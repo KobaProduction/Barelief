@@ -1,5 +1,5 @@
-#ifndef AGGREGATOR_ABSTRACT_TYPES_H
-#define AGGREGATOR_ABSTRACT_TYPES_H
+#ifndef WLED_ABSTRACT_TYPES_H
+#define WLED_ABSTRACT_TYPES_H
 
 #include <cstdint>
 
@@ -25,4 +25,4 @@ namespace wled_audio_reactive {
     static_assert(sizeof(AudioSyncPacket) == 44, "AudioSyncPacket must be exactly 44 bytes");
 }
 
-#endif // AGGREGATOR_ABSTRACT_TYPES_H
+#endif // WLED_ABSTRACT_TYPES_H

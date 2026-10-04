@@ -9,6 +9,7 @@
 class AbstractChartView : public QChartView {
 public:
     AbstractChartView();
+    ~AbstractChartView() override;
     void set_auto_resizing(bool value);
     void set_auto_gain(bool value, float min_max = 100.0f, float min_min = -100.0f, size_t speed = 10);
     void set_range(qreal min, qreal max);
@@ -21,6 +22,7 @@ protected:
     qreal _gain_min_max{};
     qreal _gain_min_min{};
     size_t _gain_speed{};
+    size_t _gain_counter = 0;
     qreal _last_min_value;
     qreal _last_max_value;
 
@@ -29,6 +31,10 @@ protected:
     QValueAxis _axis_x;
     QValueAxis _axis_y;
 
+    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
     void _init_series();
     virtual void _update_chart_data() = 0;
     virtual void _on_chart_updated() {};

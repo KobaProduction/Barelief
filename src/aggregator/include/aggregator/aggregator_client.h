@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QHostAddress>
+#include "core/runtime_state.h"
 
 #include <BDSP/transceivers.h>
 
@@ -38,12 +39,12 @@ public:
     /// @param address IP-адрес сервера агрегатора
     /// @param port Порт сервера агрегатора
     /// @param timeout_ms Тайм-аут подключения в миллисекундах
-    /// @return true если подключение успешно, false в противном случае
+    /// @return true если асинхронное подключение запрошено; результат приходит через сигналы
     bool connect_to_aggregator_server(QHostAddress address = QHostAddress::LocalHost,
                                       uint16_t port = aggregator_component::DEFAULT_PORT,
                                       int32_t timeout_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS);
 
-    /// @brief Беспокнечное подключение к серверу агрегатора до установления первого соединения
+    /// @brief Асинхронное подключение с бесконечными повторными попытками
     /// @param address IP-адрес сервера агрегатора
     /// @param port Порт сервера агрегатора
     /// @param timeout_ms Тайм-аут подключения в миллисекундах
@@ -55,6 +56,9 @@ public:
     /// @brief Проверка подключения к серверу
     /// @return true если подключен, false в противном случае
     bool is_connected() const;
+    void disconnect_from_aggregator_server();
+    core::RuntimeState runtime_state() const { return _state; }
+    QString error() const { return _error; }
 
     /// @brief Проверка регистрации клиента как компонента
     /// @return true если зарегистрирован, false в противном случае
@@ -68,6 +72,7 @@ public:
                             int32_t reconnect_interval_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS);
 
 Q_SIGNALS:
+    void status_changed(core::RuntimeState state, const QString &error);
     /// @brief Сигнал о закрытии клиента
     void on_client_disconnected();
 
@@ -96,14 +101,21 @@ private:
     session_token_t _session_token = 0;
     std::optional<int32_t> _reconnect_tries;
     int32_t _current_reconnect_attempt = 0;
-    QTimer _reconnect_timer;
+    QTimer _reconnect_timer, _timeout_timer;
+    bool _enabled = false, _waiting_for_first_registration = false;
+    std::optional<int32_t> _saved_reconnect_tries;
+    int32_t _timeout_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS;
+    core::RuntimeState _state = core::RuntimeState::Stopped;
+    QString _error;
+    void _begin_connection();
+    void _set_status(core::RuntimeState state, QString error = {});
     int32_t _reconnect_interval_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS;
 
     void _handle_packet(BDSP::packet_context_t &packet_ctx);
 
     void _start_reconnecting();
 
-    void _send_registration_request() const;
+    void _send_registration_request();
 };
 
 #endif // AGGREGATOR_CLIENT_H

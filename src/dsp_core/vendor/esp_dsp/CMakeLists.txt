@@ -1,4 +1,4 @@
-add_library(dsp)
+add_library(dsp STATIC)
 
 target_include_directories(dsp PUBLIC common/include)
 target_include_directories(dsp PUBLIC common/include_sim)
@@ -11,7 +11,7 @@ target_include_directories(dsp PUBLIC windows/flat_top/include)
 target_include_directories(dsp PUBLIC windows/hann/include)
 target_include_directories(dsp PUBLIC windows/nuttall/include)
 
-target_sources(dsp PUBLIC
+target_sources(dsp PRIVATE
         common/misc/dsps_pwroftwo.cpp
         fft/float/dsps_fft2r_fc32_ansi.c
         fft/float/dsps_fft4r_fc32_ansi.c

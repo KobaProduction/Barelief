@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <vector>
+#include "dsp_core/dsp.h"
 
 class FFT {
 public:
@@ -10,7 +11,7 @@ public:
     typedef enum {FFT2R, FFT4R, FHT2R, FHT4R} fft_type_t;
 protected:
     int _samples_size = 0;
-    std::vector<float> _buffer;
+    dsp_core::FFT _transform;
     fft_type_t _type = FFT2R;
 public:
 
@@ -18,6 +19,5 @@ public:
 
     fft_status_t run(std::vector<float> &samples, std::vector<float> &amplitudes);
 };
-
 
 #endif //QT_VISUALIZATION_FFT_H

@@ -1,4 +1,5 @@
 #include <QTimer>
+#include "aggregator/packet_codec.h"
 
 #include "core/utils.h"
 #include "aggregator/aggregator_client.h"
@@ -11,67 +12,66 @@ AggregatorClient::AggregatorClient(const AggregatorClientConfig &config, QObject
     _session_token = aggregator_utils::generate_session_token(_cfg.uuid, _cfg.type, _cfg.component_server_port);
     connect(&_socket, &TcpBDSPSocket::on_got_packet, this, &AggregatorClient::_handle_packet);
 
-    connect(&_socket, &QTcpSocket::connected, this, [this]() {
-        qCInfo(aggregator_client, "Connected to server, sending registration");
-        _current_reconnect_attempt = 0;
-        _reconnect_timer.stop();
+    _timeout_timer.setSingleShot(true);
+    _reconnect_timer.setSingleShot(true);
+    connect(&_socket, &QTcpSocket::connected, this, [this] {
+        if (!_enabled) { _socket.abort(); return; }
+        _timeout_timer.start(aggregator_component::REGISTRATION_TIMEOUT_MS);
+        emit on_client_connected();
         _send_registration_request();
     });
-
-    connect(&_socket, &QTcpSocket::disconnected, this, [this]() {
-        qCInfo(aggregator_client, "Socket disconnected");
-        if (_is_registered) {
-            _is_registered = false;
-            emit on_client_disconnected();
-        }
-        if (not _reconnect_tries.has_value()) {
-            qCInfo(aggregator_client, "An endless process of restoring the connection has begun...");
-        }
+    connect(&_socket, &QTcpSocket::disconnected, this, [this] {
+        _timeout_timer.stop();
+        if (_is_registered) { _is_registered=false; emit on_client_disconnected(); }
         _start_reconnecting();
     });
-
-
-    _reconnect_timer.setSingleShot(true);
-    connect(&_reconnect_timer, &QTimer::timeout, this, [this]() {
-        _current_reconnect_attempt++;
-        if (connect_to_aggregator_server(_aggregator_server_address, _aggregator_server_port)) {
-            qCInfo(aggregator_client, "Reconnected successfully");
-        } else {
-            _start_reconnecting();
-        }
+    connect(&_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        _timeout_timer.stop(); _error=_socket.errorString();
+        _start_reconnecting();
     });
+    connect(&_timeout_timer, &QTimer::timeout, this, [this] {
+        _error=is_connected() ? "Registration timeout" : "Connection timeout";
+        _socket.abort(); _start_reconnecting();
+    });
+    connect(&_reconnect_timer, &QTimer::timeout, this, [this] { ++_current_reconnect_attempt; _begin_connection(); });
 
     qCDebug(aggregator_client, "AggregatorClient created for component: %s",
             qPrintable(_cfg.uuid.toString()));
 }
 
 AggregatorClient::~AggregatorClient() {
-    _reconnect_timer.stop();
-    _socket.close();
+    _enabled=false; _reconnect_timer.stop(); _timeout_timer.stop();
+    _socket.disconnect(this); _socket.abort();
 }
-
-
+void AggregatorClient::_set_status(core::RuntimeState state, QString error) {
+    if (_state==state && _error==error) return;
+    _state=state; _error=std::move(error); emit status_changed(_state,_error);
+}
+void AggregatorClient::disconnect_from_aggregator_server() {
+    _enabled=false; _reconnect_timer.stop(); _timeout_timer.stop(); _socket.abort();
+    _is_registered=false; _set_status(core::RuntimeState::Stopped);
+}
 bool AggregatorClient::connect_to_aggregator_server(QHostAddress address, uint16_t port, int32_t timeout_ms) {
-    _aggregator_server_address = std::move(address);
-    _aggregator_server_port = port;
-    if (_socket.isOpen()) _socket.close();
-    _socket.connectToHost(_aggregator_server_address, _aggregator_server_port);
-    const bool result = _socket.waitForConnected(timeout_ms);
-    if (not result) _socket.close();
-    return result;
+    disconnect_from_aggregator_server();
+    _waiting_for_first_registration=false;
+    if (address.isNull() || !port || timeout_ms<=0) { _set_status(core::RuntimeState::Failed,"Invalid connection parameters"); return false; }
+    _aggregator_server_address=std::move(address); _aggregator_server_port=port; _timeout_ms=timeout_ms;
+    _enabled=true; _current_reconnect_attempt=0; _set_status(core::RuntimeState::Starting);
+    _begin_connection(); return true;
 }
-
-void AggregatorClient::connect_to_aggregator_server_with_waiting(const QHostAddress &address, const uint16_t port,
-                                                                 const int32_t timeout_ms) {
-    const auto last = _reconnect_tries;
-    _reconnect_tries.reset();
-    while (not connect_to_aggregator_server(address, port, timeout_ms)) {
-    }
-    _reconnect_tries = last;
+void AggregatorClient::_begin_connection() {
+    if (!_enabled) return;
+    _timeout_timer.start(_timeout_ms);
+    _socket.connectToHost(_aggregator_server_address,_aggregator_server_port);
+}
+void AggregatorClient::connect_to_aggregator_server_with_waiting(const QHostAddress &address, uint16_t port, int32_t timeout_ms) {
+    const auto saved=_reconnect_tries;
+    _reconnect_tries.reset(); connect_to_aggregator_server(address,port,timeout_ms);
+    _saved_reconnect_tries=saved; _waiting_for_first_registration=true;
 }
 
 bool AggregatorClient::is_connected() const {
-    return _socket.isOpen();
+    return _socket.state() == QAbstractSocket::ConnectedState;
 }
 
 bool AggregatorClient::is_registered() const {
@@ -80,32 +80,33 @@ bool AggregatorClient::is_registered() const {
 
 
 void AggregatorClient::_start_reconnecting() {
-    if (not _reconnect_tries.has_value()) {
-        // Бесконечное переподключение
-        _reconnect_timer.start(_reconnect_interval_ms);
-        return;
+    if (!_enabled || _reconnect_timer.isActive()) return;
+    if (_reconnect_tries && _current_reconnect_attempt>=*_reconnect_tries) {
+        _enabled=false; _timeout_timer.stop(); _socket.abort();
+        _set_status(core::RuntimeState::Failed,_error.isEmpty() ? "Reconnect attempts exhausted" : _error); return;
     }
-    // Ограниченное количество попыток
-    qCInfo(aggregator_client, "(%d) Reconnect try...", _current_reconnect_attempt);
-    if (_current_reconnect_attempt < _reconnect_tries.value()) {
-        _reconnect_timer.start(_reconnect_interval_ms);
-    } else {
-        qCInfo(aggregator_client, "Max reconnection attempts reached (%d)", _current_reconnect_attempt);
-    }
+    _set_status(core::RuntimeState::Recovering,_error);
+    const auto multiplier=1 << std::min(_current_reconnect_attempt,5);
+    _reconnect_timer.start(std::min<int64_t>(30000,int64_t(_reconnect_interval_ms)*multiplier));
 }
-
 
 void AggregatorClient::_handle_packet(BDSP::packet_context_t &packet_context) {
     const auto packet_type = static_cast<PacketType>(packet_context.packet_id);
     switch (packet_type) {
+        case PacketType::error: {
+            const auto message=QString::fromUtf8(reinterpret_cast<const char *>(packet_context.data_ptr),static_cast<qsizetype>(packet_context.size));
+            _enabled=false; _reconnect_timer.stop(); _timeout_timer.stop(); _socket.abort();
+            _set_status(core::RuntimeState::Failed,message); return;
+        }
         case PacketType::component_state_change: {
             if (packet_context.size not_eq sizeof(component_update_state_packet_t)) {
                 qCWarning(aggregator_client, "Component state change packet size incorrect.");
                 return;
             }
 
-            const auto [uuid_bytes, new_state] = *reinterpret_cast<component_update_state_packet_t *>(packet_context.
-                data_ptr);
+            component_update_state_packet_t decoded{};
+            if (!aggregator_wire::decode(QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded)) return;
+            const auto [uuid_bytes, new_state] = decoded;
             const auto uuid = QUuid::fromBytes(&uuid_bytes);
 
             if (uuid == _cfg.uuid) return;
@@ -120,8 +121,9 @@ void AggregatorClient::_handle_packet(BDSP::packet_context_t &packet_context) {
                 return;
             }
 
-            const auto [uuid_raw, type, address_raw, component_server_port, state] =
-                    *reinterpret_cast<component_update_full_packet_t *>(packet_context.data_ptr);
+            component_update_full_packet_t decoded{};
+            if (!aggregator_wire::decode(QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded)) return;
+            const auto [uuid_raw, type, address_raw, component_server_port, state] = decoded;
             const QUuid uuid = QUuid::fromBytes(&uuid_raw);
 
             const component_info_t info{
@@ -133,12 +135,15 @@ void AggregatorClient::_handle_packet(BDSP::packet_context_t &packet_context) {
 
             if (uuid == _cfg.uuid) {
                 if (state >= ComponentState::registered) {
+                    if (_is_registered) return;
                     _is_registered = true;
+                    if (_waiting_for_first_registration) { _reconnect_tries=_saved_reconnect_tries; _waiting_for_first_registration=false; }
+                    _current_reconnect_attempt=0; _reconnect_timer.stop(); _timeout_timer.stop();
+                    _set_status(core::RuntimeState::Running);
                     qCInfo(aggregator_client, "Registration AggregatorClient successful! External Ip: %s",
                            qPrintable(convert_qt_host_address_to_string(info.address)));
                     emit on_client_registered();
                 }
-                // todo update internal ip
                 return;
             }
 
@@ -158,20 +163,19 @@ void AggregatorClient::_handle_packet(BDSP::packet_context_t &packet_context) {
 
 void AggregatorClient::set_reconnect_mode(const bool infinite_mode, int32_t tries,
                                           const int32_t reconnect_interval_ms) {
-    _reconnect_interval_ms = reconnect_interval_ms;
+    _reconnect_interval_ms = std::max(1,reconnect_interval_ms);
     if (infinite_mode) {
         _reconnect_tries.reset();
         return;
     }
-    _reconnect_tries = tries;
+    _reconnect_tries = std::max(0,tries);
 }
 
-void AggregatorClient::_send_registration_request() const {
+void AggregatorClient::_send_registration_request() {
     registration_request_packet_t data{};
     data.component_type = _cfg.type;
     data.component_server_port = _cfg.component_server_port;
     data.uuid = _cfg.uuid.toBytes();
     data.session_token = _session_token;
-    _socket.send_data(static_cast<uint8_t>(PacketType::component_registration),
-                      reinterpret_cast<uint8_t *>(&data), sizeof(data));
+    _socket.send_packet(static_cast<uint8_t>(PacketType::component_registration), aggregator_wire::encode(data));
 }

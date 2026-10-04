@@ -11,7 +11,6 @@ void TcpBDSPServer::incomingConnection(qintptr handle) {
         delete socket;
         return;
     }
-    addPendingConnection(socket);
     emit tcp_bdsp_socket_ready(socket);
 }
 

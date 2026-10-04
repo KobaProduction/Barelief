@@ -1,6 +1,9 @@
+#include "core/performance.h"
 #include "analyzer/analyze/analyzer.h"
 
-#include <QDebug>
+#include <algorithm>
+#include <cmath>
+#include <chrono>
 
 #include "dsps_wind_hann.h"
 
@@ -12,196 +15,186 @@ Amplitudes::Amplitudes(size_t size) {
     right.resize(size, 0);
 }
 
-static float hz_to_mel(float f) {
-    return 2595.0f * log10f(1.0f + f / 700.0f);
-}
-
-static float mel_to_hz(float m) {
-    return 700.0f * (powf(10.0f, m / 2595.0f) - 1.0f);
-}
-
-void fft_to_mel(
-    const std::vector<float> &temp_amplitudes,
-    size_t sample_rate,
-    std::vector<float> &mel_output,
-    size_t mel_bands = 40) {
-    mel_output.resize(mel_bands);
-    const size_t fft_bins = temp_amplitudes.size();
-    const size_t N = fft_bins * 2;
-
-    float f_min = 0.0f;
-    float f_max = sample_rate * 0.5f;
-
-    float mel_min = hz_to_mel(f_min);
-    float mel_max = hz_to_mel(f_max);
-
-    std::vector<float> mel_points(mel_bands + 2);
-
-    for (size_t i = 0; i < mel_bands + 2; ++i) {
-        mel_points[i] = mel_min +
-                        (mel_max - mel_min) * i / (mel_bands + 1);
+void fft_to_mel(const std::vector<float> &spectrum, size_t rate, std::vector<float> &output, size_t bands) {
+    thread_local dsp_core::MelFilterBank filter;
+    thread_local size_t cached_bins = SIZE_MAX, cached_rate = SIZE_MAX, cached_bands = SIZE_MAX;
+    if (cached_bins != spectrum.size() || cached_rate != rate || cached_bands != bands) {
+        filter.prepare(spectrum.size(), rate, bands);
+        cached_bins = spectrum.size(); cached_rate = rate; cached_bands = bands;
     }
-
-    std::vector<int> bin(mel_bands + 2);
-
-    for (size_t i = 0; i < mel_bands + 2; ++i) {
-        float f = mel_to_hz(mel_points[i]);
-        bin[i] = static_cast<int>(floor((N + 1) * f / sample_rate));
-    }
-
-    mel_output.assign(mel_bands, 0.0f);
-
-    for (size_t m = 1; m <= mel_bands; ++m) {
-        int left = bin[m - 1];
-        int center = bin[m];
-        int right = bin[m + 1];
-
-        float energy = 0.0f;
-
-        for (int k = left; k < center; ++k) {
-            float w = float(k - left) / (center - left);
-            energy += temp_amplitudes[k] * w;
-        }
-
-        for (int k = center; k < right; ++k) {
-            float w = float(right - k) / (right - center);
-            energy += temp_amplitudes[k] * w;
-        }
-
-        mel_output[m - 1] = energy;
-    }
-    //    float max_val = *std::max_element(mel_output.begin(), mel_output.end());
-    //
-    //    for (auto& v : mel_output)
-    //    {
-    //        v = 20.0f * log10f((v + 1e-9f) / max_val);
-    //    }
+    output.resize(bands);
+    filter.process(spectrum, output);
 }
-
 
 uint64_t Analyzer::_task() {
-    const float fps_ms_delay = 1000.0 / 45;
-    while (_thread_handle) {
-        timer.start();
-        if (_need_update) {
-            std::vector<float> temp_amplitudes;
-            std::vector<float> mel_amplitudes;
-            temp_amplitudes.resize(amplitudes.left.size(), 0.0f);
-            mel_amplitudes.resize(80, 0.0f);
-            std::vector<float> samples_ = samples.left.get_window();
-            use_window(samples_);
-            const auto status = fft.run(samples_, temp_amplitudes);
+    std::vector<float> left(_samples_size), right(_samples_size), weights, hann;
+    SpectrumFrame frame;
+    dsp_core::StereoProcessor processor;
+    size_t prepared_rate = SIZE_MAX;
+    bool mel_enabled = true;
+    uint64_t previous_frame_time=0;
+    while (_running.load()) {
 
-            if (_sample_rate and temp_amplitudes.size() == _bark_scale.size()) {
-                for (int i = 0; i < temp_amplitudes.size(); ++i) {
-                    temp_amplitudes[i] *= _bark_scale[i];
-                }
+        left.clear(); right.clear();
+        size_t rate = 0;
+        update_handler_t handler;
+        std::function<void(const SpectrumFrame &)> frame_handler;
+        on_samples_after_window_function_handler_t windowed_handler;
+        {
+            std::unique_lock lock(_mutex);
+            _samples_ready.wait(lock, [this] { return _pending_size || !_running.load(); });
+            if (!_running.load()) break;
+            core::perf::Scope trace(core::perf::Stage::WindowSnapshot);
+            if (_pending_size) {
+                auto &pending = _pending[_pending_head];
+                left.swap(pending.left); right.swap(pending.right);
+                _pending_head = (_pending_head + 1) % pending_capacity; --_pending_size;
+                frame.input_timestamp_ns = pending.input_timestamp_ns;
+                frame.discontinuity = _force_discontinuity || pending.sequence != _sequence + 1;
+                _force_discontinuity = false;
+                frame.sequence = pending.sequence; _sequence = pending.sequence;
+                frame.dropped_windows = _dropped_windows;
+                weights = _bark_scale;
+                hann = window;
+                rate = _sample_rate;
+                mel_enabled = _mel_enabled;
+
+                handler = _handler;
+                frame_handler = _frame_handler;
+                windowed_handler = _samples_after_window_function_handler;
             }
-
-            // for (int i = 0; i < amplitudes.left.size(); ++i) {
-            //     amplitudes.left[i] = temp_amplitudes[i];
-            // }
-            for (int i = 0; i < 100; ++i) {
-                amplitudes_test.left[i] = temp_amplitudes[i] * 10;
-            }
-
-            // fft_to_mel(temp_amplitudes,
-            //            _sample_rate,
-            //            amplitudes_test.left,
-            //            30);
-
-            // for (int i = 0; i < 10; ++i) {
-                // amplitudes_test.left[i] *= 3;
-            // }
-            //            whitening.process(mel_amplitudes,
-            //                              amplitudes_test.left);
-            //            for (int i = 0; i < amplitudes_test.left.size(); ++i) {
-            //                amplitudes_test.left[i] = temp_amplitudes[i];
-            //            }
-
-            //            if (_sample_rate and temp_amplitudes.size() == _bark_scale.size()) {
-            //                for (int i = 0; i < temp_amplitudes.size(); ++i) {
-            //                    temp_amplitudes[i] *= _bark_scale[i];
-            //                }
-            //            }
-            //            if (_smoothing_percent > 0 and _smoothing_percent < 100) {
-            //                float new_mul = 100 - _smoothing_percent;
-            //                for (int i = 0; i < amplitudes.left.size(); ++i) {
-            //                    amplitudes.left[i] = (amplitudes.left[i] * _smoothing_percent + temp_amplitudes[i] * new_mul) / 100;
-            //                }
-            //            } else {
-            //                for (int i = 0; i < amplitudes.left.size(); ++i) {
-            //                amplitudes.left[i] = temp_amplitudes[i];
-            //                }
-            //            }
-            //            for (int i = 0; i < amplitudes.left.size(); ++i) {
-            //                if (amplitudes.left[i] < 0 or std::isinf(amplitudes.left[i]) or std::isnan(amplitudes.left[i])) {
-            //                    amplitudes.left[i] = 0;
-            //                }
-            //            }
-
-
-            if (status not_eq FFT::SUCCESS) {
-                qCritical(std::format("Failed run fft. code: {}", int(status)).c_str());
-                break;
-            }
-            if (_handler) {
-                _handler();
-            }
-            _need_update = false;
         }
-        const auto fft_calc_time_ms = static_cast<float>(timer.elapsed()) / 1000000;
-        const auto delta = abs(fps_ms_delay - fft_calc_time_ms);
-        if (delta > 0) _sleep(delta);
+        if (!left.empty()) {
+            core::perf::Scope work(core::perf::Stage::AnalysisWork);
+            const auto frame_time=core::perf::now();
+            if(previous_frame_time) core::perf::record(core::perf::Stage::AnalysisGap,previous_frame_time,frame_time-previous_frame_time);
+            previous_frame_time=frame_time;
+            frame.audio_samples=left.size(); frame.audio_peak=0;
+            for (size_t i=0;i<left.size();++i) frame.audio_peak=std::max({frame.audio_peak,std::abs(left[i]),std::abs(right[i])});
+            frame.sample_rate = rate;
+            frame.frequency_step = float(rate) / float(_samples_size);
+            frame.samples = left;
+            frame.window = hann;
+
+            frame.timestamp_ns = frame.input_timestamp_ns;
+            if (prepared_rate != rate) {
+                if (!processor.prepare(_samples_size, rate)) return 1;
+                prepared_rate = rate;
+            }
+            frame.left.resize(_amplitudes_size); frame.right.resize(_amplitudes_size);
+            frame.mel_left.resize(mel_enabled ? 50 : 0); frame.mel_right.resize(mel_enabled ? 50 : 0);
+            { core::perf::Scope trace(core::perf::Stage::FFT);
+              if (!processor.process(left, right, hann, weights, frame.left, frame.right)) return 1; }
+            if (mel_enabled) {
+                core::perf::Scope trace(core::perf::Stage::StereoMel);
+                if (!processor.process_mel(frame.left, frame.right, frame.mel_left, frame.mel_right)) return 1;
+            }
+            frame.post_window = left;
+            {
+                std::lock_guard lock(_mutex);
+                amplitudes.left = frame.left; amplitudes.right = frame.right;
+                amplitudes_test.left = frame.mel_left; amplitudes_test.right = frame.mel_right;
+            }
+            // Consumer callbacks and FFT never hold the capture mutex.
+            if (windowed_handler) windowed_handler(left);
+            if (frame_handler) frame_handler(frame);
+            if (handler) handler();
+        }
     }
     return 0;
+}
+
+std::vector<float> Analyzer::merge_spectra(const std::vector<float> &left, const std::vector<float> &right, SpectrumMerge mode) {
+    std::vector<float> result(std::min(left.size(), right.size()));
+    for (size_t i = 0; i < result.size(); ++i) {
+        if (mode == SpectrumMerge::Maximum) result[i] = std::max(left[i], right[i]);
+        else if (mode == SpectrumMerge::Energy) result[i] = std::hypot(left[i], right[i]) / std::sqrt(2.0f);
+        else result[i] = (left[i] + right[i]) * 0.5f;
+    }
+    return result;
+}
+void Analyzer::set_mel_enabled(bool enabled) {
+    std::lock_guard lock(_mutex); _mel_enabled = enabled;
+}
+void Analyzer::stop() {
+    {
+        std::lock_guard lock(_mutex);
+        _running = false;
+    }
+    _samples_ready.notify_all();
+    AbstractTask::stop();
+}
+void Analyzer::set_frame_handler(std::function<void(const SpectrumFrame &)> handler) {
+    std::lock_guard lock(_mutex); _frame_handler = std::move(handler);
 }
 
 Analyzer::Analyzer() {
     _samples_size = 4096;
     _sample_rate = 0;
     _amplitudes_size = _samples_size / 2;
-    whitening = SpectralWhitening(80);
-    //    _smoothing_percent = 60;
+
+    generate_window();
 
     samples = Samples(_samples_size);
+    for (auto &pending : _pending) { pending.left.resize(_samples_size); pending.right.resize(_samples_size); }
     amplitudes = Amplitudes(_amplitudes_size);
     amplitudes_test = Amplitudes(50);
     _bark_scale.resize(_amplitudes_size, 1.0f);
-    _volume_scale.resize(_amplitudes_size, 1.0f);
 
-    auto status = fft.init(int(_samples_size), fft.FFT4R);
-    if (status not_eq FFT::SUCCESS) {
-        qCritical("Failed init fft");
-    }
 }
 
 std::vector<float> Analyzer::average_channels(const std::vector<float> &left, const std::vector<float> &right) {
-    std::vector<float> result(left.size());
-    for (size_t i = 0; i < left.size(); ++i) {
+    std::vector<float> result(std::min(left.size(), right.size()));
+    for (size_t i = 0; i < result.size(); ++i) {
         result[i] = (left[i] + right[i]) / 2.0f;
     }
     return result;
 }
 
-void Analyzer::add_samples(const std::vector<float> &left, const std::vector<float> &right) {
-    samples.left.append_data(left);
-    samples.right.append_data(right);
-    _need_update = true;
-    if (not _thread_handle) {
-        qDebug("Analyzer task not started");
+void Analyzer::add_samples(const std::vector<float> &left, const std::vector<float> &right, int64_t timestamp_ns) {
+    std::lock_guard lock(_mutex);
+    _input_timestamp_ns = timestamp_ns ? timestamp_ns : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto count = std::min(left.size(), right.size());
+    const auto rate = _sample_rate ? _sample_rate : 48000;
+    size_t offset = 0;
+    while (offset < count) {
+        if (!_hop_size) {
+            _hop_size = rate / 60;
+            _hop_remainder += rate % 60;
+            if (_hop_remainder >= 60) { ++_hop_size; _hop_remainder -= 60; }
+            _hop_size = std::max(size_t{1}, _hop_size);
+        }
+        const auto chunk = std::min(count - offset, _hop_size - _hop_progress);
+        samples.left.append_data(left.data() + offset, chunk);
+        samples.right.append_data(right.data() + offset, chunk);
+        offset += chunk; _hop_progress += chunk;
+        if (_hop_progress == _hop_size) {
+            if (_pending_size == pending_capacity) {
+                _pending_head = (_pending_head + 1) % pending_capacity; --_pending_size; ++_dropped_windows;
+            }
+            auto &pending = _pending[(_pending_head + _pending_size) % pending_capacity];
+            pending.left = samples.left.get_window(); pending.right = samples.right.get_window();
+            pending.input_timestamp_ns = _input_timestamp_ns - static_cast<int64_t>(((count - offset) * 1000000000ULL) / rate);
+            pending.sequence = ++_queued_sequence; ++_pending_size;
+            _hop_progress = 0; _hop_size = 0;
+        }
     }
+    if (_pending_size) _samples_ready.notify_one();
 }
 
 void Analyzer::set_update_handler(update_handler_t handler) {
+    std::lock_guard lock(_mutex);
     _handler = std::move(handler);
 }
 
 void Analyzer::set_update_window_function_handler(on_update_window_function_handler_t handler) {
-    _update_window_function_handler = std::move(handler);
+    std::vector<float> current;
+    { std::lock_guard lock(_mutex); _update_window_function_handler = handler; current = window; }
+    if (handler) handler(current);
 }
 
 void Analyzer::set_samples_after_window_function_handler(on_samples_after_window_function_handler_t handler) {
+    std::lock_guard lock(_mutex);
     _samples_after_window_function_handler = std::move(handler);
 }
 
@@ -214,13 +207,18 @@ void Analyzer::generate_bark_scale(float *scale_ptr, size_t scale_size, float fr
 }
 
 void Analyzer::update_sample_rate(size_t sample_rate) {
+    std::lock_guard lock(_mutex);
     if (sample_rate == _sample_rate) return;
+    if (_sample_rate) _force_discontinuity = true;
     _sample_rate = sample_rate;
+    samples.left.clear(); samples.right.clear();
+    _pending_head = _pending_size = 0; _hop_progress = _hop_remainder = _hop_size = 0;
     generate_bark_scale(_bark_scale.data(), _bark_scale.size(), get_freq_step());
-    generate_volume_scale(_volume_scale.data(), _volume_scale.size(), get_freq_step());
+
 }
 
 float Analyzer::get_freq_step() {
+    std::lock_guard lock(_mutex);
     return float(_sample_rate) / float(_samples_size);
 }
 
@@ -251,6 +249,7 @@ void Analyzer::generate_volume_scale(float *scale_ptr, size_t scale_size, float 
 }
 
 void Analyzer::generate_window() {
+    std::lock_guard lock(_mutex);
     window.resize(_samples_size);
     dsps_wind_hann_f32(window.data(), window.size());
     if (_update_window_function_handler) {
@@ -259,6 +258,7 @@ void Analyzer::generate_window() {
 }
 
 void Analyzer::use_window(std::vector<float> &samples_) {
+    std::lock_guard lock(_mutex);
     if (samples_.empty()) return;
     if (window.size() not_eq samples_.size()) generate_window();
     for (size_t i = 0; i < samples_.size(); ++i) {
@@ -267,4 +267,20 @@ void Analyzer::use_window(std::vector<float> &samples_) {
     if (_samples_after_window_function_handler) {
         _samples_after_window_function_handler(samples_);
     }
+}
+
+std::vector<float> Analyzer::get_samples_snapshot() const {
+    std::lock_guard lock(_mutex);
+    return samples.left.get_window();
+}
+
+std::vector<float> Analyzer::get_window_snapshot() const {
+    std::lock_guard lock(_mutex);
+    return window;
+}
+
+void Analyzer::reset_samples() {
+    std::lock_guard lock(_mutex); samples.left.clear(); samples.right.clear();
+    _pending_head = _pending_size = 0; _hop_progress = _hop_remainder = _hop_size = 0;
+    _force_discontinuity = true;
 }

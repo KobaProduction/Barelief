@@ -1,0 +1,5 @@
+add_library(audio_pipeline STATIC src/audio_pipeline.cpp src/audio_source.cpp include/pipeline/audio_source.h src/graph.cpp src/engine_client.cpp include/pipeline/engine_client.h include/pipeline/graph.h include/pipeline/audio_pipeline.h)
+target_include_directories(audio_pipeline PUBLIC include)
+target_link_libraries(audio_pipeline PUBLIC analyzer wled core Qt6::Core Qt6::Network)
+add_executable(pipeline_cli src/main.cpp)
+target_link_libraries(pipeline_cli PRIVATE audio_pipeline)

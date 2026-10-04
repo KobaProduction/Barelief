@@ -1,10 +1,13 @@
 #include "app.h"
+#include <cstring>
+#include "core/latest_delivery.h"
 
 #include "visualization/charts/line.h"
 #include "visualization/charts/bar.h"
 #include "visualization/charts/freq.h"
 
 Application::Application(int &argc, char **argv, const int flags) : QApplication(argc, argv, flags) {
+    _pipeline = std::make_unique<pipeline::AudioPipeline>();
     if (_cfg.run_analyser) {
         _run_analyzer();
     }
@@ -61,15 +64,16 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
                 size_t samples_size = packet_context.size;
                 samples_size /= 2;
                 std::vector<float> samples;
-                auto *packet_samples = reinterpret_cast<int16_t *>(packet_context.data_ptr);
                 for (int i = 0; i < samples_size; ++i) {
-                    samples.push_back(float(packet_samples[i]));
+                    int16_t value;
+                    std::memcpy(&value, packet_context.data_ptr + i * sizeof(value), sizeof(value));
+                    samples.push_back(float(value));
                 }
                 app.serialSamplesView->update(samples);
                 return;
             } else if (packet_context.packet_id == 2 and app.serialSpectreView) {
                 size_t spectre_size = packet_context.size;
-                spectre_size = 300;
+                spectre_size = std::min<size_t>(spectre_size, 300);
                 //                spectre_size /= 2;
                 std::vector<float> spectre;
                 const auto *packet_samples = reinterpret_cast<uint8_t *>(packet_context.data_ptr);
@@ -90,9 +94,8 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
             } else if (packet_context.packet_id == 4 and app.serialFastAmplitudesView) {
                 std::vector<float> amplitudes;
                 amplitudes.resize(packet_context.size / 4);
-                const auto *data = reinterpret_cast<float *>(packet_context.data_ptr);
                 for (int i = 0; i < amplitudes.size(); ++i) {
-                    amplitudes[i] = static_cast<float>(data[i]);
+                    std::memcpy(&amplitudes[i], packet_context.data_ptr + i * sizeof(float), sizeof(float));
                 }
                 app.serialFastAmplitudesView->update(amplitudes);
                 return;
@@ -105,7 +108,7 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
     }
 
 
-    if (_cfg.show_raw_samples and loopback) {
+    if (_cfg.show_raw_samples and _cfg.run_loopback) {
         rawSamplesView = new LineChartView();
         rawSamplesView->set_range(-1, 1);
         rawSamplesView->chart()->setTitle("Raw samples");
@@ -114,7 +117,7 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
         qInfo("Raw samples only can show when loopback running");
     }
 
-    if (_cfg.show_samples and analyzer) {
+    if (_cfg.show_samples and _cfg.run_analyser) {
         samplesView = new LineChartView();
         samplesView->set_range(-1, 1);
         samplesView->chart()->setTitle("Analyzer samples");
@@ -123,7 +126,7 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
         qInfo("Analyzer samples only can show when analyzer running");
     }
 
-    if (_cfg.show_amplitudes and analyzer) {
+    if (_cfg.show_amplitudes and _cfg.run_analyser) {
         amplitudesView = new FreqChartView();
 
         amplitudesView->set_range(0, 1);
@@ -136,7 +139,7 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
         qInfo("Analyzer amplitudes only can show when analyzer running");
     }
 
-    if (_cfg.show_test_amplitudes and analyzer) {
+    if (_cfg.show_test_amplitudes and _cfg.run_analyser) {
         testAmplitudesView = new LineChartView();
 
         testAmplitudesView->set_range(0, 1);
@@ -157,7 +160,6 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
     //
     if (_cfg.show_surface) {
         surfaceView = new SurfaceGraph(&tabWidget);
-        spectrogram = new Spectrogram(400);
         if (not surfaceView->initialize(minimumGraphSize, screenSize)) {
             qWarning("Couldn't initialize the OpenGL context.");
         }
@@ -176,90 +178,33 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
 }
 
 Application::~Application() {
-    if (analyzer) {
-        analyzer->stop();
-        qInfo("Analyzer stopped successfully");
-    }
-    if (loopback) {
-        loopback->set_audio_handler(nullptr);
-        loopback->stop();
-        qInfo("Loopback stopped successfully");
-    }
-
-    if (serial) {
-        serial->close();
-        qInfo("Serial stopped successfully");
-    }
+    // Runtime stops capture, DSP and outputs before any view is destroyed.
+    _pipeline.reset();
+    delete receiver;
+    if (serial) serial->close();
+    _window.takeCentralWidget();
 }
 
 void Application::_run_analyzer() {
-    if (analyzer) {
-        return qDebug("Analyzer already started");
-    }
-
-    analyzer = new Analyzer;
-
-    analyzer->set_update_handler([this]() {
-        if (samplesView) {
-            samplesView->update(analyzer->samples.left.get_window());
-        }
-
+    auto delivery = std::make_shared<LatestDelivery<pipeline::ViewFrame>>(this, [this](pipeline::ViewFrame frame) {
+        if (samplesView) samplesView->update(frame.samples);
         if (amplitudesView) {
-            amplitudesView->update(analyzer->amplitudes.left);
+            static_cast<FreqChartView *>(amplitudesView)->update_freq_step(frame.frequency_step);
+            amplitudesView->update(frame.fft);
         }
-
-        if (testAmplitudesView) {
-            testAmplitudesView->update(analyzer->amplitudes_test.left);
-        }
-
-        if (surfaceView and spectrogram) {
-            spectrogram->push(analyzer->amplitudes_test.left);
-            const auto vector_spectrogram = spectrogram->get_vector_spectrogram();
-            surfaceView->update(vector_spectrogram);
-        }
+        if (testAmplitudesView) testAmplitudesView->update(frame.mel);
+        if (surfaceView && frame.history) surfaceView->update(frame.history->values);
     });
-
-    analyzer->start();
+    _pipeline->set_spectrum_handler([delivery](pipeline::ViewFrame frame) { delivery->publish(std::move(frame)); });
+    _pipeline->start_analyzer();
 }
 
-
 void Application::_run_loopback() {
-    if (loopback) {
-        return qDebug("Loopback already started");
-    }
-
-    loopback = new audio::loopback::WASAPILoopback();
-
-    if (not loopback) {
-        return qCritical("Failed get loopback from Factory");
-    }
-
-    loopback->set_audio_handler([this](audio::loopback::loopback_audio data) {
-        static size_t sample_rate = 0;
-        std::vector<float> left;
-        std::vector<float> right;
-        left.resize(data.samples);
-        right.resize(data.samples);
-        for (int i = 0; i < data.samples; ++i) {
-            left[i] = data.data[i];
-            right[i] = data.data[i + data.samples];
-        }
-        if (_cfg.show_raw_samples and rawSamplesView) {
-            rawSamplesView->update(left);
-        }
-
-        if (not analyzer) return;
-        analyzer->add_samples(left, right);
-        if (sample_rate not_eq data.sample_rate) {
-            sample_rate = data.sample_rate;
-            analyzer->update_sample_rate(sample_rate);
-            if (amplitudesView) {
-                reinterpret_cast<FreqChartView *>(amplitudesView)->update_freq_step(analyzer->get_freq_step());
-            }
-        }
+    auto delivery = std::make_shared<LatestDelivery<pipeline::AudioFrame>>(this, [this](pipeline::AudioFrame frame) {
+        if (rawSamplesView) rawSamplesView->update(frame.left);
     });
-
-    loopback->start();
+    _pipeline->set_audio_handler([delivery](pipeline::AudioFrame frame) { delivery->publish(std::move(frame)); });
+    _pipeline->start_capture();
 }
 
 void Application::_run_serial() {

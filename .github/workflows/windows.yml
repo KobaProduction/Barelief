@@ -1,0 +1,55 @@
+name: Windows build and tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
+        with:
+          version: '6.10.2'
+          arch: win64_mingw
+          modules: qtcharts qtdatavis3d qtserialport
+          tools: tools_mingw1310,qt.tools.win64_mingw1310
+          aqtversion: '==3.3.0'
+      - name: Configure
+        run: |
+          $toolchain = Join-Path (Split-Path (Split-Path $env:QT_ROOT_DIR)) 'Tools/mingw1310_64/bin'
+          $toolchain >> $env:GITHUB_PATH
+          $env:PATH = "$toolchain;$env:PATH"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe" -DBUILD_TESTING=ON
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Verify deployment
+        if: matrix.configuration == 'Release'
+        run: cmake --install build --prefix dist
+
+  portable:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        fft_size: [512, 1024, 2048, 4096]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Configure without Qt
+        run: cmake -S . -B build -DBUILD_DSP_ONLY=ON -DPORTABLE_DSP_MAX_FFT_SIZE=${{ matrix.fft_size }} -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

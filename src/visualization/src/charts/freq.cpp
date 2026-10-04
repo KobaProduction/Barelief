@@ -1,4 +1,8 @@
+#include "core/performance.h"
+#include <QLineSeries>
+#include <algorithm>
 #include "visualization/charts/freq.h"
+#include <cmath>
 
 FreqChartView::FreqChartView(const qreal freq_step) {
     chart()->setTitle("Freq Chart");
@@ -6,10 +10,16 @@ FreqChartView::FreqChartView(const qreal freq_step) {
 
     chart()->addAxis(&_freq_axis, Qt::AlignBottom);
     _freq_axis.setLabelFormat("%.0f");
-    _freq_axis.hide();
+    _series->detachAxis(&_axis_x);
+    _series->attachAxis(&_freq_axis);
+    _axis_x.hide();
+    QPen pen(Qt::blue);pen.setWidthF(1);
+    static_cast<QLineSeries *>(_series)->setPen(pen);
     update_freq_step(freq_step);
 }
 
+
+FreqChartView::~FreqChartView() { chart()->removeAxis(&_freq_axis); }
 
 void FreqChartView::_on_updated_data_size(const size_t new_size) {
     AbstractChartView::_on_updated_data_size(new_size);
@@ -26,8 +36,27 @@ void FreqChartView::_on_updated_data_size(const size_t new_size) {
 }
 
 void FreqChartView::update_freq_step(const qreal freq_step) {
-    if (freq_step == _freq_step or freq_step < 1) return;
+    if (!std::isfinite(freq_step) || freq_step <= 0) return;
+    if(_freq_step!=freq_step) _need_update=true;
     _freq_step = freq_step;
     _freq_axis.setRange(0, _freq_step * static_cast<qreal>(_data.size()));
     _freq_axis.show();
+}
+
+
+void FreqChartView::_update_chart_data() {
+    core::perf::Scope trace(core::perf::Stage::ChartGeometry);
+    _points.clear();
+    const size_t count=_data.size();
+    const size_t buckets=std::min(count,static_cast<size_t>(std::max(1,int(chart()->plotArea().width()))));
+    _points.reserve(qsizetype(3*buckets));
+    // One batched path of vertical spectrum stems, instead of thousands of bar items.
+    // Maxima per screen column preserve narrow peaks; x positions remain in Hz.
+    for(size_t bucket=0;bucket<buckets;++bucket) {
+        const size_t first=bucket*count/buckets,end=(bucket+1)*count/buckets;
+        const auto peak=std::max_element(_data.begin()+first,_data.begin()+end,[](float a,float b) { return std::abs(a)<std::abs(b); });
+        const qreal x=std::distance(_data.begin(),peak)*_freq_step;
+        _points.append(QPointF(x,0));_points.append(QPointF(x,*peak));_points.append(QPointF(x,0));
+    }
+    static_cast<QLineSeries *>(_series)->replace(_points);
 }

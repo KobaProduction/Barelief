@@ -8,13 +8,9 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Network)
 
-if (BUILD_SHARED_LIBS)
-    add_library(${LIB_NAME}  SHARED)
-else ()
-    add_library(${LIB_NAME} )
-endif ()
+add_library(${LIB_NAME} STATIC)
 
-target_sources(${LIB_NAME} PUBLIC
+target_sources(${LIB_NAME} PRIVATE
         include/aggregator/abstract/types.h
         include/aggregator/aggregator_server.h
         include/aggregator/aggregator_client.h

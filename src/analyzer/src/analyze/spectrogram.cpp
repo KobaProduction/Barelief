@@ -40,7 +40,7 @@ bool Spectrogram::set_history_size(size_t new_size) {
 
     // Сначала разворачиваем текущие данные в линейный порядок (старые→новые)
     const size_t old_filled = filled_count_;
-    std::vector<std::vector<float>> linear(channels_, std::vector<float>(old_filled, 0.0f));
+    std::vector<std::vector<float>> linear(channels_, std::vector<float>(history_size_, 0.0f));
 
     for (size_t ch = 0; ch < channels_; ++ch) {
         unwrap_channel(ch, linear[ch]);
@@ -53,27 +53,12 @@ bool Spectrogram::set_history_size(size_t new_size) {
     // Пересоздаём буферы под новый размер истории, заполняем нулями
     data_.assign(channels_, std::vector<float>(history_size_, 0.0f));
 
-    if (new_size >= old_filled) {
-        // Увеличение: данные помещаются целиком, начало (старые слоты) — нули
-        const size_t offset = new_size - old_filled;
-        for (size_t ch = 0; ch < channels_; ++ch) {
-            for (size_t t = 0; t < old_filled; ++t) {
-                data_[ch][offset + t] = linear[ch][t];
-            }
-        }
-        write_index_  = 0;            // следующая запись снова в начало (кольцо заполнено)
-        filled_count_ = new_size;
-    } else {
-        // Уменьшение: берём только new_size самых новых срезов
-        const size_t discard = old_filled - new_size;
-        for (size_t ch = 0; ch < channels_; ++ch) {
-            for (size_t t = 0; t < new_size; ++t) {
-                data_[ch][t] = linear[ch][discard + t];
-            }
-        }
-        write_index_  = 0;
-        filled_count_ = new_size;
+    const size_t keep = std::min(old_filled, new_size);
+    for (size_t ch = 0; ch < channels_; ++ch) {
+        std::copy(linear[ch].end() - keep, linear[ch].end(), data_[ch].begin());
     }
+    filled_count_ = keep;
+    write_index_ = keep % new_size;
 
     return true;
 }
@@ -157,3 +142,4 @@ void Spectrogram::unwrap_channel(size_t channel_index, std::vector<float>& outpu
         output[i] = data_[channel_index][(write_index_ + i) % history_size_];
     }
 }
+void Spectrogram::clear() { reset(channels_); }

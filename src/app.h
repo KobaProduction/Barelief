@@ -8,7 +8,7 @@
 
 #include <BDSP/receivers.h>
 
-#include "analyzer/analyze/analyzer.h"
+#include "pipeline/audio_pipeline.h"
 #include "analyzer/analyze/spectrogram.h"
 #include "analyzer/loopback/windows_loopback.h"
 #include "visualization/abstract/abs.h"
@@ -44,10 +44,7 @@ private:
     AbstractChartView *amplitudesView = nullptr;
     AbstractChartView *testAmplitudesView = nullptr;
     SurfaceGraph *surfaceView = nullptr;
-    Spectrogram *spectrogram = nullptr;
-
-    Analyzer *analyzer = nullptr;
-    audio::loopback::WASAPILoopback *loopback = nullptr;
+    std::unique_ptr<pipeline::AudioPipeline> _pipeline;
     QSerialPort *serial{};
     BDSP::COBSZPEReceiver *receiver = nullptr;
     QSplitter *splitter;

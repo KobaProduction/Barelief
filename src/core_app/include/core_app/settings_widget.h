@@ -12,10 +12,14 @@
 class SettingsWidget : public QWidget {
     Q_OBJECT
 public:
-    explicit SettingsWidget(CoreApplicationContext& context, QWidget* parent = nullptr);
+    void refresh_processing_settings();
+    explicit SettingsWidget(GuiState& context, QWidget* parent = nullptr);
 
 signals:
     void on_config_changed();
+    void camera_controls_changed();
+    void processing_settings_changed();
+    void reset_camera_requested();
     void on_rebuild_charts();
     void start_loopback_requested();
     void stop_loopback_requested();
@@ -26,7 +30,7 @@ signals:
     void wled_server_config_changed();
 
 private:
-    CoreApplicationContext& _context;
+    GuiState& _context;
 
     QVBoxLayout* _main_layout = nullptr;
     QGroupBox* _core_group = nullptr;
@@ -53,6 +57,7 @@ private:
     QComboBox* _network_adapter_combo = nullptr;
     QSpinBox* _port_spinbox = nullptr;
 
+    void _setup_camera_controls();
     void _setup_ui();
     void _connect_signals();
     void _load_current_config() const;

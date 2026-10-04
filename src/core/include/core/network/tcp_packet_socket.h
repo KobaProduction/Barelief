@@ -15,9 +15,12 @@ public:
 
     ~TcpBDSPSocket() override;
 
-    void send_data(uint8_t packet_id, uint8_t *data, size_t size) const;
+    void send_data(uint8_t packet_id, uint8_t *data, size_t size);
+    bool send_packet(quint8 packet_id, const QByteArray &payload);
 
 Q_SIGNALS:
+    // Owned payload is safe to deliver with a queued connection.
+    void packetReceived(quint8 packet_id, QByteArray payload);
     void on_got_packet(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket);
 
     void on_bdsp_packet_parsing_error(BDSP::parse_packet_status_t status, TcpBDSPSocket *socket);
@@ -26,6 +29,7 @@ Q_SIGNALS:
 
 private:
     std::unique_ptr<BDSP::COBSZPETransceiver> _transceiver;
+    QByteArray _encoded;
     using QTcpSocket::readyRead;
 };
 

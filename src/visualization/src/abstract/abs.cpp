@@ -1,4 +1,7 @@
+#include "core/performance.h"
 #include "visualization/abstract/abs.h"
+#include <algorithm>
+#include <cmath>
 
 AbstractChartView::AbstractChartView() {
     setChart(new QChart);
@@ -17,18 +20,23 @@ AbstractChartView::AbstractChartView() {
     _axis_x.setLabelFormat("%.0f");
 
     connect(&_data_update_timer, &QTimer::timeout, this, [this] () {
-        if (not _need_update) return;
+        if (!isVisible() || !_need_update) return;
         _update_chart_data();
         _on_chart_updated();
         _need_update = false;
     });
 
-    _data_update_timer.setInterval(1000 / 200);
-    _data_update_timer.start();
+    _data_update_timer.setInterval(17);
+    _data_update_timer.setTimerType(Qt::PreciseTimer);
+}
+
+AbstractChartView::~AbstractChartView() {
+    _data_update_timer.stop();
+    chart()->removeAxis(&_axis_x);
+    chart()->removeAxis(&_axis_y);
 }
 
 void AbstractChartView::_init_series() {
-    _series->setUseOpenGL(true);
     chart()->addSeries(_series);
     _series->attachAxis(&_axis_x);
     _series->attachAxis(&_axis_y);
@@ -37,6 +45,7 @@ void AbstractChartView::_init_series() {
 }
 
 void AbstractChartView::update(const std::vector<float> &data) {
+    core::perf::Scope trace(core::perf::Stage::ChartData);
 
     if (data.size() not_eq _data.size()) {
         _data.resize(data.size(), 0);
@@ -45,23 +54,23 @@ void AbstractChartView::update(const std::vector<float> &data) {
         _need_update = true;
     }
     for (int i = 0; i < data.size(); ++i) {
-        if (data[i] not_eq _data[i]) _need_update = true;
-        _data[i] = data[i];
+        const float value = std::isfinite(data[i]) ? data[i] : 0.0f;
+        if (value != _data[i]) _need_update = true;
+        _data[i] = value;
     }
-    if (_auto_resizing) {
-        const auto max = std::ranges::max_element(data);
-        const auto min = std::ranges::min_element(data);
-        static unsigned int counter = 0;
+    if (_auto_resizing && !data.empty()) {
+        const auto max = std::ranges::max_element(_data);
+        const auto min = std::ranges::min_element(_data);
 
         bool needUpdate = false;
 
-        if (_auto_gain and counter++ > _gain_speed) {
+        if (_auto_gain and _gain_counter++ > _gain_speed) {
             _last_max_value *= 0.9;
             _last_min_value *= 0.9;
 
             if (_last_max_value < _gain_min_max) _last_max_value = _gain_min_max;
             if (_last_min_value > _gain_min_min) _last_min_value = _gain_min_min;
-            counter = 0;
+            _gain_counter = 0;
             needUpdate = true;
         }
 
@@ -95,3 +104,10 @@ void AbstractChartView::set_range(const qreal min, const qreal max) {
     _last_max_value = max;
     _axis_y.setRange(min, max);
 }
+
+void AbstractChartView::paintEvent(QPaintEvent *event) { core::perf::Scope trace(core::perf::Stage::ChartPaint);QChartView::paintEvent(event); }
+
+void AbstractChartView::showEvent(QShowEvent *event) { QChartView::showEvent(event); _data_update_timer.start(); }
+void AbstractChartView::hideEvent(QHideEvent *event) { _data_update_timer.stop(); QChartView::hideEvent(event); }
+
+void AbstractChartView::resizeEvent(QResizeEvent *event) { QChartView::resizeEvent(event); _need_update=true; }

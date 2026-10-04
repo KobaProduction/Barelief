@@ -20,7 +20,7 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include <string.h>
-#include <malloc.h>
+#include <stdlib.h>
 
 static const char *TAG = "fftr4 ansi";
 

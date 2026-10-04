@@ -1,3 +1,4 @@
+#include "core/performance.h"
 #include "visualization/charts/bar.h"
 
 #include <QBarSeries>
@@ -14,13 +15,11 @@ BarChartView::BarChartView() {
 }
 
 void BarChartView::_update_chart_data() {
-    if (_set) {
-        reinterpret_cast<QBarSeries *>(_series)->remove(_set);
-    }
-    _set = new QBarSet("");
-    _set->setPen(_pen);
-    for (float i: _data) {
-        _set->append(i);
-    }
+    core::perf::Scope trace(core::perf::Stage::ChartGeometry);
+    if (_set) reinterpret_cast<QBarSeries *>(_series)->remove(_set);
+    _set = new QBarSet("");_set->setPen(_pen);
+    QList<qreal> values;values.reserve(qsizetype(_data.size()));
+    for(float value:_data) values.append(value);
+    _set->append(values);
     reinterpret_cast<QBarSeries *>(_series)->append(_set);
 }

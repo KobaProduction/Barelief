@@ -1,0 +1,136 @@
+#include "dsp_core/dsp.h"
+#include <algorithm>
+#include <cmath>
+#include <mutex>
+#include "dsps_fft2r.h"
+#include "dsps_fft4r.h"
+
+namespace dsp_core {
+std::optional<MemoryRequirements> estimate_memory(std::size_t n, std::size_t bands, std::size_t queue_slots,
+                                                  std::size_t history_rows) {
+    if (n < 512 || n > max_fft_samples || (n & (n - 1)) || bands > 50 || queue_slots > 16 || history_rows > 2000)
+        return std::nullopt;
+    MemoryRequirements memory;
+    // Bounds above make every multiplication and sum fit even 32-bit size_t.
+    memory.fft_scratch_bytes = 2 * n * sizeof(float);
+    memory.mel_boundaries_bytes = (bands + 2) * sizeof(std::size_t);
+    memory.window_bytes = n * sizeof(float);
+    memory.weights_bytes = (n / 2) * sizeof(float);
+    memory.stereo_input_bytes = 2 * n * sizeof(float);
+    memory.stereo_spectrum_bytes = n * sizeof(float);
+    memory.stereo_mel_bytes = 2 * bands * sizeof(float);
+    memory.queue_payload_bytes = queue_slots * 2 * n * sizeof(float);
+    memory.history_payload_bytes = history_rows * bands * sizeof(float);
+    // Shared tables are prepared for the build profile, independent of instance N.
+    std::size_t log2 = 0, log4 = 0;
+    for (auto size = max_fft_samples; size > 1; size >>= 1) ++log2;
+    for (auto size = max_radix4_samples; size > 1; size >>= 2) ++log4;
+    memory.shared_radix2_tables_bytes =
+        max_fft_samples * sizeof(float) + 2 * dsps_fft2r_rev_tables_fc32_size[log2 - 4] * sizeof(uint16_t);
+    memory.shared_radix4_tables_bytes =
+        max_radix4_samples * 4 * sizeof(float) + 2 * dsps_fft4r_rev_tables_fc32_size[log4 - 2] * sizeof(uint16_t);
+    return memory;
+}
+bool FFT::prepare(std::size_t n, bool radix4) {
+    scratch_.clear();
+    if (n < 4 || n > max_fft_samples || (n & (n - 1)) || (radix4 && (n & 0x55555555) == 0))
+        return false;
+    // ESP ANSI tables are immutable after initialization. Always initialize the
+    // profile maximum once so independent plans cannot invalidate each other.
+    static std::mutex init_mutex;
+    std::lock_guard lock(init_mutex);
+    const auto status = radix4 ? dsps_fft4r_init_fc32(nullptr, max_radix4_samples)
+                              : dsps_fft2r_init_fc32(nullptr, max_fft_samples);
+    if (status != ESP_OK)
+        return false;
+    // Vendor init returns success without growing previously initialized tables.
+    // Reject that configuration rather than reallocating another user's tables.
+    if (radix4 ? (!dsps_fft4r_w_table_fc32 || dsps_fft4r_w_table_size < 2 * n)
+               : (!dsps_fft_w_table_fc32 || dsps_fft_w_table_size < n))
+        return false;
+    radix4_ = radix4;
+    scratch_.resize(n * 2);
+    return true;
+}
+bool FFT::process(std::span<const float> input, std::span<float> output, bool hartley) {
+    const auto n = scratch_.size() / 2;
+    if (!n || input.size() != n || output.size() != n / 2)
+        return false;
+    for (std::size_t i = 0; i < n; ++i) {
+        scratch_[2 * i] = input[i];
+        scratch_[2 * i + 1] = 0;
+    }
+    if (radix4_) {
+        if (dsps_fft4r_fc32_ansi_(scratch_.data(), n, dsps_fft4r_w_table_fc32, dsps_fft4r_w_table_size) != ESP_OK ||
+            dsps_bit_rev4r_fc32(scratch_.data(), n) != ESP_OK)
+            return false;
+    } else {
+        if (dsps_fft2r_fc32_ansi_(scratch_.data(), n, dsps_fft_w_table_fc32) != ESP_OK ||
+            dsps_bit_rev_fc32_ansi(scratch_.data(), n) != ESP_OK)
+            return false;
+    }
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        const auto re = scratch_[2 * i], im = scratch_[2 * i + 1];
+        output[i] = (hartley ? std::abs(re - im) : std::hypot(re, im)) / n;
+    }
+    return true;
+}
+bool MelFilterBank::prepare(std::size_t bins, std::size_t rate, std::size_t bands) {
+    bins_ = bins;
+    bands_ = bands;
+    boundaries_.assign(bands + 2, 0);
+    if (!bins || !rate)
+        return true; // Legacy zero-rate frames produce zero Mel.
+    const float mel_max = 2595.0f * std::log10(1.0f + (rate * 0.5f) / 700.0f);
+    for (std::size_t i = 0; i < boundaries_.size(); ++i) {
+        const float point = mel_max * i / (bands + 1);
+        const float hz = 700.0f * (std::pow(10.0f, point / 2595.0f) - 1.0f);
+        boundaries_[i] =
+            std::clamp(static_cast<std::size_t>(std::floor((bins * 2 + 1) * hz / rate)), std::size_t{0}, bins);
+    }
+    return true;
+}
+bool MelFilterBank::process(std::span<const float> input, std::span<float> output) const {
+    if (input.size() != bins_ || output.size() != bands_ || boundaries_.empty())
+        return false;
+    for (std::size_t m = 1; m <= bands_; ++m) {
+        const auto left = boundaries_[m - 1], center = boundaries_[m], right = boundaries_[m + 1];
+        float energy = 0;
+        for (auto k = left; k < center; ++k)
+            energy += input[k] * (float(k - left) / (center - left));
+        for (auto k = center; k < right; ++k)
+            energy += input[k] * (float(right - k) / (right - center));
+        output[m - 1] = energy;
+    }
+    return true;
+}
+bool StereoProcessor::prepare(std::size_t n, std::size_t rate, std::size_t bands) {
+    return fft_.prepare(n, (n & 0x55555555) != 0) && mel_.prepare(n / 2, rate, bands);
+}
+bool StereoProcessor::process(std::span<float> left, std::span<float> right, std::span<const float> window,
+                              std::span<const float> weights, std::span<float> sl, std::span<float> sr,
+                              std::span<float> ml, std::span<float> mr) {
+    if (left.size() != right.size() || left.size() != window.size() || sl.size() != sr.size() ||
+        sl.size() != weights.size() || sl.size() * 2 != left.size())
+        return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] *= window[i];
+        right[i] *= window[i];
+    }
+    if (!fft_.process(left, sl) || !fft_.process(right, sr))
+        return false;
+    for (std::size_t i = 0; i < sl.size(); ++i) {
+        sl[i] *= weights[i];
+        sr[i] *= weights[i];
+        if (!std::isfinite(sl[i]))
+            sl[i] = 0;
+        if (!std::isfinite(sr[i]))
+            sr[i] = 0;
+    }
+    return (ml.empty() && mr.empty()) || process_mel(sl, sr, ml, mr);
+}
+bool StereoProcessor::process_mel(std::span<const float> left, std::span<const float> right, std::span<float> ml,
+                                  std::span<float> mr) const {
+    return mel_.process(left, ml) && mel_.process(right, mr);
+}
+} // namespace dsp_core

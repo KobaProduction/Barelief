@@ -1,8 +1,4 @@
-if (BUILD_SHARED_LIBS)
-    add_library(visualization SHARED)
-else ()
-    add_library(visualization)
-endif ()
+add_library(visualization STATIC)
 
 set(CMAKE_AUTOMOC ON)
 #set(CMAKE_AUTORCC ON)
@@ -41,3 +37,4 @@ target_include_directories(visualization PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/incl
 find_package(Qt6 REQUIRED COMPONENTS Charts DataVisualization)
 
 target_link_libraries(visualization Qt::Charts Qt::DataVisualization)
+target_link_libraries(visualization runtime_performance)

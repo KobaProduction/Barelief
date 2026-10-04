@@ -1,8 +1,10 @@
 #include "visualization/abstract/mixins.h"
+#include <algorithm>
+#include <limits>
 
 void FPSMixin::_calcFPS() {
     if (_fpsCallback) {
-        _fpsCallback(static_cast<qreal>(_numberOfCalls) / (1000.0 / _timer.interval()));
+        _fpsCallback(static_cast<qreal>(_numberOfCalls) * 1000.0 / _timer.interval());
     }
     _numberOfCalls = 0;
 }
@@ -20,7 +22,7 @@ FPSMixin::FPSMixin(const QObject *parent) {
 }
 
 void FPSMixin::setFPSTimeout(const quint64 timeoutMs) {
-    _timer.setInterval(static_cast<int>(timeoutMs));
+    _timer.setInterval(static_cast<int>(std::clamp<quint64>(timeoutMs, 1, std::numeric_limits<int>::max())));
 }
 
 void FPSMixin::setFPSCallback(FPSCallback callback) {

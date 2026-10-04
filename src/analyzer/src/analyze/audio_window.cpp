@@ -1,46 +1,22 @@
-#include "analyzer/analyze//audio_window.h"
-
-AudioWindow::AudioWindow(const size_t size) : window(size, 0) {
-
-}
-
-void AudioWindow::append_data(const std::vector<float> &newData) {
-    if (newData.empty()) {
+#include "analyzer/analyze/audio_window.h"
+#include <algorithm>
+AudioWindow::AudioWindow(size_t size) : window(size, 0), linear(size, 0) {}
+void AudioWindow::append_data(const std::vector<float> &data) { append_data(data.data(), data.size()); }
+void AudioWindow::append_data(const float *data, size_t count) {
+    if (!data || !count || window.empty()) return;
+    if (count >= window.size()) {
+        std::copy(data + count - window.size(), data + count, window.begin()); cursor = 0;
         return;
     }
-    if (newData.size() >= window.size()) {
-        std::copy(newData.end() - window.size(), newData.end(), window.begin());
-    } else {
-        std::copy(window.begin() + newData.size(), window.end(), window.begin());
-//            std::rotate(window.begin(), window.begin() + newData.size(), window.end()); // todo check and test perform
-        std::copy(newData.begin(), newData.end(), window.end() - newData.size());
-    }
+    const auto first = std::min(count, window.size() - cursor);
+    std::copy_n(data, first, window.begin() + cursor);
+    std::copy_n(data + first, count - first, window.begin());
+    cursor = (cursor + count) % window.size();
 }
-
-void AudioWindow::append_data(const float *data, size_t dataSize) {
-    if (dataSize == 0 || data == nullptr) {
-        return;
-    }
-
-    if (dataSize >= window.size()) {
-        std::copy(data + dataSize - window.size(), data + dataSize, window.begin());
-    } else {
-        std::copy(window.begin() + dataSize, window.end(), window.begin());
-//            std::rotate(window.begin(), window.begin() + dataSize, window.end()); // todo check and test perform
-        std::copy(data, data + dataSize, window.end() - dataSize);
-    }
+void AudioWindow::clear() { std::fill(window.begin(), window.end(), 0); cursor = 0; }
+const std::vector<float> &AudioWindow::get_window() const {
+    std::copy(window.begin() + cursor, window.end(), linear.begin());
+    std::copy(window.begin(), window.begin() + cursor, linear.end() - cursor);
+    return linear;
 }
-
-void AudioWindow::clear() {
-    std::fill(window.begin(), window.end(), 0);
-}
-
-std::vector<float> &AudioWindow::get_window() {
-    return window;
-}
-
-size_t AudioWindow::size() const {
-    return window.size();
-}
-
-
+size_t AudioWindow::size() const { return window.size(); }

@@ -1,5 +1,6 @@
 #include "core_app/config_manager.h"
 
+#include <QSaveFile>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,7 +13,17 @@ Q_DECLARE_LOGGING_CATEGORY(core_app_config)
 
 Q_LOGGING_CATEGORY(core_app_config, "core_app.config")
 
-ConfigManager::ConfigManager(QString config_path) : _config_path(std::move(config_path)) { }
+static QJsonObject overlay_settings(QJsonObject original, const QJsonObject &updated) {
+    for (auto it = updated.begin(); it != updated.end(); ++it) {
+        original[it.key()] =
+            it.value().isObject() && original.value(it.key()).isObject()
+                ? QJsonValue(overlay_settings(original.value(it.key()).toObject(), it.value().toObject()))
+                : it.value();
+    }
+    return original;
+}
+
+ConfigManager::ConfigManager(QString config_path) : _config_path(std::move(config_path)) {}
 
 bool ConfigManager::load(FileSaveApplicationConfig &config) const {
     QFile config_file(_config_path);
@@ -36,11 +47,15 @@ bool ConfigManager::load(FileSaveApplicationConfig &config) const {
         return false;
     }
 
+    if (!json_doc.isObject())
+        return false;
     const auto json_obj = json_doc.object();
+    config.raw_document = json_obj;
 
     _parse_core_config(json_obj, config);
     _parse_ui_config(json_obj, config);
     _parse_diagram_config(json_obj, config);
+    config.pipeline_graph = json_obj.value("pipeline_graph").toObject();
     _parse_wled_ar_server_config(json_obj, config);
 
     qCInfo(core_app_config, "Config loaded successfully from: %s", qPrintable(_config_path));
@@ -51,12 +66,12 @@ bool ConfigManager::save(const FileSaveApplicationConfig &config) const {
     // Создаем директорию если её нет
     const QFileInfo file_info(_config_path);
     const QDir dir = file_info.absoluteDir();
-    if (not dir.exists() and dir.mkpath(".")) {
+    if (not dir.exists() and not dir.mkpath(".")) {
         qCWarning(core_app_config, "Failed to create config directory: %s", qPrintable(dir.absolutePath()));
         return false;
     }
 
-    QFile config_file(_config_path);
+    QSaveFile config_file(_config_path);
     if (not config_file.open(QIODevice::WriteOnly)) {
         qCWarning(core_app_config, "Failed to open config file for writing: %s", qPrintable(_config_path));
         return false;
@@ -66,11 +81,17 @@ bool ConfigManager::save(const FileSaveApplicationConfig &config) const {
     _save_aggregator_config(json_obj, config);
     _save_ui_config(json_obj, config);
     _save_scheme_config(json_obj, config);
+    // Keep even malformed/non-object schema values verbatim during prefs writes.
+    // Only a changed schema replaces the originally loaded value.
+    if (!config.raw_document.contains("pipeline_graph") ||
+        config.pipeline_graph != config.raw_document.value("pipeline_graph").toObject())
+        json_obj["pipeline_graph"] = config.pipeline_graph;
     _save_wled_ar_server_config(json_obj, config);
 
-    const QJsonDocument json_doc(json_obj);
-    config_file.write(json_doc.toJson());
-    config_file.close();
+    const QJsonDocument json_doc(overlay_settings(config.raw_document, json_obj));
+    const auto data = json_doc.toJson();
+    if (config_file.write(data) != data.size() || !config_file.commit())
+        return false;
 
     qCInfo(core_app_config, "Config saved successfully to: %s", qPrintable(_config_path));
     return true;
@@ -86,29 +107,41 @@ void ConfigManager::setConfigPath(const QString &path) {
 
 auto ConfigManager::_parse_core_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) -> void {
     constexpr FileCoreApplicationConfig default_;
-    if (not json_obj.contains("core")) return;
+    if (not json_obj.contains("core"))
+        return;
     const QJsonObject agg_obj = json_obj["core"].toObject();
     config.core.run_loopback = agg_obj.value("run_loopback").toBool(default_.run_loopback);
     config.core.run_analyser = agg_obj.value("run_analyser").toBool(default_.run_analyser);
+    config.core.capture_source = std::clamp(agg_obj.value("capture_source").toInt(0), 0, 1);
+    config.core.spectrum_channel = std::clamp(agg_obj.value("spectrum_channel").toInt(0), 0, 2);
+    const auto merge = agg_obj.value("spectrum_merge").toString("energy");
+    config.core.spectrum_merge = merge == "mean"      ? SpectrumMerge::Mean
+                                 : merge == "maximum" ? SpectrumMerge::Maximum
+                                                      : SpectrumMerge::Energy;
 }
 
 void ConfigManager::_parse_ui_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) {
-    constexpr UIApplicationConfig default_;
+    const UIApplicationConfig default_;
 
-    if (not json_obj.contains("ui"))return;
+    if (not json_obj.contains("ui"))
+        return;
     const QJsonObject ui_obj = json_obj["ui"].toObject();
-    config.ui.move_to_primary_screen_on_start = ui_obj.value("move_to_primary_screen_on_start").toBool(
-        default_.move_to_primary_screen_on_start);
+    config.ui.move_to_primary_screen_on_start =
+        ui_obj.value("move_to_primary_screen_on_start").toBool(default_.move_to_primary_screen_on_start);
     config.ui.autosave_enabled = ui_obj.value("autosave_enabled").toBool(default_.autosave_enabled);
 
     config.ui.show_raw_samples = ui_obj.value("show_raw_samples").toBool(default_.show_raw_samples);
     config.ui.show_samples = ui_obj.value("show_samples").toBool(default_.show_samples);
-    config.ui.show_samples_after_window_function = ui_obj.value("show_samples_after_window_function").toBool(
-        default_.show_samples_after_window_function);
+    config.ui.show_samples_after_window_function =
+        ui_obj.value("show_samples_after_window_function").toBool(default_.show_samples_after_window_function);
     config.ui.show_window_function = ui_obj.value("show_window_function").toBool(default_.show_window_function);
     config.ui.show_amplitudes = ui_obj.value("show_amplitudes").toBool(default_.show_amplitudes);
     config.ui.show_test_amplitudes = ui_obj.value("show_test_amplitudes").toBool(default_.show_test_amplitudes);
     config.ui.show_surface = ui_obj.value("show_surface").toBool(default_.show_surface);
+    config.ui.camera = ui_obj.value("camera").toObject();
+    config.ui.camera_controls = CameraControls::normalized(ui_obj.value("camera_controls").toObject());
+    const auto ratio = ui_obj.value("surface_side_panel_ratio").toDouble(0.25);
+    config.ui.surface_side_panel_ratio = ratio >= 0.01 && ratio <= 0.99 ? static_cast<float>(ratio) : 0.25f;
 }
 
 void ConfigManager::_parse_diagram_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) {
@@ -119,6 +152,11 @@ void ConfigManager::_save_aggregator_config(QJsonObject &json_obj, const FileSav
     QJsonObject agg_obj;
     agg_obj["run_loopback"] = config.core.run_loopback;
     agg_obj["run_analyser"] = config.core.run_analyser;
+    agg_obj["capture_source"] = config.core.capture_source;
+    agg_obj["spectrum_channel"] = config.core.spectrum_channel;
+    agg_obj["spectrum_merge"] = config.core.spectrum_merge == SpectrumMerge::Mean      ? "mean"
+                                : config.core.spectrum_merge == SpectrumMerge::Maximum ? "maximum"
+                                                                                       : "energy";
     json_obj["core"] = agg_obj;
 }
 
@@ -134,21 +172,29 @@ void ConfigManager::_save_ui_config(QJsonObject &json_obj, const FileSaveApplica
     ui_obj["show_amplitudes"] = config.ui.show_amplitudes;
     ui_obj["show_test_amplitudes"] = config.ui.show_test_amplitudes;
     ui_obj["show_surface"] = config.ui.show_surface;
+    ui_obj["camera"] = config.ui.camera;
+    ui_obj["camera_controls"] = config.ui.camera_controls;
+    ui_obj["surface_side_panel_ratio"] = config.ui.surface_side_panel_ratio;
     json_obj["ui"] = ui_obj;
 }
 
 void ConfigManager::_save_scheme_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config) {
-    json_obj["scene_graph"] = config.scene_graph;
+    if (!config.raw_document.contains("scene_graph") ||
+        config.scene_graph != config.raw_document.value("scene_graph").toObject())
+        json_obj["scene_graph"] = config.scene_graph;
 }
 
 void ConfigManager::_parse_wled_ar_server_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) {
     const WLEDARServerConfig default_;
 
-    if (not json_obj.contains("wled_ar_server")) return;
+    if (not json_obj.contains("wled_ar_server"))
+        return;
     const QJsonObject wled_obj = json_obj["wled_ar_server"].toObject();
     config.wled_ar_server.enabled = wled_obj.value("enabled").toBool(default_.enabled);
-    config.wled_ar_server.network_interface_name = wled_obj.value("network_interface_name").toString(default_.network_interface_name);
-    config.wled_ar_server.port = static_cast<quint16>(wled_obj.value("port").toInt(wled_audio_reactive::DEFAULT_PORT));
+    config.wled_ar_server.network_interface_name =
+        wled_obj.value("network_interface_name").toString(default_.network_interface_name);
+    const auto port = wled_obj.value("port").toInt(wled_audio_reactive::DEFAULT_PORT);
+    config.wled_ar_server.port = port >= 1 && port <= 65535 ? static_cast<quint16>(port) : default_.port;
 }
 
 void ConfigManager::_save_wled_ar_server_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config) {

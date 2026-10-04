@@ -299,6 +299,9 @@ int32_t main(int32_t argc, char *argv[]) {
 
     // Создание клиента агрегации
     AggregatorClient client(client_config);
+    QObject::connect(&client,&AggregatorClient::status_changed,&app,[&app](core::RuntimeState state,const QString &error) {
+        if (state==core::RuntimeState::Failed) { qCritical().noquote()<<error; QTimer::singleShot(0,&app,[&app]{app.exit(1);}); }
+    });
 
     // Настройка параметров переподключения
     client.set_reconnect_mode(config.infinite_reconnect, config.reconnect_tries, config.reconnect_interval_ms);

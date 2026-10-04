@@ -1,20 +1,21 @@
+#include "core/performance.h"
 #include <QHostAddress>
 #include <QUdpSocket>
 #include <algorithm>
 #include <cmath>
-#include <winsock2.h>
+#include <cstring>
 
 #include "wled/wled_audio_reactive_server.h"
 
 
-Q_LOGGING_CATEGORY(logger, "wled_audio_reactive_server")
+Q_LOGGING_CATEGORY(wled_audio_reactive_server, "wled_audio_reactive_server")
 
-WLEDAudioReactiveServer::WLEDAudioReactiveServer(const QHostAddress &broadcast_address, const quint16 broadcast_port) {
+WLEDAudioReactiveServer::WLEDAudioReactiveServer(const QHostAddress &broadcast_address, const quint16 broadcast_port, const QHostAddress &destination) {
     // Store interface address for binding
     _interface_address = broadcast_address;
     
     // Always use limited broadcast address (255.255.255.255) for WLED
-    _broadcast_address = QHostAddress("255.255.255.255");
+    _broadcast_address = destination;
     _broadcast_port = broadcast_port;
     _data.resize(16, 0.0);
     _frame_counter = 0;
@@ -24,41 +25,48 @@ WLEDAudioReactiveServer::WLEDAudioReactiveServer(const QHostAddress &broadcast_a
     // Bind to specific interface address for broadcast to work on Windows
     // The source IP must be the interface IP for broadcast to be sent correctly
     const bool bind_ok = _udp_socket->bind(_interface_address, 0);
+    _bound = bind_ok;
+    if (!bind_ok) _error = _udp_socket->errorString();
 
     if (not bind_ok) {
-        qCWarning(logger, "Failed to bind socket to %s: %s",
+        qCWarning(wled_audio_reactive_server, "Failed to bind socket to %s: %s",
                  _interface_address.toString().toStdString().c_str(),
                  _udp_socket->errorString().toStdString().c_str());
     } else {
-        qCInfo(logger, "Socket bound to interface: %s", _interface_address.toString().toStdString().c_str());
+        qCInfo(wled_audio_reactive_server, "Socket bound to interface: %s", _interface_address.toString().toStdString().c_str());
     }
 
-    // Enable broadcast using native socket
-    int broadcast_enabled = 1;
-    if (setsockopt(_udp_socket->socketDescriptor(), SOL_SOCKET, SO_BROADCAST,
-                   reinterpret_cast<const char*>(&broadcast_enabled), sizeof(broadcast_enabled)) < 0) {
-        qCWarning(logger, "Failed to enable broadcast socket option");
-                   }
+    _timer.setInterval(17);
+    _timer.setTimerType(Qt::PreciseTimer);
+    _last_update.start();
+    connect(&_timer, &QTimer::timeout, this, [this] {
+        if (_last_update.elapsed() > 300) {
+            std::fill(_data.begin(), _data.end(), 0); _peak_hz = 0; _magnitude = 0;
+        }
+        _handler(); _need_update = false;
+    });
 
-    qCInfo(logger, "UDP socket created and configured for broadcast");
+    qCInfo(wled_audio_reactive_server, "UDP socket created and configured for broadcast");
 
-    qCInfo(logger, "WLED broadcast address set to: %s:%u (interface: %s)", 
+    qCInfo(wled_audio_reactive_server, "WLED broadcast address set to: %s:%u (interface: %s)",
            _broadcast_address.toString().toStdString().c_str(), _broadcast_port,
            _interface_address.toString().toStdString().c_str());
 }
 
 WLEDAudioReactiveServer::~WLEDAudioReactiveServer() {
+    stop();
     delete _udp_socket;
 }
 
-void WLEDAudioReactiveServer::update(const std::vector<float> &spectrum) {
+void WLEDAudioReactiveServer::update(const std::vector<float> &spectrum, float peak_hz, float magnitude) {
+    _peak_hz = peak_hz; _magnitude = magnitude; _last_update.restart();
     if (spectrum.size() != 50) {
-        qCInfo(logger, "incorrect size: expected 50, got %zu", spectrum.size());
+        qCInfo(wled_audio_reactive_server, "incorrect size: expected 50, got %zu", spectrum.size());
         return;
     }
     
     // Map spectrum[4..46] (42 values) to 16 WLED bins
-    // Data is already normalized to 0.0-1.0 range
+    // Clamp mapped magnitudes to the byte range when encoding the packet.
     constexpr int start_idx = 4;
     constexpr int end_idx = 46;
     constexpr int useful_bins = end_idx - start_idx;  // 42 bins
@@ -77,82 +85,46 @@ void WLEDAudioReactiveServer::update(const std::vector<float> &spectrum) {
         int count = 0;
         
         for (int j = static_cast<int>(src_start); j < static_cast<int>(src_end) && (start_idx + j) < end_idx; ++j) {
-            sum += spectrum[start_idx + j];
+            const float value = spectrum[start_idx + j];
+            sum += std::isfinite(value) ? std::max(0.0f, value) : 0.0f;
             count++;
         }
         
-        // Use average directly (already 0.0-1.0)
+        // Preserve level changes; saturation is handled by the packet encoder.
         _data[i] = count > 0 ? sum / count : 0.0f;
     }
     
     _need_update = true;
 }
 
-uint64_t WLEDAudioReactiveServer::_task() {
-    constexpr float fps_ms_delay = 1000.0 / 30;
-    while (_thread_handle) {
-        timer.start();
-        if (_need_update) {
-            _handler();
-            _need_update = false;
-        }
-        const auto fft_calc_time_ms = static_cast<float>(timer.elapsed()) / 1000000;
-        const auto delta = abs(fps_ms_delay - fft_calc_time_ms);
-        if (delta > 0) _sleep(delta);
-    }
-    return 0;
-}
+void WLEDAudioReactiveServer::start() { if (_bound) _timer.start(); }
+void WLEDAudioReactiveServer::stop() { _timer.stop(); }
 
-void WLEDAudioReactiveServer::_handler() {
-
-    // Build WLED audio sync packet
-    wled_audio_reactive::AudioSyncPacket packet = {};
-    
-    // Set header
-    std::strcpy(packet.header, "00002");
-    
-    // Set frame counter
-    packet.frameCounter = _frame_counter++;
-    
-    // Calculate average and peak values from spectrum
-    float avg_value = 0.0f;
-    float max_magnitude = 0.0f;
-    float major_peak_freq = 0.0f;
-    
+wled_audio_reactive::AudioSyncPacket WLEDAudioReactiveServer::make_packet(
+    const std::vector<float> &bins, float peak_hz, float magnitude, uint8_t counter) {
+    wled_audio_reactive::AudioSyncPacket packet{};
+    std::memcpy(packet.header, "00002", 6);
+    packet.frameCounter = counter;
+    float sum = 0, peak = 0;
     for (size_t i = 0; i < 16; ++i) {
-        avg_value += _data[i];
-        
-        // Clamp to 0-255 range for FFT bins
-        packet.fftResult[i] = static_cast<uint8_t>(std::clamp(_data[i] * 255.0f, 0.0f, 255.0f));
-        
-        if (_data[i] > max_magnitude) {
-            max_magnitude = _data[i];
-            major_peak_freq = static_cast<float>(i);
-        }
+        float value = i < bins.size() && std::isfinite(bins[i]) ? std::clamp(bins[i], 0.0f, 1.0f) : 0;
+        sum += value; peak = std::max(peak, value);
+        packet.fftResult[i] = static_cast<uint8_t>(value * 255);
     }
-    
-    avg_value /= 16.0f;
-    
-    // Set sample values (0-255 range, like in C# version)
-    packet.sampleRaw = avg_value * 255.0f;
-    packet.sampleSmth = avg_value * 255.0f;
-    
-    // Set peak detection (simple threshold)
-    packet.samplePeak = (max_magnitude > 0.5f) ? 1 : 0;
-    
-    // Set FFT magnitude and peak frequency
-    packet.FFT_Magnitude = max_magnitude * 4096.0f;
-    packet.FFT_MajorPeak = major_peak_freq;
-    
-    // Send packet via UDP broadcast
-    const auto packet_data = reinterpret_cast<const char*>(&packet);
-    constexpr auto packet_size = sizeof(wled_audio_reactive::AudioSyncPacket);
-
-    const qint64 bytes_sent = _udp_socket->writeDatagram(packet_data, packet_size, _broadcast_address, _broadcast_port);
-    
-    if (bytes_sent <= 0) {
-        qCWarning(logger, "Failed to send datagram: %s", _udp_socket->errorString().toStdString().c_str());
-    } else if (bytes_sent not_eq packet_size) {
-        qCWarning(logger, "Partial send: sent %lld of %zu bytes", bytes_sent, packet_size);
+    packet.sampleRaw = packet.sampleSmth = sum / 16 * 255;
+    packet.samplePeak = peak > 0.5f;
+    packet.FFT_Magnitude = std::isfinite(magnitude) ? std::max(0.0f, magnitude) : 0;
+    packet.FFT_MajorPeak = std::isfinite(peak_hz) ? std::max(0.0f, peak_hz) : 0;
+    return packet;
+}
+void WLEDAudioReactiveServer::_handler() {
+    core::perf::Scope trace(core::perf::Stage::WledSend);
+    const auto packet = make_packet(_data, _peak_hz, _magnitude, _frame_counter++);
+    const auto sent = _udp_socket->writeDatagram(reinterpret_cast<const char *>(&packet), sizeof(packet), _broadcast_address, _broadcast_port);
+    if (sent != sizeof(packet)) {
+        _error = _udp_socket->errorString();
+        qCWarning(wled_audio_reactive_server, "UDP send failed: %s", qPrintable(_error));
+        _timer.stop();
+        if (_error_handler) _error_handler(_error);
     }
 }

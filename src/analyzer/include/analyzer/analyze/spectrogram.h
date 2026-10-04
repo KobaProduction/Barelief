@@ -13,6 +13,7 @@ public:
      * Если длина среза изменилась — производится resize всей спектрограммы.
      * @return false, если spectrum пуст
      */
+    void clear();
     bool push(const std::vector<float> &spectrum);
 
     /**

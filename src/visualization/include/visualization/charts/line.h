@@ -8,6 +8,8 @@ public:
     LineChartView();
 
     void _update_chart_data() override;
+protected:
+    QList<QPointF> _points;
 };
 
 

@@ -1,4 +1,6 @@
 #include <QHostAddress>
+#include <QPointer>
+#include "aggregator/packet_codec.h"
 
 #include "core/network/tcp_packet_socket.h"
 #include "core/utils.h"
@@ -43,16 +45,17 @@ void AggregatorServer::stop() {
         qCInfo(aggregator_server, "Aggregator server stopped");
     }
 
-    for (auto it = _sockets_uuid_map.begin(); it != _sockets_uuid_map.end(); ++it) {
-        QTcpSocket *socket = it.key();
-        socket->disconnect();
-        socket->disconnectFromHost();
-        if (socket->state() != QAbstractSocket::UnconnectedState) {
-            socket->waitForDisconnected(1000);
-        }
-        socket->deleteLater();
-    }
+    QList<QPointer<TcpBDSPSocket>> sockets;
+    for (auto *socket : _sockets_uuid_map.keys()) sockets.append(socket);
     _sockets_uuid_map.clear();
+    _registered_components_map.clear();
+    _offline_generation.clear();
+    for (const auto &socket : sockets) {
+        if (!socket) continue;
+        socket->disconnect(this);
+        socket->abort();
+        if (socket) socket->deleteLater();
+    }
 }
 
 bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &uuid,
@@ -60,6 +63,8 @@ bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &u
     qCDebug(aggregator_server, "Registration received from %s",
             qPrintable(convert_qt_socket_to_string_ip_port(socket)));
 
+    if (new_info.type < ComponentType::data_source || new_info.type > ComponentType::core) return false;
+    if (uuid.isNull() || (_sockets_uuid_map.value(socket).has_value() && _sockets_uuid_map.value(socket) != uuid)) return false;
     if (_registered_components_map.contains(uuid)) {
         auto &[socket_before, last_token, info] = _registered_components_map[uuid];
         if (last_token not_eq session_token) {
@@ -68,12 +73,14 @@ bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &u
             return false;
         }
 
-        if (socket_before->isOpen() and socket_before not_eq socket) {
+        if (socket_before && socket_before->isOpen() && socket_before != socket) {
             qCWarning(aggregator_server, "Socket %s tried to take control of a component with a uuid: %s",
                       qPrintable(convert_qt_socket_to_string_ip_port(socket)), qPrintable(uuid.toString()));
             return false;
         }
 
+        socket_before = socket;
+        info = new_info;
         info.state = ComponentState::registered;
 
         _registered_components_map[uuid].info.state = ComponentState::registered;
@@ -92,9 +99,11 @@ bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &u
                 .type = new_info.type,
                 .state = ComponentState::registered,
                 .component_server_port = new_info.component_server_port,
+                .address = new_info.address,
             }
         };
     }
+    _offline_generation[uuid] = ++_next_generation;
     _sockets_uuid_map[socket] = uuid;
     component_update_full_packet_t info = {
         .uuid = uuid.toBytes(),
@@ -103,29 +112,47 @@ bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &u
         .component_server_port = new_info.component_server_port,
         .state = ComponentState::registered
     };
+    QPointer<TcpBDSPSocket> receiver(socket);
     _send_update_component_event(info);
+    const auto registry = _registered_components_map;
+    for (auto it=registry.cbegin();it!=registry.cend();++it) {
+        if (!receiver || !_get_registration_status(receiver)) break;
+        if (it.key()==uuid) continue;
+        const auto &entry=it.value().info;
+        component_update_full_packet_t snapshot{.uuid=it.key().toBytes(),.type=entry.type,
+            .address=entry.address.toIPv6Address(),.component_server_port=entry.component_server_port,.state=entry.state};
+        if (!receiver->send_packet(static_cast<uint8_t>(PacketType::component_info_update), aggregator_wire::encode(snapshot))) break;
+    }
     return true;
 }
 
+void AggregatorServer::_reject(TcpBDSPSocket *socket, const QString &error) {
+    QPointer<TcpBDSPSocket> receiver(socket);
+    auto data=error.toUtf8().left(512);
+    socket->send_data(static_cast<uint8_t>(PacketType::error),reinterpret_cast<uint8_t *>(data.data()),data.size());
+    if (receiver) receiver->disconnectFromHost(); // Flush the explicit error before closing.
+}
+
 bool AggregatorServer::_get_registration_status(TcpBDSPSocket *socket) {
-    return this->_sockets_uuid_map[socket].has_value();
+    return _sockets_uuid_map.value(socket).has_value();
 }
 
 void AggregatorServer::_disconnect_socket(TcpBDSPSocket *socket) {
-    if (_sockets_uuid_map.contains(socket)) {
-        const auto uuid = _sockets_uuid_map.value(socket);
-
-        if (uuid.has_value() and _registered_components_map.contains(uuid.value())) {
-            _registered_components_map[uuid.value()].socket = nullptr;
-            // Обновляем состояние на disconnected
-            _update_component_state_with_broadcast(uuid.value(), ComponentState::disconnected);
-            // Запускаем таймер для перехода в состояние offline
-            _start_offline_timer(uuid.value());
-        }
-        _sockets_uuid_map.remove(socket);
+    const auto entry = _sockets_uuid_map.find(socket);
+    if (entry == _sockets_uuid_map.end()) return;
+    const auto uuid = entry.value();
+    // Retire before broadcasting: send_packet may synchronously disconnect peers.
+    _sockets_uuid_map.erase(entry);
+    QPointer<TcpBDSPSocket> retiring(socket);
+    socket->disconnect(this);
+    if (uuid.has_value() and _registered_components_map.contains(uuid.value()) &&
+        _registered_components_map.value(uuid.value()).socket == socket) {
+        _registered_components_map[uuid.value()].socket = nullptr;
+        _start_offline_timer(uuid.value());
+        _update_component_state_with_broadcast(uuid.value(), ComponentState::disconnected);
     }
-
-    if (socket->isOpen()) socket->close();
+    if (retiring) retiring->abort();
+    if (retiring) retiring->deleteLater();
 }
 
 void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket) {
@@ -134,7 +161,7 @@ void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, Tc
     if (not _get_registration_status(socket) and packet_type not_eq PacketType::component_registration) {
         qCWarning(aggregator_server, "An unregistered socket (%s) tries to work without registration",
                   qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-        return;
+        _reject(socket,"Registration required"); return;
     }
 
     switch (packet_type) {
@@ -142,11 +169,11 @@ void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, Tc
             if (packet_context.size not_eq sizeof(registration_request_packet_t)) {
                 qCWarning(aggregator_server, "Registration packet size incorrect from %s",
                           qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-                // todo send error message to socket
-                return;
+                _reject(socket,"Invalid packet size"); return;
             }
-            auto [uuid_raw, component_type, component_server_port, session_token] = *reinterpret_cast<
-                registration_request_packet_t *>(packet_context.data_ptr);
+            registration_request_packet_t decoded{};
+            if (!aggregator_wire::decode(QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded)) { _reject(socket, "Invalid registration"); return; }
+            const auto [uuid_raw, component_type, component_server_port, session_token] = decoded;
             const QUuid uuid = QUuid::fromBytes(&uuid_raw);
             const component_info_t info = {
                 .type = component_type,
@@ -155,7 +182,7 @@ void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, Tc
                 .address = socket->peerAddress()
             };
             if (not _register_component(socket, uuid, info, session_token)) {
-                // todo send error message to socket
+                _reject(socket,"Registration rejected: invalid identity, type or session");
             };
             break;
         }
@@ -163,24 +190,26 @@ void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, Tc
             if (packet_context.size not_eq sizeof(component_update_state_packet_t)) {
                 qCWarning(aggregator_server, "Component state change packet size incorrect from %s",
                           qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-                // todo send error message to socket
-                return;
+                _reject(socket,"Invalid packet size"); return;
             }
-            auto [uuid_raw, new_state] = *reinterpret_cast<component_update_state_packet_t *>(packet_context.data_ptr);
+            component_update_state_packet_t decoded{};
+            if (!aggregator_wire::decode(QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded)) { _reject(socket, "Invalid state"); return; }
+            const auto [uuid_raw, new_state] = decoded;
             const auto uuid = QUuid::fromBytes(&uuid_raw);
 
             // Проверяем, что клиент может изменять состояние только своего компонента
             if (_sockets_uuid_map.value(socket) not_eq uuid) {
                 qCWarning(aggregator_server, "Component tried to change state of another component");
-                // todo send error message to socket and disconnect
+                _reject(socket,"Cannot change another component state"); return;
             }
+            if (new_state < ComponentState::inactive || new_state > ComponentState::active) { _reject(socket,"Invalid component state"); return; }
             _update_component_state_with_broadcast(uuid, new_state);
             break;
         }
         default:
             qCWarning(aggregator_server, "Unknown packet type %u from %s", packet_type,
                       qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-            // todo send error message
+            _reject(socket,"Unknown packet type");
             break;
     }
 }
@@ -196,6 +225,7 @@ void AggregatorServer::_on_new_connection(TcpBDSPSocket *socket) {
         _disconnect_socket(disconnected_socket);
     });
     connect(socket, &TcpBDSPSocket::on_got_packet, this, &AggregatorServer::_on_got_packet);
+    connect(socket,&TcpBDSPSocket::on_bdsp_packet_parsing_error,this,[this,socket] { _reject(socket,"Malformed packet"); });
 
     if (not _registration_timeout_ms) {
         qCDebug(aggregator_server, "Registration timeout disabled for %s",
@@ -203,17 +233,18 @@ void AggregatorServer::_on_new_connection(TcpBDSPSocket *socket) {
         return;
     }
     // Устанавливаем таймер регистрации только если timeout не равен 0
-    QTimer::singleShot(_registration_timeout_ms, this, [socket, this]() {
+    QTimer::singleShot(_registration_timeout_ms, socket, [socket, this]() {
         if (this->_get_registration_status(socket)) return;
         qCWarning(aggregator_server, "Registration timeout for %s",
                   qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-        _disconnect_socket(socket);
+        _reject(socket,"Registration timeout");
     });
 }
 
 
 void AggregatorServer::_send_update_component_event(component_update_full_packet_t &info) {
-    _broadcast(PacketType::component_info_update, reinterpret_cast<uint8_t *>(&info), sizeof(info));
+    auto encoded = aggregator_wire::encode(info);
+    _broadcast(PacketType::component_info_update, reinterpret_cast<uint8_t *>(encoded.data()), encoded.size());
 }
 
 void AggregatorServer::_broadcast(const PacketType packet_type, uint8_t *data, const size_t size) {
@@ -222,10 +253,13 @@ void AggregatorServer::_broadcast(const PacketType packet_type, uint8_t *data, c
 
 void AggregatorServer::_broadcast_except_socket(PacketType packet_type, uint8_t *data, const size_t size,
                                                 const TcpBDSPSocket *except_socket) {
-    for (auto it = _sockets_uuid_map.begin(); it != _sockets_uuid_map.end(); ++it) {
-        if (not it.key() or it.key() == except_socket) continue;
-        if (not it.value().has_value()) continue; // не отправляем незарегистрированным сокетам пакет
-        it.key()->send_data(static_cast<uint8_t>(packet_type), data, size);
+    QList<QPointer<TcpBDSPSocket>> recipients;
+    for (auto it = _sockets_uuid_map.cbegin(); it != _sockets_uuid_map.cend(); ++it) {
+        if (it.key() != except_socket && it.value().has_value()) recipients.append(it.key());
+    }
+    for (const auto &socket : recipients) {
+        if (socket && _get_registration_status(socket))
+            socket->send_data(static_cast<uint8_t>(packet_type), data, size);
     }
 }
 
@@ -237,7 +271,8 @@ void AggregatorServer::_send_component_state_change_event(const QUuid &uuid, Com
 
     qCDebug(aggregator_server, "Broadcasting component state change for %s",
             qPrintable(aggregator_utils::format_component_state_change(uuid, new_state)));
-    _broadcast(PacketType::component_state_change, reinterpret_cast<uint8_t *>(&state_data), sizeof(state_data));
+    auto encoded = aggregator_wire::encode(state_data);
+    _broadcast(PacketType::component_state_change, reinterpret_cast<uint8_t *>(encoded.data()), encoded.size());
 }
 
 void AggregatorServer::_update_component_state_with_broadcast(const QUuid &uuid, const ComponentState new_state) {
@@ -255,10 +290,16 @@ void AggregatorServer::_start_offline_timer(const QUuid &uuid) {
     qCDebug(aggregator_server, "Starting offline timer for component %s (%d ms)",
             qPrintable(uuid.toString()), aggregator_component::COMPONENT_OFFLINE_TIMEOUT_MS);
 
-    QTimer::singleShot(aggregator_component::COMPONENT_OFFLINE_TIMEOUT_MS, this, [this, uuid]() {
+    const auto generation = _offline_generation[uuid] = ++_next_generation;
+    QTimer::singleShot(aggregator_component::COMPONENT_OFFLINE_TIMEOUT_MS, this, [this, uuid, generation]() {
+        if (!_registered_components_map.contains(uuid) || _offline_generation.value(uuid) != generation ||
+            _registered_components_map.value(uuid).info.state != ComponentState::disconnected) return;
         qCInfo(aggregator_server, "Component %s went offline due to timeout", qPrintable(uuid.toString()));
         _send_component_state_change_event(uuid, ComponentState::offline);
-        _registered_components_map.remove(uuid);
+        if (_offline_generation.value(uuid) == generation) {
+            _registered_components_map.remove(uuid);
+            _offline_generation.remove(uuid);
+        }
         qCInfo(aggregator_server, "Component %s removed from registry", qPrintable(uuid.toString()));
     });
 }

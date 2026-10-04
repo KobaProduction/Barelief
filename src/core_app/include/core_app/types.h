@@ -4,6 +4,7 @@
 #include <QtNodes/DataFlowGraphModel>
 #include <QtNodes/NodeDelegateModelRegistry>
 #include <QJsonObject>
+#include "visualization/camera_controls.h"
 
 #include "wled/wled_audio_reactive_server.h"
 #include "analyzer/analyze/analyzer.h"
@@ -23,39 +24,48 @@ struct UIApplicationConfig {
     bool show_amplitudes = true;
     bool show_test_amplitudes = true;
     bool show_surface = true;
+    QJsonObject camera;
+    QJsonObject camera_controls = CameraControls::defaults();
+    float surface_side_panel_ratio = 0.25f;
 };
 
 struct WLEDARServerConfig {
     bool enabled = false;
     QString network_interface_name{};
-    quint16 port{};
+    quint16 port = wled_audio_reactive::DEFAULT_PORT;
 };
 
 struct FileCoreApplicationConfig {
     bool run_loopback = true;
     bool run_analyser = true;
+    int capture_source = 0;
+    int spectrum_channel = 0;
+    SpectrumMerge spectrum_merge = SpectrumMerge::Energy;
 };
 
 struct FileSaveApplicationConfig {
+    QJsonObject raw_document; // Preserve extension fields when updating known settings.
     FileCoreApplicationConfig core;
     UIApplicationConfig ui{};
     WLEDARServerConfig wled_ar_server{};
-    QJsonObject scene_graph;
+    QJsonObject scene_graph;    // Editable draft, including incomplete connections.
+    QJsonObject pipeline_graph; // Persisted audio graph; runtime snapshots may differ.
 };
 
 struct CoreApplicationConfig {
     bool enable_ui = true;
 };
 
-struct CoreApplicationContext {
+// Mutable GUI/editor state contains no engine objects.
+struct GuiState {
     CoreApplicationConfig configs;
     FileSaveApplicationConfig file_configs;
     node_delegate_model_registry_t delegate_model_registry;
     data_flow_graph_model_t data_flow_graph;
-    Analyzer *analyzer = nullptr;
-    Spectrogram *spectrogram = nullptr;
-    audio::loopback::WASAPILoopback *loopback = nullptr;
-    WLEDAudioReactiveServer *wled_ar_server = nullptr;
+    // Only editor edits / an explicit Save may replace the saved draft.
+    bool editor_draft_modified = false;
 };
+
+using CoreApplicationContext = GuiState;
 
 #endif // CORE_APP_TYPES_H

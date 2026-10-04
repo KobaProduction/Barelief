@@ -7,8 +7,11 @@
 #include <QString>
 
 #include "core_app/config_manager.h"
+#include "core_app/gui_presenter.h"
 
 Q_DECLARE_LOGGING_CATEGORY(core_app_main)
+
+class MainWindow;
 
 class CoreApplication final : public QApplication {
     Q_OBJECT
@@ -16,29 +19,36 @@ class CoreApplication final : public QApplication {
 public:
     CoreApplicationContext _ctx{};
 
-    explicit CoreApplication(int32_t argc, char *argv[]);
+    explicit CoreApplication(int &argc, char *argv[]);
 
     ~CoreApplication() override;
 
     [[nodiscard]] int exec() const;
 
+    GuiPresenter &presenter() { return *_presenter; }
+    // Legacy diagnostics bridge; absent for a remote GUI.
+    pipeline::AudioPipeline &pipeline();
+
 public Q_SLOTS:
+    void apply_processing_settings();
     void start_analyzer();
 
-    void stop_analyzer() const;
+    void stop_analyzer();
 
     void start_loopback();
 
-    void stop_loopback() const;
+    void stop_loopback();
 
     void start_wled_audio_reactive_server();
 
-    void stop_wled_audio_reactive_server() const;
+    void stop_wled_audio_reactive_server();
 
-    void restart_wled_audio_reactive_server() const;
+    void restart_wled_audio_reactive_server();
 
 Q_SIGNALS:
     void on_config_updated();
+    void pipeline_preview(const QMap<int,pipeline::NodePreview> &previews);
+    void component_status_changed(QString component, int state, QString error);
 
     void raw_samples_ready(const std::vector<float> &samples);
 
@@ -66,10 +76,14 @@ Q_SIGNALS:
 
 
 private:
-    QMainWindow *_main_window = nullptr;
+    std::unique_ptr<GuiPresenter> _presenter;
+    QString _remote_host;
+    quint16 _remote_port = 8213;
+    MainWindow *_main_window = nullptr;
     ConfigManager _config_manager;
 
     void _parse_command_line();
+
 };
 
 #endif // CORE_APP_CORE_APPLICATION_H

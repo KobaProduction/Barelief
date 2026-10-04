@@ -1,10 +1,4 @@
-if (BUILD_SHARED_LIBS)
-    add_library(analyzer SHARED)
-else ()
-    add_library(analyzer)
-endif ()
-
-add_subdirectory(include/analyzer/dsp)
+add_library(analyzer STATIC)
 
 set(ANALYZER_HEADERS
         include/analyzer/analyze/analyzer.h
@@ -21,7 +15,7 @@ set(ANALYZER_SOURCES
         src/loopback/windows_loopback.cpp
 )
 
-target_sources(analyzer PUBLIC
+target_sources(analyzer PRIVATE
         ${ANALYZER_HEADERS} ${ANALYZER_SOURCES}
 )
 
@@ -30,5 +24,6 @@ target_include_directories(analyzer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(analyzer PUBLIC
         Qt::Core
         dsp
+        portable_dsp
         core
 )

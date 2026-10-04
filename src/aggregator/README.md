@@ -92,7 +92,7 @@ unknown -> registered -> inactive -> idle -> active
 **`registration_request_packet_t`** — запрос регистрации компонента
 ```cpp
 struct registration_request_packet_t {
-    uuid_t uuid;                          // UUID компонента
+    uuid_bytes_t uuid;                          // UUID компонента
     ComponentType component_type;         // Тип компонента
     uint16_t component_server_port;       // Порт компонента
     session_token_t session_token;        // CRC16 токен сессии
@@ -102,7 +102,7 @@ struct registration_request_packet_t {
 **`component_update_full_packet_t`** — полная информация о компоненте
 ```cpp
 struct component_update_full_packet_t {
-    uuid_t uuid;                          // UUID компонента
+    uuid_bytes_t uuid;                          // UUID компонента
     ComponentType type;                   // Тип компонента
     QIPv6Address address;                 // IPv6 адрес компонента
     uint16_t component_server_port;       // Порт компонента
@@ -113,7 +113,7 @@ struct component_update_full_packet_t {
 **`component_update_state_packet_t`** — изменение состояния
 ```cpp
 struct component_update_state_packet_t {
-    uuid_t uuid;                          // UUID компонента
+    uuid_bytes_t uuid;                          // UUID компонента
     ComponentState new_state;             // Новое состояние
 };
 ```
@@ -343,3 +343,18 @@ cmake --build cmake-build-debug --target aggregator_client_app -- -j16
 QLoggingCategory::setFilterRules("aggregator_server.debug=true");
 QLoggingCategory::setFilterRules("aggregator_client.debug=true");
 ```
+
+## Асинхронное подключение
+
+`connect_to_aggregator_server()` возвращает принятие запроса, а не результат
+соединения. Подключение и регистрация завершаются через сигналы в event loop.
+`status_changed` использует общий `core::RuntimeState`: Starting, Running,
+Recovering, Failed и Stopped. Running означает подтверждённую регистрацию.
+`disconnect_from_aggregator_server()` отменяет подключение и все повторные попытки.
+
+При регистрации клиент получает существующий реестр через обычные пакеты
+component_info_update. Переподключение использует растущую задержку до 30 секунд.
+Подключение и регистрация имеют отдельные тайм-ауты. Сервер возвращает текст
+ошибки UTF-8 в существующем PacketType::error перед закрытием соединения; отказ
+регистрации требует нового явного запроса подключения. Форматы обычных пакетов
+не изменены. `aggregator_network` проверяет эти сценарии на локальных сокетах.

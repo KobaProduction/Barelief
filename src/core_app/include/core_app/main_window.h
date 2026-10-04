@@ -3,14 +3,14 @@
 
 #include <QtWidgets/QTabWidget>
 
-#include "core_app/core_application.h"
+#include "core_app/gui_presenter.h"
 #include "visualization/abstract/abs.h"
 #include "visualization/surfaces/surfacegraph.h"
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
 public:
-    explicit MainWindow(CoreApplication &application);
+    explicit MainWindow(GuiPresenter &application);
     ~MainWindow() override;
 
 signals:
@@ -35,7 +35,8 @@ private slots:
     void on_sample_rate_changed(uint32_t sample_rate);
 
 private:
-    CoreApplication& _application;
+    QTimer _camera_save_timer;
+    GuiPresenter& _application;
     QTabWidget* _tab_widget = nullptr;
     
     // Статические графики

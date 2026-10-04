@@ -52,7 +52,7 @@ enum class ComponentState : uint8_t {
     active = 6
 };
 
-using uuid_t = QUuid::Id128Bytes;
+using uuid_bytes_t = QUuid::Id128Bytes;
 
 enum class PacketType : uint8_t {
     incorrect_packet_id = 0,
@@ -65,20 +65,20 @@ enum class PacketType : uint8_t {
 using session_token_t = uint16_t; // CRC16 токен сессии
 
 struct registration_request_packet_t {
-    uuid_t uuid;
+    uuid_bytes_t uuid;
     ComponentType component_type;
     uint16_t component_server_port;
     session_token_t session_token;
 } __attribute__((packed));
 
 struct component_update_state_packet_t {
-    uuid_t uuid;
+    uuid_bytes_t uuid;
     ComponentState new_state;
 } __attribute__((packed));
 
 
 struct component_update_full_packet_t {
-    uuid_t uuid{};
+    uuid_bytes_t uuid{};
     ComponentType type = ComponentType::unknown;
     QIPv6Address address{};
     uint16_t component_server_port{};

@@ -8,18 +8,18 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Network)
 
-if (BUILD_SHARED_LIBS)
-    add_library(${LIB_NAME}  SHARED)
-else ()
-    add_library(${LIB_NAME} )
-endif ()
+add_library(runtime_performance INTERFACE)
+target_include_directories(runtime_performance INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_library(${LIB_NAME} STATIC)
 
 
-target_sources(${LIB_NAME} PUBLIC
+target_sources(${LIB_NAME} PRIVATE
         include/core/abstract/abs_task.h
         include/core/network/tcp_packet_socket.h
         include/core/network/tcp_packet_server.h
         include/core/utils.h
+        include/core/latest_delivery.h
         src/abstract/abs_task.cpp
         src/network/tcp_packet_socket.cpp
         src/network/tcp_packet_server.cpp

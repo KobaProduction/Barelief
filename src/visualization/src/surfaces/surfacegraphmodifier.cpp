@@ -1,4 +1,6 @@
+#include "core/performance.h"
 #include "visualization/surfaces/surfacegraphmodifier.h"
+#include <algorithm>
 
 #include <QtDataVisualization/qvalue3daxis.h>
 #include <QtDataVisualization/q3dtheme.h>
@@ -15,7 +17,7 @@ SurfaceGraphModifier::SurfaceGraphModifier(Q3DSurface *surface, QLabel *label, Q
     m_graph->scene()->activeCamera()->setZoomLevel(155.f);
     m_graph->scene()->activeCamera()->setCameraPreset(Q3DCamera::CameraPresetIsometricRightHigh);
     m_graph->activeTheme()->setType(Q3DTheme::ThemeArmyBlue);
-    m_graph->setShadowQuality(QAbstract3DGraph::ShadowQualitySoftLow);
+    m_graph->setShadowQuality(QAbstract3DGraph::ShadowQualityNone);
 
     m_graph->setAxisX(new QValue3DAxis);
     m_graph->setAxisY(new QValue3DAxis);
@@ -36,27 +38,32 @@ SurfaceGraphModifier::SurfaceGraphModifier(Q3DSurface *surface, QLabel *label, Q
 }
 
 void SurfaceGraphModifier::update(const std::vector<std::vector<float> > &spectrogram) {
-    if (spectrogram.empty()) return;
+    core::perf::Scope trace(core::perf::Stage::SurfaceGeometry);
+    if (spectrogram.size() < 2 || spectrogram[0].size() < 2) return;
+    if (std::any_of(spectrogram.begin(), spectrogram.end(), [&](const auto &row) { return row.size() != spectrogram[0].size(); })) return;
     if (spectrogram.size() not_eq sampleCountZ or spectrogram[0].size() not_eq sampleCountX) {
 
         updateAxisRanges(0, spectrogram[0].size(), 0, spectrogram.size());
     }
 
-    auto *dataArray = new QSurfaceDataArray;
-
-    dataArray->reserve(sampleCountZ);
-    for (int ch = 0; ch < spectrogram.size(); ++ch) {
-        auto *newRow = new QSurfaceDataRow;
-        newRow->reserve(spectrogram[ch].size());
-        for (int x = 0; x < spectrogram[ch].size(); x++) {
-            newRow->append(QSurfaceDataItem({
-                static_cast<float>(x), spectrogram[ch][x], float(ch)
-            }));
+    const auto *existing = m_dataProxy->array();
+    if (existing && existing->size() == spectrogram.size() && !existing->empty() && existing->first()->size() == spectrogram[0].size()) {
+        // Reuse proxy rows; updating values avoids rebuilding 20,000 Qt items every frame.
+        for (int ch = 0; ch < spectrogram.size(); ++ch) {
+            auto *row = existing->at(ch);
+            for (int x = 0; x < row->size(); ++x) (*row)[x].setY(spectrogram[ch][x]);
         }
-        dataArray->append(newRow);
+        emit m_dataProxy->rowsChanged(0, spectrogram.size());
+    } else {
+        auto *dataArray = new QSurfaceDataArray;
+        dataArray->reserve(spectrogram.size());
+        for (int ch = 0; ch < spectrogram.size(); ++ch) {
+            auto *row = new QSurfaceDataRow(spectrogram[ch].size());
+            for (int x = 0; x < row->size(); ++x) (*row)[x].setPosition({float(x), spectrogram[ch][x], float(ch)});
+            dataArray->append(row);
+        }
+        m_dataProxy->resetArray(dataArray);
     }
-
-    m_dataProxy->resetArray(dataArray);
 }
 
 
@@ -88,7 +95,8 @@ void SurfaceGraphModifier::fillDataProxy() {
 
 void SurfaceGraphModifier::enable3DModel() {
     m_dataSeries->setDrawMode(QSurface3DSeries::DrawSurfaceAndWireframe);
-    m_dataSeries->setFlatShadingEnabled(true);
+    // Flat shading expands the dynamic mesh and recomputes per-face normals every frame.
+    m_dataSeries->setFlatShadingEnabled(false);
 
     m_graph->axisX()->setLabelFormat("%.2f");
     m_graph->axisZ()->setLabelFormat("%.2f");

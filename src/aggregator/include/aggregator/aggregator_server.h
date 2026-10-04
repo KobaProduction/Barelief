@@ -34,6 +34,8 @@ public:
 protected:
     QHash<TcpBDSPSocket *, std::optional<QUuid>> _sockets_uuid_map;
     QHash<QUuid, registered_component_t> _registered_components_map;
+    QHash<QUuid, uint64_t> _offline_generation;
+    uint64_t _next_generation = 0;
     uint32_t _registration_timeout_ms = aggregator_component::REGISTRATION_TIMEOUT_MS;
 
 protected Q_SLOTS:
@@ -44,6 +46,8 @@ protected Q_SLOTS:
 private:
     bool _register_component(TcpBDSPSocket *socket, const QUuid &uuid, const component_info_t &new_info,
                              const uint16_t session_token);
+
+    void _reject(TcpBDSPSocket *socket, const QString &error);
 
     bool _get_registration_status(TcpBDSPSocket *socket);
 
