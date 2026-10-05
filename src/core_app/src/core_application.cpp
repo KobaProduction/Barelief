@@ -14,8 +14,39 @@
 #include <QTimer>
 #include "core/performance.h"
 #include <QtNodes/internal/ConnectionIdUtils.hpp>
+#include <QThread>
+#include <cstring>
+#include "core_app/gui_event_profile.h"
 
 Q_LOGGING_CATEGORY(core_app_main, "core_app.main")
+bool CoreApplication::notify(QObject *receiver, QEvent *event) {
+    if (!core::perf::enabled.load(std::memory_order_relaxed) || QThread::currentThread() != thread())
+        return QApplication::notify(receiver, event);
+    const auto start = core::perf::now();
+    const auto type = int(event->type());
+    // Copy before dispatch: an event handler may delete its own receiver.
+    std::array<char, 64> name{};
+    if (receiver) std::strncpy(name.data(), receiver->metaObject()->className(), name.size() - 1);
+    gui_event_profile::Frame frame{gui_event_profile::current};
+    const bool detailed = gui_event_profile::enabled;
+    if (detailed) gui_event_profile::current = &frame;
+    // Restore the stack even when a handler throws. No owning TLS or heap work.
+    struct Restore {
+        gui_event_profile::Frame &frame;
+        bool active;
+        ~Restore() { if (active) gui_event_profile::current = frame.parent; }
+    } restore{frame, detailed};
+    const auto result = QApplication::notify(receiver, event);
+    const auto duration = core::perf::now() - start;
+    if (detailed) {
+        if (frame.parent) frame.parent->children += duration;
+        gui_event_profile::record(name.data(), type, duration, frame.children);
+    }
+    core::perf::record(core::perf::Stage::GuiEvent, start, duration);
+    if (duration >= 50000000 && core::perf::slow_gui_event_count < core::perf::slow_gui_events.size())
+        core::perf::slow_gui_events[core::perf::slow_gui_event_count++] = {duration, type, name};
+    return result;
+}
 CoreApplication::CoreApplication(int &argc, char *argv[]) : QApplication(argc, argv) {
     setApplicationName("Data Processing System Core");
     setApplicationVersion("1.0.0");
@@ -32,13 +63,17 @@ CoreApplication::CoreApplication(int &argc, char *argv[]) : QApplication(argc, a
         _ctx.delegate_model_registry->registerModel(
             [kind = definition.name] { return std::make_unique<AudioNodeModel>(kind); }, "Audio pipeline");
     }
-    if (_ctx.file_configs.scene_graph.isEmpty() && !_ctx.file_configs.raw_document.contains("scene_graph"))
-        _ctx.file_configs.scene_graph = pipeline::GraphProgram::defaults(_ctx.file_configs.core.spectrum_channel,
-                                                                         _ctx.file_configs.core.spectrum_merge,
-                                                                         _ctx.file_configs.core.capture_source);
+    if (_ctx.file_configs.scene_graph.isEmpty() && !_ctx.file_configs.raw_document.contains("scene_graph")) {
+        QString graph_error;
+        _ctx.file_configs.scene_graph = pipeline::GraphProgram::compile(_ctx.file_configs.pipeline_graph,graph_error)
+            ? _ctx.file_configs.pipeline_graph
+            : pipeline::GraphProgram::defaults(_ctx.file_configs.core.spectrum_channel,
+                                               _ctx.file_configs.core.spectrum_merge,
+                                               _ctx.file_configs.core.capture_source);
+    }
 
     if (not _ctx.file_configs.scene_graph.empty()) {
-        for (const auto &value : _ctx.file_configs.scene_graph.value("nodes").toArray()) {
+        for (const auto &value : pipeline::canonical_graph_document(_ctx.file_configs.scene_graph).value("nodes").toArray()) {
             const auto node = value.toObject();
             const auto id = node.value("id").toInt(-1);
             const auto kind = node.value("internal-data").toObject().value("model-name").toString();
@@ -67,10 +102,10 @@ CoreApplication::CoreApplication(int &argc, char *argv[]) : QApplication(argc, a
     connect(_presenter.get(), &GuiPresenter::pipeline_preview, this, &CoreApplication::pipeline_preview);
     connect(_presenter.get(), &GuiPresenter::component_status_changed, this,
             &CoreApplication::component_status_changed);
-    connect(_presenter.get(), &GuiPresenter::raw_samples_ready, this, &CoreApplication::raw_samples_ready);
-    connect(_presenter.get(), &GuiPresenter::samples_ready, this, &CoreApplication::samples_ready);
-    connect(_presenter.get(), &GuiPresenter::samples_after_window_function_ready, this,
-            &CoreApplication::samples_after_window_function_ready);
+    connect(_presenter.get(), &GuiPresenter::raw_signal_ready, this, &CoreApplication::raw_signal_ready);
+    connect(_presenter.get(), &GuiPresenter::window_signal_ready, this, &CoreApplication::window_signal_ready);
+    connect(_presenter.get(), &GuiPresenter::windowed_signal_ready, this,
+            &CoreApplication::windowed_signal_ready);
     connect(_presenter.get(), &GuiPresenter::window_function_ready, this, &CoreApplication::window_function_ready);
     connect(_presenter.get(), &GuiPresenter::amplitudes_ready, this, &CoreApplication::amplitudes_ready);
     connect(_presenter.get(), &GuiPresenter::test_amplitudes_ready, this, &CoreApplication::test_amplitudes_ready);
@@ -85,6 +120,9 @@ CoreApplication::CoreApplication(int &argc, char *argv[]) : QApplication(argc, a
         if (_ctx.editor_draft_modified) {
             _ctx.file_configs.scene_graph = _ctx.data_flow_graph->save();
             _ctx.file_configs.scene_graph["version"] = 1;
+            // Override an initial-layout marker in the preserved original JSON.
+            // Omitting it would let recursive settings overlay resurrect `true`.
+            _ctx.file_configs.scene_graph["layout_pending"] = false;
             _ctx.editor_draft_modified = false;
         }
         if ((force || _ctx.file_configs.ui.autosave_enabled) && !_config_manager.save(_ctx.file_configs))
@@ -93,10 +131,6 @@ CoreApplication::CoreApplication(int &argc, char *argv[]) : QApplication(argc, a
     };
     connect(_main_window, &MainWindow::on_config_updated, this, [save] { save(true); });
     connect(_presenter.get(), &GuiPresenter::on_config_updated, this, [save] { save(false); });
-    connect(_main_window, &MainWindow::start_loopback_requested, _presenter.get(), &GuiPresenter::start_loopback);
-    connect(_main_window, &MainWindow::stop_loopback_requested, _presenter.get(), &GuiPresenter::stop_loopback);
-    connect(_main_window, &MainWindow::start_analyzer_requested, _presenter.get(), &GuiPresenter::start_analyzer);
-    connect(_main_window, &MainWindow::stop_analyzer_requested, _presenter.get(), &GuiPresenter::stop_analyzer);
     connect(_main_window, &MainWindow::start_wled_server_requested, _presenter.get(),
             &GuiPresenter::start_wled_audio_reactive_server);
     connect(_main_window, &MainWindow::stop_wled_server_requested, _presenter.get(),
@@ -156,9 +190,10 @@ void CoreApplication::_parse_command_line() {
     _remote_port = static_cast<quint16>(value);
 }
 int CoreApplication::exec() const {
-    if (_ctx.file_configs.ui.move_to_primary_screen_on_start)
+    if (_ctx.file_configs.ui.move_to_primary_screen_on_start &&
+        _ctx.file_configs.ui.workspace.value("geometry").toString().isEmpty())
         _main_window->move(primaryScreen()->availableGeometry().center() - _main_window->rect().center());
-    _main_window->showNormal();
+    _main_window->show();
     return QApplication::exec();
 }
 void CoreApplication::apply_processing_settings() {

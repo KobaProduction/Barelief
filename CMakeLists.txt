@@ -26,9 +26,6 @@ if(BUILD_DSP_ONLY)
     endif()
     return()
 endif()
-if(NOT WIN32)
-    message(FATAL_ERROR "Desktop WASAPI adapter requires Windows; use -DBUILD_DSP_ONLY=ON for portable DSP")
-endif()
 find_package(Qt6 6.7 REQUIRED COMPONENTS Core Network)
 if(BUILD_GUI)
     find_package(Qt6 6.7 REQUIRED COMPONENTS Gui Widgets Charts DataVisualization)
@@ -38,6 +35,12 @@ if(BUILD_GUI)
 endif()
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 include(FetchContent)
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.25
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR capture-only)
+FetchContent_MakeAvailable(miniaudio)
 
 FetchContent_Declare(
         BDSP

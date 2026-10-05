@@ -1,6 +1,7 @@
+#include "visualization/ui_text.h"
 #include "core/performance.h"
-#include "visualization/surfaces/surfacegraph.h"
-#include "visualization/surfaces/surfacegraphmodifier.h"
+#include "visualization/spectrograms/spectrogram_graph.h"
+#include "visualization/spectrograms/spectrogram_graph_modifier.h"
 
 #include <QtWidgets/qboxlayout.h>
 #include <QtWidgets/qcheckbox.h>
@@ -28,29 +29,52 @@ using namespace Qt::StringLiterals;
 
 // Coalesce camera/data changes into at most 60 native frames/s.
 // Leave the Qt scene and buffer swap on their owning GUI thread.
-class PacedSurface final : public Q3DSurface {
+class PacedSpectrogram final : public Q3DSurface {
 public:
-    explicit PacedSurface(const QSurfaceFormat *format) : Q3DSurface(format) {}
+    explicit PacedSpectrogram(const QSurfaceFormat *format) : Q3DSurface(format) {}
     std::function<void()> prepare;
+    qreal fps() const {
+        if (!_clock.isValid() || _clock.nsecsElapsed()-_last_render>1500000000) return 0;
+        return _fps;
+    }
+    void stopRendering() {
+        _stopped = true;
+        prepare = {};
+    }
 private:
     QElapsedTimer _clock;
-    qint64 _last_frame=-16666667;
+    qint64 _next_frame=0;
     bool _pending=false;
+    bool _stopped=false;
+    qint64 _fps_start=0, _last_render=0;
+    quint64 _fps_frames=0;
+    qreal _fps=0;
     void renderFrame() {
         _pending=false;
-        if(!isExposed()) return;
-        _last_frame=_clock.nsecsElapsed();
+        if(_stopped || !isExposed()) return;
+        const auto start = _clock.nsecsElapsed();
         if(prepare) prepare();
         QEvent update(QEvent::UpdateRequest);
-        core::perf::Scope trace(core::perf::Stage::SurfaceRender);
+        core::perf::Scope trace(core::perf::Stage::SpectrogramRender);
         Q3DSurface::event(&update);
+        _last_render=_clock.nsecsElapsed(); ++_fps_frames;
+        const auto elapsed=_last_render-_fps_start;
+        if (elapsed>=1000000000) { _fps=_fps_frames*1e9/elapsed; _fps_frames=0; _fps_start=_last_render; }
+        // A slow driver must leave time for input/paint events between frames.
+        _next_frame = std::max(start + 16666667, _clock.nsecsElapsed() + 1000000);
     }
 protected:
+    void exposeEvent(QExposeEvent *) override {
+        // Qt renders synchronously from its default expose handler. Route it
+        // through the same scheduler as camera/data updates and count the frame.
+        if (!_stopped && isExposed()) requestUpdate();
+    }
     bool event(QEvent *event) override {
         if(event->type()==QEvent::UpdateRequest) {
+            if (_stopped) return true;
             if(!_clock.isValid()) _clock.start();
             if(_pending) return true;
-            const auto remaining=16666667-(_clock.nsecsElapsed()-_last_frame);
+            const auto remaining=_next_frame-_clock.nsecsElapsed();
             if(remaining<=0) renderFrame();
             else {
                 _pending=true;
@@ -61,6 +85,9 @@ protected:
         return Q3DSurface::event(event);
     }
 };
+qreal SpectrogramGraph::display_fps() const {
+    return m_spectrogram_graph && isVisible() ? static_cast<PacedSpectrogram *>(m_spectrogram_graph)->fps() : 0;
+}
 
 static QPixmap gradientBtoYPB_Pixmap() {
     QLinearGradient grBtoY(0, 0, 1, 100);
@@ -119,56 +146,81 @@ static QPixmap highlightPixmap() {
 }
 
 
-SurfaceGraph::SurfaceGraph(QWidget *parent) : QWidget(parent) {
+SpectrogramGraph::SpectrogramGraph(QWidget *parent) : QWidget(parent) {
     _camera_timer.setInterval(16);
     _camera_timer.setTimerType(Qt::PreciseTimer);
-    connect(&_camera_timer, &QTimer::timeout, this, [this] { if(m_surfaceGraph) m_surfaceGraph->requestUpdate(); });
+    connect(&_camera_timer, &QTimer::timeout, this, [this] { if(m_spectrogram_graph) m_spectrogram_graph->requestUpdate(); });
 }
 
-SurfaceGraph::~SurfaceGraph() {
+SpectrogramGraph::~SpectrogramGraph() {
     _stop_camera();
-    if (!m_container) delete m_surfaceGraph;
+    // The container owns the native window and is destroyed by QWidget later,
+    // after this object's members. Native teardown may dispatch pending events.
+    // Detach the callback capturing this before those members are destroyed.
+    if (m_spectrogram_graph) {
+        static_cast<PacedSpectrogram *>(m_spectrogram_graph)->stopRendering();
+        m_spectrogram_graph->removeEventFilter(this);
+        m_spectrogram_graph->scene()->activeCamera()->disconnect(this);
+    }
+    if (m_container) m_container->removeEventFilter(this);
+    // Destroy the owning container while this object's state is still alive.
+    // QWidget base destruction otherwise happens after the members above.
+    if (m_container) delete m_container;
+    else delete m_spectrogram_graph;
+    m_container = nullptr;
+    m_spectrogram_graph = nullptr;
 }
 
-bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximumGraphSize) {
+bool SpectrogramGraph::initialize(const QSize &minimumGraphSize, const QSize &maximumGraphSize) {
     if (_initialization_attempted) return _modifier != nullptr;
     _initialization_attempted = true;
-    QOpenGLContext probe;
-    QOffscreenSurface surface;
-    if (!probe.create()) {
+    // These QPA plugins cannot host a native 3D window even when Mesa exposes GL.
+    const auto platform = QGuiApplication::platformName();
+    if (platform == "offscreen" || platform == "minimal") {
         auto *layout = new QVBoxLayout(this);
-        layout->addWidget(new QLabel("3D visualization is unavailable: no graphics context.", this));
+        layout->addWidget(ui::make<QLabel>("3D visualization requires a native graphical session.", this));
         return false;
     }
-    surface.setFormat(probe.format());
-    surface.create();
-    if (!surface.isValid() || !probe.makeCurrent(&surface)) {
+    QOpenGLContext probe;
+    QOffscreenSurface gl_surface;
+    if (!probe.create()) {
         auto *layout = new QVBoxLayout(this);
-        layout->addWidget(new QLabel("3D visualization is unavailable: no graphics context.", this));
+        layout->addWidget(ui::make<QLabel>("3D visualization is unavailable: no graphics context.", this));
+        return false;
+    }
+    gl_surface.setFormat(probe.format());
+    gl_surface.create();
+    if (!gl_surface.isValid() || !probe.makeCurrent(&gl_surface)) {
+        auto *layout = new QVBoxLayout(this);
+        layout->addWidget(ui::make<QLabel>("3D visualization is unavailable: no graphics context.", this));
         return false;
     }
     probe.doneCurrent();
     auto format=qDefaultSurfaceFormat(true);
+#if defined(__linux__)
+    format.setVersion(2,0);
+#endif
     format.setSwapInterval(1);
-    m_surfaceGraph = new PacedSurface(&format);
-    if (!m_surfaceGraph->hasContext()) {
+    m_spectrogram_graph = new PacedSpectrogram(&format);
+    if (!m_spectrogram_graph->hasContext()) {
         auto *layout = new QVBoxLayout(this);
-        layout->addWidget(new QLabel("3D visualization is unavailable: no graphics context.", this));
+        layout->addWidget(ui::make<QLabel>("3D visualization is unavailable: no graphics context.", this));
         return false;
     }
     auto *hLayout = new QHBoxLayout(this);
-    m_container = QWidget::createWindowContainer(m_surfaceGraph, this);
+    m_container = QWidget::createWindowContainer(m_spectrogram_graph, this);
+    m_container->setObjectName("spectrogramContainer");
     Q_UNUSED(minimumGraphSize);
     Q_UNUSED(maximumGraphSize);
     m_container->setMinimumSize(240, 180);
     m_container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_container->setFocusPolicy(Qt::StrongFocus);
     m_container->installEventFilter(this);
-    m_surfaceGraph->installEventFilter(this);
-    m_surfaceGraph->setObjectName("surfaceWindow");
+    m_spectrogram_graph->installEventFilter(this);
+    m_spectrogram_graph->setObjectName("spectrogramWindow");
     hLayout->setContentsMargins(0, 0, 0, 0);
     _splitter = new QSplitter(Qt::Horizontal, this);
-    _splitter->setObjectName("surfaceSplitter");
+    _splitter->setObjectName("spectrogramSplitter");
     _splitter->setChildrenCollapsible(false);
     _splitter->setHandleWidth(8);
     _splitter->addWidget(m_container);
@@ -195,44 +247,51 @@ bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximu
     });
     vLayout->setAlignment(Qt::AlignTop);
 
-    auto *signalGroupBox = new QGroupBox(u"Signal Settings"_s);
+    auto *signalGroupBox = ui::make<QGroupBox>("Signal Settings", this);
 
     auto *pauseButton = new QCheckBox(this);
     pauseButton->setCheckState(_pause ? Qt::Unchecked : Qt::Checked);
-    pauseButton->setText(u"Pause"_s);
+    ui::bind(pauseButton,"text","Pause");
     pauseButton->setChecked(false);
 
     auto *pauseVBox = new QVBoxLayout;
     pauseVBox->addWidget(pauseButton);
+    auto *information=new QLabel(signalGroupBox);
+    information->setWordWrap(true); information->setObjectName("spectrogramGraphInfo");
+    pauseVBox->addWidget(information);
+    auto *information_timer=new QTimer(this); information_timer->setInterval(500);
+    connect(information_timer,&QTimer::timeout,this,[this,information] {
+        if (isVisible()) information->setText(ui::text("History: %1 frames · %2 bands").arg(_spectrogram.empty() ? 0 : _spectrogram.back().size()).arg(_spectrogram.size()));
+    }); information_timer->start();
     signalGroupBox->setLayout(pauseVBox);
 
     // Create control widgets
-    auto *modelGroupBox = new QGroupBox(u"Model"_s);
+    auto *modelGroupBox = ui::make<QGroupBox>("Model", this);
 
     auto *toggle3DModelRB = new QRadioButton(this);
-    toggle3DModelRB->setText(u"3D"_s);
+    ui::bind(toggle3DModelRB,"text","3D");
     toggle3DModelRB->setChecked(false);
 
     auto *modelVBox = new QVBoxLayout;
     modelVBox->addWidget(toggle3DModelRB);
     modelGroupBox->setLayout(modelVBox);
 
-    auto *selectionGroupBox = new QGroupBox(u"Graph Selection Mode"_s);
+    auto *selectionGroupBox = ui::make<QGroupBox>("Graph Selection Mode", this);
 
     auto *modeNoneRB = new QRadioButton(this);
-    modeNoneRB->setText(u"No selection"_s);
+    ui::bind(modeNoneRB,"text","No selection");
     modeNoneRB->setChecked(false);
 
     auto *modeItemRB = new QRadioButton(this);
-    modeItemRB->setText(u"Item"_s);
+    ui::bind(modeItemRB,"text","Item");
     modeItemRB->setChecked(false);
 
     auto *modeSliceRowRB = new QRadioButton(this);
-    modeSliceRowRB->setText(u"Time Slice"_s);
+    ui::bind(modeSliceRowRB,"text","Time Slice");
     modeSliceRowRB->setChecked(false);
 
     auto *modeSliceColumnRB = new QRadioButton(this);
-    modeSliceColumnRB->setText(u"Frequency Slice"_s);
+    ui::bind(modeSliceColumnRB,"text","Frequency Slice");
     modeSliceColumnRB->setChecked(false);
 
     auto *selectionVBox = new QVBoxLayout;
@@ -242,7 +301,7 @@ bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximu
     selectionVBox->addWidget(modeSliceColumnRB);
     selectionGroupBox->setLayout(selectionVBox);
 
-    auto *axisGroupBox = new QGroupBox(u"Axis ranges"_s);
+    auto *axisGroupBox = ui::make<QGroupBox>("Axis ranges", this);
 
     auto *axisMinSliderX = new QSlider(Qt::Horizontal);
     axisMinSliderX->setMinimum(0);
@@ -263,15 +322,15 @@ bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximu
     axisMaxSliderZ->setEnabled(true);
 
     auto *axisVBox = new QVBoxLayout;
-    axisVBox->addWidget(new QLabel(u"Time range (x)"_s));
+    axisVBox->addWidget(ui::make<QLabel>("Time range (x)", this));
     axisVBox->addWidget(axisMinSliderX);
     axisVBox->addWidget(axisMaxSliderX);
-    axisVBox->addWidget(new QLabel(u"Freq range (z)"_s));
+    axisVBox->addWidget(ui::make<QLabel>("Freq range (z)", this));
     axisVBox->addWidget(axisMinSliderZ);
     axisVBox->addWidget(axisMaxSliderZ);
     axisGroupBox->setLayout(axisVBox);
 
-    auto *colorGroupBox = new QGroupBox(u"Custom gradient"_s);
+    auto *colorGroupBox = ui::make<QGroupBox>("Custom gradient", this);
 
     QPixmap pixmap = gradientBtoYPB_Pixmap();
     auto *gradientBtoYPB = new QPushButton(this);
@@ -290,7 +349,7 @@ bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximu
     // Multiseries heightmap
 
 
-    auto *labelSelectedItem = new QLabel(u"Nothing"_s);
+    auto *labelSelectedItem = ui::make<QLabel>("Nothing", this);
     labelSelectedItem->setVisible(false);
 
 
@@ -311,41 +370,41 @@ bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximu
     vLayout->addWidget(labelSelectedItem);
 
     // Create the controller
-    _modifier = new SurfaceGraphModifier(m_surfaceGraph, labelSelectedItem, this);
+    _modifier = new SpectrogramGraphModifier(m_spectrogram_graph, labelSelectedItem, this);
 
 
     connect(pauseButton, &QCheckBox::checkStateChanged, this, [this](const Qt::CheckState state) {
         _pause = state==Qt::Checked;
         _need_update = true;
-        if(!_pause && m_surfaceGraph) m_surfaceGraph->requestUpdate();
+        if(!_pause && m_spectrogram_graph) m_spectrogram_graph->requestUpdate();
     });
 
     connect(toggle3DModelRB, &QRadioButton::toggled,
-            _modifier, &SurfaceGraphModifier::enable3DModel);
+            _modifier, &SpectrogramGraphModifier::enable3DModel);
 
 
     connect(modeNoneRB, &QRadioButton::toggled,
-            _modifier, &SurfaceGraphModifier::toggleModeNone);
+            _modifier, &SpectrogramGraphModifier::toggleModeNone);
     connect(modeItemRB, &QRadioButton::toggled,
-            _modifier, &SurfaceGraphModifier::toggleModeItem);
+            _modifier, &SpectrogramGraphModifier::toggleModeItem);
     connect(modeSliceRowRB, &QRadioButton::toggled,
-            _modifier, &SurfaceGraphModifier::toggleModeSliceRow);
+            _modifier, &SpectrogramGraphModifier::toggleModeSliceRow);
     connect(modeSliceColumnRB, &QRadioButton::toggled,
-            _modifier, &SurfaceGraphModifier::toggleModeSliceColumn);
+            _modifier, &SpectrogramGraphModifier::toggleModeSliceColumn);
 
     connect(axisMinSliderX, &QSlider::valueChanged,
-            _modifier, &SurfaceGraphModifier::adjustXMin);
+            _modifier, &SpectrogramGraphModifier::adjustXMin);
     connect(axisMaxSliderX, &QSlider::valueChanged,
-            _modifier, &SurfaceGraphModifier::adjustXMax);
+            _modifier, &SpectrogramGraphModifier::adjustXMax);
     connect(axisMinSliderZ, &QSlider::valueChanged,
-            _modifier, &SurfaceGraphModifier::adjustZMin);
+            _modifier, &SpectrogramGraphModifier::adjustZMin);
     connect(axisMaxSliderZ, &QSlider::valueChanged,
-            _modifier, &SurfaceGraphModifier::adjustZMax);
+            _modifier, &SpectrogramGraphModifier::adjustZMax);
 
     connect(gradientBtoYPB, &QPushButton::pressed,
-            _modifier, &SurfaceGraphModifier::setBlackToYellowGradient);
+            _modifier, &SpectrogramGraphModifier::setBlackToYellowGradient);
     connect(gradientGtoRPB, &QPushButton::pressed,
-            _modifier, &SurfaceGraphModifier::setGreenToRedGradient);
+            _modifier, &SpectrogramGraphModifier::setGreenToRedGradient);
 
     connect(toggle3DModelRB, &QRadioButton::toggled,
             colorGroupBox, &QGroupBox::setVisible);
@@ -356,51 +415,57 @@ bool SurfaceGraph::initialize(const QSize &minimumGraphSize, const QSize &maximu
     _modifier->setAxisMaxSliderZ(axisMaxSliderZ);
     _modifier->setGreenToRedGradient();
 
-    auto *camera = m_surfaceGraph->scene()->activeCamera();
+    auto *camera = m_spectrogram_graph->scene()->activeCamera();
     camera->setMaxZoomLevel(maximum_camera_zoom);
     _default_camera_state = camera_state();
     if (!_camera_state.isEmpty()) set_camera_state(_camera_state);
     _camera_state = camera_state();
-    connect(camera, &Q3DCamera::xRotationChanged, this, &SurfaceGraph::_camera_changed);
-    connect(camera, &Q3DCamera::yRotationChanged, this, &SurfaceGraph::_camera_changed);
-    connect(camera, &Q3DCamera::zoomLevelChanged, this, &SurfaceGraph::_camera_changed);
-    connect(camera, &Q3DCamera::targetChanged, this, &SurfaceGraph::_camera_changed);
-    auto *resetButton = new QPushButton("Reset camera", this);
+    connect(camera, &Q3DCamera::xRotationChanged, this, &SpectrogramGraph::_camera_changed);
+    connect(camera, &Q3DCamera::yRotationChanged, this, &SpectrogramGraph::_camera_changed);
+    connect(camera, &Q3DCamera::zoomLevelChanged, this, &SpectrogramGraph::_camera_changed);
+    connect(camera, &Q3DCamera::targetChanged, this, &SpectrogramGraph::_camera_changed);
+    auto *resetButton = ui::make<QPushButton>("Reset camera", this);
     resetButton->setObjectName("resetCamera");
     vLayout->addWidget(resetButton);
-    connect(resetButton, &QPushButton::clicked, this, &SurfaceGraph::reset_camera);
+    connect(resetButton, &QPushButton::clicked, this, &SpectrogramGraph::reset_camera);
 
     toggle3DModelRB->setChecked(true);
     modeItemRB->setChecked(true);
 
-    static_cast<PacedSurface *>(m_surfaceGraph)->prepare=[this] {
+    static_cast<PacedSpectrogram *>(m_spectrogram_graph)->prepare=[this] {
         if(!_camera_keys.isEmpty()) _move_camera();
         if (!_pause && _need_update && _modifier) {
             _modifier->update(_spectrogram);
             _need_update=false;
         }
+#if defined(_WIN32)
+        // Keep native presentation progressing without repainting every control
+        // in the Spectrogram side panel on each 3D frame.
+        if (m_container) m_container->update();
+#endif
     };
 
     return true;
 }
 
-void SurfaceGraph::update(const std::vector<std::vector<float> > &spectrogram) {
-    core::perf::Scope trace(core::perf::Stage::SurfaceData);
+void SpectrogramGraph::update(const std::vector<std::vector<float> > &spectrogram) {
+    core::perf::Scope trace(core::perf::Stage::SpectrogramData);
     if (!_modifier) return;
+    if (_spectrogram == spectrogram) return;
     _spectrogram = spectrogram;
     _need_update = true;
-    if(isVisible() && !_pause) m_surfaceGraph->requestUpdate();
+    if(isVisible() && !_pause) m_spectrogram_graph->requestUpdate();
 }
 
-QJsonObject SurfaceGraph::camera_state() const {
-    if (!m_surfaceGraph || !_modifier) return _camera_state;
-    const auto *camera = m_surfaceGraph->scene()->activeCamera();
+QJsonObject SpectrogramGraph::camera_state() const {
+    if (!m_spectrogram_graph || !_modifier) return _camera_state;
+    const auto *camera = m_spectrogram_graph->scene()->activeCamera();
     const auto target = camera->target();
     return {{"horizontal", camera->xRotation()}, {"vertical", camera->yRotation()},
             {"zoom", camera->zoomLevel()}, {"target", QJsonArray{target.x(), target.y(), target.z()}}};
 }
 
-void SurfaceGraph::set_camera_state(const QJsonObject &state) {
+void SpectrogramGraph::set_camera_state(const QJsonObject &state) {
     if (state.isEmpty()) return;
     auto number = [&](const char *key, float fallback, float min, float max) {
         const auto value = state.value(key).toDouble(fallback);
@@ -413,20 +478,20 @@ void SurfaceGraph::set_camera_state(const QJsonObject &state) {
     };
     _camera_state = {{"horizontal",number("horizontal",45,-180,180)}, {"vertical",number("vertical",45,0,90)},
                      {"zoom",number("zoom",155,10,maximum_camera_zoom)}, {"target",QJsonArray{coordinate(0),coordinate(1),coordinate(2)}}};
-    if (!m_surfaceGraph || !_modifier) return;
-    auto *camera = m_surfaceGraph->scene()->activeCamera();
+    if (!m_spectrogram_graph || !_modifier) return;
+    auto *camera = m_spectrogram_graph->scene()->activeCamera();
     const QSignalBlocker blocker(camera);
     camera->setCameraPosition(_camera_state["horizontal"].toDouble(), _camera_state["vertical"].toDouble(), _camera_state["zoom"].toDouble());
     camera->setTarget(QVector3D(coordinate(0),coordinate(1),coordinate(2)));
     _camera_state = camera_state();
 }
 
-bool SurfaceGraph::eventFilter(QObject *watched, QEvent *event) {
-    if (event->type() == QEvent::Wheel && m_surfaceGraph && _modifier) {
+bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::Wheel && m_spectrogram_graph && _modifier) {
         auto *wheel = static_cast<QWheelEvent *>(event);
         const float step = wheel->pixelDelta().isNull() ? wheel->angleDelta().y() / 1200.0f
                                                        : wheel->pixelDelta().y() / 200.0f;
-        auto *camera = m_surfaceGraph->scene()->activeCamera();
+        auto *camera = m_spectrogram_graph->scene()->activeCamera();
         camera->setZoomLevel(camera->zoomLevel() * std::exp(std::clamp(step, -2.0f, 2.0f)));
         wheel->accept();
         return true;
@@ -475,21 +540,21 @@ bool SurfaceGraph::eventFilter(QObject *watched, QEvent *event) {
     return QWidget::eventFilter(watched, event);
 }
 
-void SurfaceGraph::_stop_camera() {
+void SpectrogramGraph::_stop_camera() {
     _camera_keys.clear();
     _held_camera_keys.clear();
     _camera_timer.stop();
 }
 
-void SurfaceGraph::hideEvent(QHideEvent *event) {
+void SpectrogramGraph::hideEvent(QHideEvent *event) {
     _stop_camera();
     QWidget::hideEvent(event);
 }
 
-void SurfaceGraph::_move_camera() {
+void SpectrogramGraph::_move_camera() {
     core::perf::Scope trace(core::perf::Stage::CameraMove);
-    if (!m_surfaceGraph || !_modifier) { _stop_camera(); return; }
-    auto *camera = m_surfaceGraph->scene()->activeCamera();
+    if (!m_spectrogram_graph || !_modifier) { _stop_camera(); return; }
+    auto *camera = m_spectrogram_graph->scene()->activeCamera();
     const auto dt = std::min(_camera_clock.restart() / 1000.0f, 0.05f);
     const auto speed = (_camera_keys.contains("fast") ? 2.5f : 1.0f) * dt;
     const float forward = _camera_keys.contains("forward") - _camera_keys.contains("backward");
@@ -497,38 +562,38 @@ void SurfaceGraph::_move_camera() {
     const float up = _camera_keys.contains("up") - _camera_keys.contains("down");
     const auto yaw = qDegreesToRadians(camera->xRotation());
     auto target = camera->target();
-    float ratio = m_surfaceGraph->horizontalAspectRatio();
+    float ratio = m_spectrogram_graph->horizontalAspectRatio();
     if (ratio <= 0) {
-        const float x_range = m_surfaceGraph->axisX()->max() - m_surfaceGraph->axisX()->min();
-        const float z_range = m_surfaceGraph->axisZ()->max() - m_surfaceGraph->axisZ()->min();
+        const float x_range = m_spectrogram_graph->axisX()->max() - m_spectrogram_graph->axisX()->min();
+        const float z_range = m_spectrogram_graph->axisZ()->max() - m_spectrogram_graph->axisZ()->min();
         ratio = z_range > 0 ? x_range / z_range : 1.0f;
     }
-    target += camera_translation(yaw,side,up,ratio,m_surfaceGraph->aspectRatio()) * speed;
+    target += camera_translation(yaw,side,up,ratio,m_spectrogram_graph->aspectRatio()) * speed;
     camera->setTarget(target);
     camera->setZoomLevel(camera->zoomLevel() * std::exp(forward * speed));
 }
 
-void SurfaceGraph::_camera_changed() {
+void SpectrogramGraph::_camera_changed() {
     _camera_state = camera_state();
     emit camera_changed(_camera_state);
 }
 
-void SurfaceGraph::set_side_panel_ratio(float ratio) {
+void SpectrogramGraph::set_side_panel_ratio(float ratio) {
     _side_panel_ratio = std::isfinite(ratio) ? std::clamp(ratio, 0.01f, 0.99f) : 0.25f;
     if (_splitter) _splitter->setSizes({static_cast<int>(1000 * (1 - _side_panel_ratio)), static_cast<int>(1000 * _side_panel_ratio)});
 }
 
-void SurfaceGraph::set_camera_controls(const QJsonObject &controls) {
+void SpectrogramGraph::set_camera_controls(const QJsonObject &controls) {
     _stop_camera();
     _camera_controls = CameraControls::normalized(controls);
 }
-void SurfaceGraph::reset_camera() {
+void SpectrogramGraph::reset_camera() {
     _stop_camera();
     if (_default_camera_state.isEmpty()) return;
     set_camera_state(_default_camera_state);
     _camera_changed();
 }
-QVector3D SurfaceGraph::camera_translation(float yaw, float side, float up, float horizontal_ratio, float aspect) {
+QVector3D SpectrogramGraph::camera_translation(float yaw, float side, float up, float horizontal_ratio, float aspect) {
     const float ratio = std::max(horizontal_ratio, 0.001f);
     const float x_scale = std::min(1.0f, ratio);
     const float z_scale = std::min(1.0f, 1.0f / ratio);
@@ -539,6 +604,6 @@ QVector3D SurfaceGraph::camera_translation(float yaw, float side, float up, floa
     return {direction.x() / x_scale, direction.y() * aspect, direction.z() / z_scale};
 }
 
-void SurfaceGraph::showEvent(QShowEvent *event) {
-    QWidget::showEvent(event); if (_modifier) m_surfaceGraph->requestUpdate();
+void SpectrogramGraph::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event); if (_modifier) m_spectrogram_graph->requestUpdate();
 }

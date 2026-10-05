@@ -4,12 +4,13 @@
 #include <QtNodes/DataFlowGraphModel>
 #include <QtNodes/NodeDelegateModelRegistry>
 #include <QJsonObject>
+#include <QJsonArray>
 #include "visualization/camera_controls.h"
 
 #include "wled/wled_audio_reactive_server.h"
 #include "analyzer/analyze/analyzer.h"
 #include "analyzer/analyze/spectrogram.h"
-#include "analyzer/loopback/windows_loopback.h"
+
 
 using node_delegate_model_registry_t = std::shared_ptr<QtNodes::NodeDelegateModelRegistry>;
 using data_flow_graph_model_t = std::shared_ptr<QtNodes::DataFlowGraphModel>;
@@ -18,15 +19,24 @@ struct UIApplicationConfig {
     bool move_to_primary_screen_on_start = false;
     bool autosave_enabled = true;
     bool show_raw_samples = false;
-    bool show_samples = false;
-    bool show_samples_after_window_function = false;
+    bool show_window_signal = false;
+    bool show_windowed_signal = false;
     bool show_window_function = false;
-    bool show_amplitudes = true;
-    bool show_test_amplitudes = true;
-    bool show_surface = true;
+    bool show_amplitudes = false;
+    bool show_test_amplitudes = false;
+    bool show_spectrogram = true;
+    QJsonObject workspace;
+    QString language = "ru";
+    QString theme = "system";
+    QJsonObject graph_views;
+    QJsonObject editor_view;
+    bool show_data_flow = true;
+    bool pipeline_auto_apply = true;
+    bool show_fps = true;
+    QJsonArray pipeline_presets;
     QJsonObject camera;
     QJsonObject camera_controls = CameraControls::defaults();
-    float surface_side_panel_ratio = 0.25f;
+    float spectrogram_side_panel_ratio = 0.25f;
 };
 
 struct WLEDARServerConfig {

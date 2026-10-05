@@ -1,4 +1,5 @@
 #include "pipeline/audio_pipeline.h"
+#include <thread>
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -16,10 +17,34 @@ int main(int argc,char **argv) {
     try {
         auto document=pipeline::GraphProgram::defaults(); QString error;
         auto program=pipeline::GraphProgram::compile(document,error); require(bool(program),qPrintable(error));
+        auto legacy=document; auto legacy_nodes=legacy.value("nodes").toArray();
+        for (int i=0;i<legacy_nodes.size();++i) {
+            auto node=legacy_nodes[i].toObject(); auto parameters=node.value("internal-data").toObject();
+            if (parameters.value("model-name")=="SpectrogramView") { parameters["model-name"]="SurfaceView"; node["internal-data"]=parameters; legacy_nodes[i]=node; }
+        }
+        legacy["nodes"]=legacy_nodes;
+        const auto legacy_program=pipeline::GraphProgram::compile(legacy,error);
+        require(legacy_program && legacy_program->contains("SpectrogramView") &&
+            legacy_program->document()==document,"Legacy visualization node was not migrated");
         SpectrumFrame frame; frame.sample_rate=48000; frame.left.resize(2048); frame.right.resize(2048); frame.left[64]=1; frame.right[128]=2;
         auto output=program->evaluate(frame);
-        require(output.fft[64]==1 && output.fft[128]==0 && output.mel.size()==50 && output.history.size()==50 && output.surface,"Default routing incorrect");
+        require(output.fft[64]==1 && output.fft[128]==0 && output.mel.size()==50 && output.history.size()==50 && output.spectrogram,"Default routing incorrect");
         require(output.peak_hz==1500,"Merged peak ignores right channel");
+        pipeline::GraphEvaluationContext context;
+        for (int iteration=0;iteration<16;++iteration) {
+            bool matched=false;
+            // Reuse storage across joined workers, without owning thread-local data.
+            std::thread worker([&] {
+                const auto evaluated=program->evaluate(frame,context);
+                matched=evaluated.history==output.history && evaluated.fft==output.fft;
+            });
+            worker.join();
+            require(matched,"Joined worker changed graph output");
+        }
+        auto smaller=frame;smaller.sample_rate=44100;smaller.left.resize(1024);smaller.right.resize(1024);
+        require(program->evaluate(smaller,context).mel==program->evaluate(smaller).mel,
+                "Reused context retained an obsolete Mel filter");
+        require(program->evaluate(frame,context).mel==output.mel,"Context did not restore the original Mel shape");
         auto microphone=pipeline::GraphProgram::defaults(0,SpectrumMerge::Energy,1);
         require(pipeline::GraphProgram::compile(microphone,error)->capture_source()==1,"Microphone source was not compiled");
         auto bad_source=pipeline::GraphProgram::defaults(0,SpectrumMerge::Energy,2);
@@ -35,6 +60,8 @@ int main(int argc,char **argv) {
         edges.append(edge(2,10)); document["nodes"]=nodes; document["connections"]=edges;
         auto muted=pipeline::GraphProgram::compile(document,error); require(bool(muted),qPrintable(error));
         auto result=muted->evaluate(frame); require(std::all_of(result.history.begin(),result.history.end(),[](float v){return v==0;}),"Gain node does not affect processing");
+        require(muted->evaluate(frame,context).history==result.history,"Graph change retained stale scratch values");
+        require(program->evaluate(frame,context).history==output.history,"Reused context did not restore the previous graph");
         pipeline::AudioPipeline engine; require(engine.apply_graph(document,error),"Valid graph rejected");
         auto active=engine.graph(); auto revision=engine.graph_revision();
         auto moved=active; nodes=moved["nodes"].toArray(); auto node=nodes[0].toObject(); node["position"]=QJsonObject{{"x",123},{"y",456}};nodes[0]=node;moved["nodes"]=nodes;
@@ -51,10 +78,10 @@ int main(int argc,char **argv) {
         QTemporaryDir temp; QFile file(temp.filePath("graph.json"));require(file.open(QIODevice::WriteOnly),"Cannot save graph");file.write(QJsonDocument(active).toJson());file.close();
         require(file.open(QIODevice::ReadOnly),"Cannot reload graph");auto loaded=QJsonDocument::fromJson(file.readAll()).object();file.close();
         require(loaded==active && pipeline::GraphProgram::compile(loaded,error)->evaluate(frame).history==result.history,"Graph roundtrip changed output");
-        QProcess console; console.start(QCoreApplication::applicationDirPath()+"/pipeline_cli.exe",{"--config",temp.filePath("graph.json"),"--synthetic","--duration","300"});
+        QProcess console; console.start(QCoreApplication::applicationDirPath()+"/pipeline_cli",{"--config",temp.filePath("graph.json"),"--synthetic","--duration","300"});
         require(console.waitForFinished(5000) && console.exitCode()==0,"Saved graph failed in console");
         QProcess cadence;auto env=QProcessEnvironment::systemEnvironment();env.insert("QT_FORCE_STDERR_LOGGING","1");cadence.setProcessEnvironment(env);
-        cadence.start(QCoreApplication::applicationDirPath()+"/pipeline_cli.exe",{"--synthetic","--duration","1200"});
+        cadence.start(QCoreApplication::applicationDirPath()+"/pipeline_cli",{"--synthetic","--duration","1200"});
         require(cadence.waitForFinished(7000) && cadence.exitCode()==0,"Synthetic cadence console failed");
         const auto report=QString::fromUtf8(cadence.readAllStandardError()+cadence.readAllStandardOutput());
         const auto count=QRegularExpression("Processed (\\d+) spectrum frames").match(report);

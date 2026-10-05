@@ -7,16 +7,19 @@
 #include "visualization/abstract/mixins.h"
 
 class FPSChartView : public AbstractChartView, public FPSMixin {
+    Q_OBJECT
 public:
     explicit FPSChartView();
+    qreal display_fps() const { return _fps; }
+signals:
+    void fps_changed(qreal fps);
 
 protected:
-    inline static auto _label = QStringLiteral("FPS: %1");
-    QLabel *_fps_label;
+    qreal _fps=0;
 
-    void _setFPS(qreal fps) const;
+    void _setFPS(qreal fps);
 
-    void _on_chart_updated() override;
+    void paintEvent(QPaintEvent *event) override;
 };
 
 #endif //QT_VISUALIZATION_FPS_H

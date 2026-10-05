@@ -1,3 +1,4 @@
+#include "visualization/ui_text.h"
 #include "core_app/settings_widget.h"
 
 #include <QVBoxLayout>
@@ -26,7 +27,7 @@ SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent)
     auto *general = findChild<QScrollArea *>();
     outer->removeWidget(general);
     outer->addWidget(sections);
-    sections->addTab(general,"General");
+    ui::tab(sections,general,"General");
     auto add_section = [sections](QWidget *group, const QString &title) {
         auto *scroll = new QScrollArea(sections);
         scroll->setWidgetResizable(true);
@@ -36,13 +37,19 @@ SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent)
         layout->addWidget(group);
         layout->addStretch();
         scroll->setWidget(page);
-        sections->addTab(scroll,title);
+        ui::tab(sections,scroll,title.toUtf8().constData());
     };
-    auto *controls = findChild<QGroupBox *>("cameraControls");
-    _main_layout->removeWidget(controls);
-    _main_layout->removeWidget(_wled_group);
-    add_section(controls,"Controls");
-    add_section(_wled_group,"WLED / Network");
+    auto *processing=new QGroupBox(this); auto *processing_layout=new QVBoxLayout(processing);
+    auto *automatic=ui::make<QCheckBox>("Auto apply pipeline",processing); automatic->setObjectName("pipelineAutoApply");
+    automatic->setChecked(_context.file_configs.ui.pipeline_auto_apply); processing_layout->addWidget(automatic);
+    connect(automatic,&QCheckBox::toggled,this,[this](bool checked) {
+        _context.file_configs.ui.pipeline_auto_apply=checked; emit presentation_preferences_changed(); _on_config_change();
+    });
+    add_section(processing,"Audio processing");
+    _main_layout->removeWidget(_wled_group); add_section(_wled_group,"WLED");
+    _main_layout->removeWidget(_network_group); add_section(_network_group,"Network");
+    auto *controls=findChild<QGroupBox *>("cameraControls");
+    _main_layout->removeWidget(controls); add_section(controls,"Controls");
     for (int i = _main_layout->count()-1; i >= 0; --i)
         if (_main_layout->itemAt(i)->spacerItem()) delete _main_layout->takeAt(i);
     _main_layout->addStretch();
@@ -59,102 +66,83 @@ void SettingsWidget::_setup_ui() {
     _main_layout = new QVBoxLayout(content);
     scroll->setWidget(content);
     outer_layout->addWidget(scroll);
-    // Группа управления ядром
-    _core_group = new QGroupBox("Core Settings", this);
-    _core_layout = new QVBoxLayout(_core_group);
-
-    _enable_loopback_cb = new QCheckBox("Enable audio capture", this);
-    _enable_loopback_cb->setObjectName("enableLoopback");
-    _enable_analyzer_cb = new QCheckBox("Enable Analyzer", this);
-    _enable_analyzer_cb->setObjectName("enableAnalyzer");
-
-    _core_layout->addWidget(_enable_loopback_cb);
-    _core_layout->addWidget(_enable_analyzer_cb);
-    auto *source = new QComboBox(_core_group); source->setObjectName("captureSource");
-    source->addItems({"System output", "System microphone"});
-    source->setCurrentIndex(_context.file_configs.core.capture_source);
-    _core_layout->addWidget(new QLabel("Audio source", _core_group)); _core_layout->addWidget(source);
-    connect(source, &QComboBox::currentIndexChanged, this, [this](int index) {
-        _context.file_configs.core.capture_source = index;
-        emit processing_settings_changed(); _on_config_change();
+    auto *language = new QComboBox(this);
+    language->setObjectName("interfaceLanguage");
+    language->addItem(QString::fromUtf8("Русский"), "ru"); language->addItem("English", "en");
+    language->setCurrentIndex(_context.file_configs.ui.language=="en" ? 1 : 0);
+    _main_layout->addWidget(ui::make<QLabel>("Interface language", this));
+    _main_layout->addWidget(language);
+    connect(language,&QComboBox::currentIndexChanged,this,[this,language](int index) {
+        const auto code=language->itemData(index).toString();
+        if (ui::Language::instance().set(code)) { _context.file_configs.ui.language=code; _on_config_change(); }
     });
-    auto *channel = new QComboBox(_core_group);
-    channel->setObjectName("spectrumChannel");
-    channel->addItems({"Left", "Right", "Merged"});
-    channel->setCurrentIndex(_context.file_configs.core.spectrum_channel);
-    _core_layout->addWidget(new QLabel("FFT graph channel", _core_group));
-    _core_layout->addWidget(channel);
-    auto *merge = new QComboBox(_core_group);
-    merge->setObjectName("spectrumMerge");
-    merge->addItems({"Mean", "Maximum", "Energy (RMS)"});
-    merge->setCurrentIndex(static_cast<int>(_context.file_configs.core.spectrum_merge));
-    _core_layout->addWidget(new QLabel("Merge spectra before Mel / spectrogram", _core_group));
-    _core_layout->addWidget(merge);
-    auto *description = new QLabel("Both channels are analysed separately. Merging happens after FFT, so opposite phases do not cancel.", _core_group);
-    description->setWordWrap(true); _core_layout->addWidget(description);
-    connect(channel, &QComboBox::currentIndexChanged, this, [this](int index) {
-        _context.file_configs.core.spectrum_channel = index;
-        emit processing_settings_changed(); _on_config_change();
+    auto *theme=new QComboBox(this); theme->setObjectName("interfaceTheme");
+    ui::items(theme,{"System theme","Dark","Light"});
+    const QStringList themes{"system","dark","light"};
+    theme->setCurrentIndex(qMax(0,themes.indexOf(_context.file_configs.ui.theme)));
+    _main_layout->addWidget(ui::make<QLabel>("Interface theme",this));
+    _main_layout->addWidget(theme);
+    connect(theme,&QComboBox::currentIndexChanged,this,[this,themes](int index) {
+        if (ui::Theme::instance().set(themes[index])) { _context.file_configs.ui.theme=themes[index]; _on_config_change(); }
     });
-    connect(merge, &QComboBox::currentIndexChanged, this, [this](int index) {
-        _context.file_configs.core.spectrum_merge = static_cast<SpectrumMerge>(index);
-        emit processing_settings_changed(); _on_config_change();
+    auto *fps=ui::make<QCheckBox>("Show FPS",this); fps->setObjectName("showFPS");
+    fps->setChecked(_context.file_configs.ui.show_fps); _main_layout->addWidget(fps);
+    connect(fps,&QCheckBox::toggled,this,[this](bool checked) {
+        _context.file_configs.ui.show_fps=checked; emit presentation_preferences_changed(); _on_config_change();
     });
-
-
-    _main_layout->addWidget(_core_group);
-    _main_layout->addStretch();
-
     // Группа управления отображением
-    _ui_group = new QGroupBox("UI Settings", this);
+    _ui_group = ui::make<QGroupBox>("UI Settings", this);
     _ui_layout = new QVBoxLayout(_ui_group);
 
-    _move_to_primary_screen_on_start_cb = new QCheckBox("Move window to primary screen on startup", this);
-    _enable_autosave_cb = new QCheckBox("Autosave enabled", this);
+    _move_to_primary_screen_on_start_cb = ui::make<QCheckBox>("Move window to primary screen on startup", this);
+    _enable_autosave_cb = ui::make<QCheckBox>("Autosave enabled", this);
     _enable_autosave_cb->setObjectName("enableAutosave");
-    _show_raw_samples_cb = new QCheckBox("Show Raw Samples", this);
+    _show_raw_samples_cb = ui::make<QCheckBox>("Show Raw Samples", this);
     _show_raw_samples_cb->setObjectName("showRawSamples");
-    _show_samples_cb = new QCheckBox("Show Samples", this);
-    _show_samples_cb->setObjectName("showSamples");
-    _show_samples_after_window_function_cb = new QCheckBox("Show Samples after window function", this);
-    _show_samples_after_window_function_cb->setObjectName("showWindowedSamples");
-    _show_window_function_cb = new QCheckBox("Show Windows Function", this);
+    _show_window_signal_cb = ui::make<QCheckBox>("Show window signal", this);
+    _show_window_signal_cb->setObjectName("showWindowSignal");
+    _show_windowed_signal_cb = ui::make<QCheckBox>("Show windowed signal", this);
+    _show_windowed_signal_cb->setObjectName("showWindowedSignal");
+    _show_window_function_cb = ui::make<QCheckBox>("Show window function", this);
     _show_window_function_cb->setObjectName("showWindowFunction");
-    _show_amplitudes_cb = new QCheckBox("Show Amplitudes (FFT)", this);
+    _show_amplitudes_cb = ui::make<QCheckBox>("Show Amplitudes (FFT)", this);
     _show_amplitudes_cb->setObjectName("showFFT");
-    _show_test_amplitudes_cb = new QCheckBox("Show Test Amplitudes (Mel)", this);
+    _show_test_amplitudes_cb = ui::make<QCheckBox>("Show Test Amplitudes (Mel)", this);
     _show_test_amplitudes_cb->setObjectName("showMel");
-    _show_surface_cb = new QCheckBox("Show 3D Surface", this);
-    _show_surface_cb->setObjectName("showSurface");
+    _show_spectrogram_cb = ui::make<QCheckBox>("Show spectrogram", this);
+    _show_spectrogram_cb->setObjectName("showSpectrogram");
 
     _ui_layout->addWidget(_move_to_primary_screen_on_start_cb);
     _ui_layout->addWidget(_enable_autosave_cb);
     _ui_layout->addWidget(_show_raw_samples_cb);
-    _ui_layout->addWidget(_show_samples_cb);
-    _ui_layout->addWidget(_show_samples_after_window_function_cb);
+    _ui_layout->addWidget(_show_window_signal_cb);
+    _ui_layout->addWidget(_show_windowed_signal_cb);
     _ui_layout->addWidget(_show_window_function_cb);
     _ui_layout->addWidget(_show_amplitudes_cb);
     _ui_layout->addWidget(_show_test_amplitudes_cb);
-    _ui_layout->addWidget(_show_surface_cb);
+    _ui_layout->addWidget(_show_spectrogram_cb);
     _ui_layout->addStretch();
 
     _main_layout->addWidget(_ui_group);
     _main_layout->addStretch();
 
     // Группа WLED AR server
-    _wled_group = new QGroupBox("WLED AR server", this);
+    _wled_group = ui::make<QGroupBox>("WLED AR server", this);
     _wled_layout = new QVBoxLayout(_wled_group);
 
-    _enable_wled_server_cb = new QCheckBox("Enable WLED AR server", this);
+    _enable_wled_server_cb = ui::make<QCheckBox>("Enable WLED AR server", this);
     _enable_wled_server_cb->setObjectName("enableWLED");
     _wled_layout->addWidget(_enable_wled_server_cb);
 
     // Выбор сетевого адаптера
-    auto* adapter_label = new QLabel("Network Adapter:", this);
-    _wled_layout->addWidget(adapter_label);
+    _network_group = ui::make<QGroupBox>("Network", this);
+    _network_layout = new QVBoxLayout(_network_group);
+    _main_layout->addWidget(_network_group);
+    auto* adapter_label = ui::make<QLabel>("Network Adapter:", this);
+    _network_layout->addWidget(adapter_label);
 
     _network_adapter_combo = new QComboBox(this);
-    _wled_layout->addWidget(_network_adapter_combo);
+    _network_layout->addWidget(_network_adapter_combo);
 
     // Определение интерфейса по умолчанию через тестовое UDP соединение
     const auto defaultInterfaceAddress = get_default_interfaces();
@@ -192,7 +180,7 @@ void SettingsWidget::_setup_ui() {
 
     // Порт сервера
     auto* port_layout = new QHBoxLayout();
-    auto* port_label = new QLabel("Server Port:", this);
+    auto* port_label = ui::make<QLabel>("Server Port:", this);
     _port_spinbox = new QSpinBox(this);
     _port_spinbox->setObjectName("wledPort");
     _port_spinbox->setMinimum(1);
@@ -201,7 +189,7 @@ void SettingsWidget::_setup_ui() {
     port_layout->addWidget(port_label);
     port_layout->addWidget(_port_spinbox);
     port_layout->addStretch();
-    _wled_layout->addLayout(port_layout);
+    _network_layout->addLayout(port_layout);
 
     _wled_layout->addStretch();
 
@@ -210,19 +198,17 @@ void SettingsWidget::_setup_ui() {
 }
 
 void SettingsWidget::_load_current_config() const {
-    _enable_loopback_cb->setChecked(_context.file_configs.core.run_loopback);
-    _enable_analyzer_cb->setChecked(_context.file_configs.core.run_analyser);
 
     _enable_autosave_cb->setChecked(_context.file_configs.ui.autosave_enabled);
     _move_to_primary_screen_on_start_cb->setChecked(_context.file_configs.ui.move_to_primary_screen_on_start);
 
     _show_raw_samples_cb->setChecked(_context.file_configs.ui.show_raw_samples);
-    _show_samples_cb->setChecked(_context.file_configs.ui.show_samples);
-    _show_samples_after_window_function_cb->setChecked(_context.file_configs.ui.show_samples_after_window_function);
+    _show_window_signal_cb->setChecked(_context.file_configs.ui.show_window_signal);
+    _show_windowed_signal_cb->setChecked(_context.file_configs.ui.show_windowed_signal);
     _show_window_function_cb->setChecked(_context.file_configs.ui.show_window_function);
     _show_amplitudes_cb->setChecked(_context.file_configs.ui.show_amplitudes);
     _show_test_amplitudes_cb->setChecked(_context.file_configs.ui.show_test_amplitudes);
-    _show_surface_cb->setChecked(_context.file_configs.ui.show_surface);
+    _show_spectrogram_cb->setChecked(_context.file_configs.ui.show_spectrogram);
 
     // Загрузка настроек WLED AR server
     _enable_wled_server_cb->setChecked(_context.file_configs.wled_ar_server.enabled);
@@ -231,27 +217,6 @@ void SettingsWidget::_load_current_config() const {
 
 
 void SettingsWidget::_connect_signals() {
-    // Сигналы управления ядром
-    connect(_enable_loopback_cb, &QCheckBox::toggled, this, [this](const bool checked) {
-        if (checked) {
-            emit start_loopback_requested();
-        } else {
-            emit stop_loopback_requested();
-        }
-        _context.file_configs.core.run_loopback = checked;
-        _on_config_change();
-    });
-
-    connect(_enable_analyzer_cb, &QCheckBox::toggled, this, [this](const bool checked) {
-        if (checked) {
-            emit start_analyzer_requested();
-        } else {
-            emit stop_analyzer_requested();
-        }
-        _context.file_configs.core.run_analyser = checked;
-        _on_config_change();
-    });
-
     // Сигналы управления отображением
 
     connect(_move_to_primary_screen_on_start_cb, &QCheckBox::toggled, this, [this](const bool checked) {
@@ -270,14 +235,14 @@ void SettingsWidget::_connect_signals() {
         emit on_rebuild_charts();
     });
 
-    connect(_show_samples_cb, &QCheckBox::toggled, this, [this](const bool checked) {
-        _context.file_configs.ui.show_samples = checked;
+    connect(_show_window_signal_cb, &QCheckBox::toggled, this, [this](const bool checked) {
+        _context.file_configs.ui.show_window_signal = checked;
         _on_config_change();
         emit on_rebuild_charts();
     });
 
-    connect(_show_samples_after_window_function_cb, &QCheckBox::toggled, this, [this](const bool checked) {
-        _context.file_configs.ui.show_samples_after_window_function = checked;
+    connect(_show_windowed_signal_cb, &QCheckBox::toggled, this, [this](const bool checked) {
+        _context.file_configs.ui.show_windowed_signal = checked;
         _on_config_change();
         emit on_rebuild_charts();
     });
@@ -300,8 +265,8 @@ void SettingsWidget::_connect_signals() {
         emit on_rebuild_charts();
     });
 
-    connect(_show_surface_cb, &QCheckBox::toggled, this, [this](const bool checked) {
-        _context.file_configs.ui.show_surface = checked;
+    connect(_show_spectrogram_cb, &QCheckBox::toggled, this, [this](const bool checked) {
+        _context.file_configs.ui.show_spectrogram = checked;
         _on_config_change();
         emit on_rebuild_charts();
     });
@@ -338,10 +303,6 @@ void SettingsWidget::_on_config_change(const bool force_save) {
     }
 }
 
-void SettingsWidget::refresh_processing_settings() {
-    if (auto *source = findChild<QComboBox *>("captureSource")) { QSignalBlocker block(source); source->setCurrentIndex(_context.file_configs.core.capture_source); }
-    auto *channel=findChild<QComboBox *>("spectrumChannel");
-    auto *merge=findChild<QComboBox *>("spectrumMerge");
-    if (channel) { QSignalBlocker block(channel); channel->setCurrentIndex(_context.file_configs.core.spectrum_channel); }
-    if (merge) { QSignalBlocker block(merge); merge->setCurrentIndex(static_cast<int>(_context.file_configs.core.spectrum_merge)); }
+void SettingsWidget::select_section(int index) {
+    if (auto *tabs=findChild<QTabWidget *>("settingsSections")) tabs->setCurrentIndex(index);
 }

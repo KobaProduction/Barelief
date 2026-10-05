@@ -1,3 +1,4 @@
+#include "visualization/ui_text.h"
 #include "core_app/settings_widget.h"
 #include <QDialog>
 #include <QApplication>
@@ -13,13 +14,13 @@ public:
     QJsonObject binding;
     explicit CaptureKey(const QString &action, QWidget *parent) : QDialog(parent) {
         setObjectName("captureCameraKey");
-        setWindowTitle("Assign camera key");
+        ui::bind(this,"windowTitle","Assign camera key");
         setMinimumWidth(360);
         auto *layout = new QVBoxLayout(this);
-        auto *label = new QLabel(QString("Press a key for %1\nEscape cancels. Any keyboard layout works.").arg(action),this);
+        auto *label = new QLabel(ui::text("Press a key for %1\nEscape cancels. Any keyboard layout works.").arg(action),this);
         label->setWordWrap(true);
         layout->addWidget(label);
-        auto *cancel = new QPushButton("Cancel",this);
+        auto *cancel = ui::make<QPushButton>("Cancel", this);
         layout->addWidget(cancel);
         connect(cancel,&QPushButton::clicked,this,&QDialog::reject);
         qApp->installEventFilter(this);
@@ -42,19 +43,19 @@ protected:
 }
 
 void SettingsWidget::_setup_camera_controls() {
-    auto *group = new QGroupBox("Camera controls",this);
+    auto *group = ui::make<QGroupBox>("Camera controls", this);
     group->setObjectName("cameraControls");
     group->setStyleSheet("QGroupBox#cameraControls { border: 1px solid palette(mid); border-radius: 8px; margin-top: 12px; padding: 14px 10px 10px; } QGroupBox#cameraControls::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; } QGroupBox#cameraControls QPushButton { padding: 6px 12px; min-width: 76px; }");
     auto *layout = new QVBoxLayout(group);
-    auto *help = new QLabel("Click a key to reassign it. Works in any keyboard layout.\nThe second column adds an alternative key for the same action.",group);
+    auto *help = ui::make<QLabel>("Click a key to reassign it. Works in any keyboard layout.\nThe second column adds an alternative key for the same action.", group);
     help->setWordWrap(true);
     layout->addWidget(help);
     auto *grid = new QGridLayout;
     grid->setHorizontalSpacing(16);
     grid->setVerticalSpacing(6);
-    grid->addWidget(new QLabel("Action",group),0,0);
-    grid->addWidget(new QLabel("Primary",group),0,1);
-    grid->addWidget(new QLabel("Alternative",group),0,2);
+    grid->addWidget(ui::make<QLabel>("Action", group),0,0);
+    grid->addWidget(ui::make<QLabel>("Primary", group),0,1);
+    grid->addWidget(ui::make<QLabel>("Alternative", group),0,2);
     const std::pair<const char *, const char *> actions[] = {{"forward","Forward"},{"backward","Backward"},
         {"left","Strafe left"},{"right","Strafe right"},{"up","Move up"},{"down","Move down"},
         {"fast","Move faster"},{"reset","Reset camera"}};
@@ -66,7 +67,7 @@ void SettingsWidget::_setup_camera_controls() {
             const auto slot = button->property("cameraSlot").toInt();
             const auto keys = _context.file_configs.ui.camera_controls[action].toArray();
             const auto key = slot < keys.size() ? keys[slot].toObject() : QJsonObject{};
-            button->setText(key.isEmpty() ? "Unassigned" : CameraControls::label(key["scan"].toInt(),key["key"].toInt()));
+            button->setText(key.isEmpty() ? ui::text("Unassigned") : CameraControls::label(key["scan"].toInt(),key["key"].toInt()));
         }
     };
     auto *status = new QLabel(group);
@@ -74,7 +75,8 @@ void SettingsWidget::_setup_camera_controls() {
     status->setObjectName("cameraBindingStatus");
     int row = 1;
     for (auto [action,title] : actions) {
-        grid->addWidget(new QLabel(title,group),row,0);
+        auto *action_label=new QLabel(group); ui::bind(action_label,"text",QString::fromLatin1(title));
+        grid->addWidget(action_label,row,0);
         for (int slot = 0; slot < 2; ++slot) {
             auto *button = new QPushButton(group);
             button->setObjectName(QString("bind_%1_%2").arg(action).arg(slot));
@@ -83,7 +85,7 @@ void SettingsWidget::_setup_camera_controls() {
             if (slot == 1) {
                 auto *alternate = new QHBoxLayout;
                 alternate->addWidget(button);
-                auto *clear = new QPushButton("Clear",group);
+                auto *clear = ui::make<QPushButton>("Clear", group);
                 clear->setObjectName(QString("clear_%1").arg(action));
                 alternate->addWidget(clear);
                 grid->addLayout(alternate,row,slot+1);
@@ -98,7 +100,7 @@ void SettingsWidget::_setup_camera_controls() {
                 });
             } else grid->addWidget(button,row,slot+1);
             connect(button,&QPushButton::clicked,this,[this,action,title,slot,refresh,status] {
-                CaptureKey capture(title,this);
+                CaptureKey capture(ui::text(title),this);
                 if (capture.exec() != QDialog::Accepted) return;
                 auto &controls = _context.file_configs.ui.camera_controls;
                 for (auto it = controls.constBegin(); it != controls.constEnd(); ++it) {
@@ -106,7 +108,7 @@ void SettingsWidget::_setup_camera_controls() {
                     for (int i = 0; i < keys.size(); ++i) {
                         if (it.key() == action && i == slot) continue;
                         if (CameraControls::same(keys[i].toObject(),capture.binding)) {
-                            status->setText("This key is already assigned. Choose another key.");
+                            status->setText(ui::text("This key is already assigned. Choose another key."));
                             return;
                         }
                     }
@@ -115,7 +117,7 @@ void SettingsWidget::_setup_camera_controls() {
                 if (slot < keys.size()) keys[slot] = capture.binding;
                 else keys.append(capture.binding);
                 controls[action] = keys;
-                status->setText("Binding applied. Autosave or Ctrl+S saves it.");
+                status->setText(ui::text("Binding applied. Autosave or Ctrl+S saves it."));
                 refresh();
                 emit camera_controls_changed();
                 _on_config_change();
@@ -127,9 +129,9 @@ void SettingsWidget::_setup_camera_controls() {
     layout->addLayout(grid);
     layout->addWidget(status);
     auto *buttons = new QHBoxLayout;
-    auto *defaults = new QPushButton("Restore default keys",group);
+    auto *defaults = ui::make<QPushButton>("Restore default keys", group);
     defaults->setObjectName("restoreCameraKeys");
-    auto *reset = new QPushButton("Reset camera position",group);
+    auto *reset = ui::make<QPushButton>("Reset camera position", group);
     reset->setObjectName("resetCameraFromSettings");
     buttons->addWidget(defaults);
     buttons->addWidget(reset);
@@ -142,5 +144,6 @@ void SettingsWidget::_setup_camera_controls() {
     });
     connect(reset,&QPushButton::clicked,this,&SettingsWidget::reset_camera_requested);
     _main_layout->insertWidget(2,group);
+    connect(&ui::Language::instance(),&ui::Language::changed,group,refresh);
     refresh();
 }

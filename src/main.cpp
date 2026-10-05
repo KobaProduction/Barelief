@@ -1,5 +1,5 @@
 #include "app.h"
-#include "visualization/surfaces/surfacegraph.h"
+#include "visualization/spectrograms/spectrogram_graph.h"
 
 #include <QtWidgets/qapplication.h>
 #include <QtGui/qscreen.h>

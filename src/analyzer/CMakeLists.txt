@@ -4,7 +4,6 @@ set(ANALYZER_HEADERS
         include/analyzer/analyze/analyzer.h
         include/analyzer/analyze/audio_window.h
         include/analyzer/analyze/spectrogram.h
-        include/analyzer/loopback/windows_loopback.h
 )
 
 set(ANALYZER_SOURCES
@@ -12,7 +11,6 @@ set(ANALYZER_SOURCES
         src/analyze/audio_window.cpp
         src/analyze/fft.cpp
         src/analyze/spectrogram.cpp
-        src/loopback/windows_loopback.cpp
 )
 
 target_sources(analyzer PRIVATE

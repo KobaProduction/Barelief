@@ -16,12 +16,9 @@ Amplitudes::Amplitudes(size_t size) {
 }
 
 void fft_to_mel(const std::vector<float> &spectrum, size_t rate, std::vector<float> &output, size_t bands) {
-    thread_local dsp_core::MelFilterBank filter;
-    thread_local size_t cached_bins = SIZE_MAX, cached_rate = SIZE_MAX, cached_bands = SIZE_MAX;
-    if (cached_bins != spectrum.size() || cached_rate != rate || cached_bands != bands) {
-        filter.prepare(spectrum.size(), rate, bands);
-        cached_bins = spectrum.size(); cached_rate = rate; cached_bands = bands;
-    }
+    // Compatibility helper. Hot graph evaluation owns and reuses its filter bank.
+    dsp_core::MelFilterBank filter;
+    filter.prepare(spectrum.size(), rate, bands);
     output.resize(bands);
     filter.process(spectrum, output);
 }
@@ -39,10 +36,10 @@ uint64_t Analyzer::_task() {
         size_t rate = 0;
         update_handler_t handler;
         std::function<void(const SpectrumFrame &)> frame_handler;
-        on_samples_after_window_function_handler_t windowed_handler;
+        on_windowed_signal_handler_t windowed_handler;
         {
             std::unique_lock lock(_mutex);
-            _samples_ready.wait(lock, [this] { return _pending_size || !_running.load(); });
+            _window_signal_ready.wait(lock, [this] { return _pending_size || !_running.load(); });
             if (!_running.load()) break;
             core::perf::Scope trace(core::perf::Stage::WindowSnapshot);
             if (_pending_size) {
@@ -61,7 +58,7 @@ uint64_t Analyzer::_task() {
 
                 handler = _handler;
                 frame_handler = _frame_handler;
-                windowed_handler = _samples_after_window_function_handler;
+                windowed_handler = _windowed_signal_handler;
             }
         }
         if (!left.empty()) {
@@ -73,7 +70,7 @@ uint64_t Analyzer::_task() {
             for (size_t i=0;i<left.size();++i) frame.audio_peak=std::max({frame.audio_peak,std::abs(left[i]),std::abs(right[i])});
             frame.sample_rate = rate;
             frame.frequency_step = float(rate) / float(_samples_size);
-            frame.samples = left;
+            frame.window_signal = left;
             frame.window = hann;
 
             frame.timestamp_ns = frame.input_timestamp_ns;
@@ -89,7 +86,7 @@ uint64_t Analyzer::_task() {
                 core::perf::Scope trace(core::perf::Stage::StereoMel);
                 if (!processor.process_mel(frame.left, frame.right, frame.mel_left, frame.mel_right)) return 1;
             }
-            frame.post_window = left;
+            frame.windowed_signal = left;
             {
                 std::lock_guard lock(_mutex);
                 amplitudes.left = frame.left; amplitudes.right = frame.right;
@@ -121,7 +118,7 @@ void Analyzer::stop() {
         std::lock_guard lock(_mutex);
         _running = false;
     }
-    _samples_ready.notify_all();
+    _window_signal_ready.notify_all();
     AbstractTask::stop();
 }
 void Analyzer::set_frame_handler(std::function<void(const SpectrumFrame &)> handler) {
@@ -179,7 +176,7 @@ void Analyzer::add_samples(const std::vector<float> &left, const std::vector<flo
             _hop_progress = 0; _hop_size = 0;
         }
     }
-    if (_pending_size) _samples_ready.notify_one();
+    if (_pending_size) _window_signal_ready.notify_one();
 }
 
 void Analyzer::set_update_handler(update_handler_t handler) {
@@ -193,9 +190,9 @@ void Analyzer::set_update_window_function_handler(on_update_window_function_hand
     if (handler) handler(current);
 }
 
-void Analyzer::set_samples_after_window_function_handler(on_samples_after_window_function_handler_t handler) {
+void Analyzer::set_windowed_signal_handler(on_windowed_signal_handler_t handler) {
     std::lock_guard lock(_mutex);
-    _samples_after_window_function_handler = std::move(handler);
+    _windowed_signal_handler = std::move(handler);
 }
 
 void Analyzer::generate_bark_scale(float *scale_ptr, size_t scale_size, float frequency_step) {
@@ -264,8 +261,8 @@ void Analyzer::use_window(std::vector<float> &samples_) {
     for (size_t i = 0; i < samples_.size(); ++i) {
         samples_[i] = window[i] * samples_[i];
     }
-    if (_samples_after_window_function_handler) {
-        _samples_after_window_function_handler(samples_);
+    if (_windowed_signal_handler) {
+        _windowed_signal_handler(samples_);
     }
 }
 

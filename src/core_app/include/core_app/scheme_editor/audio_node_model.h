@@ -7,7 +7,7 @@ class AudioNodeModel final : public QtNodes::NodeDelegateModel {
 public:
     explicit AudioNodeModel(QString kind);
     QString name() const override { return _kind; }
-    QString caption() const override { return _kind; }
+    QString caption() const override;
     unsigned int nPorts(QtNodes::PortType type) const override;
     QtNodes::NodeDataType dataType(QtNodes::PortType type, QtNodes::PortIndex) const override;
     std::shared_ptr<QtNodes::NodeData> outData(QtNodes::PortIndex) override { return {}; }

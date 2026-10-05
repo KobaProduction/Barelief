@@ -138,17 +138,19 @@ void audio(QDataStream &s, const AudioFrame &v) {
 }
 void read_audio(QDataStream &s, AudioFrame &v) {
     quint64 rate = 0;
-    s >> v.sequence >> v.timestamp_ns >> rate >> v.generation >> v.discontinuity;
+    quint64 sequence=0,generation=0; qint64 timestamp=0;
+    s >> sequence >> timestamp >> rate >> generation >> v.discontinuity;
+    v.sequence=sequence; v.timestamp_ns=timestamp; v.generation=generation;
     v.sample_rate = rate;
     read_floats(s, v.left);
     read_floats(s, v.right);
 }
 void view(QDataStream &s, const ViewFrame &v) {
     const auto &f = v.spectrum;
-    s << v.epoch << quint64(v.graph_revision) << quint64(v.ready_timestamp_ns) << v.surface << quint64(f.sequence)
+    s << quint64(v.epoch) << quint64(v.graph_revision) << quint64(v.ready_timestamp_ns) << v.spectrogram << quint64(f.sequence)
       << qint64(f.timestamp_ns) << qint64(f.input_timestamp_ns) << quint64(f.audio_samples) << f.audio_peak
       << quint64(f.sample_rate) << quint64(f.generation) << f.discontinuity << quint64(f.dropped_windows);
-    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.samples, &v.window, &v.post_window})
+    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.window_signal, &v.window, &v.windowed_signal})
         floats(s, *p);
     s << v.frequency_step << quint32(v.previews.size());
     for (auto i = v.previews.begin(); i != v.previews.end(); ++i)
@@ -158,11 +160,15 @@ void view(QDataStream &s, const ViewFrame &v) {
 void read_view(QDataStream &s, ViewFrame &v) {
     auto &f = v.spectrum;
     quint64 samples = 0, rate = 0;
-    s >> v.epoch >> v.graph_revision >> v.ready_timestamp_ns >> v.surface >> f.sequence >> f.timestamp_ns >>
-        f.input_timestamp_ns >> samples >> f.audio_peak >> rate >> f.generation >> f.discontinuity >> f.dropped_windows;
+    quint64 epoch_value=0,graph_revision=0,ready=0,sequence=0,generation=0,dropped=0;
+    qint64 timestamp=0,input_timestamp=0;
+    s >> epoch_value >> graph_revision >> ready >> v.spectrogram >> sequence >> timestamp >>
+        input_timestamp >> samples >> f.audio_peak >> rate >> generation >> f.discontinuity >> dropped;
+    v.epoch=epoch_value;v.graph_revision=graph_revision;v.ready_timestamp_ns=ready;
+    f.sequence=sequence;f.timestamp_ns=timestamp;f.input_timestamp_ns=input_timestamp;f.generation=generation;f.dropped_windows=dropped;
     f.audio_samples = samples;
     f.sample_rate = rate;
-    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.samples, &v.window, &v.post_window})
+    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.window_signal, &v.window, &v.windowed_signal})
         read_floats(s, *p);
     quint32 n = 0;
     s >> v.frequency_step >> n;
@@ -453,6 +459,8 @@ class EngineClient::Impl {
             if (audio_handler)
                 audio_handler(std::move(v));
         });
+        views->start_polling();
+        audios->start_polling();
         engine->set_spectrum_handler([delivery = views](ViewFrame v) { delivery->publish(std::move(v)); });
         engine->set_audio_handler([delivery = audios](AudioFrame v) { delivery->publish(std::move(v)); });
         statuses = std::make_shared<LatestDelivery<bool>>(owner, [this](bool) {
@@ -713,9 +721,9 @@ class EngineServer::Impl {
                         if (!(mask & EngineCommand::Previews))
                             selected.previews.clear();
                         if (!(mask & EngineCommand::Diagnostics)) {
-                            selected.samples.clear();
+                            selected.window_signal.clear();
                             selected.window.clear();
-                            selected.post_window.clear();
+                            selected.windowed_signal.clear();
                         }
                         payloads[key] = encode([&](QDataStream &s) { view(s, selected); });
                     }
@@ -735,6 +743,8 @@ class EngineServer::Impl {
                 if (wire->subscriptions & EngineCommand::Audio)
                     wire->send(AudioId, b);
         });
+        views->start_polling();
+        audios->start_polling();
         engine.set_spectrum_handler([delivery = views](ViewFrame v) { delivery->publish(std::move(v)); });
         engine.set_audio_handler([delivery = audios](AudioFrame v) { delivery->publish(std::move(v)); });
         statuses = std::make_shared<LatestDelivery<bool>>(owner, [this](bool) { broadcast(); });

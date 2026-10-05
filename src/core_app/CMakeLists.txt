@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_AUTOMOC ON)
 
 set(HEADERS
+        include/core_app/graph_panel.h
         include/core_app/types.h
         include/core_app/gui_presenter.h
         include/core_app/core_application.h
@@ -18,6 +19,7 @@ set(HEADERS
 )
 
 set(SOURCES
+        src/graph_panel.cpp
         src/gui_presenter.cpp
         src/core_application.cpp
         src/config_manager.cpp

@@ -4,7 +4,9 @@
 
 void FPSMixin::_calcFPS() {
     if (_fpsCallback) {
-        _fpsCallback(static_cast<qreal>(_numberOfCalls) * 1000.0 / _timer.interval());
+        const auto elapsed=_fps_clock.nsecsElapsed();
+        _fps_clock.restart();
+        _fpsCallback(elapsed>0 ? static_cast<qreal>(_numberOfCalls) * 1e9 / elapsed : 0);
     }
     _numberOfCalls = 0;
 }
@@ -32,5 +34,6 @@ void FPSMixin::setFPSCallback(FPSCallback callback) {
     } else {
         _timer.start();
         _numberOfCalls = 0;
+        _fps_clock.start();
     }
 }

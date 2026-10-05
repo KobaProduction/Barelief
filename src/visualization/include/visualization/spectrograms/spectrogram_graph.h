@@ -1,5 +1,5 @@
-#ifndef SURFACEGRAPH_H
-#define SURFACEGRAPH_H
+#ifndef SPECTROGRAM_GRAPH_H
+#define SPECTROGRAM_GRAPH_H
 
 #include <QtDataVisualization/q3dsurface.h>
 #include <QJsonObject>
@@ -8,20 +8,21 @@
 #include <QSplitter>
 #include "visualization/camera_controls.h"
 
-#include "visualization/surfaces/surfacegraphmodifier.h"
+#include "visualization/spectrograms/spectrogram_graph_modifier.h"
 #include "visualization/abstract/mixins.h"
 
-class SurfaceGraph final : public QWidget {
+class SpectrogramGraph final : public QWidget {
     Q_OBJECT
 
 public:
-    explicit SurfaceGraph(QWidget *parent = nullptr);
+    explicit SpectrogramGraph(QWidget *parent = nullptr);
 
-    ~SurfaceGraph() override;
+    ~SpectrogramGraph() override;
 
     bool initialize(const QSize &minimumGraphSize, const QSize &maximumGraphSize);
 
     void update(const std::vector<std::vector<float> > &spectrogram);
+    qreal display_fps() const;
 
     static constexpr float maximum_camera_zoom = 5000.0f;
     void set_side_panel_ratio(float ratio);
@@ -55,9 +56,9 @@ private:
     QElapsedTimer _camera_clock;
 
     bool _initialization_attempted = false;
-    Q3DSurface *m_surfaceGraph = nullptr;
+    Q3DSurface *m_spectrogram_graph = nullptr;
     QWidget *m_container = nullptr;
-    SurfaceGraphModifier *_modifier = nullptr;
+    SpectrogramGraphModifier *_modifier = nullptr;
 
     bool _need_update = false;
     bool _pause = false;

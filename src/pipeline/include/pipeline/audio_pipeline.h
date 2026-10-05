@@ -1,18 +1,19 @@
 #pragma once
 #include <QObject>
 #include <QThread>
+#include <QTimer>
 #include <QHostAddress>
 #include <memory>
 #include <mutex>
 #include <functional>
+#include <optional>
 #include <QMap>
 #include "pipeline/graph.h"
-#include "core/latest_delivery.h"
 #include "core/runtime_state.h"
 #include "analyzer/analyze/analyzer.h"
 #include "analyzer/analyze/spectrogram.h"
 #include "pipeline/audio_source.h"
-namespace audio::loopback { class WASAPILoopback; }
+
 #include "wled/wled_audio_reactive_server.h"
 
 namespace pipeline {
@@ -31,11 +32,11 @@ struct ViewFrame {
     SpectrumFrame spectrum;
     std::vector<float> fft, mel;
     QMap<int, NodePreview> previews;
-    bool surface = true;
+    bool spectrogram = true;
     uint64_t graph_revision = 0;
     uint64_t ready_timestamp_ns = 0;
     uint64_t epoch = 0;
-    std::vector<float> samples, window, post_window;
+    std::vector<float> window_signal, window, windowed_signal;
     float frequency_step = 0;
     std::shared_ptr<const HistorySnapshot> history;
 };
@@ -81,7 +82,7 @@ class AudioPipeline final {
     uint64_t processed_frames() const;
     Analyzer *analyzer() const;
     Spectrogram *spectrogram() const;
-    audio::loopback::WASAPILoopback *capture() const;
+    AudioSourceDiagnostics capture_diagnostics() const;
     WLEDAudioReactiveServer *wled() const;
 
   private:
@@ -100,8 +101,10 @@ class AudioPipeline final {
     std::unique_ptr<IAudioSource> _capture;
     std::unique_ptr<WLEDAudioReactiveServer> _wled;
     std::shared_ptr<const GraphProgram> _graph;
+    GraphEvaluationContext _graph_context;
     uint64_t _graph_revision = 0;
     std::atomic<bool> _history_pending{false};
+    QTimer *_history_timer = nullptr;
     std::atomic<uint64_t> _history_requested_ns{0};
     std::atomic<uint32_t> _view_subscription{31};
     std::atomic<std::shared_ptr<const HistorySnapshot>> _history_snapshot;
@@ -116,7 +119,10 @@ class AudioPipeline final {
         float hz, magnitude;
         uint64_t generation, graph_revision, enqueued_ns;
     };
-    std::shared_ptr<LatestDelivery<WledFrame>> _wled_delivery;
+    QTimer *_wled_timer = nullptr;
+    std::mutex _wled_mailbox_mutex;
+    std::optional<WledFrame> _pending_wled;
+    std::atomic<bool> _wled_active{false};
     std::atomic<uint64_t> _network_generation{0};
     void publish_wled(const std::vector<float> &mel, float hz, float magnitude, uint64_t graph_revision);
 };

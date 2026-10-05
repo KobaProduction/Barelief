@@ -22,6 +22,7 @@ public:
     explicit CoreApplication(int &argc, char *argv[]);
 
     ~CoreApplication() override;
+    bool notify(QObject *receiver, QEvent *event) override;
 
     [[nodiscard]] int exec() const;
 
@@ -50,11 +51,11 @@ Q_SIGNALS:
     void pipeline_preview(const QMap<int,pipeline::NodePreview> &previews);
     void component_status_changed(QString component, int state, QString error);
 
-    void raw_samples_ready(const std::vector<float> &samples);
+    void raw_signal_ready(const std::vector<float> &samples);
 
-    void samples_ready(const std::vector<float> &samples);
+    void window_signal_ready(const std::vector<float> &samples);
 
-    void samples_after_window_function_ready(const std::vector<float> &samples);
+    void windowed_signal_ready(const std::vector<float> &samples);
 
     void window_function_ready(const std::vector<float> &window);
 

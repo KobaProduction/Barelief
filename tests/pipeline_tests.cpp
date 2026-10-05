@@ -9,8 +9,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <limits>
-#include <windows.h>
-#include <psapi.h>
+#include "process_memory.h"
 static void require(bool value, const char *message) { if (!value) throw std::runtime_error(message); }
 class FailingTask final : public AbstractTask {
     uint64_t _before_run_task() override { return 42; }
@@ -112,8 +111,7 @@ int main(int argc, char **argv) {
         engine.set_spectrum_handler({});
         engine.start_analyzer();
         const auto begin = std::chrono::steady_clock::now();
-        PROCESS_MEMORY_COUNTERS memory_before{}; memory_before.cb=sizeof(memory_before);
-        require(GetProcessMemoryInfo(GetCurrentProcess(),&memory_before,sizeof(memory_before)),"Cannot measure memory");
+        const auto memory_before = resident_memory();
         uint64_t worst_feed_us = 0;
         std::atomic<int64_t> worst_latency_ns{0};
         engine.set_spectrum_handler([&](auto output) {
@@ -121,26 +119,32 @@ int main(int argc, char **argv) {
             const auto latency=now-output.spectrum.input_timestamp_ns;
             auto previous=worst_latency_ns.load(); while(latency>previous && !worst_latency_ns.compare_exchange_weak(previous,latency)) {}
         });
+        #ifdef _WIN32
         HANDLE producer_timer=CreateWaitableTimerExW(nullptr,nullptr,0x00000002,TIMER_ALL_ACCESS);
         require(producer_timer,"High resolution producer timer unavailable");
+#endif
         pipeline::AudioFrame paced; paced.sample_rate=48000; paced.left.resize(240);paced.right.resize(240);
         for (int i = 0; i < 200; ++i) {
             for(size_t j=0;j<240;++j) paced.left[j]=paced.right[j]=std::sin(2*3.141592653589793*750*(i*240+j)/48000);
             const auto before = std::chrono::steady_clock::now(); engine.feed(paced);
             worst_feed_us = std::max(worst_feed_us, static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-before).count()));
             const auto deadline=begin+std::chrono::milliseconds((i+1)*5);
+            #ifdef _WIN32
             const auto remaining=std::chrono::duration_cast<std::chrono::nanoseconds>(deadline-std::chrono::steady_clock::now()).count();
             LARGE_INTEGER due; due.QuadPart=-std::max<int64_t>(1,remaining/100);
             require(SetWaitableTimer(producer_timer,&due,0,nullptr,nullptr,FALSE),"Producer timer failed");
             WaitForSingleObject(producer_timer,INFINITE);
+#else
+            std::this_thread::sleep_until(deadline);
+#endif
         }
+        #ifdef _WIN32
         CloseHandle(producer_timer);
+#endif
         const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now()-begin).count();
         require(engine.history_count()<=400,"History grew past configured limit");
         engine.stop_analyzer();
-        PROCESS_MEMORY_COUNTERS memory_after{}; memory_after.cb=sizeof(memory_after);
-        require(GetProcessMemoryInfo(GetCurrentProcess(),&memory_after,sizeof(memory_after)),"Cannot measure memory");
-        const auto growth=static_cast<int64_t>(memory_after.WorkingSetSize)-static_cast<int64_t>(memory_before.WorkingSetSize);
+        const auto growth = resident_memory() - memory_before;
         qInfo("Short-run working-set growth: %.3f MiB",growth/1048576.0);
         require(growth<32*1024*1024,"Unexpected memory growth in bounded pipeline");
         const auto measured_fps = engine.processed_frames()/elapsed;

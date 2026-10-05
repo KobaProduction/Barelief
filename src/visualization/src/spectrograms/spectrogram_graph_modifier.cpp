@@ -1,6 +1,8 @@
+#include "visualization/ui_text.h"
 #include "core/performance.h"
-#include "visualization/surfaces/surfacegraphmodifier.h"
+#include "visualization/spectrograms/spectrogram_graph_modifier.h"
 #include <algorithm>
+#include <QApplication>
 
 #include <QtDataVisualization/qvalue3daxis.h>
 #include <QtDataVisualization/q3dtheme.h>
@@ -11,12 +13,15 @@
 
 using namespace Qt::StringLiterals;
 
-SurfaceGraphModifier::SurfaceGraphModifier(Q3DSurface *surface, QLabel *label, QObject *parent) : QObject(parent),
-    m_graph(surface),
+SpectrogramGraphModifier::SpectrogramGraphModifier(Q3DSurface *spectrogram, QLabel *label, QObject *parent) : QObject(parent),
+    m_graph(spectrogram),
     m_textField(label) {
     m_graph->scene()->activeCamera()->setZoomLevel(155.f);
     m_graph->scene()->activeCamera()->setCameraPreset(Q3DCamera::CameraPresetIsometricRightHigh);
-    m_graph->activeTheme()->setType(Q3DTheme::ThemeArmyBlue);
+    auto update_theme=[this] {
+        m_graph->activeTheme()->setType(QApplication::palette().color(QPalette::Window).lightness()<128 ? Q3DTheme::ThemeEbony : Q3DTheme::ThemeArmyBlue);
+    };
+    update_theme(); connect(&ui::Theme::instance(),&ui::Theme::changed,this,update_theme);
     m_graph->setShadowQuality(QAbstract3DGraph::ShadowQualityNone);
 
     m_graph->setAxisX(new QValue3DAxis);
@@ -29,7 +34,7 @@ SurfaceGraphModifier::SurfaceGraphModifier(Q3DSurface *surface, QLabel *label, Q
     fillDataProxy();
 
     connect(m_graph, &QAbstract3DGraph::selectedElementChanged,
-            this, &SurfaceGraphModifier::handleElementSelected);
+            this, &SpectrogramGraphModifier::handleElementSelected);
 
     m_selectionAnimation = new QPropertyAnimation(this);
     m_selectionAnimation->setPropertyName("scaling");
@@ -37,8 +42,8 @@ SurfaceGraphModifier::SurfaceGraphModifier(Q3DSurface *surface, QLabel *label, Q
     m_selectionAnimation->setLoopCount(-1);
 }
 
-void SurfaceGraphModifier::update(const std::vector<std::vector<float> > &spectrogram) {
-    core::perf::Scope trace(core::perf::Stage::SurfaceGeometry);
+void SpectrogramGraphModifier::update(const std::vector<std::vector<float> > &spectrogram) {
+    core::perf::Scope trace(core::perf::Stage::SpectrogramGeometry);
     if (spectrogram.size() < 2 || spectrogram[0].size() < 2) return;
     if (std::any_of(spectrogram.begin(), spectrogram.end(), [&](const auto &row) { return row.size() != spectrogram[0].size(); })) return;
     if (spectrogram.size() not_eq sampleCountZ or spectrogram[0].size() not_eq sampleCountX) {
@@ -67,7 +72,7 @@ void SurfaceGraphModifier::update(const std::vector<std::vector<float> > &spectr
 }
 
 
-void SurfaceGraphModifier::fillDataProxy() {
+void SpectrogramGraphModifier::fillDataProxy() {
     float stepX = (sampleMaxX - sampleMinX) / float(sampleCountX - 1);
     float stepZ = (sampleMaxX - sampleMinX) / float(sampleCountZ - 1);
 
@@ -93,7 +98,7 @@ void SurfaceGraphModifier::fillDataProxy() {
     m_dataProxy->resetArray(dataArray);
 }
 
-void SurfaceGraphModifier::enable3DModel() {
+void SpectrogramGraphModifier::enable3DModel() {
     m_dataSeries->setDrawMode(QSurface3DSeries::DrawSurfaceAndWireframe);
     // Flat shading expands the dynamic mesh and recomputes per-face normals every frame.
     m_dataSeries->setFlatShadingEnabled(false);
@@ -115,9 +120,9 @@ void SurfaceGraphModifier::enable3DModel() {
     m_graph->axisY()->setTitleVisible(true);
     m_graph->axisZ()->setTitleVisible(true);
 
-    m_graph->axisX()->setTitle("Time (x)");
-    m_graph->axisY()->setTitle("Signal (y)");
-    m_graph->axisZ()->setTitle("Frequency (z)");
+    ui::bind(m_graph->axisX(),"title","Time (x)");
+    ui::bind(m_graph->axisY(),"title","Signal (y)");
+    ui::bind(m_graph->axisZ(),"title","Frequency (z)");
 
     m_graph->setActiveInputHandler(m_defaultInputHandler);
 
@@ -140,7 +145,7 @@ void SurfaceGraphModifier::enable3DModel() {
 }
 
 
-void SurfaceGraphModifier::adjustXMin(int min) {
+void SpectrogramGraphModifier::adjustXMin(int min) {
     float minX = m_stepX * float(min) + m_rangeMinX;
 
     int max = m_axisMaxSliderX->value();
@@ -153,7 +158,7 @@ void SurfaceGraphModifier::adjustXMin(int min) {
     setAxisXRange(minX, maxX);
 }
 
-void SurfaceGraphModifier::adjustXMax(int max) {
+void SpectrogramGraphModifier::adjustXMax(int max) {
     float maxX = m_stepX * float(max) + m_rangeMinX;
 
     int min = m_axisMinSliderX->value();
@@ -166,7 +171,7 @@ void SurfaceGraphModifier::adjustXMax(int max) {
     setAxisXRange(minX, maxX);
 }
 
-void SurfaceGraphModifier::adjustZMin(int min) {
+void SpectrogramGraphModifier::adjustZMin(int min) {
     float minZ = m_stepZ * float(min) + m_rangeMinZ;
 
     int max = m_axisMaxSliderZ->value();
@@ -179,7 +184,7 @@ void SurfaceGraphModifier::adjustZMin(int min) {
     setAxisZRange(minZ, maxZ);
 }
 
-void SurfaceGraphModifier::adjustZMax(int max) {
+void SpectrogramGraphModifier::adjustZMax(int max) {
     float maxX = m_stepZ * float(max) + m_rangeMinZ;
 
     int min = m_axisMinSliderZ->value();
@@ -192,7 +197,7 @@ void SurfaceGraphModifier::adjustZMax(int max) {
     setAxisZRange(minX, maxX);
 }
 
-void SurfaceGraphModifier::updateAxisRanges(float xMin, float xMax, float zMin, float zMax) {
+void SpectrogramGraphModifier::updateAxisRanges(float xMin, float xMax, float zMin, float zMax) {
     sampleCountX = xMax;
     sampleCountZ = zMax;
     sampleMinX = xMin;
@@ -203,15 +208,15 @@ void SurfaceGraphModifier::updateAxisRanges(float xMin, float xMax, float zMin, 
 }
 
 
-void SurfaceGraphModifier::setAxisXRange(float min, float max) {
+void SpectrogramGraphModifier::setAxisXRange(float min, float max) {
     m_graph->axisX()->setRange(min, max);
 }
 
-void SurfaceGraphModifier::setAxisZRange(float min, float max) {
+void SpectrogramGraphModifier::setAxisZRange(float min, float max) {
     m_graph->axisZ()->setRange(min, max);
 }
 
-void SurfaceGraphModifier::setBlackToYellowGradient() {
+void SpectrogramGraphModifier::setBlackToYellowGradient() {
     //! [8]
     QLinearGradient gr;
     gr.setColorAt(0.f, Qt::black);
@@ -223,7 +228,7 @@ void SurfaceGraphModifier::setBlackToYellowGradient() {
     m_dataSeries->setColorStyle(Q3DTheme::ColorStyleRangeGradient);
 }
 
-void SurfaceGraphModifier::setGreenToRedGradient() {
+void SpectrogramGraphModifier::setGreenToRedGradient() {
     QLinearGradient gr;
     gr.setColorAt(0.f, Qt::darkGreen);
     gr.setColorAt(0.5f, Qt::yellow);
@@ -235,7 +240,7 @@ void SurfaceGraphModifier::setGreenToRedGradient() {
 }
 
 
-void SurfaceGraphModifier::handleElementSelected(QAbstract3DGraph::ElementType type) {
+void SpectrogramGraphModifier::handleElementSelected(QAbstract3DGraph::ElementType type) {
     resetSelection();
     if (type == QAbstract3DGraph::ElementCustomItem) {
         QCustom3DItem *item = m_graph->selectedCustomItem();
@@ -257,7 +262,7 @@ void SurfaceGraphModifier::handleElementSelected(QAbstract3DGraph::ElementType t
         m_selectionAnimation->setEndValue(item->scaling() * 1.5f);
         m_selectionAnimation->start();
     } else if (type == QAbstract3DGraph::ElementSeries) {
-        QString text = "Surface (";
+        QString text = ui::text("Spectrogram") + " (";
         QSurface3DSeries *series = m_graph->selectedSeries();
         if (series) {
             QPoint point = series->selectedPoint();
@@ -283,16 +288,16 @@ void SurfaceGraphModifier::handleElementSelected(QAbstract3DGraph::ElementType t
         text.append(QString::number(index));
         m_textField->setText(text);
     } else {
-        m_textField->setText("Nothing");
+        m_textField->setText(ui::text("Nothing"));
     }
 }
 
-void SurfaceGraphModifier::resetSelection() {
+void SpectrogramGraphModifier::resetSelection() {
     m_selectionAnimation->stop();
     if (m_previouslyAnimatedItem)
         m_previouslyAnimatedItem->setScaling(m_previousScaling);
     m_previouslyAnimatedItem = nullptr;
 }
 
-void SurfaceGraphModifier::changePauseState(const Qt::CheckState state) {
+void SpectrogramGraphModifier::changePauseState(const Qt::CheckState state) {
 }

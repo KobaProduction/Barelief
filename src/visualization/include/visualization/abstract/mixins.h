@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <QTimer>
+#include <QElapsedTimer>
 
 class FPSMixin {
     typedef std::function<void(qreal)> FPSCallback;
@@ -20,6 +21,7 @@ protected:
 
 private:
     QTimer _timer;
+    QElapsedTimer _fps_clock;
     FPSCallback _fpsCallback = nullptr;
     quint64 _numberOfCalls = 0;
 

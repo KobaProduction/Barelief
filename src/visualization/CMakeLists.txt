@@ -5,6 +5,7 @@ set(CMAKE_AUTOMOC ON)
 #set(CMAKE_AUTOUIC ON)
 
 set(HEADERS
+        include/visualization/ui_text.h
         include/visualization/abstract/abs.h
         include/visualization/abstract/fps.h
         include/visualization/abstract/mixins.h
@@ -12,11 +13,12 @@ set(HEADERS
         include/visualization/charts/line.h
         include/visualization/charts/freq.h
 
-        include/visualization/surfaces/surfacegraph.h
-        include/visualization/surfaces/surfacegraphmodifier.h
+        include/visualization/spectrograms/spectrogram_graph.h
+        include/visualization/spectrograms/spectrogram_graph_modifier.h
 )
 
 set(SOURCES
+        src/ui_text.cpp
         ${public_headers}
         src/abstract/abs.cpp
         src/abstract/fps.cpp
@@ -25,8 +27,8 @@ set(SOURCES
         src/charts/line.cpp
         src/charts/freq.cpp
 
-        src/surfaces/surfacegraph.cpp
-        src/surfaces/surfacegraphmodifier.cpp
+        src/spectrograms/spectrogram_graph.cpp
+        src/spectrograms/spectrogram_graph_modifier.cpp
 )
 
 
@@ -35,6 +37,10 @@ target_sources(visualization PRIVATE ${HEADERS} ${SOURCES})
 target_include_directories(visualization PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 find_package(Qt6 REQUIRED COMPONENTS Charts DataVisualization)
+find_package(Qt6 REQUIRED COMPONENTS LinguistTools)
+qt_add_lrelease(visualization TS_FILES ${CMAKE_CURRENT_SOURCE_DIR}/i18n/ui_ru.ts
+    QM_FILES_OUTPUT_VARIABLE ui_qm_files)
+qt_add_resources(visualization ui_translations PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_BINARY_DIR}" FILES ${ui_qm_files})
 
-target_link_libraries(visualization Qt::Charts Qt::DataVisualization)
-target_link_libraries(visualization runtime_performance)
+target_link_libraries(visualization PUBLIC Qt::Charts Qt::DataVisualization runtime_performance)

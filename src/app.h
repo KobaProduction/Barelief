@@ -10,9 +10,9 @@
 
 #include "pipeline/audio_pipeline.h"
 #include "analyzer/analyze/spectrogram.h"
-#include "analyzer/loopback/windows_loopback.h"
+
 #include "visualization/abstract/abs.h"
-#include "visualization/surfaces/surfacegraph.h"
+#include "visualization/spectrograms/spectrogram_graph.h"
 
 class Application : public QApplication {
 public:
@@ -22,12 +22,12 @@ public:
         bool run_analyser = true;
         bool show_serial_samples = false;
         bool show_raw_samples = false;
-        bool show_samples = false;
+        bool show_window_signal = false;
         bool show_amplitudes = true;
         bool show_test_amplitudes = true;
         bool show_serial_fast_amplitudes = false;
         bool show_serial_audio_spectre = false;
-        bool show_surface = true;
+        bool show_spectrogram = true;
     };
 
     Application(int &argc, char **argv, int = ApplicationFlags);
@@ -40,10 +40,10 @@ private:
     AbstractChartView *serialFastAmplitudesView = nullptr;
     AbstractChartView *serialSpectreView = nullptr;
     AbstractChartView *generatorSamplesView = nullptr;
-    AbstractChartView *samplesView = nullptr;
+    AbstractChartView *windowSignalView = nullptr;
     AbstractChartView *amplitudesView = nullptr;
     AbstractChartView *testAmplitudesView = nullptr;
-    SurfaceGraph *surfaceView = nullptr;
+    SpectrogramGraph *spectrogramView = nullptr;
     std::unique_ptr<pipeline::AudioPipeline> _pipeline;
     QSerialPort *serial{};
     BDSP::COBSZPEReceiver *receiver = nullptr;

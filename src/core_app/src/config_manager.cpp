@@ -126,22 +126,40 @@ void ConfigManager::_parse_ui_config(const QJsonObject &json_obj, FileSaveApplic
     if (not json_obj.contains("ui"))
         return;
     const QJsonObject ui_obj = json_obj["ui"].toObject();
+    const auto read_legacy=[&ui_obj](const char *name,const char *legacy) {
+        return ui_obj.value(ui_obj.contains(name) ? name : legacy);
+    };
     config.ui.move_to_primary_screen_on_start =
         ui_obj.value("move_to_primary_screen_on_start").toBool(default_.move_to_primary_screen_on_start);
     config.ui.autosave_enabled = ui_obj.value("autosave_enabled").toBool(default_.autosave_enabled);
 
     config.ui.show_raw_samples = ui_obj.value("show_raw_samples").toBool(default_.show_raw_samples);
-    config.ui.show_samples = ui_obj.value("show_samples").toBool(default_.show_samples);
-    config.ui.show_samples_after_window_function =
-        ui_obj.value("show_samples_after_window_function").toBool(default_.show_samples_after_window_function);
+    config.ui.show_window_signal = read_legacy("show_window_signal", "show_samples").toBool(default_.show_window_signal);
+    config.ui.show_windowed_signal =
+        read_legacy("show_windowed_signal", "show_samples_after_window_function").toBool(default_.show_windowed_signal);
     config.ui.show_window_function = ui_obj.value("show_window_function").toBool(default_.show_window_function);
     config.ui.show_amplitudes = ui_obj.value("show_amplitudes").toBool(default_.show_amplitudes);
     config.ui.show_test_amplitudes = ui_obj.value("show_test_amplitudes").toBool(default_.show_test_amplitudes);
-    config.ui.show_surface = ui_obj.value("show_surface").toBool(default_.show_surface);
+    config.ui.show_spectrogram = read_legacy("show_spectrogram", "show_surface").toBool(default_.show_spectrogram);
+    config.ui.workspace = ui_obj.value("workspace").toObject();
+    config.ui.language = ui_obj.value("language").toString("ru");
+    if (config.ui.language != "ru" && config.ui.language != "en") config.ui.language = "ru";
+    config.ui.theme = ui_obj.value("theme").toString("system");
+    if (config.ui.theme != "dark" && config.ui.theme != "light") config.ui.theme = "system";
+    config.ui.graph_views = ui_obj.value("graph_views").toObject();
+    if (!config.ui.graph_views.contains("windowSignal") && config.ui.graph_views.contains("samples"))
+        config.ui.graph_views["windowSignal"]=config.ui.graph_views.value("samples");
+    if (!config.ui.graph_views.contains("windowedSignal") && config.ui.graph_views.contains("windowedSamples"))
+        config.ui.graph_views["windowedSignal"]=config.ui.graph_views.value("windowedSamples");
+    config.ui.pipeline_auto_apply = ui_obj.value("pipeline_auto_apply").toBool(true);
+    config.ui.show_fps = ui_obj.value("show_fps").toBool(true);
+    config.ui.pipeline_presets = ui_obj.value("pipeline_presets").toArray();
+    config.ui.editor_view = ui_obj.value("editor_view").toObject();
+    config.ui.show_data_flow = ui_obj.value("show_data_flow").toBool(true);
     config.ui.camera = ui_obj.value("camera").toObject();
     config.ui.camera_controls = CameraControls::normalized(ui_obj.value("camera_controls").toObject());
-    const auto ratio = ui_obj.value("surface_side_panel_ratio").toDouble(0.25);
-    config.ui.surface_side_panel_ratio = ratio >= 0.01 && ratio <= 0.99 ? static_cast<float>(ratio) : 0.25f;
+    const auto ratio = read_legacy("spectrogram_side_panel_ratio", "surface_side_panel_ratio").toDouble(0.25);
+    config.ui.spectrogram_side_panel_ratio = ratio >= 0.01 && ratio <= 0.99 ? static_cast<float>(ratio) : 0.25f;
 }
 
 void ConfigManager::_parse_diagram_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) {
@@ -165,16 +183,25 @@ void ConfigManager::_save_ui_config(QJsonObject &json_obj, const FileSaveApplica
     ui_obj["move_to_primary_screen_on_start"] = config.ui.move_to_primary_screen_on_start;
     ui_obj["autosave_enabled"] = config.ui.autosave_enabled;
     ui_obj["show_raw_samples"] = config.ui.show_raw_samples;
-    ui_obj["show_samples"] = config.ui.show_samples;
-    ui_obj["show_samples_after_window_function"] = config.ui.show_samples_after_window_function;
+    ui_obj["show_window_signal"] = config.ui.show_window_signal;
+    ui_obj["show_windowed_signal"] = config.ui.show_windowed_signal;
     ui_obj["show_window_function"] = config.ui.show_window_function;
     ui_obj["show_raw_samples"] = config.ui.show_raw_samples;
     ui_obj["show_amplitudes"] = config.ui.show_amplitudes;
     ui_obj["show_test_amplitudes"] = config.ui.show_test_amplitudes;
-    ui_obj["show_surface"] = config.ui.show_surface;
+    ui_obj["show_spectrogram"] = config.ui.show_spectrogram;
+    ui_obj["workspace"] = config.ui.workspace;
+    ui_obj["language"] = config.ui.language;
+    ui_obj["theme"] = config.ui.theme;
+    ui_obj["graph_views"] = config.ui.graph_views;
+    ui_obj["pipeline_auto_apply"] = config.ui.pipeline_auto_apply;
+    ui_obj["show_fps"] = config.ui.show_fps;
+    ui_obj["pipeline_presets"] = config.ui.pipeline_presets;
+    ui_obj["editor_view"] = config.ui.editor_view;
+    ui_obj["show_data_flow"] = config.ui.show_data_flow;
     ui_obj["camera"] = config.ui.camera;
     ui_obj["camera_controls"] = config.ui.camera_controls;
-    ui_obj["surface_side_panel_ratio"] = config.ui.surface_side_panel_ratio;
+    ui_obj["spectrogram_side_panel_ratio"] = config.ui.spectrogram_side_panel_ratio;
     json_obj["ui"] = ui_obj;
 }
 

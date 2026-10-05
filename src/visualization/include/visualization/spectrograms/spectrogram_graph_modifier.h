@@ -1,8 +1,8 @@
 // Copyright (C) 2023 The Qt Company Ltd.
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
 
-#ifndef SURFACEGRAPHMODIFIER_H
-#define SURFACEGRAPHMODIFIER_H
+#ifndef SPECTROGRAM_GRAPH_MODIFIER_H
+#define SPECTROGRAM_GRAPH_MODIFIER_H
 
 #include <QtDataVisualization/q3dsurface.h>
 #include <QtDataVisualization/qsurfacedataproxy.h>
@@ -16,11 +16,11 @@
 #include <QtCore/qpropertyanimation.h>
 
 
-class SurfaceGraphModifier : public QObject {
+class SpectrogramGraphModifier : public QObject {
     Q_OBJECT
 
 public:
-    explicit SurfaceGraphModifier(Q3DSurface *surface, QLabel *label, QObject *parent);
+    explicit SpectrogramGraphModifier(Q3DSurface *spectrogram, QLabel *label, QObject *parent);
 
 
     void toggleModeNone() { m_graph->setSelectionMode(QAbstract3DGraph::SelectionNone); }
@@ -107,4 +107,4 @@ private:
     Q3DInputHandler *m_defaultInputHandler = new Q3DInputHandler();
 };
 
-#endif // SURFACEGRAPHMODIFIER_H
+#endif // SPECTROGRAM_GRAPH_MODIFIER_H

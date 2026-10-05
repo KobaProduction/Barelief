@@ -1,6 +1,6 @@
 #include "core_app/core_application.h"
 #include "core/latest_delivery.h"
-#include "visualization/surfaces/surfacegraph.h"
+#include "visualization/spectrograms/spectrogram_graph.h"
 #include <QJsonArray>
 #include <thread>
 #include "aggregator/aggregator_server.h"
@@ -32,7 +32,7 @@ int main(int, char **) {
     auto config_path = temp.filePath("startup.json").toLocal8Bit();
     QFile file(QString::fromLocal8Bit(config_path));
     if (!file.open(QIODevice::WriteOnly)) return 1;
-    file.write(R"({"core":{"run_loopback":false,"run_analyser":false},"ui":{"show_surface":false},"scene_graph":{"nodes":[{"id":1,"internal-data":{"model-name":"RemovedModel"}}],"connections":[{"outNodeId":1,"inNodeId":9}]}})");
+    file.write(R"({"core":{"run_loopback":false,"run_analyser":false},"ui":{"show_spectrogram":false},"scene_graph":{"nodes":[{"id":1,"internal-data":{"model-name":"RemovedModel"}}],"connections":[{"outNodeId":1,"inNodeId":9}]}})");
     file.close();
     int argc = 3;
     char name[] = "runtime_tests", flag[] = "--config";
@@ -55,9 +55,30 @@ int main(int, char **) {
         std::thread late_producer([&]{for(int i=0;i<10000;++i)cancelled->publish(i);});
         late_producer.join();pump(5);
         require(cancelled_delivery==0,"Cancelled delivery used a destroyed receiver");
+        int polled_count = 0, polled_latest = -1;
+        auto polled = std::make_shared<LatestDelivery<int>>(&app, [&](int value) {
+            ++polled_count; polled_latest = value;
+        });
+        polled->start_polling();
+        std::thread polled_producer([&] { for (int i = 0; i < 10000; ++i) polled->publish(i); });
+        polled_producer.join();
+        require(polled_count == 0, "Polling producer invoked the GUI callback");
+        pump(40);
+        require(polled_count == 1 && polled_latest == 9999, "Polling replayed backlog or lost latest frame");
+        polled->publish(10000); polled->cancel();
+        std::thread late_polled_producer([&] { for (int i = 0; i < 10000; ++i) polled->publish(i); });
+        late_polled_producer.join(); pump(40);
+        require(polled_count == 1, "Polling delivered after cancellation");
+        QObject timer_owner;
+        {
+            auto replaced = std::make_shared<LatestDelivery<int>>(&timer_owner, [](int) {});
+            replaced->start_polling();
+        }
+        pump(40);
+        require(timer_owner.findChildren<QTimer *>().isEmpty(), "Replaced delivery left an active polling timer");
         for (float ratio : {0.125f,1.0f,8.0f}) {
             for (float yaw : {0.0f,0.785398f,1.570796f}) {
-                const auto step = SurfaceGraph::camera_translation(yaw,1,0,ratio,2);
+                const auto step = SpectrogramGraph::camera_translation(yaw,1,0,ratio,2);
                 const QVector3D world(step.x()*std::min(1.0f,ratio),step.y()/2,
                                       step.z()*std::min(1.0f,1.0f/ratio));
                 require(std::abs(world.length()-1.0f) < 1e-5, "Camera speed depends on rotation or graph aspect ratio");
@@ -71,17 +92,24 @@ int main(int, char **) {
         const auto [low,high]=std::minmax_element(rendered.begin(),rendered.end(),[](const auto &a,const auto &b){return a.y()<b.y();});
         require(low->y()==-17 && high->y()==42,"Chart decimation lost a short spike");
         dense_chart.hide();
+        const auto legacy_path=temp.filePath("legacy.json");
+        QFile legacy_file(legacy_path); require(legacy_file.open(QIODevice::WriteOnly),"Cannot create legacy config");
+        legacy_file.write(R"({"ui":{"show_surface":false,"show_samples":true,"show_samples_after_window_function":true,"surface_side_panel_ratio":0.4}})"); legacy_file.close();
+        FileSaveApplicationConfig legacy_config; ConfigManager legacy_manager(legacy_path);
+        require(legacy_manager.load(legacy_config) && !legacy_config.ui.show_spectrogram && legacy_config.ui.show_window_signal &&
+            legacy_config.ui.show_windowed_signal && std::abs(legacy_config.ui.spectrogram_side_panel_ratio-0.4)<1e-6,
+            "Legacy presentation keys not migrated");
         ConfigManager manager(temp.filePath("nested/config.json"));
         FileSaveApplicationConfig saved;
         saved.wled_ar_server.port = 11989;
         saved.core.spectrum_channel = 1; saved.core.spectrum_merge = SpectrumMerge::Maximum;
-        saved.ui.surface_side_panel_ratio = 0.4f;
+        saved.ui.spectrogram_side_panel_ratio = 0.4f;
         saved.ui.camera_controls["forward"] = QJsonArray{CameraControls::binding(23,Qt::Key_I), CameraControls::binding(37,Qt::Key_K)};
         saved.ui.camera = {{"horizontal", 35}, {"vertical", 60}, {"zoom", 200}, {"target", QJsonArray{0.2,-0.3,0.4}}};
         require(manager.save(saved), "Nested configuration save failed");
         FileSaveApplicationConfig loaded;
         require(manager.load(loaded) && loaded.wled_ar_server.port == 11989, "Configuration roundtrip failed");
-        require(std::abs(loaded.ui.surface_side_panel_ratio - 0.4f) < 1e-6, "Surface split ratio not preserved by config");
+        require(std::abs(loaded.ui.spectrogram_side_panel_ratio - 0.4f) < 1e-6, "Spectrogram split ratio not preserved by config");
         require(loaded.core.spectrum_channel == 1 && loaded.core.spectrum_merge == SpectrumMerge::Maximum, "Stereo settings did not persist");
         require(loaded.ui.camera_controls == saved.ui.camera_controls, "Camera key bindings did not persist");
         const auto default_forward = CameraControls::defaults()["forward"].toArray()[0].toObject();
@@ -94,7 +122,7 @@ int main(int, char **) {
         QKeyEvent right_ctrl(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier,0x11d,0,0);
         require(CameraControls::matches(CameraControls::defaults()["down"].toArray()[0].toObject(),right_ctrl), "Right Ctrl not recognized");
         require(loaded.ui.camera == saved.ui.camera, "Camera position not preserved by config");
-        SurfaceGraph camera_graph;
+        SpectrogramGraph camera_graph;
         camera_graph.set_camera_state(saved.ui.camera);
         const auto staged = camera_graph.camera_state();
         require(staged["horizontal"] == saved.ui.camera["horizontal"] && staged["zoom"] == saved.ui.camera["zoom"] &&
@@ -237,7 +265,10 @@ int main(int, char **) {
         wait_status("WLED",pipeline::State::Stopped);
 
         AggregatorServer server;
-        require(server.start(0, 20), "Aggregator start failed");
+        // Registration correctness is covered here; the dedicated network test
+        // verifies registration deadlines. Do not race a 20 ms timeout against
+        // unrelated GUI/DSP work on loaded CI machines.
+        require(server.start(0, 1000), "Aggregator start failed");
         TcpBDSPSocket client;
         registration_request_packet_t registration{};
         registration.uuid = QUuid::createUuid().toBytes();
@@ -251,9 +282,8 @@ int main(int, char **) {
             registered = false;
             client.connectToHost(QHostAddress::LocalHost, server.serverPort());
             require(client.waitForConnected(1000), "Aggregator connect failed");
-            pump(5);
             client.send_data(static_cast<uint8_t>(PacketType::component_registration), reinterpret_cast<uint8_t *>(&registration), sizeof(registration));
-            pump(30);
+            for (int attempt = 0; !registered && attempt < 200; ++attempt) pump(5);
             require(registered, "Aggregator registration/restoration failed");
             client.abort(); pump(10);
         }

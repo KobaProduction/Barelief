@@ -1,13 +1,12 @@
 #include "core/performance.h"
 #include "pipeline/audio_pipeline.h"
-#include "core/latest_delivery.h"
 #include <QMetaObject>
 #include <chrono>
 #include <algorithm>
 #include <exception>
 #include <QJsonArray>
 namespace pipeline {
-audio::loopback::WASAPILoopback *legacy_wasapi_capture(IAudioSource *source);
+
 AudioPipeline::AudioPipeline() : AudioPipeline(default_audio_source_factory()) {}
 AudioPipeline::AudioPipeline(AudioSourceFactory source_factory) : _source_factory(std::move(source_factory)) {
     if (!_source_factory) _source_factory = default_audio_source_factory();
@@ -16,13 +15,26 @@ AudioPipeline::AudioPipeline(AudioSourceFactory source_factory) : _source_factor
     _runtime = new QObject;
     _runtime->moveToThread(&_thread);
     QObject::connect(&_thread, &QThread::finished, _runtime, &QObject::deleteLater);
-    _wled_delivery = std::make_shared<LatestDelivery<WledFrame>>(_runtime, [this](WledFrame frame) {
-        core::perf::duration(core::perf::Stage::WledQueue, core::perf::now() - frame.enqueued_ns);
-        if (_wled && frame.generation == _network_generation.load() && frame.graph_revision == graph_revision())
-            _wled->update(frame.mel, frame.hz, frame.magnitude);
-    });
     _thread.setObjectName("AudioPipeline");
     _thread.start();
+    command([this] {
+        _history_timer = new QTimer(_runtime);
+        _history_timer->setInterval(17);
+        _history_timer->setTimerType(Qt::PreciseTimer);
+        QObject::connect(_history_timer, &QTimer::timeout, _runtime, [this] {
+            if (!_history_pending.exchange(false)) return;
+            core::perf::Scope trace(core::perf::Stage::HistorySnapshot);
+            auto snapshot = std::make_shared<HistorySnapshot>();
+            {
+                std::lock_guard lock(_mutex);
+                std::lock_guard history_lock(_history_mutex);
+                snapshot->graph_revision = _graph_revision;
+                snapshot->analyzer_generation = _analyzer_generation.load();
+                if (_history) snapshot->values = _history->get_vector_spectrogram();
+            }
+            _history_snapshot.store(std::move(snapshot));
+        });
+    });
 }
 AudioPipeline::~AudioPipeline() {
     stop_capture();
@@ -77,6 +89,8 @@ void AudioPipeline::start_analyzer() {
         _analyzer.reset();
         const auto generation = ++_analyzer_generation;
         _history_snapshot.store(nullptr);
+        _history_pending = false;
+        _history_requested_ns = 0;
         _analyzer = std::make_unique<Analyzer>();
         _analyzer->set_mel_enabled(false);
         {
@@ -104,6 +118,7 @@ void AudioPipeline::start_analyzer() {
         status("Analyzer", State::Starting);
         try {
             _analyzer->start();
+            _history_timer->start();
         } catch (const std::exception &error) {
             status("Analyzer", State::Failed, error.what());
             throw;
@@ -112,6 +127,8 @@ void AudioPipeline::start_analyzer() {
 }
 void AudioPipeline::stop_analyzer() {
     command([this] {
+        _history_timer->stop();
+        _history_pending = false;
         ++_analyzer_generation;
         std::unique_ptr<Analyzer> retiring;
         {
@@ -148,14 +165,18 @@ void AudioPipeline::start_capture() {
             return;
         const auto generation = ++_capture_generation;
         int source;
+        QJsonObject parameters;
         {
             std::lock_guard lock(_mutex);
             source = _graph->capture_source();
+            parameters = _graph->source_parameters();
         }
         if (_capture) { _capture->stop(); _capture.reset(); }
         try { _capture = _source_factory(static_cast<AudioSourceKind>(source)); }
         catch (const std::exception &error) { status("Capture", State::Failed, error.what()); throw; }
         if (!_capture) { status("Capture", State::Failed, "Audio source factory returned no source"); return; }
+        try { _capture->configure(parameters); }
+        catch (const std::exception &error) { _capture.reset(); status("Capture", State::Failed, error.what()); throw; }
         _capture->set_status_handler([this, generation](bool running, QString error) {
             if (generation != _capture_generation.load())
                 return;
@@ -204,7 +225,7 @@ void AudioPipeline::process(const SpectrumFrame &frame) {
     }
     const auto output = [&] {
         core::perf::Scope trace(core::perf::Stage::Graph);
-        return program->evaluate(frame, (_view_subscription.load() & 8) != 0);
+        return program->evaluate(frame, _graph_context, (_view_subscription.load() & 8) != 0);
     }();
     {
         std::lock_guard lock(_mutex);
@@ -224,19 +245,20 @@ void AudioPipeline::process(const SpectrumFrame &frame) {
     }
     std::function<void(ViewFrame)> handler;
     {
+        core::perf::Scope trace(core::perf::Stage::CallbackSnapshot);
         std::lock_guard lock(_callback_mutex);
         handler = _spectrum_handler;
     }
-    if (!output.network.empty())
+    if (_wled_active.load() && !output.network.empty())
         publish_wled(output.network, output.peak_hz, output.magnitude, revision);
     if (handler) {
         core::perf::Scope trace(core::perf::Stage::SpectrumPublish);
-        ViewFrame view{frame, output.fft, output.mel, output.previews, output.surface, revision, core::perf::now()};
+        ViewFrame view{frame, output.fft, output.mel, output.previews, output.spectrogram, revision, core::perf::now()};
         const auto subscriptions = _view_subscription.load();
         if (subscriptions & 16) {
-            view.samples = frame.samples;
+            view.window_signal = frame.window_signal;
             view.window = frame.window;
-            view.post_window = frame.post_window;
+            view.windowed_signal = frame.windowed_signal;
         }
         view.frequency_step = frame.frequency_step;
         if (!(subscriptions & 8))
@@ -254,7 +276,8 @@ bool AudioPipeline::apply_graph(const QJsonObject &document, QString &error) {
     if (!program)
         return false;
     std::unique_lock lock(_mutex);
-    const bool source_changed = _graph->capture_source() != program->capture_source();
+    const bool source_changed = _graph->capture_source() != program->capture_source() ||
+        _graph->source_parameters() != program->source_parameters();
     if (_graph->same_processing_as(*program)) {
         _graph = std::move(program);
         return true;
@@ -271,7 +294,7 @@ bool AudioPipeline::apply_graph(const QJsonObject &document, QString &error) {
     lock.unlock();
     if (source_changed)
         command([this] {
-            const bool running = _capture && _capture->is_running();
+            const bool running = bool(_capture); // Preserve start intent during recovery/opening too.
             if (running)
                 stop_capture();
             const bool analysing = analyzer() && analyzer()->is_running();
@@ -297,7 +320,14 @@ QJsonObject AudioPipeline::graph() const {
     return _graph->document();
 }
 void AudioPipeline::publish_wled(const std::vector<float> &mel, float hz, float magnitude, uint64_t revision) {
-    _wled_delivery->publish({mel, hz, magnitude, _network_generation.load(), revision, core::perf::now()});
+    core::perf::Scope trace(core::perf::Stage::WledPublish);
+    std::optional<WledFrame> next(WledFrame{mel, hz, magnitude, _network_generation.load(), revision, core::perf::now()});
+    {
+        std::lock_guard lock(_wled_mailbox_mutex);
+        next.swap(_pending_wled);
+    }
+    // Retire the superseded frame outside the mailbox lock. DSP never posts a
+    // Qt event: GUI/native window operations can contend with Qt event posting.
 }
 void AudioPipeline::start_wled(const QHostAddress &address, quint16 port, const QHostAddress &destination) {
     command([this, address, port, destination] {
@@ -312,12 +342,37 @@ void AudioPipeline::start_wled(const QHostAddress &address, quint16 port, const 
         server->set_error_handler([this](QString error) { status("WLED", State::Failed, error); });
         server->start();
         _wled = std::move(server);
+        if (!_wled_timer) {
+            _wled_timer = new QTimer(_runtime);
+            _wled_timer->setInterval(16);
+            _wled_timer->setTimerType(Qt::PreciseTimer);
+            QObject::connect(_wled_timer, &QTimer::timeout, _runtime, [this] {
+                std::optional<WledFrame> frame;
+                {
+                    std::lock_guard lock(_wled_mailbox_mutex);
+                    frame.swap(_pending_wled);
+                }
+                if (!frame) return;
+                core::perf::duration(core::perf::Stage::WledQueue, core::perf::now() - frame->enqueued_ns);
+                if (_wled && frame->generation == _network_generation.load() && frame->graph_revision == graph_revision())
+                    _wled->update(frame->mel, frame->hz, frame->magnitude);
+            });
+        }
+        _wled_active = true;
+        _wled_timer->start();
         status("WLED", State::Running);
     });
 }
 void AudioPipeline::stop_wled() {
     command([this] {
+        _wled_active = false;
         ++_network_generation;
+        if (_wled_timer) _wled_timer->stop();
+        std::optional<WledFrame> pending;
+        {
+            std::lock_guard lock(_wled_mailbox_mutex);
+            pending.swap(_pending_wled);
+        }
         _wled.reset();
         status("WLED", State::Stopped);
     });
@@ -374,24 +429,8 @@ std::shared_ptr<const HistorySnapshot> AudioPipeline::latest_history() {
     auto last = _history_requested_ns.load();
     if (now - last < 16000000 || !_history_requested_ns.compare_exchange_strong(last, now))
         return result;
-    if (!_history_pending.exchange(true))
-        QMetaObject::invokeMethod(
-            _runtime,
-            [this] {
-                core::perf::Scope trace(core::perf::Stage::HistorySnapshot);
-                auto snapshot = std::make_shared<HistorySnapshot>();
-                {
-                    std::lock_guard lock(_mutex);
-                    std::lock_guard history_lock(_history_mutex);
-                    snapshot->graph_revision = _graph_revision;
-                    snapshot->analyzer_generation = _analyzer_generation.load();
-                    if (_history)
-                        snapshot->values = _history->get_vector_spectrogram();
-                }
-                _history_snapshot.store(std::move(snapshot));
-                _history_pending = false;
-            },
-            Qt::QueuedConnection);
+    // The owner thread polls this flag. No Qt event posting on the DSP path.
+    _history_pending = true;
     return result;
 }
 size_t AudioPipeline::history_count() const {
@@ -410,9 +449,9 @@ Spectrogram *AudioPipeline::spectrogram() const {
     std::lock_guard lock(_history_mutex);
     return _history.get();
 }
-audio::loopback::WASAPILoopback *AudioPipeline::capture() const {
-    audio::loopback::WASAPILoopback *result;
-    command([&] { result = legacy_wasapi_capture(_capture.get()); });
+AudioSourceDiagnostics AudioPipeline::capture_diagnostics() const {
+    AudioSourceDiagnostics result;
+    command([&] { if (_capture) result = _capture->diagnostics(); });
     return result;
 }
 WLEDAudioReactiveServer *AudioPipeline::wled() const {

@@ -117,13 +117,13 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
         qInfo("Raw samples only can show when loopback running");
     }
 
-    if (_cfg.show_samples and _cfg.run_analyser) {
-        samplesView = new LineChartView();
-        samplesView->set_range(-1, 1);
-        samplesView->chart()->setTitle("Analyzer samples");
-        splitter->addWidget(samplesView);
-    } else if (_cfg.show_samples) {
-        qInfo("Analyzer samples only can show when analyzer running");
+    if (_cfg.show_window_signal and _cfg.run_analyser) {
+        windowSignalView = new LineChartView();
+        windowSignalView->set_range(-1, 1);
+        windowSignalView->chart()->setTitle("Window signal");
+        splitter->addWidget(windowSignalView);
+    } else if (_cfg.show_window_signal) {
+        qInfo("Window signal requires the analyzer");
     }
 
     if (_cfg.show_amplitudes and _cfg.run_analyser) {
@@ -158,12 +158,12 @@ Application::Application(int &argc, char **argv, const int flags) : QApplication
     const QSize screenSize = tabWidget.screen()->size();
     const QSize minimumGraphSize{screenSize.width() / 2, qRound(screenSize.height() / 1.75)};
     //
-    if (_cfg.show_surface) {
-        surfaceView = new SurfaceGraph(&tabWidget);
-        if (not surfaceView->initialize(minimumGraphSize, screenSize)) {
+    if (_cfg.show_spectrogram) {
+        spectrogramView = new SpectrogramGraph(&tabWidget);
+        if (not spectrogramView->initialize(minimumGraphSize, screenSize)) {
             qWarning("Couldn't initialize the OpenGL context.");
         }
-        tabWidget.addTab(surfaceView, "surface tab");
+        tabWidget.addTab(spectrogramView, "spectrogram tab");
     }
 
     tabWidget.addTab(splitter, "main");
@@ -187,14 +187,15 @@ Application::~Application() {
 
 void Application::_run_analyzer() {
     auto delivery = std::make_shared<LatestDelivery<pipeline::ViewFrame>>(this, [this](pipeline::ViewFrame frame) {
-        if (samplesView) samplesView->update(frame.samples);
+        if (windowSignalView) windowSignalView->update(frame.window_signal);
         if (amplitudesView) {
             static_cast<FreqChartView *>(amplitudesView)->update_freq_step(frame.frequency_step);
             amplitudesView->update(frame.fft);
         }
         if (testAmplitudesView) testAmplitudesView->update(frame.mel);
-        if (surfaceView && frame.history) surfaceView->update(frame.history->values);
+        if (spectrogramView && frame.history) spectrogramView->update(frame.history->values);
     });
+    delivery->start_polling();
     _pipeline->set_spectrum_handler([delivery](pipeline::ViewFrame frame) { delivery->publish(std::move(frame)); });
     _pipeline->start_analyzer();
 }
@@ -203,6 +204,7 @@ void Application::_run_loopback() {
     auto delivery = std::make_shared<LatestDelivery<pipeline::AudioFrame>>(this, [this](pipeline::AudioFrame frame) {
         if (rawSamplesView) rawSamplesView->update(frame.left);
     });
+    delivery->start_polling();
     _pipeline->set_audio_handler([delivery](pipeline::AudioFrame frame) { delivery->publish(std::move(frame)); });
     _pipeline->start_capture();
 }

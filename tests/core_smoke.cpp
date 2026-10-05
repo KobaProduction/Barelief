@@ -10,6 +10,10 @@
 #include <QThread>
 #include <stdexcept>
 #include <QTimer>
+#include <QScreen>
+#include <QDockWidget>
+#include <QDir>
+#include <Q3DSurface>
 static int schema_regression() {
     auto require = [](bool ok, const char *message) { if (!ok) throw std::runtime_error(message); };
     QTemporaryDir directory;
@@ -18,7 +22,7 @@ static int schema_regression() {
     const auto original_draft = QJsonObject{{"version", 99}, {"future-draft", "keep separately"}};
     const auto original = QJsonDocument(QJsonObject{
         {"core", QJsonObject{{"run_loopback", false}, {"run_analyser", false}}},
-        {"ui", QJsonObject{{"show_surface", false}, {"autosave_enabled", true}}},
+        {"ui", QJsonObject{{"show_spectrogram", false}, {"autosave_enabled", true}}},
         {"pipeline_graph", original_pipeline}, {"scene_graph", original_draft}}).toJson();
     QFile file(path);
     require(file.open(QIODevice::WriteOnly), "Cannot write schema fixture");
@@ -48,7 +52,7 @@ static int schema_regression() {
         if (auto *candidate = qobject_cast<MainWindow *>(widget)) window = candidate;
     require(window && !window->findChild<QLabel *>("savedPipelineWarning")->text().isEmpty(),
             "Bootstrap error is not visible in the UI");
-    app._ctx.file_configs.ui.show_samples = true;
+    app._ctx.file_configs.ui.show_window_signal = true;
     emit app.presenter().on_config_updated();
     auto saved = QJsonDocument::fromJson(read()).object();
     require(saved["pipeline_graph"].toObject() == original_pipeline &&
@@ -59,9 +63,9 @@ static int schema_regression() {
     saved = QJsonDocument::fromJson(read()).object();
     require(saved["pipeline_graph"].toObject() == original_pipeline &&
             saved["scene_graph"].toObject() == original_draft, "Processing prefs replaced saved schemas");
-    auto *recover = window->findChild<QPushButton *>("defaultPipeline");
+    auto *recover = window->findChild<QAction *>("defaultPipeline");
     require(recover, "Explicit recovery button missing");
-    recover->click();
+    recover->trigger();
     wait([&] { return !app.presenter().graph_request_pending(); });
     saved = QJsonDocument::fromJson(read()).object();
     QString error;
@@ -80,11 +84,50 @@ int main(int argc, char **argv) {
     const bool expect_remote = qEnvironmentVariableIsSet("QT_VISUALIZATION_EXPECT_REMOTE");
     int spectra = 0;
     QObject::connect(&app, &CoreApplication::amplitudes_ready, &app, [&] { ++spectra; });
-    QTimer::singleShot(expect_remote ? 1500 : 500, &app, &QCoreApplication::quit);
+    const auto review_dir=qEnvironmentVariable("QT_VIS_UI_REVIEW_DIR");
+    if (!review_dir.isEmpty()) {
+        QDir().mkpath(review_dir);
+        auto window=app.findChild<MainWindow *>();
+        if (!window) for (auto *widget : QApplication::topLevelWidgets())
+            if (auto *candidate=qobject_cast<MainWindow *>(widget)) window=candidate;
+        if (!window) return 1;
+        window->resize(1200,900);
+        auto capture=[window,review_dir](const QString &name) {
+            window->screen()->grabWindow(window->winId()).save(review_dir+"/"+name+".png");
+        };
+        QTimer::singleShot(2200,&app,[capture,window,review_dir] {
+            capture("spectrogram");
+            for (auto *candidate : QGuiApplication::allWindows()) if (auto *spectrogram=qobject_cast<Q3DSurface *>(candidate)) {
+                qInfo()<<"Native Spectrogram"<<spectrogram->isExposed()<<spectrogram->size();
+                spectrogram->renderToImage().save(review_dir+"/spectrogram-native.png");
+            }
+        });
+        QTimer::singleShot(2700,&app,[window] {
+            auto *dock=window->findChild<QDockWidget *>("fftDock"); dock->show(); dock->raise();
+        });
+        QTimer::singleShot(4000,&app,[capture] { capture("fft"); });
+        QTimer::singleShot(4200,&app,[window] { window->findChild<QAction *>("openSettingsSection4")->trigger(); });
+        QTimer::singleShot(4700,&app,[window,review_dir] {
+            auto *dialog=window->findChild<QWidget *>("settingsDialog");
+            dialog->screen()->grabWindow(dialog->winId()).save(review_dir+"/settings.png");
+        });
+    }
+    QTimer::singleShot(!review_dir.isEmpty() ? 5200 : expect_remote ? 1500 : 500, &app, &QCoreApplication::quit);
     const auto result = qEnvironmentVariableIsSet("QT_VISUALIZATION_HIDDEN_SMOKE") ? QApplication::exec() : app.exec();
     if (expect_remote && (!app.presenter().is_remote() || spectra < 10)) {
         qCritical("Remote GUI did not receive spectra: %d", spectra);
         return 1;
+    }
+    if (qEnvironmentVariableIsSet("QT_VISUALIZATION_EXPECT_TEST_SIGNAL")) {
+        QString error;
+        const auto engine_graph = pipeline::GraphProgram::compile(app.pipeline().graph(),error);
+        auto editor_document = app._ctx.data_flow_graph->save(); editor_document["version"] = 1;
+        const auto editor_graph = pipeline::GraphProgram::compile(editor_document,error);
+        if (spectra < 10 || !engine_graph || !editor_graph || engine_graph->capture_source()!=2 ||
+            !editor_graph->same_processing_as(*engine_graph) ||
+            app.pipeline().capture_diagnostics().backend != "In-memory test generator") {
+            qCritical("Silent GUI pipeline did not match the configured source or deliver spectra"); return 1;
+        }
     }
     if (expect_remote)
         qInfo("Remote GUI received %d spectra from the console host", spectra);

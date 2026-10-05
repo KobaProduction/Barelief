@@ -1,0 +1,32 @@
+{
+  "core": {"run_loopback": true, "run_analyser": true},
+  "ui": {"autosave_enabled": false, "show_spectrogram": true, "show_amplitudes": false, "show_test_amplitudes": false},
+  "wled_ar_server": {"enabled": false},
+  "pipeline_graph": {
+    "version": 1,
+    "layout_pending": true,
+    "nodes": [
+      {"id": 0, "internal-data": {"model-name": "TestSignal", "tones": 8, "sample_rate": 48000, "minimum_hz": 73, "maximum_hz": 13901, "amplitude": 0.04, "period_seconds": 6, "sweep_depth": 0.18}},
+      {"id": 1, "internal-data": {"model-name": "StereoFFT"}},
+      {"id": 2, "internal-data": {"model-name": "SpectrumMerge", "merge": 2}},
+      {"id": 3, "internal-data": {"model-name": "Mel"}},
+      {"id": 4, "internal-data": {"model-name": "Spectrogram", "history_size": 400}},
+      {"id": 5, "internal-data": {"model-name": "FFTView", "channel": 0, "merge": 2}},
+      {"id": 6, "internal-data": {"model-name": "MelView"}},
+      {"id": 7, "internal-data": {"model-name": "SpectrogramView"}},
+      {"id": 8, "internal-data": {"model-name": "WLED", "gain": 1}},
+      {"id": 9, "internal-data": {"model-name": "AudioView"}}
+    ],
+    "connections": [
+      {"outNodeId": 0, "outPortIndex": 0, "inNodeId": 1, "inPortIndex": 0},
+      {"outNodeId": 1, "outPortIndex": 0, "inNodeId": 2, "inPortIndex": 0},
+      {"outNodeId": 2, "outPortIndex": 0, "inNodeId": 3, "inPortIndex": 0},
+      {"outNodeId": 3, "outPortIndex": 0, "inNodeId": 4, "inPortIndex": 0},
+      {"outNodeId": 1, "outPortIndex": 0, "inNodeId": 5, "inPortIndex": 0},
+      {"outNodeId": 3, "outPortIndex": 0, "inNodeId": 6, "inPortIndex": 0},
+      {"outNodeId": 4, "outPortIndex": 0, "inNodeId": 7, "inPortIndex": 0},
+      {"outNodeId": 3, "outPortIndex": 0, "inNodeId": 8, "inPortIndex": 0},
+      {"outNodeId": 0, "outPortIndex": 0, "inNodeId": 9, "inPortIndex": 0}
+    ]
+  }
+}

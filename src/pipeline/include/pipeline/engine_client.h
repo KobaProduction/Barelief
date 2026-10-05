@@ -31,7 +31,7 @@ struct EngineSnapshot {
     QJsonObject graph;
     QMap<QString, ComponentStatus> statuses;
     std::shared_ptr<const HistorySnapshot> history;
-    std::vector<float> samples, window, post_window;
+    std::vector<float> window_signal, window, windowed_signal;
     float frequency_step = 0;
 };
 struct EngineReply {

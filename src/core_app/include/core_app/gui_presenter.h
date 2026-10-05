@@ -5,6 +5,7 @@
 #include <QLoggingCategory>
 #include <QMainWindow>
 #include <QString>
+#include <optional>
 
 #include "core_app/config_manager.h"
 #include "pipeline/engine_client.h"
@@ -41,9 +42,12 @@ class GuiPresenter final : public QObject {
     }
     void initialize();
     void update_subscription();
+    void set_visible_views(quint32 mask);
     QString saved_graph_warning() const { return _saved_graph_warning; }
 
   public Q_SLOTS:
+    void set_spectrum_channel(int channel);
+    void set_spectrum_merge(int merge);
     void apply_processing_settings();
     quint64 apply_pipeline_graph(const QJsonObject &document);
     void start_analyzer();
@@ -69,11 +73,11 @@ class GuiPresenter final : public QObject {
     void pipeline_preview(const QMap<int, pipeline::NodePreview> &previews);
     void component_status_changed(QString component, int state, QString error);
 
-    void raw_samples_ready(const std::vector<float> &samples);
+    void raw_signal_ready(const std::vector<float> &samples);
 
-    void samples_ready(const std::vector<float> &samples);
+    void window_signal_ready(const std::vector<float> &samples);
 
-    void samples_after_window_function_ready(const std::vector<float> &samples);
+    void windowed_signal_ready(const std::vector<float> &samples);
 
     void window_function_ready(const std::vector<float> &window);
 
@@ -95,6 +99,7 @@ class GuiPresenter final : public QObject {
 
   private:
     quint64 _subscription_epoch = 0;
+    std::optional<quint32> _visible_views;
     quint32 _subscription = std::numeric_limits<quint32>::max();
     bool _remote = false;
     GuiState &_state;

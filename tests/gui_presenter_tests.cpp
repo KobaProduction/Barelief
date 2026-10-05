@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
     FileSaveApplicationConfig config;
     require(manager.load(config), "Cannot load config fixture");
     config.core.capture_source = 1;
-    config.ui.show_surface = false;
+    config.ui.show_spectrogram = false;
     require(manager.save(config), "Cannot save config fixture");
     require(file.open(QIODevice::ReadOnly), "Cannot read roundtrip config");
     const auto saved = QJsonDocument::fromJson(file.readAll()).object();
@@ -154,7 +154,7 @@ int main(int argc, char **argv) {
     {
         FileSaveApplicationConfig malformed;
         malformed.raw_document = QJsonObject{{"pipeline_graph", "future-format"}, {"scene_graph", QJsonArray{42}}};
-        malformed.ui.show_surface = false;
+        malformed.ui.show_spectrogram = false;
         require(manager.save(malformed), "Cannot save malformed schema prefs");
         require(file.open(QIODevice::ReadOnly), "Cannot read malformed schema prefs");
         const auto preserved = QJsonDocument::fromJson(file.readAll()).object(); file.close();

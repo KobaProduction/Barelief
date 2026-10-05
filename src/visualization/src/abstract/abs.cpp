@@ -2,10 +2,14 @@
 #include "visualization/abstract/abs.h"
 #include <algorithm>
 #include <cmath>
+#include <QResizeEvent>
 
 AbstractChartView::AbstractChartView() {
     setChart(new QChart);
     chart()->legend()->hide();
+    // Qt can finish axis layout after resizeEvent returns. Rebuild decimation
+    // against that final plot width, including when no new audio arrives.
+    connect(chart(), &QChart::plotAreaChanged, this, [this] { _need_update = true; });
 
     set_auto_gain(false);
 
@@ -20,7 +24,9 @@ AbstractChartView::AbstractChartView() {
     _axis_x.setLabelFormat("%.0f");
 
     connect(&_data_update_timer, &QTimer::timeout, this, [this] () {
-        if (!isVisible() || !_need_update) return;
+        if (!isVisible()) return;
+        _flush_chart_resize();
+        if (!_need_update) return;
         _update_chart_data();
         _on_chart_updated();
         _need_update = false;
@@ -34,6 +40,11 @@ AbstractChartView::~AbstractChartView() {
     _data_update_timer.stop();
     chart()->removeAxis(&_axis_x);
     chart()->removeAxis(&_axis_y);
+}
+float AbstractChartView::peak_value() const {
+    float peak=0;
+    for (float value : _data) peak=std::max(peak,std::abs(value));
+    return peak;
 }
 
 void AbstractChartView::_init_series() {
@@ -107,7 +118,25 @@ void AbstractChartView::set_range(const qreal min, const qreal max) {
 
 void AbstractChartView::paintEvent(QPaintEvent *event) { core::perf::Scope trace(core::perf::Stage::ChartPaint);QChartView::paintEvent(event); }
 
-void AbstractChartView::showEvent(QShowEvent *event) { QChartView::showEvent(event); _data_update_timer.start(); }
+void AbstractChartView::showEvent(QShowEvent *event) {
+    QChartView::showEvent(event);
+    _flush_chart_resize();
+    _data_update_timer.start();
+}
 void AbstractChartView::hideEvent(QHideEvent *event) { _data_update_timer.stop(); QChartView::hideEvent(event); }
 
-void AbstractChartView::resizeEvent(QResizeEvent *event) { QChartView::resizeEvent(event); _need_update=true; }
+void AbstractChartView::resizeEvent(QResizeEvent *event) {
+    // Keep viewport/input geometry current immediately. Chart axis layout and
+    // resolution-dependent series rebuilding share the 60 Hz display budget.
+    QGraphicsView::resizeEvent(event);
+    _pending_resize = true;
+}
+
+void AbstractChartView::_flush_chart_resize() {
+    if (!_pending_resize) return;
+    _pending_resize = false;
+    QResizeEvent event(size(), _chart_size);
+    QChartView::resizeEvent(&event);
+    _chart_size = size();
+    _need_update = true;
+}

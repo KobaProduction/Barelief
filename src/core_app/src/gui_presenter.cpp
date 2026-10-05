@@ -64,13 +64,13 @@ GuiPresenter::GuiPresenter(GuiState &state, const QString &remote_host, quint16 
                                now - frame.ready_timestamp_ns);
         _frequency_step = frame.frequency_step;
         _window = frame.window;
-        emit samples_ready(frame.samples);
+        emit window_signal_ready(frame.window_signal);
         emit window_function_ready(frame.window);
-        emit samples_after_window_function_ready(frame.post_window);
+        emit windowed_signal_ready(frame.windowed_signal);
         emit amplitudes_ready(frame.fft);
         emit test_amplitudes_ready(frame.mel);
         emit pipeline_preview(frame.previews);
-        if (frame.surface && frame.history)
+        if (frame.spectrogram && frame.history)
             emit spectrogram_updated(frame.history->values);
     });
     _client->set_audio_handler([this](const auto &frame) {
@@ -81,7 +81,7 @@ GuiPresenter::GuiPresenter(GuiState &state, const QString &remote_host, quint16 
         std::vector<float> samples(frame.left.size());
         for (size_t i = 0; i < samples.size(); ++i)
             samples[i] = i < frame.right.size() ? (frame.left[i] + frame.right[i]) * 0.5f : frame.left[i];
-        emit raw_samples_ready(samples);
+        emit raw_signal_ready(samples);
         if (_sample_rate != frame.sample_rate) {
             _sample_rate = static_cast<uint32_t>(frame.sample_rate);
             emit sample_rate_changed(_sample_rate);
@@ -133,10 +133,11 @@ void GuiPresenter::update_subscription() {
     quint32 mask = pipeline::EngineCommand::Views | pipeline::EngineCommand::Previews;
     if (ui.show_raw_samples)
         mask |= pipeline::EngineCommand::Audio;
-    if (ui.show_surface)
+    if (ui.show_spectrogram)
         mask |= pipeline::EngineCommand::History;
-    if (ui.show_samples || ui.show_window_function || ui.show_samples_after_window_function)
+    if (ui.show_window_signal || ui.show_window_function || ui.show_windowed_signal)
         mask |= pipeline::EngineCommand::Diagnostics;
+    if (_visible_views) mask = *_visible_views;
     if (_subscription == mask)
         return;
     _subscription = mask;
@@ -144,6 +145,9 @@ void GuiPresenter::update_subscription() {
     command.kind = pipeline::EngineCommand::Subscribe;
     command.subscriptions = mask;
     _client->submit(command);
+}
+void GuiPresenter::set_visible_views(quint32 mask) {
+    _visible_views = mask; update_subscription();
 }
 void GuiPresenter::accept_snapshot(const pipeline::EngineSnapshot &snapshot) {
     if (_remote && _subscription_epoch != snapshot.epoch) {
@@ -226,6 +230,16 @@ void GuiPresenter::restart_wled_audio_reactive_server() {
     stop_wled_audio_reactive_server();
     if (_state.file_configs.wled_ar_server.enabled)
         start_wled_audio_reactive_server();
+}
+void GuiPresenter::set_spectrum_channel(int channel) {
+    if (channel<0 || channel>2 || channel==_state.file_configs.core.spectrum_channel) return;
+    _state.file_configs.core.spectrum_channel=channel;
+    apply_processing_settings();
+}
+void GuiPresenter::set_spectrum_merge(int merge) {
+    if (merge<0 || merge>2 || merge==static_cast<int>(_state.file_configs.core.spectrum_merge)) return;
+    _state.file_configs.core.spectrum_merge=static_cast<SpectrumMerge>(merge);
+    apply_processing_settings();
 }
 void GuiPresenter::apply_processing_settings() {
     auto document = _active_graph;

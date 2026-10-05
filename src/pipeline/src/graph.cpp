@@ -1,4 +1,5 @@
 #include "pipeline/graph.h"
+#include "pipeline/test_signal.h"
 #include <QJsonArray>
 #include <QSet>
 #include <algorithm>
@@ -15,14 +16,27 @@ const std::vector<NodeDefinition> &node_definitions() {
                                                          {"Spectrogram", "mel", "history"},
                                                          {"FFTView", "stereo-spectrum", ""},
                                                          {"MelView", "mel", ""},
-                                                         {"SurfaceView", "history", ""},
+                                                         {"SpectrogramView", "history", ""},
                                                          {"AudioView", "audio", ""},
-                                                         {"WLED", "mel", ""}};
+                                                         {"WLED", "mel", ""},
+                                                         {"TestSignal", "", "audio"}};
     return definitions;
+}
+// Legacy version-1 node name, accepted at document boundaries only.
+QString canonical_node_name(const QString &name) { return name=="SurfaceView" ? QStringLiteral("SpectrogramView") : name; }
+QJsonObject canonical_graph_document(QJsonObject document) {
+    if (!document.value("nodes").isArray()) return document;
+    auto nodes=document.value("nodes").toArray();
+    for (int i=0;i<nodes.size();++i) {
+        auto node=nodes[i].toObject(); auto parameters=node.value("internal-data").toObject();
+        const auto name=parameters.value("model-name").toString();
+        if (name!=canonical_node_name(name)) { parameters["model-name"]=canonical_node_name(name); node["internal-data"]=parameters; nodes[i]=node; }
+    }
+    document["nodes"]=nodes; return document;
 }
 NodeDefinition node_definition(const QString &name) {
     for (const auto &definition : node_definitions())
-        if (definition.name == name)
+        if (definition.name == canonical_node_name(name))
             return definition;
     return {};
 }
@@ -39,13 +53,13 @@ QJsonObject GraphProgram::defaults(int channel, SpectrumMerge merge, int source)
     node(4, "Spectrogram", 1000, 0, {{"history_size", 400}});
     node(5, "FFTView", 500, 250, {{"channel", channel}, {"merge", static_cast<int>(merge)}});
     node(6, "MelView", 1000, 250);
-    node(7, "SurfaceView", 1250, 0);
+    node(7, "SpectrogramView", 1250, 0);
     node(8, "WLED", 1000, 450, {{"gain", 1.0}});
     node(9, "AudioView", 250, 250);
     for (auto pair : {std::pair{0, 1}, {1, 2}, {2, 3}, {3, 4}, {1, 5}, {3, 6}, {4, 7}, {3, 8}, {0, 9}})
         edges.append(
             QJsonObject{{"outNodeId", pair.first}, {"outPortIndex", 0}, {"inNodeId", pair.second}, {"inPortIndex", 0}});
-    return {{"version", 1}, {"nodes", nodes}, {"connections", edges}};
+    return {{"version", 1}, {"layout_pending", true}, {"nodes", nodes}, {"connections", edges}};
 }
 std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &document, QString &error) {
     error.clear();
@@ -65,11 +79,17 @@ std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &doc
         const auto json = value.toObject();
         const auto id = json.value("id").toInt(-1);
         auto params = json.value("internal-data").toObject();
-        const auto kind = params.value("model-name").toString();
+        const auto kind = canonical_node_name(params.value("model-name").toString());
+        params["model-name"]=kind;
         if (id < 0 || id == std::numeric_limits<int>::max() || by_id.contains(id))
             return fail("Invalid or duplicate node ID");
         if (node_definition(kind).name.isEmpty())
             return fail("Unknown audio node: " + kind);
+        if (kind == "TestSignal") {
+            TestSignalSettings settings;
+            QString detail;
+            if (!TestSignalSettings::parse(params, settings, detail)) return fail(detail);
+        }
         auto integral_parameter = [&](const QString &key) {
             if (!params.contains(key))
                 return true;
@@ -104,9 +124,9 @@ std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &doc
         by_id.insert(id, {id, -1, kind, params});
         ++counts[kind];
     }
-    if (counts["AudioSource"] != 1 || counts["StereoFFT"] != 1)
+    if (counts["AudioSource"] + counts["TestSignal"] != 1 || counts["StereoFFT"] != 1)
         return fail("Exactly one audio source and one stereo FFT are required");
-    for (const auto &kind : {"FFTView", "MelView", "SurfaceView", "AudioView", "Spectrogram", "WLED"})
+    for (const auto &kind : {"FFTView", "MelView", "SpectrogramView", "AudioView", "Spectrogram", "WLED"})
         if (counts[kind] > 1)
             return fail(QString("Only one %1 is supported").arg(kind));
     for (const auto &value : connections) {
@@ -123,7 +143,7 @@ std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &doc
         by_id[to].input = from;
     }
     auto program = std::make_shared<GraphProgram>();
-    program->_document = document;
+    program->_document = canonical_graph_document(document);
     QSet<int> visiting, visited;
     std::function<bool(int)> visit = [&](int id) {
         if (visiting.contains(id)) {
@@ -154,7 +174,8 @@ std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &doc
         node.operation = static_cast<Operation>(
             std::distance(definitions.begin(), std::find_if(definitions.begin(), definitions.end(),
                                                             [&](const auto &d) { return d.name == node.kind; })));
-        node.source = node.parameters.value("source").toInt(0);
+        if (node.kind == "TestSignal") node.operation = Operation::AudioSource;
+        node.source = node.kind == "TestSignal" ? 2 : node.parameters.value("source").toInt(0);
         node.channel = node.parameters.value("channel").toInt(0);
         node.history_size = node.parameters.value("history_size").toInt(400);
         node.merge = static_cast<SpectrumMerge>(node.parameters.value("merge").toInt(2));
@@ -166,11 +187,30 @@ std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &doc
     }
     return program;
 }
+QJsonObject GraphProgram::test_signal_defaults() {
+    auto document = defaults();
+    auto nodes = document["nodes"].toArray();
+    auto node = nodes[0].toObject();
+    auto parameters = TestSignalSettings{}.json();
+    parameters["model-name"] = "TestSignal";
+    node["internal-data"] = parameters; nodes[0] = node; document["nodes"] = nodes;
+    return document;
+}
 int GraphProgram::capture_source() const {
     for (const auto &node : _ordered)
         if (node.operation == Operation::AudioSource)
             return node.source;
     return 0;
+}
+QJsonObject GraphProgram::source_parameters() const {
+    for (const auto &node : _ordered)
+        if (node.kind == "TestSignal") {
+            TestSignalSettings settings;
+            QString error;
+            TestSignalSettings::parse(node.parameters, settings, error);
+            return settings.json();
+        }
+    return {};
 }
 bool GraphProgram::contains(const QString &kind) const {
     return std::any_of(_ordered.begin(), _ordered.end(), [&](const auto &node) { return node.kind == kind; });
@@ -186,13 +226,11 @@ bool GraphProgram::same_processing_as(const GraphProgram &other) const {
     return true;
 }
 GraphOutput GraphProgram::evaluate(const SpectrumFrame &frame, bool previews) const {
-    struct Value {
-        std::vector<float> spectrum, mel;
-        float hz = 0, magnitude = 0;
-        int history = 400;
-    };
-    // Each evaluator thread retains its scratch buffers. Graph outputs remain owned.
-    thread_local std::vector<Value> values;
+    GraphEvaluationContext context;
+    return evaluate(frame, context, previews);
+}
+GraphOutput GraphProgram::evaluate(const SpectrumFrame &frame, GraphEvaluationContext &context, bool previews) const {
+    auto &values = context._values;
     values.resize(_ordered.size());
     auto merge_into = [&](std::vector<float> &out, SpectrumMerge mode) {
         const auto n = std::min(frame.left.size(), frame.right.size());
@@ -235,9 +273,15 @@ GraphOutput GraphProgram::evaluate(const SpectrumFrame &frame, bool previews) co
             for (auto &v : value.spectrum)
                 v *= gain;
             value.magnitude *= gain;
-        } else if (kind == Operation::Mel)
-            fft_to_mel(value.spectrum, frame.sample_rate, value.mel, 50);
-        else if (kind == Operation::Spectrogram) {
+        } else if (kind == Operation::Mel) {
+            if (context._mel_bins != value.spectrum.size() || context._mel_rate != frame.sample_rate) {
+                context._mel_filter.prepare(value.spectrum.size(), frame.sample_rate, 50);
+                context._mel_bins = value.spectrum.size();
+                context._mel_rate = frame.sample_rate;
+            }
+            value.mel.resize(50);
+            context._mel_filter.process(value.spectrum, value.mel);
+        } else if (kind == Operation::Spectrogram) {
             value.history = node.history_size;
             result.history = value.mel;
             result.history_size = value.history;
@@ -251,8 +295,8 @@ GraphOutput GraphProgram::evaluate(const SpectrumFrame &frame, bool previews) co
                 merge_into(result.fft, node.merge);
         } else if (kind == Operation::MelView)
             result.mel = value.mel;
-        else if (kind == Operation::SurfaceView)
-            result.surface = true;
+        else if (kind == Operation::SpectrogramView)
+            result.spectrogram = true;
         else if (kind == Operation::WLED) {
             result.network = value.mel;
             const auto gain = node.gain;

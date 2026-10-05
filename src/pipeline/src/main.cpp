@@ -1,5 +1,6 @@
 #include "pipeline/audio_pipeline.h"
 #include "pipeline/engine_client.h"
+#include "pipeline/test_signal.h"
 #include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QTimer>
@@ -19,7 +20,8 @@ int main(int argc, char **argv) {
     parser.addHelpOption();
     parser.addOption({"duration", "Stop after milliseconds (0: continuous)", "ms", "0"});
     parser.addOption({"config", "Settings file or standalone audio graph", "file"});
-    parser.addOption({"synthetic", "Use a synthetic stereo 750 Hz signal instead of WASAPI"});
+    parser.addOption({"synthetic", "Use silent configurable test sinusoids instead of device capture"});
+    parser.addOption({"capture-diagnostics", "Report device, buffer and capture latency once per second"});
     parser.addOption({"microphone", "Capture the default system microphone"});
     parser.addOption({"listen", "Serve BDSP clients at explicit address (default localhost)", "address", "127.0.0.1"});
     parser.addOption({"port", "Engine BDSP TCP port", "port", "8213"});
@@ -123,46 +125,22 @@ int main(int argc, char **argv) {
         }
         qInfo() << "Engine listening" << address.toString() << server->port();
     }
+    if (parser.isSet("synthetic")) {
+        auto graph = engine.graph(); auto nodes = graph["nodes"].toArray();
+        for (int i = 0; i < nodes.size(); ++i) {
+            auto node = nodes[i].toObject();
+            if (node["internal-data"].toObject().value("model-name") == "AudioSource") {
+                auto parameters = pipeline::TestSignalSettings{}.json(); parameters["model-name"] = "TestSignal";
+                node["internal-data"] = parameters; nodes[i] = node;
+            }
+        }
+        graph["nodes"] = nodes; QString error;
+        if (!engine.apply_graph(graph,error)) { qCritical().noquote() << error; return 2; }
+    }
     const auto core = settings.value("core").toObject();
     if (core.value("run_analyser").toBool(true))
         engine.start_analyzer();
-    QTimer source;
-    uint64_t offset = 0, sequence = 0;
-    QElapsedTimer source_clock;
-    int64_t stream_start_ns = 0;
-    if (parser.isSet("synthetic")) {
-        source.setTimerType(Qt::PreciseTimer);
-        source.setInterval(5);
-        QObject::connect(&source, &QTimer::timeout, &app, [&] {
-            constexpr uint64_t rate = 48000, chunk_limit = 4096, catch_up_limit = 8192;
-            const auto elapsed = static_cast<uint64_t>(source_clock.nsecsElapsed());
-            // Count PCM from elapsed audio time, including a fractional sample
-            // remainder. Timer precision does not determine the audio rate.
-            const auto due = (elapsed / 1000000000) * rate + (elapsed % 1000000000) * rate / 1000000000;
-            bool gap = due > offset && due - offset > catch_up_limit;
-            if (gap) offset = due - catch_up_limit;
-            while (offset < due) {
-                const auto count = static_cast<size_t>(std::min(due - offset, chunk_limit));
-                pipeline::AudioFrame frame;
-                frame.sample_rate = rate;
-                frame.sequence = ++sequence;
-                frame.discontinuity = gap;
-                gap = false;
-                frame.left.resize(count);
-                frame.right.resize(count);
-                for (size_t i = 0; i < count; ++i)
-                    frame.left[i] = frame.right[i] = std::sin(2 * 3.141592653589793 * 750 * ((offset + i) % rate) / rate);
-                offset += count;
-                frame.timestamp_ns = stream_start_ns + static_cast<int64_t>((offset / rate) * 1000000000 +
-                                                                          (offset % rate) * 1000000000 / rate);
-                engine.feed(frame);
-            }
-        });
-        source_clock.start();
-        stream_start_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        source.start();
-    } else if (core.value("run_loopback").toBool(true))
+    if (parser.isSet("synthetic") || core.value("run_loopback").toBool(true))
         engine.start_capture();
     const auto wled = settings.value("wled_ar_server").toObject();
     if (wled.value("enabled").toBool(false)) {
@@ -173,6 +151,16 @@ int main(int argc, char **argv) {
         }
         engine.start_wled(get_network_interface_address(wled.value("network_interface_name").toString()),
                           static_cast<quint16>(port));
+    }
+    QTimer diagnostics;
+    if (parser.isSet("capture-diagnostics")) {
+        QObject::connect(&diagnostics, &QTimer::timeout, &app, [&] {
+            const auto d = engine.capture_diagnostics();
+            qInfo().noquote() << "Capture" << d.backend << d.device << "rate" << d.sample_rate
+                << "buffer" << d.buffered_frames << "/" << d.capacity_frames << "lost" << d.dropped_frames
+                << "gaps" << d.discontinuities << "dispatch_ms" << d.dispatch_latency_ns / 1000000.0;
+        });
+        diagnostics.start(1000);
     }
     if (duration)
         QTimer::singleShot(duration, &app, &QCoreApplication::quit);

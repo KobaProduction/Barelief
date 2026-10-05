@@ -1,4 +1,4 @@
-name: Windows build and tests
+name: Desktop and portable builds
 on:
   push:
   pull_request:
@@ -34,7 +34,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 4
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration'
       - name: Verify deployment
         if: matrix.configuration == 'Release'
         run: cmake --install build --prefix dist
@@ -52,4 +52,37 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 2
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error -L dsp
+
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        gui: ['ON', 'OFF']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: System dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpulse-dev pulseaudio pulseaudio-utils libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+      - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
+        with:
+          version: '6.10.2'
+          arch: linux_gcc_64
+          modules: qtcharts qtdatavis3d qtserialport
+          aqtversion: '==3.3.0'
+      - name: Virtual audio devices
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=qa rate=48000 channels=2
+          pactl set-default-sink qa
+          pactl set-default-source qa.monitor
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration'
+      - name: PulseAudio monitor and capture
+        run: |
+          ./build/bin/native_capture_checks 5000 tone
+          bash tests/pulse_capture_checks.sh ./build/bin

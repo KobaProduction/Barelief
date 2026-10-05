@@ -41,7 +41,7 @@ struct SpectrumFrame {
     uint64_t generation = 0;
     uint64_t dropped_windows = 0;
     bool discontinuity = false;
-    std::vector<float> samples, window, post_window;
+    std::vector<float> window_signal, window, windowed_signal;
     std::vector<float> left, right, mel_left, mel_right;
 };
 
@@ -49,17 +49,17 @@ class Analyzer final : public AbstractTask {
 public:
     typedef std::function<void(void)> update_handler_t;
     typedef std::function<void(const std::vector<float> &window)> on_update_window_function_handler_t;
-    typedef std::function<void(const std::vector<float> &window)> on_samples_after_window_function_handler_t;
+    typedef std::function<void(const std::vector<float> &window)> on_windowed_signal_handler_t;
 protected:
     mutable std::recursive_mutex _mutex;
-    std::condition_variable_any _samples_ready;
+    std::condition_variable_any _window_signal_ready;
 
     update_handler_t _handler = nullptr;
     std::function<void(const SpectrumFrame &)> _frame_handler;
     uint64_t _sequence = 0;
     int64_t _input_timestamp_ns = 0;
     on_update_window_function_handler_t _update_window_function_handler = nullptr;
-    on_samples_after_window_function_handler_t _samples_after_window_function_handler = nullptr;
+    on_windowed_signal_handler_t _windowed_signal_handler = nullptr;
 
     bool _mel_enabled = true;
     struct PendingWindow {
@@ -103,7 +103,7 @@ public:
     void set_frame_handler(std::function<void(const SpectrumFrame &)> handler);
     static std::vector<float> merge_spectra(const std::vector<float> &left, const std::vector<float> &right, SpectrumMerge mode);
     void set_update_window_function_handler(on_update_window_function_handler_t handler);
-    void set_samples_after_window_function_handler(on_samples_after_window_function_handler_t handler);
+    void set_windowed_signal_handler(on_windowed_signal_handler_t handler);
 
     void update_sample_rate(size_t sample_rate);
 
