@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "pipeline/engine_client.h"
 #include "pipeline/network_runtime.h"
 #include "pipeline/stream_transport.h"
@@ -48,7 +49,7 @@ int main(int argc, char **argv) {
             producer.publish("mel", frame);
         };
         {
-            EngineClient local;
+            EngineClient local(test_fixture::synthetic_capture_factory());
             EngineCommand command;
             command.kind = EngineCommand::ApplyGraph;
             command.graph = graph;
@@ -93,7 +94,7 @@ int main(int argc, char **argv) {
             require(wait([&] { return cleared; }), "local stopped view did not clear");
         }
         {
-            AudioPipeline engine;
+            AudioPipeline engine(test_fixture::synthetic_capture_factory());
             QString error;
             require(engine.apply_graph(graph, error), qPrintable(error));
             EngineServer server(engine);

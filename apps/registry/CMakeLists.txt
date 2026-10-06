@@ -1,4 +1,6 @@
 add_executable(aggregator_server_app main_server.cpp)
 target_link_libraries(aggregator_server_app PRIVATE aggregator-library)
+deploy_desktop_runtime(aggregator_server_app)
 add_executable(aggregator_client_app main_client.cpp)
 target_link_libraries(aggregator_client_app PRIVATE aggregator-library)
+deploy_desktop_runtime(aggregator_client_app)

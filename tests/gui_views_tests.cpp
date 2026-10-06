@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "core_app/core_application.h"
 #include "core_app/main_window.h"
 #include "core_app/scheme_editor/editor_widget.h"
@@ -51,7 +52,7 @@ int main(int argc, char **argv) {
         char name[] = "gui_views_tests", flag[] = "--config";
         char *args[]{name, flag, bytes.data(), nullptr};
         int count = 3;
-        CoreApplication app(count, args);
+        CoreApplication app(count, args, test_fixture::synthetic_capture_factory(false));
         MainWindow *window = nullptr;
         for (auto *widget : QApplication::topLevelWidgets())
             if (auto *candidate = qobject_cast<MainWindow *>(widget))
@@ -156,11 +157,18 @@ int main(int argc, char **argv) {
             require(app.pipeline().graph_revision()==revision,"Graph navigation changed DSP revision");
             window->close();qInfo("Graph tabs, activation, selector, settings and shortcut navigation passed");return 0;
         }
+        auto *editor = window->findChild<SchemeEditorWidget *>();
+        require(editor, "graph editor absent");
         first->show();
         first->raise();
         extra->show();
+        // Public QDock floating also represents dragging a tab into its own
+        // window; exposure must update without a placement-menu command.
         extra->setFloating(true);
-        QTest::qWait(50);
+        for (int i=0; i<100 && (!first->property("renderExposed").toBool() || !extra->property("renderExposed").toBool()); ++i)
+            QTest::qWait(5);
+        require(first->property("renderExposed").toBool() && extra->property("renderExposed").toBool(),
+                "Floating an inactive tab did not expose both renderers");
         auto *a = dynamic_cast<FreqChartView *>(first->findChild<QChartView *>());
         auto *b = dynamic_cast<FreqChartView *>(extra->findChild<QChartView *>());
         require(a && b && a != b, "independent charts absent");
@@ -175,16 +183,20 @@ int main(int argc, char **argv) {
         right.values = {8, 9};
         left.frequency_step = right.frequency_step = 10;
         emit app.presenter().node_views_ready({{5, left}, {55, right}});
+        if (a->value_count() != 3 || b->value_count() != 2 || a->peak_value() != 3 || b->peak_value() != 9)
+            qCritical() << "Per-node values/counts:" << a->value_count() << a->peak_value() << b->value_count() << b->peak_value()
+                        << "Visibility:" << first->isVisible() << extra->isVisible();
         require(a->value_count() == 3 && b->value_count() == 2 && a->peak_value() == 3 && b->peak_value() == 9,
                 "per-node frames cross-fed views");
         emit app.presenter().node_views_ready({{55, right}});
-        require(a->value_count() == 0 && b->value_count() == 2, "inactive view not cleared independently");
+        require(a->value_count() == 3 && a->peak_value() == 0 && b->value_count() == 2 && b->peak_value() == 9,
+                "Missing node frame did not zero only its existing geometry");
         pipeline::TypedFrame unavailable;
         unavailable.available = false;
         unavailable.sequence = 0;
         emit app.presenter().node_views_ready({{5, left}, {55, unavailable}});
-        require(a->value_count() == 3 && b->value_count() == 0,
-                "Unavailable control marker did not clear only affected node");
+        require(a->value_count() == 3 && a->peak_value() == 3 && b->value_count() == 2 && b->peak_value() == 0,
+                "Unavailable marker did not zero only affected node geometry");
         if (app.platformName() != "offscreen" && app.platformName() != "minimal") {
             auto *dock = window->findChild<QDockWidget *>("spectrogramDock");
             require(dock, "spectrogram dock");
@@ -225,7 +237,7 @@ int main(int argc, char **argv) {
         }
         require(identity, "identity not persisted");
         {
-            pipeline::AudioPipeline remote_engine;
+            pipeline::AudioPipeline remote_engine(test_fixture::synthetic_capture_factory());
             auto remote_graph = graph;
             auto remote_nodes = remote_graph["nodes"].toArray();
             remote_nodes.append(QJsonObject{
@@ -246,14 +258,21 @@ int main(int argc, char **argv) {
             pipeline::EngineServer server(remote_engine);
             require(server.listen(QHostAddress::LocalHost, 0, false), "remote server");
             app.presenter().select_device("remote-test", "127.0.0.1", server.port());
-            auto wait = [&](auto predicate) {
+            auto wait = [&](auto predicate, const char *message) {
                 QElapsedTimer clock;
                 clock.start();
                 while (!predicate() && clock.elapsed() < 4000)
                     QTest::qWait(5);
-                require(predicate(), "Remote GUI frame timeout");
+                if (!predicate())
+                    qCritical() << message << "Remote status:" << int(remote_engine.current_status("Capture").state)
+                                << int(remote_engine.current_status("Analyzer").state)
+                                << "processed:" << remote_engine.processed_frames()
+                                << "epoch:" << app.presenter().client().snapshot().epoch
+                                << "GUI status:" << int(app.presenter().client().snapshot().statuses.value("Capture").state)
+                                << int(app.presenter().client().snapshot().statuses.value("Analyzer").state);
+                require(predicate(), message);
             };
-            wait([&] { return app.presenter().client().snapshot().epoch != 0; });
+            wait([&] { return app.presenter().client().snapshot().epoch != 0; }, "Remote control handshake timeout");
             auto dock_for = [&](int node) {
                 auto key = QString::fromLatin1(
                     QJsonDocument(QJsonArray{"remote-test", "main", node}).toJson(QJsonDocument::Compact).toHex());
@@ -261,16 +280,16 @@ int main(int argc, char **argv) {
             };
             auto *fft_remote = dock_for(5), *mel_remote = dock_for(101);
             require(fft_remote && mel_remote, "remote per-node views absent");
-            fft_remote->show();
-            fft_remote->setFloating(true);
-            mel_remote->show();
-            mel_remote->setFloating(true);
+            emit editor->graph_open_requested(5, 0);
+            emit editor->graph_open_requested(101, 0);
+            wait([&] { return fft_remote->property("renderExposed").toBool() && mel_remote->property("renderExposed").toBool(); },
+                 "Remote floating renderer exposure timeout");
             auto *fft_chart = dynamic_cast<AbstractChartView *>(fft_remote->findChild<QChartView *>());
             auto *mel_chart = dynamic_cast<AbstractChartView *>(mel_remote->findChild<QChartView *>());
             require(fft_chart && mel_chart, "remote chart types");
             remote_engine.start_analyzer();
             remote_engine.start_capture();
-            wait([&] { return fft_chart->value_count() > 0; });
+            wait([&] { return fft_chart->value_count() > 0; }, "Remote synthetic FFT delivery timeout");
             pipeline::TypedFrame incoming;
             incoming.type = pipeline::FrameType::Mel;
             incoming.values = {42, 43};
@@ -279,16 +298,23 @@ int main(int argc, char **argv) {
             incoming.sample_rate = 48000;
             incoming.stream_id = "gui-control";
             remote_engine.feed_typed(100, incoming);
-            wait([&] { return mel_chart->value_count() == 2; });
+            wait([&] { return mel_chart->value_count() == 2; }, "Remote injected Mel delivery timeout");
             remote_engine.clear_ingress(100, remote_engine.epoch());
-            wait([&] { return mel_chart->value_count() == 0; });
+            wait([&] { return mel_chart->value_count() == 2 && mel_chart->peak_value() == 0; }, "Remote unavailable Mel zero timeout");
             require(fft_chart->value_count() > 0, "Upstream unavailable marker cleared independent remote branch");
             incoming.sequence = 2;
             remote_engine.feed_typed(100, incoming);
-            wait([&] { return mel_chart->value_count() == 2; });
+            wait([&] { return mel_chart->value_count() == 2 && mel_chart->peak_value() == 43; }, "Remote resumed Mel delivery timeout");
             remote_engine.stop_capture();
             remote_engine.stop_analyzer();
-            wait([&] { return mel_chart->value_count() == 0 && fft_chart->value_count() == 0; });
+            for(int i=0; i<100 && app.presenter().client().snapshot().statuses.value("Analyzer").state!=pipeline::State::Stopped; ++i)
+                QTest::qWait(5);
+            if(mel_chart->value_count() || fft_chart->value_count())
+                qInfo() << "External Stop before clear:" << "FFT" << fft_chart->value_count() << fft_chart->peak_value()
+                        << "Mel" << mel_chart->value_count() << mel_chart->peak_value();
+            wait([&] { return mel_chart->value_count() == 0 && fft_chart->value_count() == 0; }, "Remote explicit Stop clear timeout");
+            wait([&] { return app.presenter().client().snapshot().statuses.value("Analyzer").state==pipeline::State::Stopped; },
+                 "Remote explicit Stop acknowledgement timeout");
             app.presenter().select_device(app.presenter().local_device_id(), {}, 0);
         }
         window->close();

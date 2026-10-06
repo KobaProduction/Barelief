@@ -44,10 +44,34 @@ int main() {
     assert(transport.sent==expected);
     for(auto byte:expected)assert(stream.feed(std::span(&byte,1))==Status::ok);
     assert(received==1 && received_payload[255]==255 && received_payload[256]==0);
+    std::vector<BDSP::parse_packet_status_t> errors;
+    stream.set_error_handler([](BDSP::parse_packet_status_t error,void *ctx){
+        static_cast<std::vector<BDSP::parse_packet_status_t> *>(ctx)->push_back(error);
+    }, &errors);
     auto corrupted=expected;corrupted[20]^=1;assert(stream.feed(corrupted)==Status::malformed);
+    assert(errors.size()==1 && errors.back()==BDSP::CHECKSUM_ERROR);
     assert(stream.feed(expected)==Status::ok && received==2);
+    assert(errors.size()==1); // Recovery must not manufacture another diagnostic.
     std::array<uint8_t,12> tiny{};PacketStream bounded(tiny,out);
+    bounded.set_error_handler([](BDSP::parse_packet_status_t error,void *ctx){
+        static_cast<std::vector<BDSP::parse_packet_status_t> *>(ctx)->push_back(error);
+    }, &errors);
     assert(bounded.feed(expected)==Status::overflow);
+    assert(errors.size()==2 && errors.back()==BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR);
+    bounded.reset();
+    assert(bounded.feed(std::span(expected).first(3))==Status::ok);
+    bounded.reset(); // Reconnection fences both framing and partial packet bytes.
+    std::array<uint8_t,2200> cancel_in{},cancel_out{};
+    PacketStream cancelled(cancel_in,cancel_out);
+    std::pair<PacketStream *,int> cancellation{&cancelled,0};
+    cancelled.set_packet_handler([](PacketView,void *ctx){
+        auto &state=*static_cast<std::pair<PacketStream *,int> *>(ctx);
+        ++state.second;state.first->reset();
+    },&cancellation);
+    auto coalesced=expected;coalesced.insert(coalesced.end(),expected.begin(),expected.end());
+    assert(cancelled.feed(coalesced)==Status::ok);
+    assert(cancellation.second==1); // Reset cancels the rest of the old receive block.
+    assert(cancelled.feed(expected)==Status::ok && cancellation.second==2);
     std::array<uint8_t,1> short_out{88};auto result=encode_packet(13,payload,short_out);
     assert(result.status==Status::buffer_too_small && result.required_bytes>short_out.size() && short_out[0]==88);
     // Boundary sizes and COBS special patterns retain the upstream byte format.

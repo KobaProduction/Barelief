@@ -51,6 +51,20 @@ int main(int argc, char **argv) {
         r.write(QJsonDocument(graph).toJson());
         r.close();
         run({"--config", raw, "--duration", "200"}, 0);
+        run({"--serial-port","__codex_missing_uart__","--duration","100"},2);
+        run({"--serial-port","__codex_missing_uart__","--serial-input-node","0","--serial-baud","invalid"},2);
+        run({"--remote","127.0.0.1","--serial-port","__codex_missing_uart__"},2);
+        const auto uart_path=dir.filePath("uart.json");
+        QFile uart(uart_path);
+        const auto uart_graph=QJsonObject{{"version",2},{"unknown-uart",42},{"nodes",QJsonArray{
+            QJsonObject{{"id",0},{"internal-data",QJsonObject{{"model-name","NetworkInput"},{"data_type","mel"},{"stream_id","uart"}}}},
+            QJsonObject{{"id",1},{"internal-data",QJsonObject{{"model-name","MelView"}}}}}},
+            {"connections",QJsonArray{QJsonObject{{"outNodeId",0},{"inNodeId",1},{"outPortIndex",0},{"inPortIndex",0}}}}};
+        const auto uart_original=QJsonDocument(uart_graph).toJson();
+        require(uart.open(QIODevice::WriteOnly),"UART config fixture");uart.write(uart_original);uart.close();
+        // Endpoint failure is recoverable; no COM device or audio capture is used.
+        run({"--config",uart_path,"--serial-port","__codex_missing_uart__","--serial-input-node","0","--duration","100"},0);
+        require(uart.open(QIODevice::ReadOnly) && uart.readAll()==uart_original,"Serial CLI changed JSON document");uart.close();
         config["pipeline_graph"] = QJsonObject{{"version", 2}, {"nodes", QJsonArray{}}};
         require(f.open(QIODevice::WriteOnly | QIODevice::Truncate), "invalid fixture");
         f.write(QJsonDocument(config).toJson());

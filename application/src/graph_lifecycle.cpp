@@ -74,4 +74,8 @@ Status GraphLifecycle::stop() {
 const domain::GraphDefinition* GraphLifecycle::working_graph() const noexcept {
     return working_ ? &working_->definition() : nullptr;
 }
+void GraphLifecycle::runtime_limits(RuntimeLimits limits) {
+    pending_={};
+    limits_=limits;
+}
 }

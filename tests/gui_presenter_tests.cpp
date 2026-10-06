@@ -1,3 +1,5 @@
+#include "synthetic_capture.h"
+#include "core_app/config_manager.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/scheme_editor/audio_node_model.h"
 #include "core/network/tcp_packet_socket.h"
@@ -81,6 +83,27 @@ protected:
 };
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    if(QCoreApplication::arguments().contains("--serial-runtime-options-only")) {
+        GuiState state;
+        state.file_configs.pipeline_graph=QJsonObject{{"version",2},{"nodes",QJsonArray{
+            QJsonObject{{"id",0},{"internal-data",QJsonObject{{"model-name","NetworkInput"},{"data_type","mel"},{"stream_id","uart"}}}},
+            QJsonObject{{"id",1},{"internal-data",QJsonObject{{"model-name","MelView"}}}}}},
+            {"connections",QJsonArray{QJsonObject{{"outNodeId",0},{"inNodeId",1},{"outPortIndex",0},{"inPortIndex",0}}}}};
+        state.file_configs.raw_document={{"unknown",42},{"network",QJsonObject{{"unknown-network",true}}}};
+        const auto saved=state.file_configs.raw_document;
+        GuiPresenter presenter(state, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
+        QString rejected;
+        QObject::connect(&presenter,&GuiPresenter::command_rejected,[&](quint64,const QString &error){rejected=error;});
+        auto runtime_config=saved;
+        runtime_config["network"]=QJsonObject{{"serial",QJsonObject{{"port_name",""},{"input_node",0}}}};
+        presenter.initialize(runtime_config);
+        wait([&]{return !presenter.graph_request_pending();});
+        require(rejected.contains("port_name"),"Presenter ignored runtime-only Serial config");
+        require(state.file_configs.raw_document==saved,"Runtime Serial overrides changed persisted config");
+        require(presenter.client().local_engine()->current_status("Capture").state==pipeline::State::Stopped,
+                "Serial-only initialization opened a capture source");
+        return 0;
+    }
     QTemporaryDir directory;
     require(directory.isValid(), "Cannot create CLI test directory");
 #ifdef Q_OS_WIN
@@ -170,7 +193,7 @@ int main(int argc, char **argv) {
     state.file_configs.core.run_analyser = false;
     state.file_configs.core.run_loopback = false;
     state.file_configs.ui.camera = QJsonObject{{"test", 42}};
-    GuiPresenter presenter(state);
+    GuiPresenter presenter(state, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
     quint64 completed = 0;
     bool accepted = false;
     QObject::connect(&presenter, &GuiPresenter::graph_apply_finished, &app, [&](quint64 id, bool ok, const QString &) {
@@ -209,7 +232,7 @@ int main(int argc, char **argv) {
         broken.file_configs.scene_graph = draft;
         broken.file_configs.pipeline_graph = draft;
         load_editor(broken, draft);
-        GuiPresenter fallback(broken);
+        GuiPresenter fallback(broken, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
         int automatic_saves = 0;
         QObject::connect(&fallback, &GuiPresenter::on_config_updated, &fallback, [&] { ++automatic_saves; });
         fallback.initialize();
@@ -224,7 +247,7 @@ int main(int argc, char **argv) {
                 broken.data_flow_graph->allNodeIds().empty(), "Processing prefs replaced invalid version1 schemas");
     }
     {
-        pipeline::AudioPipeline engine;
+        pipeline::AudioPipeline engine(test_fixture::synthetic_capture_factory());
         pipeline::EngineServer readonly(engine);
         require(readonly.listen(QHostAddress::LocalHost, 0, false), "Cannot start read-only peer");
         GuiState remote_state; load_editor(remote_state, valid);
@@ -307,12 +330,12 @@ int main(int argc, char **argv) {
         require(delayed_state.file_configs.scene_graph == draft, "Remote replies replaced saved draft");
     }
     {
-        pipeline::AudioPipeline engine;pipeline::EngineServer server(engine);
+        pipeline::AudioPipeline engine(test_fixture::synthetic_capture_factory());pipeline::EngineServer server(engine);
         require(server.listen(QHostAddress::LocalHost,0,false),"Device server");
         GuiState isolated;isolated.file_configs.core.run_analyser=isolated.file_configs.core.run_loopback=false;
         isolated.file_configs.scene_graph=valid;isolated.file_configs.scene_graph["local-extension"]=42;
         isolated.file_configs.ui.pipeline_presets=QJsonArray{QJsonObject{{"id","local-preset"}}};
-        isolated.file_configs.ui.editor_view={{"zoom",.5}};GuiPresenter selector(isolated);
+        isolated.file_configs.ui.editor_view={{"zoom",.5}};GuiPresenter selector(isolated, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
         selector.initialize();wait([&]{return !selector.graph_request_pending();});
         const auto local_draft=isolated.file_configs.scene_graph;int selected=0;
         QObject::connect(&selector,&GuiPresenter::selected_device_changed,&selector,[&](auto,auto){++selected;});
@@ -329,7 +352,7 @@ int main(int argc, char **argv) {
         GuiState transitions;
         transitions.file_configs.core.run_analyser = transitions.file_configs.core.run_loopback = false;
         transitions.file_configs.pipeline_graph = valid;
-        GuiPresenter local(transitions);
+        GuiPresenter local(transitions, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
         local.initialize();
         wait([&] { return !local.graph_request_pending(); });
         auto *engine = local.client().local_engine();

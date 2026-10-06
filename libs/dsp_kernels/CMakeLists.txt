@@ -26,5 +26,8 @@ target_include_directories(dsp_kernels PUBLIC
     $<INSTALL_INTERFACE:include>)
 target_compile_features(dsp_kernels PUBLIC cxx_std_20)
 target_link_libraries(dsp_kernels PRIVATE ${dsp_backend_target})
+# Preserve the historical consumer target without a second implementation.
+add_library(portable_dsp INTERFACE)
+target_link_libraries(portable_dsp INTERFACE dsp_kernels)
 install(TARGETS dsp_kernels EXPORT portable_sdk_targets ARCHIVE DESTINATION lib)
 install(DIRECTORY include/ DESTINATION include)

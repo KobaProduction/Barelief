@@ -3,6 +3,7 @@
 #include "pipeline/audio_pipeline.h"
 #include "pipeline/engine_client.h"
 #include "pipeline/test_signal.h"
+#include "pipeline/serial_config.h"
 #include <QCoreApplication>
 #include <QCommandLineParser>
 #include <QTimer>
@@ -31,6 +32,7 @@ int main(int argc, char **argv) {
     parser.addOption({"server", "Enable engine BDSP TCP server"});
     parser.addOption({"allow-mutations", "Allow remote engine commands"});
     parser.addOption({"remote", "Connect to an existing engine instead of capturing locally", "host"});
+    pipeline::add_serial_options(parser);
     parser.process(app);
     if (parser.isSet("synthetic") && parser.isSet("microphone")) {
         qCritical("Choose either synthetic or microphone source");
@@ -49,6 +51,9 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (parser.isSet("remote")) {
+        if(parser.isSet("serial-port") || parser.isSet("serial-baud") || parser.isSet("serial-input-node")) {
+            qCritical("Serial input belongs to the local graph; choose either --remote or Serial options");return 2;
+        }
         pipeline::EngineClient client(parser.value("remote"), static_cast<quint16>(port));
         client.set_snapshot_handler([](pipeline::EngineSnapshot s) {
             qInfo() << "Engine snapshot" << s.epoch << s.revision << s.graph_revision;
@@ -152,6 +157,10 @@ int main(int argc, char **argv) {
         }
     }
     const auto core = settings.value("core").toObject();
+    QString serial_error;
+    if(!pipeline::apply_serial_options(parser,settings,serial_error)) {
+        qCritical().noquote()<<serial_error;return 2;
+    }
     if (core.value("run_analyser").toBool(true))
         engine.start_analyzer();
     pipeline::NetworkRuntime network(engine, settings);

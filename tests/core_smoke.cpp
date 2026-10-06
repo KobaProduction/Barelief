@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "core_app/core_application.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/main_window.h"
@@ -38,7 +39,7 @@ static int schema_regression() {
     char name[] = "schema_smoke", flag[] = "--config";
     char *args[] = {name, flag, path_bytes.data(), nullptr};
     int count = 3;
-    CoreApplication app(count, args);
+    CoreApplication app(count, args, test_fixture::synthetic_capture_factory());
     auto wait = [&](auto predicate) {
         QElapsedTimer timer;
         timer.start();
@@ -103,7 +104,7 @@ int main(int argc, char **argv) {
     char *fresh_args[] = {fresh_name, fresh_flag, fresh_path.data(), nullptr};
     int fresh_count = 3;
     const bool expect_first_run = qEnvironmentVariableIsSet("QT_VISUALIZATION_EXPECT_FIRST_RUN");
-    CoreApplication app(expect_first_run ? fresh_count : argc, expect_first_run ? fresh_args : argv);
+    CoreApplication app(expect_first_run ? fresh_count : argc, expect_first_run ? fresh_args : argv, test_fixture::synthetic_capture_factory());
     const bool expect_remote = qEnvironmentVariableIsSet("QT_VISUALIZATION_EXPECT_REMOTE");
     int spectra = 0;
     QObject::connect(&app, &CoreApplication::amplitudes_ready, &app, [&] { ++spectra; });
@@ -157,10 +158,10 @@ int main(int argc, char **argv) {
             !program || program->capture_source() != 0 ||
             app.pipeline().current_status("Analyzer").state != pipeline::State::Running ||
             app.pipeline().current_status("Capture").state == pipeline::State::Stopped) {
-            qCritical("First run did not open the connected real-capture workspace and request processing");
+            qCritical("First run did not open the default-source workspace and request synthetic processing");
             return 1;
         }
-        qInfo("Fresh configuration: connected real capture, Analyzer running, Spectrogram above Pipeline");
+        qInfo("Fresh configuration: default source with synthetic adapter, Analyzer running, Spectrogram above Pipeline");
     }
     if (expect_remote && (!app.presenter().is_remote() || spectra < 10)) {
         qCritical("Remote GUI did not receive spectra: %d", spectra);
@@ -184,6 +185,8 @@ int main(int argc, char **argv) {
                 spectra, bool(engine_graph), bool(editor_graph), engine_graph ? engine_graph->capture_source() : -1,
                 engine_graph && editor_graph && editor_graph->same_processing_as(*engine_graph),
                 qPrintable(app.pipeline().capture_diagnostics().backend), qPrintable(error));
+            qCritical().noquote() << "Engine graph:" << QJsonDocument(app.pipeline().graph()).toJson(QJsonDocument::Compact);
+            qCritical().noquote() << "Editor graph:" << QJsonDocument(editor_document).toJson(QJsonDocument::Compact);
             return 1;
         }
     }

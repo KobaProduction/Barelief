@@ -8,8 +8,15 @@
 #include <condition_variable>
 #include <QUdpSocket>
 #include <cstring>
+#include <source_location>
 using namespace pipeline;
 static void check(bool ok,const char *why) { if(!ok) throw std::runtime_error(why); }
+static void check_apply(AudioPipeline &runtime, const QJsonObject &document, QString &error,
+                        std::source_location location = std::source_location::current()) {
+    const bool applied = runtime.apply_graph(document, error);
+    if (!applied) throw std::runtime_error((QStringLiteral("Apply at line %1 failed: %2")
+        .arg(location.line()).arg(error)).toStdString());
+}
 static QJsonObject node(int id,const char *kind,QJsonObject p={}) {
     if(QString(kind).startsWith("Network") && !p.contains("stream_id")) p["stream_id"]=QString::number(id);
     p["model-name"]=kind;return {{"id",id},{"internal-data",p}};
@@ -94,7 +101,7 @@ int main(int argc,char **argv) {
         check(b->evaluate(0,f,c).views[2].history.size()==1,"Producer restart did not reset history");
         f.epoch=100;f.sequence=2;check(b->evaluate(0,f,c).views.isEmpty(),"Retired producer epoch accepted");
         f.epoch=0;f.generation=2;f.sequence=1;
-        AudioPipeline runtime;check(runtime.apply_graph(branches,error),qPrintable(error));
+        AudioPipeline runtime;check_apply(runtime,branches,error);
         const auto epoch=runtime.epoch();std::atomic<int> observer1{0},observer2{0};
         auto one=runtime.subscribe_typed([&](int,TypedFrame){++observer1;});auto two=runtime.subscribe_typed([&](int,TypedFrame){++observer2;});
         f.discontinuity=false;f.sequence=1;runtime.feed_typed(0,f,epoch);runtime.feed_typed(10,f,epoch);
@@ -147,11 +154,11 @@ int main(int argc,char **argv) {
             "Disconnected history did not retain rows and append a dimensioned zero tick");
         runtime.unsubscribe_typed(two);
         auto history_only=graph({node(0,"NetworkInput",{{"data_type","history"}}),node(1,"SpectrogramView")},{edge(0,1)});
-        check(runtime.apply_graph(history_only,error),qPrintable(error));f.type=FrameType::History;f.history={{1,2},{3,4}};
+        check_apply(runtime,history_only,error);f.type=FrameType::History;f.history={{1,2},{3,4}};
         runtime.feed_typed(0,f);check(runtime.latest_views()[1].history==f.history,"History ingress performed earlier stages");
         int capture_opens=0;
         AudioPipeline remote_only([&](AudioSourceKind){++capture_opens;return std::unique_ptr<IAudioSource>{};});
-        check(remote_only.apply_graph(history_only,error),qPrintable(error));remote_only.start_analyzer();remote_only.start_capture();
+        check_apply(remote_only,history_only,error);remote_only.start_analyzer();remote_only.start_capture();
         check(capture_opens==0,"History-only runtime opened a capture adapter");remote_only.stop_analyzer();
         {
             QUdpSocket receiver;check(receiver.bind(QHostAddress(QHostAddress::LocalHost),quint16(0)),"WLED test bind failed");
@@ -159,7 +166,7 @@ int main(int argc,char **argv) {
             auto outputs=graph({node(0,"NetworkInput",{{"data_type","mel"}}),node(1,"WLED"),node(2,"MelView"),
                 node(10,"NetworkInput",{{"data_type","mel"}}),node(11,"Spectrogram"),node(12,"SpectrogramView")},
                 {edge(0,1),edge(0,2),edge(10,11),edge(11,12)});
-            check(lights.apply_graph(outputs,error),qPrintable(error));lights.start_analyzer();
+            check_apply(lights,outputs,error);lights.start_analyzer();
             auto duplicate_wled=outputs;auto duplicate_nodes=duplicate_wled["nodes"].toArray();duplicate_nodes.append(node(20,"WLED"));duplicate_wled["nodes"]=duplicate_nodes;
             check(!GraphProgram::compile(duplicate_wled,error) && error.contains("WLED"),"Additional physical WLED sink was silently accepted");
             lights.start_wled(QHostAddress::LocalHost,receiver.localPort(),QHostAddress::LocalHost);
@@ -195,8 +202,8 @@ int main(int argc,char **argv) {
             for(int i=0;i<disabled_nodes.size();++i) {auto n=disabled_nodes[i].toObject();if(n["internal-data"].toObject()["model-name"]!="WLED") continue;
                 auto params=n["internal-data"].toObject();params["enabled"]=false;n["internal-data"]=params;disabled_nodes[i]=n;}
             disabled["nodes"]=disabled_nodes;const auto prior_epoch=lights.epoch();
-            check(lights.apply_graph(disabled,error),qPrintable(error));check(wait_packet(true,100),"Disabled WLED did not immediately silence");
-            check(lights.apply_graph(outputs,error),qPrintable(error));drain();
+            check_apply(lights,disabled,error);check(wait_packet(true,100),"Disabled WLED did not immediately silence");
+            check_apply(lights,outputs,error);drain();
             lights.feed_typed(0,m,prior_epoch);check(!wait_packet(false,40),"Old apply epoch crossed reenable");
             ++m.sequence;lights.feed_typed(0,m,lights.epoch());check(wait_packet(false,200),"Reenabled WLED did not resume");
             lights.stop_wled();lights.stop_analyzer();
@@ -244,7 +251,7 @@ int main(int argc,char **argv) {
             node(15,"BarkWeighting"),node(16,"SpectrumMerge"),node(17,"Mel"),node(18,"Spectrogram"),node(19,"SpectrogramView")},
             {edge(0,1),edge(1,2),edge(2,3),edge(3,4),edge(3,5),edge(5,6),edge(6,7),edge(7,8),edge(8,9),
              edge(10,11),edge(11,12),edge(12,13),edge(13,14),edge(13,15),edge(15,16),edge(16,17),edge(17,18),edge(18,19)});
-        check(runtime.apply_graph(local,error),qPrintable(error));runtime.start_analyzer();runtime.start_capture();
+        check_apply(runtime,local,error);runtime.start_analyzer();runtime.start_capture();
         std::this_thread::sleep_for(std::chrono::seconds(5));
         const auto views=runtime.latest_views();check(views[4].sequence>=250 && views[14].sequence>=250,"Multiple local producers depend on GUI/one source");
         check(views[9].history.size()>=250 && views[19].history.size()>=250 && views[9].history.back()!=views[19].history.back(),

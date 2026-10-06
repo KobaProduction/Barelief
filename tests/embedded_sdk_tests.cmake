@@ -1,0 +1,8 @@
+add_executable(embedded_sdk_tests "${CMAKE_CURRENT_LIST_DIR}/embedded_sdk_tests.cpp")
+target_link_libraries(embedded_sdk_tests PRIVATE embedded_support dataflow_runtime)
+target_compile_features(embedded_sdk_tests PRIVATE cxx_std_20)
+if(NOT MSVC)
+    target_compile_options(embedded_sdk_tests PRIVATE -UNDEBUG -fno-exceptions -fno-rtti)
+endif()
+add_test(NAME embedded_sdk_tests COMMAND embedded_sdk_tests)
+set_tests_properties(embedded_sdk_tests PROPERTIES LABELS "portable;quick;embedded" TIMEOUT 15)

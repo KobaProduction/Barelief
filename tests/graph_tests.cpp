@@ -1,4 +1,5 @@
 #include "pipeline/audio_pipeline.h"
+#include "synthetic_capture.h"
 #include <thread>
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -17,6 +18,25 @@ int main(int argc,char **argv) {
     try {
         auto document=pipeline::GraphProgram::defaults(); QString error;
         auto program=pipeline::GraphProgram::compile(document,error); require(bool(program),qPrintable(error));
+        auto explicit_defaults=document;
+        auto default_nodes=explicit_defaults["nodes"].toArray();
+        for(int i=0;i<default_nodes.size();++i) {
+            auto n=default_nodes[i].toObject();auto p=n["internal-data"].toObject();
+            p["enabled"]=true;
+            if(p["model-name"]=="Window") p["size"]=4096;
+            if(p["model-name"]=="WindowFunction") p["function"]="hann";
+            p["future-ui-field"]=42;n["internal-data"]=p;default_nodes[i]=n;
+        }
+        explicit_defaults["nodes"]=default_nodes;
+        auto normalized=pipeline::GraphProgram::compile(explicit_defaults,error);
+        require(normalized && program->same_processing_as(*normalized),
+                "Explicit defaults or preserved unknown fields changed processing identity");
+        default_nodes=explicit_defaults["nodes"].toArray();
+        auto changed=default_nodes[0].toObject();auto changed_params=changed["internal-data"].toObject();
+        changed_params["enabled"]=false;changed["internal-data"]=changed_params;default_nodes[0]=changed;
+        explicit_defaults["nodes"]=default_nodes;
+        auto disabled=pipeline::GraphProgram::compile(explicit_defaults,error);
+        require(disabled && !program->same_processing_as(*disabled),"Enabled change did not change processing identity");
         auto legacy=document; auto legacy_nodes=legacy.value("nodes").toArray();
         for (int i=0;i<legacy_nodes.size();++i) {
             auto node=legacy_nodes[i].toObject(); auto parameters=node.value("internal-data").toObject();
@@ -62,7 +82,10 @@ int main(int argc,char **argv) {
         auto result=muted->evaluate(frame); require(std::all_of(result.history.begin(),result.history.end(),[](float v){return v==0;}),"Gain node does not affect processing");
         require(muted->evaluate(frame,context).history==result.history,"Graph change retained stale scratch values");
         require(program->evaluate(frame,context).history==output.history,"Reused context did not restore the previous graph");
-        pipeline::AudioPipeline engine; require(engine.apply_graph(document,error),"Valid graph rejected");
+        // Apply starts AudioSource; exercise the unchanged default document with
+        // an in-memory adapter instead of opening the host loopback device.
+        pipeline::AudioPipeline engine(test_fixture::synthetic_capture_factory());
+        require(engine.apply_graph(document,error),"Valid graph rejected");
         auto active=engine.graph(); auto revision=engine.graph_revision();
         auto moved=active; nodes=moved["nodes"].toArray(); auto node=nodes[0].toObject(); node["position"]=QJsonObject{{"x",123},{"y",456}};nodes[0]=node;moved["nodes"]=nodes;
         require(engine.apply_graph(moved,error) && engine.graph_revision()==revision,"Moving nodes resets processing");

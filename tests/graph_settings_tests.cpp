@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "core_app/core_application.h"
 #include "core_app/main_window.h"
 #include "core_app/settings_widget.h"
@@ -68,7 +69,7 @@ int main() {
     char name[] = "graph_settings_tests", flag[] = "--config";
     char *argv[]{name, flag, bytes.data(), nullptr};
     int argc = 3;
-    CoreApplication app(argc, argv);
+    CoreApplication app(argc, argv, test_fixture::synthetic_capture_factory());
     try {
         MainWindow *window = nullptr;
         for (auto *widget : QApplication::topLevelWidgets())
@@ -583,7 +584,7 @@ int main() {
             };
             AggregatorServer directory;
             check(directory.start(0), "GUI registry fixture listen");
-            pipeline::AudioPipeline external;
+            pipeline::AudioPipeline external(test_fixture::synthetic_capture_factory());
             pipeline::EngineServer endpoint(external);
             check(endpoint.listen(QHostAddress::LocalHost, 0), "External processor fixture listen");
             const auto uuid = QUuid::createUuid();

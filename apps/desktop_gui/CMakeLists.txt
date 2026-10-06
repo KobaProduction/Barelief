@@ -1,27 +1,13 @@
+add_library(desktop_gui_configuration STATIC
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/gui_config/src/config_manager.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/gui_config/include/core_app/config_manager.h)
+target_include_directories(desktop_gui_configuration PUBLIC
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/gui_config/include
+    ${CMAKE_SOURCE_DIR}/presentation/qt/include)
+target_link_libraries(desktop_gui_configuration PUBLIC config_document visualization audio_pipeline aggregator-library Qt6::Widgets QtNodes)
+add_library(desktop_gui_composition STATIC src/core_application.cpp include/core_app/core_application.h)
+target_include_directories(desktop_gui_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(desktop_gui_composition PUBLIC core_app_components desktop_gui_configuration)
 add_executable(core_app main.cpp)
-target_link_libraries(core_app PRIVATE core_app_components)
-if(WIN32 AND DEPLOY_BUILD_RUNTIME)
-    find_program(QT_WINDEPLOYQT_EXECUTABLE windeployqt
-        HINTS "${Qt6_DIR}/../../../bin" REQUIRED NO_DEFAULT_PATH)
-    get_filename_component(qt_runtime_bin "${QT_WINDEPLOYQT_EXECUTABLE}" DIRECTORY)
-    get_filename_component(runtime_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
-    foreach(app IN ITEMS core_app)
-        if(NOT TARGET ${app})
-            continue()
-        endif()
-        add_custom_command(TARGET ${app} POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E env
-                "PATH=${runtime_compiler_bin};${qt_runtime_bin};$ENV{PATH}"
-                "${QT_WINDEPLOYQT_EXECUTABLE}" --no-translations --compiler-runtime
-                --dir "$<TARGET_FILE_DIR:${app}>" "$<TARGET_FILE:${app}>"
-            COMMENT "Deploying Qt runtime for ${app}" VERBATIM)
-        if(MINGW)
-            add_custom_command(TARGET ${app} POST_BUILD
-                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                    "${runtime_compiler_bin}/libgcc_s_seh-1.dll"
-                    "${runtime_compiler_bin}/libstdc++-6.dll"
-                    "${runtime_compiler_bin}/libwinpthread-1.dll"
-                    "$<TARGET_FILE_DIR:${app}>" VERBATIM)
-        endif()
-    endforeach()
-endif()
+target_link_libraries(core_app PRIVATE desktop_gui_composition)
+deploy_desktop_runtime(core_app)

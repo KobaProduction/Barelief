@@ -1,0 +1,30 @@
+menu "Portable stream example"
+choice STREAMER_LINK
+    prompt "Host transport"
+    default STREAMER_UART
+config STREAMER_UART
+    bool "UART (same BDSP packets as TCP)"
+config STREAMER_TCP
+    bool "TCP (firmware supplies accepted socket and WiFi setup)"
+endchoice
+config STREAMER_SPECTRAL
+    bool "Window 512 -> Hann -> stereo FFT -> RMS -> Mel 8"
+    default n
+config STREAMER_EXTERNAL_PCM
+    bool "Use explicit host I2S/Bluetooth PCM hook instead of synthetic tones"
+    default n
+config STREAMER_UART_TX
+    int "UART1 TX pin"
+    default 17
+config STREAMER_UART_RX
+    int "UART1 RX pin"
+    default 16
+config STREAMER_UART_BAUD
+    int "UART 8N1 baud (raw profile needs conservative wire budget)"
+    range 115200 4000000
+    default 2000000
+config STREAMER_TCP_BUDGET
+    int "Explicit TCP bytes per second budget"
+    range 1 10000000
+    default 200000
+endmenu

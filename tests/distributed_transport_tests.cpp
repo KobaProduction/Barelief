@@ -110,7 +110,15 @@ int main(int argc, char **argv) {
                                {"--config", f.fileName(), "--duration", "15000"});
             require(processes[i].waitForStarted(), "CLI start");
         }
-        require(wait([&] { return observer.capabilities().size() >= 3; }), "cores capabilities");
+          // Registration is announced before the separate capabilities packet.
+          // Wait for each expected participant's metadata, then assert its wire
+          // version below. Empty registration placeholders are not readiness.
+          require(wait([&] {
+              const auto capabilities=observer.capabilities();
+              return std::all_of(std::begin(uuids),std::end(uuids),[&](const auto &id) {
+                  return capabilities.value(QUuid(id)).value("protocol_versions").isArray();
+              });
+          }), "cores capabilities");
         for (auto &u : uuids) {
             auto m = observer.capabilities().value(QUuid(u));
             require(m["protocol_versions"].toArray().contains(2), "protocol capability");

@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "visualization/ui_text.h"
 #include <QMenu>
 #include <QMenuBar>
@@ -24,6 +25,8 @@
 #include <QLabel>
 #include "core_app/scheme_editor/audio_node_model.h"
 #include <QToolBar>
+#include <QToolButton>
+#include <QSignalSpy>
 #include <QAction>
 #include <QElapsedTimer>
 #include <QJsonDocument>
@@ -63,12 +66,12 @@ int main() {
     if (!file.open(QIODevice::WriteOnly))
         return 1;
     file.write(
-        R"({"core":{"run_loopback":false,"run_analyser":false},"ui":{"show_spectrogram":false},"wled_ar_server":{"port":80}})");
+        R"({"core":{"run_loopback":false,"run_analyser":false},"ui":{"show_spectrogram":false},"wled_ar_server":{"enabled":false,"port":80}})");
     file.close();
     int argc = 3;
     char name[] = "ui_tests", flag[] = "--config";
     char *argv[] = {name, flag, path.data(), nullptr};
-    CoreApplication app(argc, argv);
+    CoreApplication app(argc, argv, test_fixture::synthetic_capture_factory());
     try {
         {
             LineChartView chart;
@@ -93,6 +96,27 @@ int main() {
             if (auto *candidate = qobject_cast<MainWindow *>(widget))
                 window = candidate;
         require(window, "Main window not created");
+        // Keep settings/widget/engine command handling real, but compose the
+        // automatic fixture's network destination as loopback. Production's
+        // interface selector deliberately excludes loopback adapters.
+        require(QObject::disconnect(window,&MainWindow::start_wled_server_requested,&app.presenter(),
+                                    &GuiPresenter::start_wled_audio_reactive_server),
+                "WLED start composition connection missing");
+        require(QObject::disconnect(window,&MainWindow::wled_server_config_changed,&app.presenter(),
+                                    &GuiPresenter::restart_wled_audio_reactive_server),
+                "WLED restart composition connection missing");
+        auto start_local_wled=[&] {
+            pipeline::EngineCommand command;
+            command.kind=pipeline::EngineCommand::StartWled;
+            command.interface_address=command.destination=QHostAddress::LocalHost;
+            command.port=app._ctx.file_configs.wled_ar_server.port;
+            app.presenter().client().submit(command);
+        };
+        QObject::connect(window,&MainWindow::start_wled_server_requested,window,start_local_wled);
+        QObject::connect(window,&MainWindow::wled_server_config_changed,window,[&app,start_local_wled] {
+            app.presenter().stop_wled_audio_reactive_server();
+            if(app._ctx.file_configs.wled_ar_server.enabled) start_local_wled();
+        });
         auto *settings = window->findChild<SettingsWidget *>();
         DockPanels panel_views(window); auto *tabs = &panel_views;
         require(settings && tabs, "Settings tab not created");
@@ -236,14 +260,14 @@ int main() {
         auto *port = settings->findChild<QSpinBox *>("wledPort");
         require(port && port->value() == 80, "Valid saved port is displayed incorrectly");
         for (int iteration = 0; iteration < 5; ++iteration) {
-            window->findChild<QCheckBox *>("pipelineAnalyzer")->toggle();
-            wait_state("Analyzer", pipeline::State::Running, "Analyzer click did not start worker");
-            window->findChild<QCheckBox *>("pipelineCapture")->toggle();
-            QTest::qWait(30);
-            window->findChild<QCheckBox *>("pipelineAnalyzer")->toggle();
-            wait_state("Analyzer", pipeline::State::Stopped, "Analyzer click did not release worker");
-            window->findChild<QCheckBox *>("pipelineCapture")->toggle();
-            wait_state("Capture", pipeline::State::Stopped, "Loopback click did not release worker");
+            app.presenter().start_analyzer();
+            wait_state("Analyzer", pipeline::State::Running, "Presenter did not start worker");
+            app.presenter().start_loopback();
+            wait_state("Capture", pipeline::State::Running, "Presenter did not start synthetic capture");
+            app.presenter().stop_analyzer();
+            wait_state("Analyzer", pipeline::State::Stopped, "Presenter did not release worker");
+            app.presenter().stop_loopback();
+            wait_state("Capture", pipeline::State::Stopped, "Presenter did not release capture");
         }
         const std::pair<const char *, int> charts[] = {
             {"showRawSamples", 0}, {"showWindowSignal", 1}, {"showWindowedSignal", 2}, {"showWindowFunction", 3},
@@ -260,11 +284,11 @@ int main() {
         auto *language=settings->findChild<QComboBox *>("interfaceLanguage");
         auto *sections=settings->findChild<QTabWidget *>("settingsSections");
         auto *graphs_menu=window->findChild<QMenu *>("graphsMenu");
-        require(language && sections->count()==6 && graphs_menu->title()==QString::fromUtf8("Графики"),"Russian default/menu sections missing");
+        require(language && sections->count()==6 && graphs_menu->title()==ui::text("Display"),"Russian default/menu sections missing");
         const auto menu_actions=window->menuBar()->actions();
-        require(menu_actions.size()==3 && menu_actions[0]->menu()==graphs_menu &&
-            menu_actions[1]->menu()->objectName()=="wledMenu" && menu_actions[2]->menu()->objectName()=="settingsMenu",
-            "Top-level menus must be Graphs, WLED, Settings");
+        require(menu_actions.size()==4 && menu_actions[0]->menu()->objectName()=="fileMenu" && menu_actions[1]->menu()==graphs_menu &&
+            menu_actions[2]->menu()->objectName()=="wledMenu" && menu_actions[3]->menu()->objectName()=="settingsMenu",
+            "Top-level menus must be File, Display, WLED, Settings");
         require(!settings->findChild<QCheckBox *>("enableAnalyzer") && !settings->findChild<QComboBox *>("captureSource") &&
             sections->widget(1)->findChild<QCheckBox *>("pipelineAutoApply") && sections->tabText(5)==ui::text("Controls"),
             "Processing duplicated outside graph or section order incorrect");
@@ -285,16 +309,23 @@ int main() {
         theme->setCurrentIndex(0);
         require(app.pipeline().graph_revision()==theme_revision,"Theme changed processing graph");
         auto *spectrogram_dock=window->findChild<QDockWidget *>("spectrogramDock");
-        require(spectrogram_dock->titleBarWidget() && !spectrogram_dock->titleBarWidget()->findChild<QLabel *>(),
-            "Graph dock repeats its tab title");
+        auto *spectrogram_strip=spectrogram_dock->titleBarWidget();
+        require(spectrogram_strip && spectrogram_strip->findChild<QToolButton *>("graphPlacement"),
+            "Docked graph lacks draggable title and placement control");
+        auto *floating_title=spectrogram_strip->findChild<QLabel *>();
+        require(floating_title && floating_title->isHidden(),"Docked strip duplicates its tab title");
         spectrogram_dock->setFloating(true); QTest::qWait(100);
-        require(!spectrogram_dock->titleBarWidget(),"Floating graph lost native window controls");
+        require(spectrogram_dock->titleBarWidget()==spectrogram_strip && spectrogram_strip->isVisible(),
+                "Floating graph lost draggable title and placement control");
+        require(floating_title->isVisible() && floating_title->text()==spectrogram_dock->windowTitle(),
+                "Floating graph title did not follow its localized dock title");
         spectrogram_dock->setFloating(false); QTest::qWait(100);
         require(spectrogram_dock->titleBarWidget(),"Docked graph controls not restored");
+        require(floating_title->isHidden(),"Return to tabs retained duplicate floating title");
         const auto language_revision=app.pipeline().graph_revision();
         auto *same_spectrogram=window->findChild<SpectrogramGraph *>();
         language->setCurrentIndex(1); QTest::qWait(400);
-        require(graphs_menu->title()=="Graphs" && sections->tabText(0)=="General" && window->findChild<SpectrogramGraph *>()==same_spectrogram,
+        require(graphs_menu->title()=="Display" && sections->tabText(0)=="General" && window->findChild<SpectrogramGraph *>()==same_spectrogram,
                 "Live language switch recreated views or failed to translate");
         require(app.pipeline().graph_revision()==language_revision,"Language switch applied DSP graph");
         language->setCurrentIndex(0); QTest::qWait(400);
@@ -325,13 +356,20 @@ int main() {
                     settings->findChild<QCheckBox *>("showFFT")->isChecked() == fft_toggle->isChecked(),
                 "Toolbar graph toggle does not sync settings");
         fft_toggle->trigger();
-        auto *analyzer_toggle = window->findChild<QCheckBox *>("pipelineAnalyzer");
-        analyzer_toggle->setChecked(!analyzer_toggle->isChecked());
-        wait_state("Analyzer", pipeline::State::Running, "Toolbar did not start analyzer");
-        require(app._ctx.file_configs.core.run_analyser,"Pipeline start did not synchronize settings");
-        analyzer_toggle->setChecked(!analyzer_toggle->isChecked());
-        wait_state("Analyzer", pipeline::State::Stopped, "Toolbar did not stop analyzer");
-        require(!app._ctx.file_configs.core.run_analyser,"Pipeline stop did not synchronize settings");
+        require(!window->findChild<QCheckBox *>("pipelineAnalyzer") && !window->findChild<QCheckBox *>("pipelineCapture"),
+                "Removed processing controls returned outside graph");
+        const auto processing_graph=app.presenter().client().snapshot().graph;
+        const auto saved_run_preference=app._ctx.file_configs.core.run_analyser;
+        app.presenter().start_analyzer();
+        wait_state("Analyzer", pipeline::State::Running, "Presenter did not start analyzer");
+        require(app._ctx.file_configs.core.run_analyser==saved_run_preference &&
+                    app.presenter().client().snapshot().graph==processing_graph,
+                "Start command rewrote graph parameters or saved run preference");
+        app.presenter().stop_analyzer();
+        wait_state("Analyzer", pipeline::State::Stopped, "Presenter did not stop analyzer");
+        require(app._ctx.file_configs.core.run_analyser==saved_run_preference &&
+                    app.presenter().client().snapshot().graph==processing_graph,
+                "Explicit Stop rewrote graph parameters or saved run preference");
         auto assign = [&](const char *button_name, int key, int scan) {
             auto *button = settings->findChild<QPushButton *>(button_name);
             require(button, "Camera binding button missing");
@@ -397,24 +435,35 @@ int main() {
             graph->set_camera_state(initial);
             click("showSpectrogram");
         }
+        QUdpSocket first_wled_receiver, restarted_wled_receiver;
+        require(first_wled_receiver.bind(QHostAddress(QHostAddress::LocalHost),quint16(0)) &&
+                    restarted_wled_receiver.bind(QHostAddress(QHostAddress::LocalHost),quint16(0)),
+                "Local WLED receiver bind failed");
+        port->setValue(first_wled_receiver.localPort());
         click("enableWLED");
         wait_state("WLED", pipeline::State::Running, "WLED checkbox did not start server");
         const auto wled_revision = app.presenter().client().snapshot().statuses.value("WLED").revision;
-        port->setValue(11989);
+        require(first_wled_receiver.hasPendingDatagrams() || first_wled_receiver.waitForReadyRead(500),
+                "WLED checkbox did not deliver to configured local port");
+        const auto restarted_port=restarted_wled_receiver.localPort();
+        port->setValue(restarted_port);
         wait_for(
             [&] {
                 return runtime_state("WLED") == pipeline::State::Running &&
                        app.presenter().client().snapshot().statuses.value("WLED").revision > wled_revision;
             },
             "WLED port change failed");
-        require(app._ctx.file_configs.wled_ar_server.port == 11989, "WLED port setting lost");
+        require(app._ctx.file_configs.wled_ar_server.port == restarted_port, "WLED port setting lost");
+        require(restarted_wled_receiver.hasPendingDatagrams() || restarted_wled_receiver.waitForReadyRead(500),
+                "WLED restart did not deliver to changed local port");
         click("enableWLED");
-        port->setValue(11990);
+        const auto disabled_port=restarted_port==65535 ? 65534 : restarted_port+1;
+        port->setValue(disabled_port);
         wait_state("WLED", pipeline::State::Stopped, "Changing port started disabled WLED");
         ConfigManager manager(QString::fromLocal8Bit(path));
         FileSaveApplicationConfig saved;
         require(manager.load(saved) && !saved.core.run_loopback && !saved.core.run_analyser &&
-                    !saved.wled_ar_server.enabled && saved.wled_ar_server.port == 11990,
+                    !saved.wled_ar_server.enabled && saved.wled_ar_server.port == disabled_port,
                 "Settings were not persisted");
         click("enableAutosave");
         QFile persisted(QString::fromLocal8Bit(path));
@@ -431,25 +480,42 @@ int main() {
                 "Enabling autosave did not save pending changes");
         auto *pipeline_dialog = window->findChild<QDockWidget *>("dataFlowDock");
         require(pipeline_dialog, "Pipeline editor dialog missing");
+        automatic->setChecked(false);
+        require(!app._ctx.file_configs.ui.pipeline_auto_apply,"Manual Apply mode not stored");
         if (pipeline_dialog->isHidden()) window->findChild<QAction *>("openPipeline")->trigger();
         QTest::qWait(20);
         auto *apply = pipeline_dialog->findChild<QPushButton *>("applyPipeline");
-        require(apply && apply->isVisible(), "Pipeline apply control missing");
-        QTest::mouseClick(apply, Qt::LeftButton);
-        wait_for(
-            [&] { return !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Applying Data Flow…")); },
-            "Graph reply not delivered");
-        require(pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"),
-                "Default editor graph did not apply");
+        require(apply, "Pipeline apply control missing");
+        wait_for([&] { return apply->isVisible(); }, "Manual Apply mode did not expose Apply control");
+        QSignalSpy apply_replies(&app.presenter(),&GuiPresenter::graph_apply_finished);
+        require(apply_replies.isValid(),"Apply acknowledgement signal unavailable");
+        auto apply_and_wait=[&](const char *message) {
+            const auto desired=window->findChild<SchemeEditorWidget *>()->document();
+            const auto before=apply_replies.count();
+            QTest::mouseClick(apply,Qt::LeftButton);
+            wait_for([&] { return !app.presenter().graph_request_pending() && apply_replies.count()>before; },message);
+            const auto reply=apply_replies.at(before);
+            if(!reply.at(1).toBool()) qCritical() << "Rejected Apply:" << reply.at(2).toString();
+            require(reply.at(0).toULongLong()!=0 && reply.at(1).toBool(),message);
+            QString error;
+            const auto requested=pipeline::GraphProgram::compile(desired,error);
+            const auto working=pipeline::GraphProgram::compile(app.presenter().client().snapshot().graph,error);
+            require(requested && working && requested->same_processing_as(*working),
+                    "Accepted Apply did not activate the requested processing graph");
+            auto *warning=pipeline_dialog->findChild<QLabel *>("pipelineValidation");
+            require(warning && warning->accessibleName().isEmpty() && warning->isHidden(),
+                    "Successful Apply retained warning or obsolete success information");
+        };
+        apply_and_wait("Default editor graph did not apply");
         auto valid = app.presenter().client().snapshot().graph;
         auto *invalid_model=app._ctx.data_flow_graph->delegateModel<AudioNodeModel>(2);
         auto invalid_parameters=invalid_model->save();invalid_parameters["merge"]=99;invalid_model->load(invalid_parameters);
         QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Applying Data Flow…")); },
+            [&] { return !app.presenter().graph_request_pending() && !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->accessibleName().startsWith(ui::text("Applying Data Flow…")); },
             "Graph reply not delivered");
         require(app.presenter().client().snapshot().graph == valid &&
-                    pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Not applied: ")),
+                    pipeline_dialog->findChild<QLabel *>("pipelineValidation")->accessibleName().startsWith(ui::text("Not applied: ")),
                 "Invalid draft replaced running graph");
         require(manager.load(saved) && saved.pipeline_graph == valid && saved.scene_graph != valid,
                 "Draft and applied graph were not saved separately");
@@ -459,7 +525,7 @@ int main() {
         require(draft_file.open(QIODevice::ReadOnly), "Cannot read draft before load active");
         const auto draft_bytes = draft_file.readAll();
         draft_file.close();
-        auto *load_active = pipeline_dialog->findChild<QAction *>("loadActivePipeline");
+        auto *load_active = window->findChild<QAction *>("loadActivePipeline");
         require(load_active, "Load active pipeline control missing");
         load_active->trigger();
         QTest::qWait(450);
@@ -485,20 +551,14 @@ int main() {
         click("showFFT");
         require(manager.load(saved) && saved.scene_graph == rejected_draft,
                 "Unrelated prefs autosave replaced the saved draft after Load active");
-        pipeline_dialog->findChild<QAction *>("defaultPipeline")->trigger();
-        QTest::mouseClick(apply, Qt::LeftButton);
-        wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
-            "Default graph reply not delivered");
-        require(pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"),
-                "Default pipeline recovery failed");
+        auto *default_action=window->findChild<QAction *>("defaultPipeline");
+        require(default_action,"Status-bar default preset action missing");
+        default_action->trigger();
+        apply_and_wait("Default pipeline recovery failed");
         auto *merge_model = app._ctx.data_flow_graph->delegateModel<AudioNodeModel>(2);
         auto *merge_combo = merge_model->embeddedWidget()->findChild<QComboBox *>("merge");
         merge_combo->setCurrentIndex(1);
-        QTest::mouseClick(apply, Qt::LeftButton);
-        wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
-            "Graph reply not delivered");
+        apply_and_wait("Merge graph reply not delivered");
         require(manager.load(saved) && saved.pipeline_graph == app.presenter().client().snapshot().graph,
                 "Node settings did not persist");
         require(app._ctx.file_configs.core.spectrum_merge == SpectrumMerge::Maximum,
@@ -506,10 +566,7 @@ int main() {
         auto *source_model = app._ctx.data_flow_graph->delegateModel<AudioNodeModel>(0);
         auto *source_combo = source_model->embeddedWidget()->findChild<QComboBox *>("source");
         source_combo->setCurrentIndex(1);
-        QTest::mouseClick(apply, Qt::LeftButton);
-        wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
-            "Graph reply not delivered");
+        apply_and_wait("Microphone graph reply not delivered");
         require(app._ctx.file_configs.core.capture_source == 1,
                 "Microphone node and settings are out of sync");
         require(manager.load(saved) && saved.core.capture_source == 1, "Microphone setting did not persist");
@@ -528,10 +585,7 @@ int main() {
                         .toInt() == 1,
                 "Microphone graph source incorrect");
         source_combo->setCurrentIndex(0);
-        QTest::mouseClick(apply, Qt::LeftButton);
-        wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
-            "Source graph reply not delivered");
+        apply_and_wait("System-output graph reply not delivered");
         wait_state("Capture", pipeline::State::Running, "Live source change did not restart capture");
         require(app.presenter()
                         .client()

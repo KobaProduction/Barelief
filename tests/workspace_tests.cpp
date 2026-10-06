@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include <QWheelEvent>
 #include <QMenu>
 #include "core_app/core_application.h"
@@ -40,7 +41,7 @@ int main(int argc,char **argv) {
             file.write(QJsonDocument(fixture).toJson());
         }
         auto bytes=path.toLocal8Bit(); char name[]="workspace_tests",flag[]="--config";
-        char *args[]{name,flag,bytes.data(),nullptr};int count=3; CoreApplication app(count,args);
+        char *args[]{name,flag,bytes.data(),nullptr};int count=3; CoreApplication app(count,args, test_fixture::synthetic_capture_factory(false));
         MainWindow *window=nullptr;
         for(auto *widget:QApplication::topLevelWidgets()) if(auto *candidate=qobject_cast<MainWindow *>(widget)) window=candidate;
         require(window,"Main window absent"); window->show(); QTest::qWait(450);
@@ -115,12 +116,14 @@ int main(int argc,char **argv) {
         require(flow->geometry().top() >= spectrogram->geometry().bottom(),
                 "Pipeline is not below Spectrogram in default workspace");
         auto *graphs_menu=window->findChild<QMenu *>("graphsMenu");
-        require(graphs_menu && graphs_menu->actions().contains(fft->toggleViewAction()),"Graph missing from menu");
-        fft->toggleViewAction()->trigger();
+        require(graphs_menu && !graphs_menu->actions().contains(fft->toggleViewAction()),"Display retained removed graph selector");
+        auto *placement = fft->findChild<QToolButton *>("graphPlacement");
+        require(placement && placement->menu() && placement->menu()->actions().size()==4,"Graph placement controls missing");
+        placement->menu()->actions()[1]->trigger();
         require(!fft->isHidden() && !spectrogram->isHidden() && window->tabifiedDockWidgets(spectrogram).contains(fft),
-                "Graph menu did not add a switchable tab");
-        fft->toggleViewAction()->trigger();
-        require(fft->isHidden() && !spectrogram->isHidden() && !flow->isHidden(),"Graph menu toggle affected other panels");
+                "Graph placement did not add a switchable tab");
+        fft->close();
+        require(fft->isHidden() && !spectrogram->isHidden() && !flow->isHidden(),"Graph close affected other panels");
         window->findChild<QAction *>("resetWorkspace")->trigger(); QTest::qWait(40);
         auto *pipeline_action = window->findChild<QAction *>("openPipeline");
         pipeline_action->trigger();
@@ -175,7 +178,9 @@ int main(int argc,char **argv) {
         const auto source_position = graph.nodeData(0,QtNodes::NodeRole::Position).toPointF();
         const auto connections_before = graph.save().value("connections").toArray().size();
         const auto undo_before = scene->undoStack().index();
-        editor->findChild<QAction *>("useTestSource")->trigger();
+        auto *test_source_action=window->findChild<QAction *>("useTestSource");
+        require(test_source_action,"Status-bar generator preset action missing");
+        test_source_action->trigger();
         auto *generator = graph.delegateModel<AudioNodeModel>(0);
         require(generator && generator->name()=="TestSignal", "Test source button did not replace the input node");
         require(generator->embeddedWidget()->findChild<QDoubleSpinBox *>("tones")->value()==8 &&

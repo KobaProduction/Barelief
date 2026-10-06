@@ -2,10 +2,20 @@
 
 Windows/Linux application for real-time system audio capture, FFT visualization and WLED audio sync.
 Requires CMake 3.30+, a C++23 compiler and Qt 6.7+ with Widgets, Charts, DataVisualization, SerialPort and Network.
+The portable SDK uses C++20 and builds without Qt, miniaudio or ESP-IDF.
 Use the compiler matching your Qt installation (for example the Qt MinGW toolchain).
 BDSP, QtNodes and miniaudio 0.11.25 are fetched through CMake FetchContent at fixed revisions.
 
 ## Architecture decisions and product context
+
+The current source boundaries and common executor are described in
+[the architecture map](docs/architecture-map.md). The Qt-free libraries provide
+signal contracts, DSP kernels, graph rules/lifecycle, prepared execution and BDSP.
+Desktop GUI, CLI and distributed processing use this common executor through
+desktop adapters. [The embedded SDK guide](docs/embedded-sdk.md) documents the
+installed CMake package, ESP-IDF source component and synthetic TCP/UART example.
+Migration acceptance and outstanding gates are recorded in
+[the execution ledger](docs/refactor-execution.md).
 
 [Архитектура аудиосистемы](docs/architecture.md) records the agreed responsibilities
 of the headless core, GUI, processing/view nodes, TCP/BDSP transport and aggregator,
@@ -14,15 +24,15 @@ current implementation from the target architecture. Typed distributed streams a
 independent view instances are implemented; the wire protocol is documented in
 [network-stream-v2.md](docs/network-stream-v2.md), and runtime boundaries and
 the single configured WLED adapter are documented in
-[the pipeline module](src/pipeline/README.md).
+[the desktop runtime adapter](adapters/desktop/runtime/README.md).
 
 ## Build and test
 
-Current development policy (owner decision, 2026-10-05): run short tests for the
-changed subsystem and necessary short integration/native regressions. Do not run
-30-minute soaks or other long tests during this implementation; reserve them for
-commit preparation. Long-run commands below are opt-in references, not a gate for
-the current refactoring.
+Run short tests for changed logic and necessary short integration checks during
+implementation. Run the full short automated suite for final acceptance. Physical
+capture (`ENABLE_DEVICE_QA`) and native graphics (`ENABLE_NATIVE_QA`) are opt-in;
+automatic GUI tests use offscreen Qt. Do not run 30-minute soaks or long stress
+tests for this migration. Long-run commands below remain opt-in references.
 
 Run from a terminal with the compiler and Qt `bin` directories in PATH:
 
@@ -31,6 +41,14 @@ cmake -S . -B cmake-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PR
 cmake --build cmake-build-release
 ctest --test-dir cmake-build-release --output-on-failure
 ```
+
+For a portable SDK build, use `-DBUILD_PORTABLE_SDK=ON` and optionally
+`-DPORTABLE_DISABLE_EXCEPTIONS_RTTI=ON`. `scripts/verify-portable-sdk.ps1` checks
+portable tests, install/export, an installed external consumer and host component
+smoke tests. It does not claim firmware cross-compilation or hardware acceptance.
+`scripts/verify-desktop-runtime.ps1` checks deployed executable, DLL and plugin
+dependencies without launching the application. See
+[manual acceptance](docs/manual-acceptance.md) for native/device checks.
 
 `core_app` is the application with runtime settings; `qt-application` is the compatibility visualizer using the same audio runtime.
 `core_app --config <path>` selects a JSON configuration file (default: `config.json` in the working directory).

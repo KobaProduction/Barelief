@@ -1,10 +1,12 @@
 #include "pipeline/engine_client.h"
+#include "pipeline/stream_codec.h"
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QTimer>
 #include <QTcpServer>
 #include <QElapsedTimer>
 #include <QDataStream>
+#include <QJsonArray>
 #include "core/network/tcp_packet_socket.h"
 #include <stdexcept>
 #include <thread>
@@ -47,6 +49,32 @@ static QByteArray scripted_snapshot(const pipeline::EngineSnapshot &snapshot, qu
     }
     return bytes;
 }
+static QByteArray scripted_optional_view(const pipeline::EngineSnapshot &snapshot) {
+    QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);
+    stream.setVersion(QDataStream::Qt_6_0);stream.setByteOrder(QDataStream::LittleEndian);
+    stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
+    stream<<quint16(1)<<snapshot.epoch<<snapshot.graph_revision<<quint64(1)<<false
+          <<quint64(1)<<qint64(1)<<qint64(1)<<quint64(1)<<float(.1)<<quint64(48000)
+          <<snapshot.analyzer_generation<<false<<quint64(0);
+    for(int i=0;i<9;++i) {
+        stream<<quint32(i>=4?1:0);
+        if(i>=4)stream<<float(i==4?11:i==5?22:123+i-6);
+    }
+    stream<<float(1)<<quint32(1)<<qint32(9)<<quint64(1)<<float(123)
+          <<true<<snapshot.graph_revision<<quint32(1)<<quint32(1)<<float(123);
+    return bytes;
+}
+static QByteArray scripted_typed_view(const pipeline::EngineSnapshot &snapshot, bool available=true) {
+    pipeline::TypedFrame frame;frame.type=pipeline::FrameType::Mel;frame.sample_rate=48000;frame.bands=3;
+    frame.epoch=snapshot.epoch;frame.graph_revision=snapshot.graph_revision;
+    frame.generation=77;frame.producer_epoch=77;frame.sequence=available?1:0;frame.available=available;
+    if(available)frame.values={1,2,3};
+    const auto payload=pipeline::stream::encode(frame);
+    if(payload.empty())throw std::runtime_error("Scripted typed frame encoding failed");
+    QByteArray bytes;QDataStream stream(&bytes,QIODevice::WriteOnly);stream.setByteOrder(QDataStream::LittleEndian);
+    stream<<quint16(2)<<snapshot.epoch<<snapshot.graph_revision<<quint32(1)<<qint32(1)<<quint32(payload.size());
+    bytes.append(reinterpret_cast<const char *>(payload.data()),payload.size());return bytes;
+}
 static void require(bool x, const char *message) {
     if (!x)
         throw std::runtime_error(message);
@@ -69,7 +97,8 @@ struct FakeSourceState {
 };
 class FakeAudioSource final : public pipeline::IAudioSource {
 public:
-    FakeAudioSource(pipeline::AudioSourceKind kind, std::shared_ptr<FakeSourceState> state) : kind(kind), state(std::move(state)) {
+    FakeAudioSource(pipeline::AudioSourceKind kind, std::shared_ptr<FakeSourceState> state, bool deliver_audio=true)
+        : kind(kind), state(std::move(state)), deliver_audio(deliver_audio) {
         this->state->sources.push_back(kind);
     }
     ~FakeAudioSource() override { stop(); }
@@ -82,9 +111,14 @@ public:
             while (running) {
                 pipeline::AudioFrame frame; frame.sample_rate = 48000;
                 frame.left.resize(4096); frame.right.resize(4096);
-                for(size_t i=0;i<4096;++i) frame.left[i]=frame.right[i]=std::sin(float(offset+i)*float(2*3.141592653589793*750/48000));
+                for(size_t i=0;i<4096;++i) {
+                    float sample=0;
+                    for(int tone=0;tone<8;++tone)
+                        sample+=std::sin(float(offset+i)*float(2*3.141592653589793*(200+tone*600+(offset/4096)%7*11)/48000))/32;
+                    frame.left[i]=frame.right[i]=sample;
+                }
                 offset += 4096;
-                if (audio) audio(std::move(frame));
+                if (audio && deliver_audio) audio(std::move(frame));
                 ++state->produced;
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
@@ -107,11 +141,53 @@ private:
     std::atomic<bool> running{false};
     std::thread producer;
     AudioHandler audio; StatusHandler status; LifecycleHandler lifecycle;
+    bool deliver_audio;
 };
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
-        pipeline::EngineClient local;
+        {
+            pipeline::EngineClient client([](pipeline::AudioSourceKind){return std::unique_ptr<pipeline::IAudioSource>{};});
+            auto *engine=client.local_engine();
+            QString error;
+            QJsonObject graph{{"version",2},{"nodes",QJsonArray{
+                QJsonObject{{"id",0},{"internal-data",QJsonObject{{"model-name","NetworkInput"},{"data_type","mel"},{"stream_id","mel"}}}},
+                QJsonObject{{"id",1},{"internal-data",QJsonObject{{"model-name","MelView"}}}}}},
+                {"connections",QJsonArray{QJsonObject{{"outNodeId",0},{"inNodeId",1},{"outPortIndex",0},{"inPortIndex",0}}}}};
+            require(engine->apply_graph(graph,error),"Local subscription probe graph failed");
+            pump();
+            int delivered=0;bool typed_fields=false;
+            client.set_view_handler([&](auto view){++delivered;typed_fields=!view.views.isEmpty();});
+            quint64 acknowledged=0;bool accepted=false;
+            client.set_reply_handler([&](auto reply){acknowledged=reply.request_id;accepted=reply.accepted;});
+            pipeline::TypedFrame frame;frame.type=pipeline::FrameType::Mel;frame.sample_rate=48000;frame.values={1,2,3};frame.sequence=1;
+            engine->feed_typed(0,frame); // pending in the owner-thread mailbox
+            pipeline::EngineCommand subscription;subscription.kind=pipeline::EngineCommand::Subscribe;subscription.subscriptions=0;
+            const auto unsubscribe=client.submit(subscription);pump(40);
+            require(acknowledged==unsubscribe && accepted,"Local unsubscribe was not acknowledged");
+            require(delivered==0,"Queued local view escaped Subscribe(0)");
+            frame.sequence=2;engine->feed_typed(0,frame);pump(40);
+            require(delivered==0,"Subsequent local view escaped Subscribe(0)");
+            subscription.subscriptions=pipeline::EngineCommand::Views|pipeline::EngineCommand::TypedViews;
+            client.submit(subscription);pump();
+            frame.sequence=3;engine->feed_typed(0,frame);
+            subscription.subscriptions=0;client.submit(subscription);
+            subscription.subscriptions=pipeline::EngineCommand::Views|pipeline::EngineCommand::TypedViews;client.submit(subscription);
+            pump(40);require(delivered==0,"Old local mailbox survived unsubscribe/resubscribe");
+            frame.sequence=4;engine->feed_typed(0,frame);
+            require(wait_until([&]{return delivered==1;}),"Current local subscription did not resume");
+            require(typed_fields,"Current typed local subscription lost typed views");
+            frame.sequence=5;engine->feed_typed(0,frame);
+            subscription.subscriptions=pipeline::EngineCommand::Views;client.submit(subscription);pump(40);
+            require(delivered==1,"Queued typed view escaped local legacy selection");
+            frame.sequence=6;engine->feed_typed(0,frame);
+            require(wait_until([&]{return delivered==2;}),"Local legacy view subscription did not resume");
+            require(!typed_fields,"Local legacy subscription retained typed view fields");
+        }
+        auto local_source_state=std::make_shared<FakeSourceState>();
+        pipeline::EngineClient local([local_source_state](pipeline::AudioSourceKind kind) {
+            return std::make_unique<FakeAudioSource>(kind,local_source_state,false);
+        });
         int replies = 0;
         pipeline::EngineReply last;
         local.set_reply_handler([&](auto r) {
@@ -125,6 +201,7 @@ int main(int argc, char **argv) {
         require(replies == 0, "Local command completed synchronously");
         pump();
         require(replies == 1 && last.accepted, "Local async command failed");
+        require(!local_source_state->sources.empty(),"EngineClient ignored its injected capture factory");
         c.expected_revision = 0;
         local.submit(c);
         pump();
@@ -210,12 +287,98 @@ int main(int argc, char **argv) {
             changed.statuses["Analyzer"]={pipeline::State::Stopped,{},5}; changed.history=stopped_history;
             send(changed); pump();
             require(!client.snapshot().history,"Stopped snapshot retained history");
+            // A queued typed packet from the previous subscription must not be
+            // presented as an empty legacy frame after switching subscriptions.
+            changed.statuses["Analyzer"]={pipeline::State::Running,{},6};changed.revision=6;changed.history.reset();
+            send(changed);
+            require(wait_until([&]{return client.snapshot().statuses.value("Analyzer").state==pipeline::State::Running;}),
+                    "Typed subscription probe did not resume running");
+            const auto typed=scripted_typed_view(changed);
+            size_t typed_deliveries=0;
+            client.set_view_handler([&](auto){++typed_deliveries;});
+            pipeline::EngineCommand subscription;subscription.kind=pipeline::EngineCommand::Subscribe;
+            subscription.subscriptions=pipeline::EngineCommand::Views;
+            client.submit(subscription);
+            require(scripted.peer->send_packet(17,typed),"Scripted queued typed packet");pump();
+            require(typed_deliveries==0,"Old TypedViews subscription escaped legacy selection");
+            subscription.subscriptions=pipeline::EngineCommand::Views|pipeline::EngineCommand::TypedViews;
+            client.submit(subscription);
+            require(scripted.peer->send_packet(17,typed),"Scripted current typed packet");
+            require(wait_until([&]{return typed_deliveries==1;}),"Current TypedViews subscription was suppressed");
+            subscription.subscriptions=0;client.submit(subscription);
+            require(scripted.peer->send_packet(17,typed),"Scripted unsubscribed typed packet");pump();
+            require(typed_deliveries==1,"Unsubscribed TypedViews packet was delivered");
+            subscription.subscriptions=pipeline::EngineCommand::Views|pipeline::EngineCommand::TypedViews;
+            client.submit(subscription);
+            changed.statuses["Analyzer"]={pipeline::State::Stopped,{},7};changed.revision=7;send(changed);
+            require(wait_until([&]{return client.snapshot().statuses.value("Analyzer").state==pipeline::State::Stopped;}),
+                    "Explicit remote Stop snapshot missing");
+            require(scripted.peer->send_packet(17,typed),"Delayed valid pre-Stop typed packet send failed");pump();
+            require(typed_deliveries==1,"Delayed TypedViews packet escaped confirmed Analyzer Stop");
+            changed.statuses["Analyzer"]={pipeline::State::Recovering,{},8};changed.revision=8;send(changed);
+            require(wait_until([&]{return client.snapshot().statuses.value("Analyzer").state==pipeline::State::Recovering;}),
+                    "Remote recovery snapshot missing");
+            bool unavailable=false;
+            client.set_view_handler([&](auto view){++typed_deliveries;unavailable=!view.views.value(1).available;});
+            require(scripted.peer->send_packet(17,scripted_typed_view(changed,false)),"Current unavailable typed marker send failed");
+            require(wait_until([&]{return typed_deliveries==2;}),"Recovery unavailable marker was suppressed");
+            require(unavailable,"Current unavailable typed marker lost its semantic state");
+            client.disconnect_remote();
+        }
+        {
+            ScriptedEngineServer peer;
+            require(peer.listen(QHostAddress::LocalHost,0),"Optional-field peer listen failed");
+            pipeline::EngineClient client("127.0.0.1",peer.serverPort());
+            require(wait_until([&]{return peer.requests.size()>=2;}),"Optional-field handshake missing");
+            pipeline::EngineSnapshot snapshot;snapshot.epoch=42;snapshot.revision=1;snapshot.graph_revision=7;
+            snapshot.analyzer_generation=1;snapshot.statuses["Analyzer"]={pipeline::State::Running,{},1};
+            auto seed=std::make_shared<pipeline::HistorySnapshot>();seed->graph_revision=7;seed->analyzer_generation=1;
+            seed->values={{777}};snapshot.history=seed;
+            require(peer.peer->send_packet(7,scripted_snapshot(snapshot)),"Optional-field snapshot send failed");
+            require(wait_until([&]{return client.snapshot().epoch==42;}),"Optional-field snapshot missing");
+            using C=pipeline::EngineCommand;
+            C subscribe;subscribe.kind=C::Subscribe;subscribe.subscriptions=C::Views|C::History|C::Previews|C::Diagnostics;
+            client.submit(subscribe);pump();
+            int deliveries=0;pipeline::ViewFrame delivered;
+            client.set_view_handler([&](auto frame){++deliveries;delivered=std::move(frame);});
+            const auto packet=scripted_optional_view(snapshot);
+            require(peer.peer->send_packet(8,packet),"Buffered old optional view send failed");
+            subscribe.subscriptions=C::Views;client.submit(subscribe);
+            require(wait_until([&]{return deliveries==1;}),"Current legacy base view suppressed");
+            require(delivered.window_signal.empty() && delivered.window.empty() && delivered.windowed_signal.empty() &&
+                    delivered.previews.isEmpty() && !delivered.history,"Remote legacy view retained disabled optional fields");
+            require(delivered.fft==std::vector<float>{11} && delivered.mel==std::vector<float>{22},"Optional filtering changed base values");
+            require(client.snapshot().history && client.snapshot().history->values==seed->values,
+                    "Disabled legacy History repopulated the snapshot cache");
+            for(const auto flags:{C::History,C::Previews,C::Diagnostics}) {
+                subscribe.subscriptions=C::Views|flags;client.submit(subscribe);
+                const auto before=deliveries;
+                require(peer.peer->send_packet(8,packet),"Selected optional view send failed");
+                require(wait_until([&]{return deliveries==before+1;}),"Selected optional view missing");
+                require(bool(delivered.history)==bool(flags&C::History) &&
+                        !delivered.previews.isEmpty()==bool(flags&C::Previews) &&
+                        !delivered.window_signal.empty()==bool(flags&C::Diagnostics),"Optional flags did not select exact fields");
+                if(flags&C::History)require(delivered.history->values==std::vector<std::vector<float>>{{123}},"Selected history payload changed");
+                if(flags&C::Previews)require(delivered.previews.value(9).peak==123,"Selected preview payload changed");
+                if(flags&C::Diagnostics)require(delivered.window_signal==std::vector<float>{123} &&
+                    delivered.window==std::vector<float>{124} && delivered.windowed_signal==std::vector<float>{125},"Selected diagnostic payload changed");
+            }
+            // A protocol-v1 peer remains a valid fallback when TypedViews is requested.
+            subscribe.subscriptions=C::Views|C::TypedViews;client.submit(subscribe);
+            auto before=deliveries;require(peer.peer->send_packet(8,packet),"Legacy fallback send failed");
+            require(wait_until([&]{return deliveries==before+1;}),"Protocol-v1 legacy fallback was suppressed");
+            subscribe.subscriptions=0;client.submit(subscribe);before=deliveries;
+            require(peer.peer->send_packet(8,packet),"Unsubscribed legacy send failed");pump();
+            require(deliveries==before,"Unsubscribed legacy packet was delivered");
             client.disconnect_remote();
         }
         auto source_state=std::make_shared<FakeSourceState>();
         {pipeline::AudioPipeline injected([source_state](pipeline::AudioSourceKind kind){return std::make_unique<FakeAudioSource>(kind,source_state);});std::atomic<size_t> raw{0};injected.set_audio_handler([&](auto f){require(f.sample_rate==48000 && f.left.size()==4096 && f.right.size()==4096,"Capture port changed owned audio");++raw;});injected.start_analyzer();injected.start_capture();require(injected.capture_diagnostics().backend.isEmpty(),"Custom source diagnostics changed");require(wait_until([&]{return injected.history_count()>0 && raw.load()>2;}),"Custom source did not feed the same DSP history");injected.stop_capture();const auto stopped=raw.load();pump(40);require(raw.load()==stopped,"Custom source callback escaped stop cancellation");QString error;require(injected.apply_graph(pipeline::GraphProgram::defaults(0,SpectrumMerge::Energy,1),error),"Custom source graph failed");injected.start_capture();require(wait_until([&]{return raw.load()>stopped;}),"Custom microphone port did not restart");injected.stop_capture();injected.stop_analyzer();}
         require(source_state->stopped==2 && source_state->sources.size()==2 && source_state->sources.back()==pipeline::AudioSourceKind::Microphone,"Audio source factory or stop contract violated");
-        pipeline::AudioPipeline engine;
+        auto transport_source_state=std::make_shared<FakeSourceState>();
+        pipeline::AudioPipeline engine([transport_source_state](pipeline::AudioSourceKind kind) {
+            return std::make_unique<FakeAudioSource>(kind,transport_source_state,false);
+        });
         pipeline::EngineServer server(engine);
         require(server.listen(QHostAddress::LocalHost, 0, false), "Listen failed");
         pipeline::EngineClient remote("127.0.0.1", server.port());
@@ -306,6 +469,7 @@ int main(int argc, char **argv) {
         size_t views = 0;
         quint64 last_sequence = 0;
         control.set_view_handler([&](pipeline::ViewFrame v) {
+            require(QThread::currentThread()==app.thread(),"Remote view callback ran outside client Qt thread");
             require(v.epoch == control.snapshot().epoch, "Stale epoch view delivered");
             require(v.history == nullptr || v.history->graph_revision == v.graph_revision, "Stale history delivered");
             ++views;
@@ -316,20 +480,28 @@ int main(int argc, char **argv) {
         c.subscriptions = pipeline::EngineCommand::Views | pipeline::EngineCommand::Diagnostics;
         control.submit(c);
         pump();
+        const auto views_before_block=views;
         engine.start_analyzer();
         pipeline::AudioFrame input;
         input.sample_rate = 48000;
         input.left.resize(4096);
         input.right.resize(4096);
-        for (size_t i = 0; i < input.left.size(); ++i)
-            input.left[i] = input.right[i] = std::sin(float(i) * 0.1f);
+        for (size_t i = 0; i < input.left.size(); ++i) {
+            float sample=0;
+            for(int tone=0;tone<8;++tone) sample+=std::sin(float(i)*float(2*3.141592653589793*(200+tone*600)/48000))/32;
+            input.left[i]=input.right[i]=sample;
+        }
         engine.feed(input);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        require(views == 0, "Remote view callback ran outside client event loop");
-        require(wait_until([&] { return views > 0; }), "Subscribed view stream timed out");
+        require(views == views_before_block, "Remote view callback ran outside client event loop");
+        require(wait_until([&] { return views > views_before_block; }), "Subscribed view stream timed out");
         require(views > 0 && last_sequence > 0, "Subscribed view stream missing");
         engine.stop_analyzer();
-        pump();
+        require(wait_until([&] {
+            const auto snapshot=control.snapshot();
+            return snapshot.statuses.value("Analyzer").state==pipeline::State::Stopped &&
+                   snapshot.analyzer_generation==engine.analyzer_generation();
+        }),"Remote Stop snapshot timed out");
         const auto stopped_views = views;
         engine.feed(input);
         pump();

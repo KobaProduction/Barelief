@@ -297,7 +297,9 @@ static void held_key_pan_checks(bool overlay_only=false,bool clipboard_only=fals
         QTest::mouseClick(handle,Qt::LeftButton); QApplication::processEvents();
         require(splitter->sizes()[2]==0 && QLineF(before_collapse,center()).length()<4/view->getScale(),"Handle click did not collapse or preserve camera");
         emit scene->nodeSelected(8); QApplication::processEvents();
-        require(splitter->sizes()[2]>0,"Node selection did not expand collapsed inspector");
+        require(splitter->sizes()[2]==0,"Node selection reopened collapsed inspector");
+        QTest::mouseClick(handle,Qt::LeftButton); QApplication::processEvents();
+        require(splitter->sizes()[2]>0,"Divider click did not restore collapsed inspector");
         const QPoint handle_point=handle->rect().center();
         QTest::mousePress(handle,Qt::LeftButton,Qt::NoModifier,handle_point);
         move_mouse(handle,handle_point+QPoint(35,0));

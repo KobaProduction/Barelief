@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "core_app/core_application.h"
 #include "core_app/gui_presenter.h"
 #include "core/latest_delivery.h"
@@ -13,6 +14,7 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QLineSeries>
+#include <QUdpSocket>
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -38,7 +40,7 @@ int main(int, char **) {
     int argc = 3;
     char name[] = "runtime_tests", flag[] = "--config";
     char *argv[] = {name, flag, config_path.data(), nullptr};
-    CoreApplication app(argc, argv);
+    CoreApplication app(argc, argv, test_fixture::synthetic_capture_factory(false));
     try {
         int delivered = 0, newest = -1;
         auto delivery = std::make_shared<LatestDelivery<int>>(&app, [&](int value) { ++delivered; newest = value; });
@@ -238,6 +240,11 @@ int main(int, char **) {
             require(app.pipeline().current_status(component).state==expected,"Engine did not reach expected state");
         };
         auto feed = [&] { pipeline::AudioFrame frame; frame.sample_rate=48000; frame.left=wave;frame.right=wave;app.pipeline().feed(frame); };
+        // This fixture consumes view signals directly, without exposing docks.
+        // Request delivery explicitly; hidden GUI panels correctly unsubscribe.
+        app.presenter().set_visible_views(pipeline::EngineCommand::Views | pipeline::EngineCommand::TypedViews |
+                                          pipeline::EngineCommand::Previews);
+        pump();
         int updates = 0, clears = 0, typed_clears = 0;
         bool valid_clear_markers = true;
         QObject::connect(&app.presenter(), &GuiPresenter::node_views_ready, &app, [&](const auto &views) {
@@ -293,17 +300,70 @@ int main(int, char **) {
         for (int i = 0; i < 3; ++i) {
             app.start_loopback(); pump(); app.stop_loopback(); app.stop_loopback();
         }
-        app._ctx.file_configs.wled_ar_server.enabled = true;
-        for (int i = 0; i < 5; ++i) {
-            app.start_wled_audio_reactive_server();
+        {
+            // Convenience Start uses the desktop LAN default. Explicit commands
+            // exercise the same application engine with loopback-only endpoints.
+            // A second client observes ACKs without replacing Presenter callbacks.
+            pipeline::EngineServer wled_server(app.pipeline());
+            require(wled_server.listen(QHostAddress::LocalHost,0,true),"Local WLED control fixture listen failed");
+            std::vector<pipeline::EngineReply> replies;
+            pipeline::EngineClient controller("127.0.0.1",wled_server.port());
+            controller.set_reply_handler([&](auto reply) { replies.push_back(std::move(reply)); });
+            auto await=[&](auto predicate,const char *message) {
+                for(int attempt=0;attempt<200 && !predicate();++attempt) pump(5);
+                require(predicate(),message);
+            };
+            await([&] { return controller.snapshot().epoch!=0; },"Local WLED control handshake failed");
+            QUdpSocket first_receiver,replacement_receiver;
+            require(first_receiver.bind(QHostAddress(QHostAddress::LocalHost),quint16(0)) &&
+                        replacement_receiver.bind(QHostAddress(QHostAddress::LocalHost),quint16(0)),
+                    "Local WLED packet receiver bind failed");
+            auto drain=[](QUdpSocket &receiver) {
+                while(receiver.hasPendingDatagrams()) {
+                    QByteArray bytes;bytes.resize(receiver.pendingDatagramSize());
+                    receiver.readDatagram(bytes.data(),bytes.size());
+                }
+            };
+            auto start=[&](quint16 port) {
+                pipeline::EngineCommand command;
+                command.kind=pipeline::EngineCommand::StartWled;
+                command.interface_address=command.destination=QHostAddress::LocalHost;
+                command.port=port;
+                const auto request=controller.submit(command);
+                const auto reply=[&] {
+                    return std::find_if(replies.begin(),replies.end(),[&](const auto &value) { return value.request_id==request; });
+                };
+                await([&] { return reply()!=replies.end(); },"WLED Start request was not acknowledged");
+                require(request && reply()->accepted,"WLED Start request was rejected");
+                wait_status("WLED",pipeline::State::Running);
+            };
+            app._ctx.file_configs.wled_ar_server.enabled=true;
+            for(int i=0;i<5;++i) {
+                start(first_receiver.localPort());
+                await([&] { return first_receiver.hasPendingDatagrams(); },"WLED Start did not send local packets");
+                const auto revision=app.pipeline().current_status("WLED").revision;
+                // Restart is Stop then Start; repeated Start is intentionally
+                // idempotent and does not reconfigure an already running sink.
+                app.stop_wled_audio_reactive_server();
+                wait_status("WLED",pipeline::State::Stopped);
+                start(replacement_receiver.localPort());
+                await([&] { return app.pipeline().current_status("WLED").revision>revision; },
+                      "Restart did not replace WLED worker");
+                await([&] { return replacement_receiver.hasPendingDatagrams(); },"Replacement WLED worker did not send local packets");
+                drain(first_receiver);pump(40);
+                require(!first_receiver.hasPendingDatagrams(),"Replacement left old WLED destination active");
+                app.stop_wled_audio_reactive_server();app.stop_wled_audio_reactive_server();
+                wait_status("WLED",pipeline::State::Stopped);
+                drain(first_receiver);drain(replacement_receiver);pump(40);
+                require(!first_receiver.hasPendingDatagrams() && !replacement_receiver.hasPendingDatagrams(),
+                        "Stopped WLED worker kept sending packets");
+            }
+            app._ctx.file_configs.wled_ar_server.enabled=false;
             app.restart_wled_audio_reactive_server();
-            wait_status("WLED",pipeline::State::Running);
-            app.stop_wled_audio_reactive_server(); app.stop_wled_audio_reactive_server();
-            wait_status("WLED",pipeline::State::Stopped);
+            wait_status("WLED",pipeline::State::Stopped);pump(40);
+            require(!first_receiver.hasPendingDatagrams() && !replacement_receiver.hasPendingDatagrams(),
+                    "Disabled restart started WLED packet delivery");
         }
-        app._ctx.file_configs.wled_ar_server.enabled = false;
-        app.restart_wled_audio_reactive_server();
-        wait_status("WLED",pipeline::State::Stopped);
 
         AggregatorServer server;
         // Registration correctness is covered here; the dedicated network test

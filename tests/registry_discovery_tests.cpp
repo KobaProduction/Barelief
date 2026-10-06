@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "aggregator/aggregator_client.h"
 #include "aggregator/aggregator_server.h"
 #include "pipeline/engine_client.h"
@@ -25,11 +26,11 @@ int main(int argc, char **argv) {
         AggregatorServer directory;
         require(directory.start(0), "registry fixture listen");
         const auto registry_port = directory.serverPort();
-        pipeline::AudioPipeline engine;
+        pipeline::AudioPipeline engine(test_fixture::synthetic_capture_factory());
         engine.stop_capture();
         engine.stop_analyzer();
         {
-            pipeline::EngineClient local;
+            pipeline::EngineClient local(test_fixture::synthetic_capture_factory());
             QJsonObject config{{"engine_server", QJsonObject{{"enabled", true}, {"port", 8213}}}};
             QString error;
             require(local.configure_network(config, &error), "local network configuration");

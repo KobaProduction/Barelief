@@ -1,0 +1,10 @@
+add_library(embedded_support STATIC src/profile.cpp src/session.cpp src/synthetic_pipeline.cpp)
+target_compile_features(embedded_support PUBLIC cxx_std_20)
+target_include_directories(embedded_support PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+target_link_libraries(embedded_support PUBLIC bdsp_protocol dataflow_runtime)
+if(PORTABLE_DISABLE_EXCEPTIONS_RTTI AND NOT MSVC)
+    target_compile_options(embedded_support PRIVATE -fno-exceptions -fno-rtti)
+endif()
+install(TARGETS embedded_support EXPORT portable_sdk_targets ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)

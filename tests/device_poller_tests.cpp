@@ -1,4 +1,4 @@
-#include "../src/pipeline/src/default_device_poller.h"
+#include "../adapters/desktop/platform/pipeline/src/default_device_poller.h"
 #include <iostream>
 #include <stdexcept>
 

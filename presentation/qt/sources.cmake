@@ -1,0 +1,52 @@
+# Canonical Qt presentation sources; targets and dependency wiring belong to the composition root.
+set(QT_PRESENTATION_HEADERS
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/graph_panel.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/gui_event_profile.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/gui_presenter.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/main_window.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/scheme_editor/audio_node_model.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/scheme_editor/editor_widget.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/scheme_editor/node_preview_card.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/settings_widget.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/core_app/types.h"
+)
+set(QT_PRESENTATION_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/audio_node_model.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/editor_widget.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/presenter/gui_presenter.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/graph_panel.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/settings/camera_controls_settings.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/settings/settings_widget.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/workspace/main_window.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/workspace/dock_workspace.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/view_updates.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/node_views.cpp"
+)
+set(QT_RENDERER_HEADERS
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/abstract/abs.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/abstract/fps.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/abstract/mixins.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/axis_control_widget.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/camera_controls.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/charts/bar.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/charts/freq.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/charts/line.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrograms/spectrogram_graph.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrograms/spectrogram_graph_modifier.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrograms/spectrogram_scene_geometry.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/surface_settings.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/ui_text.h"
+)
+set(QT_RENDERER_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/abs.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/fps.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/mixins.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/charts/bar.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/charts/freq.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/charts/line.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/spectrograms/spectrogram_graph.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/spectrograms/spectrogram_graph_modifier.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/settings/axis_control_widget.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/theme/ui_text.cpp"
+)
+set(QT_PRESENTATION_RESOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")

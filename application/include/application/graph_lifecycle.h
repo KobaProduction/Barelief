@@ -66,6 +66,9 @@ public:
     LifecycleResult disconnect(domain::NodeId to, std::uint16_t input_port = 0);
     Status start();
     Status stop();
+    // Serialized control plane. Only subsequent Prepare uses these limits;
+    // discard pending preparation without changing working state or run intent.
+    void runtime_limits(RuntimeLimits);
     LifecycleState state() const noexcept { return state_; }
     const domain::GraphDefinition* working_graph() const noexcept;
     bool has_prepared() const noexcept { return bool(pending_); }

@@ -1,3 +1,4 @@
+#include "synthetic_capture.h"
 #include "pipeline/audio_pipeline.h"
 #include <QCoreApplication>
 #include <QUdpSocket>
@@ -34,7 +35,7 @@ int main(int argc, char **argv) {
         RetryTask retry; retry.start(); std::this_thread::sleep_for(std::chrono::milliseconds(10));
         auto stop_start = std::chrono::steady_clock::now(); retry.stop();
         require(std::chrono::steady_clock::now()-stop_start < std::chrono::milliseconds(250), "Retry wait cannot be cancelled");
-        pipeline::AudioPipeline engine;
+        pipeline::AudioPipeline engine(test_fixture::synthetic_capture_factory(false));
         QUdpSocket receiver;
         require(receiver.bind(QHostAddress(QHostAddress::LocalHost), quint16(0)), "UDP receiver bind failed");
         engine.start_wled(QHostAddress::LocalHost, receiver.localPort(), QHostAddress::LocalHost);

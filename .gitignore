@@ -7,3 +7,15 @@ cmake-*-*
 /build-pipeline-owner/
 /build-adapter-slice/
 /build-sdk*/
+/build-qt-slice/
+/review-desktop-platform/
+/review-qt-presentation/
+/review-dataflow-runtime/
+/review-embedded-sdk/
+/review-desktop-analysis/
+/build-desktop-integration/
+/build-headless-verify/
+/review-desktop-application/
+/build-fixture-audit/
+/review-test-fixtures/
+/review-qt-integration/

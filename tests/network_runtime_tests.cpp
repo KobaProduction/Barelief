@@ -1,5 +1,7 @@
+#include "synthetic_capture.h"
 #include "pipeline/engine_client.h"
 #include "pipeline/stream_transport.h"
+#include "pipeline/network_runtime.h"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QThread>
@@ -25,12 +27,35 @@ static bool wait(std::function<bool()> f) {
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
     try {
+        if(app.arguments().contains("--network-apply-only")) {
+            NetworkPublisher publisher;publisher.advertise("mel",FrameType::Mel);
+            require(publisher.listen(),"apply-only publisher");
+            AudioPipeline engine(test_fixture::synthetic_capture_factory());QString error;
+            const auto graph=QJsonObject{{"version",2},{"nodes",QJsonArray{
+                QJsonObject{{"id",0},{"internal-data",QJsonObject{{"model-name","NetworkInput"},{"data_type","mel"},
+                    {"stream_id","mel"},{"host","127.0.0.1"},{"port",publisher.port()}}}},
+                QJsonObject{{"id",1},{"internal-data",QJsonObject{{"model-name","MelView"}}}}}},
+                {"connections",QJsonArray{QJsonObject{{"outNodeId",0},{"inNodeId",1},{"outPortIndex",0},{"inPortIndex",0}}}}};
+            require(engine.apply_graph(graph,error),qPrintable(error));
+            NetworkRuntime runtime(engine);require(runtime.refresh(error),qPrintable(error));
+            TypedFrame mel;mel.type=FrameType::Mel;mel.sample_rate=48000;mel.values={1,2,3};mel.stream_id="mel";
+            require(wait([&] {
+                ++mel.sequence;publisher.publish("mel",mel);const auto views=engine.latest_views();
+                return views.contains(1) && views[1].available && views[1].values==mel.values;
+            }),
+                    "Initial NetworkInput Apply did not start application processing");
+            engine.stop_analyzer();
+            auto changed=graph;changed["graph_id"]="stopped";
+            require(engine.apply_graph(changed,error),qPrintable(error));
+            require(engine.current_status("Analyzer").state==State::Stopped,"Network Apply lost explicit Stop intent");
+            return 0;
+        }
         QTcpServer registry_probe;
         require(registry_probe.listen(QHostAddress::LocalHost, 0), "registry probe");
         QTcpServer reserve;
         require(reserve.listen(QHostAddress::LocalHost, 0), "port probe");
         int port = reserve.serverPort();
-        EngineClient local;
+        EngineClient local(test_fixture::synthetic_capture_factory());
         QString error;
         require(local.configure_network(
                     {{"aggregator", QJsonObject{{"enabled", true}, {"port", int(registry_probe.serverPort())}}},

@@ -82,6 +82,18 @@ int main() {
     runtime.status=Status::ok;
     check(bool(lifecycle.prepare(graph())) && bool(lifecycle.apply()) && !runtime.requested,"failed stop loses stop intent");
     check(!lifecycle.disconnect(99) && !lifecycle.disconnect(1,1),"invalid disconnect accepted");
+    check(bool(lifecycle.prepare(graph())),"limits pending fixture");
+    const auto before_limits=*lifecycle.working_graph();
+    RuntimeLimits reduced;reduced.max_memory_bytes=1;
+    lifecycle.runtime_limits(reduced);
+    check(!lifecycle.has_prepared() && !lifecycle.apply(),"limits change leaves old pending applicable");
+    check(lifecycle.state()==LifecycleState::Stopped && *lifecycle.working_graph()==before_limits,
+          "limits change mutates working state");
+    check(lifecycle.prepare(graph()).status==Status::exhausted && *lifecycle.working_graph()==before_limits,
+          "reduced budget destroys working graph");
+    lifecycle.runtime_limits({});
+    check(bool(lifecycle.prepare(graph())) && bool(lifecycle.apply()) && !runtime.requested,
+          "limits change loses explicit stop intent");
     check(MemoryRequirements{1,2,3}.fits(6) && !MemoryRequirements{1,2,3}.fits(5),"memory accounting");
     std::cout<<"application lifecycle passed\n";
 }
