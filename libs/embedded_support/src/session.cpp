@@ -46,6 +46,7 @@ Status Session::begin(std::uint64_t now, std::uint64_t epoch) noexcept {
 void Session::stop() noexcept {
     packets_.reset();assembler_.reset();tx_size_=tx_offset_=0;
     rx_epoch_=rx_generation_=rx_sequence_=0;gap_=true;
+    rx_producer_=0;rx_identity_known_=false;retired_count_=retired_next_=0;
     state_=SessionState::stopped;last_=Status::ok;
 }
 Status Session::fail(Status s) noexcept {
@@ -84,11 +85,28 @@ void Session::packet(bdsp_protocol::PacketView p) noexcept {
     const auto valid=signal_contracts::validate(frame);
     if(frame.type!=type_ || frame.metadata.stream_id!=id_ || (valid!=Status::ok && valid!=Status::unavailable)){fail(Status::incompatible_contract);return;}
     const auto &m=frame.metadata;
-    if(m.available && m.epoch==rx_epoch_ && m.generation==rx_generation_ && m.sequence<=rx_sequence_)return;
-    frame.metadata.discontinuity |= gap_ || m.epoch!=rx_epoch_ || m.generation!=rx_generation_ ||
+    ProducerIdentity incoming{m.epoch,m.producer_epoch?m.producer_epoch:m.epoch};
+    // A source-less clearing marker belongs to the last identity in this binding;
+    // its zero generation does not lower the known generation or sequence fence.
+    if(!m.available && !m.producer_epoch && !m.generation && rx_identity_known_ && m.epoch==rx_epoch_)
+        incoming.producer=rx_producer_;
+    const ProducerIdentity current{rx_epoch_,rx_producer_};
+    const bool same_producer=rx_identity_known_ && incoming==current;
+    if(!same_producer && std::find(retired_.begin(),retired_.begin()+retired_count_,incoming)!=retired_.begin()+retired_count_)return;
+    if(same_producer && m.generation<rx_generation_ && (m.available || m.generation))return;
+    const bool same_generation=same_producer && (m.generation==rx_generation_ || (!m.available && !m.generation));
+    if(m.available && same_generation && m.sequence<=rx_sequence_)return;
+    frame.metadata.discontinuity |= gap_ || !same_generation ||
         (m.available && rx_sequence_ && m.sequence-rx_sequence_!=1);
-    if(m.available || m.epoch!=rx_epoch_ || m.generation!=rx_generation_)rx_sequence_=m.sequence;
-    rx_epoch_=m.epoch;rx_generation_=m.generation;gap_=!m.available;
+    if(!same_producer && rx_identity_known_) {
+        retired_[retired_next_]=current;
+        retired_next_=(retired_next_+1)%retired_.size();
+        retired_count_=std::min(retired_count_+1,retired_.size());
+    }
+    if(m.available || !same_generation)rx_sequence_=m.sequence;
+    rx_epoch_=incoming.publisher;rx_producer_=incoming.producer;rx_identity_known_=true;
+    if(m.available || !same_generation || m.generation)rx_generation_=m.generation;
+    gap_=!m.available;
     if(handler_)handler_(user_,frame);
 }
 Status Session::publish(const signal_contracts::FrameView &input) noexcept {

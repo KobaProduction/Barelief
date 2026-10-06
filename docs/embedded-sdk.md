@@ -126,6 +126,18 @@ existing zero delimiter to resynchronize an abandoned partial packet. It does no
 define another framing or reconnect control packet.
 Subscribers mark sequence gaps as discontinuities as well as epoch/generation
 changes, preserve explicit discontinuity flags and reject non-advancing sequences.
+Generation and sequence fences apply within the current publisher/producer
+identity. A newer-generation unavailable marker admits the new generation's
+fresh sequence; an unknown-generation marker keeps the known fence. Discontinuity
+does not authorize duplicate or backwards data. Subscriber Session keeps sixteen
+retired `(publisher epoch, effective producer epoch)` tuples in a fixed FIFO ring
+(256 bytes plus cursor/index state). Effective producer epoch uses producer_epoch
+when nonzero, otherwise frame epoch; a source-less clearing marker in the current
+publisher belongs to its last known producer. Recently retired data and markers
+are ignored before changing cursor or gap state. The oldest tuple is evicted on
+the seventeenth retirement, so this is a bounded replay window, not an unlimited
+identity history. Explicit stop/begin resets it; all consumers must rebuild after
+changes to Session's private object layout. No wire fields or public methods change.
 
 ## Wire scope and verification
 

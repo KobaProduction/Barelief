@@ -89,6 +89,37 @@ int main(int argc,char **argv) {
             node(10,"NetworkInput",{{"data_type","mel"}}),node(11,"Spectrogram",{{"history_size",3}}),node(12,"SpectrogramView"),node(13,"MelView"),node(14,"NetworkOutput",{{"data_type","history"}})},
             {edge(0,1),edge(1,2),edge(10,11),edge(11,12),edge(10,13),edge(11,14)});
         auto b=GraphProgram::compile(branches,error);check(bool(b),qPrintable(error));check(!b->contains("StereoFFT"),"External Mel requires FFT");
+        {
+            auto fenced_graph=branches;auto fenced_nodes=fenced_graph["nodes"].toArray();fenced_nodes.append(node(3,"NetworkOutput",{{"data_type","history"}}));
+            auto fenced_edges=fenced_graph["connections"].toArray();fenced_edges.append(edge(1,3));
+            fenced_graph["nodes"]=fenced_nodes;fenced_graph["connections"]=fenced_edges;
+            AudioPipeline fenced([](AudioSourceKind){return std::unique_ptr<IAudioSource>{};});check_apply(fenced,fenced_graph,error);
+            int controls=0;
+            fenced.subscribe_typed([&](int,TypedFrame output) {
+                if(!output.available) {
+                    ++controls;check(output.generation==2 && output.producer_epoch==100,"Forwarded marker lost producer/generation fence");
+                }
+            },std::vector<int>{3});
+            TypedFrame data;data.type=FrameType::Mel;data.sample_rate=48000;data.epoch=100;data.generation=1;
+            data.sequence=1;data.values={1,2,3};fenced.feed_typed(0,data);fenced.feed_typed(10,data);
+            auto marker=data;marker.available=false;marker.sequence=0;marker.values.clear();marker.generation=2;
+            fenced.feed_typed(0,marker);
+            check(!fenced.latest_views()[2].available,"New generation marker did not make dependent view unavailable");
+            data.sequence=2;fenced.feed_typed(0,data);
+            check(!fenced.latest_views()[2].available,"Older generation revived history after accepted marker");
+            check(fenced.latest_views()[12].available && fenced.latest_views()[12].history.size()==1,"Marker cleared an independent branch");
+            data.generation=2;data.sequence=3;fenced.feed_typed(0,data);
+            check(fenced.latest_views()[2].available && fenced.latest_views()[2].history.size()==1,"Current generation did not recover");
+            marker.generation=1;fenced.feed_typed(0,marker);
+            check(fenced.latest_views()[2].available,"Stale marker cleared current generation data");
+            data.epoch=101;data.generation=1;data.sequence=1;fenced.feed_typed(0,data);
+            check(fenced.latest_views()[2].history.back()==data.values,"New producer/geometry was rejected");
+            marker.epoch=100;marker.generation=99;fenced.feed_typed(0,marker);
+            check(fenced.latest_views()[2].available,"Retired producer marker cleared the new producer");
+            check(controls==1,"Rejected or accepted marker emitted duplicate controls");
+            data.sequence=2;data.values={4,5,6,7};fenced.feed_typed(0,data);
+            check(fenced.latest_views()[2].history.back()==data.values,"Recovery geometry renegotiation was rejected");
+        }
         GraphEvaluationContext c;TypedFrame f;f.type=FrameType::Mel;f.sample_rate=48000;f.generation=2;f.sequence=1;f.values={1,2,3};
         b->evaluate(0,f,c);f.sequence=2;auto a=b->evaluate(0,f,c);check(a.views[2].history.size()==2,"First history failed");
         f.sequence=1;f.values={4,5,6};auto second=b->evaluate(10,f,c);check(second.views[12].history.size()==1,"Histories share state");

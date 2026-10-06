@@ -16,6 +16,8 @@ using FrameHandler = void (*)(void *, const signal_contracts::FrameView &);
 // is borrowed for its entire lifetime. Serialized task access only, never ISR.
 // Frame callback spans are borrowed for that callback only; queue via encode/pool.
 // One encoded frame + one packet pending. Transport methods must never block.
+// Subscriber replay fence retains the last 16 retired publisher/producer tuples
+// in fixed storage. Older evicted identities are outside that bounded window.
 class Session {
 public:
     Session(Role, signal_contracts::FrameType, std::string_view id, SessionBuffers) noexcept;
@@ -42,6 +44,14 @@ private:
     SessionState state_=SessionState::stopped;
     Status last_=Status::ok;
     std::uint64_t started_=0,epoch_=0,dropped_=0,rx_epoch_=0,rx_generation_=0,rx_sequence_=0;
+    struct ProducerIdentity {
+        std::uint64_t publisher=0,producer=0;
+        bool operator==(const ProducerIdentity &) const = default;
+    };
+    std::uint64_t rx_producer_=0;
+    std::array<ProducerIdentity,16> retired_{};
+    std::size_t retired_count_=0,retired_next_=0;
+    bool rx_identity_known_=false;
     bool gap_=true;
     FrameHandler handler_=nullptr;void *user_=nullptr;
 };

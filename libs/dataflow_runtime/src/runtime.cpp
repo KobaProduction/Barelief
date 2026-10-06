@@ -461,7 +461,7 @@ Status PreparedGraph::process(NodeId ingress, const FrameView &input, RuntimeCon
     if (input.metadata.available && !new_epoch &&
         (input.metadata.generation < origin.generation ||
          (input.metadata.generation == origin.generation && origin.sequence &&
-          input.metadata.sequence <= origin.sequence && !input.metadata.discontinuity)))
+          input.metadata.sequence <= origin.sequence)))
         return Status::would_block;
     if (new_epoch && origin.producer_epoch) {
         origin.retired[origin.retired_next] = origin.producer_epoch;
@@ -495,8 +495,10 @@ Status PreparedGraph::process(NodeId ingress, const FrameView &input, RuntimeCon
             origin.producer_epoch = epoch;
             origin.generation = input.metadata.generation;
             origin.sequence = 0;
-        } else if (input.metadata.generation)
+        } else if (input.metadata.generation) {
+            if(input.metadata.generation>origin.generation)origin.sequence=0;
             origin.generation = input.metadata.generation;
+        }
         unavailable(unavailable, at, input.metadata);
         return Status::unavailable;
     }

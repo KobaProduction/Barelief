@@ -7,6 +7,14 @@
 #include <vector>
 #include <cmath>
 #include <limits>
+#include <cstdlib>
+#include <new>
+#include <cstring>
+static thread_local bool measuring_allocations=false;
+static thread_local std::size_t allocation_count=0;
+void *operator new(std::size_t size) {if(measuring_allocations)++allocation_count;if(auto *p=std::malloc(size))return p;std::abort();}
+void operator delete(void *p) noexcept {std::free(p);}
+void operator delete(void *p,std::size_t) noexcept {std::free(p);}
 using signal_contracts::Status;
 using signal_contracts::FrameType;
 struct Transport : bdsp_protocol::ByteTransport {
@@ -30,8 +38,62 @@ struct Storage {
     std::array<float,512> samples{};std::array<char,256> id{};
     embedded_support::SessionBuffers buffers(){return {in,out,read,tx,fragment,assembly,samples,id};}
 };
-void transfer(embedded_support::Session &p, embedded_support::Session &s, Transport &a, Transport &b, int n=10000){
+template<class T> void transfer(embedded_support::Session &p, embedded_support::Session &s, T &a, T &b, int n=10000){
     for(int i=0;i<n;++i){assert(p.poll(a,1)==Status::ok);assert(s.poll(b,1)==Status::ok);}
+}
+struct FixedTransport : bdsp_protocol::ByteTransport {
+    std::array<std::uint8_t,4096> bytes{};FixedTransport *peer=nullptr;
+    std::size_t head=0,count=0,quantum=1;
+    bdsp_protocol::TransportState state() const noexcept override{return bdsp_protocol::TransportState::connected;}
+    bdsp_protocol::IoResult read(std::span<std::uint8_t> out) noexcept override {
+        const auto n=std::min({count,out.size(),quantum});
+        for(std::size_t i=0;i<n;++i){out[i]=bytes[head];head=(head+1)%bytes.size();}count-=n;
+        return {n?Status::ok:Status::would_block,n};
+    }
+    bdsp_protocol::IoResult write(std::span<const std::uint8_t> in) noexcept override {
+        const auto n=std::min({in.size(),quantum,peer->bytes.size()-peer->count});
+        for(auto value:in.first(n)){peer->bytes[(peer->head+peer->count)%peer->bytes.size()]=value;++peer->count;}
+        return {n?Status::ok:Status::would_block,n};
+    }
+};
+void producer_fences(bool replay_only=false) {
+    Storage pb,sb;FixedTransport a,b;a.peer=&b;b.peer=&a;
+    embedded_support::Session p{embedded_support::Role::publisher,FrameType::PCM,"raw",pb.buffers()};
+    embedded_support::Session s{embedded_support::Role::subscriber,FrameType::PCM,"raw",sb.buffers()};
+    assert(p.begin(0,123)==Status::ok && s.begin(0,0)==Status::ok);transfer(p,s,a,b,1000);
+    struct Received {int data=0,markers=0;std::uint64_t producer=0,generation=0;bool gap=false;} received;
+    s.set_frame_handler([](void *ctx,const signal_contracts::FrameView &frame) {
+        assert(frame.metadata.timestamp_ns==-456 && frame.metadata.source_sequence==91 && frame.metadata.stream_id=="raw");
+        auto &r=*static_cast<Received *>(ctx);if(frame.metadata.available)++r.data;else ++r.markers;
+        r.producer=frame.metadata.producer_epoch;r.generation=frame.metadata.generation;r.gap=frame.metadata.discontinuity;
+    },&received);
+    std::array<float,4> pcm{1,2,3,4};signal_contracts::FrameView frame;
+    frame.metadata.stream_id="raw";frame.metadata.sample_rate=8000;frame.metadata.producer_epoch=100;
+    frame.metadata.generation=1;frame.metadata.sequence=1;frame.left=pcm;frame.right=pcm;
+    frame.metadata.timestamp_ns=-456;frame.metadata.source_sequence=91;
+    auto send=[&](const signal_contracts::FrameView &value){assert(p.publish(value)==Status::ok);transfer(p,s,a,b,1000);};
+    allocation_count=0;measuring_allocations=true;send(frame);assert(received.data==1);
+    if(!replay_only) {
+        auto marker=frame;marker.metadata.available=false;marker.metadata.sequence=0;marker.metadata.generation=2;marker.left={};marker.right={};
+        send(marker);assert(received.markers==1);
+        frame.metadata.sequence=2;send(frame);assert(received.data==1); // older generation after accepted marker
+        frame.metadata.generation=2;frame.metadata.sequence=1;send(frame);assert(received.data==2);
+        marker.metadata.generation=1;send(marker);assert(received.markers==1); // stale control cannot clear current data
+        marker.metadata.producer_epoch=0;marker.metadata.generation=0;send(marker);assert(received.markers==2);
+        send(frame);assert(received.data==2);frame.metadata.sequence=2;send(frame);assert(received.data==3 && received.gap);
+    }
+    const auto before=received.data;
+    frame.metadata.producer_epoch=101;frame.metadata.generation=1;frame.metadata.sequence=3;send(frame);assert(received.data==before+1);
+    frame.metadata.producer_epoch=100;frame.metadata.sequence=4;frame.metadata.discontinuity=true;send(frame);
+    assert(received.data==before+1); // retired identity must not become a new producer again
+    auto old_marker=frame;old_marker.metadata.available=false;old_marker.metadata.sequence=0;old_marker.left={};old_marker.right={};
+    const auto controls=received.markers;send(old_marker);assert(received.markers==controls);
+    frame.metadata.producer_epoch=102;frame.metadata.sequence=1;frame.metadata.discontinuity=false;send(frame);assert(received.data==before+2);
+    // Retention is explicitly bounded to the same sixteen identities as runtime.
+    for(std::uint64_t producer=200;producer<217;++producer){frame.metadata.producer_epoch=producer;send(frame);}
+    const auto latest=received.data;frame.metadata.producer_epoch=215;frame.metadata.sequence=2;send(frame);assert(received.data==latest);
+    frame.metadata.producer_epoch=100;frame.metadata.sequence=1;send(frame);assert(received.data==latest+1); // evicted, beyond retention window
+    measuring_allocations=false;assert(allocation_count==0);
 }
 void sessions(std::size_t quantum) {
     Storage pb,sb; Transport a,b;a.peer=&b;b.peer=&a;a.quantum=b.quantum=quantum;
@@ -102,7 +164,8 @@ void sequence_gap() {
     f.metadata.sequence=6;f.metadata.discontinuity=true;assert(p.publish(f)==Status::ok);transfer(p,s,a,b,100);assert(r.count==4 && r.gap);
     f.metadata.sequence=5;assert(p.publish(f)==Status::ok);transfer(p,s,a,b,100);assert(r.count==4);
 }
-int main(){
+int main(int argc,char **argv){
+    producer_fences(argc>1 && std::strcmp(argv[1],"--retired-producer-only")==0);
     embedded_support::Profile profile;profile.tcp_bytes_per_second=200000;profile.uart_baud=2000000;
     assert(embedded_support::admit(profile,3).status==Status::ok);
     profile.link=embedded_support::Link::uart_8n1;assert(embedded_support::admit(profile,3).status==Status::ok);

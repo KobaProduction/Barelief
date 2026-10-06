@@ -72,6 +72,7 @@ int main(int argc,char **argv) {
         require(delivered==1 && engine.latest_views()[2].history==std::vector<std::vector<float>>{{1,2,3}},
                 "UART packet did not execute actual desktop graph");
         TypedFrame unavailable;unavailable.type=FrameType::Mel;unavailable.available=false;unavailable.epoch=99;
+        unavailable.stream_id="uart";
         uart.inject(data(unavailable));require(delivered==2 && !engine.latest_views()[2].available,"UART unavailable retained history");
         mel.sequence=2;uart.inject(data(mel));require(engine.latest_views()[2].history.size()==1,"UART resume failed");
         // Stop from a callback must fence remaining coalesced bytes and assembly.

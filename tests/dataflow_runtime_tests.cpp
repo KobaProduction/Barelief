@@ -154,6 +154,38 @@ static void marker_identity_test() {
     assert(!p->marker_current(0, marker, *c));
     assert(p->process(0, marker, *c) == Status::would_block && p->history(2, *c).frames == 1);
 }
+static void generation_baseline_test() {
+    auto graph=mel_graph();std::array<float,3> samples{1,2,3};
+    FrameView frame;frame.type=FrameType::Mel;frame.values=samples;frame.metadata.sample_rate=48000;
+    frame.metadata.bands=3;frame.metadata.producer_epoch=100;frame.metadata.generation=1;frame.metadata.sequence=10;
+    std::array<IngressSpec,1> specs{{{0,contract(frame),3}}};
+    GraphExecutor executor(specs);application::GraphLifecycle lifecycle(executor,executor,desktop_capabilities());
+    assert(lifecycle.prepare(graph) && lifecycle.apply());assert(executor.process(0,frame)==Status::ok);
+    auto marker=frame;marker.metadata.available=false;marker.metadata.sequence=0;marker.metadata.generation=2;marker.values={};
+    allocations=0;guard=true;
+    assert(executor.process(0,marker)==Status::unavailable);
+    frame.metadata.sequence=11;assert(executor.process(0,frame)==Status::would_block);
+    frame.metadata.generation=2;frame.metadata.sequence=1;
+    assert(executor.process(0,frame)==Status::ok); // no discontinuity bypass requested
+    assert(executor.process(0,frame)==Status::would_block);
+    marker.metadata.generation=2;assert(executor.process(0,marker)==Status::unavailable);
+    assert(executor.process(0,frame)==Status::would_block); // same-generation marker keeps baseline
+    frame.metadata.sequence=2;assert(executor.process(0,frame)==Status::ok);
+    guard=false;assert(allocations==0 && executor.plan()->history(2,*executor.context()).frames==1);
+}
+static void duplicate_discontinuity_test() {
+    auto graph=mel_graph();std::array<float,3> samples{1,2,3};
+    FrameView frame;frame.type=FrameType::Mel;frame.values=samples;frame.metadata.sample_rate=48000;
+    frame.metadata.bands=3;frame.metadata.producer_epoch=100;frame.metadata.generation=1;frame.metadata.sequence=10;
+    std::array<IngressSpec,1> specs{{{0,contract(frame),3}}};GraphExecutor executor(specs);
+    application::GraphLifecycle lifecycle(executor,executor,desktop_capabilities());
+    assert(lifecycle.prepare(graph) && lifecycle.apply());assert(executor.process(0,frame)==Status::ok);
+    allocations=0;guard=true;frame.metadata.discontinuity=true;
+    assert(executor.process(0,frame)==Status::would_block);
+    frame.metadata.sequence=9;assert(executor.process(0,frame)==Status::would_block);
+    frame.metadata.sequence=11;assert(executor.process(0,frame)==Status::ok);
+    guard=false;assert(!allocations && executor.plan()->history(2,*executor.context()).frames==1);
+}
 static void source_semantics_test() {
     GraphDefinition g;
     g.nodes = {node(0, NodeKind::AudioSource), node(1, NodeKind::AudioView)};
@@ -264,6 +296,10 @@ int main(int argc, char **argv) {
         const std::string_view selected = argv[1];
         if (selected == "marker_identity")
             marker_identity_test();
+        else if(selected=="generation_baseline")
+            generation_baseline_test();
+        else if(selected=="duplicate_discontinuity")
+            duplicate_discontinuity_test();
         else if (selected == "source_semantics")
             source_semantics_test();
         else if (selected == "unavailable_tick")
@@ -563,6 +599,8 @@ int main(int argc, char **argv) {
     assert(next->process(0, wf, *nc, peak, &window_peak) == Status::ok && window_peak == 0);
     pending_execution_test();
     marker_identity_test();
+    generation_baseline_test();
+    duplicate_discontinuity_test();
     source_semantics_test();
     unavailable_tick_test();
     history_fallback_tick_test();

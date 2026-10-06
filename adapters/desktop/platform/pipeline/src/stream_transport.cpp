@@ -12,6 +12,15 @@ namespace pipeline {
 namespace {
 constexpr quint8 Subscribe = 11, Ack = 12, Data = 13, Error = 14;
 constexpr qsizetype Chunk = bdsp_protocol::StreamFragmentBytes, Queue = 2 * 1024 * 1024;
+uint64_t scoped_producer(uint64_t publisher, uint64_t producer) {
+    // Local producer epochs can repeat in a new process. Scope inherited identity
+    // by this publisher incarnation, including at stable intermediate relays.
+    auto value=publisher ^ (producer + 0x9e3779b97f4a7c15ULL);
+    value=(value^(value>>30))*0xbf58476d1ce4e5b9ULL;
+    value=(value^(value>>27))*0x94d049bb133111ebULL;
+    value^=value>>31;
+    return value?value:1;
+}
 QByteArray request(QString id, stream::Type type) {
     auto b = id.toUtf8();
     b.prepend(char(type));
@@ -29,6 +38,7 @@ bool parse(const QByteArray &b, QString &id, stream::Type &type) {
 } // namespace
 class NetworkPublisher::Impl {
   public:
+    std::map<QString,uint64_t> last_producers;
     struct Server : QTcpServer {
         std::function<void(qintptr)> accept;
         void incomingConnection(qintptr fd) override {
@@ -87,6 +97,7 @@ NetworkPublisher::~NetworkPublisher() {
 }
 bool NetworkPublisher::listen(const QHostAddress &a, quint16 p) {
     d->epoch = QRandomGenerator::global()->generate64();
+    for(auto &[id,producer]:d->last_producers)producer=0;
     return d->server.listen(a, p);
 }
 quint16 NetworkPublisher::port() const {
@@ -101,6 +112,7 @@ void NetworkPublisher::stop() {
 }
 void NetworkPublisher::advertise(QString id, stream::Type t) {
     d->streams[id] = t;
+    d->last_producers.try_emplace(id,0);
 }
 uint64_t NetworkPublisher::dropped() const {
     return d->drops;
@@ -108,6 +120,11 @@ uint64_t NetworkPublisher::dropped() const {
 bool NetworkPublisher::publish(const QString &id, const stream::Frame &f) {
     if (!stream::valid(f) || !d->streams.contains(id) || d->streams.value(id) != f.type)
         return false;
+    auto &last_producer=d->last_producers.at(id);
+    const bool unknown_marker=!f.available && !f.producer_epoch && !f.generation;
+    const auto producer=unknown_marker && last_producer?last_producer:
+        scoped_producer(d->epoch,unknown_marker?0:(f.producer_epoch?f.producer_epoch:f.epoch));
+    last_producer=producer;
     auto recipients = d->peers.keys();
     for (auto s : recipients) {
         if (!d->peers.contains(s))
@@ -124,6 +141,8 @@ bool NetworkPublisher::publish(const QString &id, const stream::Frame &f) {
         }
         auto x = f;
         x.epoch = d->epoch;
+        x.stream_id = id.toStdString();
+        x.producer_epoch=producer;
         x.discontinuity |= peer.gap;
         auto bytes = stream::encode(x);
         peer.gap = false;
@@ -152,13 +171,21 @@ class NetworkSubscriber::Impl {
     std::vector<QMetaObject::Connection> channel_connections;
     QTimer retry, timeout;
     QString host, id;
+    std::string id_bytes;
     quint16 port = 0;
     stream::Type type;
     bool enabled = false, ready = false, gap = true;
     int attempt = 0;
     std::vector<std::uint8_t> assembly_storage = std::vector<std::uint8_t>(bdsp_protocol::MaxFrameBytes);
     bdsp_protocol::FrameAssembler assembler{assembly_storage};
-    uint64_t epoch = 0, generation = 0, sequence = 0;
+    uint64_t epoch = 0, producer_epoch = 0, generation = 0, sequence = 0;
+    struct ProducerIdentity {
+        uint64_t publisher=0,producer=0;
+        bool operator==(const ProducerIdentity &) const = default;
+    };
+    std::array<ProducerIdentity,16> retired{};
+    size_t retired_count=0,retired_next=0;
+    bool identity_known=false;
     std::function<void(stream::Frame)> frame;
     std::function<void(QString)> status;
     void report(QString s) {
@@ -168,6 +195,7 @@ class NetworkSubscriber::Impl {
     void connect() {
         if (!enabled)
             return;
+        id_bytes=id.toStdString();
         ready = false;
         assembler.reset();
         timeout.start(5000);
@@ -250,24 +278,31 @@ class NetworkSubscriber::Impl {
             stream::Frame f;
             std::string error;
             if (!stream::decode(complete, f, error) ||
-                f.type != type) {
-                report(QString::fromStdString(error));
+                f.type != type || f.stream_id != id_bytes) {
+                report(error.empty()?QStringLiteral("Stream type or id does not match subscription"):QString::fromStdString(error));
                 abort();
                 return;
             }
-            if (!f.available) {
-                gap = true;
-                if (frame)
-                    frame(std::move(f));
-                return;
+            auto producer=f.producer_epoch?f.producer_epoch:f.epoch;
+            if(!f.available && !f.producer_epoch && !f.generation && identity_known && f.epoch==epoch)producer=producer_epoch;
+            const ProducerIdentity incoming{f.epoch,producer},current{epoch,producer_epoch};
+            const bool same_producer=identity_known && incoming==current;
+            if(!same_producer && std::find(retired.begin(),retired.begin()+retired_count,incoming)!=retired.begin()+retired_count)return;
+            if(same_producer && f.generation<generation && (f.available || f.generation))return;
+            const bool same_identity=same_producer && (f.generation==generation || (!f.available && !f.generation));
+            if(f.available && same_identity && f.sequence<=sequence)return;
+            f.discontinuity |= gap || !same_identity || (f.available && f.sequence != sequence + 1);
+            if(!same_producer && identity_known) {
+                retired[retired_next]=current;
+                retired_next=(retired_next+1)%retired.size();
+                retired_count=std::min(retired_count+1,retired.size());
             }
-            if (f.epoch == epoch && f.generation == generation && f.sequence <= sequence && !f.discontinuity && !gap)
-                return;
-            f.discontinuity |= gap || f.epoch != epoch || f.generation != generation || f.sequence != sequence + 1;
-            gap = false;
+            if(f.available || !same_identity)sequence=f.sequence;
+            gap = !f.available;
             epoch = f.epoch;
-            generation = f.generation;
-            sequence = f.sequence;
+            producer_epoch=producer;
+            identity_known=true;
+            if(f.available || !same_identity || f.generation)generation=f.generation;
             if (frame)
                 frame(std::move(f));
     }
@@ -341,6 +376,8 @@ void NetworkSubscriber::stop() {
     d->assembler.reset();
     d->ready = false;
     d->gap = true;
+    d->epoch=d->producer_epoch=d->generation=d->sequence=0;
+    d->identity_known=false;d->retired_count=d->retired_next=0;
     d->report("Stopped");
 }
 void NetworkSubscriber::set_frame_handler(std::function<void(stream::Frame)> h) {

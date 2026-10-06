@@ -747,7 +747,7 @@ bool AudioPipeline::process_without_delivery(int ingress,const TypedFrame &input
         for(const auto &row:input.history)destination=std::copy(row.begin(),row.end(),destination);
     }
     auto frame=GraphProgram::frame_view(input,_history_input_storage);
-    frame.metadata.producer_epoch=input.epoch;
+    frame.metadata.producer_epoch=input.producer_epoch?input.producer_epoch:input.epoch;
     if(!frame.metadata.sequence)frame.metadata.sequence=++_legacy_sequence[ingress];
     if(frame.type==FrameType::Mel)frame.metadata.bands=frame.values.size();
     if(frame.type==FrameType::History && !frame.metadata.history_capacity)frame.metadata.history_capacity=frame.history.capacity;
@@ -802,11 +802,13 @@ GraphOutput AudioPipeline::evaluate_view(int ingress,const TypedFrame &input,con
     if(input.type==FrameType::History)
         for(const auto &row:input.history)history_storage.insert(history_storage.end(),row.begin(),row.end());
     auto frame=GraphProgram::frame_view(input,history_storage);
-    frame.metadata.producer_epoch=input.epoch;
-    if(!frame.metadata.sequence)frame.metadata.sequence=++_legacy_sequence[ingress];
-    if(frame.type==FrameType::Mel)frame.metadata.bands=frame.values.size();
-    if(frame.type==FrameType::History && !frame.metadata.history_capacity)frame.metadata.history_capacity=frame.history.capacity;
-    if(negotiate_ingress(ingress,frame)!=signal_contracts::Status::ok)return result;
+    frame.metadata.producer_epoch=input.producer_epoch?input.producer_epoch:input.epoch;
+    if(frame.metadata.available) {
+        if(!frame.metadata.sequence)frame.metadata.sequence=++_legacy_sequence[ingress];
+        if(frame.type==FrameType::Mel)frame.metadata.bands=frame.values.size();
+        if(frame.type==FrameType::History && !frame.metadata.history_capacity)frame.metadata.history_capacity=frame.history.capacity;
+        if(negotiate_ingress(ingress,frame)!=signal_contracts::Status::ok)return result;
+    }
     struct Sink {AudioPipeline *owner;GraphOutput *result;bool previews;};
     Sink sink{this,&result,(_view_subscription.load()&8)!=0};
     _executor.process(ingress,frame,[](void *user,const dataflow_runtime::OutputView &output) {
@@ -980,8 +982,30 @@ void AudioPipeline::feed_typed(int ingress, const TypedFrame &frame, uint64_t ex
     if(!_typed_running || (expected_epoch!=UINT64_MAX && expected_epoch!=_epoch) ||
         (expected_ingress_serial!=UINT64_MAX && expected_ingress_serial!=_ingress_serials.value(ingress))) return;
     if(!frame.available) {
-        if(_executor.plan()->marker_current(ingress,GraphProgram::frame_view(frame),*_executor.context()))
-            clear_ingress(ingress,expected_epoch);
+        // Execute the control marker so the runtime records its producer/generation
+        // fence and emits provenance-preserving markers. Rejected markers do nothing.
+        const auto output=evaluate_view(ingress,frame,*_graph);
+        if(output.ports.isEmpty() && output.views.isEmpty() && output.output_events.empty())return;
+        const auto serial=++_ingress_serials[ingress];
+        {
+            std::lock_guard lock(_mutex);
+            if(ingress==_primary_source_id && _analyzer)_analyzer->set_ingress_serial(serial);
+            for(auto &branch:_local_branches)if(branch->id==ingress)branch->analyzer->set_ingress_serial(serial);
+        }
+        _incoming_histories.remove(ingress);
+        for(auto it=output.views.cbegin();it!=output.views.cend();++it)_history_zero_latest.remove(it.key());
+        if(output.ports.contains(_compat_history_node)) {
+            std::lock_guard history_lock(_history_mutex);if(_history)_history->clear();_history_snapshot.store(nullptr);
+        }
+        deliver_typed(output);
+        if(_wled_active.load() && output.ports.contains(_compat_wled_node)) {
+            ++_network_generation;
+            {std::lock_guard mailbox_lock(_wled_mailbox_mutex);_pending_wled.reset();}
+            publish_wled({},0,0,_graph_revision);
+        }
+        std::function<void(ViewFrame)> handler;
+        {std::lock_guard lock(_callback_mutex);handler=_spectrum_handler;}
+        if(handler){ViewFrame view;view.views=_views;view.epoch=_epoch;view.graph_revision=_graph_revision;handler(std::move(view));}
         return;
     }
     if(!frame.sample_rate) return;
