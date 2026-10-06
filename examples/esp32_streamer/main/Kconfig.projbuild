@@ -8,8 +8,36 @@ config STREAMER_TCP
     bool "TCP (firmware supplies accepted socket and WiFi setup)"
 endchoice
 config STREAMER_SPECTRAL
-    bool "Window 512 -> Hann -> stereo FFT -> RMS -> Mel 8"
+    bool "Window -> Hann -> stereo FFT -> RMS -> Mel 8"
     default n
+choice STREAMER_FFT_WINDOW
+    prompt "Active FFT window samples per channel"
+    default STREAMER_FFT_2048
+    depends on STREAMER_SPECTRAL
+config STREAMER_FFT_512
+    bool "512"
+config STREAMER_FFT_1024
+    bool "1024"
+    depends on PORTABLE_SDK_MAX_FFT_SIZE >= 1024
+config STREAMER_FFT_2048
+    bool "2048"
+    depends on PORTABLE_SDK_MAX_FFT_SIZE >= 2048
+config STREAMER_FFT_4096
+    bool "4096"
+    depends on PORTABLE_SDK_MAX_FFT_SIZE >= 4096
+endchoice
+config STREAMER_FFT_SIZE
+    int
+    default 512 if STREAMER_FFT_512
+    default 1024 if STREAMER_FFT_1024
+    default 4096 if STREAMER_FFT_4096
+    default 2048 if PORTABLE_SDK_MAX_FFT_SIZE >= 2048
+    default PORTABLE_SDK_MAX_FFT_SIZE
+config STREAMER_MEMORY_KIB
+    int "Explicit DSP/source/adapter memory budget (KiB)"
+    range 64 512
+    default 384 if STREAMER_FFT_4096
+    default 256
 config STREAMER_EXTERNAL_PCM
     bool "Use explicit host I2S/Bluetooth PCM hook instead of synthetic tones"
     default n

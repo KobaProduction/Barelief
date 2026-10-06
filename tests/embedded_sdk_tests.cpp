@@ -1,6 +1,7 @@
 #include <embedded_support/session.h>
 #include <embedded_support/profile.h>
 #include <embedded_support/synthetic_pipeline.h>
+#include <dsp_kernels/dsp.h>
 #include <cassert>
 #include <algorithm>
 #include <deque>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <new>
 #include <cstring>
+#include <cstdio>
 static thread_local bool measuring_allocations=false;
 static thread_local std::size_t allocation_count=0;
 void *operator new(std::size_t size) {if(measuring_allocations)++allocation_count;if(auto *p=std::malloc(size))return p;std::abort();}
@@ -164,9 +166,64 @@ void sequence_gap() {
     f.metadata.sequence=6;f.metadata.discontinuity=true;assert(p.publish(f)==Status::ok);transfer(p,s,a,b,100);assert(r.count==4 && r.gap);
     f.metadata.sequence=5;assert(p.publish(f)==Status::ok);transfer(p,s,a,b,100);assert(r.count==4);
 }
+void independent_fft_windows() {
+    if(dsp_kernels::max_fft_samples<2048)return; // Explicit compact kernel profile.
+    using namespace domain;
+    GraphDefinition graph;graph.graph_id="long-and-short-stereo";
+    auto add=[&](int id,NodeKind kind,NodeParameters params){graph.nodes.push_back({id,kind,std::move(params),true});};
+    add(0,NodeKind::AudioSource,AudioSourceParameters{});
+    add(1,NodeKind::Window,WindowParameters{2048});
+    add(2,NodeKind::WindowFunction,WindowFunctionParameters{});
+    add(3,NodeKind::StereoFFT,NoParameters{});
+    add(4,NodeKind::FFTView,FFTViewParameters{Channel::Merged});
+    add(10,NodeKind::Window,WindowParameters{512});
+    add(11,NodeKind::WindowFunction,WindowFunctionParameters{});
+    add(12,NodeKind::StereoFFT,NoParameters{});
+    add(13,NodeKind::FFTView,FFTViewParameters{Channel::Left});
+    add(14,NodeKind::FFTView,FFTViewParameters{Channel::Right});
+    graph.edges={{0,1},{1,2},{2,3},{3,4},{0,10},{10,11},{11,12},{12,13},{12,14}};
+    const std::array<dataflow_runtime::IngressSpec,1> ingress{{{0,{FrameType::PCM,8192,0,0,0,256},256}}};
+    application::RuntimeLimits limits;limits.max_frame_samples=2048;limits.max_history_frames=0;
+    limits.max_memory_bytes=256*1024;
+    std::shared_ptr<const dataflow_runtime::PreparedGraph> plan;
+    std::unique_ptr<dataflow_runtime::RuntimeContext> context;
+    assert(dataflow_runtime::PreparedGraph::prepare(graph,ingress,limits,plan,context)==Status::ok);
+    std::array<float,256> left{},right{};
+    struct Result {int long_frames=0,left_frames=0,right_frames=0;std::size_t long_peak=0,left_peak=0,right_peak=0;
+        std::uint64_t left_source=0,right_source=0;std::int64_t left_time=0,right_time=0;} result;
+    allocation_count=0;measuring_allocations=true;
+    for(int tick=0;tick<40;++tick) {
+        for(std::size_t i=0;i<left.size();++i) {
+            const auto sample=tick*left.size()+i;
+            left[i]=.8f*std::sin(float(sample)*6.28318530718f*512/8192);
+            right[i]=.4f*std::sin(float(sample)*6.28318530718f*1024/8192);
+        }
+        signal_contracts::FrameView pcm;pcm.metadata.sample_rate=8192;
+        pcm.metadata.sequence=pcm.metadata.source_sequence=tick+1;
+        pcm.metadata.producer_epoch=pcm.metadata.generation=1;
+        pcm.metadata.timestamp_ns=std::int64_t(tick)*256*1000000000LL/8192;
+        pcm.left=left;pcm.right=right;
+        assert(plan->process(0,pcm,*context,[](void *ctx,const dataflow_runtime::OutputView &out){
+            if(out.kind!=NodeKind::FFTView)return;
+            auto &r=*static_cast<Result *>(ctx);
+            const auto peak=std::max_element(out.display_values.begin(),out.display_values.end())-out.display_values.begin();
+            if(out.node==4){++r.long_frames;assert(out.frame.metadata.fft_size==2048 && out.display_values.size()==1024);r.long_peak=peak;}
+            if(out.node==13){++r.left_frames;assert(out.frame.metadata.fft_size==512 && out.display_values.size()==256);
+                r.left_peak=peak;r.left_source=out.frame.metadata.source_sequence;r.left_time=out.frame.metadata.timestamp_ns;}
+            if(out.node==14){++r.right_frames;r.right_peak=peak;r.right_source=out.frame.metadata.source_sequence;r.right_time=out.frame.metadata.timestamp_ns;}
+        },&result)==Status::ok);
+    }
+    measuring_allocations=false;
+    assert(allocation_count==0 && result.long_frames>0 && result.left_frames==result.right_frames);
+    assert(result.long_peak==128 && result.left_peak==32 && result.right_peak==64);
+    assert(result.left_source==result.right_source && result.left_time==result.right_time);
+}
 int main(int argc,char **argv){
     producer_fences(argc>1 && std::strcmp(argv[1],"--retired-producer-only")==0);
+    independent_fft_windows();
     embedded_support::Profile profile;profile.tcp_bytes_per_second=200000;profile.uart_baud=2000000;
+    assert(profile.fft_size==2048); // Samples per channel, not interleaved stereo count.
+    profile.fft_size=std::min(profile.fft_size,std::uint32_t(dsp_kernels::max_fft_samples));
     assert(embedded_support::admit(profile,3).status==Status::ok);
     profile.link=embedded_support::Link::uart_8n1;assert(embedded_support::admit(profile,3).status==Status::ok);
     profile.uart_baud=115200;assert(embedded_support::admit(profile,3).status==Status::exhausted);
@@ -185,4 +242,26 @@ int main(int argc,char **argv){
     assert(outputs>0);
     profile.spectral=false;assert(pipeline.prepare(profile,"raw")==Status::ok);outputs=0;
     assert(pipeline.tick([](void *ctx,const signal_contracts::FrameView &f){++*static_cast<int *>(ctx);assert(f.type==FrameType::PCM && f.left.size()==256 && f.right.size()==256);},&outputs)==Status::ok);assert(outputs==1);
+    for(const auto size:{512u,1024u,2048u,4096u}) {
+        embedded_support::Profile spectral;spectral.spectral=true;spectral.fft_size=size;
+        spectral.memory_bytes=(size==4096?384:256)*1024;spectral.adapter_bytes=64*1024;
+        if(size>dsp_kernels::max_fft_samples) {
+            assert(embedded_support::admit(spectral,3).status==Status::invalid_argument);
+            continue;
+        }
+        const auto prepared=pipeline.prepare(spectral,"mel");
+        if(prepared!=Status::ok)std::fprintf(stderr,"FFT %u preparation status %d\n",size,int(prepared));
+        assert(prepared==Status::ok);
+        const auto admitted=embedded_support::admit(spectral,3,pipeline.memory_requirements());
+        assert(admitted.status==Status::ok);
+        std::fprintf(stdout,"FFT %u: reserved %zu bytes plus source PCM\n",size,admitted.reserved_bytes);
+        outputs=0;allocation_count=0;measuring_allocations=true;
+        for(int i=0;i<20;++i)assert(pipeline.tick([](void *ctx,const signal_contracts::FrameView &f){
+            ++*static_cast<int *>(ctx);assert(f.type==FrameType::Mel && f.values.size()==8);
+            for(float x:f.values)assert(std::isfinite(x));
+        },&outputs)==Status::ok);
+        measuring_allocations=false;assert(outputs>0 && allocation_count==0);
+        spectral.memory_bytes=64*1024;
+        assert(pipeline.prepare(spectral,"mel")==Status::exhausted);
+    }
 }

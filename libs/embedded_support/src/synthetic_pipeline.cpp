@@ -17,7 +17,10 @@ Status SyntheticPipeline::prepare(const Profile &profile, std::string_view id) {
         add(domain::NodeKind::SpectrumMerge,domain::MergeParameters{});
         add(domain::NodeKind::Mel,domain::MelParameters{profile.mel_bands});
     }
-    add(domain::NodeKind::NetworkOutput,domain::NetworkParameters{profile.spectral?signal_contracts::FrameType::Mel:signal_contracts::FrameType::PCM,"",std::string(id)});
+    auto network = domain::NetworkParameters{};
+    network.data_type = profile.spectral ? signal_contracts::FrameType::Mel : signal_contracts::FrameType::PCM;
+    network.stream_id = std::string(id);
+    add(domain::NodeKind::NetworkOutput, std::move(network));
     const std::array<dataflow_runtime::IngressSpec,1> ingress{{{0,{signal_contracts::FrameType::PCM,profile.sample_rate,0,0,0,profile.block_samples},profile.block_samples}}};
     std::shared_ptr<const dataflow_runtime::PreparedGraph> candidate;
     std::unique_ptr<dataflow_runtime::RuntimeContext> context;

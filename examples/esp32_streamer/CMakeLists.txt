@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
+option(PORTABLE_SDK_ESP_DSP "Use the existing optimized ESP-DSP component" ON)
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../adapters/esp_idf/bdsp"
     "${CMAKE_CURRENT_LIST_DIR}/../../adapters/esp_idf/portable_sdk"

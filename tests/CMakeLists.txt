@@ -8,6 +8,11 @@ endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/portable_foundation.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/embedded_sdk_tests.cmake)
+add_test(NAME esp32_sdk_preflight COMMAND ${CMAKE_COMMAND}
+    "-DSDK_ROOT=${CMAKE_SOURCE_DIR}"
+    "-DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/esp32-preflight"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/esp32_sdk_preflight_tests.cmake")
+set_tests_properties(esp32_sdk_preflight PROPERTIES LABELS "sdk;quick" TIMEOUT 10)
 add_executable(portable_dsp_tests portable_dsp_tests.cpp)
 target_link_libraries(portable_dsp_tests PRIVATE portable_dsp)
 add_test(NAME portable_dsp COMMAND portable_dsp_tests)
@@ -303,8 +308,9 @@ set_tests_properties(desktop_byte_transport desktop_packet_socket PROPERTIES LAB
 if(BUILD_GUI)
     add_executable(qt_workspace_resize_tests qt_workspace_resize_tests.cpp)
     target_link_libraries(qt_workspace_resize_tests PRIVATE desktop_gui_composition Qt6::Test)
-    foreach(resize_case selection narrow footer)
-        add_test(NAME qt_workspace_resize_${resize_case} COMMAND qt_workspace_resize_tests ${resize_case})
+    foreach(resize_case selection narrow footer startup)
+        add_test(NAME qt_workspace_resize_${resize_case} COMMAND qt_workspace_resize_tests ${resize_case}
+            "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/restored-dock-layout.json")
         set_tests_properties(qt_workspace_resize_${resize_case} PROPERTIES LABELS "ui;resize;integration" TIMEOUT 8 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     endforeach()
 endif()

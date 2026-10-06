@@ -18,6 +18,11 @@ extern "C" int fcntl(int,int,...){return 0;}
 extern "C" int uart_read_bytes(uart_port_t,void *,std::uint32_t,TickType_t){return 0;}
 extern "C" int uart_tx_chars(uart_port_t,const char *,std::uint32_t){return 0;}
 int main(){
+    static_assert(FftSize==CONFIG_STREAMER_FFT_SIZE);
+    static_assert(buffers.samples.size()==2*BlockSamples);
+    const auto profile=example_profile();
+    assert(profile.fft_size==CONFIG_STREAMER_FFT_SIZE && profile.memory_bytes==MemoryBytes);
+    assert(profile.block_samples==BlockSamples && profile.adapter_bytes==64*1024);
     frames=&queue_control;running=true;gap=false;dropped=0;
     std::array<float,4> pcm{};
     signal_contracts::FrameView f;f.metadata.stream_id=StreamId;f.metadata.sample_rate=8000;f.metadata.sequence=1;f.left=pcm;f.right=pcm;

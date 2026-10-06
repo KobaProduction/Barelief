@@ -66,6 +66,10 @@ void Theme::applyPalette() {
         "QMainWindow::separator { background: %3; width: 6px; height: 6px; }"
         "QMainWindow::separator:hover { background: %6; }"
         "QMainWindow[singleDock=\"true\"]::separator { width: 0px; height: 0px; background: transparent; }"
+        // Qt's dock animator also queues zero-duration animations when
+        // AnimatedDocks is off. Restoring tab groups can delete their tab bars
+        // before those callbacks run. Keep dock geometry updates synchronous.
+        "QMainWindow QTabBar, QMainWindow QDockWidget { widget-animation-duration: 0; }"
         "QDockWidget { border: 1px solid %3; } QDockWidget::title { padding: 4px; }"
         "QMenuBar { border: none; border-bottom: 1px solid %3; padding: 3px 4px; }"
         "QWidget[dockControls=\"true\"] { border-bottom: 1px solid %3; }"

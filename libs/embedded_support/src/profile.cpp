@@ -1,5 +1,6 @@
 #include <embedded_support/profile.h>
 #include <bdsp_protocol/stream_codec.h>
+#include <dsp_kernels/dsp.h>
 #include <limits>
 namespace embedded_support {
 using signal_contracts::Status;
@@ -8,7 +9,8 @@ Admission admit(const Profile &p, std::size_t id, application::MemoryRequirement
     if(!id || id>256 || p.sample_rate<1000 || p.sample_rate>192000 || !p.block_samples ||
        p.block_samples>4096 || p.fft_size<512 || p.fft_size>4096 || (p.fft_size&(p.fft_size-1)) ||
        !p.mel_bands || p.mel_bands>p.fft_size/2 || !p.queue_frames || p.queue_frames>8 ||
-       !p.utilization_percent || p.utilization_percent>100) return a;
+       !p.utilization_percent || p.utilization_percent>100 ||
+       (p.spectral && p.fft_size>dsp_kernels::max_fft_samples)) return a;
     a.frame_bytes=bdsp_protocol::StreamHeaderBytes+id+4*(p.spectral?p.mel_bands:2*p.block_samples);
     if(a.frame_bytes>p.max_frame_bytes || p.max_frame_bytes>bdsp_protocol::MaxFrameBytes) {
         a.status=Status::buffer_too_small;return a;

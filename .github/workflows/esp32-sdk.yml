@@ -1,0 +1,61 @@
+name: ESP32 library SDK
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cross-library:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: ansi
+            fft: 512
+          - backend: esp-dsp
+            fft: 2048
+          - backend: esp-dsp
+            fft: 4096
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Build tools
+        run: python -m pip install cmake==3.31.6 ninja==1.11.1.3
+      - name: SDK sources
+        run: |
+          git clone --recursive --branch v6.1 --depth 1 https://github.com/espressif/esp-idf.git build-sdk-idf
+          test "$(git -C build-sdk-idf rev-parse HEAD)" = 'fff9895c82d744c7237be8847347bdd1b07c6643'
+          echo "IDF_PATH=$GITHUB_WORKSPACE/build-sdk-idf" >> "$GITHUB_ENV"
+          echo "IDF_TOOLS_PATH=$GITHUB_WORKSPACE/build-sdk-ci-tools" >> "$GITHUB_ENV"
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            build-sdk-ci-tools
+            build-sdk-python
+          key: esp32-idf61-ubuntu-py312-v1
+      - name: Install compiler only when missing
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install xtensa-esp-elf
+          compiler_bin=$(find "$IDF_TOOLS_PATH/tools/xtensa-esp-elf" -type d -name bin -print -quit)
+          test -n "$compiler_bin"
+          echo "ESP32_TOOLCHAIN_DIR=$(dirname "$compiler_bin")" >> "$GITHUB_ENV"
+      - name: Runner unit checks
+        run: python tests/esp32_sdk_runner_tests.py
+      - name: Prepare Python, compile and install library
+        run: python scripts/build-esp32-sdk.py --prepare-python --tools-cache build-sdk-python --backend ${{ matrix.backend }} --fft-capacity ${{ matrix.fft }}
+      - name: Check archive package
+        run: |
+          test -f build-sdk-esp32/prefix/lib/esp32/libportable_sdk.a
+          test -f build-sdk-esp32/prefix/lib/esp32/libbdsp.a
+          test -f build-sdk-esp32/prefix/include/dataflow_runtime/runtime.h
+          test -z "$(find build-sdk-esp32 -name '*.elf' -print -quit)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: esp32-sdk-${{ matrix.backend }}-${{ matrix.fft }}
+          path: build-sdk-esp32/prefix
+          if-no-files-found: error

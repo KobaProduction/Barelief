@@ -486,7 +486,7 @@ Status PreparedGraph::process(NodeId ingress, const FrameView &input, RuntimeCon
         if (n.node.kind == NodeKind::NetworkOutput)
             marker.metadata.stream_id = std::get<NetworkParameters>(n.node.parameters).stream_id;
         if (callback)
-            callback(user, {n.node.id, n.node.kind, marker});
+            callback(user, {n.node.id, n.node.kind, marker, false, {}});
         for (auto child : n.children)
             self(self, child, marker.metadata);
     };

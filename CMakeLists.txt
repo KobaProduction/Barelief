@@ -26,6 +26,7 @@ FetchContent_Declare(BDSP
     GIT_REPOSITORY https://github.com/KobaProduction/BDSP.git
     GIT_TAG 2c68056dfaeffba2f34fc64eee9bc9e331e83c7c)
 FetchContent_MakeAvailable(BDSP)
+include(cmake/esp32_sdk.cmake)
 add_subdirectory(libs/signal_contracts)
 add_subdirectory(libs/bdsp_protocol)
 add_subdirectory(domain)

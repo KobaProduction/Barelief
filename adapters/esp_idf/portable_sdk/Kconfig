@@ -1,0 +1,20 @@
+menu "Portable DSP SDK"
+choice PORTABLE_SDK_FFT_CAPACITY
+    prompt "Maximum supported FFT samples per channel"
+    default PORTABLE_SDK_FFT_CAPACITY_4096
+config PORTABLE_SDK_FFT_CAPACITY_512
+    bool "512"
+config PORTABLE_SDK_FFT_CAPACITY_1024
+    bool "1024"
+config PORTABLE_SDK_FFT_CAPACITY_2048
+    bool "2048"
+config PORTABLE_SDK_FFT_CAPACITY_4096
+    bool "4096"
+endchoice
+config PORTABLE_SDK_MAX_FFT_SIZE
+    int
+    default 512 if PORTABLE_SDK_FFT_CAPACITY_512
+    default 1024 if PORTABLE_SDK_FFT_CAPACITY_1024
+    default 2048 if PORTABLE_SDK_FFT_CAPACITY_2048
+    default 4096
+endmenu

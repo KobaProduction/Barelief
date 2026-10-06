@@ -15,6 +15,8 @@
 #include <QSplitter>
 #include <QSplitterHandle>
 #include <QStatusBar>
+#include <QFile>
+#include <QJsonDocument>
 #include <QtTest/QTest>
 #include <stdexcept>
 
@@ -143,15 +145,40 @@ static void dataflow_footer(GuiPresenter &presenter) {
     window.close();
 }
 
+static void restored_startup(GuiPresenter &presenter) {
+    // Restore a saved tabbed workspace before the first event loop, as the
+    // desktop entrypoint does, then close and restore its resulting layout.
+    for (int pass = 0; pass < 4; ++pass) {
+        MainWindow window(presenter);
+        auto *fft = window.findChild<QDockWidget *>("fftDock");
+        auto *mel = window.findChild<QDockWidget *>("melDock");
+        require(fft && mel, "Saved workspace graph docks absent");
+        if (pass == 0) presenter.initialize();
+        window.show();
+        QTest::qWait(250); // Includes deferred dock animation deletion.
+        require(window.isVisible(), "Restored workspace did not remain open");
+        window.close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+}
+
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     try {
         auto state = fixture();
-        GuiPresenter presenter(state, test_fixture::synthetic_engine_provider());
         const auto mode = app.arguments().value(1);
+        if (mode == "startup") {
+            QFile saved(app.arguments().value(2));
+            require(saved.open(QIODevice::ReadOnly), "Saved dock fixture unavailable");
+            state.file_configs.ui.workspace = QJsonDocument::fromJson(saved.readAll()).object();
+            state.file_configs.ui.graph_views["5b226c6f63616c222c226d61696e222c31335d"] =
+                QJsonObject{{"node", 13}, {"kind", "FFTView"}, {"device", "local"}, {"graph", "main"}, {"open", true}};
+        }
+        GuiPresenter presenter(state, test_fixture::synthetic_engine_provider());
         if (mode == "selection") inspector_selection(presenter);
         else if (mode == "narrow") narrow_controls(presenter);
         else if (mode == "footer") dataflow_footer(presenter);
+        else if (mode == "startup") restored_startup(presenter);
         else throw std::runtime_error("Expected selection, narrow or footer case");
         qInfo("Qt workspace resize case passed: %s", qPrintable(mode));
         return 0;

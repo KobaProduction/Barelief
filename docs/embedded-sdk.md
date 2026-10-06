@@ -6,15 +6,124 @@ miniaudio, OS socket or ESP-IDF dependency. The ESP-IDF adapter is a separate
 boundary; its component compiles those **same source files** with the firmware
 toolchain. Desktop `.a` files are not firmware libraries.
 
+## ESP32 library-only cross target
+
+The SDK is internal source code. ESP-IDF and ESP-DSP are external dependencies.
+`adapters/esp_idf/library` uses ESP-IDF 6.1's native CMake v2 library API
+(`idf_project_init` / `idf_build_library`). It registers the same SDK/BDSP/
+transport components, with no `main`, firmware ELF, bootloader or flash
+invocation. There is no dummy executable or replacement component implementation.
+ESP-IDF itself is supplied through `ESP_IDF_SOURCE_DIR` or
+`IDF_PATH`, never installed by the build. ESP-DSP 1.8.2
+(`a53a0756833c045311ea1d79a2badf495cdfde4c`) and pinned BDSP sources may be obtained
+through FetchContent. Source overrides can supply BDSP and ESP-DSP locally; the
+ESP-DSP component directory must be named `esp-dsp` for IDF dependency resolution.
+Ordinary desktop builds neither fetch nor build these ESP dependencies.
+
+Activate an existing compatible ESP-IDF tool/Python environment first, or set
+`ESP32_TOOLCHAIN_DIR` to an existing compiler root containing `bin`. Paths are
+configuration inputs, never embedded in source code. PlatformIO is not required:
+its installed compiler can be used by supplying that directory. FetchContent
+does not install compilers or Python dependencies. Then:
+
+```powershell
+# Explicit target from the already configured desktop build:
+cmake --build build-gui --target esp32_sdk
+
+# Or a standalone library build, without configuring any desktop target:
+cmake -S adapters/esp_idf/library -B build-sdk-esp32 -G Ninja
+cmake --build build-sdk-esp32 --target esp32_sdk
+cmake --install build-sdk-esp32 --prefix build-sdk-esp32/prefix
+
+# Native helper using IDF_PATH and ESP32_TOOLCHAIN_DIR from the environment:
+python scripts/build-esp32-sdk.py
+# Optional isolated Python dependency preparation (no compiler/platform install):
+python scripts/build-esp32-sdk.py --prepare-python --tools-cache build-sdk-python
+```
+
+Standalone options: `PORTABLE_SDK_MAX_FFT_SIZE=512/1024/2048/4096` (default 4096,
+compiled capacity, not the active processing window), `PORTABLE_SDK_ESP_DSP=ON`
+(default, OFF selects ANSI), `PORTABLE_SDK_TRANSPORTS=ON` (default, OFF excludes
+the TCP/UART adapter). Desktop dispatcher equivalents are
+`ESP32_SDK_FFT_CAPACITY`, `ESP32_SDK_ESP_DSP`, `ESP32_SDK_IDF_PATH`,
+`ESP32_TOOLCHAIN_DIR` and
+`ESP32_SDK_BUILD_DIR`. Root target output defaults to `build-gui/esp32-sdk`.
+All sdkconfig/generated defaults remain inside that separate build directory.
+
+Installation places SDK, BDSP, optional ESP-DSP and transport archives in
+`lib/esp32`, public SDK/BDSP headers in `include`, and the actual sdkconfig/header
+plus compiler/backend/capacity metadata in `share/PortableDSP/esp32`.
+These archives require matching ESP32 ABI, IDF configuration and IDF framework
+libraries at the firmware's final link; they are not a self-contained generic
+host CMake package. The existing source components remain the preferred way to
+integrate into arbitrary host firmware, letting its IDF build resolve dependency
+libraries, linker scripts and chip configuration. No firmware is supplied by the
+library-only target.
+
+CI (`.github/workflows/esp32-sdk.yml`) uses pinned IDF 6.1 sources, the official
+`idf_tools.py install xtensa-esp-elf` command, an isolated Python environment, and
+the same native helper. It installs only a compiler tool package, without a
+PlatformIO platform; repeated runs use the tools cache. The matrix checks ANSI
+512 and ESP-DSP 2048/4096, installs archives/headers/profile, checks absence of
+firmware ELF files, and publishes SDK artifacts. CI execution is only confirmed
+after GitHub has run it; writing the workflow is not a successful CI run.
+
+Initial preflight tests used TDD, checking invalid FFT capacity and missing
+compiler. The user's clean local IDF checkout is updated in place to stable 6.1
+(`fff9895c82d744c7237be8847347bdd1b07c6643`). Its supported compiler is GCC
+15.2.0_20251204; SDK/tool version checks are retained. The compiler is installed
+separately by the official IDF tools manager, preserving the user's pre-existing
+GCC 14.2.0 toolchain. Two mistakenly installed PlatformIO packages were removed;
+the final build has no PlatformIO Python/API dependency. Cleanup of the temporary
+older compiler and two Python caches was rejected by automatic command review;
+the user subsequently removed the reported directories and compiler archive
+with the supplied PowerShell command without errors.
+Hardware execution remains outside this validation.
+
+The library defaults to IDF's standard performance optimization profile.
+GCC 15.2 reproduced an internal compiler error in ESP-DSP's image-convolution
+source under `-Og`, with both ESP-DSP 1.6.4 and 1.8.2. This function is unrelated
+to the SDK's audio FFT but belongs to the upstream component's archive. The
+performance profile is tested separately; do not claim Debug cross builds pass.
+This is not a compiler-version-check bypass, per-file flag patch or source patch.
+
+Native acceptance (2026-10-06): Windows cross build and installation passed for
+ESP32 / IDF 6.1 / GCC 15.2.0_20251204 / ESP-DSP 1.8.2, compiled FFT capacity 4096,
+performance profile, with both TCP and UART adapter sources. Installed archives:
+`libportable_sdk.a`, `libbdsp.a`, `libesp-dsp.a`, `libstream_adapter.a`; SDK headers,
+sdkconfig and build-profile metadata are present. No firmware `.elf` was produced.
+The desktop `esp32_sdk` dispatcher also passed with paths provided through local
+CMake cache variables. Desktop rebuild and five targeted SDK/runtime/DSP tests
+plus two runner isolation tests passed. This is author validation, not independent
+acceptance, physical-board execution, numerical target execution, or a completed
+GitHub CI run. The CI matrix covers additional configurations when it is run.
+
+Reference: [official ESP-IDF 6.1 library composition example](https://github.com/espressif/esp-idf/blob/fff9895c82d744c7237be8847347bdd1b07c6643/examples/build_system/cmakev2/features/idf_as_lib/CMakeLists.txt).
+
 ## Example and source installation
 
 `examples/esp32_streamer` targets the ordinary ESP32 with an 8 kHz stereo source,
 256 samples/block, eight changing sine tones, and no playback. Default is raw
-PCM over UART1. `menuconfig` can select TCP and/or Window512 → Hann → stereo FFT
+PCM over UART1. `menuconfig` can select TCP and/or Window → Hann → stereo FFT
 → RMS → Mel8. History is OFF (`max_history_frames=0`); the route contains no
 history node. The common executor retains its 60 Hz window cadence, including
 133/134-sample hops at 8 kHz and initial zero-prefill. The raw route uses the same
-executor with AudioSource → NetworkOutput.
+executor with AudioSource → NetworkOutput. The active spectral window defaults
+to **2048 samples per channel** (4096 planar PCM values across stereo). Choose
+512/1024/2048/4096 under "Portable stream example"; SDK capacity is a separate
+choice under "Portable DSP SDK", default 4096. A smaller SDK build excludes larger
+window choices; admission rejects unsupported spectral sizes before allocation.
+Raw PCM block size remains 256 per channel; Mel8/raw wire buffers do not grow with
+the internal FFT window.
+
+Profile's memory limit defaults 256 KiB; the example offers an explicit 64–512 KiB
+budget, default 384 KiB for 4096 and 256 KiB otherwise. Host ANSI preparation of the
+existing stereo Window/Hann/FFT/RMS/Mel8 route reserves 181655 bytes for 2048 and
+284055 bytes for 4096 with a 64 KiB adapter reserve and two 2304-byte queue slots,
+plus 2048 source PCM bytes. These are host-accounted bounds, not measured ESP32
+heap headroom; allocator/firmware/network stacks and shared backend tables must
+fit the host-provided reserve and actual chip budget. An insufficient budget is
+rejected, never silently reduced to 512.
 
 Register these three directories in the firmware's `EXTRA_COMPONENT_DIRS`:
 
@@ -46,13 +155,36 @@ work in either repository or installed source package. BDSP remains an explicit
 external source dependency. `embedded_support` also installs/exports its normal
 host target and public headers alongside the other SDK libraries.
 
-ANSI uses the repository's existing ESP-DSP ANSI implementation and the shared
-backend source. `-DPORTABLE_SDK_ESP_DSP=ON` selects the same
+The ESP32 example defaults to `PORTABLE_SDK_ESP_DSP=ON`; supply an existing
+`esp-dsp` component. Nothing is downloaded/installed. Explicit
+`-DPORTABLE_SDK_ESP_DSP=OFF` selects the repository's existing ESP-DSP ANSI
+implementation for a standalone fallback/host check. `ON` selects the same
 `backend_esp_dsp.cpp`, with an externally supplied `esp-dsp` IDF component;
 it excludes bundled ANSI objects so symbols are not duplicated. Firmware owns
-that external dependency/version. Both profiles fix the portable maximum FFT
-size at 512. Do not initialize/deinitialize shared ESP-DSP tables concurrently
+that external dependency/version. The maximum FFT capacity is configurable via
+`CONFIG_PORTABLE_SDK_MAX_FFT_SIZE` (or explicit CMake override
+`PORTABLE_SDK_MAX_FFT_SIZE`); ESP-DSP's own `CONFIG_DSP_MAX_FFT_SIZE` must cover it.
+Backend selection stays a CMake option because ESP-IDF5.x expands component
+dependencies before Kconfig (see [build-system rules](https://docs.espressif.com/projects/esp-idf/en/v5.1.2/esp32s3/api-guides/build-system.html)).
+Do not initialize/deinitialize shared ESP-DSP tables concurrently
 with prepared plans. External backend native linking remains unverified here.
+
+## Parallel analysis windows
+
+The existing graph supports AudioSource fan-out to independent Window/Hann/FFT
+branches. For example, a 2048/4096 window feeds a merged spectrum/Mel/history,
+while a 512/1024 stereo FFT feeds separate left/right FFTView consumers. Short
+channel views reuse the same stereo FFT result instead of repeating transforms
+for each display. Source sequence/time metadata allows channel synchronization;
+different window sizes have different temporal/frequency resolution. The current
+window scheduler remains 60 Hz; per-branch rate control/beat detection/effects
+are separate features. No new beat detector is claimed here.
+
+The host SDK regression executes long 2048 plus short 512 on one ingress, checks
+distinct tone peaks for left/right, shared source clocks and zero processing
+allocations. It requires no change to the executor. The streaming example still
+publishes a single raw or Mel8 route; multi-stream effect firmware can compose
+the same public graph API with an explicitly admitted aggregate memory budget.
 
 ## Host firmware responsibilities
 
@@ -92,7 +224,8 @@ turns history off. After `PreparedGraph::prepare`, admission includes its publis
 `MemoryRequirements`; source vectors are checked separately. These are declared
 budgets, not ESP heap/CPU/WiFi measurements. The example reserves 64 KiB for adapter
 buffers, driver queues, source/task/control overhead; a two-slot encoded-frame pool
-is additional. Total configured budget is 128 KiB. Firmware WiFi/Bluetooth heap
+is additional. The configurable total is 256 KiB by default (384 KiB for the
+4096-window example). Firmware WiFi/Bluetooth heap
 and its other components require their own budget outside this SDK allocation.
 
 Wire admission uses a deliberately conservative upstream COBS-ZPE expansion bound:
@@ -190,3 +323,24 @@ transport-task exit against a bounded fake queue, verifies ordinary data loss,
 fatal marker fencing, no post-fence enqueue, old-queue purge, and pending Session
 packet cancellation. Updated component checks pass 3/3 (0.19 s), with both example
 variants rebuilt. Independent re-review remains the acceptance gate.
+
+## Configurable FFT follow-up (2026-10-06)
+
+New default regression first failed on the old Profile512 value, then passed
+with Profile2048. Checks now cover all supported 512/1024/2048/4096 sizes,
+unsupported compiled capacity, insufficient memory, finite Mel outputs and
+allocation-free ticks. Existing session/marker/partial-I/O tests are retained.
+The long/short stereo branch check is characterization of the existing executor,
+not a second FFT implementation.
+
+Host verification: portable SDK 13/13, installed-source component 3/3, separate
+component configurations for capacities 512/2048/4096 each 3/3, desktop targeted
+DSP/runtime/SDK checks 4/4, compact512 SDK targeted check 1/1. Invalid513 capacity
+and an ESP-DSP table limit below the requested capacity both fail configuration.
+Desktop applications rebuilt. Logs: build-sdk/fft-config-verification.log,
+build-sdk/fft-component-*-tests.log, build-gui/fft-config-tests.log.
+
+These are host/fake-IDF checks. Actual ESP-IDF menuconfig/cross-link, optimized
+ESP-DSP and board heap/timing need the existing SDK/board; no SDK was installed,
+no physical device/native GUI tests were run, and no independent follow-up review
+is claimed for this later configuration change.

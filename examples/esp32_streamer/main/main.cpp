@@ -15,13 +15,16 @@ extern "C" void __attribute__((weak)) streamer_host_release_socket(int){}
 extern "C" Status __attribute__((weak)) streamer_host_read_pcm(signal_contracts::FrameView *){return Status::would_block;}
 namespace {
 constexpr std::size_t FrameBytes=2304, QueueFrames=2;
+constexpr std::size_t BlockSamples=256;
 struct FrameSlot {std::size_t size;std::array<std::uint8_t,FrameBytes> bytes;};
 struct Buffers {
     std::array<std::uint8_t,4608> in{},out{};
     std::array<std::uint8_t,256> read{};
     std::array<std::uint8_t,FrameBytes> tx{},assembly{};
     std::array<std::uint8_t,FrameBytes+8> fragment{};
-    std::array<float,512> samples{};std::array<char,256> id{};
+    // Codec scratch holds one stereo PCM block, not an FFT window. Only Mel8
+    // or raw PCM is streamed; changing FFT size does not enlarge these payloads.
+    std::array<float,2*BlockSamples> samples{};std::array<char,256> id{};
     embedded_support::SessionBuffers spans(){return {in,out,read,tx,fragment,assembly,samples,id};}
 } buffers;
 embedded_support::SyntheticPipeline pipeline;
@@ -39,7 +42,32 @@ constexpr bool Spectral=true;
 #else
 constexpr bool Spectral=false;
 #endif
+#ifdef CONFIG_STREAMER_FFT_SIZE
+constexpr std::uint32_t FftSize=CONFIG_STREAMER_FFT_SIZE;
+#else
+constexpr std::uint32_t FftSize=PORTABLE_DSP_MAX_FFT_SIZE<2048?PORTABLE_DSP_MAX_FFT_SIZE:2048;
+#endif
+#ifdef CONFIG_STREAMER_MEMORY_KIB
+constexpr std::size_t MemoryBytes=CONFIG_STREAMER_MEMORY_KIB*1024;
+#else
+constexpr std::size_t MemoryBytes=(FftSize==4096?384:256)*1024;
+#endif
 constexpr const char *StreamId=Spectral?"esp32-mel":"esp32-raw";
+static_assert(!Spectral || (FftSize>=512 && FftSize<=PORTABLE_DSP_MAX_FFT_SIZE &&
+                           (FftSize&(FftSize-1))==0),"FFT window exceeds configured SDK capacity");
+embedded_support::Profile example_profile() {
+    embedded_support::Profile profile;profile.spectral=Spectral;
+    profile.fft_size=FftSize;profile.memory_bytes=MemoryBytes;profile.block_samples=BlockSamples;
+    // Static adapter buffers/tasks, shared table reserve and driver/control data;
+    // frame queue slots and executor/source workspaces are counted separately.
+    profile.adapter_bytes=64*1024;
+#ifdef CONFIG_STREAMER_UART
+    profile.link=embedded_support::Link::uart_8n1;profile.uart_baud=CONFIG_STREAMER_UART_BAUD;
+#else
+    profile.link=embedded_support::Link::tcp;profile.tcp_bytes_per_second=CONFIG_STREAMER_TCP_BUDGET;
+#endif
+    return profile;
+}
 void capture_output(void *,const signal_contracts::FrameView &view) {
     if(!running)return; // Includes later outputs in the same tick after a fatal marker.
     FrameSlot slot;auto frame=view;frame.metadata.discontinuity|=gap.exchange(false);
@@ -57,7 +85,7 @@ void cancel_delivery(embedded_support::Session &session) {
 }
 void dsp_task(void *) {
     // DSP task owns executor/source; no socket or UART waits here.
-    const std::int64_t period=256LL*1000000/8000;
+    const std::int64_t period=BlockSamples*1000000LL/8000;
     auto next=esp_timer_get_time();
     while(running) {
         auto now=esp_timer_get_time();
@@ -146,15 +174,7 @@ void transport_task(void *) {
 }
 }
 extern "C" void app_main() {
-    embedded_support::Profile profile;profile.spectral=Spectral;
-    // Covers static adapter buffers, two task stacks, driver RX queue, control
-    // blocks and example source vectors; queue slots are added separately.
-    profile.adapter_bytes=64*1024;
-#ifdef CONFIG_STREAMER_UART
-    profile.link=embedded_support::Link::uart_8n1;profile.uart_baud=CONFIG_STREAMER_UART_BAUD;
-#else
-    profile.link=embedded_support::Link::tcp;profile.tcp_bytes_per_second=CONFIG_STREAMER_TCP_BUDGET;
-#endif
+    const auto profile=example_profile();
     const auto admitted=embedded_support::admit(profile,std::char_traits<char>::length(StreamId));
     if(admitted.status!=Status::ok){ESP_LOGE(Tag,"Admission status %d, required %llu B/s",int(admitted.status),(unsigned long long)admitted.required_bytes_per_second);return;}
     const auto prepared=pipeline.prepare(profile,StreamId);
