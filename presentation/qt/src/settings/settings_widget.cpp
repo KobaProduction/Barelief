@@ -864,6 +864,19 @@ QWidget *SettingsWidget::_setup_graphs() {
     _graph_views_layout->addWidget(_empty_graph_views);
     pageLayout->insertWidget(0, views);
     pageLayout->insertWidget(0, cadence);
+    auto *workspace=ui::make<QGroupBox>("Workspace",page);
+    auto *workspaceForm=new QFormLayout(workspace);
+    auto *position=new QComboBox(workspace); position->setObjectName("dataFlowPosition");
+    ui::items(position,{"Bottom","Top","Left side","Right side"});
+    const QStringList positions{"bottom","top","left","right"};
+    for(int i=0;i<positions.size();++i) position->setItemData(i,positions[i]);
+    position->setCurrentIndex(std::max(0,int(positions.indexOf(_context.file_configs.ui.workspace.value("data_flow_position").toString("bottom")))));
+    workspaceForm->addRow(ui::make<QLabel>("Data Flow position",workspace),position);
+    pageLayout->insertWidget(0,workspace);
+    connect(position,&QComboBox::currentIndexChanged,this,[this,position] {
+        _context.file_configs.ui.workspace["data_flow_position"]=position->currentData().toString();
+        emit workspace_position_changed(); _on_config_change();
+    });
     const auto initialCadence = SurfaceSettings::normalizedCadence(_context.file_configs.ui.graph_rendering);
     const int initialFps = initialCadence["gui_target_fps"].toInt();
     fpsMode->setCurrentIndex(initialCadence["gui_fps_mode"] == "screen" ? 0

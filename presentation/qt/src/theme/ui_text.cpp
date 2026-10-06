@@ -57,26 +57,25 @@ void Theme::applyPalette() {
     QApplication::setPalette(p);
     // Standard controls are drawn by Fusion from the inherited palette. Only
     // application navigation and dock chrome need centralized extra styling.
-    const auto accent=p.color(QPalette::Link);
     qApp->setStyleSheet(QStringLiteral(
-        "QToolButton#pipelineToggle { background: %7; color: %8; border: 1px solid %1; border-radius: 4px; padding: 3px 8px; font-weight: 600; }"
-        "QToolButton#pipelineToggle:hover { background: %4; color: %2; }"
-        "QToolButton#pipelineToggle:checked { background: %1; color: %2; }"
-        "QToolButton#pipelineToggle:pressed { background: %5; color: %2; }"
+        "QAbstractButton[compactControl=\"true\"] { background: %1; color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 6px; }"
+        "QAbstractButton[compactControl=\"true\"]:hover { border-color: %5; background: %4; }"
+        "QAbstractButton[compactControl=\"true\"]:checked, QAbstractButton[compactControl=\"true\"]:pressed { background: %4; }"
+        "QAbstractButton[compactControl=\"true\"]:disabled { color: %6; }"
         "QMainWindow::separator { background: %3; width: 6px; height: 6px; }"
-        "QMainWindow::separator:hover { background: %6; }"
-        "QMainWindow[singleDock=\"true\"]::separator { width: 0px; height: 0px; background: transparent; }"
+        "QMainWindow::separator:hover { background: %5; }"
         // Qt's dock animator also queues zero-duration animations when
         // AnimatedDocks is off. Restoring tab groups can delete their tab bars
         // before those callbacks run. Keep dock geometry updates synchronous.
-        "QMainWindow QTabBar, QMainWindow QDockWidget { widget-animation-duration: 0; }"
+        "QMainWindow QTabBar { widget-animation-duration: 0; }"
         "QDockWidget { border: 1px solid %3; } QDockWidget::title { padding: 4px; }"
+        "QDockWidget[externalWindow=\"true\"] { border: 2px solid %3; }"
         "QMenuBar { border: none; border-bottom: 1px solid %3; padding: 3px 4px; }"
         "QWidget[dockControls=\"true\"] { border-bottom: 1px solid %3; }"
-        "QToolButton#themeMenuButton, QToolButton#graphPlacement { border: 1px solid %3; border-radius: 4px; padding: 3px 20px 3px 8px; }"
-        "QToolButton#themeMenuButton::menu-indicator, QToolButton#graphPlacement::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 6px; width: 8px; height: 8px; }"
+        "QToolButton[menuControl=\"true\"] { padding-right: 18px; }"
+        "QToolButton[menuControl=\"true\"]::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 5px; width: 7px; height: 7px; }"
         "QStatusBar::item { border: none; }")
-        .arg(accent.name(),p.color(QPalette::HighlightedText).name(),p.color(QPalette::Mid).name(),accent.lighter(115).name(),accent.darker(120).name(),p.color(QPalette::Highlight).name(),window.name(),text.name()));
+        .arg(window.name(),text.name(),mid.name(),p.color(QPalette::AlternateBase).name(),p.color(QPalette::Highlight).name(),secondary.name()));
     emit changed();
 }
 

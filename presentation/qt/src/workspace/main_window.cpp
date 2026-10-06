@@ -58,24 +58,68 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     resize(1000, 800);
 
     setup_ui();
+    if(auto *editor=data_flow_editor()) {
+        auto *fileMenu=findChild<QMenu *>("fileMenu");
+        fileMenu->addSeparator();
+        auto *undo=editor->history().createUndoAction(fileMenu,ui::text("Undo"));
+        auto *redo=editor->history().createRedoAction(fileMenu,ui::text("Redo"));
+        undo->setObjectName("undoDataFlow"); redo->setObjectName("redoDataFlow");
+        undo->setShortcut(QKeySequence("Alt+Z")); redo->setShortcut(QKeySequence("Alt+Shift+Z"));
+        for(auto *action:{undo,redo}) { action->setShortcutContext(Qt::ApplicationShortcut); action->setShortcutVisibleInContextMenu(true); fileMenu->addAction(action); }
+    }
     qApp->installEventFilter(this);
-    connect(this,&QMainWindow::tabifiedDockWidgetActivated,this,[this](QDockWidget *dock) {
-        if (!_restoring_layout && is_graph_dock(dock)) _last_graph_slot=dock;
+    // Familiar JetBrains navigation belongs to presentation, never the DSP core.
+    auto *navigation=findChild<QMenu *>("graphsMenu");
+    auto action=[this,navigation](const char *label,const char *id,const char *key,auto callback) {
+        auto *item=navigation->addAction(ui::text(label)); item->setObjectName(id);
+        ui::bind(item,"text",label); item->setShortcut(QKeySequence(QString::fromLatin1(key)));
+        item->setShortcutContext(Qt::ApplicationShortcut); item->setShortcutVisibleInContextMenu(true);
+        connect(item,&QAction::triggered,this,[this,callback] {
+            auto *active=QApplication::activeWindow();
+            bool belongs=active==this;
+            for(auto *dock:workspaceDocks()) if(dock->window()==active) belongs=true;
+            if(belongs) callback();
+        });
+    };
+    navigation->addSeparator();
+    action("Next tab","workspaceNextTab","Alt+Right",[this]{activateAdjacentTab(1);});
+    action("Previous tab","workspacePreviousTab","Alt+Left",[this]{activateAdjacentTab(-1);});
+    action("Detach active tab","workspaceDetachTab","Shift+F4",[this]{if(auto *dock=activeDock()) dock->setFloating(true);});
+    action("Hide active panel","workspaceHidePanel","Shift+Escape",[this]{if(auto *dock=activeDock()) dock->hide();});
+    action("Focus Data Flow","workspaceFocusFlow","F12",[this]{
+        auto *flow=_panels.value("dataFlow"); flow->raise(); focusDock(flow);
+    });
+    action("Hide or restore tool panels","workspaceToggleTools","Ctrl+Shift+F12",[this]{
+        auto *flow=_panels.value("dataFlow"); flow->toggleView(flow->isHidden());
+    });
+    action("Switch workspace tab…","workspaceSwitcher","Ctrl+Tab",[this]{
+        auto *menu=new QMenu(this); menu->setAttribute(Qt::WA_DeleteOnClose);
+        for(auto *dock:workspaceDocks()) if(!dock->isHidden()) {
+            auto *item=menu->addAction(dock->windowTitle());
+            connect(item,&QAction::triggered,this,[this,dock]{dock->raise();focusDock(dock);});
+        }
+        menu->popup(mapToGlobal(rect().center()));
+    });
+
+    connect(this,&WorkspaceWindow::graphAreaActivated,this,[this](WorkspaceDock *dock) {
+        if (!_restoring_layout && is_graph_dock(dock) && in_editor_window(dock)) _last_graph_slot=dock;
     });
     auto *devices = new QComboBox(this);
     devices->setObjectName("engineDeviceSelector");
     devices->addItem(ui::text("In-app processor"), QJsonObject{{"uuid", _application.local_device_id()}});
     ui::bind(devices,"toolTip","Processes audio inside this application. External processors connect over TCP.");
     auto *deviceCorner = new QWidget(menuBar());
+    deviceCorner->setObjectName("navigationControls");
     auto *deviceLayout = new QHBoxLayout(deviceCorner);
-    deviceLayout->setContentsMargins(8, 4, 8, 4);
+    deviceLayout->setContentsMargins(4, 0, 4, 0); deviceLayout->setSpacing(4);
+    for(const auto *id:{"pipelinePresets","pipelineToggle"})
+        if(auto *button=findChild<QToolButton *>(id)) { deviceLayout->addWidget(button); button->show(); }
     devices->hide();
-    auto *engineButton = new QToolButton(deviceCorner);
+    auto *engineButton = ui::tool_button(deviceCorner);
     engineButton->setObjectName("engineSelectorButton");
     engineButton->setMaximumWidth(260);
-    engineButton->setPopupMode(QToolButton::InstantPopup);
     auto *engineMenu = new QMenu(engineButton);
-    engineButton->setMenu(engineMenu);
+    ui::button_menu(engineButton,engineMenu);
     deviceLayout->addWidget(engineButton);
     const auto refreshEngineCaption = [devices, engineButton] {
         engineButton->setText(devices->currentText()); engineButton->setToolTip(devices->currentText());
@@ -330,14 +374,14 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
             statusBar()->showMessage(ui::text("Engine endpoint is unavailable"), 5000);
             return;
         }
-        if (auto *editor = findChild<SchemeEditorWidget *>()) {
+        if (auto *editor = data_flow_editor()) {
             editor->flush_presentation();
             _application.state().file_configs.scene_graph = editor->document();
         }
         _application.select_device(uuid, host, quint16(port));
     });
     connect(&_application, &GuiPresenter::explicit_stop_requested, this, [this] {
-        if (auto *editor = findChild<SchemeEditorWidget *>()) editor->cancel_start_intent();
+        if (auto *editor = data_flow_editor()) editor->cancel_start_intent();
     });
     connect(&_application, &GuiPresenter::active_graph_changed, this, &MainWindow::sync_node_views);
     connect(&_application, &GuiPresenter::selected_device_changed, engineButton, refreshEngineCaption);
@@ -357,7 +401,7 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     };
     updateApplyStatus(_application.apply_status());
     connect(&_application, &GuiPresenter::apply_status_changed, apply_state, updateApplyStatus);
-    if (auto *editor = findChild<SchemeEditorWidget *>())
+    if (auto *editor = data_flow_editor())
         connect(editor, &SchemeEditorWidget::status_message, apply_state, updateApplyStatus);
     auto *themeSelector = new QComboBox(this);
     themeSelector->setObjectName("statusTheme");
@@ -368,10 +412,8 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     ui::bind(themeSelector, "toolTip", "Interface theme");
     themeSelector->setMaximumWidth(160);
     themeSelector->hide();
-    auto *themeButton = new QToolButton(this);
+    auto *themeButton = ui::tool_button(deviceCorner,"Theme");
     themeButton->setObjectName("themeMenuButton");
-    ui::bind(themeButton, "text", "Theme");
-    themeButton->setPopupMode(QToolButton::InstantPopup);
     auto *themeMenu = new QMenu(themeButton);
     auto *themeActions = new QActionGroup(themeMenu);
     themeActions->setExclusive(true);
@@ -387,8 +429,8 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
             action->setChecked(themeSelector->currentIndex() == index);
         }
     });
-    themeButton->setMenu(themeMenu);
-    statusBar()->addPermanentWidget(themeButton);
+    ui::button_menu(themeButton,themeMenu);
+    deviceLayout->insertWidget(2,themeButton);
     auto syncTheme = [this, themeSelector, themeCodes] {
         const auto code = ui::Theme::instance().code();
         QSignalBlocker block(themeSelector);
@@ -425,16 +467,12 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     });
     connect(&_application, &GuiPresenter::sample_rate_changed, this, &MainWindow::on_sample_rate_changed);
 
-    auto *fps = new QLabel(this);
-    fps->setObjectName("renderStatus");
-    fps->setContentsMargins(8, 0, 8, 0);
-    statusBar()->addPermanentWidget(fps);
     auto *fps_timer = new QTimer(this);
     fps_timer->setInterval(500);
-    auto refresh_fps = [this, fps] {
+    auto refresh_fps = [this] {
         if (!_application.state().file_configs.ui.show_fps)
             return;
-        QStringList rates;
+        for (auto *dock:workspaceDocks()) if(is_graph_dock(dock) && !dock->property("renderExposed").toBool()) dock->setRenderFPS(0,true);
         const std::pair<const char *, AbstractChartView *> charts[]{{"rawSamples", _raw_signal_chart},
                                                                     {"windowSignal", _window_signal_chart},
                                                                     {"windowedSignal", _windowed_signal_chart},
@@ -444,33 +482,28 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
         for (auto [id, chart] : charts)
             if (_render_visible.value(id) && chart->isVisible())
                 if (auto *view = dynamic_cast<FPSChartView *>(chart))
-                    rates << ui::text("%1: %2 FPS")
-                                     .arg(_panels[id]->windowTitle())
-                                     .arg(view->display_fps(), 0, 'f', 0);
+                    _panels[id]->setRenderFPS(view->display_fps(),true);
         if (_render_visible.value("spectrogram") && _spectrogram_view->isVisible())
-            rates << ui::text("%1 FPS").arg(_spectrogram_view->display_fps(), 0, 'f', 0);
+            _panels["spectrogram"]->setRenderFPS(_spectrogram_view->display_fps(),true);
         for (auto it = _node_views.cbegin(); it != _node_views.cend(); ++it) {
             const auto &view = it.value();
             if (!view.dock || !_render_visible.value(it.key())) continue;
             if (view.spectrogram && view.spectrogram->isVisible())
-                rates << ui::text("%1: %2 FPS").arg(view.dock->windowTitle()).arg(view.spectrogram->display_fps(), 0, 'f', 0);
+                view.dock->setRenderFPS(view.spectrogram->display_fps(),true);
             else if (auto *chart = dynamic_cast<FPSChartView *>(view.chart); chart && chart->isVisible())
-                rates << ui::text("%1: %2 FPS").arg(view.dock->windowTitle()).arg(chart->display_fps(), 0, 'f', 0);
+                view.dock->setRenderFPS(chart->display_fps(),true);
         }
-        fps->setText(rates.isEmpty() ? ui::text("%1 FPS").arg(0) : rates.join(" · "));
-        fps->setVisible(true);
     };
     connect(fps_timer, &QTimer::timeout, this, refresh_fps);
     for (auto *chart : {_raw_signal_chart, _window_signal_chart, _windowed_signal_chart, _window_function_chart,
                         _amplitudes_chart, _test_amplitudes_chart})
         if (auto *view = dynamic_cast<FPSChartView *>(chart))
             connect(view, &FPSChartView::fps_changed, this, refresh_fps);
-    auto refresh_preferences = [this, fps, refresh_fps] {
+    auto refresh_preferences = [this, refresh_fps] {
         apply_render_rate();
-        if (auto *editor = findChild<SchemeEditorWidget *>()) editor->sync_preferences();
+        if (auto *editor = data_flow_editor()) editor->sync_preferences();
         if (!_application.state().file_configs.ui.show_fps) {
-            fps->clear();
-            fps->hide();
+            for(auto *dock:workspaceDocks()) dock->setRenderFPS(0,false);
         } else
             refresh_fps();
     };
@@ -487,17 +520,19 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
         if (windowHandle())
             connect(windowHandle(), &QWindow::screenChanged, this, [this] { apply_render_rate(); });
         apply_render_rate();
-        auto *theme = findChild<QToolButton *>("themeMenuButton");
-        auto *flow = findChild<QToolButton *>("pipelineToggle");
-        if (theme && flow) {
-            const int height = std::max(theme->sizeHint().height(), flow->sizeHint().height());
-            theme->setFixedHeight(height);
-            flow->setFixedHeight(height);
-        }
     });
+    statusBar()->setSizeGripEnabled(false);
+    auto refreshStatusVisibility=[this,apply_state,saved_warning] {
+        statusBar()->setVisible(!statusBar()->currentMessage().isEmpty() || !apply_state->text().isEmpty() || !saved_warning->text().isEmpty());
+    };
+    refreshStatusVisibility();
+    connect(statusBar(),&QStatusBar::messageChanged,this,refreshStatusVisibility);
+    connect(&_application,&GuiPresenter::apply_status_changed,this,refreshStatusVisibility);
+    connect(&_application,&GuiPresenter::saved_graph_warning_changed,this,refreshStatusVisibility);
 }
 
 MainWindow::~MainWindow() {
+    disconnect(workspace(),nullptr,this,nullptr);
     qApp->removeEventFilter(this);
     _restoring_layout = true;
     _workspace_save_timer.stop();
@@ -506,7 +541,10 @@ MainWindow::~MainWindow() {
         disconnect(panel, nullptr, this, nullptr);
         disconnect(panel->toggleViewAction(), nullptr, this, nullptr);
     }
-    if (auto *editor = findChild<SchemeEditorWidget *>())
+    // Floating children close during QWidget teardown, after our maps have
+    // already been destroyed. Their visibility callbacks must stop here.
+    for(const auto &view:_node_views) disconnect(view.dock,nullptr,this,nullptr);
+    if (auto *editor = data_flow_editor())
         editor->flush_presentation();
     if (!_workspace_closed) {
         save_workspace();
@@ -528,7 +566,7 @@ void MainWindow::setup_ui() {
     saveAction->setShortcutVisibleInContextMenu(true);
 
     connect(saveAction, &QAction::triggered, this, [this]() {
-        if (auto *editor = findChild<SchemeEditorWidget *>())
+        if (auto *editor = data_flow_editor())
             editor->flush_presentation();
         save_workspace();
         _application.state().editor_draft_modified = true;
@@ -545,7 +583,7 @@ void MainWindow::setup_ui() {
         const auto path = QFileDialog::getSaveFileName(this, ui::text("Save settings as…"), {},
                                                      ui::text("Settings (*.json)"));
         if (path.isEmpty()) return;
-        if (auto *editor = findChild<SchemeEditorWidget *>()) editor->flush_presentation();
+        if (auto *editor = data_flow_editor()) editor->flush_presentation();
         save_workspace();
         _application.state().editor_draft_modified = true;
         emit save_configuration_as_requested(path);
@@ -564,7 +602,6 @@ void MainWindow::setup_ui() {
     });
 
     // Native 3D windows must be reparented synchronously when rebuilding the layout.
-    setDockOptions(QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks);
 
     // Создаем все графики один раз
 
@@ -680,7 +717,7 @@ void MainWindow::setup_ui() {
                 const auto controls = _application.state().file_configs.ui.camera_controls;
                 _spectrogram_view->set_camera_controls(controls);
                 for (auto &view : _node_views) if (view.spectrogram) view.spectrogram->set_camera_controls(controls);
-                if (auto *editor = findChild<SchemeEditorWidget *>())
+                if (auto *editor = data_flow_editor())
                     editor->set_navigation_speed(CameraControls::movementSpeed(controls));
             });
     connect(settings_widget, &SettingsWidget::reset_camera_requested, _spectrogram_view,
@@ -694,7 +731,7 @@ void MainWindow::setup_ui() {
             &MainWindow::stop_wled_server_requested);
     connect(settings_widget, &SettingsWidget::wled_server_config_changed, this,
             &MainWindow::wled_server_config_changed);
-    for (auto *panel : findChildren<GraphPanel *>()) {
+    for (auto *dock : _panels) if (auto *panel=qobject_cast<GraphPanel *>(dock->widget())) {
         auto refresh = [this, panel] {
             panel->set_processing_choices(_application.state().file_configs.core.spectrum_channel,
                                           static_cast<int>(_application.state().file_configs.core.spectrum_merge));
@@ -714,23 +751,29 @@ void MainWindow::setup_ui() {
             statusBar()->showMessage(text, 5000);
     });
     auto *pipeline_panel = add_panel("dataFlow", "Data Flow", editor, &UIApplicationConfig::show_data_flow);
+    setup_graph_dock_controls(pipeline_panel);
+    connect(settings_widget,&SettingsWidget::workspace_position_changed,this,[this] {
+        const bool restoring=_restoring_layout; _restoring_layout=true;
+        rebuild_graph_areas(nullptr,nullptr,-1);
+
+        _restoring_layout=restoring; refresh_subscriptions(); _workspace_save_timer.start();
+    });
     auto *pipeline_action = pipeline_panel->toggleViewAction();
     pipeline_action->setObjectName("openPipeline");
     pipeline_action->setShortcut(QKeySequence("Alt+D"));
-    auto *pipeline_toggle = new QToolButton(this);
+    auto *pipeline_toggle = ui::tool_button(this);
     pipeline_toggle->setObjectName("pipelineToggle");
     pipeline_toggle->setDefaultAction(pipeline_action);
     editor->set_navigation_speed(CameraControls::movementSpeed(_application.state().file_configs.ui.camera_controls));
-    statusBar()->addPermanentWidget(pipeline_toggle);
     connect(pipeline_action, &QAction::triggered, this, [pipeline_panel](bool visible) {
         if (visible)
             pipeline_panel->raise();
     });
     connect(editor,&SchemeEditorWidget::graph_view_requested,this,&MainWindow::open_graph_node);
     connect(editor,&SchemeEditorWidget::graph_open_requested,this,&MainWindow::add_graph_node);
+    editor->set_graph_menu_provider([this](int node,QMenu *menu) { populate_graph_menu(node,menu); });
     if(auto *presets=editor->findChild<QToolButton *>("pipelinePresets")) {
-        statusBar()->addWidget(presets);
-        presets->show();
+        presets->hide(); // Added to the shared upper navigation bar by the constructor.
     }
     auto *view_menu = menuBar()->addMenu(ui::text("Display"));
     view_menu->setObjectName("graphsMenu");
@@ -785,29 +828,22 @@ void MainWindow::setup_ui() {
     bool restored_workspace = false;
     if (workspace.value("version").toInt() == 1) {
         const auto geometry = QByteArray::fromBase64(workspace.value("geometry").toString().toLatin1());
-        const auto state = QByteArray::fromBase64(workspace.value("state").toString().toLatin1());
+        const auto state = QByteArray::fromBase64(workspace.value(workspace.contains("ads_state") ? "ads_state" : "state").toString().toLatin1());
         if (!geometry.isEmpty())
             restoreGeometry(geometry);
         const int layout_version = workspace.value("layout_version").toInt();
-        // Qt serializes dock object names. Restore legacy names temporarily, then
-        // keep canonical names for all subsequent saves and runtime lookups.
-        const QMap<QString, QString> legacy_names{
-            {"spectrogram", "surfaceDock"}, {"windowSignal", "samplesDock"}, {"windowedSignal", "windowedSamplesDock"}};
-        if (layout_version == 2)
-            for (auto it = legacy_names.cbegin(); it != legacy_names.cend(); ++it)
-                _panels[it.key()]->setObjectName(it.value());
-        if ((layout_version == 2 || layout_version == 3 || layout_version == 4) && !state.isEmpty() &&
-            restoreState(state, 1)) {
+        if ((layout_version >= 2 && layout_version <= 5) && !state.isEmpty() &&
+            (workspace.contains("ads_state") ? restoreState(state, 1) : importLegacyState(state, 1, layout_version==2))) {
             restored_workspace = true;
             _application.state().file_configs.ui = saved_ui;
             const auto visibility = workspace.value("visibility").toObject();
             for (auto it = _panels.begin(); it != _panels.end(); ++it)
-                if (layout_version == 4 && visibility.value(it.key()).isBool())
-                    it.value()->setVisible(visibility.value(it.key()).toBool());
+                if (layout_version >= 4 && visibility.value(it.key()).isBool())
+                    it.value()->toggleView(visibility.value(it.key()).toBool());
             for (auto it = _node_views.begin(); it != _node_views.end(); ++it) {
                 const auto identity = "nodeView_" + it.key();
-                if (layout_version == 4 && visibility.value(identity).isBool())
-                    it.value().dock->setVisible(visibility.value(identity).toBool());
+                if (layout_version >= 4 && visibility.value(identity).isBool())
+                    it.value().dock->toggleView(visibility.value(identity).toBool());
                 auto p = _application.state().file_configs.ui.graph_views[it.key()].toObject();
                 p["open"] = !it.value().dock->isHidden();
                 _application.state().file_configs.ui.graph_views[it.key()] = p;
@@ -824,8 +860,7 @@ void MainWindow::setup_ui() {
             ui.show_windowed_signal = !_panels["windowedSignal"]->isHidden();
             ui.show_window_function = !_panels["windowFunction"]->isHidden();
         }
-        for (auto it = legacy_names.cbegin(); it != legacy_names.cend(); ++it)
-            _panels[it.key()]->setObjectName(it.key() + "Dock");
+
     }
     if (!restored_workspace) {
         // A damaged serialized layout can partly mutate docks before failing.

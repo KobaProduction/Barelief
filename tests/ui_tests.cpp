@@ -28,6 +28,7 @@
 #include <QToolButton>
 #include <QSignalSpy>
 #include <QAction>
+#include <DockAreaWidget.h>
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QUdpSocket>
@@ -132,7 +133,7 @@ int main() {
             tabs->setTabVisible(0, true);
             tabs->setTabVisible(4, true);
             tabs->setCurrentIndex(4);
-            auto *editor = window->findChild<QDockWidget *>("dataFlowDock");
+            auto *editor = window->workspaceDock("dataFlowDock");
             if (editor->isHidden()) window->findChild<QAction *>("openPipeline")->trigger();
             require(editor && editor->isVisible(), "Live editor not visible");
             int fft_frames = 0, raw_frames = 0;
@@ -296,7 +297,8 @@ int main() {
         automatic->setChecked(false); require(!app._ctx.file_configs.ui.pipeline_auto_apply,"Auto apply preference not updated");
         automatic->setChecked(true);
         auto *fps_preference=settings->findChild<QCheckBox *>("showFPS");
-        fps_preference->setChecked(false); require(window->findChild<QLabel *>("renderStatus")->isHidden(),"FPS preference ignored");
+        fps_preference->setChecked(false);
+        for(auto *dock:window->workspaceDocks()) require(dock->renderFPS().isEmpty(),"FPS preference ignored");
         fps_preference->setChecked(true);
         auto *theme=settings->findChild<QComboBox *>("interfaceTheme");
         require(theme,"Theme selector missing");
@@ -308,20 +310,14 @@ int main() {
         require(QApplication::palette().color(QPalette::Window).lightness()>128,"Light theme not applied");
         theme->setCurrentIndex(0);
         require(app.pipeline().graph_revision()==theme_revision,"Theme changed processing graph");
-        auto *spectrogram_dock=window->findChild<QDockWidget *>("spectrogramDock");
-        auto *spectrogram_strip=spectrogram_dock->titleBarWidget();
-        require(spectrogram_strip && spectrogram_strip->findChild<QToolButton *>("graphPlacement"),
-            "Docked graph lacks draggable title and placement control");
-        auto *floating_title=spectrogram_strip->findChild<QLabel *>();
-        require(floating_title && floating_title->isHidden(),"Docked strip duplicates its tab title");
-        spectrogram_dock->setFloating(true); QTest::qWait(100);
-        require(spectrogram_dock->titleBarWidget()==spectrogram_strip && spectrogram_strip->isVisible(),
-                "Floating graph lost draggable title and placement control");
-        require(floating_title->isVisible() && floating_title->text()==spectrogram_dock->windowTitle(),
-                "Floating graph title did not follow its localized dock title");
-        spectrogram_dock->setFloating(false); QTest::qWait(100);
-        require(spectrogram_dock->titleBarWidget(),"Docked graph controls not restored");
-        require(floating_title->isHidden(),"Return to tabs retained duplicate floating title");
+        auto *spectrogram_dock=window->workspaceDock("spectrogramDock");
+        auto *graphContent=spectrogram_dock->widget();
+        auto *placement=spectrogram_dock->findChild<QAction *>("graphPlacement");
+        require(placement && spectrogram_dock->dockAreaWidget()->titleBar(),"Docked graph lacks placement control");
+        placement->menu()->actions()[0]->trigger(); QTest::qWait(100);
+        require(spectrogram_dock->isFloating() && spectrogram_dock->widget()==graphContent,"Floating graph recreated content");
+        placement->menu()->actions()[1]->trigger(); QTest::qWait(100);
+        require(!spectrogram_dock->isFloating() && spectrogram_dock->widget()==graphContent,"Graph cannot return to tabs");
         const auto language_revision=app.pipeline().graph_revision();
         auto *same_spectrogram=window->findChild<SpectrogramGraph *>();
         language->setCurrentIndex(1); QTest::qWait(400);
@@ -349,7 +345,7 @@ int main() {
         panel_channel->setCurrentIndex(initial_channel);
         wait_for([&] { return !app.presenter().graph_request_pending(); },"Graph panel channel not restored");
 
-        auto *fft_toggle = window->findChild<QDockWidget *>("fftDock")->toggleViewAction();
+        auto *fft_toggle = window->workspaceDock("fftDock")->toggleViewAction();
         const auto fft_visible = tabs->isTabVisible(4);
         fft_toggle->trigger();
         require(tabs->isTabVisible(4) != fft_visible &&
@@ -478,7 +474,7 @@ int main() {
         require(manager.load(saved) && saved.ui.autosave_enabled &&
                     saved.ui.show_raw_samples == app._ctx.file_configs.ui.show_raw_samples,
                 "Enabling autosave did not save pending changes");
-        auto *pipeline_dialog = window->findChild<QDockWidget *>("dataFlowDock");
+        auto *pipeline_dialog = window->workspaceDock("dataFlowDock");
         require(pipeline_dialog, "Pipeline editor dialog missing");
         automatic->setChecked(false);
         require(!app._ctx.file_configs.ui.pipeline_auto_apply,"Manual Apply mode not stored");

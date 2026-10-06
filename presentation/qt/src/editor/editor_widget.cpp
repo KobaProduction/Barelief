@@ -1,6 +1,7 @@
 #include "visualization/ui_text.h"
 #include "core/performance.h"
 #include "core_app/scheme_editor/editor_widget.h"
+#include "core_app/wheel_input.h"
 
 #include <QtNodes/ConnectionStyle>
 #include <QtNodes/GraphicsViewStyle>
@@ -128,6 +129,7 @@ public:
     using DataFlowGraphicsScene::DataFlowGraphicsScene;
     std::function<void(int)> focus_graph;
     std::function<void(int,int)> open_graph;
+    std::function<void(int,QMenu *)> graph_menu;
     QMenu *createStdMenu(QPointF scene_position) {
         auto *menu=DataFlowGraphicsScene::createStdMenu(scene_position);
         for(auto *action:menu->actions()) {
@@ -140,6 +142,9 @@ public:
             trim_clipboard_connections();
             undoStack().push(new QtNodes::PasteCommand(this,scene_position));
         });
+        auto *remove=menu->addAction(ui::text("Delete selection"));
+        remove->setObjectName("deleteGraphSelection"); remove->setShortcut(QKeySequence(Qt::Key_Delete));
+        connect(remove,&QAction::triggered,this,[this] { undoStack().push(new QtNodes::DeleteCommand(this)); });
         for(auto *item:items(scene_position)) {
             QtNodes::NodeGraphicsObject *node=nullptr;
             for(auto *parent=item;parent;parent=parent->parentItem())
@@ -149,12 +154,17 @@ public:
             auto *model=graph.delegateModel<AudioNodeModel>(node->nodeId());
             if(model && pipeline::node_definition(model->name()).category=="views") {
                 menu->addSeparator(); const int id=int(node->nodeId());
+                if(graph_menu) { graph_menu(id,menu); break; }
                 auto *focus=menu->addAction(ui::text("Focus graph")); focus->setObjectName("focusGraph");
                 connect(focus,&QAction::triggered,this,[this,id] { if(focus_graph) focus_graph(id); });
                 const std::array<const char *,3> labels{"Open in separate window","Open in new tab","Open beside current graph"};
                 for(int placement=0;placement<3;++placement) {
                     auto *action=menu->addAction(ui::text(labels[placement]));
                     action->setObjectName(QStringLiteral("openGraphPlacement%1").arg(placement));
+                    if (placement < 2) {
+                        action->setShortcut(QKeySequence(placement == 0 ? "Alt+Shift+G" : "Alt+G"));
+                        action->setShortcutVisibleInContextMenu(true);
+                    }
                     connect(action,&QAction::triggered,this,[this,id,placement] { if(open_graph) open_graph(id,placement); });
                 }
             }
@@ -187,6 +197,10 @@ public:
     }
 };
 
+void SchemeEditorWidget::set_graph_menu_provider(std::function<void(int,QMenu *)> provider) {
+    static_cast<LocalizedDataFlowScene *>(_scene)->graph_menu=std::move(provider);
+}
+
 class GraphViewIndicator final : public QGraphicsItem {
 public:
     enum { Type=QGraphicsItem::UserType+0x315 };
@@ -207,7 +221,10 @@ public:
 class ProfiledGraphicsView final : public GraphicsView {
   public:
     explicit ProfiledGraphicsView(QWidget *parent=nullptr) : GraphicsView(parent) {
+        desktop_input::track_wheel_devices();
         setMouseTracking(true); viewport()->setMouseTracking(true);
+        for(auto *scroll:{horizontalScrollBar(),verticalScrollBar()})
+            connect(scroll,&QScrollBar::valueChanged,this,[this] { if(!_restoring) remember_camera(); });
         _pan_timer.setInterval(16);
         _pan_timer.setTimerType(Qt::PreciseTimer);
         connect(&_pan_timer,&QTimer::timeout,this,[this] {
@@ -248,9 +265,9 @@ class ProfiledGraphicsView final : public GraphicsView {
         for(auto *action:actions()) {
             const auto shortcuts=action->shortcuts();
             if(shortcuts.contains(QKeySequence(QKeySequence::Undo))) {
-                action->setShortcuts({QKeySequence(Qt::ALT|Qt::Key_Z)});
+                action->setShortcuts({}); // Shared File menu owns history shortcuts.
             } else if(shortcuts.contains(QKeySequence(QKeySequence::Redo))) {
-                action->setShortcuts({QKeySequence(Qt::ALT|Qt::SHIFT|Qt::Key_Z)});
+                action->setShortcuts({});
             } else {
                 QList<QKeySequence> remapped;
                 for(const auto &shortcut:shortcuts) {
@@ -271,6 +288,7 @@ class ProfiledGraphicsView final : public GraphicsView {
                 if(stable=="Copy Selection") action->setShortcuts({QKeySequence(QKeySequence::Copy)});
                 if(stable=="Paste Selection") action->setShortcuts({QKeySequence(QKeySequence::Paste)});
                 if(stable=="Cut Selection") action->setShortcuts({QKeySequence(QKeySequence::Cut)});
+                if(stable=="Delete Selection") action->setShortcuts({QKeySequence(Qt::Key_Delete),QKeySequence(Qt::Key_Backspace)});
             }
         }
     }
@@ -281,10 +299,21 @@ class ProfiledGraphicsView final : public GraphicsView {
     void camera(double scale, QPointF center) {
         _restoring = true;
         // setupScale skips equal scales; reset also removes old zoom translations.
-        QTransform transform; transform.scale(scale,scale); setTransform(transform);
+        const bool scaleChangedNow=std::abs(scale-getScale())>1e-9;
+        if(scaleChangedNow) { QTransform transform; transform.scale(scale,scale); setTransform(transform); }
+        auto bounds=nodeScene()->itemsBoundingRect();
+        if(bounds.isEmpty()) bounds=QRectF(-100,-100,200,200);
+        const auto half=QSizeF(viewport()->size())/(2*scale);
+        const auto size=QSizeF(std::max(bounds.width(),2*half.width()),std::max(bounds.height(),2*half.height()));
+        bounds=QRectF(bounds.center()-QPointF(size.width()/2,size.height()/2),size);
+        const double margin=160/scale;
+        bounds.adjust(-margin,-margin,margin,margin);
+        setSceneRect(bounds);
+        center.setX(std::clamp(center.x(),bounds.left()+half.width(),bounds.right()-half.width()));
+        center.setY(std::clamp(center.y(),bounds.top()+half.height(),bounds.bottom()-half.height()));
         centerOn(center); _center = center;
         _restoring = false;
-        emit scaleChanged(getScale());
+        if(scaleChangedNow) emit scaleChanged(getScale());
     }
 
   protected:
@@ -459,6 +488,19 @@ class ProfiledGraphicsView final : public GraphicsView {
         if (on_interaction) on_interaction();
     }
     void wheelEvent(QWheelEvent *event) override {
+        if(event->phase()==Qt::ScrollMomentum) { event->accept(); return; }
+        const auto scroll=event->pixelDelta().isNull() ? QPointF(event->angleDelta())/3.0 : QPointF(event->pixelDelta());
+        const bool touchpad=desktop_input::is_touchpad(*event);
+        const bool pinch=desktop_input::is_pinch(*event);
+        if(!touchpad && event->modifiers().testFlag(Qt::ControlModifier)) {
+            pan_pixels({0,-scroll.y()}); event->accept(); return;
+        }
+        if(!touchpad && event->modifiers().testFlag(Qt::AltModifier)) {
+            pan_pixels({-(scroll.y()!=0 ? scroll.y() : scroll.x()),0}); event->accept(); return;
+        }
+        if(touchpad && !pinch) {
+            pan_pixels(-scroll); event->accept(); return;
+        }
         const double delta=event->pixelDelta().isNull() ? event->angleDelta().y()/120.0 : event->pixelDelta().y()/40.0;
         if (delta==0) { event->ignore(); return; }
         const QPointF anchor=mapToScene(event->position().toPoint());
@@ -508,10 +550,7 @@ class ProfiledGraphicsView final : public GraphicsView {
         return false;
     }
     void pan_pixels(QPointF delta) {
-        _restoring=true;
-        _center+=delta/getScale();
-        centerOn(_center);
-        _restoring=false;
+        camera(getScale(),_center+delta/getScale());
         if(on_interaction) on_interaction();
     }
     void finish_middle_pan() {
@@ -656,6 +695,8 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     _scene->setGroupingEnabled(false);
     _view->setScene(_scene);
     static_cast<ProfiledGraphicsView *>(_view)->configure_graph_shortcuts();
+    _view->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    _view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     _view->setScaleRange(0.2,3.0);
     _view->setTransformationAnchor(QGraphicsView::NoAnchor);
     _view->setResizeAnchor(QGraphicsView::NoAnchor);
@@ -663,16 +704,19 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     _view->setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
     _view->setInteractive(!_unsupported_document);
     auto *layout = new QVBoxLayout(this);
-    auto *bar = new QHBoxLayout;
+    _toolbar = new QWidget(this);
+    _toolbar->setObjectName("dataFlowToolbar");
+    auto *bar = new QHBoxLayout(_toolbar);
+    bar->setContentsMargins(0,0,0,0);
     bar->setSpacing(6);
+    _toolbar->setSizePolicy(QSizePolicy::Maximum,QSizePolicy::Preferred);
     auto *apply_button = ui::make<QPushButton>("Apply", this);
     _apply_button=apply_button;
     apply_button->setObjectName("applyPipeline");
-    auto *presets=new QToolButton(this); presets->setObjectName("pipelinePresets");
+    ui::compact_control(apply_button);
+    auto *presets=ui::tool_button(this,"Presets"); presets->setObjectName("pipelinePresets");
     _presets_button=presets; presets->hide();
-    ui::bind(presets,"text","Presets"); presets->setPopupMode(QToolButton::InstantPopup);
-    presets->setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; }");
-    auto *preset_menu=new QMenu(presets); preset_menu->setObjectName("pipelinePresetsMenu"); presets->setMenu(preset_menu);
+    auto *preset_menu=new QMenu(presets); preset_menu->setObjectName("pipelinePresetsMenu"); ui::button_menu(presets,preset_menu);
     ui::bind(preset_menu,"title","Presets");
     auto action=[preset_menu](const char *text,const char *id) {
         auto *item=preset_menu->addAction(ui::text(text)); item->setObjectName(id); ui::bind(item,"text",text); return item;
@@ -720,9 +764,8 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
         set_status(ui::text("No audio source in this draft"));
     });
     auto *execution=bar;
-    execution->addStretch();
     auto *zoom=new QDoubleSpinBox(this); zoom->setObjectName("pipelineZoom");
-    zoom->setMaximumWidth(85);
+    zoom->setMaximumWidth(72); zoom->setFixedHeight(24);
     zoom->setDecimals(0); zoom->setRange(20,300); zoom->setSuffix(" %"); zoom->setSingleStep(10); zoom->setValue(100);
     execution->addWidget(ui::make<QLabel>("Zoom",this)); execution->addWidget(zoom);
     connect(zoom,&QDoubleSpinBox::valueChanged,this,[this](double percent) {
@@ -733,12 +776,14 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
         const QSignalBlocker blocker(zoom); zoom->setValue(value*100);
     });
     auto *fit=ui::make<QPushButton>("Center",this); fit->setObjectName("fitPipeline");
+    ui::compact_control(fit);
     ui::bind(fit,"toolTip","Fit the Data Flow in view (Alt+F)");
-    execution->insertWidget(2,fit);
+    execution->addWidget(fit);
     connect(fit,&QPushButton::clicked,this,[this] {
         fit_nodes();
     });
-    layout->addLayout(bar);
+    layout->setContentsMargins(3,3,3,3);
+    layout->addWidget(_toolbar);
     auto *splitter = new InspectorSplitter(Qt::Horizontal,this);
     _splitter=splitter; splitter->setObjectName("pipelineSplitter");
     auto *library = new QTreeWidget(splitter); library->setObjectName("pipelineNodeLibrary");
@@ -863,8 +908,9 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     connect(&model, &DataFlowGraphModel::connectionDeleted, this, &SchemeEditorWidget::changed);
     connect(&_scene->undoStack(), &QUndoStack::indexChanged, this, &SchemeEditorWidget::changed);
     auto *arrange = ui::make<QPushButton>("Arrange", this);
+    ui::compact_control(arrange);
     ui::bind(arrange,"toolTip","Arrange nodes from left to right (Alt+A)");
-    arrange->setObjectName("arrangePipeline"); bar->insertWidget(2,arrange);
+    arrange->setObjectName("arrangePipeline"); bar->insertWidget(bar->indexOf(fit),arrange);
     connect(arrange, &QPushButton::clicked, this, &SchemeEditorWidget::arrange_nodes);
     auto scoped_shortcut=[this](const char *label,const char *id,QKeySequence key,auto handler) {
         // Alt+A previously belonged to QtNodes Select All. The requested
@@ -881,6 +927,31 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     };
     _arrange_action=scoped_shortcut("Arrange Data Flow","arrangePipelineShortcut",QKeySequence(Qt::ALT|Qt::Key_A),&SchemeEditorWidget::arrange_nodes);
     _center_action=scoped_shortcut("Center Data Flow","fitPipelineShortcut",QKeySequence(Qt::ALT|Qt::Key_F),&SchemeEditorWidget::fit_nodes);
+    const auto selected_graph = [this]() -> int {
+        for (auto *item : _scene->selectedItems())
+            if (auto *node = qgraphicsitem_cast<QtNodes::NodeGraphicsObject *>(item)) {
+                auto *model = _application.state().data_flow_graph->delegateModel<AudioNodeModel>(node->nodeId());
+                if (model && pipeline::node_definition(model->name()).category == "views")
+                    return int(node->nodeId());
+            }
+        return -1;
+    };
+    auto *showGraph = new QAction(this);
+    showGraph->setObjectName("showSelectedGraph");
+    ui::bind(showGraph,"text","Open in new tab");
+    showGraph->setShortcut(QKeySequence("Alt+G"));
+    showGraph->setShortcutContext(Qt::WidgetWithChildrenShortcut); addAction(showGraph);
+    connect(showGraph,&QAction::triggered,this,[this,selected_graph] {
+        if (const auto id = selected_graph(); id >= 0) emit graph_open_requested(id,1);
+    });
+    auto *floatGraph = new QAction(this);
+    floatGraph->setObjectName("floatSelectedGraph");
+    ui::bind(floatGraph,"text","Open in separate window");
+    floatGraph->setShortcut(QKeySequence("Alt+Shift+G"));
+    floatGraph->setShortcutContext(Qt::WidgetWithChildrenShortcut); addAction(floatGraph);
+    connect(floatGraph,&QAction::triggered,this,[this,selected_graph] {
+        if (const auto id = selected_graph(); id >= 0) emit graph_open_requested(id,0);
+    });
     connect(_view, &GraphicsView::scaleChanged, this, [this] { if (!_loading) _save_timer.start(); });
     for (auto *scroll : {_view->horizontalScrollBar(), _view->verticalScrollBar()})
         connect(scroll, &QScrollBar::sliderMoved, this, [this] { if (!_loading) _save_timer.start(); });

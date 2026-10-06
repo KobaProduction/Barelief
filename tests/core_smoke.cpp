@@ -14,6 +14,7 @@
 #include <QTimer>
 #include <QScreen>
 #include <QDockWidget>
+#include <DockAreaWidget.h>
 #include <QDir>
 #include <QOpenGLWidget>
 static int schema_regression() {
@@ -128,7 +129,7 @@ int main(int argc, char **argv) {
                 spectrogram->grabFramebuffer().save(review_dir + "/spectrogram-native.png");
         });
         QTimer::singleShot(2700, &app, [window] {
-            auto *dock = window->findChild<QDockWidget *>("fftDock");
+            auto *dock = window->workspaceDock("fftDock");
             dock->show();
             dock->raise();
         });
@@ -149,12 +150,16 @@ int main(int argc, char **argv) {
         for (auto *widget : QApplication::topLevelWidgets())
             if (auto *candidate = qobject_cast<MainWindow *>(widget))
                 window = candidate;
-        auto *surface = window ? window->findChild<QDockWidget *>("spectrogramDock") : nullptr;
-        auto *flow = window ? window->findChild<QDockWidget *>("dataFlowDock") : nullptr;
+        auto *surface = window ? window->workspaceDock("spectrogramDock") : nullptr;
+        auto *flow = window ? window->workspaceDock("dataFlowDock") : nullptr;
         QString error;
+        auto areaRect=[](WorkspaceDock *dock) {
+            auto *area=dock->dockAreaWidget();
+            return QRect(area->mapTo(area->window(),QPoint()),area->size());
+        };
         auto program = pipeline::GraphProgram::compile(app.pipeline().graph(), error);
         if (!surface || !flow || surface->isHidden() || flow->isHidden() ||
-            flow->geometry().top() < surface->geometry().bottom() || surface->height() < 180 || flow->height() < 150 ||
+            areaRect(flow).top() < areaRect(surface).bottom() || surface->height() < 180 || flow->height() < 150 ||
             !program || program->capture_source() != 0 ||
             app.pipeline().current_status("Analyzer").state != pipeline::State::Running ||
             app.pipeline().current_status("Capture").state == pipeline::State::Stopped) {

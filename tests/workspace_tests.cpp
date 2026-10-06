@@ -11,7 +11,10 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <DockAreaWidget.h>
 #include <QDockWidget>
+#include <QToolBar>
+#include <FloatingDockContainer.h>
 #include <QToolButton>
 #include <QScreen>
 #include <QProcess>
@@ -26,6 +29,11 @@
 #include <cmath>
 #include <QtTest/QTest>
 #include <stdexcept>
+static QRect rectInWindow(QWidget *widget) {
+    if(auto *dock=qobject_cast<WorkspaceDock *>(widget); dock && dock->dockAreaWidget()) widget=dock->dockAreaWidget();
+    return QRect(widget->mapTo(widget->window(),QPoint()),widget->size());
+}
+
 static void require(bool ok,const char *message) { if (!ok) throw std::runtime_error(message); }
 int main(int argc,char **argv) {
     try {
@@ -46,24 +54,24 @@ int main(int argc,char **argv) {
         for(auto *widget:QApplication::topLevelWidgets()) if(auto *candidate=qobject_cast<MainWindow *>(widget)) window=candidate;
         require(window,"Main window absent"); window->show(); QTest::qWait(450);
         if(dockControls) {
-            auto *dock=window->findChild<QDockWidget *>("fftDock");require(dock,"FFT dock absent");
-            dock->show();auto *strip=dock->titleBarWidget();
-            auto *toggle=dock->findChild<QToolButton *>("graphPlacement");
+            auto *dock=window->workspaceDock("fftDock");require(dock,"FFT dock absent");
+            dock->show();auto *strip=dock->widget();
+            auto *toggle=dock->findChild<QAction *>("graphPlacement");
             require(strip && toggle,"Dock controls absent");
             for(int round=0;round<3;++round) {
                 toggle->menu()->actions()[0]->trigger();QTest::qWait(10);
-                require(dock->isFloating() && dock->titleBarWidget()==strip && strip->isVisible() && toggle->isVisible(),
+                require(dock->isFloating() && dock->widget()==strip && strip->isVisible(),
                         "Floating graph lost draggable title and return control");
                 toggle->menu()->actions()[1]->trigger();QTest::qWait(10);
-                require(!dock->isFloating() && dock->titleBarWidget()==strip,"Cannot reattach graph");
+                require(!dock->isFloating() && dock->widget()==strip,"Cannot reattach graph");
             }
             window->close();qInfo("Dock detach/reattach controls passed");return 0;
         }
         if (argc > 2) {
             const auto mode = QString::fromLocal8Bit(argv[2]);
-            auto *surface = window->findChild<QDockWidget *>("spectrogramDock");
-            auto *pipeline = window->findChild<QDockWidget *>("dataFlowDock");
-            auto *frequency = window->findChild<QDockWidget *>("fftDock");
+            auto *surface = window->workspaceDock("spectrogramDock");
+            auto *pipeline = window->workspaceDock("dataFlowDock");
+            auto *frequency = window->workspaceDock("fftDock");
             require(surface && pipeline && frequency, "Persistence probe docks absent");
             QFile config_file(path);
             auto bytes_on_disk = [&] { require(config_file.open(QIODevice::ReadOnly), "Probe read failed");
@@ -98,9 +106,9 @@ int main(int argc,char **argv) {
         }
         auto *editor=window->findChild<SchemeEditorWidget *>(); auto *scene=editor->findChild<QtNodes::DataFlowGraphicsScene *>();
         auto *view=editor->findChild<QtNodes::GraphicsView *>();
-        auto *flow=window->findChild<QDockWidget *>("dataFlowDock"), *fft=window->findChild<QDockWidget *>("fftDock");
+        auto *flow=window->workspaceDock("dataFlowDock"), *fft=window->workspaceDock("fftDock");
         require(editor && scene && view && flow && fft,"Dock/editor missing");
-        require(window->findChildren<QDockWidget *>().size()==8,"Views not represented by eight unique docks");
+        require(window->workspaceDocks().size()==8,"Views not represented by eight unique docks");
         auto &graph=*app._ctx.data_flow_graph;
         if (restoring) {
             require(fft->isFloating() && !flow->isFloating(),"Floating/attached workspace not restored");
@@ -109,15 +117,15 @@ int main(int argc,char **argv) {
             require(app._ctx.file_configs.ui.pipeline_presets.size()==1,"Custom presets lost after restart");
             window->close(); return 0;
         }
-        auto *spectrogram = window->findChild<QDockWidget *>("spectrogramDock");
+        auto *spectrogram = window->workspaceDock("spectrogramDock");
         require(spectrogram && !spectrogram->isHidden() && !flow->isHidden() && !fft->isHidden() &&
                     window->tabifiedDockWidgets(spectrogram).contains(fft),
                 "Default workspace must expose graph nodes as tabs above Data Flow");
-        require(flow->geometry().top() >= spectrogram->geometry().bottom(),
+        require(rectInWindow(flow).top() >= rectInWindow(spectrogram).bottom(),
                 "Pipeline is not below Spectrogram in default workspace");
         auto *graphs_menu=window->findChild<QMenu *>("graphsMenu");
         require(graphs_menu && !graphs_menu->actions().contains(fft->toggleViewAction()),"Display retained removed graph selector");
-        auto *placement = fft->findChild<QToolButton *>("graphPlacement");
+        auto *placement = fft->findChild<QAction *>("graphPlacement");
         require(placement && placement->menu() && placement->menu()->actions().size()==4,"Graph placement controls missing");
         placement->menu()->actions()[1]->trigger();
         require(!fft->isHidden() && !spectrogram->isHidden() && window->tabifiedDockWidgets(spectrogram).contains(fft),
@@ -130,8 +138,8 @@ int main(int argc,char **argv) {
         require(flow->isHidden() && !spectrogram->isHidden(), "Pipeline toggle hid the top graph");
         pipeline_action->trigger();
         require(!flow->isHidden(), "Pipeline toolbar toggle did not reopen the bottom panel");
-        auto *zoom=editor->findChild<QDoubleSpinBox *>("pipelineZoom");
-        require(zoom && editor->findChild<QPushButton *>("fitPipeline"),"Editor zoom controls missing");
+        auto *zoom=window->findChild<QDoubleSpinBox *>("pipelineZoom");
+        require(zoom && window->findChild<QPushButton *>("fitPipeline"),"Editor zoom controls missing");
         const auto zoom_revision=app.pipeline().graph_revision();
         const QPoint cursor=view->viewport()->rect().center()+QPoint(25,15);
         const auto anchor=view->mapToScene(cursor); const auto previous_scale=view->getScale();
@@ -159,7 +167,7 @@ int main(int argc,char **argv) {
         scene->undoStack().undo();require(graph.nodeData(0,QtNodes::NodeRole::Position).toPointF()==old,"Drag undo failed");
         scene->undoStack().redo();require(graph.nodeData(0,QtNodes::NodeRole::Position).toPointF()==dragged,"Drag redo failed");
         const auto before_arrange=scene->undoStack().count();
-        QTest::mouseClick(editor->findChild<QPushButton *>("arrangePipeline"),Qt::LeftButton);
+        QTest::mouseClick(window->findChild<QPushButton *>("arrangePipeline"),Qt::LeftButton);
         require(scene->undoStack().count()==before_arrange+1,"Arrange not a single undo operation");
         scene->undoStack().undo(); require(graph.nodeData(0,QtNodes::NodeRole::Position).toPointF()==dragged,"Arrange undo lost position");
         QTest::qWait(450); require(app.pipeline().graph_revision()==revision,"Layout changed processing revision");
@@ -211,7 +219,7 @@ int main(int argc,char **argv) {
         require(file.open(QIODevice::ReadOnly),"Cannot read presets");
         require(QJsonDocument::fromJson(file.readAll()).object().value("ui").toObject().value("pipeline_presets").toArray().size()==1,
             "Manual save did not persist custom presets"); file.close();
-        QTest::mouseClick(editor->findChild<QPushButton *>("fitPipeline"),Qt::LeftButton);
+        QTest::mouseClick(window->findChild<QPushButton *>("fitPipeline"),Qt::LeftButton);
         const auto bounds=scene->itemsBoundingRect();
         require(QLineF(view->mapToScene(view->viewport()->rect().center()),bounds.center()).length()<5/view->getScale(),
             "Center all blocks misses graph center");
@@ -241,9 +249,9 @@ int main(int argc,char **argv) {
         require(udp.hasPendingDatagrams(),"Blocked GUI stopped network output");
         app.pipeline().stop_wled();app.pipeline().stop_analyzer();
         fft->setFloating(true); QTest::qWait(30);
-        fft->move(50000,50000);
+        fft->floatingDockContainer()->move(50000,50000);
         QMetaObject::invokeMethod(qApp,"screenRemoved",Qt::DirectConnection,Q_ARG(QScreen *,QGuiApplication::primaryScreen()));
-        require(QGuiApplication::primaryScreen()->availableGeometry().intersects(fft->frameGeometry()),"Detached monitor left dock unreachable");
+        require(QGuiApplication::primaryScreen()->availableGeometry().intersects(fft->floatingDockContainer()->frameGeometry()),"Detached monitor left dock unreachable");
         flow->close();
         require(flow->isHidden() && !app._ctx.file_configs.ui.show_data_flow,"Dock close not reflected in preferences");
         window->findChild<QAction *>("openPipeline")->trigger();require(!flow->isHidden() && !flow->isFloating(),"Data Flow did not reopen attached");
@@ -261,16 +269,30 @@ int main(int argc,char **argv) {
                 "Unknown editor settings lost");
         require(saved.value("ui").toObject().value("workspace").toObject().value("version").toInt()==1,"Workspace not saved on close");
         auto legacy_workspace=saved;
-        window->findChild<QDockWidget *>("spectrogramDock")->setObjectName("surfaceDock");
-        window->findChild<QDockWidget *>("windowSignalDock")->setObjectName("samplesDock");
-        window->findChild<QDockWidget *>("windowedSignalDock")->setObjectName("windowedSamplesDock");
+        QMainWindow legacyWindow; legacyWindow.setAttribute(Qt::WA_DontShowOnScreen);
+        legacyWindow.resize(window->size());
+        const QMap<QString,QString> oldNames{{"spectrogramDock","surfaceDock"},{"windowSignalDock","samplesDock"},{"windowedSignalDock","windowedSamplesDock"}};
+        QMap<WorkspaceDock *,QDockWidget *> proxies;
+        for(auto *dock:window->workspaceDocks()) {
+            auto *proxy=new QDockWidget(dock->windowTitle(),&legacyWindow);
+            proxy->setAttribute(Qt::WA_DontShowOnScreen);
+            proxy->setObjectName(oldNames.value(dock->objectName(),dock->objectName()));
+            legacyWindow.addDockWidget(Qt::LeftDockWidgetArea,proxy); proxies[dock]=proxy;
+        }
+        auto *legacySurface=proxies[window->workspaceDock("spectrogramDock")];
+        auto *legacyFlow=proxies[window->workspaceDock("dataFlowDock")];
+        legacyWindow.splitDockWidget(legacySurface,legacyFlow,Qt::Vertical);
+        for(auto *dock:window->workspaceDocks()) {
+            auto *proxy=proxies[dock];
+            if(proxy!=legacySurface && proxy!=legacyFlow) legacyWindow.tabifyDockWidget(legacySurface,proxy);
+            if(dock->isFloating()) proxy->setFloating(true);
+            proxy->setVisible(!dock->isHidden());
+        }
         auto legacy_ui=legacy_workspace.value("ui").toObject(); auto legacy_layout=legacy_ui.value("workspace").toObject();
+        legacy_layout.remove("ads_state"); legacy_layout.remove("backend");
         legacy_layout["layout_version"]=2;
-        legacy_layout["state"]=QString::fromLatin1(window->saveState(1).toBase64());
+        legacy_layout["state"]=QString::fromLatin1(legacyWindow.saveState(1).toBase64());
         legacy_ui["workspace"]=legacy_layout; legacy_workspace["ui"]=legacy_ui;
-        window->findChild<QDockWidget *>("surfaceDock")->setObjectName("spectrogramDock");
-        window->findChild<QDockWidget *>("samplesDock")->setObjectName("windowSignalDock");
-        window->findChild<QDockWidget *>("windowedSamplesDock")->setObjectName("windowedSignalDock");
         const auto legacy_path=directory.filePath("legacy-workspace.json");
         QFile legacy_file(legacy_path); require(legacy_file.open(QIODevice::WriteOnly),"Cannot save old dock layout");
         legacy_file.write(QJsonDocument(legacy_workspace).toJson()); legacy_file.close();

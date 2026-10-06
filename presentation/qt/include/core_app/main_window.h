@@ -1,7 +1,7 @@
 #ifndef CORE_APP_MAIN_WINDOW_H
 #define CORE_APP_MAIN_WINDOW_H
 
-#include <QDockWidget>
+#include "core_app/workspace/workspace_window.h"
 #include <QMap>
 #include <QPointer>
 
@@ -9,7 +9,9 @@
 #include "visualization/abstract/abs.h"
 #include "visualization/spectrograms/spectrogram_graph.h"
 
-class MainWindow final : public QMainWindow {
+class SchemeEditorWidget;
+
+class MainWindow final : public WorkspaceWindow {
     Q_OBJECT
   public:
     explicit MainWindow(GuiPresenter &application);
@@ -36,25 +38,31 @@ class MainWindow final : public QMainWindow {
 
   private:
     QTimer _camera_save_timer, _workspace_save_timer;
-    QMap<QString, QDockWidget *> _panels;
+    QMap<QString, WorkspaceDock *> _panels;
     QMap<QString, bool> _render_visible;
     QByteArray _default_workspace_state;
     bool _restoring_layout = true, _workspace_closed = false;
-    QPointer<QDockWidget> _last_graph_slot;
+    QPointer<WorkspaceDock> _last_graph_slot;
+    int _next_view_instance = 1;
+    QList<WorkspaceDock *> graph_docks() const;
+    bool in_editor_window(WorkspaceDock *dock) const;
+    WorkspaceDock *new_graph_view(int node);
+    void populate_graph_menu(int node, QMenu *menu);
+    void rebuild_graph_areas(WorkspaceDock *dock, WorkspaceDock *anchor, int placement);
     void add_graph_node(int node, int placement);
-    bool is_graph_dock(QDockWidget *dock) const;
-    QDockWidget *add_panel(const QString &id, const QString &title, QWidget *view, bool UIApplicationConfig::*flag);
+    bool is_graph_dock(WorkspaceDock *dock) const;
+    WorkspaceDock *add_panel(const QString &id, const QString &title, QWidget *view, bool UIApplicationConfig::*flag);
     void reset_workspace();
-    void setup_graph_dock_controls(QDockWidget *dock);
-    void set_graph_exposed(const QString &key, QDockWidget *dock, bool exposed);
-    void place_graph(QDockWidget *dock, int placement);
-    QDockWidget *graph_dock(int node) const;
+    void setup_graph_dock_controls(WorkspaceDock *dock);
+    void set_graph_exposed(const QString &key, WorkspaceDock *dock, bool exposed);
+    void place_graph(WorkspaceDock *dock, int placement);
+    WorkspaceDock *graph_dock(int node) const;
     void open_graph_node(int node);
     void refresh_graph_navigation(const QMap<int,QString> &previous);
     struct NodeView {
         int node = -1;
         QString device, graph, kind;
-        QDockWidget *dock = nullptr;
+        WorkspaceDock *dock = nullptr;
         AbstractChartView *chart = nullptr;
         SpectrogramGraph *spectrogram = nullptr;
     };
@@ -66,7 +74,7 @@ class MainWindow final : public QMainWindow {
     void consume_node_views(const QMap<int, pipeline::TypedFrame> &views);
     void clear_node_views();
     QString ensure_node_view(int node, const QString &kind, const QString &device, const QString &graph,
-                             bool open = false);
+                             bool open = false, int instance = 0);
     void save_workspace();
     void refresh_subscriptions();
     void apply_surface_settings();
@@ -91,6 +99,7 @@ class MainWindow final : public QMainWindow {
     SpectrogramGraph *_spectrogram_view = nullptr;
 
     void setup_ui();
+    SchemeEditorWidget *data_flow_editor() const;
     void update_chart_visibility(const UIApplicationConfig &config);
 };
 

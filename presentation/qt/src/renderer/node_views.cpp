@@ -15,9 +15,10 @@
 Q_DECLARE_LOGGING_CATEGORY(core_app_window)
 
 QString MainWindow::ensure_node_view(int node, const QString &kind, const QString &device, const QString &graph,
-                                     bool open) {
-    const auto key =
-        QString::fromLatin1(QJsonDocument(QJsonArray{device, graph, node}).toJson(QJsonDocument::Compact).toHex());
+                                     bool open, int instance) {
+    QJsonArray identity{device, graph, node};
+    if(instance) identity.append(instance);
+    const auto key = QString::fromLatin1(QJsonDocument(identity).toJson(QJsonDocument::Compact).toHex());
     if (_node_views.contains(key))
         return key;
     NodeView view;
@@ -25,15 +26,18 @@ QString MainWindow::ensure_node_view(int node, const QString &kind, const QStrin
     view.device = device;
     view.graph = graph;
     view.kind = kind;
-    auto *dock = new QDockWidget(AudioNodeModel(kind).caption()+" #"+QString::number(node), this);
+    auto *dock = new WorkspaceDock(AudioNodeModel(kind).caption()+" #"+QString::number(node), this);
     connect(&ui::Language::instance(),&ui::Language::changed,dock,[dock,kind,node] {
         dock->setWindowTitle(AudioNodeModel(kind).caption()+" #"+QString::number(node));
     });
     dock->setObjectName("nodeView_" + key);
     view.dock = dock;
+    dock->setProperty("graphNode",node);
+    dock->setProperty("viewInstance",instance);
     setup_graph_dock_controls(dock);
     auto preferences = _application.state().file_configs.ui.graph_views.value(key).toObject();
     preferences["kind"] = kind;
+    preferences["instance"] = instance;
     if (kind == "SpectrogramView") {
         view.spectrogram = new SpectrogramGraph(dock);
         connect_surface_status(view.spectrogram, key);
@@ -101,19 +105,19 @@ QString MainWindow::ensure_node_view(int node, const QString &kind, const QStrin
     if (view.spectrogram) view.spectrogram->set_render_fps(_render_fps);
     _node_views[key] = view;
     set_graph_exposed(key, dock, false);
-    connect(dock, &QDockWidget::visibilityChanged, this, [this, key, dock](bool visible) {
+    connect(dock, &WorkspaceDock::visibilityChanged, this, [this, key, dock](bool visible) {
         set_graph_exposed(key, dock, visible);
         refresh_subscriptions();
     });
     addDockWidget(Qt::RightDockWidgetArea, dock);
-    dock->setVisible(preferences.value("open").toBool(open));
+    dock->toggleView(preferences.value("open").toBool(open));
     preferences["device"] = device;
     preferences["graph"] = graph;
     preferences["node"] = node;
     preferences["kind"] = kind;
     preferences["open"] = !dock->isHidden();
     _application.state().file_configs.ui.graph_views[key] = preferences;
-    connect(dock, &QDockWidget::visibilityChanged, this, [this, key](bool visible) {
+    connect(dock, &WorkspaceDock::visibilityChanged, this, [this, key](bool visible) {
         if (_restoring_layout)
             return;
         auto &view = _node_views[key];
@@ -131,7 +135,11 @@ void MainWindow::restore_node_views() {
     for (auto it = preferences.begin(); it != preferences.end(); ++it) {
         const auto p = it.value().toObject();
         if (!p.contains("legacy_panel") && p.contains("node") && p.contains("kind"))
-            ensure_node_view(p["node"].toInt(), p["kind"].toString(), p["device"].toString(), p["graph"].toString());
+        {
+            const int instance=p.value("instance").toInt();
+            _next_view_instance=std::max(_next_view_instance,instance+1);
+            ensure_node_view(p["node"].toInt(), p["kind"].toString(), p["device"].toString(), p["graph"].toString(),false,instance);
+        }
     }
 }
 void MainWindow::sync_node_views(const QJsonObject &graph) {
@@ -158,6 +166,7 @@ void MainWindow::sync_node_views(const QJsonObject &graph) {
             !used.contains(old) && !old.isEmpty() && legacy_ids.value(kind, -1) == id) {
             used.insert(old);
             _active_node_views[id] = old;
+            _panels[old]->setProperty("graphNode",id);
             const auto identity =
                 QString::fromLatin1(QJsonDocument(QJsonArray{_application.device_id(), _application.graph_id(), id})
                                         .toJson(QJsonDocument::Compact)
@@ -194,6 +203,9 @@ void MainWindow::sync_node_views(const QJsonObject &graph) {
         }
     }
     // Resolve declared dimensions for an empty view before its first frame.
+    for(const auto &view:_node_views)
+        if(view.device==_application.device_id() && view.graph==_application.graph_id() && !_active_node_views.contains(view.node))
+            view.dock->hide();
     // Runtime metadata subsequently becomes authoritative; clearing retains it.
     QMap<int, QJsonObject> parameters;
     QMultiMap<int, int> parents;
@@ -251,11 +263,17 @@ void MainWindow::clear_node_views() {
     }
 }
 void MainWindow::consume_node_views(const QMap<int, pipeline::TypedFrame> &views) {
-    for (auto it = _active_node_views.begin(); it != _active_node_views.end(); ++it) {
-        const auto key = it.value();
+    QMap<QString,int> presentations;
+    for(auto it=_active_node_views.cbegin();it!=_active_node_views.cend();++it) presentations[it.value()]=it.key();
+    for(auto it=_node_views.cbegin();it!=_node_views.cend();++it)
+        if(it->device==_application.device_id() && it->graph==_application.graph_id() && _active_node_views.contains(it->node))
+            presentations[it.key()]=it->node;
+    for (auto it = presentations.begin(); it != presentations.end(); ++it) {
+        const auto key = it.key();
+        const int node=it.value();
         AbstractChartView *chart = nullptr;
         SpectrogramGraph *spectrogram = nullptr;
-        QDockWidget *dock = nullptr;
+        WorkspaceDock *dock = nullptr;
         if (_node_views.contains(key)) {
             const auto &view = _node_views[key];
             chart = view.chart;
@@ -280,18 +298,18 @@ void MainWindow::consume_node_views(const QMap<int, pipeline::TypedFrame> &views
         }
         if (!dock || !_render_visible.value(key))
             continue;
-        if (!views.contains(it.key()) || !views[it.key()].available) {
+        if (!views.contains(node) || !views[node].available) {
             if (chart && chart->value_count())
                 chart->update(std::vector<float>(chart->value_count(), 0.0f));
             // A missing clock/contract cannot fabricate history; hold it until
             // the engine delivers correctly typed zero frames or explicit Stop.
             continue;
         }
-        const auto &frame = views[it.key()];
+        const auto &frame = views[node];
         if (spectrogram) {
             if (auto *settings = findChild<SettingsWidget *>()) {
                 const auto identity = QString::fromLatin1(
-                    QJsonDocument(QJsonArray{_application.device_id(), _application.graph_id(), it.key()})
+                    QJsonDocument(QJsonArray{_application.device_id(), _application.graph_id(), node})
                         .toJson(QJsonDocument::Compact).toHex());
                 settings->set_graph_dimensions(identity, frame.history_capacity, frame.bands);
             }

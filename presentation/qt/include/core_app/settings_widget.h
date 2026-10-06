@@ -31,6 +31,7 @@ class SettingsWidget : public QWidget {
     void camera_controls_changed();
     void presentation_preferences_changed();
     void surface_settings_changed();
+    void workspace_position_changed();
     void reset_camera_requested();
     void on_rebuild_charts();
     void start_wled_server_requested();

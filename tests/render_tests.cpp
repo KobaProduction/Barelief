@@ -108,7 +108,7 @@ int main() {
     const auto camera_state = spectrogram->camera_state();
     QPointer<QOpenGLWidget> original_native = native;
     for (int round = 0; round < 3; ++round) {
-        for (auto *dock : window->findChildren<QDockWidget *>()) {
+        for (auto *dock : window->workspaceDocks()) {
             auto *view = dock->widget();
             dock->show(); dock->raise(); dock->setFloating(true); QTest::qWait(60);
             dock->close(); dock->toggleViewAction()->trigger(); QTest::qWait(30);

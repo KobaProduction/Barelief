@@ -13,6 +13,7 @@ set(QT_PRESENTATION_HEADERS
 set(QT_PRESENTATION_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/editor/audio_node_model.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/editor/editor_widget.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/wheel_input.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/presenter/gui_presenter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/graph_panel.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/settings/camera_controls_settings.cpp"

@@ -12,9 +12,17 @@
 #include <QTranslator>
 #include <QPalette>
 #include <QSignalBlocker>
+#include <QToolButton>
+#include <QMenu>
 
 // Presentation-only localization. Stable model/configuration keys are never translated.
 namespace ui {
+inline QString workspace_style() {
+    return QStringLiteral(
+        "ads--CDockWidgetTab { border-radius: 4px; margin: 2px; padding: 2px 6px; }"
+        "ads--CTitleBarButton#graphPlacement { background: palette(button); color: palette(button-text); border: 1px solid palette(mid); border-radius: 3px; padding: 1px 18px 1px 6px; }"
+        "ads--CTitleBarButton#graphPlacement::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 5px; width: 7px; height: 7px; }");
+}
 class Theme final : public QObject {
     Q_OBJECT
   public:
@@ -92,6 +100,21 @@ inline void bind(QObject *object, const char *property, const QString &source) {
     auto update = [object, key, utf8] { object->setProperty(key.constData(), text(utf8.constData())); };
     update();
     QObject::connect(&language, &Language::changed, object, update);
+}
+inline void compact_control(QAbstractButton *button) {
+    button->setProperty("compactControl",true);
+    button->setFixedHeight(24);
+}
+inline QToolButton *tool_button(QWidget *parent,const char *label=nullptr) {
+    auto *button=new QToolButton(parent);
+    compact_control(button);
+    if(label) bind(button,"text",label);
+    return button;
+}
+inline void button_menu(QToolButton *button,QMenu *menu) {
+    button->setProperty("menuControl",true);
+    button->setPopupMode(QToolButton::InstantPopup);
+    button->setMenu(menu);
 }
 template <class Widget> Widget *make(const char *source, QWidget *parent) {
     auto *widget = new Widget(QString(), parent);

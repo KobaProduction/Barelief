@@ -7,12 +7,15 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonArray>
-#include <QDockWidget>
+#include <DockAreaWidget.h>
+#include <QToolBar>
+#include <FloatingDockContainer.h>
 #include <QTest>
 #include <QProcess>
 #include <QOpenGLWidget>
 #include <QToolButton>
 #include <QMenu>
+#include <QMenuBar>
 #include <QAction>
 #include <QStatusBar>
 #include <QGraphicsView>
@@ -20,6 +23,11 @@
 #include "core_app/settings_widget.h"
 #include "visualization/ui_text.h"
 #include <stdexcept>
+static QRect rectInWindow(QWidget *widget) {
+    if(auto *dock=qobject_cast<WorkspaceDock *>(widget); dock && dock->dockAreaWidget()) widget=dock->dockAreaWidget();
+    return QRect(widget->mapTo(widget->window(),QPoint()),widget->size());
+}
+
 static void require(bool value, const char *message) {
     if (!value)
         throw std::runtime_error(message);
@@ -64,12 +72,12 @@ int main(int argc, char **argv) {
             QString::fromLatin1(QJsonDocument(QJsonArray{app.presenter().local_device_id(), "main", 55})
                                     .toJson(QJsonDocument::Compact)
                                     .toHex());
-        auto *extra = window->findChild<QDockWidget *>("nodeView_" + extra_key);
+        auto *extra = window->workspaceDock("nodeView_" + extra_key);
         require(extra, "second FFT dock not created");
-        require(window->findChildren<QDockWidget *>().size() >= 9, "unexpected duplicate or missing views");
-        auto *first = window->findChild<QDockWidget *>("fftDock");
+        require(window->workspaceDocks().size() >= 9, "unexpected duplicate or missing views");
+        auto *first = window->workspaceDock("fftDock");
         if(argc==2 && QString::fromLocal8Bit(argv[1])=="--navigation-only") {
-            auto *surface=window->findChild<QDockWidget *>("spectrogramDock");
+            auto *surface=window->workspaceDock("spectrogramDock");
             auto *editor=window->findChild<SchemeEditorWidget *>();
             require(surface && editor && !first->isHidden() && !extra->isHidden(),"Active graph tabs absent");
             require(window->tabifiedDockWidgets(surface).contains(first) &&
@@ -84,7 +92,7 @@ int main(int argc, char **argv) {
             require(!first->isHidden() && first->widget()->isVisible(),"Graph block did not reopen/focus its hidden view");
             require(!first->findChild<QToolButton *>("graphSelector") &&
                     !first->findChild<QToolButton *>("toggleFloatingGraph"),"Duplicate graph controls retained");
-            auto *placement = extra->findChild<QToolButton *>("graphPlacement");
+            auto *placement = extra->findChild<QAction *>("graphPlacement");
             auto *renderer = dynamic_cast<FreqChartView *>(extra->findChild<QChartView *>());
             require(placement && renderer && placement->menu()->actions().size()==4,"Explicit placement actions absent");
             placement->menu()->actions()[0]->trigger(); app.processEvents();
@@ -117,28 +125,30 @@ int main(int argc, char **argv) {
             require(extra->isFloating(),"Context graph window request failed");
             placement->menu()->actions()[1]->trigger();app.processEvents();
             require(!window->findChild<QMenu *>("pipelinePresetsMenu")->title().isEmpty(),"Display presets submenu has no title");
-            for(auto *dock:window->findChildren<QDockWidget *>()) if(dock->objectName()!="dataFlowDock") dock->hide();
+            for(auto *dock:window->workspaceDocks()) if(dock->objectName()!="dataFlowDock") dock->hide();
             app.processEvents();
             emit editor->graph_view_requested(5);app.processEvents();
             require(first->isHidden(),"Ordinary graph click created an unreserved area");
-            require(window->property("singleDock").toBool(),"Single Data Flow retained splitter chrome");
+            auto *flow=window->workspaceDock("dataFlowDock");
+            require(flow && rectInWindow(flow).bottom()<(window->statusBar()->isVisible() ? window->statusBar()->geometry().top() : window->height()),
+                    "Single Data Flow overlaps footer");
             emit editor->graph_open_requested(5,1);app.processEvents();
             require(!first->isHidden(),"Explicit context command did not reserve a graph area");
-            const auto region=first->geometry();
+            const auto region=rectInWindow(first);
             emit editor->graph_view_requested(55);app.processEvents();
-            require(first->isHidden() && !extra->isHidden() && (extra->geometry().center()-region.center()).manhattanLength()<15,
+            require(first->isHidden() && !extra->isHidden() && (rectInWindow(extra).center()-region.center()).manhattanLength()<15,
                     "Switching a graph did not replace the reserved area");
             emit editor->graph_open_requested(5,2);app.processEvents();
-            const auto untouched=first->geometry(), replaced=extra->geometry();
+            const auto untouched=rectInWindow(first), replaced=rectInWindow(extra);
             QFocusEvent focusIn(QEvent::FocusIn);QApplication::sendEvent(extra->widget(),&focusIn);
             emit editor->graph_view_requested(6);app.processEvents();
-            auto *mel=window->findChild<QDockWidget *>("melDock");
+            auto *mel=window->workspaceDock("melDock");
             require(!first->isHidden() && extra->isHidden() && !mel->isHidden() &&
-                    (first->geometry().center()-untouched.center()).manhattanLength()<15 &&
-                    (mel->geometry().center()-replaced.center()).manhattanLength()<15,
+                    (rectInWindow(first).center()-untouched.center()).manhattanLength()<15 &&
+                    (rectInWindow(mel).center()-replaced.center()).manhattanLength()<15,
                     "Graph switch ignored the last interacted viewing area");
-            require(window->findChild<QToolButton *>("pipelinePresets")->parentWidget()==window->statusBar(),
-                    "Presets not moved to the bottom bar");
+            require(window->menuBar()->isAncestorOf(window->findChild<QToolButton *>("pipelinePresets")),
+                    "Presets not moved to the upper bar");
             auto *fileMenu=window->findChild<QMenu *>("fileMenu");
             require(fileMenu && fileMenu->actions().contains(window->findChild<QAction *>("saveSettings")) &&
                     window->findChild<QAction *>("saveSettingsAs") && window->findChild<QAction *>("openSettingsFile"),
@@ -198,7 +208,7 @@ int main(int argc, char **argv) {
         require(a->value_count() == 3 && a->peak_value() == 3 && b->value_count() == 2 && b->peak_value() == 0,
                 "Unavailable marker did not zero only affected node geometry");
         if (app.platformName() != "offscreen" && app.platformName() != "minimal") {
-            auto *dock = window->findChild<QDockWidget *>("spectrogramDock");
+            auto *dock = window->workspaceDock("spectrogramDock");
             require(dock, "spectrogram dock");
             dock->show();
             dock->raise();
@@ -276,7 +286,7 @@ int main(int argc, char **argv) {
             auto dock_for = [&](int node) {
                 auto key = QString::fromLatin1(
                     QJsonDocument(QJsonArray{"remote-test", "main", node}).toJson(QJsonDocument::Compact).toHex());
-                return window->findChild<QDockWidget *>("nodeView_" + key);
+                return window->workspaceDock("nodeView_" + key);
             };
             auto *fft_remote = dock_for(5), *mel_remote = dock_for(101);
             require(fft_remote && mel_remote, "remote per-node views absent");

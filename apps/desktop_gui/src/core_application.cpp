@@ -58,8 +58,13 @@ bool CoreApplication::notify(QObject *receiver, QEvent *event) {
 }
 CoreApplication::CoreApplication(int &argc, char *argv[]) : CoreApplication(argc, argv, {}) {}
 
+static int &prepare_gui_arguments(int &argc) {
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    return argc;
+}
+
 CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceFactory source_factory)
-    : QApplication(argc, argv) {
+    : QApplication(prepare_gui_arguments(argc), argv) {
     setApplicationName("Data Processing System Core");
     setApplicationVersion("1.0.0");
     setOrganizationName("Data Processing System");

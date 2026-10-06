@@ -10,6 +10,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QSet>
+#include <functional>
 class GuiPresenter;
 class QVBoxLayout;
 class QPushButton;
@@ -17,6 +18,7 @@ class QScrollArea;
 class QAction;
 class QToolButton;
 class QSplitter;
+class QMenu;
 
 class SchemeEditorWidget final : public QWidget {
     Q_OBJECT
@@ -36,6 +38,9 @@ class SchemeEditorWidget final : public QWidget {
     QAction *arrange_action() const { return _arrange_action; }
     QAction *center_action() const { return _center_action; }
     QToolButton *presets_button() const { return _presets_button; }
+    QWidget *toolbar() const { return _toolbar; }
+    QUndoStack &history() const { return _scene->undoStack(); }
+    void set_graph_menu_provider(std::function<void(int,QMenu *)> provider);
 
 signals:
     void status_message(const QString &text);
@@ -57,6 +62,7 @@ protected:
     QPushButton *_apply_button = nullptr;
     QAction *_arrange_action = nullptr, *_center_action = nullptr;
     QToolButton *_presets_button = nullptr;
+    QWidget *_toolbar = nullptr;
     bool _auto_apply = false;
     QTimer _apply_timer, _save_timer;
     QJsonObject _last_processing_document;

@@ -12,23 +12,35 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QMenu>
+#include <QMenuBar>
 #include <QMoveEvent>
+#include <QMouseEvent>
+#include <QKeyEvent>
+#include <QWindow>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSignalBlocker>
 #include <QStyle>
+#include <QStatusBar>
 #include <QTabBar>
 #include <QToolButton>
+#include <QToolBar>
 #include <algorithm>
+#include <FloatingDockContainer.h>
+#include <QSet>
 
 Q_DECLARE_LOGGING_CATEGORY(core_app_window)
 
-QDockWidget *MainWindow::add_panel(const QString &id, const QString &title, QWidget *view,
+SchemeEditorWidget *MainWindow::data_flow_editor() const {
+    auto *dock=_panels.value("dataFlow");
+    return dock ? qobject_cast<SchemeEditorWidget *>(dock->widget()) : nullptr;
+}
+WorkspaceDock *MainWindow::add_panel(const QString &id, const QString &title, QWidget *view,
                                    bool UIApplicationConfig::*flag) {
-    auto *dock = new QDockWidget(title, this);
+    auto *dock = new WorkspaceDock(title, this);
     dock->setObjectName(id + "Dock");
-    dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable |
-                      QDockWidget::DockWidgetFloatable);
+    dock->setFeatures(WorkspaceDock::DockWidgetClosable | WorkspaceDock::DockWidgetMovable |
+                      WorkspaceDock::DockWidgetFloatable);
     ui::bind(dock, "windowTitle", title);
     ui::bind(dock->toggleViewAction(), "text", title);
     if (auto *chart = dynamic_cast<AbstractChartView *>(view)) {
@@ -48,7 +60,7 @@ QDockWidget *MainWindow::add_panel(const QString &id, const QString &title, QWid
     _panels[id] = dock;
     addDockWidget(Qt::LeftDockWidgetArea, dock);
     if (id != "dataFlow") setup_graph_dock_controls(dock);
-    connect(dock->toggleViewAction(), &QAction::toggled, this, [this, flag, id](bool open) {
+    connect(dock, &WorkspaceDock::viewToggled, this, [this, flag, id](bool open) {
         if (_restoring_layout)
             return;
         _application.state().file_configs.ui.*flag = open;
@@ -73,17 +85,17 @@ QDockWidget *MainWindow::add_panel(const QString &id, const QString &title, QWid
         _workspace_save_timer.start();
         refresh_subscriptions();
     });
-    connect(dock, &QDockWidget::visibilityChanged, this, [this, id](bool visible) {
+    connect(dock, &WorkspaceDock::visibilityChanged, this, [this, id](bool visible) {
         set_graph_exposed(id, _panels[id], visible);
         refresh_subscriptions();
         if (!_restoring_layout)
             _workspace_save_timer.start();
     });
-    connect(dock, &QDockWidget::topLevelChanged, this, [this] {
+    connect(dock, &WorkspaceDock::topLevelChanged, this, [this] {
         if (!_restoring_layout)
             _workspace_save_timer.start();
     });
-    connect(dock, &QDockWidget::dockLocationChanged, this, [this] {
+    connect(dock, &WorkspaceDock::dockLocationChanged, this, [this] {
         if (!_restoring_layout)
             _workspace_save_timer.start();
     });
@@ -93,7 +105,7 @@ void MainWindow::reset_workspace() {
     const bool restoring = _restoring_layout;
     _restoring_layout = true;
     if (!_default_workspace_state.isEmpty()) {
-        // Let Qt restore its tab groups atomically instead of removing and reusing
+        // Let ADS restore its tab groups atomically instead of removing and reusing
         // docks while old floating/tab layouts still refer to them.
         restoreState(_default_workspace_state, 1);
     } else {
@@ -140,23 +152,16 @@ void MainWindow::save_workspace() {
     ui.show_window_function = visibility["windowFunction"].toBool();
     auto workspace = ui.workspace;
     workspace["version"] = 1;
-    workspace["layout_version"] = 4;
+    workspace["layout_version"] = 5;
+    workspace["backend"] = "qt-ads";
     workspace["geometry"] = QString::fromLatin1(saveGeometry().toBase64());
-    workspace["state"] = QString::fromLatin1(saveState(1).toBase64());
+    workspace["ads_state"] = QString::fromLatin1(saveState(1).toBase64());
     workspace["visibility"] = visibility;
     ui.workspace = workspace;
 }
 void MainWindow::refresh_subscriptions() {
     if (_restoring_layout)
         return;
-    int docked=0;
-    for(auto *dock:findChildren<QDockWidget *>(QString{},Qt::FindDirectChildrenOnly))
-        if(!dock->isHidden() && !dock->isFloating()) ++docked;
-    const bool single=docked<=1;
-    if(property("singleDock").toBool()!=single) {
-        setProperty("singleDock",single);
-        style()->unpolish(this);style()->polish(this);
-    }
     quint32 mask = 0;
     const auto visible = [this](const QString &id) {
         return (id == "dataFlow" || _active_node_views.values().contains(id)) && _render_visible.value(id) &&
@@ -177,7 +182,7 @@ void MainWindow::refresh_subscriptions() {
     for (auto it = _node_views.cbegin(); it != _node_views.cend(); ++it) {
         const auto &view = it.value();
         if (view.device == _application.device_id() && view.graph == _application.graph_id() &&
-            _active_node_views.value(view.node) == it.key() && _render_visible.value(it.key())) {
+            _active_node_views.contains(view.node) && _render_visible.value(it.key())) {
             mask |= pipeline::EngineCommand::Views;
             if (view.spectrogram)
                 mask |= pipeline::EngineCommand::History;
@@ -189,8 +194,10 @@ void MainWindow::recover_offscreen_panels() {
     const auto screens = QGuiApplication::screens();
     if (screens.isEmpty())
         return;
-    for (auto *dock : _panels)
-        if (dock->isFloating()) {
+    QSet<QWidget *> visited;
+    for (auto *panel : workspaceDocks())
+        if (auto *dock = panel->floatingDockContainer(); dock && !visited.contains(dock)) {
+            visited.insert(dock);
             QScreen *target = nullptr;
             const auto title = QRect(dock->frameGeometry().topLeft(), QSize(dock->width(), 30));
             for (auto *screen : screens)
@@ -215,13 +222,13 @@ void MainWindow::recover_offscreen_panels() {
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     if (!_restoring_layout && (event->type()==QEvent::MouseButtonPress || event->type()==QEvent::FocusIn)) {
         for(auto *widget=qobject_cast<QWidget *>(watched);widget;widget=widget->parentWidget()) {
-            if(auto *dock=qobject_cast<QDockWidget *>(widget)) {
-                if(is_graph_dock(dock) && !dock->isHidden()) _last_graph_slot=dock;
+            if(auto *dock=qobject_cast<WorkspaceDock *>(widget)) {
+                if(is_graph_dock(dock) && in_editor_window(dock) && !dock->isHidden()) _last_graph_slot=dock;
                 break;
             }
         }
     }
-    if (!_restoring_layout && qobject_cast<QDockWidget *>(watched) &&
+    if (!_restoring_layout && qobject_cast<WorkspaceDock *>(watched) &&
         (event->type() == QEvent::Move || event->type() == QEvent::Resize))
         _workspace_save_timer.start();
     return QMainWindow::eventFilter(watched, event);
@@ -229,7 +236,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 void MainWindow::closeEvent(QCloseEvent *event) {
     _workspace_save_timer.stop();
     _camera_save_timer.stop();
-    if (auto *editor = findChild<SchemeEditorWidget *>())
+    if (auto *editor = data_flow_editor())
         editor->flush_presentation();
     save_workspace();
     if (_application.state().file_configs.ui.autosave_enabled)
@@ -249,7 +256,7 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     if (!_restoring_layout)
         _workspace_save_timer.start();
 }
-QDockWidget *MainWindow::graph_dock(int node) const {
+WorkspaceDock *MainWindow::graph_dock(int node) const {
     const auto key=_active_node_views.value(node);
     return _panels.contains(key) ? _panels.value(key) : _node_views.value(key).dock;
 }
@@ -257,18 +264,22 @@ void MainWindow::open_graph_node(int node) {
     auto *dock=graph_dock(node);
     if(!dock) return;
     auto *slot=_last_graph_slot.data();
-    if(!slot || slot->isHidden() || !is_graph_dock(slot)) {
+    if(!slot || slot->isHidden() || !is_graph_dock(slot) || !in_editor_window(slot)) {
         slot=nullptr;
         for(auto it=_active_node_views.cbegin();it!=_active_node_views.cend();++it)
-            if(_render_visible.value(it.value())) { slot=graph_dock(it.key()); break; }
+            if(_render_visible.value(it.value()) && in_editor_window(graph_dock(it.key()))) { slot=graph_dock(it.key()); break; }
+        if(!slot) for(auto *candidate:graph_docks())
+            if(in_editor_window(candidate) && candidate->property("renderExposed").toBool()) { slot=candidate; break; }
     }
     if(!slot) return; // Only an explicit context command creates a viewing area.
+    for(auto *candidate:graph_docks())
+        if(candidate->property("graphNode").toInt()==node && in_editor_window(candidate) && !candidate->isHidden()) {
+            candidate->raise(); _last_graph_slot=candidate; return;
+        }
+    if(dock->isFloating()) dock=new_graph_view(node);
+    if(!dock) return;
     if(slot!=dock) {
-        if(slot->isFloating()) {
-            const auto geometry=slot->geometry();
-            dock->setFloating(true);dock->setGeometry(geometry);
-            slot->hide();
-        } else if(!tabifiedDockWidgets(slot).contains(dock)) {
+        if(!tabifiedDockWidgets(slot).contains(dock)) {
             dock->setFloating(false);
             tabifyDockWidget(slot,dock);
             slot->hide(); // Replace, rather than add, a visible tab in this area.
@@ -278,24 +289,79 @@ void MainWindow::open_graph_node(int node) {
         surface->initialize({240,180},screen()->availableGeometry().size());
     dock->show();dock->raise();
     _last_graph_slot=dock;
-    if(dock->isFloating()) set_graph_exposed(_active_node_views.value(node),dock,dock->isVisible());
     // Activation from the editor must not steal keyboard focus during dragging
     // or prevent subsequent copy/paste shortcuts from reaching the editor.
     _workspace_save_timer.start();refresh_subscriptions();
 }
-bool MainWindow::is_graph_dock(QDockWidget *dock) const {
+bool MainWindow::is_graph_dock(WorkspaceDock *dock) const {
     if(!dock) return false;
     for(auto it=_active_node_views.cbegin();it!=_active_node_views.cend();++it)
         if(graph_dock(it.key())==dock) return true;
+    for(const auto &view:_node_views) if(view.dock==dock) return true;
     return false;
+}
+QList<WorkspaceDock *> MainWindow::graph_docks() const {
+    QList<WorkspaceDock *> result;
+    for(int node:_active_node_views.keys()) if(auto *dock=graph_dock(node)) result.append(dock);
+    for(const auto &view:_node_views)
+        if(view.device==_application.device_id() && view.graph==_application.graph_id() && _active_node_views.contains(view.node)
+           && !result.contains(view.dock)) result.append(view.dock);
+    return result;
+}
+bool MainWindow::in_editor_window(WorkspaceDock *dock) const {
+    auto *flow=_panels.value("dataFlow");
+    return dock && flow && dock->sharesHost(flow);
+}
+WorkspaceDock *MainWindow::new_graph_view(int node) {
+    for(const auto &value:_application.state().file_configs.scene_graph.value("nodes").toArray()) {
+        const auto entry=value.toObject();
+        if(entry["id"].toInt()==node) {
+            const auto kind=entry["internal-data"].toObject()["model-name"].toString();
+            const auto key=ensure_node_view(node,kind,_application.device_id(),_application.graph_id(),false,_next_view_instance++);
+            return _node_views.value(key).dock;
+        }
+    }
+    return nullptr;
+}
+void MainWindow::populate_graph_menu(int node,QMenu *menu) {
+    auto *focus=menu->addMenu(ui::text("Focus representation")); focus->setObjectName("graphRepresentations");
+    int internal=0,external=0;
+    for(auto *dock:graph_docks()) {
+        if(dock->isHidden() || dock->property("graphNode").toInt()!=node) continue;
+        const bool outside=dock->isFloating();
+        auto *action=focus->addAction(ui::text(outside ? "External window %1" : "Internal area %1")
+                                     .arg(outside ? ++external : ++internal));
+        connect(action,&QAction::triggered,this,[this,dock] {
+            dock->show(); dock->raise(); dock->activateWindow(); dock->widget()->setFocus();
+            if(in_editor_window(dock)) _last_graph_slot=dock;
+        });
+    }
+    focus->setEnabled(!focus->isEmpty());
+    const char *labels[]{"Open in separate window","Open in new tab","Open in this window"};
+    for(int placement=0;placement<3;++placement) {
+        auto *action=menu->addAction(ui::text(labels[placement]));
+        action->setObjectName(QStringLiteral("openGraphPlacement%1").arg(placement));
+        if(placement<2) { action->setShortcut(QKeySequence(placement ? "Alt+G" : "Alt+Shift+G")); action->setShortcutVisibleInContextMenu(true); }
+        connect(action,&QAction::triggered,this,[this,node,placement] { add_graph_node(node,placement); });
+    }
+    auto *beside=menu->addMenu(ui::text("Open beside")); beside->setObjectName("graphPlacementTargets");
+    int index=0;
+    for(auto *target:graph_docks()) if(in_editor_window(target) && !target->isHidden()) {
+        auto *action=beside->addAction(ui::text("Internal area %1").arg(++index)+": "+target->windowTitle());
+        connect(action,&QAction::triggered,this,[this,node,target] { _last_graph_slot=target; add_graph_node(node,2); });
+    }
+    beside->setEnabled(!beside->isEmpty());
 }
 void MainWindow::add_graph_node(int node,int placement) {
     if(auto *dock=graph_dock(node)) {
+        if(dock->isFloating() && !dock->isHidden()) dock=new_graph_view(node);
+        else if(placement==2 && dock->property("renderExposed").toBool()) dock=new_graph_view(node);
+        if(!dock) return;
         place_graph(dock,placement);
-        _last_graph_slot=dock;
+        if(in_editor_window(dock)) _last_graph_slot=dock;
     }
 }
-void MainWindow::set_graph_exposed(const QString &key, QDockWidget *dock, bool exposed) {
+void MainWindow::set_graph_exposed(const QString &key, WorkspaceDock *dock, bool exposed) {
     _render_visible[key] = exposed;
     dock->setProperty("renderExposed", exposed);
     if (auto *panel = qobject_cast<GraphPanel *>(dock->widget())) panel->set_render_visible(exposed);
@@ -303,36 +369,37 @@ void MainWindow::set_graph_exposed(const QString &key, QDockWidget *dock, bool e
     for (auto *view : dock->findChildren<QChartView *>())
         if (auto *chart = dynamic_cast<AbstractChartView *>(view)) chart->set_render_visible(exposed);
 }
-void MainWindow::place_graph(QDockWidget *dock, int placement) {
+void MainWindow::rebuild_graph_areas(WorkspaceDock *dock,WorkspaceDock *anchor,int placement) {
+    auto *flow=_panels.value("dataFlow");
+    const auto position=_application.state().file_configs.ui.workspace.value("data_flow_position").toString("bottom");
+    if(!dock) {
+        moveDockToHostEdge(flow,position=="top" ? Qt::TopDockWidgetArea : position=="left" ? Qt::LeftDockWidgetArea :
+            position=="right" ? Qt::RightDockWidgetArea : Qt::BottomDockWidgetArea);
+        return;
+    }
+    if(anchor && placement==1) tabifyDockWidget(anchor,dock);
+    else if(anchor) placeDock(dock,anchor,placement==3 ? Qt::BottomDockWidgetArea : Qt::RightDockWidgetArea);
+    else placeDock(dock,flow,position=="top" ? Qt::BottomDockWidgetArea : position=="left" ? Qt::RightDockWidgetArea :
+        position=="right" ? Qt::LeftDockWidgetArea : Qt::TopDockWidgetArea);
+}
+void MainWindow::place_graph(WorkspaceDock *dock, int placement) {
+    const bool restoring = _restoring_layout;
+    _restoring_layout = true;
     // Reuse the dock and renderer: docking never recreates the camera or graph.
     if (placement == 0) {
         dock->setFloating(true);
     } else {
-        QDockWidget *anchor = nullptr;
-        for (const auto &key : _active_node_views.keys()) {
-            auto *candidate = graph_dock(key);
-            if (candidate && candidate != dock && !candidate->isFloating() && !candidate->isHidden()) {
-                if (!anchor || _render_visible.value(_active_node_views.value(key))) anchor = candidate;
-            }
-        }
+        auto *anchor=_last_graph_slot.data();
+        if(anchor==dock || !in_editor_window(anchor) || anchor->isHidden()) anchor=nullptr;
+        if(!anchor) for(auto *candidate:graph_docks())
+            if(candidate!=dock && in_editor_window(candidate) && !candidate->isHidden()) { anchor=candidate; break; }
         dock->setFloating(false);
-        if (anchor) {
-            if (placement == 1) tabifyDockWidget(anchor, dock);
-            else {
-                // Qt adds a tab instead of splitting when `first` is tabified.
-                // Split the anchor on its own, then restore its existing peers.
-                const auto peers = tabifiedDockWidgets(anchor);
-                const auto area = dockWidgetArea(anchor);
-                removeDockWidget(dock);
-                removeDockWidget(anchor);
-                addDockWidget(area, anchor);
-                splitDockWidget(anchor, dock, placement == 2 ? Qt::Horizontal : Qt::Vertical);
-                for (auto *peer : peers) if (peer != dock) tabifyDockWidget(anchor, peer);
-                anchor->show(); anchor->raise();
-            }
-        } else addDockWidget(Qt::LeftDockWidgetArea, dock);
+        rebuild_graph_areas(dock,anchor,placement);
     }
-    dock->show(); dock->raise();
+    dock->show();
+    layout()->activate();
+    dock->raise();
+    if(in_editor_window(dock)) _last_graph_slot=dock;
     // Floating an inactive tab can retain its previous tab visibility signal.
     // A shown top-level dock is exposed independently of that former group.
     if (dock->isFloating()) {
@@ -341,46 +408,36 @@ void MainWindow::place_graph(QDockWidget *dock, int placement) {
             if (graph_dock(it.key()) == dock) { key = it.value(); break; }
         if (!key.isEmpty()) set_graph_exposed(key, dock, dock->isVisible());
     }
+    _restoring_layout = restoring;
     _workspace_save_timer.start(); refresh_subscriptions();
 }
-void MainWindow::setup_graph_dock_controls(QDockWidget *dock) {
-    auto *strip=new QWidget(dock);strip->setProperty("dockControls",true);
-    strip->setObjectName(dock->objectName()+"Controls");
-    auto *row=new QHBoxLayout(strip);row->setContentsMargins(6,3,6,3);
-    auto *floatingTitle=new QLabel(dock->windowTitle(),strip);floatingTitle->hide();row->addWidget(floatingTitle);
-    connect(dock,&QDockWidget::windowTitleChanged,floatingTitle,&QLabel::setText);
-    row->addStretch();
-    auto *placement=new QToolButton(strip);placement->setObjectName("graphPlacement");
-    placement->setPopupMode(QToolButton::InstantPopup);ui::bind(placement,"text","Placement");
-    auto *placementMenu=new QMenu(placement);placement->setMenu(placementMenu);row->addWidget(placement);
+void MainWindow::setup_graph_dock_controls(WorkspaceDock *dock) {
+    // ADS owns the single caption, tab dragging, pin button and floating frame.
+    // Product-specific commands are actions, not a second docking implementation.
+    auto *placement=new QAction(ui::text("Placement"),dock);
+    placement->setObjectName("graphPlacement");
+    ui::bind(placement,"text","Placement");
+    auto *menu=new QMenu(dock);
+    placement->setMenu(menu);
     const char *labels[]{"Separate window", "Return to tabs", "Place beside", "Place below"};
     for(int index=0;index<4;++index) {
-        auto *action=placementMenu->addAction(ui::text(labels[index]));
-        ui::bind(action,"text",labels[index]);action->setData(index);
+        auto *action=menu->addAction(ui::text(labels[index]));
+        ui::bind(action,"text",labels[index]); action->setData(index);
         connect(action,&QAction::triggered,this,[this,dock,index] {place_graph(dock,index);});
     }
-    auto *close=new QToolButton(strip);close->setText(QStringLiteral("\u00d7"));ui::bind(close,"toolTip","Close");row->addWidget(close);
-    connect(close,&QToolButton::clicked,dock,&QDockWidget::hide);
-    dock->setTitleBarWidget(strip);
-    connect(dock,&QDockWidget::topLevelChanged,dock,[floatingTitle](bool floating) {
-        floatingTitle->setVisible(floating);
-    });
-    connect(dock, &QDockWidget::topLevelChanged, this, [this, dock](bool floating) {
-        if (!floating) return;
-        // Detaching an inactive tab can leave visibilityChanged at its old
-        // value. Once Qt has completed reparenting, the separate window is
-        // exposed independently of the previously selected dock tab.
-        QTimer::singleShot(0, dock, [this, dock] {
-            if (!dock->isFloating()) return;
-            QString key = _panels.key(dock);
-            if (key.isEmpty()) {
-                for (auto it = _node_views.cbegin(); it != _node_views.cend(); ++it)
-                    if (it->dock == dock) { key = it.key(); break; }
-            }
-            if (!key.isEmpty()) {
-                set_graph_exposed(key, dock, dock->isVisible());
-                refresh_subscriptions();
-            }
+    dock->setTitleBarActions({placement});
+    if (dock==_panels.value("dataFlow")) {
+        if(auto *editor=qobject_cast<SchemeEditorWidget *>(dock->widget())) {
+            dock->setHeaderControls(editor->toolbar());
+        }
+    }
+    connect(dock,&WorkspaceDock::topLevelChanged,this,[this,dock](bool) {
+        QTimer::singleShot(0,dock,[this,dock] {
+            QString key=_panels.key(dock);
+            if(key.isEmpty()) for(auto it=_node_views.cbegin();it!=_node_views.cend();++it)
+                if(it->dock==dock) {key=it.key();break;}
+            if(!key.isEmpty()) set_graph_exposed(key,dock,dock->isVisible());
+            refresh_subscriptions();
         });
     });
 }
@@ -389,7 +446,7 @@ void MainWindow::refresh_graph_navigation(const QMap<int,QString> &previous) {
     const bool migrate=_application.state().file_configs.ui.workspace.value("graph_navigation_version").toInt()!=1;
     _graph_navigation_initialized=true;
     QList<QAction *> actions;
-    QDockWidget *anchor=nullptr,*selected=nullptr;
+    WorkspaceDock *anchor=nullptr,*selected=nullptr;
     for(auto it=_active_node_views.begin();it!=_active_node_views.end();++it) {
         auto *dock=graph_dock(it.key());if(!dock) continue;
         actions.append(dock->toggleViewAction());
@@ -412,10 +469,6 @@ void MainWindow::refresh_graph_navigation(const QMap<int,QString> &previous) {
     if(migrate && anchor) selected=anchor;
     if(selected) selected->raise();
     _restoring_layout=restoring;
-    for(auto *bar:findChildren<QTabBar *>()) {
-        // Qt retains tab ordering, docking and active-page behavior.
-        if(bar->parentWidget()==this) {bar->setUsesScrollButtons(true);bar->setElideMode(Qt::ElideRight);}
-    }
     if(auto *settings=findChild<SettingsWidget *>()) settings->set_graph_actions(actions);
     if(migrate || (!first && previous!=_active_node_views)) {
         _application.state().file_configs.ui.workspace["graph_navigation_version"]=1;

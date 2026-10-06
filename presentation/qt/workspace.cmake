@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 set(CMAKE_AUTOMOC ON)
+include(${CMAKE_SOURCE_DIR}/cmake/qt_workspace.cmake)
 
 include(${CMAKE_SOURCE_DIR}/presentation/qt/sources.cmake)
 set(HEADERS ${QT_PRESENTATION_HEADERS})
@@ -16,6 +17,7 @@ set(BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(QtNodes)
 
 target_link_libraries(core_app_components PUBLIC
+        qt_workspace
         qt_engine_ports
         Qt6::Core
         aggregator-library

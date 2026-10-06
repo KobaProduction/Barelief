@@ -1287,4 +1287,103 @@ Escape — отмена. Поддерживаются все раскладки.
 %2</translation></message>
     <message><source>Could not start the application with settings: %1</source><translation>Не удалось запустить приложение с настройками: %1</translation></message>
     </context>
+    <context>
+        <name>Ui</name>
+        <message><source>Focus representation</source><translation>Сфокусировать представление</translation></message>
+        <message><source>External window %1</source><translation>Внешнее окно %1</translation></message>
+        <message><source>Internal area %1</source><translation>Внутренняя область %1</translation></message>
+        <message><source>Open in this window</source><translation>Открыть в этом окне</translation></message>
+        <message><source>Open beside</source><translation>Открыть рядом с</translation></message>
+        <message><source>Workspace</source><translation>Рабочая область</translation></message>
+        <message><source>Data Flow position</source><translation>Положение потока данных</translation></message>
+        <message><source>Bottom</source><translation>Снизу</translation></message>
+        <message><source>Top</source><translation>Сверху</translation></message>
+        <message><source>Left side</source><translation>Слева</translation></message>
+        <message><source>Right side</source><translation>Справа</translation></message>
+    </context>
+
+<context>
+<name>Ui</name>
+<message><source>Next tab</source><translation>Следующая вкладка</translation></message>
+<message><source>Previous tab</source><translation>Предыдущая вкладка</translation></message>
+<message><source>Detach active tab</source><translation>Отделить активную вкладку</translation></message>
+<message><source>Hide active panel</source><translation>Скрыть активную панель</translation></message>
+<message><source>Focus Data Flow</source><translation>Фокус на поток данных</translation></message>
+<message><source>Hide or restore tool panels</source><translation>Скрыть или вернуть панели инструментов</translation></message>
+<message><source>Switch workspace tab…</source><translation>Переключить вкладку…</translation></message>
+</context>
+
+<context>
+<name>ads::CDockWidgetTab</name>
+<message><source>Detach</source><translation>Отделить</translation></message>
+<message><source>Detach Group</source><translation>Отделить группу</translation></message>
+<message><source>Pin</source><translation>Закрепить у края</translation></message>
+<message><source>Pin To...</source><translation>Закрепить у края…</translation></message>
+<message><source>Pin Group</source><translation>Закрепить группу у края</translation></message>
+<message><source>Pin Group To...</source><translation>Закрепить группу у края…</translation></message>
+<message><source>Unpin (Dock)</source><translation>Вернуть в рабочую область</translation></message>
+<message><source>Top</source><translation>Сверху</translation></message>
+<message><source>Bottom</source><translation>Снизу</translation></message>
+<message><source>Left</source><translation>Слева</translation></message>
+<message><source>Right</source><translation>Справа</translation></message>
+<message><source>Close</source><translation>Закрыть</translation></message>
+<message><source>Close Group</source><translation>Закрыть группу</translation></message>
+<message><source>Close Others</source><translation>Закрыть другие вкладки</translation></message>
+<message><source>Close Other Groups</source><translation>Закрыть другие группы</translation></message>
+<message><source>Minimize</source><translation>Свернуть</translation></message>
+<message><source>Close Active Tab</source><translation>Закрыть активную вкладку</translation></message>
+<message><source>Pin Active Tab (Press Ctrl to Pin Group)</source><translation>Закрепить вкладку у края (Ctrl — всю группу)</translation></message>
+</context>
+
+<context>
+<name>ads::CDockAreaTitleBar</name>
+<message><source>Detach</source><translation>Отделить</translation></message>
+<message><source>Detach Group</source><translation>Отделить группу</translation></message>
+<message><source>Pin</source><translation>Закрепить у края</translation></message>
+<message><source>Pin To...</source><translation>Закрепить у края…</translation></message>
+<message><source>Pin Group</source><translation>Закрепить группу у края</translation></message>
+<message><source>Pin Group To...</source><translation>Закрепить группу у края…</translation></message>
+<message><source>Unpin (Dock)</source><translation>Вернуть в рабочую область</translation></message>
+<message><source>Top</source><translation>Сверху</translation></message>
+<message><source>Bottom</source><translation>Снизу</translation></message>
+<message><source>Left</source><translation>Слева</translation></message>
+<message><source>Right</source><translation>Справа</translation></message>
+<message><source>Close</source><translation>Закрыть</translation></message>
+<message><source>Close Group</source><translation>Закрыть группу</translation></message>
+<message><source>Close Others</source><translation>Закрыть другие вкладки</translation></message>
+<message><source>Close Other Groups</source><translation>Закрыть другие группы</translation></message>
+<message><source>Minimize</source><translation>Свернуть</translation></message>
+<message><source>Close Active Tab</source><translation>Закрыть активную вкладку</translation></message>
+<message><source>Pin Active Tab (Press Ctrl to Pin Group)</source><translation>Закрепить вкладку у края (Ctrl — всю группу)</translation></message>
+</context>
+
+<context>
+<name>ads::CAutoHideTab</name>
+<message><source>Detach</source><translation>Отделить</translation></message>
+<message><source>Detach Group</source><translation>Отделить группу</translation></message>
+<message><source>Pin</source><translation>Закрепить у края</translation></message>
+<message><source>Pin To...</source><translation>Закрепить у края…</translation></message>
+<message><source>Pin Group</source><translation>Закрепить группу у края</translation></message>
+<message><source>Pin Group To...</source><translation>Закрепить группу у края…</translation></message>
+<message><source>Unpin (Dock)</source><translation>Вернуть в рабочую область</translation></message>
+<message><source>Top</source><translation>Сверху</translation></message>
+<message><source>Bottom</source><translation>Снизу</translation></message>
+<message><source>Left</source><translation>Слева</translation></message>
+<message><source>Right</source><translation>Справа</translation></message>
+<message><source>Close</source><translation>Закрыть</translation></message>
+<message><source>Close Group</source><translation>Закрыть группу</translation></message>
+<message><source>Close Others</source><translation>Закрыть другие вкладки</translation></message>
+<message><source>Close Other Groups</source><translation>Закрыть другие группы</translation></message>
+<message><source>Minimize</source><translation>Свернуть</translation></message>
+<message><source>Close Active Tab</source><translation>Закрыть активную вкладку</translation></message>
+<message><source>Pin Active Tab (Press Ctrl to Pin Group)</source><translation>Закрепить вкладку у края (Ctrl — всю группу)</translation></message>
+</context>
+
+<context>
+<name>QObject</name>
+<message><source>List All Tabs</source><translation>Список вкладок</translation></message>
+<message><source>Detach Group</source><translation>Отделить группу</translation></message>
+<message><source>Close Tab</source><translation>Закрыть вкладку</translation></message>
+<message><source>Minimize</source><translation>Свернуть</translation></message>
+</context>
 </TS>

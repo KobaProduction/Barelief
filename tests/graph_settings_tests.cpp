@@ -104,7 +104,7 @@ int main() {
         check(graphViews, "Graph views settings section missing");
         QList<QAction *> restoredGraphActions;
         for (auto *box : graphViews->findChildren<QCheckBox *>())
-            for (auto *dock : window->findChildren<QDockWidget *>())
+            for (auto *dock : window->workspaceDocks())
                 if (dock->toggleViewAction()->text() == box->text()) {
                     restoredGraphActions.append(dock->toggleViewAction());
                     break;
@@ -383,8 +383,7 @@ int main() {
         check(!applyStatus->isHidden(), "Error status hidden");
         emit app.presenter().apply_status_changed("Running");
         auto *renderStatus = window->findChild<QLabel *>("renderStatus");
-        check(renderStatus && !renderStatus->text().contains(ui::text("Spectrogram")),
-              "Spectrogram name remains before FPS");
+        check(!renderStatus,"Aggregate FPS remains in main window");
         auto *pipelineToggle = window->findChild<QToolButton *>("pipelineToggle");
         check(pipelineToggle, "Pipeline toggle missing");
         check(pipelineToggle->text() == QString::fromUtf8("Поток данных"), "Data Flow rename missing");
