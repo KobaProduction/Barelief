@@ -2,6 +2,8 @@
 #include "core/performance.h"
 #include "core_app/scheme_editor/editor_widget.h"
 #include "core_app/wheel_input.h"
+#include "core_app/touchpad_input.h"
+#include <QNativeGestureEvent>
 
 #include <QtNodes/ConnectionStyle>
 #include <QtNodes/GraphicsViewStyle>
@@ -222,6 +224,7 @@ class ProfiledGraphicsView final : public GraphicsView {
   public:
     explicit ProfiledGraphicsView(QWidget *parent=nullptr) : GraphicsView(parent) {
         desktop_input::track_wheel_devices();
+        desktop_input::attach_touchpad(viewport(),[this](QPoint pos) { return !editing_widget_at(pos); });
         setMouseTracking(true); viewport()->setMouseTracking(true);
         for(auto *scroll:{horizontalScrollBar(),verticalScrollBar()})
             connect(scroll,&QScrollBar::valueChanged,this,[this] { if(!_restoring) remember_camera(); });
@@ -321,12 +324,22 @@ class ProfiledGraphicsView final : public GraphicsView {
         QGraphicsView::contextMenuEvent(event);
     }
     bool viewportEvent(QEvent *event) override {
+        if(event->type()==QEvent::NativeGesture) {
+            auto *gesture=static_cast<QNativeGestureEvent *>(event);
+            if(gesture->gestureType()==Qt::PanNativeGesture) {
+                pan_pixels(-gesture->delta()); event->accept(); return true;
+            }
+            if(gesture->gestureType()==Qt::ZoomNativeGesture) {
+                const double next=std::clamp(getScale()*(1+gesture->value()),0.2,3.0);
+                const auto anchor=mapToScene(gesture->position().toPoint());
+                const auto offset=(gesture->position()-QPointF(viewport()->rect().center()))/next;
+                camera(next,anchor-offset);
+                event->accept(); if(on_interaction) on_interaction(); return true;
+            }
+        }
         if(event->type()!=QEvent::ContextMenu) return GraphicsView::viewportEvent(event);
         auto *context=static_cast<QContextMenuEvent *>(event);
-        for(auto *item:items(context->pos())) if(auto *proxy=qgraphicsitem_cast<QGraphicsProxyWidget *>(item)) {
-            auto *child=proxy->widget() ? proxy->widget()->childAt(proxy->mapFromScene(mapToScene(context->pos())).toPoint()) : nullptr;
-            if(is_editing_widget(child)) return GraphicsView::viewportEvent(event);
-        }
+        if(editing_widget_at(context->pos())) return GraphicsView::viewportEvent(event);
         show_context_menu(context);
         return true;
     }
@@ -547,6 +560,14 @@ class ProfiledGraphicsView final : public GraphicsView {
         if(is_editing_widget(QApplication::focusWidget())) return true;
         if(scene()) if(auto *proxy=qgraphicsitem_cast<QGraphicsProxyWidget *>(scene()->focusItem()))
             if(proxy->widget() && is_editing_widget(proxy->widget()->focusWidget())) return true;
+        return false;
+    }
+    bool editing_widget_at(QPoint pos) const {
+        for(auto *item:items(pos)) if(auto *proxy=qgraphicsitem_cast<QGraphicsProxyWidget *>(item)) {
+            auto *widget=proxy->widget();
+            auto *child=widget ? widget->childAt(proxy->mapFromScene(mapToScene(pos)).toPoint()) : nullptr;
+            if(is_editing_widget(child)) return true;
+        }
         return false;
     }
     void pan_pixels(QPointF delta) {

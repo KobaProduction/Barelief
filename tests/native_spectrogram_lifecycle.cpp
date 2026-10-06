@@ -15,6 +15,8 @@
 #include <QPointer>
 #include <QSlider>
 #include <QJsonArray>
+#include <QNativeGestureEvent>
+#include <QPointingDevice>
 #include <limits>
 #include <cmath>
 #include <memory>
@@ -101,13 +103,15 @@ static int checkSelectionOverlay(QApplication &app,const QString &directory) {
         if(color!=QColor("#2255bb")) {qCritical("Custom GPU gradient did not match configured stops");return 1;}
         mode->setCurrentIndex(1);QTest::mouseClick(native,Qt::LeftButton,Qt::NoModifier,point);QTest::qWait(70);
         if(!native->property("selectionMarkerVisible").toBool() || native->property("selectedAge").toInt()!=8 ||
-            native->property("selectedBand").toInt()!=4 || std::abs(native->property("selectedValue").toFloat()-.8f)>1e-5) return 1;
+            native->property("selectedBand").toInt()!=4 || std::abs(native->property("selectedValue").toFloat()-.8f)>1e-5) {
+            qCritical()<<"Selection mismatch"<<native->property("selectedAge")<<native->property("selectedBand")<<native->property("selectedValue");return 1;
+        }
         pixels=native->grabFramebuffer();const auto center=native->property("selectionMarkerPosition").toPointF();
         if(pixels.pixelColor(qRound(center.x()*dpr),qRound(center.y()*dpr))!=QColor(255,210,0)) {
             qCritical("Selection marker is hidden behind the filled surface");return 1;
         }
         pixels.save(directory+(light ? "/point-light.png" : "/point-dark.png"));
-        const auto camera=graph.camera_state();const auto uploads=native->property("geometryUploads");
+        const auto camera=graph.camera_state();
         for(int selection:{2,3}) {
             mode->setCurrentIndex(selection);QTest::qWait(70);
             if(native->property("sliceSampleCount").toInt()!=(selection==2 ? 9 : 24)) return 1;
@@ -116,12 +120,41 @@ static int checkSelectionOverlay(QApplication &app,const QString &directory) {
                 qCritical("Opaque slice overlay is hidden by the scene");return 1;
             }
             pixels.save(directory+QString("/slice-%1-%2.png").arg(selection).arg(light ? "light" : "dark"));
+            const auto corner=panel.topLeft()+QPointF(2,2);
+            QTest::mousePress(native,Qt::LeftButton,Qt::NoModifier,corner.toPoint());
+            const QPointF moved=corner-QPointF(20,15);
+            QMouseEvent resize(QEvent::MouseMove,moved,native->mapToGlobal(moved.toPoint()),
+                               Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+            QApplication::sendEvent(native,&resize);
+            QTest::mouseRelease(native,Qt::LeftButton,Qt::NoModifier,moved.toPoint());QTest::qWait(50);
+            const auto enlarged=native->property("slicePanelRect").toRectF();
+            const auto saved=graph.presentation_state();
+            if(enlarged.width()<=panel.width() || enlarged.height()<=panel.height() ||
+               saved["slice_size"].toArray().size()!=2) {qCritical("Slice resize failed");return 1;}
+            graph.set_presentation_state(saved);QTest::qWait(40);
+            if(native->property("slicePanelRect").toRectF()!=enlarged) {qCritical("Slice size restore failed");return 1;}
+
         }
+        const auto uploads=native->property("geometryUploads");
         options["mesh_grid"]=true;options["mesh_color"]="#ff00ff";options["mesh_width"]=2;options["mesh_contrast"]=.5;
         graph.set_surface_settings(options);QTest::qWait(70);
         if(graph.camera_state()!=camera || native->property("geometryUploads")!=uploads ||
             native->property("meshActualWidth").toFloat()<=0) return 1;
     }
+    // Exercise the camera event contract, independently of physical touchpad recognition.
+    SpectrogramGraph cameraGraph;cameraGraph.initialize({240,180},{1200,900});cameraGraph.show();QTest::qWait(70);
+    auto *cameraView=cameraGraph.findChild<QOpenGLWidget *>("spectrogramContainer");
+    auto position=[&] {const auto a=cameraGraph.camera_state()["position"].toArray();return QVector3D(a[0].toDouble(),a[1].toDouble(),a[2].toDouble());};
+    const auto before=position();const auto pose=cameraGraph.camera_state();
+    QNativeGestureEvent orbit(Qt::PanNativeGesture,QPointingDevice::primaryPointingDevice(),2,{},{},{},0,{60,0});
+    QApplication::sendEvent(cameraView,&orbit);
+    if(std::abs(position().length()-before.length())>1e-5 || position()==before || cameraGraph.camera_state()["quaternion"]==pose["quaternion"]) {
+        qCritical("Orbit must rotate pose while retaining radius");return 1;
+    }
+    const auto radius=position().length();
+    QNativeGestureEvent pinch(Qt::ZoomNativeGesture,QPointingDevice::primaryPointingDevice(),2,{},{},{},.25,{});
+    QApplication::sendEvent(cameraView,&pinch);
+    if(std::abs(position().length()-radius/1.25)>1e-5) {qCritical("Pinch zoom contract failed");return 1;}
     app.setPalette(original);qInfo("Overlay PASS light/dark: age8 band4 pick, visible yellow marker pixels, opaque9-band/24-age slices, custom GPU stops, option changes retain camera/geometry");
     return 0;
 }

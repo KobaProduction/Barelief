@@ -1,5 +1,6 @@
 #include "visualization/spectrograms/spectrogram_scene_geometry.h"
 #include "visualization/surface_settings.h"
+#include "visualization/slice_overlay.h"
 #include <cstdio>
 #include <cmath>
 
@@ -10,6 +11,19 @@ int main() {
         return condition;
     };
     const int full[4]={0,100,0,100},crop[4]={25,75,0,100};
+    SliceOverlay overlay;
+    const QSizeF area(800,600);
+    const auto initial=overlay.rect(area);
+    if(!check(overlay.begin(area,initial.topLeft()+QPointF(1,1)),"Resize corner hit")) return 1;
+    overlay.move(area,initial.topLeft()-QPointF(200,120));overlay.end();
+    const auto enlarged=overlay.rect(area);
+    if(!check(enlarged.width()>initial.width() && enlarged.height()>initial.height() &&
+              QRectF(QPointF(),area).contains(enlarged),"Resize grows and stays in viewport")) return 1;
+    overlay.begin(area,enlarged.topLeft()+QPointF(1,1));
+    overlay.move(area,enlarged.bottomRight()+QPointF(400,400));overlay.end();
+    if(!check(overlay.rect(area).width()>=180 && overlay.rect(area).height()>=120,
+              "Resizing cannot collapse the slice axes")) return 1;
+    if(!check(QRectF(0,0,100,80).contains(overlay.rect({100,80})),"Small viewport clips preferred size")) return 1;
     for (const QSizeF viewport : {QSizeF(80, 60), QSizeF(180, 100), QSizeF(800, 600)})
       for(const QPointF position:{QPointF(0,0),QPointF(.5,.5),QPointF(1,1),QPointF(-1,2)}) {
         const auto panel = spectrogramSlicePanel(viewport,position), plot = spectrogramSlicePlot(panel);

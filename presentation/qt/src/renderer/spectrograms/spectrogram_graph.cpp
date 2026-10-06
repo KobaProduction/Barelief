@@ -24,6 +24,9 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QNativeGestureEvent>
+#include "core_app/touchpad_input.h"
+#include "visualization/slice_overlay.h"
 #include <QHideEvent>
 #include <QGuiApplication>
 #include <QPainter>
@@ -74,21 +77,12 @@ class SpectrogramRenderer final : public QOpenGLWidget, protected QOpenGLFunctio
     size_t history_capacity=0, configured_bands=0;
     QJsonObject options=SurfaceSettings::defaults();
     QPoint selected{-1, -1};
-    QPointF slicePosition{1,1}, sliceDragOffset;
-    bool sliceDragging=false;
+    SliceOverlay sliceOverlay;
     bool beginSliceDrag(QPointF point) {
-        if(selection<2 || property("sliceSampleCount").toInt()<=0) return false;
-        const auto panel=spectrogramSlicePanel(size(),slicePosition);
-        if(!panel.contains(point)) return false;
-        sliceDragging=true;sliceDragOffset=point-panel.topLeft();return true;
+        return selection>=2 && property("sliceSampleCount").toInt()>0 && sliceOverlay.begin(size(),point);
     }
     void moveSlice(QPointF point) {
-        const auto origin=spectrogramSlicePanel(size(),{0,0}).topLeft();
-        const auto span=spectrogramSlicePanel(size(),{1,1}).topLeft()-origin;
-        const auto target=point-sliceDragOffset-origin;
-        slicePosition={span.x()>0 ? std::clamp(target.x()/span.x(),0.0,1.0) : 0,
-                       span.y()>0 ? std::clamp(target.y()/span.y(),0.0,1.0) : 0};
-        requestUpdate();
+        sliceOverlay.move(size(),point);requestUpdate();
     }
     int ranges[4]{0, 100, 0, 100};
     SpectrogramSceneGeometry geometry() const {
@@ -740,7 +734,7 @@ class SpectrogramRenderer final : public QOpenGLWidget, protected QOpenGLFunctio
             if (selection == 2 || selection == 3) {
                 // A real cross-section, as in the native SelectionSlice mode.
                 // Read the selected history/band directly; no GPU readback.
-                const QRectF panel = spectrogramSlicePanel(size(),slicePosition);
+                const QRectF panel = sliceOverlay.rect(size());
                 painter.save();
                 painter.setClipRect(panel);
                 setProperty("slicePanelRect",panel);
@@ -843,6 +837,12 @@ bool SpectrogramGraph::initialize(const QSize &, const QSize &) {
     m_spectrogram_graph->shadow_error=[this](const QString &message){emit surface_settings_error(message);};
     m_container = m_spectrogram_graph;
     m_container->installEventFilter(this);
+    m_container->setMouseTracking(true);
+    desktop_input::attach_touchpad(m_container,[this](QPoint point) {
+        return _render_visible && !(m_spectrogram_graph->selection>=2 &&
+            m_spectrogram_graph->property("sliceSampleCount").toInt()>0 &&
+            m_spectrogram_graph->sliceOverlay.rect(m_container->size()).contains(point));
+    });
     _splitter->addWidget(m_container);
     auto *scroll = new QScrollArea(_splitter);
     scroll->setWidgetResizable(true);
@@ -1176,8 +1176,10 @@ bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
         return QWidget::eventFilter(watched, event);
     if (event->type() == QEvent::PaletteChange)
         m_spectrogram_graph->requestUpdate();
+    if(event->type()==QEvent::Resize || event->type()==QEvent::Hide)
+        m_spectrogram_graph->sliceOverlay.end();
     if (event->type() == QEvent::FocusOut || event->type() == QEvent::WindowDeactivate)
-        _stop_camera();
+        { _stop_camera();m_spectrogram_graph->sliceOverlay.end(); }
     if(!_render_visible) return QWidget::eventFilter(watched,event);
     if (event->type() == QEvent::MouseButtonPress) {
         const auto *mouse=static_cast<QMouseEvent *>(event);
@@ -1189,8 +1191,12 @@ bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
     }
     if (event->type() == QEvent::MouseMove) {
         auto *mouse = static_cast<QMouseEvent *>(event);
-        if(m_spectrogram_graph->sliceDragging && (mouse->buttons() & Qt::LeftButton)) {
+        if(m_spectrogram_graph->sliceOverlay.active && (mouse->buttons() & Qt::LeftButton)) {
             m_spectrogram_graph->moveSlice(mouse->position());return true;
+        }
+        if(mouse->buttons()==Qt::NoButton) {
+            const bool slice=m_spectrogram_graph->selection>=2 && m_spectrogram_graph->property("sliceSampleCount").toInt()>0;
+            m_container->setCursor(slice ? m_spectrogram_graph->sliceOverlay.cursor(m_container->size(),mouse->position()) : Qt::ArrowCursor);
         }
         if (mouse->buttons() & (Qt::RightButton | Qt::MiddleButton)) {
             auto delta = mouse->position().toPoint() - _mouse_position;
@@ -1204,17 +1210,39 @@ bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
             return true;
         }
     }
-    if (event->type() == QEvent::MouseButtonRelease && m_spectrogram_graph->sliceDragging) {
-        m_spectrogram_graph->sliceDragging=false;
+    if (event->type() == QEvent::MouseButtonRelease && m_spectrogram_graph->sliceOverlay.active) {
+        m_spectrogram_graph->sliceOverlay.end();
         emit presentation_changed(presentation_state());return true;
     }
+    // Orbit around the scene center; rotate position and orientation together.
+    auto orbit=[this](double pixels) {
+        const auto rotation=QQuaternion::fromAxisAndAngle({0,1,0},float(-pixels*.3));
+        _position=rotation.rotatedVector(_position);
+        _orientation=(rotation*_orientation).normalized();
+    };
+    auto zoom=[this](double amount) {
+        _position+=_orientation.rotatedVector({0,0,float(-amount)});
+        if(_position.length()>10) _position=_position.normalized()*10;
+    };
+    if(event->type()==QEvent::NativeGesture) {
+        const auto *gesture=static_cast<QNativeGestureEvent *>(event);
+        if(gesture->gestureType()==Qt::PanNativeGesture) {
+            orbit(gesture->delta().x());zoom(gesture->delta().y()/150.0);
+        } else if(gesture->gestureType()==Qt::ZoomNativeGesture) {
+            const double ratio=std::clamp(1+gesture->value(),.1,10.0);
+            _position/=float(ratio);
+            if(_position.length()>10) _position=_position.normalized()*10;
+        } else return QWidget::eventFilter(watched,event);
+        _camera_changed();return true;
+    }
     if (event->type() == QEvent::Wheel) {
-        auto *wheel = static_cast<QWheelEvent *>(event);
-        _position += _orientation.rotatedVector({0, 0, -wheel->angleDelta().y() / 600.f});
-        if (_position.length() > 10)
-            _position = _position.normalized() * 10;
-        _camera_changed();
-        return true;
+        const auto *wheel = static_cast<QWheelEvent *>(event);
+        if(!wheel->pixelDelta().isNull()) {
+            orbit(wheel->pixelDelta().x());zoom(wheel->pixelDelta().y()/150.0);
+        } else {
+            orbit(wheel->angleDelta().x()/4.0);zoom(wheel->angleDelta().y()/600.0);
+        }
+        _camera_changed();return true;
     }
     if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease) {
         auto *key = static_cast<QKeyEvent *>(event);
@@ -1267,7 +1295,9 @@ bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
 QJsonObject SpectrogramGraph::presentation_state() const {
     auto state = _presentation_state;
     if (m_spectrogram_graph) {
-        state["slice_position"] = QJsonArray{m_spectrogram_graph->slicePosition.x(),m_spectrogram_graph->slicePosition.y()};
+        state["slice_position"] = QJsonArray{m_spectrogram_graph->sliceOverlay.position.x(),m_spectrogram_graph->sliceOverlay.position.y()};
+        if(m_spectrogram_graph->sliceOverlay.preferredSize.isValid())
+            state["slice_size"] = QJsonArray{m_spectrogram_graph->sliceOverlay.preferredSize.width(),m_spectrogram_graph->sliceOverlay.preferredSize.height()};
         state["ranges"] = QJsonArray{m_spectrogram_graph->ranges[0], m_spectrogram_graph->ranges[1],
                                      m_spectrogram_graph->ranges[2], m_spectrogram_graph->ranges[3]};
         state["selection"] = m_spectrogram_graph->selection;
@@ -1279,11 +1309,19 @@ void SpectrogramGraph::set_presentation_state(const QJsonObject &state) {
     _presentation_state = state;
     if (!m_spectrogram_graph)
         return;
+    m_spectrogram_graph->sliceOverlay.end();
+    m_spectrogram_graph->sliceOverlay.preferredSize={};
+    const auto sliceSize=state.value("slice_size").toArray();
+    if(sliceSize.size()==2) {
+        const double w=sliceSize[0].toDouble(),h=sliceSize[1].toDouble();
+        if(std::isfinite(w) && std::isfinite(h) && w>0 && h>0)
+            m_spectrogram_graph->sliceOverlay.preferredSize={std::clamp(w,180.0,16384.0),std::clamp(h,120.0,16384.0)};
+    }
     const auto slicePosition=state.value("slice_position").toArray();
     if(slicePosition.size()==2) {
         const double x=slicePosition[0].toDouble(1),y=slicePosition[1].toDouble(1);
         if(std::isfinite(x) && std::isfinite(y))
-            m_spectrogram_graph->slicePosition={std::clamp(x,0.0,1.0),std::clamp(y,0.0,1.0)};
+            m_spectrogram_graph->sliceOverlay.position={std::clamp(x,0.0,1.0),std::clamp(y,0.0,1.0)};
     }
     const auto ranges = state.value("ranges").toArray();
     for (int axis = 0; axis < 2; ++axis) {
