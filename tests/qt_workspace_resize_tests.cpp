@@ -1,3 +1,4 @@
+#include "synthetic_engine_provider.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/main_window.h"
 #include "core_app/scheme_editor/audio_node_model.h"
@@ -146,7 +147,7 @@ int main(int argc, char **argv) {
     QApplication app(argc, argv);
     try {
         auto state = fixture();
-        GuiPresenter presenter(state);
+        GuiPresenter presenter(state, test_fixture::synthetic_engine_provider());
         const auto mode = app.arguments().value(1);
         if (mode == "selection") inspector_selection(presenter);
         else if (mode == "narrow") narrow_controls(presenter);

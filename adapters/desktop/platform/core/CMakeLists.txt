@@ -12,6 +12,7 @@ add_library(runtime_performance INTERFACE)
 target_include_directories(runtime_performance INTERFACE ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
 
 add_library(${LIB_NAME} STATIC)
+target_link_libraries(${LIB_NAME} PUBLIC qt_engine_ports)
 
 
 target_sources(${LIB_NAME} PRIVATE

@@ -19,3 +19,7 @@ cmake-*-*
 /build-fixture-audit/
 /review-test-fixtures/
 /review-qt-integration/
+/review-final-architecture/
+/review-final-runtime/
+/review-final-desktop/
+/review-gui-port-repair/

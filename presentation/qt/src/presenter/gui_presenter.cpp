@@ -5,9 +5,9 @@
 #include <QJsonArray>
 #include "visualization/ui_text.h"
 
-GuiPresenter::GuiPresenter(GuiState &state, const QString &remote_host, quint16 remote_port, QObject *parent,
-                           pipeline::AudioSourceFactory source_factory)
-    : QObject(parent), _state(state), _source_factory(std::move(source_factory)) {
+GuiPresenter::GuiPresenter(GuiState &state, std::shared_ptr<pipeline::EngineProvider> provider,
+                           const QString &remote_host, quint16 remote_port, QObject *parent)
+    : QObject(parent), _state(state), _provider(std::move(provider)) {
     _local_device_id = _state.file_configs.raw_document.value("device").toObject().value("uuid").toString("local");
     _device_id = remote_host.isEmpty() ? _local_device_id : remote_host + ":" + QString::number(remote_port);
     _graph_id = _state.file_configs.pipeline_graph.value("graph_id").toString("main");
@@ -22,8 +22,7 @@ GuiPresenter::GuiPresenter(GuiState &state, const QString &remote_host, quint16 
     if (_preserve_saved_pipeline)
         _saved_graph_warning = "Saved pipeline is invalid: " + saved_error +
                                ". The saved document is preserved until an explicit pipeline Apply.";
-    _client = remote_host.isEmpty() ? std::make_unique<pipeline::EngineClient>(_source_factory)
-                                    : std::make_unique<pipeline::EngineClient>(remote_host, remote_port);
+    _client = _provider->create(remote_host, remote_port);
     _remote = !remote_host.isEmpty();
     _remote_endpoint = _remote ? QJsonObject{{"address", remote_host}, {"port", remote_port}} : QJsonObject{};
     if (_remote) {
@@ -550,9 +549,7 @@ void GuiPresenter::select_device(const QString &uuid, const QString &host, quint
         _client = std::move(found->second);
         _inactive_clients.erase(found);
     } else {
-        _client =
-            _remote ? std::make_unique<pipeline::EngineClient>(host, port)
-                    : std::make_unique<pipeline::EngineClient>(_source_factory);
+        _client = _provider->create(_remote ? host : QString{}, port);
         bind_client();
     }
     const auto document = _state.file_configs.raw_document.value("devices").toObject().value(uuid).toObject();

@@ -9,6 +9,7 @@ target_sources(analyzer PRIVATE
 target_include_directories(analyzer PUBLIC ${DESKTOP_ANALYSIS_INCLUDE_DIR})
 
 target_link_libraries(analyzer PUBLIC
+        qt_engine_ports
         Qt::Core
         dsp_kernels
         portable_dsp

@@ -8,6 +8,7 @@
 
 #include "core_app/config_manager.h"
 #include "core_app/gui_presenter.h"
+#include "core_app/desktop_engine_provider.h"
 
 Q_DECLARE_LOGGING_CATEGORY(core_app_main)
 
@@ -81,6 +82,7 @@ class CoreApplication final : public QApplication {
     void loopback_stopped();
 
   private:
+    std::shared_ptr<DesktopEngineProvider> _engine_provider;
     std::unique_ptr<GuiPresenter> _presenter;
     QString _remote_host;
     quint16 _remote_port = 8213;

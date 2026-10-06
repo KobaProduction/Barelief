@@ -1,4 +1,4 @@
-#include "synthetic_capture.h"
+#include "synthetic_engine_provider.h"
 #include "core_app/config_manager.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/scheme_editor/audio_node_model.h"
@@ -17,6 +17,57 @@
 #include <QThread>
 #include <stdexcept>
 #include <algorithm>
+#include "pipeline/engine_port.h"
+#include <QTimer>
+
+class FakeEndpoint final : public pipeline::EnginePort {
+public:
+    pipeline::EngineSnapshot current;
+    std::vector<pipeline::EngineCommand> commands;
+    std::function<void(pipeline::EngineSnapshot)> snapshots;
+    std::function<void(pipeline::EngineReply)> replies;
+    std::function<void(pipeline::ViewFrame)> views;
+    std::function<void(pipeline::AudioFrame)> audio;
+    QJsonObject configured;
+    int connections = 0;
+    quint64 next = 0;
+    quint64 submit(pipeline::EngineCommand command) override {
+        commands.push_back(command);
+        const auto id = ++next;
+        if (command.kind == pipeline::EngineCommand::ApplyGraph) {
+            QTimer::singleShot(0, [this, id, command] {
+                current.graph = command.graph;
+                ++current.graph_revision;
+                ++current.revision;
+                if (snapshots) snapshots(current);
+                if (replies) replies({id, true, {}, current});
+            });
+        }
+        return id;
+    }
+    void set_snapshot_handler(std::function<void(pipeline::EngineSnapshot)> h) override { snapshots = std::move(h); }
+    void set_reply_handler(std::function<void(pipeline::EngineReply)> h) override { replies = std::move(h); }
+    void set_view_handler(std::function<void(pipeline::ViewFrame)> h) override { views = std::move(h); }
+    void set_audio_handler(std::function<void(pipeline::AudioFrame)> h) override { audio = std::move(h); }
+    pipeline::EngineSnapshot snapshot() const override { return current; }
+    bool configure_network(QJsonObject config, QString *) override { configured = std::move(config); return true; }
+    QString network_warning() const override { return {}; }
+    void connect_remote() override { ++connections; if (snapshots) snapshots(current); }
+    void disconnect_remote() override {}
+};
+
+class FakeProvider final : public pipeline::EngineProvider {
+public:
+    struct Selection { QString host; quint16 port; FakeEndpoint *endpoint; };
+    std::vector<Selection> selections;
+    std::unique_ptr<pipeline::EnginePort> create(const QString &host, quint16 port) override {
+        auto endpoint = std::make_unique<FakeEndpoint>();
+        endpoint->current.epoch = selections.size() + 1;
+        endpoint->current.graph = pipeline::GraphProgram::defaults();
+        selections.push_back({host, port, endpoint.get()});
+        return endpoint;
+    }
+};
 
 static void require(bool value, const char *message) {
     if (!value)
@@ -83,6 +134,77 @@ protected:
 };
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    if (QCoreApplication::arguments().contains("--replaceable-port-only")) {
+        GuiState state;
+        state.file_configs.pipeline_graph = pipeline::GraphProgram::defaults();
+        state.file_configs.scene_graph = state.file_configs.pipeline_graph;
+        state.file_configs.raw_document = {{"unknown", 42}};
+        auto provider = std::make_shared<FakeProvider>();
+        GuiPresenter presenter(state, provider);
+        auto *local = provider->selections.at(0).endpoint;
+        require(provider->selections.at(0).host.isEmpty(), "Local bootstrap bypassed provider");
+        const auto runtime = QJsonObject{{"runtime-only", true}};
+        presenter.initialize(runtime);
+        wait([&] { return !presenter.graph_request_pending(); });
+        require(local->configured == runtime, "Injected endpoint did not receive runtime config");
+        require(local->commands.size() >= 2 && local->commands.back().kind == pipeline::EngineCommand::ApplyGraph,
+                "Bootstrap commands did not reach endpoint");
+        const auto local_draft = QJsonObject{{"version", 2}, {"custom-draft", 7}};
+        state.file_configs.scene_graph = local_draft;
+        state.file_configs.ui.editor_view = {{"zoom", .5}};
+        presenter.select_device("remote", "fake-host", 9123);
+        require(provider->selections.size() == 2 && provider->selections.back().host == "fake-host" &&
+                provider->selections.back().port == 9123, "Dynamic selection bypassed provider");
+        auto *remote = provider->selections.back().endpoint;
+        require(remote->connections == 1 && state.file_configs.scene_graph == remote->current.graph,
+                "Remote snapshot was not handled");
+        int delivered_views = 0, running_notifications = 0;
+        QObject::connect(&presenter, &GuiPresenter::node_views_ready, &presenter,
+                         [&](const auto &) { ++delivered_views; });
+        QObject::connect(&presenter, &GuiPresenter::analyzer_started, &presenter,
+                         [&] { ++running_notifications; });
+        remote->current.statuses["Analyzer"] = {pipeline::State::Running, {}, 1};
+        remote->current.window = {1, 2};
+        remote->current.frequency_step = 12;
+        remote->snapshots(remote->current);
+        require(running_notifications == 1 && presenter.window() == remote->current.window &&
+                presenter.frequency_step() == 12, "Snapshot status/data did not cross injected port");
+        pipeline::ViewFrame view;
+        view.epoch = remote->current.epoch;
+        view.graph_revision = remote->current.graph_revision;
+        remote->views(view);
+        require(delivered_views == 1, "View handler did not cross injected port");
+        require(local->commands.back().kind == pipeline::EngineCommand::Subscribe &&
+                local->commands.back().subscriptions == 0, "Inactive endpoint retained view subscription");
+        presenter.stop_analyzer();
+        require(remote->commands.back().kind == pipeline::EngineCommand::StopAnalyzer,
+                "Selected endpoint did not receive command");
+        const auto remote_draft = QJsonObject{{"version", 2}, {"remote-draft", 9}};
+        state.file_configs.scene_graph = remote_draft;
+        presenter.select_device(presenter.local_device_id(), {}, 8213);
+        require(provider->selections.size() == 2 && &presenter.client() == local,
+                "Returning device recreated the endpoint");
+        require(state.file_configs.scene_graph == local_draft && state.file_configs.ui.editor_view["zoom"].toDouble() == .5,
+                "Local draft/view restoration changed");
+        auto stale = remote->current; stale.graph["stale"] = true;
+        remote->snapshots(stale);
+        require(state.file_configs.scene_graph == local_draft, "Inactive snapshot changed selected draft");
+        remote->views(view);
+        require(delivered_views == 1, "Inactive endpoint delivered a view");
+        presenter.select_device("remote", "fake-host", 9123);
+        require(provider->selections.size() == 2 && &presenter.client() == remote &&
+                state.file_configs.scene_graph == remote_draft, "Remote draft/endpoint restoration changed");
+        require(state.file_configs.raw_document["unknown"].toInt() == 42, "Selection lost unknown config fields");
+        auto direct_provider = std::make_shared<FakeProvider>();
+        GuiState direct;
+        direct.file_configs.pipeline_graph = pipeline::GraphProgram::defaults();
+        GuiPresenter direct_remote(direct, direct_provider, "initial-host", 9234);
+        direct_remote.initialize();
+        require(direct_provider->selections.size() == 1 && direct_provider->selections[0].host == "initial-host" &&
+                direct_provider->selections[0].endpoint->connections == 1,
+                "Initial remote endpoint bypassed provider");
+        return 0;
+    }
     if(QCoreApplication::arguments().contains("--serial-runtime-options-only")) {
         GuiState state;
         state.file_configs.pipeline_graph=QJsonObject{{"version",2},{"nodes",QJsonArray{
@@ -91,7 +213,8 @@ int main(int argc, char **argv) {
             {"connections",QJsonArray{QJsonObject{{"outNodeId",0},{"inNodeId",1},{"outPortIndex",0},{"inPortIndex",0}}}}};
         state.file_configs.raw_document={{"unknown",42},{"network",QJsonObject{{"unknown-network",true}}}};
         const auto saved=state.file_configs.raw_document;
-        GuiPresenter presenter(state, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
+        auto serial_provider = test_fixture::synthetic_engine_provider();
+        GuiPresenter presenter(state, serial_provider);
         QString rejected;
         QObject::connect(&presenter,&GuiPresenter::command_rejected,[&](quint64,const QString &error){rejected=error;});
         auto runtime_config=saved;
@@ -100,7 +223,7 @@ int main(int argc, char **argv) {
         wait([&]{return !presenter.graph_request_pending();});
         require(rejected.contains("port_name"),"Presenter ignored runtime-only Serial config");
         require(state.file_configs.raw_document==saved,"Runtime Serial overrides changed persisted config");
-        require(presenter.client().local_engine()->current_status("Capture").state==pipeline::State::Stopped,
+        require(serial_provider->local_engine()->current_status("Capture").state==pipeline::State::Stopped,
                 "Serial-only initialization opened a capture source");
         return 0;
     }
@@ -193,7 +316,7 @@ int main(int argc, char **argv) {
     state.file_configs.core.run_analyser = false;
     state.file_configs.core.run_loopback = false;
     state.file_configs.ui.camera = QJsonObject{{"test", 42}};
-    GuiPresenter presenter(state, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
+    GuiPresenter presenter(state, test_fixture::synthetic_engine_provider());
     quint64 completed = 0;
     bool accepted = false;
     QObject::connect(&presenter, &GuiPresenter::graph_apply_finished, &app, [&](quint64 id, bool ok, const QString &) {
@@ -232,7 +355,7 @@ int main(int argc, char **argv) {
         broken.file_configs.scene_graph = draft;
         broken.file_configs.pipeline_graph = draft;
         load_editor(broken, draft);
-        GuiPresenter fallback(broken, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
+        GuiPresenter fallback(broken, test_fixture::synthetic_engine_provider());
         int automatic_saves = 0;
         QObject::connect(&fallback, &GuiPresenter::on_config_updated, &fallback, [&] { ++automatic_saves; });
         fallback.initialize();
@@ -255,7 +378,7 @@ int main(int argc, char **argv) {
         remote_state.file_configs.pipeline_graph = valid;
         remote_state.file_configs.pipeline_graph["saved-local"] = true;
         const auto saved_local = remote_state.file_configs.pipeline_graph;
-        GuiPresenter remote(remote_state, "127.0.0.1", readonly.port());
+        GuiPresenter remote(remote_state, test_fixture::synthetic_engine_provider(), "127.0.0.1", readonly.port());
         wait([&] { return remote.client().snapshot().epoch != 0; });
         require(remote_state.file_configs.raw_document["devices"].toObject()["local"].toObject()["pipeline_graph"].toObject() == saved_local, "Handshake lost saved local pipeline");
         const auto remote_draft=remote_state.file_configs.scene_graph;
@@ -276,7 +399,7 @@ int main(int argc, char **argv) {
         require(writable.listen(QHostAddress::LocalHost, 0, true), "Cannot start writable peer");
         GuiState conflict_state; load_editor(conflict_state, valid);
         conflict_state.file_configs.scene_graph = draft;
-        GuiPresenter conflict(conflict_state, "127.0.0.1", writable.port());
+        GuiPresenter conflict(conflict_state, test_fixture::synthetic_engine_provider(), "127.0.0.1", writable.port());
         wait([&] { return conflict.client().snapshot().epoch != 0; });
         QString conflict_error;
         QObject::connect(&conflict, &GuiPresenter::command_rejected, &conflict,
@@ -301,7 +424,7 @@ int main(int argc, char **argv) {
         delayed_state.file_configs.scene_graph = draft;
         const auto delayed_id=QString("127.0.0.1:")+QString::number(peer.serverPort());
         delayed_state.file_configs.raw_document["devices"]=QJsonObject{{delayed_id,QJsonObject{{"scene_graph",draft},{"pipeline_graph",valid}}}};
-        GuiPresenter delayed(delayed_state, "127.0.0.1", peer.serverPort());
+        GuiPresenter delayed(delayed_state, test_fixture::synthetic_engine_provider(), "127.0.0.1", peer.serverPort());
         wait([&] { return delayed.client().snapshot().epoch != 0; });
         int finished = 0;
         QObject::connect(&delayed, &GuiPresenter::graph_apply_finished, &delayed,
@@ -335,7 +458,7 @@ int main(int argc, char **argv) {
         GuiState isolated;isolated.file_configs.core.run_analyser=isolated.file_configs.core.run_loopback=false;
         isolated.file_configs.scene_graph=valid;isolated.file_configs.scene_graph["local-extension"]=42;
         isolated.file_configs.ui.pipeline_presets=QJsonArray{QJsonObject{{"id","local-preset"}}};
-        isolated.file_configs.ui.editor_view={{"zoom",.5}};GuiPresenter selector(isolated, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
+        isolated.file_configs.ui.editor_view={{"zoom",.5}};GuiPresenter selector(isolated, test_fixture::synthetic_engine_provider());
         selector.initialize();wait([&]{return !selector.graph_request_pending();});
         const auto local_draft=isolated.file_configs.scene_graph;int selected=0;
         QObject::connect(&selector,&GuiPresenter::selected_device_changed,&selector,[&](auto,auto){++selected;});
@@ -352,10 +475,11 @@ int main(int argc, char **argv) {
         GuiState transitions;
         transitions.file_configs.core.run_analyser = transitions.file_configs.core.run_loopback = false;
         transitions.file_configs.pipeline_graph = valid;
-        GuiPresenter local(transitions, {}, 8213, nullptr, test_fixture::synthetic_capture_factory());
+        auto local_provider = test_fixture::synthetic_engine_provider();
+        GuiPresenter local(transitions, local_provider);
         local.initialize();
         wait([&] { return !local.graph_request_pending(); });
-        auto *engine = local.client().local_engine();
+        auto *engine = local_provider->local_engine();
         QString source_error;
         local.apply_graph_and_start(pipeline::GraphProgram::test_signal_defaults());
         wait([&] { return !local.graph_request_pending() &&
@@ -380,7 +504,7 @@ int main(int argc, char **argv) {
         DelayedEnginePeer peer;
         require(peer.listen(QHostAddress::LocalHost, 0), "Cannot start intent peer");
         GuiState intent_state;
-        GuiPresenter intent(intent_state, "127.0.0.1", peer.serverPort());
+        GuiPresenter intent(intent_state, test_fixture::synthetic_engine_provider(), "127.0.0.1", peer.serverPort());
         intent.initialize();
         wait([&] { return intent.client().snapshot().epoch != 0; });
         auto starts = [&] {

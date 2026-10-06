@@ -1,4 +1,5 @@
 #pragma once
+#include "pipeline/engine_models.h"
 #include <QString>
 #include <QJsonObject>
 #include <cstddef>
@@ -8,15 +9,6 @@
 #include <vector>
 
 namespace pipeline {
-struct AudioFrame {
-    uint64_t sequence = 0;
-    int64_t timestamp_ns = 0;
-    size_t sample_rate = 0;
-    uint64_t generation = 0;
-    bool discontinuity = false;
-    std::vector<float> left, right;
-};
-
 enum class AudioSourceKind { SystemOutput = 0, Microphone = 1, TestSignal = 2 };
 struct AudioSourceDiagnostics {
     QString backend, device;

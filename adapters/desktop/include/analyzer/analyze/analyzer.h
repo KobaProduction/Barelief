@@ -1,6 +1,7 @@
 #ifndef QT_VISUALIZATION_ANALYZER_H
 #define QT_VISUALIZATION_ANALYZER_H
 
+#include "pipeline/engine_models.h"
 #include <vector>
 #include <mutex>
 #include <functional>
@@ -28,26 +29,6 @@ public:
 };
 
 void fft_to_mel(const std::vector<float> &spectrum, size_t sample_rate, std::vector<float> &output, size_t bands = 50);
-
-enum class SpectrumMerge { Mean, Maximum, Energy };
-struct SpectrumFrame {
-    uint64_t sequence = 0;
-    int64_t timestamp_ns = 0;
-    int64_t input_timestamp_ns = 0;
-    size_t audio_samples = 0;
-    float audio_peak = 0;
-    size_t sample_rate = 0;
-    float frequency_step = 0;
-    uint64_t generation = 0;
-    uint64_t dropped_windows = 0;
-    bool discontinuity = false;
-    bool raw_window = false;
-    bool raw_pcm = false;
-    uint64_t pipeline_epoch = 0;
-    uint64_t ingress_serial = 0;
-    std::vector<float> window_signal, window, windowed_signal;
-    std::vector<float> left, right, mel_left, mel_right;
-};
 
 class Analyzer final : public AbstractTask {
 public:

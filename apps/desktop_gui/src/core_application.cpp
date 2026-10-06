@@ -114,8 +114,8 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
         }
     }
 
-    _presenter = std::make_unique<GuiPresenter>(_ctx, _remote_host, _remote_port, nullptr,
-                                               std::move(source_factory));
+    _engine_provider = std::make_shared<DesktopEngineProvider>(std::move(source_factory));
+    _presenter = std::make_unique<GuiPresenter>(_ctx, _engine_provider, _remote_host, _remote_port);
     connect(_presenter.get(), &GuiPresenter::on_config_updated, this, &CoreApplication::on_config_updated);
     connect(_presenter.get(), &GuiPresenter::pipeline_preview, this, &CoreApplication::pipeline_preview);
     connect(_presenter.get(), &GuiPresenter::component_status_changed, this,
@@ -306,7 +306,7 @@ void CoreApplication::apply_processing_settings() {
     _presenter->apply_processing_settings();
 }
 pipeline::AudioPipeline &CoreApplication::pipeline() {
-    auto *engine = _presenter->client().local_engine();
+    auto *engine = _presenter->is_remote() ? nullptr : _engine_provider->local_engine();
     if (!engine)
         throw std::logic_error("Local diagnostic engine unavailable in remote GUI");
     return *engine;

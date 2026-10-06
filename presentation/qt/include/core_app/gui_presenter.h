@@ -9,7 +9,7 @@
 #include <map>
 
 #include "core_app/types.h"
-#include "pipeline/engine_client.h"
+#include "pipeline/engine_port.h"
 
 Q_DECLARE_LOGGING_CATEGORY(core_app_main)
 
@@ -20,7 +20,7 @@ class GuiPresenter final : public QObject {
     GuiState &state() {
         return _state;
     }
-    pipeline::EngineClient &client() {
+    pipeline::EnginePort &client() {
         return *_client;
     }
     const std::vector<float> &window() const {
@@ -30,8 +30,8 @@ class GuiPresenter final : public QObject {
         return _frequency_step;
     }
 
-    explicit GuiPresenter(GuiState &state, const QString &remote_host = {}, quint16 remote_port = 8213,
-                          QObject *parent = nullptr, pipeline::AudioSourceFactory source_factory = {});
+    explicit GuiPresenter(GuiState &state, std::shared_ptr<pipeline::EngineProvider> provider,
+                          const QString &remote_host = {}, quint16 remote_port = 8213, QObject *parent = nullptr);
 
     ~GuiPresenter() override;
 
@@ -130,9 +130,9 @@ class GuiPresenter final : public QObject {
     bool _remote = false;
     QJsonObject _remote_endpoint;
     GuiState &_state;
-    pipeline::AudioSourceFactory _source_factory;
-    std::unique_ptr<pipeline::EngineClient> _client;
-    std::map<QString, std::unique_ptr<pipeline::EngineClient>> _inactive_clients;
+    std::shared_ptr<pipeline::EngineProvider> _provider;
+    std::unique_ptr<pipeline::EnginePort> _client;
+    std::map<QString, std::unique_ptr<pipeline::EnginePort>> _inactive_clients;
     bool _load_selected_snapshot = false;
     void bind_client();
     void save_device_document();

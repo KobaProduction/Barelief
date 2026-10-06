@@ -398,7 +398,11 @@ int main() {
                 check(shortcut.isEmpty() || !(shortcut[0].keyboardModifiers() & Qt::ControlModifier) ||
                           (action->objectName() == "saveSettings" && shortcut == QKeySequence(QKeySequence::Save)) ||
                           (action->objectName() == "saveSettingsAs" && shortcut == QKeySequence(QKeySequence::SaveAs)) ||
-                          (action->objectName() == "openSettingsFile" && shortcut == QKeySequence(QKeySequence::Open)),
+                          (action->objectName() == "openSettingsFile" && shortcut == QKeySequence(QKeySequence::Open)) ||
+                          (action->shortcutContext() == Qt::WidgetShortcut &&
+                           (shortcut == QKeySequence(QKeySequence::Copy) ||
+                            shortcut == QKeySequence(QKeySequence::Cut) ||
+                            shortcut == QKeySequence(QKeySequence::Paste))),
                       "Unexpected application Ctrl shortcut remains");
         auto *saveShortcut = window->findChild<QAction *>("saveSettings");
         check(saveShortcut && saveShortcut->shortcut() == QKeySequence(QKeySequence::Save),

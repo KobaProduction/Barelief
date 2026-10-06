@@ -16,6 +16,7 @@ set(BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(QtNodes)
 
 target_link_libraries(core_app_components PUBLIC
+        qt_engine_ports
         Qt6::Core
         aggregator-library
         config_document

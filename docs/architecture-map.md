@@ -9,6 +9,9 @@ unchanged. The pinned responsibility reference is recorded in that ledger.
 flowchart TD
     GUI[apps/desktop_gui composition] --> UI[presentation/qt]
     GUI --> Desktop[adapters/desktop]
+    GUI --> Ports[presentation/ports: EnginePort / EngineProvider]
+    UI --> Ports
+    Desktop --> Ports
     UI --> Desktop
     CLI[apps/desktop_core composition] --> Desktop
     Registry[apps/registry composition] --> Desktop
@@ -44,6 +47,7 @@ traffic or a thread hierarchy.
 | Desktop capture worker and legacy analysis compatibility API | `adapters/desktop/analysis` / `analyzer` |
 | ESP-IDF byte transport and shared SDK source component | `adapters/esp_idf` |
 | Workspace, editor, settings, themes, presenter and renderers | `presentation/qt` |
+| Qt-facing command/snapshot input port and delivery DTOs | `presentation/ports` / `qt_engine_ports` |
 | Concrete GUI, CLI and registry dependency assembly | `apps/desktop_gui`, `apps/desktop_core`, `apps/registry` |
 | Historical visualizer entrypoint using the same desktop runtime | `apps/compatibility_gui` |
 
@@ -53,6 +57,14 @@ AudioPipeline uses GraphExecutor and GraphLifecycle. Capture workers deliver PCM
 the graph determines which numerical stages execute. Legacy Analyzer/FFT helpers
 delegate to common kernels and retain their historical public API. They do not
 define a second graph scheduler.
+
+GuiPresenter receives an abstract EngineProvider and owns active/inactive clients
+through EnginePort. Desktop GUI composition constructs the local/TCP EngineClient
+adapters; the presenter does not instantiate or downcast them. Qt-facing command
+and display DTOs live outside the portable application/domain. Editor JSON
+formatting still uses desktop graph adapters, represented by UI -> Desktop above.
+The owned TypedFrame compatibility header remains Qt-free; the portable codec
+wrapper uses its pure include directory without linking qt_engine_ports.
 
 Canonical targets are declared beside these responsibilities. Former `src/*`
 implementation trees and relative forwarding headers are removed. Stable target

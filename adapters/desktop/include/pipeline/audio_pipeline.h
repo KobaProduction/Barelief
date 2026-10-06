@@ -1,4 +1,5 @@
 #pragma once
+#include "pipeline/engine_models.h"
 #include <QObject>
 #include <QThread>
 #include <QTimer>
@@ -17,30 +18,6 @@
 #include "wled/wled_audio_reactive_server.h"
 
 namespace pipeline {
-using State = core::RuntimeState;
-struct ComponentStatus {
-    State state = State::Stopped;
-    QString error;
-    uint64_t revision = 0;
-};
-struct HistorySnapshot {
-    uint64_t graph_revision = 0;
-    std::vector<std::vector<float>> values;
-    uint64_t analyzer_generation = 0;
-};
-struct ViewFrame {
-    SpectrumFrame spectrum;
-    std::vector<float> fft, mel;
-    QMap<int, NodePreview> previews;
-    bool spectrogram = true;
-    uint64_t graph_revision = 0;
-    uint64_t ready_timestamp_ns = 0;
-    uint64_t epoch = 0;
-    std::vector<float> window_signal, window, windowed_signal;
-    float frequency_step = 0;
-    std::shared_ptr<const HistorySnapshot> history;
-    QMap<int, TypedFrame> views;
-};
 // Commands are serialized on a dedicated event loop; DSP/capture have their own workers.
 // Stop producers before replacing callbacks or destroying the controller.
 class AudioPipeline final {

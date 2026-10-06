@@ -1,3 +1,4 @@
+#include "synthetic_engine_provider.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/scheme_editor/editor_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
@@ -200,7 +201,7 @@ static void held_key_pan_checks(bool overlay_only=false,bool clipboard_only=fals
         state.delegate_model_registry->registerModel([kind=definition.name] {return std::make_unique<AudioNodeModel>(kind);},definition.category);
     state.data_flow_graph=std::make_shared<QtNodes::DataFlowGraphModel>(state.delegate_model_registry);
     state.data_flow_graph->load(peer.active);
-    GuiPresenter presenter(state,"127.0.0.1",peer.serverPort()); presenter.initialize();
+    GuiPresenter presenter(state, test_fixture::synthetic_engine_provider(), "127.0.0.1",peer.serverPort()); presenter.initialize();
     // Establish the initial remote document before measuring selection effects.
     // A fixed delay can let the initial snapshot/re-layout arrive during selection.
     QElapsedTimer handshake;handshake.start();
@@ -421,7 +422,7 @@ static void standard_presets() {
         state.delegate_model_registry->registerModel([kind=definition.name] {return std::make_unique<AudioNodeModel>(kind);});
     state.data_flow_graph=std::make_shared<QtNodes::DataFlowGraphModel>(state.delegate_model_registry);
     auto &graph=*state.data_flow_graph; graph.load(state.file_configs.scene_graph);
-    GuiPresenter presenter(state,"127.0.0.1",peer.serverPort()); presenter.initialize(); QTest::qWait(100);
+    GuiPresenter presenter(state, test_fixture::synthetic_engine_provider(), "127.0.0.1",peer.serverPort()); presenter.initialize(); QTest::qWait(100);
     require(presenter.client().snapshot().epoch!=0,"Preset peer handshake did not complete");
     SchemeEditorWidget editor(presenter); editor.resize(1500,900); editor.show(); QTest::qWait(60);
     auto *scene=editor.findChild<QtNodes::DataFlowGraphicsScene *>();
@@ -540,7 +541,7 @@ int main(int argc, char **argv) {
         auto extended=source; extended["node-extension"]=44; document["nodes"]=QJsonArray{extended,sink};
         state.file_configs.scene_graph=document; state.file_configs.pipeline_graph=document;
         auto &graph=*state.data_flow_graph; graph.load(document);
-        GuiPresenter presenter(state); presenter.initialize();
+        GuiPresenter presenter(state, test_fixture::synthetic_engine_provider()); presenter.initialize();
         // Enabled local sources now start on valid bootstrap Apply. Keep this
         // interaction fixture stopped so its explicit preview injections test
         // delivery/invalidation instead of racing the 100 ms live-preview gate.

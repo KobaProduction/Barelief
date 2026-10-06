@@ -1,4 +1,5 @@
 #pragma once
+#include "pipeline/engine_models.h"
 #include "analyzer/analyze/analyzer.h"
 #include "pipeline/typed_frame.h"
 #include <dataflow_runtime/runtime.h>
@@ -17,10 +18,6 @@ const std::vector<NodeDefinition> &node_definitions();
 NodeDefinition node_definition(const QString &name);
 QString canonical_node_name(const QString &name);
 QJsonObject canonical_graph_document(QJsonObject document);
-struct NodePreview {
-    size_t values = 0;
-    float peak = 0;
-};
 struct GraphOutput {
     QMap<int, TypedFrame> ports, views;
     std::vector<std::pair<int, TypedFrame>> output_events;
