@@ -1,0 +1,2 @@
+add_executable(pipeline_cli main.cpp)
+target_link_libraries(pipeline_cli PRIVATE audio_pipeline config_document aggregator-library)

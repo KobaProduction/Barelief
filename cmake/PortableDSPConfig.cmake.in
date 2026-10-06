@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(BDSP CONFIG)
+include("${CMAKE_CURRENT_LIST_DIR}/portable_sdk_targets.cmake")
+check_required_components(PortableDSP)

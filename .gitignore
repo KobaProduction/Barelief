@@ -5,3 +5,5 @@ cmake-*-*
 /build-gui/
 /build-network/
 /build-pipeline-owner/
+/build-adapter-slice/
+/build-sdk*/

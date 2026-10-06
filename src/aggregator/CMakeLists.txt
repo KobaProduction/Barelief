@@ -34,10 +34,4 @@ target_link_libraries(${LIB_NAME} PUBLIC
         BDSP
 )
 
-add_executable(aggregator_server_app src/main_server.cpp)
-target_link_libraries(aggregator_server_app PRIVATE ${LIB_NAME})
-
-add_executable(aggregator_client_app src/main_client.cpp)
-target_link_libraries(aggregator_client_app PRIVATE ${LIB_NAME})
-
-
+add_subdirectory(${CMAKE_SOURCE_DIR}/apps/registry ${CMAKE_BINARY_DIR}/apps/registry)

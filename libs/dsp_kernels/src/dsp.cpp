@@ -1,11 +1,9 @@
-#include "dsp_core/dsp.h"
+#include "dsp_kernels/dsp.h"
 #include <algorithm>
 #include <cmath>
-#include <mutex>
-#include "dsps_fft2r.h"
-#include "dsps_fft4r.h"
+#include "backend.h"
 
-namespace dsp_core {
+namespace dsp_kernels {
 void hann_window(std::span<float> output) {
     for (size_t i = 0; i < output.size(); ++i)
         output[i] = output.size() < 2 ? 1 : 0.5 * (1 - std::cos(float(i * 2 * 3.14159265358979323846 * (1 / float(output.size() - 1)))));
@@ -41,31 +39,15 @@ std::optional<MemoryRequirements> estimate_memory(std::size_t n, std::size_t ban
     memory.queue_payload_bytes = queue_slots * 2 * n * sizeof(float);
     memory.history_payload_bytes = history_rows * bands * sizeof(float);
     // Shared tables are prepared for the build profile, independent of instance N.
-    std::size_t log2 = 0, log4 = 0;
-    for (auto size = max_fft_samples; size > 1; size >>= 1) ++log2;
-    for (auto size = max_radix4_samples; size > 1; size >>= 2) ++log4;
-    memory.shared_radix2_tables_bytes =
-        max_fft_samples * sizeof(float) + 2 * dsps_fft2r_rev_tables_fc32_size[log2 - 4] * sizeof(uint16_t);
-    memory.shared_radix4_tables_bytes =
-        max_radix4_samples * 4 * sizeof(float) + 2 * dsps_fft4r_rev_tables_fc32_size[log4 - 2] * sizeof(uint16_t);
+    memory.shared_radix2_tables_bytes = detail::shared_table_bytes(false);
+    memory.shared_radix4_tables_bytes = detail::shared_table_bytes(true);
     return memory;
 }
 bool FFT::prepare(std::size_t n, bool radix4) {
     scratch_.clear();
     if (n < 4 || n > max_fft_samples || (n & (n - 1)) || (radix4 && (n & 0x55555555) == 0))
         return false;
-    // ESP ANSI tables are immutable after initialization. Always initialize the
-    // profile maximum once so independent plans cannot invalidate each other.
-    static std::mutex init_mutex;
-    std::lock_guard lock(init_mutex);
-    const auto status = radix4 ? dsps_fft4r_init_fc32(nullptr, max_radix4_samples)
-                              : dsps_fft2r_init_fc32(nullptr, max_fft_samples);
-    if (status != ESP_OK)
-        return false;
-    // Vendor init returns success without growing previously initialized tables.
-    // Reject that configuration rather than reallocating another user's tables.
-    if (radix4 ? (!dsps_fft4r_w_table_fc32 || dsps_fft4r_w_table_size < 2 * n)
-               : (!dsps_fft_w_table_fc32 || dsps_fft_w_table_size < n))
+    if (!detail::prepare_backend(n, radix4))
         return false;
     radix4_ = radix4;
     scratch_.resize(n * 2);
@@ -79,15 +61,8 @@ bool FFT::process(std::span<const float> input, std::span<float> output, bool ha
         scratch_[2 * i] = input[i];
         scratch_[2 * i + 1] = 0;
     }
-    if (radix4_) {
-        if (dsps_fft4r_fc32_ansi_(scratch_.data(), n, dsps_fft4r_w_table_fc32, dsps_fft4r_w_table_size) != ESP_OK ||
-            dsps_bit_rev4r_fc32(scratch_.data(), n) != ESP_OK)
-            return false;
-    } else {
-        if (dsps_fft2r_fc32_ansi_(scratch_.data(), n, dsps_fft_w_table_fc32) != ESP_OK ||
-            dsps_bit_rev_fc32_ansi(scratch_.data(), n) != ESP_OK)
-            return false;
-    }
+    if (!detail::transform(scratch_.data(), n, radix4_))
+        return false;
     for (std::size_t i = 0; i < output.size(); ++i) {
         const auto re = scratch_[2 * i], im = scratch_[2 * i + 1];
         output[i] = (hartley ? std::abs(re - im) : std::hypot(re, im)) / n;
@@ -95,6 +70,10 @@ bool FFT::process(std::span<const float> input, std::span<float> output, bool ha
     return true;
 }
 bool MelFilterBank::prepare(std::size_t bins, std::size_t rate, std::size_t bands) {
+    bins_ = bands_ = 0;
+    boundaries_.clear();
+    if (bins > max_fft_samples / 2 || bands > max_mel_bands)
+        return false;
     bins_ = bins;
     bands_ = bands;
     boundaries_.assign(bands + 2, 0);
@@ -124,7 +103,10 @@ bool MelFilterBank::process(std::span<const float> input, std::span<float> outpu
     return true;
 }
 bool StereoProcessor::prepare(std::size_t n, std::size_t rate, std::size_t bands) {
-    return fft_.prepare(n, (n & 0x55555555) != 0) && mel_.prepare(n / 2, rate, bands);
+    // Invalidate both plans on invalid geometry, avoiding stale Mel state.
+    const bool fft_ready = fft_.prepare(bands <= max_mel_bands ? n : 0, (n & 0x55555555) != 0);
+    const bool mel_ready = mel_.prepare(fft_ready ? n / 2 : max_fft_samples, rate, bands);
+    return fft_ready && mel_ready;
 }
 bool StereoProcessor::process(std::span<float> left, std::span<float> right, std::span<const float> window,
                               std::span<const float> weights, std::span<float> sl, std::span<float> sr,
@@ -152,4 +134,4 @@ bool StereoProcessor::process_mel(std::span<const float> left, std::span<const f
                                   std::span<float> mr) const {
     return mel_.process(left, ml) && mel_.process(right, mr);
 }
-} // namespace dsp_core
+} // namespace dsp_kernels

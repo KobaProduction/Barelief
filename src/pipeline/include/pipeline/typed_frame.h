@@ -3,10 +3,11 @@
 #include <cstddef>
 #include <vector>
 #include <string>
+#include <signal_contracts/frame.h>
 
 namespace pipeline {
 // Transport-independent owned payload. Timestamps retain the source clock domain.
-enum class FrameType { PCM, Window, Windowed, StereoSpectrum, Spectrum, Mel, History };
+using FrameType = signal_contracts::FrameType;
 struct TypedFrame {
     FrameType type = FrameType::PCM;
     uint64_t sequence = 0, generation = 0, epoch = 0, graph_revision = 0;
