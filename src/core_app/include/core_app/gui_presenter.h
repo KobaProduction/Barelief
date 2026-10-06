@@ -6,6 +6,7 @@
 #include <QMainWindow>
 #include <QString>
 #include <optional>
+#include <map>
 
 #include "core_app/config_manager.h"
 #include "pipeline/engine_client.h"
@@ -37,19 +38,37 @@ class GuiPresenter final : public QObject {
     bool is_remote() const {
         return _remote;
     }
+    QJsonObject remote_endpoint() const { return _remote_endpoint; }
     bool graph_request_pending() const {
-        return !_pending_graphs.isEmpty();
+        return !_pending_graphs.isEmpty() || _queued_graph.has_value();
     }
     void initialize();
+    quint64 set_node_parameters(int node, const QJsonObject &parameters);
+    void select_device(const QString &uuid, const QString &host, quint16 port);
     void update_subscription();
     void set_visible_views(quint32 mask);
-    QString saved_graph_warning() const { return _saved_graph_warning; }
+    QString local_device_id() const {
+        return _local_device_id;
+    }
+    QString device_id() const {
+        return _device_id;
+    }
+    QString graph_id() const {
+        return _graph_id;
+    }
+    QString apply_status() const {
+        return _apply_status;
+    }
+    QString saved_graph_warning() const {
+        return _saved_graph_warning;
+    }
 
   public Q_SLOTS:
     void set_spectrum_channel(int channel);
     void set_spectrum_merge(int merge);
     void apply_processing_settings();
     quint64 apply_pipeline_graph(const QJsonObject &document);
+    quint64 apply_graph_and_start(const QJsonObject &document);
     void start_analyzer();
 
     void stop_analyzer();
@@ -65,7 +84,13 @@ class GuiPresenter final : public QObject {
     void restart_wled_audio_reactive_server();
 
   Q_SIGNALS:
+    void explicit_stop_requested();
     void on_config_updated();
+    void node_views_ready(const QMap<int, pipeline::TypedFrame> &views);
+    void active_graph_changed(const QJsonObject &graph);
+    void views_cleared();
+    void selected_device_changed(const QJsonObject &draft, const QJsonObject &editor_view);
+    void apply_status_changed(QString status);
     void processing_state_changed();
     void saved_graph_warning_changed(QString warning);
     void command_rejected(quint64 request_id, QString error);
@@ -102,19 +127,32 @@ class GuiPresenter final : public QObject {
     std::optional<quint32> _visible_views;
     quint32 _subscription = std::numeric_limits<quint32>::max();
     bool _remote = false;
+    QJsonObject _remote_endpoint;
     GuiState &_state;
     std::unique_ptr<pipeline::EngineClient> _client;
+    std::map<QString, std::unique_ptr<pipeline::EngineClient>> _inactive_clients;
+    bool _load_selected_snapshot = false;
+    void bind_client();
+    void save_device_document();
     struct DraftPatch {
         int id;
         QJsonObject before, after;
     };
     struct PendingGraph {
+        quint64 logical_id = 0, epoch = 0, graph_revision = 0;
         QJsonObject document;
         bool bootstrap = false;
+        bool start_analyzer = false, start_capture = false;
         bool settings = false;
         std::vector<DraftPatch> patches;
     };
     QMap<quint64, PendingGraph> _pending_graphs;
+    std::optional<PendingGraph> _queued_graph;
+    quint64 _logical_request = 0;
+    QString _local_device_id = "local";
+    QString _device_id = "local", _graph_id = "main", _apply_status = "Draft";
+    quint64 dispatch_graph(PendingGraph request);
+    void set_apply_status(QString status);
     QJsonObject _active_graph;
     QString _saved_graph_warning;
     bool _saved_draft_unsupported = false;

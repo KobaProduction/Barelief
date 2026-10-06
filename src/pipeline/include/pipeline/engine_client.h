@@ -22,8 +22,8 @@ struct EngineCommand {
     int value = 0;
     QHostAddress interface_address = QHostAddress::AnyIPv4, destination = QHostAddress::Broadcast;
     quint16 port = 11988;
-    enum Subscription { Views = 1, Audio = 2, History = 4, Previews = 8, Diagnostics = 16 };
-    quint32 subscriptions = Views | History | Previews;
+    enum Subscription { Views = 1, Audio = 2, History = 4, Previews = 8, Diagnostics = 16, TypedViews = 32 };
+    quint32 subscriptions = Views | History | Previews | TypedViews;
 };
 struct EngineSnapshot {
     quint64 epoch = 0, revision = 0, graph_revision = 0;
@@ -52,6 +52,8 @@ class EngineClient final : public QObject {
     void set_reply_handler(std::function<void(EngineReply)> handler);
     EngineSnapshot snapshot() const;
     AudioPipeline *local_engine() const;
+    bool configure_network(QJsonObject config, QString *error = nullptr);
+    QString network_warning() const;
     void connect_remote();
     void disconnect_remote();
 

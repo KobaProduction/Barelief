@@ -1,4 +1,5 @@
 #include "core_app/core_application.h"
+#include "core_app/gui_presenter.h"
 #include "core/latest_delivery.h"
 #include "visualization/spectrograms/spectrogram_graph.h"
 #include <QJsonArray>
@@ -125,15 +126,37 @@ int main(int, char **) {
         SpectrogramGraph camera_graph;
         camera_graph.set_camera_state(saved.ui.camera);
         const auto staged = camera_graph.camera_state();
-        require(staged["horizontal"] == saved.ui.camera["horizontal"] && staged["zoom"] == saved.ui.camera["zoom"] &&
-                std::abs(staged["target"].toArray()[0].toDouble() - 0.2) < 1e-6,
-                "Camera state lost before lazy graph initialization");
-        camera_graph.set_camera_state({{"horizontal",999}, {"vertical",-500}, {"zoom",-1}, {"target",QJsonArray{99,-99,0.5}}});
+        const auto migrated_orientation = QQuaternion::fromEulerAngles(-60, -35, 0);
+        const auto migrated_position =
+            migrated_orientation.rotatedVector(QVector3D(0, 0, 1.5f)) + QVector3D(0.2f, -0.3f, 0.4f);
+        auto position_of = [](const QJsonObject &state) {
+            const auto p = state["position"].toArray();
+            return QVector3D(p[0].toDouble(), p[1].toDouble(), p[2].toDouble());
+        };
+        auto orientation_of = [](const QJsonObject &state) {
+            const auto q = state["quaternion"].toArray();
+            return QQuaternion(q[0].toDouble(), q[1].toDouble(), q[2].toDouble(), q[3].toDouble());
+        };
+        require(staged["version"].toInt() == 2 && staged["position"].toArray().size() == 3 &&
+                    staged["quaternion"].toArray().size() == 4 &&
+                    (position_of(staged) - migrated_position).length() < 1e-6f &&
+                    std::abs(QQuaternion::dotProduct(orientation_of(staged), migrated_orientation)) > 1 - 1e-6f,
+                "Legacy orbit camera did not migrate to an equivalent v2 pose before initialization");
+        SpectrogramGraph restored_camera;
+        restored_camera.set_camera_state(staged);
+        require((position_of(restored_camera.camera_state()) - migrated_position).length() < 1e-6f &&
+                    std::abs(QQuaternion::dotProduct(orientation_of(restored_camera.camera_state()),
+                                                     migrated_orientation)) > 1 - 1e-6f,
+                "Migrated v2 camera did not round trip");
+        camera_graph.set_camera_state(
+            {{"horizontal", 999}, {"vertical", -500}, {"zoom", -1}, {"target", QJsonArray{99, -99, 0.5}}});
         const auto bounded = camera_graph.camera_state();
-        require(bounded["horizontal"].toDouble() == 180 && bounded["vertical"].toDouble() == 0 &&
-                bounded["zoom"].toDouble() == 10 && bounded["target"].toArray() == QJsonArray{1,-1,0.5}, "Invalid camera position not bounded");
-        camera_graph.set_camera_state({{"zoom",1500}});
-        require(camera_graph.camera_state()["zoom"].toDouble() == 1500, "Close camera position still limited to 500");
+        require(std::abs(position_of(bounded).length() - SpectrogramGraph::maximum_camera_distance) < 1e-5f &&
+                    std::abs(orientation_of(bounded).length() - 1) < 1e-6f,
+                "Migrated camera exceeded the free camera distance bound or lost normalized orientation");
+        camera_graph.set_camera_state({{"zoom", 1500}});
+        require(std::abs(position_of(camera_graph.camera_state()).length() - 0.2f) < 1e-6f,
+                "Close legacy camera did not migrate to the expected distance");
         QFile invalid(manager.getConfigPath());
         require(invalid.open(QIODevice::WriteOnly), "Cannot write invalid config");
         invalid.write(R"({"wled_ar_server":{"port":70000}})"); invalid.close();
@@ -215,17 +238,35 @@ int main(int, char **) {
             require(app.pipeline().current_status(component).state==expected,"Engine did not reach expected state");
         };
         auto feed = [&] { pipeline::AudioFrame frame; frame.sample_rate=48000; frame.left=wave;frame.right=wave;app.pipeline().feed(frame); };
-        int updates = 0;
-        QObject::connect(&app, &CoreApplication::amplitudes_ready, &app, [&](const auto &) { ++updates; });
+        int updates = 0, clears = 0, typed_clears = 0;
+        bool valid_clear_markers = true;
+        QObject::connect(&app.presenter(), &GuiPresenter::node_views_ready, &app, [&](const auto &views) {
+            for (const auto &frame : views) if (!frame.available) {
+                ++typed_clears;
+                valid_clear_markers = valid_clear_markers && frame.sequence == 0 && frame.left.empty() &&
+                                      frame.right.empty() && frame.values.empty() && frame.history.empty();
+            }
+        });
+        QObject::connect(&app, &CoreApplication::amplitudes_ready, &app, [&](const auto &values) {
+            if (values.empty()) ++clears;
+            else ++updates;
+        });
         for (int i = 0; i < 10; ++i) {
             app.start_analyzer(); app.start_analyzer(); wait_status("Analyzer",pipeline::State::Running);
             feed();
             pump();
+            const auto clears_before_stop = clears;
+            const auto typed_clears_before_stop = typed_clears;
             app.stop_analyzer(); app.stop_analyzer();
             wait_status("Analyzer",pipeline::State::Stopped);
             const auto before = updates;
             pump(5);
             require(updates == before, "Stopped analyzer delivered stale data");
+            for (int attempt = 0; attempt < 40 && clears == clears_before_stop; ++attempt) pump(5);
+            require(clears > clears_before_stop, "Stopped analyzer did not clear GUI spectra");
+            require(typed_clears > typed_clears_before_stop && valid_clear_markers,
+                    "Stop did not deliver unavailable sequence-zero empty per-node control markers");
+            require(updates == before, "Stopped analyzer delivered data while awaiting its clear marker");
         }
         require(updates > 0, "No GUI spectrum delivery");
         app.start_analyzer(); wait_status("Analyzer",pipeline::State::Running);

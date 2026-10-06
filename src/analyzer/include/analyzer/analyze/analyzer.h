@@ -41,6 +41,10 @@ struct SpectrumFrame {
     uint64_t generation = 0;
     uint64_t dropped_windows = 0;
     bool discontinuity = false;
+    bool raw_window = false;
+    bool raw_pcm = false;
+    uint64_t pipeline_epoch = 0;
+    uint64_t ingress_serial = 0;
     std::vector<float> window_signal, window, windowed_signal;
     std::vector<float> left, right, mel_left, mel_right;
 };
@@ -62,10 +66,16 @@ protected:
     on_windowed_signal_handler_t _windowed_signal_handler = nullptr;
 
     bool _mel_enabled = true;
+    bool _window_only = false;
+    bool _pcm_only = false;
+    uint64_t _stream_epoch = 0;
+    uint64_t _ingress_serial = 0;
     struct PendingWindow {
         std::vector<float> left, right;
         int64_t input_timestamp_ns = 0;
         uint64_t sequence = 0;
+        uint64_t epoch = 0;
+        uint64_t ingress_serial = 0;
     };
     static constexpr size_t pending_capacity = 16;
     std::array<PendingWindow, pending_capacity> _pending;
@@ -100,6 +110,10 @@ public:
 
     void set_update_handler(update_handler_t handler);
     void set_mel_enabled(bool enabled);
+    void set_window_only(bool enabled);
+    void set_pcm_only(bool enabled);
+    void set_stream_epoch(uint64_t epoch, bool preserve_continuity = false);
+    void set_ingress_serial(uint64_t serial);
     void set_frame_handler(std::function<void(const SpectrumFrame &)> handler);
     static std::vector<float> merge_spectra(const std::vector<float> &left, const std::vector<float> &right, SpectrumMerge mode);
     void set_update_window_function_handler(on_update_window_function_handler_t handler);

@@ -39,7 +39,8 @@ void FreqChartView::update_freq_step(const qreal freq_step) {
     if (!std::isfinite(freq_step) || freq_step <= 0) return;
     if(_freq_step!=freq_step) _need_update=true;
     _freq_step = freq_step;
-    _freq_axis.setRange(0, _freq_step * static_cast<qreal>(_data.size()));
+    _freq_axis.setRange(_automatic_x_range ? 0 : _manual_x_min,
+                       _automatic_x_range ? std::max(qreal(1),_freq_step * static_cast<qreal>(_data.size())) : _manual_x_max);
     _freq_axis.show();
 }
 

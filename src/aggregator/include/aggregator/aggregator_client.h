@@ -16,6 +16,7 @@ struct AggregatorClientConfig {
     QUuid uuid{};
     ComponentType type = ComponentType::unknown;
     uint16_t component_server_port = 0;
+    std::optional<session_token_t> session_token; // Persisted by the composition root for process restart.
 };
 
 /// @brief Клиент агрегатора с поддержкой событийной системы.
@@ -26,7 +27,7 @@ struct AggregatorClientConfig {
 class AggregatorClient final : public QObject {
     Q_OBJECT
 
-public:
+  public:
     /// @brief Конструктор клиента агрегатора
     /// @param config Конфигурация клиента
     /// @param parent Родительский объект Qt
@@ -48,17 +49,31 @@ public:
     /// @param address IP-адрес сервера агрегатора
     /// @param port Порт сервера агрегатора
     /// @param timeout_ms Тайм-аут подключения в миллисекундах
-    void connect_to_aggregator_server_with_waiting(const QHostAddress &address = QHostAddress::LocalHost,
-                                  uint16_t port = aggregator_component::DEFAULT_PORT,
-                                  int32_t timeout_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS);
-
+    void
+    connect_to_aggregator_server_with_waiting(const QHostAddress &address = QHostAddress::LocalHost,
+                                              uint16_t port = aggregator_component::DEFAULT_PORT,
+                                              int32_t timeout_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS);
 
     /// @brief Проверка подключения к серверу
     /// @return true если подключен, false в противном случае
     bool is_connected() const;
     void disconnect_from_aggregator_server();
-    core::RuntimeState runtime_state() const { return _state; }
-    QString error() const { return _error; }
+    core::RuntimeState runtime_state() const {
+        return _state;
+    }
+    QString error() const {
+        return _error;
+    }
+    void set_capabilities(QJsonObject capabilities);
+    QMap<QUuid, QJsonObject> capabilities() const {
+        return _capabilities;
+    }
+    QMap<QUuid, component_info_t> components() const {
+        return _components;
+    }
+    // Returns only a currently discoverable core control endpoint, never a stream port.
+    QJsonObject resolve_engine(const QUuid &uuid, QString *error = nullptr) const;
+    QString discovery_status() const;
 
     /// @brief Проверка регистрации клиента как компонента
     /// @return true если зарегистрирован, false в противном случае
@@ -71,10 +86,11 @@ public:
     void set_reconnect_mode(bool infinite_mode, int32_t tries = aggregator_component::RECONNECT_TRIES,
                             int32_t reconnect_interval_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS);
 
-Q_SIGNALS:
+  Q_SIGNALS:
     void status_changed(core::RuntimeState state, const QString &error);
     /// @brief Сигнал о закрытии клиента
     void on_client_disconnected();
+    void capabilities_changed(const QUuid &uuid, const QJsonObject &capabilities);
 
     /// @brief Сигнал о подключении клиента к агрегатору
     void on_client_connected();
@@ -92,8 +108,11 @@ Q_SIGNALS:
     /// @param info Информация о компоненте
     void on_update_component_info(const QUuid &uuid, const component_info_t &info);
 
-private:
+  private:
     AggregatorClientConfig _cfg{};
+    QJsonObject _own_capabilities;
+    QMap<QUuid, QJsonObject> _capabilities;
+    QMap<QUuid, component_info_t> _components;
     TcpBDSPSocket _socket;
     QHostAddress _aggregator_server_address = QHostAddress::LocalHost;
     uint16_t _aggregator_server_port = aggregator_component::DEFAULT_PORT;
@@ -109,6 +128,7 @@ private:
     QString _error;
     void _begin_connection();
     void _set_status(core::RuntimeState state, QString error = {});
+    void _invalidate_discovery();
     int32_t _reconnect_interval_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS;
 
     void _handle_packet(BDSP::packet_context_t &packet_ctx);

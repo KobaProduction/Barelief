@@ -16,7 +16,7 @@ class MainWindow;
 class CoreApplication final : public QApplication {
     Q_OBJECT
 
-public:
+  public:
     CoreApplicationContext _ctx{};
 
     explicit CoreApplication(int &argc, char *argv[]);
@@ -26,12 +26,16 @@ public:
 
     [[nodiscard]] int exec() const;
 
-    GuiPresenter &presenter() { return *_presenter; }
+    GuiPresenter &presenter() {
+        return *_presenter;
+    }
     // Legacy diagnostics bridge; absent for a remote GUI.
     pipeline::AudioPipeline &pipeline();
 
-public Q_SLOTS:
+  public Q_SLOTS:
     void apply_processing_settings();
+    void save_configuration_as(const QString &path);
+    void open_configuration(const QString &path);
     void start_analyzer();
 
     void stop_analyzer();
@@ -46,9 +50,9 @@ public Q_SLOTS:
 
     void restart_wled_audio_reactive_server();
 
-Q_SIGNALS:
+  Q_SIGNALS:
     void on_config_updated();
-    void pipeline_preview(const QMap<int,pipeline::NodePreview> &previews);
+    void pipeline_preview(const QMap<int, pipeline::NodePreview> &previews);
     void component_status_changed(QString component, int state, QString error);
 
     void raw_signal_ready(const std::vector<float> &samples);
@@ -63,7 +67,7 @@ Q_SIGNALS:
 
     void test_amplitudes_ready(const std::vector<float> &test_amplitudes);
 
-    void spectrogram_updated(const std::vector<std::vector<float> > &spectrogram);
+    void spectrogram_updated(const std::vector<std::vector<float>> &spectrogram);
 
     void sample_rate_changed(uint32_t sample_rate);
 
@@ -75,16 +79,16 @@ Q_SIGNALS:
 
     void loopback_stopped();
 
-
-private:
+  private:
     std::unique_ptr<GuiPresenter> _presenter;
     QString _remote_host;
     quint16 _remote_port = 8213;
     MainWindow *_main_window = nullptr;
     ConfigManager _config_manager;
+    bool _opening_configuration = false;
 
     void _parse_command_line();
-
+    bool _save_configuration(bool force, const QString &saveAsPath = {});
 };
 
 #endif // CORE_APP_CORE_APPLICATION_H

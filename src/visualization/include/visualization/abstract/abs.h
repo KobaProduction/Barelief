@@ -13,16 +13,23 @@ public:
     void set_auto_resizing(bool value);
     void set_auto_gain(bool value, float min_max = 100.0f, float min_min = -100.0f, size_t speed = 10);
     void set_range(qreal min, qreal max);
+    void set_x_range(bool automatic, qreal minimum, qreal maximum);
+    void set_axis_precision(int precision);
     void update(const std::vector<float> &data);
+    void set_render_fps(int fps);
+    void set_render_visible(bool visible);
     size_t value_count() const { return _data.size(); }
     float peak_value() const;
 protected:
     std::vector<float> _data;
     bool _need_update = false;
     bool _pending_resize = false;
+    bool _render_visible = true;
     QSize _chart_size;
     bool _auto_resizing = false;
     bool _auto_gain = false;
+    bool _automatic_x_range = true;
+    qreal _manual_x_min = 0, _manual_x_max = 1;
     qreal _gain_min_max{};
     qreal _gain_min_min{};
     size_t _gain_speed{};

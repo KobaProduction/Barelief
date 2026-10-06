@@ -1,1 +1,7 @@
 cmake-*-*
+
+# Independent local build trees used for architecture validation.
+/build-editor/
+/build-gui/
+/build-network/
+/build-pipeline-owner/

@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QDockWidget>
+#include <QToolButton>
 #include <QScreen>
 #include <QProcess>
 #include <QToolBar>
@@ -28,12 +29,13 @@ static void require(bool ok,const char *message) { if (!ok) throw std::runtime_e
 int main(int argc,char **argv) {
     try {
         QTemporaryDir directory;
-        bool restoring = argc > 1;
+        const bool dockControls = argc > 1 && QString::fromLocal8Bit(argv[1]) == "--dock-controls";
+        bool restoring = argc > 1 && !dockControls;
         const auto path = restoring ? QString::fromLocal8Bit(argv[1]) : directory.filePath("workspace.json");
         const auto initial_graph = pipeline::GraphProgram::defaults();
         if (!restoring) {
             QFile file(path); require(file.open(QIODevice::WriteOnly),"Cannot create fixture");
-            auto fixture=QJsonDocument::fromJson(R"({"core":{"run_loopback":false,"run_analyser":false},"ui":{"autosave_enabled":false,"show_spectrogram":false,"workspace":{"extension":{"keep":24}},"editor_view":{"extension":{"keep":25}}},"extension":{"keep":23}})").object();
+            auto fixture=QJsonDocument::fromJson(R"({"core":{"run_loopback":false,"run_analyser":false},"ui":{"autosave_enabled":false,"show_spectrogram":true,"workspace":{"extension":{"keep":24}},"editor_view":{"extension":{"keep":25}}},"extension":{"keep":23}})").object();
             fixture["scene_graph"] = initial_graph;
             file.write(QJsonDocument(fixture).toJson());
         }
@@ -42,6 +44,57 @@ int main(int argc,char **argv) {
         MainWindow *window=nullptr;
         for(auto *widget:QApplication::topLevelWidgets()) if(auto *candidate=qobject_cast<MainWindow *>(widget)) window=candidate;
         require(window,"Main window absent"); window->show(); QTest::qWait(450);
+        if(dockControls) {
+            auto *dock=window->findChild<QDockWidget *>("fftDock");require(dock,"FFT dock absent");
+            dock->show();auto *strip=dock->titleBarWidget();
+            auto *toggle=dock->findChild<QToolButton *>("graphPlacement");
+            require(strip && toggle,"Dock controls absent");
+            for(int round=0;round<3;++round) {
+                toggle->menu()->actions()[0]->trigger();QTest::qWait(10);
+                require(dock->isFloating() && dock->titleBarWidget()==strip && strip->isVisible() && toggle->isVisible(),
+                        "Floating graph lost draggable title and return control");
+                toggle->menu()->actions()[1]->trigger();QTest::qWait(10);
+                require(!dock->isFloating() && dock->titleBarWidget()==strip,"Cannot reattach graph");
+            }
+            window->close();qInfo("Dock detach/reattach controls passed");return 0;
+        }
+        if (argc > 2) {
+            const auto mode = QString::fromLocal8Bit(argv[2]);
+            auto *surface = window->findChild<QDockWidget *>("spectrogramDock");
+            auto *pipeline = window->findChild<QDockWidget *>("dataFlowDock");
+            auto *frequency = window->findChild<QDockWidget *>("fftDock");
+            require(surface && pipeline && frequency, "Persistence probe docks absent");
+            QFile config_file(path);
+            auto bytes_on_disk = [&] { require(config_file.open(QIODevice::ReadOnly), "Probe read failed");
+                const auto bytes = config_file.readAll(); config_file.close(); return bytes; };
+            if (mode == "--probe-initial" || mode == "--probe-corrupt") {
+                require(!surface->isHidden() && !pipeline->isHidden(), "Stale flags or damaged workspace hid defaults");
+                if (mode == "--probe-initial") {
+                    frequency->toggleViewAction()->trigger();
+                    QTest::qWait(30);
+                    require(!surface->isHidden(), "Switching dock tab closed Spectrogram");
+                    frequency->setFloating(true);
+                    surface->hide();
+                    QTest::qWait(450);
+                }
+            } else if (mode == "--probe-restored") {
+                require(surface->isHidden() && !pipeline->isHidden() && !frequency->isHidden() && frequency->isFloating(),
+                        "Process restart lost hidden/open/floating dock preferences");
+            } else if (mode == "--probe-manual") {
+                require(!app._ctx.file_configs.ui.autosave_enabled, "Manual probe needs autosave off");
+                const auto original = bytes_on_disk();
+                surface->show(); frequency->hide(); pipeline->show(); QTest::qWait(450);
+                require(bytes_on_disk() == original, "Autosave-off dock actions wrote the config");
+                window->findChild<QAction *>("saveSettings")->trigger();
+                require(bytes_on_disk() != original, "Manual Save did not flush current dock visibility");
+            } else if (mode == "--probe-manual-restored") {
+                require(!surface->isHidden() && !pipeline->isHidden() && frequency->isHidden(),
+                        "Manual Save was not restored after process restart");
+            } else require(false, "Unknown persistence probe");
+            window->close();
+            qInfo("Workspace process persistence probe passed: %s", qPrintable(mode));
+            return 0;
+        }
         auto *editor=window->findChild<SchemeEditorWidget *>(); auto *scene=editor->findChild<QtNodes::DataFlowGraphicsScene *>();
         auto *view=editor->findChild<QtNodes::GraphicsView *>();
         auto *flow=window->findChild<QDockWidget *>("dataFlowDock"), *fft=window->findChild<QDockWidget *>("fftDock");
@@ -56,8 +109,9 @@ int main(int argc,char **argv) {
             window->close(); return 0;
         }
         auto *spectrogram = window->findChild<QDockWidget *>("spectrogramDock");
-        require(spectrogram && !spectrogram->isHidden() && !flow->isHidden() && fft->isHidden(),
-                "Default workspace must contain Spectrogram and pipeline only");
+        require(spectrogram && !spectrogram->isHidden() && !flow->isHidden() && !fft->isHidden() &&
+                    window->tabifiedDockWidgets(spectrogram).contains(fft),
+                "Default workspace must expose graph nodes as tabs above Data Flow");
         require(flow->geometry().top() >= spectrogram->geometry().bottom(),
                 "Pipeline is not below Spectrogram in default workspace");
         auto *graphs_menu=window->findChild<QMenu *>("graphsMenu");
@@ -163,7 +217,15 @@ int main(int argc,char **argv) {
             pipeline::AudioFrame frame;frame.sample_rate=48000;frame.left.resize(240);frame.right.resize(240);
             uint64_t offset=0;auto deadline=std::chrono::steady_clock::now();
             while(!stop.stop_requested()) {
-                for(size_t i=0;i<240;++i) frame.left[i]=frame.right[i]=std::sin(2*3.141592653589793*750*(offset+i)/48000);
+                for(size_t i=0;i<240;++i) {
+                    const double t=double(offset+i)/48000;
+                    double sample=0;
+                    for(int tone=0;tone<8;++tone) {
+                        const double carrier=73+tone*811;
+                        sample+=std::sin(2*3.141592653589793*carrier*t+0.18*std::sin(t*(tone+1)))/8;
+                    }
+                    frame.left[i]=frame.right[i]=float(sample);
+                }
                 offset+=240;app.pipeline().feed(frame);deadline+=std::chrono::milliseconds(5);std::this_thread::sleep_until(deadline);
             }
         });

@@ -54,10 +54,10 @@ int main(int argc,char **argv) {
         source_node["internal-data"]=source_params;source_nodes[0]=source_node;microphone["nodes"]=source_nodes;
         require(!pipeline::GraphProgram::compile(microphone,error),"Malformed source parameter silently accepted");
         auto nodes=document["nodes"].toArray();
-        nodes.append(QJsonObject{{"id",10},{"internal-data",QJsonObject{{"model-name","SpectrumGain"},{"gain",0}}}});
+        nodes.append(QJsonObject{{"id",100},{"internal-data",QJsonObject{{"model-name","SpectrumGain"},{"gain",0}}}});
         auto edges=document["connections"].toArray();
-        for(int i=0;i<edges.size();++i) if(edges[i].toObject()["inNodeId"].toInt()==3) edges[i]=edge(10,3);
-        edges.append(edge(2,10)); document["nodes"]=nodes; document["connections"]=edges;
+        for(int i=0;i<edges.size();++i) if(edges[i].toObject()["inNodeId"].toInt()==3) edges[i]=edge(100,3);
+        edges.append(edge(2,100)); document["nodes"]=nodes; document["connections"]=edges;
         auto muted=pipeline::GraphProgram::compile(document,error); require(bool(muted),qPrintable(error));
         auto result=muted->evaluate(frame); require(std::all_of(result.history.begin(),result.history.end(),[](float v){return v==0;}),"Gain node does not affect processing");
         require(muted->evaluate(frame,context).history==result.history,"Graph change retained stale scratch values");
@@ -67,10 +67,10 @@ int main(int argc,char **argv) {
         auto moved=active; nodes=moved["nodes"].toArray(); auto node=nodes[0].toObject(); node["position"]=QJsonObject{{"x",123},{"y",456}};nodes[0]=node;moved["nodes"]=nodes;
         require(engine.apply_graph(moved,error) && engine.graph_revision()==revision,"Moving nodes resets processing");
         auto missing=active; edges=missing["connections"].toArray();edges.removeAt(0);missing["connections"]=edges;
-        require(!engine.apply_graph(missing,error) && engine.graph()==moved,"Invalid draft replaced active graph");
+        require(engine.apply_graph(missing,error) && engine.graph()==missing,"Disconnected branch was rejected");
         auto bad_type=active;edges=bad_type["connections"].toArray();edges[0]=edge(3,1);bad_type["connections"]=edges;
         require(!pipeline::GraphProgram::compile(bad_type,error),"Incompatible ports accepted");
-        auto cycle=active;edges=cycle["connections"].toArray();edges[edges.size()-1]=edge(10,10);cycle["connections"]=edges;
+        auto cycle=active;edges=cycle["connections"].toArray();edges[edges.size()-1]=edge(100,100);cycle["connections"]=edges;
         require(!pipeline::GraphProgram::compile(cycle,error) && error.contains("cycle"),"Cycle accepted or misreported");
         auto unknown=active;unknown["version"]=99;require(!pipeline::GraphProgram::compile(unknown,error),"Unknown version accepted");
         auto bad_gain=active;nodes=bad_gain["nodes"].toArray();node=nodes.last().toObject();auto params=node["internal-data"].toObject();params["gain"]=-1;node["internal-data"]=params;nodes[nodes.size()-1]=node;bad_gain["nodes"]=nodes;
@@ -79,7 +79,8 @@ int main(int argc,char **argv) {
         require(file.open(QIODevice::ReadOnly),"Cannot reload graph");auto loaded=QJsonDocument::fromJson(file.readAll()).object();file.close();
         require(loaded==active && pipeline::GraphProgram::compile(loaded,error)->evaluate(frame).history==result.history,"Graph roundtrip changed output");
         QProcess console; console.start(QCoreApplication::applicationDirPath()+"/pipeline_cli",{"--config",temp.filePath("graph.json"),"--synthetic","--duration","300"});
-        require(console.waitForFinished(5000) && console.exitCode()==0,"Saved graph failed in console");
+        const bool finished=console.waitForFinished(5000);if(!finished || console.exitCode()!=0) qWarning()<<console.exitCode()<<console.errorString()<<console.readAllStandardError()<<console.readAllStandardOutput();
+        require(finished && console.exitCode()==0,"Saved graph failed in console");
         QProcess cadence;auto env=QProcessEnvironment::systemEnvironment();env.insert("QT_FORCE_STDERR_LOGGING","1");cadence.setProcessEnvironment(env);
         cadence.start(QCoreApplication::applicationDirPath()+"/pipeline_cli",{"--synthetic","--duration","1200"});
         require(cadence.waitForFinished(7000) && cadence.exitCode()==0,"Synthetic cadence console failed");

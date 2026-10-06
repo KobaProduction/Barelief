@@ -8,12 +8,11 @@
 #include "core/network/tcp_packet_socket.h"
 #include "core/network/tcp_packet_server.h"
 
-
 Q_DECLARE_LOGGING_CATEGORY(aggregator_server)
 
 /**
  * @brief Сервер агрегации событий
- * 
+ *
  * Центральный компонент системы для отслеживания доступности
  * и состояния всех компонентов. Работает на статическом порту 8212.
  */
@@ -21,7 +20,7 @@ Q_DECLARE_LOGGING_CATEGORY(aggregator_server)
 class AggregatorServer final : public TcpBDSPServer {
     Q_OBJECT
 
-public:
+  public:
     explicit AggregatorServer(QObject *parent = nullptr);
 
     ~AggregatorServer() override;
@@ -31,19 +30,20 @@ public:
 
     void stop();
 
-protected:
+  protected:
     QHash<TcpBDSPSocket *, std::optional<QUuid>> _sockets_uuid_map;
     QHash<QUuid, registered_component_t> _registered_components_map;
     QHash<QUuid, uint64_t> _offline_generation;
     uint64_t _next_generation = 0;
     uint32_t _registration_timeout_ms = aggregator_component::REGISTRATION_TIMEOUT_MS;
 
-protected Q_SLOTS:
+  protected Q_SLOTS:
     void _on_got_packet(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket);
 
     void _on_new_connection(TcpBDSPSocket *socket);
 
-private:
+  private:
+    QMap<QUuid, QJsonObject> _capabilities;
     bool _register_component(TcpBDSPSocket *socket, const QUuid &uuid, const component_info_t &new_info,
                              const uint16_t session_token);
 
@@ -64,9 +64,7 @@ private:
 
     void _update_component_state_with_broadcast(const QUuid &uuid, ComponentState new_state);
 
-
     void _start_offline_timer(const QUuid &uuid);
 };
-
 
 #endif // AGGREGATOR_SERVER_H

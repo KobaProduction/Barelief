@@ -29,6 +29,7 @@ uint64_t Analyzer::_task() {
     dsp_core::StereoProcessor processor;
     size_t prepared_rate = SIZE_MAX;
     bool mel_enabled = true;
+    bool window_only = false, pcm_only = false;
     uint64_t previous_frame_time=0;
     while (_running.load()) {
 
@@ -47,6 +48,8 @@ uint64_t Analyzer::_task() {
                 left.swap(pending.left); right.swap(pending.right);
                 _pending_head = (_pending_head + 1) % pending_capacity; --_pending_size;
                 frame.input_timestamp_ns = pending.input_timestamp_ns;
+                frame.pipeline_epoch = pending.epoch;
+                frame.ingress_serial = pending.ingress_serial;
                 frame.discontinuity = _force_discontinuity || pending.sequence != _sequence + 1;
                 _force_discontinuity = false;
                 frame.sequence = pending.sequence; _sequence = pending.sequence;
@@ -55,6 +58,7 @@ uint64_t Analyzer::_task() {
                 hann = window;
                 rate = _sample_rate;
                 mel_enabled = _mel_enabled;
+                window_only = _window_only;pcm_only = _pcm_only;
 
                 handler = _handler;
                 frame_handler = _frame_handler;
@@ -74,6 +78,15 @@ uint64_t Analyzer::_task() {
             frame.window = hann;
 
             frame.timestamp_ns = frame.input_timestamp_ns;
+            if (window_only) {
+                frame.raw_window = true;
+                frame.raw_pcm = pcm_only;
+                frame.left = left; frame.right = right;
+                frame.windowed_signal.clear();
+                if (frame_handler) frame_handler(frame);
+                if (handler) handler();
+                continue;
+            }
             if (prepared_rate != rate) {
                 if (!processor.prepare(_samples_size, rate)) return 1;
                 prepared_rate = rate;
@@ -112,6 +125,24 @@ std::vector<float> Analyzer::merge_spectra(const std::vector<float> &left, const
 }
 void Analyzer::set_mel_enabled(bool enabled) {
     std::lock_guard lock(_mutex); _mel_enabled = enabled;
+}
+void Analyzer::set_window_only(bool enabled) {
+    std::lock_guard lock(_mutex); _window_only = enabled;
+}
+void Analyzer::set_pcm_only(bool enabled) {
+    std::lock_guard lock(_mutex); _pcm_only = enabled; _window_only = enabled;
+}
+void Analyzer::set_stream_epoch(uint64_t epoch, bool preserve_continuity) {
+    std::lock_guard lock(_mutex); _stream_epoch = epoch;
+    if(preserve_continuity) {
+        for(size_t i=0;i<_pending_size;++i) _pending[(_pending_head+i)%pending_capacity].epoch=epoch;
+        return;
+    }
+    _pending_head = _pending_size = 0; _force_discontinuity = true;
+}
+void Analyzer::set_ingress_serial(uint64_t serial) {
+    std::lock_guard lock(_mutex); _ingress_serial=serial;
+    _pending_head=_pending_size=0;_force_discontinuity=true;
 }
 void Analyzer::stop() {
     {
@@ -152,6 +183,15 @@ void Analyzer::add_samples(const std::vector<float> &left, const std::vector<flo
     std::lock_guard lock(_mutex);
     _input_timestamp_ns = timestamp_ns ? timestamp_ns : std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     const auto count = std::min(left.size(), right.size());
+    if (_pcm_only) {
+        if (_pending_size == pending_capacity) {
+            _pending_head = (_pending_head + 1) % pending_capacity; --_pending_size; ++_dropped_windows;
+        }
+        auto &pending = _pending[(_pending_head + _pending_size) % pending_capacity];
+        pending.left=left;pending.right=right;pending.input_timestamp_ns=_input_timestamp_ns;
+        pending.sequence=++_queued_sequence;pending.epoch=_stream_epoch;pending.ingress_serial=_ingress_serial;++_pending_size;
+        _window_signal_ready.notify_one();return;
+    }
     const auto rate = _sample_rate ? _sample_rate : 48000;
     size_t offset = 0;
     while (offset < count) {
@@ -173,6 +213,8 @@ void Analyzer::add_samples(const std::vector<float> &left, const std::vector<flo
             pending.left = samples.left.get_window(); pending.right = samples.right.get_window();
             pending.input_timestamp_ns = _input_timestamp_ns - static_cast<int64_t>(((count - offset) * 1000000000ULL) / rate);
             pending.sequence = ++_queued_sequence; ++_pending_size;
+            pending.epoch = _stream_epoch;
+            pending.ingress_serial = _ingress_serial;
             _hop_progress = 0; _hop_size = 0;
         }
     }

@@ -5,6 +5,7 @@ set(CMAKE_AUTOMOC ON)
 #set(CMAKE_AUTOUIC ON)
 
 set(HEADERS
+        include/visualization/axis_control_widget.h
         include/visualization/ui_text.h
         include/visualization/abstract/abs.h
         include/visualization/abstract/fps.h
@@ -18,6 +19,7 @@ set(HEADERS
 )
 
 set(SOURCES
+        src/axis_control_widget.cpp
         src/ui_text.cpp
         ${public_headers}
         src/abstract/abs.cpp
@@ -36,11 +38,14 @@ target_sources(visualization PRIVATE ${HEADERS} ${SOURCES})
 
 target_include_directories(visualization PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-find_package(Qt6 REQUIRED COMPONENTS Charts DataVisualization)
+find_package(Qt6 REQUIRED COMPONENTS Charts DataVisualization OpenGLWidgets OpenGL)
 find_package(Qt6 REQUIRED COMPONENTS LinguistTools)
 qt_add_lrelease(visualization TS_FILES ${CMAKE_CURRENT_SOURCE_DIR}/i18n/ui_ru.ts
     QM_FILES_OUTPUT_VARIABLE ui_qm_files)
 qt_add_resources(visualization ui_translations PREFIX "/i18n"
     BASE "${CMAKE_CURRENT_BINARY_DIR}" FILES ${ui_qm_files})
 
-target_link_libraries(visualization PUBLIC Qt::Charts Qt::DataVisualization runtime_performance)
+target_link_libraries(visualization PUBLIC Qt::Charts Qt::DataVisualization Qt::OpenGLWidgets Qt::OpenGL runtime_performance)
+
+qt_add_resources(visualization ui_theme_icons PREFIX "/ui-theme"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/ui_theme" FILES ui_theme/checkmark.svg ui_theme/minus.svg)

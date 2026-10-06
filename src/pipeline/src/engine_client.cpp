@@ -1,3 +1,5 @@
+#include "pipeline/network_runtime.h"
+#include "pipeline/stream_codec.h"
 #include "pipeline/engine_client.h"
 #include "core/network/tcp_packet_socket.h"
 #include "core/latest_delivery.h"
@@ -11,7 +13,8 @@
 #include <algorithm>
 namespace pipeline {
 namespace {
-constexpr quint8 CommandId = 5, ReplyId = 6, SnapshotId = 7, ViewId = 8, AudioId = 9, FragmentId = 10;
+constexpr quint8 CommandId = 5, ReplyId = 6, SnapshotId = 7, ViewId = 8, AudioId = 9, FragmentId = 10,
+                 TypedViewsId = 17;
 constexpr qsizetype MaxMessage = 2 * 1024 * 1024, FragmentSize = 60000, MaxQueued = 2 * 1024 * 1024;
 quint64 epoch() {
     return QRandomGenerator::global()->generate64();
@@ -138,19 +141,24 @@ void audio(QDataStream &s, const AudioFrame &v) {
 }
 void read_audio(QDataStream &s, AudioFrame &v) {
     quint64 rate = 0;
-    quint64 sequence=0,generation=0; qint64 timestamp=0;
+    quint64 sequence = 0, generation = 0;
+    qint64 timestamp = 0;
     s >> sequence >> timestamp >> rate >> generation >> v.discontinuity;
-    v.sequence=sequence; v.timestamp_ns=timestamp; v.generation=generation;
+    v.sequence = sequence;
+    v.timestamp_ns = timestamp;
+    v.generation = generation;
     v.sample_rate = rate;
     read_floats(s, v.left);
     read_floats(s, v.right);
 }
 void view(QDataStream &s, const ViewFrame &v) {
     const auto &f = v.spectrum;
-    s << quint64(v.epoch) << quint64(v.graph_revision) << quint64(v.ready_timestamp_ns) << v.spectrogram << quint64(f.sequence)
-      << qint64(f.timestamp_ns) << qint64(f.input_timestamp_ns) << quint64(f.audio_samples) << f.audio_peak
-      << quint64(f.sample_rate) << quint64(f.generation) << f.discontinuity << quint64(f.dropped_windows);
-    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.window_signal, &v.window, &v.windowed_signal})
+    s << quint64(v.epoch) << quint64(v.graph_revision) << quint64(v.ready_timestamp_ns) << v.spectrogram
+      << quint64(f.sequence) << qint64(f.timestamp_ns) << qint64(f.input_timestamp_ns) << quint64(f.audio_samples)
+      << f.audio_peak << quint64(f.sample_rate) << quint64(f.generation) << f.discontinuity
+      << quint64(f.dropped_windows);
+    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.window_signal, &v.window,
+                   &v.windowed_signal})
         floats(s, *p);
     s << v.frequency_step << quint32(v.previews.size());
     for (auto i = v.previews.begin(); i != v.previews.end(); ++i)
@@ -160,15 +168,22 @@ void view(QDataStream &s, const ViewFrame &v) {
 void read_view(QDataStream &s, ViewFrame &v) {
     auto &f = v.spectrum;
     quint64 samples = 0, rate = 0;
-    quint64 epoch_value=0,graph_revision=0,ready=0,sequence=0,generation=0,dropped=0;
-    qint64 timestamp=0,input_timestamp=0;
-    s >> epoch_value >> graph_revision >> ready >> v.spectrogram >> sequence >> timestamp >>
-        input_timestamp >> samples >> f.audio_peak >> rate >> generation >> f.discontinuity >> dropped;
-    v.epoch=epoch_value;v.graph_revision=graph_revision;v.ready_timestamp_ns=ready;
-    f.sequence=sequence;f.timestamp_ns=timestamp;f.input_timestamp_ns=input_timestamp;f.generation=generation;f.dropped_windows=dropped;
+    quint64 epoch_value = 0, graph_revision = 0, ready = 0, sequence = 0, generation = 0, dropped = 0;
+    qint64 timestamp = 0, input_timestamp = 0;
+    s >> epoch_value >> graph_revision >> ready >> v.spectrogram >> sequence >> timestamp >> input_timestamp >>
+        samples >> f.audio_peak >> rate >> generation >> f.discontinuity >> dropped;
+    v.epoch = epoch_value;
+    v.graph_revision = graph_revision;
+    v.ready_timestamp_ns = ready;
+    f.sequence = sequence;
+    f.timestamp_ns = timestamp;
+    f.input_timestamp_ns = input_timestamp;
+    f.generation = generation;
+    f.dropped_windows = dropped;
     f.audio_samples = samples;
     f.sample_rate = rate;
-    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.window_signal, &v.window, &v.windowed_signal})
+    for (auto p : {&f.left, &f.right, &f.mel_left, &f.mel_right, &v.fft, &v.mel, &v.window_signal, &v.window,
+                   &v.windowed_signal})
         read_floats(s, *p);
     quint32 n = 0;
     s >> v.frequency_step >> n;
@@ -205,6 +220,70 @@ template <class F> bool decode(const QByteArray &b, F f) {
     f(s);
     return s.status() == QDataStream::Ok && s.atEnd();
 }
+void put32(QByteArray &b, quint32 v) {
+    for (int i = 0; i < 4; ++i)
+        b.append(char(v >> (8 * i)));
+}
+void put64(QByteArray &b, quint64 v) {
+    for (int i = 0; i < 8; ++i)
+        b.append(char(v >> (8 * i)));
+}
+quint64 getLE(const QByteArray &b, qsizetype &p, int n) {
+    quint64 v = 0;
+    for (int i = 0; i < n; ++i)
+        v |= quint64(quint8(b[p++])) << (8 * i);
+    return v;
+}
+QByteArray typed_views(const ViewFrame &v) {
+    QByteArray b;
+    b.append(char(2));
+    b.append(char(0));
+    put64(b, v.epoch);
+    put64(b, v.graph_revision);
+    put32(b, v.views.size());
+    for (auto i = v.views.begin(); i != v.views.end(); ++i) {
+        auto f = i.value();
+        f.epoch = v.epoch;
+        f.graph_revision = v.graph_revision;
+        if (!stream::valid(f))
+            return {};
+        auto bytes = stream::encode(f);
+        put32(b, i.key());
+        put32(b, bytes.size());
+        b.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+        if (b.size() > MaxMessage)
+            return {};
+    }
+    return b;
+}
+bool read_typed_views(const QByteArray &b, ViewFrame &v) {
+    if (b.size() < 22 || b.size() > MaxMessage)
+        return false;
+    qsizetype p = 0;
+    if (getLE(b, p, 2) != 2)
+        return false;
+    v.epoch = getLE(b, p, 8);
+    v.graph_revision = getLE(b, p, 8);
+    auto n = getLE(b, p, 4);
+    if (n > 128)
+        return false;
+    for (quint64 i = 0; i < n; ++i) {
+        if (b.size() - p < 8)
+            return false;
+        int id = getLE(b, p, 4);
+        auto length = getLE(b, p, 4);
+        if (length > quint64(b.size() - p))
+            return false;
+        TypedFrame f;
+        std::string error;
+        if (!stream::decode({reinterpret_cast<const uint8_t *>(b.constData() + p), size_t(length)}, f, error) ||
+            f.epoch != v.epoch || f.graph_revision != v.graph_revision || v.views.contains(id))
+            return false;
+        p += length;
+        v.views[id] = std::move(f);
+    }
+    return p == b.size();
+}
 EngineSnapshot collect(AudioPipeline &e, quint64 ep, quint64 rev) {
     EngineSnapshot v;
     v.epoch = ep;
@@ -217,7 +296,8 @@ EngineSnapshot collect(AudioPipeline &e, quint64 ep, quint64 rev) {
         v.statuses[k] = e.current_status(k);
     v.history = e.latest_history();
     if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation) ||
-        v.statuses.value("Analyzer").state != State::Running) v.history.reset();
+        v.statuses.value("Analyzer").state != State::Running)
+        v.history.reset();
     return v;
 }
 EngineReply execute(AudioPipeline &e, const EngineCommand &c, quint64 id, quint64 ep, quint64 &rev) {
@@ -288,7 +368,8 @@ struct Wire {
     quint8 kind = 0;
     quint32 total = 0;
     QByteArray partial;
-    quint32 subscriptions = EngineCommand::Views | EngineCommand::History | EngineCommand::Previews;
+    quint32 subscriptions =
+        EngineCommand::Views | EngineCommand::History | EngineCommand::Previews | EngineCommand::TypedViews;
     std::shared_ptr<const HistorySnapshot> last_history;
     void send(quint8 id, const QByteArray &b) {
         if (b.size() > MaxMessage || socket->bytesToWrite() + b.size() > MaxQueued) {
@@ -319,8 +400,8 @@ struct Wire {
                         s >> k >> seq >> n >> off;
                         read_blob(s, chunk, FragmentSize);
                     }) ||
-            k < CommandId || k > AudioId || n > MaxMessage || n <= 65535 || chunk.size() > FragmentSize ||
-            off + chunk.size() > n) {
+            (k < CommandId || k > AudioId) && k != TypedViewsId || n > MaxMessage || n <= 65535 ||
+            chunk.size() > FragmentSize || off + chunk.size() > n) {
             socket->abort();
             return false;
         }
@@ -349,6 +430,8 @@ class EngineClient::Impl {
   public:
     EngineClient *owner;
     std::unique_ptr<AudioPipeline> engine;
+    std::unique_ptr<NetworkRuntime> network;
+    QString network_warning;
     QThread commands;
     QObject *worker = nullptr;
     QString host;
@@ -360,7 +443,8 @@ class EngineClient::Impl {
     bool enabled = false;
     quint64 next = 0, ep = epoch(), rev = 0;
     std::atomic<size_t> outstanding{0};
-    quint32 subscriptions = EngineCommand::Views | EngineCommand::History | EngineCommand::Previews;
+    quint32 subscriptions =
+        EngineCommand::Views | EngineCommand::History | EngineCommand::Previews | EngineCommand::TypedViews;
     EngineSnapshot cache;
     QMap<quint64, qint64> pending;
     std::function<void(EngineSnapshot)> snapshot_handler;
@@ -398,7 +482,8 @@ class EngineClient::Impl {
     }
     void publish(EngineSnapshot v) {
         // Validate against the original generation before monotonic state merging.
-        if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation)) v.history.reset();
+        if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation))
+            v.history.reset();
         if (socket) {
             auto status = cache.statuses.value("Connection");
             if (v.epoch != 0) {
@@ -410,20 +495,24 @@ class EngineClient::Impl {
         }
         if (v.epoch == cache.epoch && v.epoch != 0) {
             for (auto i = cache.statuses.begin(); i != cache.statuses.end(); ++i)
-                if (i->revision > v.statuses.value(i.key()).revision) v.statuses[i.key()] = i.value();
+                if (i->revision > v.statuses.value(i.key()).revision)
+                    v.statuses[i.key()] = i.value();
             if (v.revision < cache.revision || v.graph_revision < cache.graph_revision) {
-                v.graph = cache.graph; v.graph_revision = cache.graph_revision;
+                v.graph = cache.graph;
+                v.graph_revision = cache.graph_revision;
             }
             v.revision = std::max(v.revision, cache.revision);
             v.analyzer_generation = std::max(v.analyzer_generation, cache.analyzer_generation);
             v.capture_generation = std::max(v.capture_generation, cache.capture_generation);
-            if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation)) v.history.reset();
+            if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation))
+                v.history.reset();
             if (!v.history && compatible_history(cache.history, v.graph_revision, v.analyzer_generation) &&
                 v.statuses.value("Analyzer").state == State::Running)
                 v.history = cache.history;
         }
         if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation) ||
-            v.statuses.value("Analyzer").state != State::Running) v.history.reset();
+            v.statuses.value("Analyzer").state != State::Running)
+            v.history.reset();
         cache = std::move(v);
         if (snapshot_handler)
             snapshot_handler(cache);
@@ -438,17 +527,16 @@ class EngineClient::Impl {
     }
     void local() {
         engine = std::make_unique<AudioPipeline>();
+        network = std::make_unique<NetworkRuntime>(*engine);
         worker = new QObject;
         worker->moveToThread(&commands);
         QObject::connect(&commands, &QThread::finished, worker, &QObject::deleteLater);
         commands.start();
         cache = collect(*engine, ep, rev);
         views = std::make_shared<LatestDelivery<ViewFrame>>(owner, [this](ViewFrame v) {
-            v.epoch = ep;
-            if (v.graph_revision != engine->graph_revision() ||
-                v.spectrum.generation != engine->analyzer_generation() ||
-                engine->current_status("Analyzer").state != State::Running)
+            if (v.epoch != engine->epoch() || v.graph_revision != engine->graph_revision())
                 return;
+            v.epoch = ep;
             if (view_handler)
                 view_handler(std::move(v));
         });
@@ -533,6 +621,17 @@ class EngineClient::Impl {
                 ok = decode(b, [&](QDataStream &s) { read_snapshot(s, v); });
                 if (ok)
                     publish(std::move(v));
+            } else if (id == 14) {
+                enabled = false;
+                retry.stop();
+                connection(State::Failed, QString::fromUtf8(b));
+                socket->abort();
+                return;
+            } else if (id == TypedViewsId) {
+                ViewFrame v;
+                ok = read_typed_views(b, v);
+                if (ok && v.epoch == cache.epoch && v.graph_revision == cache.graph_revision && view_handler)
+                    view_handler(std::move(v));
             } else if (id == ViewId) {
                 ViewFrame v;
                 ok = decode(b, [&](QDataStream &s) { read_view(s, v); });
@@ -592,6 +691,7 @@ class EngineClient::Impl {
         retry.stop();
         if (socket)
             socket->abort();
+        network.reset();
         if (engine) {
             views->cancel();
             audios->cancel();
@@ -669,6 +769,34 @@ EngineSnapshot EngineClient::snapshot() const {
 AudioPipeline *EngineClient::local_engine() const {
     return d->engine.get();
 }
+bool EngineClient::configure_network(QJsonObject config, QString *error) {
+    d->network_warning.clear();
+    if (!d->engine) {
+        if (error)
+            *error = "Remote client cannot configure local transports";
+        return false;
+    }
+    // This composition owns an executor, but no EngineServer. Keep the user's
+    // document intact and advertise only endpoints actually hosted here.
+    auto server = config.value("engine_server").toObject();
+    if (server.value("enabled").toBool(false))
+        d->network_warning = "The local executor runs inside the GUI process and has no remote control endpoint. "
+                             "Launch pipeline_cli --server with your configuration to provide one.";
+    server["enabled"] = false;
+    server["allow_mutations"] = false;
+    server["port"] = 0;
+    config["engine_server"] = server;
+    d->network.reset();
+    d->network = std::make_unique<NetworkRuntime>(*d->engine, std::move(config));
+    QString message;
+    bool accepted = d->network->refresh(message);
+    if (error)
+        *error = message;
+    return accepted;
+}
+QString EngineClient::network_warning() const {
+    return d->network_warning;
+}
 void EngineClient::connect_remote() {
     d->enabled = true;
     d->connect();
@@ -702,14 +830,23 @@ class EngineServer::Impl {
     std::shared_ptr<LatestDelivery<bool>> statuses;
     Impl(EngineServer *o, AudioPipeline &e) : owner(o), engine(e) {
         views = std::make_shared<LatestDelivery<ViewFrame>>(o, [this](ViewFrame v) {
-            if (v.spectrum.generation != engine.analyzer_generation() || v.graph_revision != engine.graph_revision() ||
-                engine.current_status("Analyzer").state != State::Running)
+            if (v.epoch != engine.epoch() || v.graph_revision != engine.graph_revision())
                 return;
             v.epoch = ep;
             QMap<quint64, QByteArray> payloads;
             for (auto wire : clients.values())
                 if (wire->subscriptions & EngineCommand::Views) {
                     const auto mask = wire->subscriptions;
+                    if (mask & EngineCommand::TypedViews) {
+                        auto bytes = typed_views(v);
+                        if (!bytes.isEmpty())
+                            wire->send(TypedViewsId, bytes);
+                        else {
+                            wire->socket->send_packet(14, "Invalid or oversized typed view snapshot (2 MiB limit)");
+                            wire->socket->disconnectFromHost();
+                        }
+                        continue;
+                    }
                     const bool fresh = v.history && wire->last_history != v.history;
                     const auto key = quint64(mask) | (quint64(fresh) << 32);
                     if (!payloads.contains(key)) {
@@ -792,6 +929,11 @@ class EngineServer::Impl {
                                 read_blob(s, graph);
                             }) ||
                     kind > EngineCommand::Subscribe) {
+                    if (b.size() >= 2 && (quint8(b[0]) != 1 || quint8(b[1]) != 0)) {
+                        w->socket->send_packet(14, "Unsupported engine protocol version");
+                        w->socket->disconnectFromHost();
+                        return;
+                    }
                     w->socket->abort();
                     return;
                 }

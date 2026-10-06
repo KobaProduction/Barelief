@@ -5,7 +5,24 @@ Requires CMake 3.30+, a C++23 compiler and Qt 6.7+ with Widgets, Charts, DataVis
 Use the compiler matching your Qt installation (for example the Qt MinGW toolchain).
 BDSP, QtNodes and miniaudio 0.11.25 are fetched through CMake FetchContent at fixed revisions.
 
+## Architecture decisions and product context
+
+[Архитектура аудиосистемы](docs/architecture.md) records the agreed responsibilities
+of the headless core, GUI, processing/view nodes, TCP/BDSP transport and aggregator,
+configuration/presets, and distributed processing scenarios. It distinguishes the
+current implementation from the target architecture. Typed distributed streams and
+independent view instances are implemented; the wire protocol is documented in
+[network-stream-v2.md](docs/network-stream-v2.md), and runtime boundaries and
+the single configured WLED adapter are documented in
+[the pipeline module](src/pipeline/README.md).
+
 ## Build and test
+
+Current development policy (owner decision, 2026-10-05): run short tests for the
+changed subsystem and necessary short integration/native regressions. Do not run
+30-minute soaks or other long tests during this implementation; reserve them for
+commit preparation. Long-run commands below are opt-in references, not a gate for
+the current refactoring.
 
 Run from a terminal with the compiler and Qt `bin` directories in PATH:
 
@@ -55,7 +72,7 @@ and the 3D view grows with the application window. Close zoom extends to 5000%.
 The top toolbar controls Capture, Analyzer and graph visibility. WLED is configured
 separately in Settings > WLED / Network. FFT, Mel and
 3D are one-click toggles; More graphs contains the remaining views. Settings open
-in a separate window (Ctrl+,) with General, Controls and WLED / Network sections.
+in a separate window (Alt+,) with General, Controls and WLED / Network sections.
 Camera translation accounts for graph axis scaling, so strafing has the same
 world-space speed at different view angles.
 
@@ -549,11 +566,26 @@ unrelated default source. `pipeline_cli --synthetic` uses the same source and
 preserves a configured generator's parameters. The saved-graph console and GUI
 smoke tests check actual signal delivery, rather than only compiling a graph.
 
-Use test profiles instead of running every suite for every edit:
+Use test profiles instead of running every suite for every edit. The default
+`quick` profile explicitly excludes UI, integration, devices and benchmarks.
+UI/application/screenshot checks are opt-in for a specific reproducible issue or
+an explicit request; do not repeat already verified UI scenarios for routine edits.
+Prefer an exact scenario, for example:
+
+```powershell
+tests/run-tests.ps1 -BuildDirectory build-gui -TestName spectrogram_geometry -List
+tests/run-tests.ps1 -BuildDirectory build-gui -TestName typed_graph_runtime
+```
+
+`-List` never executes tests. `-TestName` accepts exact CTest names and bypasses
+profile selection, so an explicitly named integration test is possible when needed.
+A larger `ui`, `integration` or `full` profile is an explicit selection, not the
+default development pass.
+
 
 | Profile | Scope |
 | --- | --- |
-| `quick` | Fast portable DSP, bounded telemetry, buffers and discovery logic |
+| `quick` | Pure numerical DSP/geometry, config, bounded telemetry and fake buffers/discovery; no windows, sockets or spawned applications |
 | `dsp` | Portable computation tests only |
 | `pipeline` | Source lifecycle, graph processing, cadence and transport |
 | `ui` | UI interactions, workspace, presenter and startup |
@@ -583,12 +615,12 @@ adapter/callback boundary without OS sound, but cannot certify the WASAPI driver
 
 ### Presentation and localization
 
-The main menu contains File, Settings and Graphs. Graph actions toggle the same
+The main menu contains Display, WLED and Settings. Graph actions toggle the same
 persistent dock instances; visible graphs remain switchable in the dock tab bar.
 Data Flow stays below the graph by default and can be detached or hidden. Its
-status-bar toggle and Ctrl+D reopen it. Capture/analyzer controls belong to
+status-bar toggle and Alt+D reopen it. Capture/analyzer controls belong to
 Data Flow rather than a global graph toolbar. Settings menu entries open General,
-Controls, WLED and Network tabs directly (Ctrl+, and Ctrl+Alt+2/3/4).
+Controls, WLED and Network tabs directly (Alt+, and Alt+2/3/4).
 
 Russian is the default UI language; General offers live Russian/English switching.
 Qt Linguist compiles `src/visualization/i18n/ui_ru.ts` into an embedded QM resource;

@@ -5,6 +5,10 @@
 #include <vector>
 
 namespace dsp_core {
+void hann_window(std::span<float> output);
+enum class WindowFunction { Hann, Hamming, Blackman, Rectangular };
+void window(std::span<float> output, WindowFunction function);
+void bark_weights(std::span<float> output, float frequency_step);
 #ifndef PORTABLE_DSP_MAX_FFT_SIZE
 #define PORTABLE_DSP_MAX_FFT_SIZE 4096
 #endif

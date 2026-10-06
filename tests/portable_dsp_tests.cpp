@@ -32,6 +32,19 @@ static void near(float actual, float expected, const char *message) {
 }
 int main() {
     try {
+        for(const auto kind:{dsp_core::WindowFunction::Hann,dsp_core::WindowFunction::Hamming,dsp_core::WindowFunction::Blackman,dsp_core::WindowFunction::Rectangular}) {
+            std::vector<float> coefficients(513);dsp_core::window(coefficients,kind);
+            for(size_t i=0;i<coefficients.size();++i) near(coefficients[i],coefficients[coefficients.size()-1-i],"Window is not symmetric");
+            near(coefficients[256],1,"Window center coefficient");
+            near(coefficients.front(),kind==dsp_core::WindowFunction::Hamming?0.08f:kind==dsp_core::WindowFunction::Rectangular?1.f:0.f,"Window endpoint coefficient");
+            const float angle=float(64*2*std::numbers::pi/512);
+            near(coefficients[64],kind==dsp_core::WindowFunction::Hann?0.5f*(1-std::cos(angle)):
+                kind==dsp_core::WindowFunction::Hamming?0.54f-0.46f*std::cos(angle):
+                kind==dsp_core::WindowFunction::Blackman?0.42f-0.5f*std::cos(angle)+0.08f*std::cos(2*angle):1.f,"Window formula coefficient");
+            std::vector<float> single(1);dsp_core::window(single,kind);near(single[0],1,"Single-sample window");
+        }
+        std::vector<float> legacy_hann(512),selected_hann(512);dsp_core::hann_window(legacy_hann);dsp_core::window(selected_hann,dsp_core::WindowFunction::Hann);
+        require(legacy_hann==selected_hann,"Hann baseline changed");
         dsp_core::FFT fft, other;
         require(!dsp_core::estimate_memory(511, 50) && !dsp_core::estimate_memory(768, 50) &&
                     !dsp_core::estimate_memory(8192, 50) && !dsp_core::estimate_memory(4096, 51) &&

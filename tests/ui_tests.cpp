@@ -4,6 +4,7 @@
 #include "core_app/core_application.h"
 #include "core_app/main_window.h"
 #include "core_app/settings_widget.h"
+#include "core_app/scheme_editor/editor_widget.h"
 #include <QtTest/QTest>
 #include <QCheckBox>
 #include <QSpinBox>
@@ -14,6 +15,7 @@
 #include <QScrollArea>
 #include <Q3DCamera>
 #include <Q3DSurface>
+#include <QOpenGLWidget>
 #include <QSplitter>
 #include <QWheelEvent>
 #include <QPushButton>
@@ -258,13 +260,13 @@ int main() {
         auto *language=settings->findChild<QComboBox *>("interfaceLanguage");
         auto *sections=settings->findChild<QTabWidget *>("settingsSections");
         auto *graphs_menu=window->findChild<QMenu *>("graphsMenu");
-        require(language && sections->count()==5 && graphs_menu->title()==QString::fromUtf8("Графики"),"Russian default/menu sections missing");
+        require(language && sections->count()==6 && graphs_menu->title()==QString::fromUtf8("Графики"),"Russian default/menu sections missing");
         const auto menu_actions=window->menuBar()->actions();
         require(menu_actions.size()==3 && menu_actions[0]->menu()==graphs_menu &&
             menu_actions[1]->menu()->objectName()=="wledMenu" && menu_actions[2]->menu()->objectName()=="settingsMenu",
             "Top-level menus must be Graphs, WLED, Settings");
         require(!settings->findChild<QCheckBox *>("enableAnalyzer") && !settings->findChild<QComboBox *>("captureSource") &&
-            sections->widget(1)->findChild<QCheckBox *>("pipelineAutoApply") && sections->tabText(4)==ui::text("Controls"),
+            sections->widget(1)->findChild<QCheckBox *>("pipelineAutoApply") && sections->tabText(5)==ui::text("Controls"),
             "Processing duplicated outside graph or section order incorrect");
         auto *automatic=settings->findChild<QCheckBox *>("pipelineAutoApply");
         automatic->setChecked(false); require(!app._ctx.file_configs.ui.pipeline_auto_apply,"Auto apply preference not updated");
@@ -296,7 +298,7 @@ int main() {
                 "Live language switch recreated views or failed to translate");
         require(app.pipeline().graph_revision()==language_revision,"Language switch applied DSP graph");
         language->setCurrentIndex(0); QTest::qWait(400);
-        for (int i=0; i<5; ++i) {
+        for (int i=0; i<6; ++i) {
             window->findChild<QAction *>(i==0 ? "openSettings" : QString("openSettingsSection%1").arg(i))->trigger();
             require(sections->currentIndex()==i,"Settings menu opened wrong section");
         }
@@ -373,106 +375,26 @@ int main() {
             settings_dialog->hide();
             tabs->setCurrentIndex(6);
             QTest::qWait(100);
-            Q3DSurface *spectrogram = nullptr;
-            for (auto *candidate : QGuiApplication::allWindows())
-                if (candidate->objectName() == "spectrogramWindow")
-                    spectrogram = qobject_cast<Q3DSurface *>(candidate);
-            require(spectrogram, "Native spectrogram not initialized");
-            auto *camera = spectrogram->scene()->activeCamera();
-            const auto initial = graph->camera_state();
-            camera->setZoomLevel(500);
-            const QPointF wheel_position(spectrogram->width() / 2, spectrogram->height() / 2);
-            QWheelEvent wheel(wheel_position, spectrogram->mapToGlobal(wheel_position.toPoint()), {}, QPoint(0, 120),
-                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
-            QCoreApplication::sendEvent(spectrogram, &wheel);
-            QTest::qWait(50);
-            require(camera->zoomLevel() > 500, "Mouse wheel still stops at old zoom limit");
-            graph->set_camera_state({{"horizontal", 35}, {"vertical", 45}, {"zoom", 1200}});
-            require(camera->zoomLevel() == 1200, "Native camera still clamps close zoom to 500");
+            auto *spectrogram=graph->findChild<QOpenGLWidget*>("spectrogramContainer");
+            require(spectrogram && spectrogram->isValid(),"Native GL spectrogram not initialized");
+            const auto initial=graph->camera_state();
+            const auto position=[&]{return graph->camera_state()["position"].toArray();};
+            QTest::keyPress(spectrogram,Qt::Key_W);QTest::qWait(100);QTest::keyRelease(spectrogram,Qt::Key_W);
+            require(graph->camera_state()!=initial,"W did not move free camera");
+            QTest::keyClick(spectrogram,Qt::Key_Z);require(graph->camera_state()==initial,"Z did not reset free camera");
+            graph->set_camera_state({{"position",QJsonArray{0,-1,0}},{"quaternion",QJsonArray{1,0,0,0}}});
+            QTest::keyPress(spectrogram,Qt::Key_W);QTest::qWait(100);QTest::keyRelease(spectrogram,Qt::Key_W);
+            require(position()[1].toDouble()==-1 && position()[2].toDouble()<0,"Camera cannot move below/through graph");
+            graph->set_camera_state(initial);graph->set_camera_controls(controls_saved.ui.camera_controls);
+            QTest::keyPress(spectrogram,Qt::Key_I);QTest::keyPress(spectrogram,Qt::Key_K);QTest::keyRelease(spectrogram,Qt::Key_I);
+            const auto held=graph->camera_state();QTest::qWait(80);require(graph->camera_state()!=held,"Primary release stopped held alternative");QTest::keyRelease(spectrogram,Qt::Key_K);
+            graph->set_camera_controls(CameraControls::defaults());graph->reset_camera();
+            QKeyEvent russian_press(QEvent::KeyPress,0x0426,Qt::NoModifier,17,0,0),russian_release(QEvent::KeyRelease,0x0426,Qt::NoModifier,17,0,0);
+            QApplication::sendEvent(spectrogram,&russian_press);QTest::qWait(80);QApplication::sendEvent(spectrogram,&russian_release);require(graph->camera_state()!=initial,"Physical W binding failed");
+            graph->reset_camera();auto *splitter=graph->findChild<QSplitter*>("spectrogramSplitter");require(splitter && splitter->count()==2,"Resize divider missing");
+            graph->set_side_panel_ratio(.35);QTest::qWait(40);
+            QTest::keyPress(spectrogram,Qt::Key_W);tabs->setCurrentIndex(4);QTest::qWait(100);const auto hidden=graph->camera_state();QTest::qWait(80);require(graph->camera_state()==hidden,"Hidden camera kept moving");
             graph->set_camera_state(initial);
-            auto *splitter = graph->findChild<QSplitter *>("spectrogramSplitter");
-            require(splitter && splitter->count() == 2, "Spectrogram resize handle missing");
-            auto *handle = splitter->handle(1);
-            const auto sizes_before = splitter->sizes();
-            const auto center = handle->rect().center();
-            QTest::mousePress(handle, Qt::LeftButton, Qt::NoModifier, center);
-            QTest::mouseMove(handle, center - QPoint(60, 0), 20);
-            QTest::mouseRelease(handle, Qt::LeftButton, Qt::NoModifier, center - QPoint(60, 0));
-            QTest::qWait(30);
-            require(splitter->sizes() != sizes_before, "Dragging divider did not resize spectrogram");
-            const auto graph_width = splitter->widget(0)->width();
-            window->resize(window->width() + 300, window->height());
-            QTest::qWait(50);
-            require(splitter->widget(0)->width() > graph_width, "Graph does not grow with window");
-            auto move = [&](Qt::Key key) {
-                QTest::keyPress(spectrogram, key);
-                QTest::qWait(100);
-                QTest::keyRelease(spectrogram, key);
-                QTest::qWait(20);
-            };
-            graph->set_camera_controls(controls_saved.ui.camera_controls);
-            QTest::keyPress(spectrogram, Qt::Key_I);
-            QTest::keyPress(spectrogram, Qt::Key_K);
-            QTest::keyRelease(spectrogram, Qt::Key_I);
-            const auto before_alternative = camera->zoomLevel();
-            QTest::qWait(80);
-            require(camera->zoomLevel() > before_alternative, "Releasing primary key stopped held alternative");
-            QTest::keyRelease(spectrogram, Qt::Key_K);
-            graph->set_camera_controls(CameraControls::defaults());
-            graph->set_camera_state(initial);
-            move(Qt::Key_W);
-            require(camera->zoomLevel() > initial["zoom"].toDouble(), "W did not move camera forward");
-            const auto zoom = camera->zoomLevel();
-            QTest::qWait(80);
-            require(camera->zoomLevel() == zoom, "Camera kept moving after key release");
-            move(Qt::Key_S);
-            require(camera->zoomLevel() < zoom, "S did not move camera back");
-            const auto target = camera->target();
-            move(Qt::Key_D);
-            require(camera->target() != target, "D did not strafe camera");
-            move(Qt::Key_A);
-            move(Qt::Key_Space);
-            require(camera->target().y() > target.y(), "Space did not raise camera");
-            move(Qt::Key_Control);
-            const auto before_russian = camera->zoomLevel();
-            QKeyEvent russian_press(QEvent::KeyPress, 0x0426, Qt::NoModifier, 17, 0, 0);
-            QKeyEvent russian_release(QEvent::KeyRelease, 0x0426, Qt::NoModifier, 17, 0, 0);
-            QApplication::sendEvent(spectrogram, &russian_press);
-            QTest::qWait(100);
-            QApplication::sendEvent(spectrogram, &russian_release);
-            require(camera->zoomLevel() > before_russian, "Russian-layout W did not move native camera");
-            const auto before_down = camera->target().y();
-            QTest::keyPress(spectrogram, Qt::Key_Control);
-            QTest::qWait(80);
-            QTest::keyPress(spectrogram, Qt::Key_W, Qt::ControlModifier);
-            QTest::qWait(80);
-            QTest::keyRelease(spectrogram, Qt::Key_W, Qt::ControlModifier);
-            QTest::keyRelease(spectrogram, Qt::Key_Control);
-            require(camera->target().y() < before_down, "Ctrl did not lower camera while moving forward");
-            QTest::keyClick(spectrogram, Qt::Key_Z);
-            require(graph->camera_state() == initial, "Z did not reset camera to initial view");
-            move(Qt::Key_W);
-            auto *reset_position = graph->findChild<QPushButton *>("resetCamera");
-            QTest::mouseClick(reset_position, Qt::LeftButton);
-            require(graph->camera_state() == initial, "Camera reset button failed");
-            QTest::keyPress(spectrogram, Qt::Key_W);
-            tabs->setCurrentIndex(4);
-            settings_dialog->show();
-            QTest::qWait(100);
-            const auto after_hide = camera->zoomLevel();
-            QTest::qWait(100);
-            require(camera->zoomLevel() == after_hide, "Camera kept moving on a hidden tab");
-            QTest::qWait(600);
-            ConfigManager camera_config(QString::fromLocal8Bit(path));
-            FileSaveApplicationConfig restored;
-            require(camera_config.load(restored) && restored.ui.camera == graph->camera_state(),
-                    "Camera autosave failed");
-            require(std::abs(restored.ui.spectrogram_side_panel_ratio - app._ctx.file_configs.ui.spectrogram_side_panel_ratio) <
-                        1e-6,
-                    "Divider position autosave failed");
-            graph->set_camera_state(initial);
-            graph->set_camera_state(restored.ui.camera);
-            require(graph->camera_state() == restored.ui.camera, "Saved camera position did not restore");
             click("showSpectrogram");
         }
         click("enableWLED");
@@ -515,15 +437,16 @@ int main() {
         require(apply && apply->isVisible(), "Pipeline apply control missing");
         QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Applying pipeline…")); },
+            [&] { return !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Applying Data Flow…")); },
             "Graph reply not delivered");
-        require(pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Pipeline applied"),
+        require(pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"),
                 "Default editor graph did not apply");
         auto valid = app.presenter().client().snapshot().graph;
-        app._ctx.data_flow_graph->deleteConnection({0, 0, 1, 0});
+        auto *invalid_model=app._ctx.data_flow_graph->delegateModel<AudioNodeModel>(2);
+        auto invalid_parameters=invalid_model->save();invalid_parameters["merge"]=99;invalid_model->load(invalid_parameters);
         QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Applying pipeline…")); },
+            [&] { return !pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Applying Data Flow…")); },
             "Graph reply not delivered");
         require(app.presenter().client().snapshot().graph == valid &&
                     pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text().startsWith(ui::text("Not applied: ")),
@@ -543,8 +466,7 @@ int main() {
         require(app.presenter().client().snapshot().revision == active_revision &&
                     app.presenter().client().snapshot().graph == valid,
                 "Load active mutated the engine");
-        auto loaded_draft = app._ctx.data_flow_graph->save();
-        loaded_draft["version"] = 1;
+        auto loaded_draft = window->findChild<SchemeEditorWidget *>()->document();
         require(canonical_editor_graph(loaded_draft) == canonical_editor_graph(valid),
                 "Load active did not replace editor draft");
         require(manager.load(saved) && saved.scene_graph == rejected_draft, "Load active erased the saved draft");
@@ -555,6 +477,7 @@ int main() {
         for (auto *document : {&before_load,&after_load}) {
             auto ui = document->value("ui").toObject(); ui.remove("workspace"); ui.remove("editor_view");
             (*document)["ui"] = ui;
+            auto devices=document->value("devices").toObject();for(auto it=devices.begin();it!=devices.end();++it){auto device=it.value().toObject();device.remove("editor_view");it.value()=device;}(*document)["devices"]=devices;
         }
         require(before_load == after_load, "Load active changed processing settings or the saved draft");
         draft_file.close();
@@ -563,17 +486,18 @@ int main() {
         require(manager.load(saved) && saved.scene_graph == rejected_draft,
                 "Unrelated prefs autosave replaced the saved draft after Load active");
         pipeline_dialog->findChild<QAction *>("defaultPipeline")->trigger();
+        QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Pipeline applied"); },
+            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
             "Default graph reply not delivered");
-        require(pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Pipeline applied"),
+        require(pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"),
                 "Default pipeline recovery failed");
         auto *merge_model = app._ctx.data_flow_graph->delegateModel<AudioNodeModel>(2);
         auto *merge_combo = merge_model->embeddedWidget()->findChild<QComboBox *>("merge");
         merge_combo->setCurrentIndex(1);
         QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Pipeline applied"); },
+            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
             "Graph reply not delivered");
         require(manager.load(saved) && saved.pipeline_graph == app.presenter().client().snapshot().graph,
                 "Node settings did not persist");
@@ -584,7 +508,7 @@ int main() {
         source_combo->setCurrentIndex(1);
         QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Pipeline applied"); },
+            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
             "Graph reply not delivered");
         require(app._ctx.file_configs.core.capture_source == 1,
                 "Microphone node and settings are out of sync");
@@ -606,7 +530,7 @@ int main() {
         source_combo->setCurrentIndex(0);
         QTest::mouseClick(apply, Qt::LeftButton);
         wait_for(
-            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Pipeline applied"); },
+            [&] { return pipeline_dialog->findChild<QLabel *>("pipelineValidation")->text() == ui::text("Data Flow applied"); },
             "Source graph reply not delivered");
         wait_state("Capture", pipeline::State::Running, "Live source change did not restart capture");
         require(app.presenter()

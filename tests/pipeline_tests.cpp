@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
         for (int scenario = 0; scenario < 3; ++scenario) {
             pipeline::ViewFrame result;
             bool received = false;
-            engine.set_spectrum_handler([&](auto value) { std::lock_guard lock(status_mutex); result = std::move(value); received = result.spectrum.sequence >= 5; changed.notify_one(); });
+            engine.set_spectrum_handler([&](auto value) { if(!value.spectrum.sequence) return; std::lock_guard lock(status_mutex); result = std::move(value); received = result.spectrum.sequence >= 5; changed.notify_one(); });
             auto stereo = frame;
             if (scenario == 0) std::fill(stereo.right.begin(), stereo.right.end(), 0);
             if (scenario == 1) std::fill(stereo.left.begin(), stereo.left.end(), 0);
@@ -115,6 +115,7 @@ int main(int argc, char **argv) {
         uint64_t worst_feed_us = 0;
         std::atomic<int64_t> worst_latency_ns{0};
         engine.set_spectrum_handler([&](auto output) {
+            if(!output.spectrum.input_timestamp_ns) return;
             auto now=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
             const auto latency=now-output.spectrum.input_timestamp_ns;
             auto previous=worst_latency_ns.load(); while(latency>previous && !worst_latency_ns.compare_exchange_weak(previous,latency)) {}

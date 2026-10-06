@@ -39,6 +39,7 @@ struct ViewFrame {
     std::vector<float> window_signal, window, windowed_signal;
     float frequency_step = 0;
     std::shared_ptr<const HistorySnapshot> history;
+    QMap<int, TypedFrame> views;
 };
 // Commands are serialized on a dedicated event loop; DSP/capture have their own workers.
 // Stop producers before replacing callbacks or destroying the controller.
@@ -57,6 +58,21 @@ class AudioPipeline final {
                     const QHostAddress &destination = QHostAddress::Broadcast);
     void stop_wled();
     void feed(const AudioFrame &frame);
+    // Serialized with graph apply. Handlers execute on the producing DSP/adapter
+    // thread and must enqueue bounded work. Unsubscribe waits for in-flight calls;
+    // callbacks must not change subscriptions or invoke pipeline commands.
+    void feed_typed(int ingress_node, TypedFrame frame, uint64_t expected_epoch = UINT64_MAX,
+                    uint64_t expected_ingress_serial = UINT64_MAX);
+    uint64_t epoch() const;
+    uint64_t ingress_serial(int ingress_node) const;
+    // Immediate unavailable marker, only for this ingress and its descendants.
+    // Keeps independent branches and output counters alive; resume signals a gap.
+    void clear_ingress(int ingress_node, uint64_t expected_epoch = UINT64_MAX);
+    using TypedHandler = std::function<void(int, TypedFrame)>;
+    uint64_t subscribe_typed(TypedHandler handler);
+    void unsubscribe_typed(uint64_t token);
+    void set_typed_handler(TypedHandler handler);
+    QMap<int, TypedFrame> latest_views() const;
     bool apply_graph(const QJsonObject &document, QString &error);
     QJsonObject graph() const;
     uint64_t graph_revision() const;
@@ -87,15 +103,40 @@ class AudioPipeline final {
 
   private:
     void command(std::function<void()> operation) const;
-    void process(const SpectrumFrame &frame);
+    void process(const SpectrumFrame &frame, int ingress_node = -1);
     void status(QString component, State state, QString error = {});
     QThread _thread;
     QObject *_runtime = nullptr;
+    // User intent belongs to the command thread, independently of adapter existence.
+    bool _capture_requested = false, _analyzer_requested = false;
+    bool _explicit_stop = false, _graph_applied = false;
     mutable std::mutex _mutex, _history_mutex, _callback_mutex, _status_mutex;
+    mutable std::recursive_mutex _evaluation_mutex;
+    std::mutex _typed_callback_mutex;
+    QMap<uint64_t, TypedHandler> _typed_handlers;
+    uint64_t _next_typed_token = 0;
+    QMap<int, TypedFrame> _views;
+    uint64_t _epoch = 0;
+    int _compat_history_node = 4;
+    int _compat_wled_node = 8;
+    int _primary_source_id = 0;
+    QMap<int, uint64_t> _ingress_serials;
+    bool _typed_running = true;
+    void invalidate_views();
+    void deliver_typed(const GraphOutput &output);
     QMap<QString, ComponentStatus> _statuses;
     uint64_t _status_revision = 0;
     std::atomic<uint64_t> _analyzer_generation{0}, _capture_generation{0};
     std::unique_ptr<Analyzer> _analyzer;
+    struct LocalBranch {
+        int id = -1, source = 0;
+        QJsonObject parameters;
+        std::unique_ptr<Analyzer> analyzer;
+        std::unique_ptr<IAudioSource> capture;
+        uint64_t sequence = 0;
+    };
+    std::vector<std::unique_ptr<LocalBranch>> _local_branches;
+    std::atomic<int64_t> _accepted_after_ns{0};
     std::unique_ptr<Spectrogram> _history;
     AudioSourceFactory _source_factory;
     std::unique_ptr<IAudioSource> _capture;

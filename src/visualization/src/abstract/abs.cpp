@@ -24,7 +24,7 @@ AbstractChartView::AbstractChartView() {
     _axis_x.setLabelFormat("%.0f");
 
     connect(&_data_update_timer, &QTimer::timeout, this, [this] () {
-        if (!isVisible()) return;
+        if (!_render_visible || !isVisible()) return;
         _flush_chart_resize();
         if (!_need_update) return;
         _update_chart_data();
@@ -40,6 +40,20 @@ AbstractChartView::~AbstractChartView() {
     _data_update_timer.stop();
     chart()->removeAxis(&_axis_x);
     chart()->removeAxis(&_axis_y);
+}
+void AbstractChartView::set_render_fps(int fps) {
+    const int cap=std::clamp(fps,1,240);
+    _data_update_timer.setInterval((1000+cap-1)/cap);
+}
+void AbstractChartView::set_render_visible(bool visible) {
+    if(_render_visible==visible) return;
+    _render_visible=visible;
+    _data_update_timer.stop();
+    setUpdatesEnabled(visible);
+    if(visible && isVisible()) {
+        _flush_chart_resize();
+        _data_update_timer.start();
+    }
 }
 float AbstractChartView::peak_value() const {
     float peak=0;
@@ -60,7 +74,8 @@ void AbstractChartView::update(const std::vector<float> &data) {
 
     if (data.size() not_eq _data.size()) {
         _data.resize(data.size(), 0);
-        _axis_x.setRange(0, static_cast<qreal>(_data.size()));
+        if (_automatic_x_range)
+            _axis_x.setRange(0, std::max(qreal(1),static_cast<qreal>(_data.size())));
         _on_updated_data_size(data.size());
         _need_update = true;
     }
@@ -94,7 +109,8 @@ void AbstractChartView::update(const std::vector<float> &data) {
             needUpdate = true;
         }
         if (needUpdate) {
-            _axis_y.setRange(_last_min_value, _last_max_value);
+            if(std::isfinite(_last_min_value) && std::isfinite(_last_max_value))
+                _axis_y.setRange(_last_min_value, std::max(_last_min_value+1e-6,_last_max_value));
         }
     }
 }
@@ -105,21 +121,44 @@ void AbstractChartView::set_auto_resizing(bool value) {
 
 void AbstractChartView::set_auto_gain(const bool value, const float min_max, const float min_min, const size_t speed) {
     _auto_gain = value;
-    _gain_min_max = min_max;
-    _gain_min_min = min_min;
+    _gain_min_max = std::isfinite(min_max) ? min_max : 1;
+    _gain_min_min = std::isfinite(min_min) ? min_min : -1;
     _gain_speed = speed;
 }
 
 void AbstractChartView::set_range(const qreal min, const qreal max) {
+    if (!std::isfinite(min) || !std::isfinite(max) || min >= max) return;
     _last_min_value = min;
     _last_max_value = max;
     _axis_y.setRange(min, max);
 }
 
-void AbstractChartView::paintEvent(QPaintEvent *event) { core::perf::Scope trace(core::perf::Stage::ChartPaint);QChartView::paintEvent(event); }
+void AbstractChartView::set_x_range(bool automatic, qreal minimum, qreal maximum) {
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum >= maximum) return;
+    _automatic_x_range = automatic;
+    _manual_x_min = minimum; _manual_x_max = maximum;
+    for (auto *axis : chart()->axes(Qt::Horizontal))
+        if (auto *value = qobject_cast<QValueAxis *>(axis))
+            value->setRange(automatic ? 0 : minimum,
+                            automatic ? std::max(qreal(1), qreal(_data.size())) : maximum);
+    _on_updated_data_size(_data.size());
+    _need_update = true;
+}
+
+void AbstractChartView::set_axis_precision(int precision) {
+    const auto format = QString("%1.%2f").arg('%').arg(std::clamp(precision, 0, 8));
+    for (auto *axis : chart()->axes())
+        if (auto *value = qobject_cast<QValueAxis *>(axis)) value->setLabelFormat(format);
+}
+
+void AbstractChartView::paintEvent(QPaintEvent *event) {
+    if(!_render_visible) return;
+    core::perf::Scope trace(core::perf::Stage::ChartPaint);QChartView::paintEvent(event);
+}
 
 void AbstractChartView::showEvent(QShowEvent *event) {
     QChartView::showEvent(event);
+    if(!_render_visible) return;
     _flush_chart_resize();
     _data_update_timer.start();
 }
@@ -127,7 +166,7 @@ void AbstractChartView::hideEvent(QHideEvent *event) { _data_update_timer.stop()
 
 void AbstractChartView::resizeEvent(QResizeEvent *event) {
     // Keep viewport/input geometry current immediately. Chart axis layout and
-    // resolution-dependent series rebuilding share the 60 Hz display budget.
+    // resolution-dependent series rebuilding share the configured display budget.
     QGraphicsView::resizeEvent(event);
     _pending_resize = true;
 }

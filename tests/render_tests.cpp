@@ -13,6 +13,8 @@
 #include "dock_panels.h"
 #include <QScreen>
 #include <QOpenGLContext>
+#include <QOpenGLWidget>
+#include <QJsonArray>
 #include <QOpenGLFunctions>
 #include <QUdpSocket>
 #include <QNetworkDatagram>
@@ -61,10 +63,10 @@ int main() {
     for(auto *widget:QApplication::topLevelWidgets()) if(auto *candidate=qobject_cast<MainWindow *>(widget)) window=candidate;
     if(!window) return 1;
     DockPanels panel_views(window); auto *tabs=&panel_views;
-    Q3DSurface *native=nullptr;
-    for(auto *candidate:QGuiApplication::allWindows()) if(candidate->objectName()=="spectrogramWindow") native=qobject_cast<Q3DSurface *>(candidate);
+    auto *spectrogram = window->findChild<SpectrogramGraph *>();
+    auto *native=spectrogram->findChild<QOpenGLWidget*>("spectrogramContainer");
     if(!native) { qCritical("Native 3D context unavailable");return 2; }
-    if (auto *context = native->findChild<QOpenGLContext *>(QString{}, Qt::FindDirectChildrenOnly)) {
+    if (auto *context = native->context()) {
         const auto format = context->format();
         qInfo("GRAPHICS api=%s version=%d.%d samples=%d alpha=%d depth=%d stencil=%d", context->isOpenGLES() ? "OpenGLES" : "OpenGL",
               format.majorVersion(), format.minorVersion(), format.samples(), format.alphaBufferSize(),
@@ -82,9 +84,29 @@ int main() {
     app.start_analyzer();
     app.start_loopback(); // Same configured source factory as GUI/console; no playback helper.
     QTest::qWait(700);
-    auto *spectrogram = window->findChild<SpectrogramGraph *>();
+    if(qEnvironmentVariableIntValue("QT_VIS_SHORT_PROFILE_MS")>0) {
+        const int duration=std::clamp(qEnvironmentVariableIntValue("QT_VIS_SHORT_PROFILE_MS"),1000,30000);
+        // In-memory eight-tone TestSignal; no playback device is created.
+        // Use the current user's 50x400 visualization dimensions, without
+        // reading or writing their configuration or resetting their workspace.
+        window->resize(1400,900);QTest::qWait(7000); // Fill the bounded 400-frame history.
+        const auto before=app.pipeline().processed_frames();
+        const auto frames=native->property("renderedFrames").toULongLong();
+        QElapsedTimer clock;clock.start();QEventLoop loop;
+        core::perf::enabled=true;
+        QTimer::singleShot(duration,&loop,&QEventLoop::quit);loop.exec();
+        const double seconds=clock.elapsed()/1000.;
+        const double dsp=(app.pipeline().processed_frames()-before)/seconds;
+        const double fps=(native->property("renderedFrames").toULongLong()-frames)/seconds;
+        qInfo("SHORT_PIPELINE eight_tones=1 DSP=%.2f/s FPS=%.2f size=%dx%d DPR=%.2f history=%zu",dsp,fps,
+            native->width(),native->height(),native->devicePixelRatioF(),app.pipeline().history_count());
+        app.stop_loopback();app.stop_analyzer();
+        const bool traceSaved=save_performance_report(qEnvironmentVariable("QT_VIS_TRACE_FILE"));
+        const bool sessionValid=session_probe.report();
+        return traceSaved && sessionValid && dsp>55 && dsp<65 && fps>50 && fps<61 ? 0 : 1;
+    }
     const auto camera_state = spectrogram->camera_state();
-    QPointer<Q3DSurface> original_native = native;
+    QPointer<QOpenGLWidget> original_native = native;
     for (int round = 0; round < 3; ++round) {
         for (auto *dock : window->findChildren<QDockWidget *>()) {
             auto *view = dock->widget();
@@ -139,9 +161,8 @@ int main() {
             QEventLoop loop;QTimer camera;camera.setTimerType(Qt::PreciseTimer);camera.setInterval(16);
             QObject::connect(&camera,&QTimer::timeout,&loop,[&] {
                 gaps.push_back(gap_clock.restart());
-                auto *c=native->scene()->activeCamera();const auto t=clock.elapsed()/1000.0;
-                c->setXRotation(45+35*std::sin(t));c->setYRotation(35+15*std::sin(t*0.7));
-                c->setTarget(QVector3D(0.3f*std::sin(t*1.7),0,-0.3f*std::cos(t*1.7)));
+                const auto t=clock.elapsed()/1000.0;
+                spectrogram->set_camera_state({{"horizontal",45+35*std::sin(t)},{"vertical",35+15*std::sin(t*.7)},{"zoom",155}});
             });camera.start();QTimer::singleShot(3500,&loop,&QEventLoop::quit);loop.exec();camera.stop();
             const auto seconds=clock.elapsed()/1000.0,rate=(app.pipeline().processed_frames()-before)/seconds;
             const auto rendered=renders.count.load()-render_before;
@@ -150,7 +171,7 @@ int main() {
             const auto p95=gaps.empty() ? 0 : gaps[(gaps.size()-1)*95/100],worst=gaps.empty() ? 0 : gaps.back();
             qInfo("RENDER screen=%s refresh=%.1f dpr=%.2f size=%dx%d DSP=%.2f rendered=%.2f/s render_mean=%.3fms heartbeat_p95=%lldms max=%lldms shadow=%d swap=%d",
                 qPrintable(screen->name()),screen->refreshRate(),native->devicePixelRatio(),native->width(),native->height(),rate,rendered/seconds,render_ms,
-                static_cast<long long>(p95),static_cast<long long>(worst),int(native->shadowQuality()),native->format().swapInterval());
+                static_cast<long long>(p95),static_cast<long long>(worst),int(0),native->format().swapInterval());
             passed &= rate>55 && rate<65 && rendered/seconds>45 && rendered/seconds<61 && p95<30 && worst<100;
         }
         // Resize/expose events must share the camera/data frame budget. Flood
@@ -227,8 +248,8 @@ int main() {
         report.setInterval(1000); camera.setInterval(16); camera.setTimerType(Qt::PreciseTimer);
         QObject::connect(&camera, &QTimer::timeout, &loop, [&] {
             const auto t = elapsed.elapsed() / 1000.0;
-            native->scene()->activeCamera()->setXRotation(45 + 35 * std::sin(t));
-            native->scene()->activeCamera()->setYRotation(35 + 15 * std::sin(t * 0.7));
+            spectrogram->set_camera_state({{"horizontal",45+35*std::sin(t)},{"vertical",35+15*std::sin(t*.7)},{"zoom",155}});
+
         });
         QObject::connect(&report, &QTimer::timeout, &loop, [&] {
             ++checked_intervals;
@@ -283,7 +304,7 @@ int main() {
         // Parent-window capture can omit native children. Export the same Spectrogram
         // separately, outside all measured intervals, using its own renderer.
         if (!window->screen()->grabWindow(window->winId()).save(screenshot) ||
-            !native->renderToImage().save(screenshot + ".spectrogram.png")) {
+            !native->grabFramebuffer().save(screenshot + ".spectrogram.png")) {
             qCritical("Cannot save test-window/Spectrogram images"); return 2;
         }
     }

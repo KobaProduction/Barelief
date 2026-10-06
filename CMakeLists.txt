@@ -56,6 +56,7 @@ FetchContent_Declare(
         GIT_TAG bcb0b35f21a0cbec95dd1e5f7dc6a9a7a7530252
 )
 
+option(DEPLOY_BUILD_RUNTIME "Deploy Windows Qt runtime beside built applications" ON)
 add_subdirectory(src)
 if(NOT PORTABLE_DSP_MAX_FFT_SIZE STREQUAL "4096")
     message(FATAL_ERROR "Desktop Analyzer requires FFT size 4096; use BUILD_DSP_ONLY=ON for a smaller kernel profile")

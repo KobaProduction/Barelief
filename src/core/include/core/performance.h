@@ -13,14 +13,14 @@ enum class Stage { CaptureDecode, CaptureDispatch, Feed, FeedLock, WindowSnapsho
     WledQueue, WledSend, HistorySnapshot, GuiSpectrumQueue, GuiSpectrumConsume,
     GuiAudioQueue, GuiAudioConsume, ChartData, ChartGeometry, ChartPaint,
     NodePreview, EditorPaint, GuiHeartbeat, SpectrogramData, SpectrogramGeometry, SpectrogramRender, CameraMove, CaptureDiscovery,
-    CallbackSnapshot, WledPublish, WindowResize, GuiEvent, Count };
+    CallbackSnapshot, WledPublish, WindowResize, GuiEvent, SpectrogramHandoff, SpectrogramMesh, SpectrogramCreases, SpectrogramUpload, SpectrogramSurface, SpectrogramWalls, SpectrogramLabels, SpectrogramAtlas, SpectrogramOverlay, SpectrogramGpu, SpectrogramSchedule, SpectrogramFrameGap, SpectrogramShadow, Count };
 inline constexpr std::array<const char *,static_cast<size_t>(Stage::Count)> names{
     "capture.decode","capture.dispatch","audio.feed","audio.feed_lock","dsp.window_snapshot",
     "dsp.stereo_fft","dsp.stereo_mel","pipeline.graph","history.push","gui.publish_spectrum",
     "dsp.work","dsp.frame_gap","wled.queue","wled.send","history.snapshot",
     "gui.spectrum_queue","gui.spectrum_consume","gui.audio_queue","gui.audio_consume",
     "chart.data","chart.geometry","chart.paint","editor.preview","editor.paint","gui.heartbeat","spectrogram.data","spectrogram.geometry","spectrogram.render","camera.move","capture.discovery",
-    "pipeline.callback_snapshot","wled.publish","window.resize","gui.event"};
+    "pipeline.callback_snapshot","wled.publish","window.resize","gui.event", "spectrogram.handoff", "spectrogram.mesh_normals", "spectrogram.creases", "spectrogram.upload", "spectrogram.surface_edges", "spectrogram.walls", "spectrogram.labels", "spectrogram.atlas", "spectrogram.overlay", "spectrogram.gpu", "spectrogram.schedule", "spectrogram.frame_gap", "spectrogram.shadow"};
 inline constexpr size_t histogram_bins=512, event_capacity=32768;
 inline constexpr uint64_t bin_ns=250000;
 struct Counter {

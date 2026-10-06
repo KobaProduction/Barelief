@@ -95,8 +95,8 @@
       <translation>Назад</translation>
     </message>
     <message>
-      <source>Binding applied. Autosave or Ctrl+S saves it.</source>
-      <translation>Клавиша назначена. Автосохранение или Ctrl+S сохраняет её.</translation>
+      <source>Binding applied. Autosave or Alt+S saves it.</source>
+      <translation>Клавиша назначена. Автосохранение или Alt+S сохраняет её.</translation>
     </message>
     <message>
       <source>Both channels are analysed separately. Merging happens after FFT, so opposite phases do not cancel.</source>
@@ -154,7 +154,7 @@ The second column adds an alternative key for the same action.</source>
     </message>
     <message>
       <source>Data Flow</source>
-      <translation>Пайплайн</translation>
+      <translation>Поток данных</translation>
     </message>
     <message>
       <source>Data Processing System Core</source>
@@ -694,5 +694,597 @@ Escape — отмена. Поддерживаются все раскладки.
       <source>Show window function</source>
       <translation>Оконная функция</translation>
     </message>
+    <message>
+      <source>Camera speed</source>
+      <translation>Скорость камеры</translation>
+    </message>
+    <message>
+      <source>Time: %1 · Band: %2 · Value: %3</source>
+      <translation>Время: %1 · Полоса: %2 · Значение: %3</translation>
+    </message>
+    <message>
+      <source>Engine registry</source>
+      <translation>Реестр ядер</translation>
+    </message>
+    <message>
+      <source>Discover engines</source>
+      <translation>Найти ядра</translation>
+    </message>
+    <message>
+      <source>Disconnect registry</source>
+      <translation>Отключить реестр</translation>
+    </message>
+    <message>
+      <source>Local engine</source>
+      <translation>Локальное ядро</translation>
+    </message>
+    <message>
+      <source>Read-only engine</source>
+      <translation>Ядро только для чтения</translation>
+    </message>
+    <message>
+      <source>Editing allowed</source>
+      <translation>Изменения разрешены</translation>
+    </message>
+    <message>
+      <source>Black / Yellow</source>
+      <translation>Чёрный / жёлтый</translation>
+    </message>
+    <message>
+      <source>Green / Red</source>
+      <translation>Зелёный / красный</translation>
+    </message>
+    <message>
+      <source>Waiting for captured audio. Check Capture and Analyzer in Pipeline.</source>
+      <translation>Ожидание захваченного звука. Проверьте «Захват» и «Анализатор» в пайплайне.</translation>
+    </message>
+    <message>
+      <source>History frames</source>
+      <translation>Кадры истории</translation>
+    </message>
+    <message>
+      <source>Bands</source>
+      <translation>Полосы</translation>
+    </message>
+    <message>
+      <source>Amplitude</source>
+      <translation>Амплитуда</translation>
+    </message>
+    <message>
+      <source>Surface graphs</source>
+      <translation>Объёмные графики</translation>
+    </message>
+    <message>
+      <source>Apply to</source>
+      <translation>Применить к</translation>
+    </message>
+    <message>
+      <source>Use global settings</source>
+      <translation>Использовать общие настройки</translation>
+    </message>
+    <message>
+      <source>Surface mesh</source>
+      <translation>Сетка поверхности</translation>
+    </message>
+    <message>
+      <source>Axis grid</source>
+      <translation>Сетка осей</translation>
+    </message>
+    <message>
+      <source>Floor grid</source>
+      <translation>Сетка основания</translation>
+    </message>
+    <message>
+      <source>Shadows</source>
+      <translation>Тени</translation>
+    </message>
+    <message>
+      <source>Lighting</source>
+      <translation>Освещение</translation>
+    </message>
+    <message>
+      <source>Brightness</source>
+      <translation>Яркость</translation>
+    </message>
+    <message>
+      <source>Light strength</source>
+      <translation>Сила света</translation>
+    </message>
+    <message>
+      <source>Ambient light</source>
+      <translation>Фоновое освещение</translation>
+    </message>
+    <message>
+      <source>Automatic background</source>
+      <translation>Фон по теме</translation>
+    </message>
+    <message>
+      <source>Custom background</source>
+      <translation>Свой цвет фона</translation>
+    </message>
+    <message>
+      <source>Background</source>
+      <translation>Фон</translation>
+    </message>
+    <message>
+      <source>Choose color</source>
+      <translation>Выбрать цвет</translation>
+    </message>
+    <message>
+      <source>Color scale</source>
+      <translation>Цветовая шкала</translation>
+    </message>
+    <message>
+      <source>Global defaults</source>
+      <translation>Общие настройки</translation>
+    </message>
+    <message>
+      <source>Space grid</source>
+      <translation>Сетка пространства</translation>
+    </message>
+    <message>
+      <source>Reset to default</source>
+      <translation>Вернуть исходное значение</translation>
+    </message>
+    <message>
+      <source>%1 FPS</source>
+      <translation>%1 FPS</translation>
+    </message>
+    <message>
+      <source>Time, frames (X)</source>
+      <translation>Время, кадры (X)</translation>
+    </message>
+    <message>
+      <source>Frequency, Mel bands (Z)</source>
+      <translation>Частота, Mel-полосы (Z)</translation>
+    </message>
+    <message>
+      <source>Default: 100%</source>
+      <translation>Исходное: 100%</translation>
+    </message>
+    <message>
+      <source>Reset</source>
+      <translation>Сброс</translation>
+    </message>
+    <message>
+      <source>Choose background color</source>
+      <translation>Цвет фона</translation>
+    </message>
+    <message>
+      <source>Edit color scale</source>
+      <translation>Редактировать цветовую шкалу</translation>
+    </message>
+    <message>
+      <source>Position (%)</source>
+      <translation>Позиция (%)</translation>
+    </message>
+    <message>
+      <source>Color</source>
+      <translation>Цвет</translation>
+    </message>
+    <message>
+      <source>Add stop</source>
+      <translation>Добавить точку</translation>
+    </message>
+    <message>
+      <source>Remove stop</source>
+      <translation>Удалить точку</translation>
+    </message>
+    <message>
+      <source>Color scale stop color</source>
+      <translation>Цвет точки шкалы</translation>
+    </message>
+    <message>
+      <source>Use distinct positions from 0% to 100%, including both ends.</source>
+      <translation>Укажите разные позиции от 0% до 100%, включая оба края.</translation>
+    </message>
+    <message>
+      <source>Mesh thickness</source>
+      <translation>Толщина линий сетки</translation>
+    </message>
+    <message>
+      <source>Mesh contrast</source>
+      <translation>Контраст сетки</translation>
+    </message>
+    <message>
+      <source>Mesh color</source>
+      <translation>Цвет линий сетки</translation>
+    </message>
+    <message>
+      <source>Default mesh color</source>
+      <translation>Исходный цвет сетки</translation>
+    </message>
+    <message>
+      <source>In-app processor</source>
+      <translation>Обработка в приложении</translation>
+    </message>
+    <message>
+      <source>Processes audio inside this application. External processors connect over TCP.</source>
+      <translation>Обрабатывает звук внутри приложения. Внешние обработчики подключаются по TCP.</translation>
+    </message>
+    <message>
+      <source>System audio (output)</source>
+      <translation>Звук системы (выход)</translation>
+    </message>
+    <message>
+      <source>Age, frames (X)</source>
+      <translation>Возраст, кадры (X)</translation>
+    </message>
+    <message>
+      <source>Age: %1 · Band: %2 · Value: %3</source>
+      <translation>Возраст: %1 · Полоса: %2 · Значение: %3</translation>
+    </message>
+    <message>
+      <source>Age range (x)</source>
+      <translation>Диапазон возраста (X)</translation>
+    </message>
+    <message>
+      <source>Output enabled</source>
+      <translation>Выход включён</translation>
+    </message>
+    <message>
+      <source>Data status</source>
+      <translation>Данные и состояние</translation>
+    </message>
+    <message>
+      <source>Available</source>
+      <translation>Данные доступны</translation>
+    </message>
+    <message>
+      <source>Waiting for data</source>
+      <translation>Ожидание данных</translation>
+    </message>
+    <message>
+      <source>Output disabled</source>
+      <translation>Выход отключён</translation>
+    </message>
+    <message>
+      <source>Values</source>
+      <translation>Значения</translation>
+    </message>
+    <message>
+      <source>Peak</source>
+      <translation>Пик</translation>
+    </message>
+    <message>
+      <source>Normalized amplitude</source>
+      <translation>Нормированная амплитуда</translation>
+    </message>
+    <message>
+      <source>Magnitude</source>
+      <translation>Величина</translation>
+    </message>
+    <message>
+      <source>Unavailable</source>
+      <translation>Недоступно</translation>
+    </message>
+    <message>
+      <source>Samples</source>
+      <translation>Сэмплы</translation>
+    </message>
+    <message>
+      <source>Bins</source>
+      <translation>Спектральные бины</translation>
+    </message>
+    <message>
+      <source>Hamming</source>
+      <translation>Хэмминга</translation>
+    </message>
+    <message>
+      <source>Blackman</source>
+      <translation>Блэкмана</translation>
+    </message>
+    <message>
+      <source>Rectangular</source>
+      <translation>Прямоугольное</translation>
+    </message>
+    <message>
+      <source>Processor registry</source>
+      <translation>Реестр обработчиков</translation>
+    </message>
+    <message>
+      <source>Local processing needs no registry. Discover external processors through an aggregator.</source>
+      <translation>Для обработки в приложении реестр не нужен. Внешние обработчики находятся через агрегатор.</translation>
+    </message>
+    <message>
+      <source>Registry address</source>
+      <translation>Адрес реестра</translation>
+    </message>
+    <message>
+      <source>Registry port</source>
+      <translation>Порт реестра</translation>
+    </message>
+    <message>
+      <source>Registry disconnected. Local processing remains available.</source>
+      <translation>Реестр отключён. Обработка в приложении доступна.</translation>
+    </message>
+    <message>
+      <source>Connecting to registry…</source>
+      <translation>Подключение к реестру…</translation>
+    </message>
+    <message>
+      <source>Available external processors: %1</source>
+      <translation>Доступно внешних обработчиков: %1</translation>
+    </message>
+    <message>
+      <source>Registry connected; no external processors with a control endpoint.</source>
+      <translation>Реестр подключён; внешние обработчики с портом управления отсутствуют.</translation>
+    </message>
+    <message>
+      <source>Registry unavailable: %1</source>
+      <translation>Реестр недоступен: %1</translation>
+    </message>
+    <message>
+      <source>Registry address must be an IP address</source>
+      <translation>Укажите IP-адрес реестра.</translation>
+    </message>
+    <message>
+      <source>Engine endpoint is unavailable</source>
+      <translation>Адрес обработчика недоступен.</translation>
+    </message>
+    <message>
+      <source>Custom color scale</source>
+      <translation>Своя цветовая шкала</translation>
+    </message>
+    <message>
+      <source>Center</source>
+      <translation>Центровать</translation>
+    </message>
+    <message>
+      <source>Viridis</source>
+      <translation>Виридис</translation>
+    </message>
+    <message>
+      <source>Ice / Fire</source>
+      <translation>Лёд / Огонь</translation>
+    </message>
+    <message>
+      <source>Rainbow</source>
+      <translation>Радуга</translation>
+    </message>
+    <message>
+      <source>Preset transitions</source>
+      <translation>Переходы пресета</translation>
+    </message>
+    <message>
+      <source>Linear transitions</source>
+      <translation>Линейные переходы</translation>
+    </message>
+    <message>
+      <source>Logarithmic transitions</source>
+      <translation>Логарифмические переходы</translation>
+    </message>
+    <message>
+      <source>Color preset</source>
+      <translation>Цветовой пресет</translation>
+    </message>
+    <message>
+      <source>Transition positions</source>
+      <translation>Расположение переходов</translation>
+    </message>
+    <message>
+      <source>Display refresh rate</source>
+      <translation>Частота отрисовки</translation>
+    </message>
+    <message>
+      <source>Screen refresh rate</source>
+      <translation>Частота экрана</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>Своя</translation>
+    </message>
+    <message>
+      <source>Screen: %1 Hz</source>
+      <translation>Экран: %1 Гц</translation>
+    </message>
+    <message>
+      <source>Use theme background</source>
+      <translation>Сбросить фон к теме</translation>
+    </message>
+    <message>
+      <source>Axis decimal places</source>
+      <translation>Знаков после запятой на осях</translation>
+    </message>
+    <message>
+      <source>Reverse time direction</source>
+      <translation>Развернуть ось времени</translation>
+    </message>
+    <message>
+      <source>Reverse the age axis. The newest frame remains age zero.</source>
+      <translation>Развернуть ось возраста. Новейший кадр остаётся нулевым.</translation>
+    </message>
+    <message>
+      <source>Reverse band direction</source>
+      <translation>Развернуть ось полос</translation>
+    </message>
+    <message>
+      <source>Reverse the band index axis without changing the data.</source>
+      <translation>Развернуть ось индексов полос, сохранив данные.</translation>
+    </message>
+    <message>
+      <source>Display refresh rate is independent of the 60 FPS audio processing rate.</source>
+      <translation>Частота отрисовки независима от обработки аудио с частотой 60 кадров/с.</translation>
+    </message>
+    <message>
+      <source>Engine command rejected: %1</source>
+      <translation>Команда обработчика отклонена: %1</translation>
+    </message>
+    <message>
+      <source>Connection lost</source>
+      <translation>Соединение потеряно</translation>
+    </message>
+    <message>
+      <source>60 FPS</source>
+      <translation>60 FPS</translation>
+    </message>
+    <message>
+      <source>90 FPS</source>
+      <translation>90 FPS</translation>
+    </message>
+    <message>
+      <source>100 FPS</source>
+      <translation>100 FPS</translation>
+    </message>
+    <message>
+      <source>120 FPS</source>
+      <translation>120 FPS</translation>
+    </message>
+    <message><source>Signal generator · no speaker output</source><translation>Генератор сигналов · без вывода на динамики</translation></message>
+    <message><source>Enter a color preset name.</source><translation>Введите название цветового пресета.</translation></message>
+    <message><source>Save color preset</source><translation>Сохранить цветовой пресет</translation></message>
+    <message><source>Maximum must be greater than minimum.</source><translation>Максимум должен быть больше минимума.</translation></message>
+    <message><source>Applied pipeline</source><translation>Применённая схема</translation></message>
+    <message><source>Frame lag: %1 · Band: %2 · Value: %3</source><translation>Отставание: %1 · Полоса: %2 · Значение: %3</translation></message>
+    <message><source>Generator example</source><translation>Пример с генератором</translation></message>
+    <message><source>Frame and band counts are defined by each spectrogram node.</source><translation>Число кадров и полос задаётся в узле спектрограммы.</translation></message>
+    <message><source>Age range: %1 frames · Band range: %2 bands</source><translation>Диапазон отставания: %1 кадров · Полосы: %2</translation></message>
+    <message><source>Amplitude range (y)</source><translation>Диапазон амплитуды (Y)</translation></message>
+    <message><source>30 FPS</source><translation>30 FPS</translation></message>
+    <message><source>Color preset name</source><translation>Название цветового пресета</translation></message>
+    <message><source>Frame lag (X)</source><translation>Отставание кадра (X)</translation></message>
+    <message><source>Mel bands: %1</source><translation>Mel-полосы: %1</translation></message>
+    <message><source>History: %1 frames</source><translation>История: %1 кадров</translation></message>
+    <message><source>Delete color preset</source><translation>Удалить цветовой пресет</translation></message>
+    <message><source>Automatic amplitude range</source><translation>Автоматический диапазон амплитуды</translation></message>
+    <message><source>Visual parameters</source><translation>Параметры отображения</translation></message>
+    <message><source>Frame lag</source><translation>Отставание кадра</translation></message>
+    <message><source>Signal generator</source><translation>Генератор сигналов</translation></message>
+    <message><source>Frame lag range (x)</source><translation>Диапазон отставания (X)</translation></message>
+    <message><source>Waiting for graph dimensions</source><translation>Ожидание размеров графика</translation></message>
+    <message><source>Manual amplitude range</source><translation>Задать диапазон амплитуды</translation></message>
+    <message><source>Mel band</source><translation>Mel-полоса</translation></message>
+    <message><source>Reset speed</source><translation>Сбросить скорость</translation></message>
+    <message><source>Reverse X axis</source><translation>Развернуть ось X</translation></message>
+    <message><source>Maximum (X)</source><translation>Максимум (X)</translation></message>
+    <message><source>Historical frame range (x)</source><translation>Диапазон исторических кадров (X)</translation></message>
+    <message><source>Historical frame (X)</source><translation>Исторический кадр (X)</translation></message>
+    <message><source>Historical frame: %1 · Band: %2 · Value: %3</source><translation>Исторический кадр: %1 · Полоса: %2 · Значение: %3</translation></message>
+    <message><source>Maximum (Y)</source><translation>Максимум (Y)</translation></message>
+    <message><source>Minimum (Y)</source><translation>Минимум (Y)</translation></message>
+    <message><source>Minimum (X)</source><translation>Минимум (X)</translation></message>
+    <message><source>Automatic X range</source><translation>Автоматический диапазон X</translation></message>
+    <message><source>Historical frame</source><translation>Исторический кадр</translation></message>
+    <message><source>Reverse Y axis</source><translation>Развернуть ось Y</translation></message>
+    <message><source>Axes and color scales are configured beside each graph.</source><translation>Оси и цветовые шкалы настраиваются в боковой панели каждого графика.</translation></message>
+    <message><source>Default 3D appearance</source><translation>Общее оформление 3D-графиков</translation></message>
+    <message><source>Preset spacing</source><translation>Интервалы пресета</translation></message>
+    <message><source>Logarithmic spacing</source><translation>Логарифмические интервалы</translation></message>
+    <message><source>Linear spacing</source><translation>Линейные интервалы</translation></message>
+    <message><source>Camera</source><translation>Камера</translation></message>
+    <message><source>Reverse historical frames (X)</source><translation>Развернуть исторические кадры (X)</translation></message>
+    <message><source>Playback</source><translation>Просмотр</translation></message>
+    <message><source>Automatic</source><translation>Автоматически</translation></message>
+    <message><source>Auto</source><translation>Авто</translation></message>
+    <message><source>Reverse</source><translation>Развернуть</translation></message>
+    <message><source>Min</source><translation>Мин.</translation></message>
+    <message><source>Max</source><translation>Макс.</translation></message>
+    <message><source>Inputs</source><translation>Источники</translation></message>
+    <message><source>Outputs</source><translation>Выходы</translation></message>
+    <message><source>Transforms</source><translation>Преобразования</translation></message>
+    <message><source>Input</source><translation>Вход</translation></message>
+    <message><source>Output</source><translation>Выход</translation></message>
+    <message><source>Transform</source><translation>Преобразование</translation></message>
+    <message><source>Graph views</source><translation>Представления графиков</translation></message>
+    <message><source>No graph views available</source><translation>В схеме нет графиков</translation></message>
+    <message><source>Choose graph</source><translation>Выбрать график</translation></message>
+    <message><source>Filter</source><translation>Поиск</translation></message>
+    <message><source>Apply Data Flow to open this graph</source><translation>Примените схему, чтобы открыть этот график</translation></message>
+    <message><source>Arrange (Alt+A)</source><translation>Упорядочить (Alt+A)</translation></message>
+    <message><source>Center (Alt+F)</source><translation>Центровать (Alt+F)</translation></message>
+    <message><source>Arrange nodes from left to right (Alt+A)</source><translation>Разместить блоки слева направо (Alt+A)</translation></message>
+    <message><source>Fit the Data Flow in view (Alt+F)</source><translation>Вписать все блоки в область просмотра (Alt+F)</translation></message>
+    <message><source>Center Data Flow</source><translation>Центровать поток данных</translation></message>
+    <message><source>Double-click to open graph</source><translation>Двойной клик — открыть график</translation></message>
+    <message><source>Restore the default workspace layout</source><translation>Восстановить стандартное расположение панелей</translation></message>
+    <message><source>Reset (Alt+R)</source><translation>Сбросить (Alt+R)</translation></message>
+    <message><source>Reset camera (Alt+R)</source><translation>Сбросить камеру (Alt+R)</translation></message>
+    <message><source>Axis range X</source><translation>Диапазон оси X</translation></message>
+    <message><source>Axis range Y</source><translation>Диапазон оси Y</translation></message>
+    <message><source>Axis range Z</source><translation>Диапазон оси Z</translation></message>
+    <message><source>Dock graph</source><translation>Закрепить график</translation></message>
+    <message><source>Automatically apply Data Flow changes</source><translation>Автоматически применять изменения потока данных</translation></message>
+    <message><source>Choose a source preset</source><translation>Выберите исходный пресет</translation></message>
+    <message><source>Create editable copy</source><translation>Создать редактируемую копию</translation></message>
+    <message><source>Source preset</source><translation>Исходный пресет</translation></message>
+    <message><source>Built-in presets are read-only. Create a copy to change colors or positions.</source><translation>Стандартные пресеты нельзя изменять. Создайте копию для изменения цветов и переходов.</translation></message>
+    <message><source>Editable color scale</source><translation>Редактируемая цветовая шкала</translation></message>
+    <message><source>Read-only preset preview</source><translation>Предпросмотр стандартного пресета</translation></message>
+    <message><source>Applied Data Flow</source><translation>Применённая схема</translation></message>
+    <message><source>Arrange Data Flow</source><translation>Упорядочить поток данных</translation></message>
+    <message><source>Active Data Flow unavailable: </source><translation>Рабочая схема недоступна: </translation></message>
+    <message><source>Data Flow applied</source><translation>Схема применена</translation></message>
+    <message><source>Applying Data Flow…</source><translation>Применение схемы…</translation></message>
+    <message><source>Waiting for audio. Check the source and connections in Data Flow.</source><translation>Ожидание звука. Проверьте источник и связи в потоке данных.</translation></message>
+    <message><source>Wait for the pending graph command to finish before loading the active Data Flow.</source><translation>Дождитесь завершения текущей команды перед загрузкой рабочей схемы.</translation></message>
+    <message><source>Applied Data Flow unavailable: </source><translation>Применённая схема недоступна: </translation></message>
+    <message><source>Wait for the pending Data Flow command to finish before loading the applied Data Flow.</source><translation>Дождитесь завершения текущей команды перед загрузкой применённой схемы.</translation></message>
+    <message><source>Reverse Mel bands (Z)</source><translation>Развернуть Mel-полосы (Z)</translation></message>
+    <message><source>Manual</source><translation>Вручную</translation></message>
+    <message><source>Selection</source><translation>Выделение</translation></message>
+    <message><source>Connection timeout</source><translation>Истекло время подключения</translation></message>
+    <message><source>State</source><translation>Состояние</translation></message>
+    <message><source>Inside this application</source><translation>В этом приложении</translation></message>
+    <message><source>Registration timeout</source><translation>Истекло время регистрации</translation></message>
+    <message><source>Connect processor</source><translation>Подключить обработчик</translation></message>
+    <message><source>Direct connection</source><translation>Прямое подключение</translation></message>
+    <message><source>Movement speed</source><translation>Скорость перемещения</translation></message>
+    <message><source>Time, frames</source><translation>Время, кадры</translation></message>
+    <message><source>Discovery through registry</source><translation>Поиск через реестр</translation></message>
+    <message><source>Endpoint</source><translation>Адрес</translation></message>
+    <message><source>Frequency, Hz (X)</source><translation>Частота, Гц (X)</translation></message>
+    <message><source>Common movement speed for the camera and editor.</source><translation>Общая скорость перемещения камеры и редактора потока данных.</translation></message>
+    <message><source>Port</source><translation>Порт</translation></message>
+    <message><source>Amplitude (Y)</source><translation>Амплитуда (Y)</translation></message>
+    <message><source>Manage processors…</source><translation>Управление обработчиками…</translation></message>
+    <message><source>Range (%)</source><translation>Диапазон (%)</translation></message>
+    <message><source>Axis ranges and color scales are configured beside each graph.</source><translation>Диапазоны осей и цветовые шкалы настраиваются в боковой панели каждого графика.</translation></message>
+    <message><source>Processor</source><translation>Обработчик</translation></message>
+    <message><source>Reverse axis</source><translation>Развернуть ось</translation></message>
+    <message><source>Theme</source><translation>Тема</translation></message>
+    <message><source>Manage processors</source><translation>Управление обработчиками</translation></message>
+    <message><source>Samples (X)</source><translation>Сэмплы (X)</translation></message>
+    <message><source>Processor address must be an IP address</source><translation>Введите IP-адрес обработчика</translation></message>
+    <message><source>Address</source><translation>Адрес</translation></message>
+    <message><source>Frequency, Mel bands (X)</source><translation>Частота, Mel-полосы (X)</translation></message>
+    <message><source>Edit...</source><translation>Изменить…</translation></message>
+    <message><source>Time frame: %1 · Band: %2 · Value: %3</source><translation>Время, кадр: %1 · Полоса: %2 · Значение: %3</translation></message>
   </context>
+    <context><name>Ui</name>
+    <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
+    <message><source>Open settings…</source><translation>Открыть настройки…</translation></message>
+    <message><source>Settings (*.json)</source><translation>Настройки (*.json)</translation></message>
+    <message><source>Open a settings file and restart the application</source><translation>Открыть файл настроек и перезапустить приложение</translation></message>
+    <message><source>Separate window</source><translation>В отдельное окно</translation></message>
+    <message><source>Return to tabs</source><translation>Вернуть во вкладки</translation></message>
+    <message><source>Place beside</source><translation>Разместить рядом</translation></message>
+    <message><source>Place below</source><translation>Разместить снизу</translation></message>
+    <message><source>Placement</source><translation>Размещение</translation></message>
+    <message><source>Focus graph</source><translation>Показать график</translation></message>
+    <message><source>Open in separate window</source><translation>Открыть в отдельном окне</translation></message>
+    <message><source>Open in new tab</source><translation>Открыть в новой вкладке</translation></message>
+    <message><source>Open beside current graph</source><translation>Открыть рядом с текущим графиком</translation></message>
+    <message><source>Select a node to see parameters</source><translation>Выберите блок, чтобы увидеть его параметры</translation></message>
+    <message><source>Drag to resize; click to collapse or expand parameters</source><translation>Перетащите для изменения ширины; нажмите, чтобы свернуть или раскрыть параметры</translation></message>
+    <message><source>Copy selection</source><translation>Копировать выделенное</translation></message>
+    <message><source>Copy</source><translation>Копировать</translation></message>
+    <message><source>Cut</source><translation>Вырезать</translation></message>
+    <message><source>Paste</source><translation>Вставить</translation></message>
+    <message><source>Undo</source><translation>Отменить</translation></message>
+    <message><source>Redo</source><translation>Повторить</translation></message>
+    <message><source>Select all</source><translation>Выделить всё</translation></message>
+    <message><source>Cut selection</source><translation>Вырезать выделенное</translation></message>
+    <message><source>Paste selection</source><translation>Вставить</translation></message>
+    <message><source>Duplicate selection</source><translation>Дублировать выделенное</translation></message>
+    <message><source>Delete selection</source><translation>Удалить выделенное</translation></message>
+    <message><source>Settings saved: %1</source><translation>Настройки сохранены: %1</translation></message>
+    <message><source>The selected remote engine endpoint is unavailable.</source><translation>Адрес выбранного удалённого обработчика недоступен.</translation></message>
+    <message><source>Could not save settings: %1
+%2</source><translation>Не удалось сохранить настройки: %1
+%2</translation></message>
+    <message><source>Could not open settings: %1
+%2</source><translation>Не удалось открыть настройки: %1
+%2</translation></message>
+    <message><source>Could not start the application with settings: %1</source><translation>Не удалось запустить приложение с настройками: %1</translation></message>
+    </context>
 </TS>

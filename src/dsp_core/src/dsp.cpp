@@ -6,6 +6,25 @@
 #include "dsps_fft4r.h"
 
 namespace dsp_core {
+void hann_window(std::span<float> output) {
+    for (size_t i = 0; i < output.size(); ++i)
+        output[i] = output.size() < 2 ? 1 : 0.5 * (1 - std::cos(float(i * 2 * 3.14159265358979323846 * (1 / float(output.size() - 1)))));
+}
+void window(std::span<float> output, WindowFunction function) {
+    if (function == WindowFunction::Hann) { hann_window(output); return; }
+    for (size_t i = 0; i < output.size(); ++i) {
+        const float angle = output.size() < 2 ? 0 : float(i * 2 * 3.14159265358979323846 * (1 / float(output.size() - 1)));
+        output[i] = output.size() < 2 || function == WindowFunction::Rectangular ? 1 :
+            function == WindowFunction::Hamming ? 0.54f - 0.46f * std::cos(angle) :
+            0.42f - 0.5f * std::cos(angle) + 0.08f * std::cos(2 * angle);
+    }
+}
+void bark_weights(std::span<float> output, float step) {
+    for (size_t i = 0; i < output.size(); ++i) {
+        const float base = i * (step / 650);
+        output[i] = 7 * std::log(base + std::sqrt(1 + base * base));
+    }
+}
 std::optional<MemoryRequirements> estimate_memory(std::size_t n, std::size_t bands, std::size_t queue_slots,
                                                   std::size_t history_rows) {
     if (n < 512 || n > max_fft_samples || (n & (n - 1)) || bands > 50 || queue_slots > 16 || history_rows > 2000)

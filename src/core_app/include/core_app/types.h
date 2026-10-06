@@ -29,6 +29,7 @@ struct UIApplicationConfig {
     QString language = "ru";
     QString theme = "system";
     QJsonObject graph_views;
+    QJsonObject graph_rendering;
     QJsonObject editor_view;
     bool show_data_flow = true;
     bool pipeline_auto_apply = true;

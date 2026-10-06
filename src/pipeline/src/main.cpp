@@ -1,3 +1,5 @@
+#include "pipeline/network_runtime.h"
+#include "config/config_document.h"
 #include "pipeline/audio_pipeline.h"
 #include "pipeline/engine_client.h"
 #include "pipeline/test_signal.h"
@@ -19,6 +21,7 @@ int main(int argc, char **argv) {
     QCommandLineParser parser;
     parser.addHelpOption();
     parser.addOption({"duration", "Stop after milliseconds (0: continuous)", "ms", "0"});
+    parser.addOption({"preset", "Preset stable ID or unique name (requires --config)", "id/name"});
     parser.addOption({"config", "Settings file or standalone audio graph", "file"});
     parser.addOption({"synthetic", "Use silent configurable test sinusoids instead of device capture"});
     parser.addOption({"capture-diagnostics", "Report device, buffer and capture latency once per second"});
@@ -58,34 +61,25 @@ int main(int argc, char **argv) {
             QTimer::singleShot(duration, &app, &QCoreApplication::quit);
         return app.exec();
     }
+    if (parser.isSet("preset") && !parser.isSet("config")) {
+        qCritical("--preset requires --config");
+        return 2;
+    }
     pipeline::AudioPipeline engine;
+    // Configuration may auto-start local sources on Apply. Resolve CLI source
+    // overrides and startup flags first, then explicitly start the final graph.
+    engine.stop_capture();
+    engine.stop_analyzer();
     std::unique_ptr<pipeline::EngineServer> server;
     QJsonObject settings;
     if (parser.isSet("config")) {
-        QFile file(parser.value("config"));
-        if (!file.open(QIODevice::ReadOnly)) {
-            qCritical("Cannot open settings");
+        const auto selected = configuration::load(parser.value("config"), parser.value("preset"));
+        if (!selected) {
+            qCritical().noquote() << selected.error;
             return 2;
         }
-        QJsonParseError parse_error;
-        const auto document = QJsonDocument::fromJson(file.readAll(), &parse_error);
-        if (!document.isObject() || parse_error.error != QJsonParseError::NoError) {
-            qCritical("Invalid settings document");
-            return 2;
-        }
-        settings = document.object();
-        auto graph = settings.contains("nodes") ? settings : settings.value("pipeline_graph").toObject();
-        if (graph.isEmpty())
-            graph = settings.value("scene_graph").toObject();
-        if (graph.isEmpty()) {
-            const auto core = settings.value("core").toObject();
-            const auto merge = core.value("spectrum_merge").toString("energy");
-            graph = pipeline::GraphProgram::defaults(core.value("spectrum_channel").toInt(0),
-                                                     merge == "mean"      ? SpectrumMerge::Mean
-                                                     : merge == "maximum" ? SpectrumMerge::Maximum
-                                                                          : SpectrumMerge::Energy,
-                                                     core.value("capture_source").toInt(0));
-        }
+        settings = selected.document;
+        const auto graph = selected.graph;
         QString error;
         if (!engine.apply_graph(graph, error)) {
             qCritical().noquote() << error;
@@ -111,35 +105,61 @@ int main(int argc, char **argv) {
     engine.set_status_handler([](QString component, pipeline::ComponentStatus status) {
         qInfo().noquote() << component << static_cast<int>(status.state) << status.error;
     });
-    if (parser.isSet("server") || parser.isSet("listen")) {
-        const QHostAddress address(parser.value("listen"));
+    const auto server_settings = settings.value("engine_server").toObject();
+    if (parser.isSet("server") || parser.isSet("listen") || server_settings.value("enabled").toBool(false)) {
+        const QHostAddress address(parser.isSet("listen")
+                                       ? parser.value("listen")
+                                       : server_settings.value("listen_address").toString("127.0.0.1"));
         if (address.isNull()) {
             qCritical("Invalid listen address");
             return 2;
         }
+        const int control_port = parser.isSet("port") ? port : server_settings.value("port").toInt(port);
+        if (control_port < 1 || control_port > 65535) {
+            qCritical("Invalid configured engine port");
+            return 2;
+        }
+        const bool allow_mutations =
+            parser.isSet("allow-mutations") || server_settings.value("allow_mutations").toBool(false);
         server = std::make_unique<pipeline::EngineServer>(engine);
-        if (!server->listen(address, static_cast<quint16>(port),
-                            (address.isLoopback() || parser.isSet("allow-mutations")))) {
+        if (!server->listen(address, static_cast<quint16>(control_port), allow_mutations)) {
             qCritical().noquote() << server->error();
             return 2;
         }
+        settings["engine_server"] = configuration::overlay(server_settings, {{"enabled", true},
+                                                                             {"port", control_port},
+                                                                             {"listen_address", address.toString()},
+                                                                             {"allow_mutations", allow_mutations}});
         qInfo() << "Engine listening" << address.toString() << server->port();
     }
     if (parser.isSet("synthetic")) {
-        auto graph = engine.graph(); auto nodes = graph["nodes"].toArray();
+        auto graph = engine.graph();
+        auto nodes = graph["nodes"].toArray();
         for (int i = 0; i < nodes.size(); ++i) {
             auto node = nodes[i].toObject();
             if (node["internal-data"].toObject().value("model-name") == "AudioSource") {
-                auto parameters = pipeline::TestSignalSettings{}.json(); parameters["model-name"] = "TestSignal";
-                node["internal-data"] = parameters; nodes[i] = node;
+                auto parameters = pipeline::TestSignalSettings{}.json();
+                parameters["model-name"] = "TestSignal";
+                node["internal-data"] = parameters;
+                nodes[i] = node;
             }
         }
-        graph["nodes"] = nodes; QString error;
-        if (!engine.apply_graph(graph,error)) { qCritical().noquote() << error; return 2; }
+        graph["nodes"] = nodes;
+        QString error;
+        if (!engine.apply_graph(graph, error)) {
+            qCritical().noquote() << error;
+            return 2;
+        }
     }
     const auto core = settings.value("core").toObject();
     if (core.value("run_analyser").toBool(true))
         engine.start_analyzer();
+    pipeline::NetworkRuntime network(engine, settings);
+    QString network_error;
+    if (!network.refresh(network_error)) {
+        qCritical().noquote() << network_error;
+        return 2;
+    }
     if (parser.isSet("synthetic") || core.value("run_loopback").toBool(true))
         engine.start_capture();
     const auto wled = settings.value("wled_ar_server").toObject();
@@ -156,9 +176,9 @@ int main(int argc, char **argv) {
     if (parser.isSet("capture-diagnostics")) {
         QObject::connect(&diagnostics, &QTimer::timeout, &app, [&] {
             const auto d = engine.capture_diagnostics();
-            qInfo().noquote() << "Capture" << d.backend << d.device << "rate" << d.sample_rate
-                << "buffer" << d.buffered_frames << "/" << d.capacity_frames << "lost" << d.dropped_frames
-                << "gaps" << d.discontinuities << "dispatch_ms" << d.dispatch_latency_ns / 1000000.0;
+            qInfo().noquote() << "Capture" << d.backend << d.device << "rate" << d.sample_rate << "buffer"
+                              << d.buffered_frames << "/" << d.capacity_frames << "lost" << d.dropped_frames << "gaps"
+                              << d.discontinuities << "dispatch_ms" << d.dispatch_latency_ns / 1000000.0;
         });
         diagnostics.start(1000);
     }

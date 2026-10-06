@@ -88,8 +88,9 @@ int main(int argc, char **argv) {
         console.setProcessEnvironment(env);
         console.start(QCoreApplication::applicationDirPath()+"/pipeline_cli",{"--config",file.fileName(),
             "--capture-diagnostics","--duration","1200"});
-        require(console.waitForFinished(5000) && console.exitCode()==0 &&
-            console.readAllStandardError().contains("In-memory test generator"), "Console did not execute the same saved generator graph");
+        const bool finished=console.waitForFinished(5000);const auto report=console.readAllStandardError();
+        if(!finished || console.exitCode()!=0 || !report.contains("In-memory test generator")) qWarning()<<console.exitCode()<<console.errorString()<<report<<console.readAllStandardOutput();
+        require(finished && console.exitCode()==0 && report.contains("In-memory test generator"), "Console did not execute the same saved generator graph");
         qInfo("Silent TestSignal graph, PCM, clock, lifecycle, GUI independence and console checks passed");
     } catch (const std::exception &error) { qCritical("TestSignal: %s",error.what()); return 1; }
 }
