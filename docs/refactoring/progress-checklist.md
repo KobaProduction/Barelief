@@ -1,5 +1,46 @@
 # Рефакторинг: видимый прогресс
 
+### QML graph migration — 2026-10-09
+
+- COMPLETED in migration / recorded automated acceptance scope: all graph families: scalar
+  metrics; vector line/points/bars/pie; matrix image2d/surface3d. QtNodes editor,
+  DSP, History accumulation, protocol and document formats remain outside scope.
+- Fresh agents created with `fork_turns=none`, using only the condensed handoff
+  `qml-handoff-2026-10-09.md` and current rules/evidence. The handoff's old
+  instruction to defer implementation is superseded by explicit user approval.
+- Ownership: qml_vector_matrix2d — 2D/metrics; qml_surface3d — surface renderer;
+  qml_graph_bridge — graph presentation/controls/shared Quick helpers; root —
+  shared CMake/composition/workspace/integration/tests/docs and sole build owner.
+- Overview: implementation INTEGRATED; release build PASS (`build15.log`);
+  FINAL automated acceptance COMPLETE in the scope below. Circular independent source reviews accepted the 2D/metrics,
+  bridge, surface and root integration after owner fixes. Supplemental independent
+  review accepted persistence, teardown, palette, explicit FBO viewport, snapshot
+  notifications and stable sidebar layout. Earlier accepted
+  History/axes/UI blocks retain only their recorded scope, not future QML pixels.
+- Evidence directory: `cmake-build-release/qml-migration-20261009-220014`.
+  Native update_plan is unavailable; no Markdown UI fallback opened.
+- Shared integration removes Charts/DataVisualization/OpenGLWidgets from live
+  targets and deploys QML imports. Regression fixtures target presentation ports;
+  new QML checks cover Ready/errors, exact scalars, peak-preserving budgets,
+  commands, axes, theme/language and lazy surface state. Build attempts exposed
+  remaining old test API/includes; these are adapted without restoring fallback
+  renderers. Focused workspace/settings/axes/QML checks: 4/4 PASS. Native 2D
+  scenes/controls/metrics/image pixels: PASS. Build13 full host: 99/101 PASS;
+  UI persistence test isolated the synchronous preference commit from unrelated
+  autosave; gesture restart fixture now uses real child processes. Both source
+  adaptations independently accepted; final affected recheck 14/14 PASS
+  (`host-recheck.log/xml`, 109.16s). Latest outcomes across the full run and
+  rechecks: **101/101 PASS**, combined evidence, not a second full suite run.
+  Machine-readable summary: `acceptance-summary.json` in the evidence directory.
+- Native 3D FINAL scenario PASS (`native3d-final.out.log`, empty stderr): actual
+  geometry, exact GPU VBO data, physical/index roundtrip, six camera poses,
+  point/both slices, resize, hide/show and dock reparent. Physical/roundtrip use
+  the same 801x800 logical viewport, 1602x1600 FBO and 14 time-axis sections.
+  Root and independent bridge reviewer inspected the owned reparent framebuffer
+  and accepted the recorded native scenario evidence. This is a bounded native
+  scenario, not general visual/product signoff.
+
+
 ### Native axes regression follow-up — 2026-10-09
 
 - Implementation integrated / independently source accepted / FINAL host and

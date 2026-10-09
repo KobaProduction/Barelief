@@ -496,8 +496,6 @@ void MainWindow::set_graph_exposed(const QString &key, WorkspaceDock *dock, bool
     _render_visible[key] = exposed;
     dock->setProperty("renderExposed", exposed);
     if (auto *surface = qobject_cast<SpectrogramGraph *>(dock->widget())) surface->set_render_visible(exposed);
-    for (auto *view : dock->findChildren<QChartView *>())
-        if (auto *chart = dynamic_cast<AbstractChartView *>(view)) chart->set_render_visible(exposed);
     if (auto *panel = qobject_cast<GraphPanel *>(dock->widget())) panel->set_render_visible(exposed);
     if(exposed)render_numeric_views();
     // ADS emits Show while the returning tab can still have its offscreen
@@ -584,21 +582,11 @@ void MainWindow::setup_graph_dock_controls(WorkspaceDock *dock) {
     });
 }
 void MainWindow::install_graph_name_control(WorkspaceDock *dock) {
-    if(!dock || !dock->widget() || dock->property("graphViewKey").toString().isEmpty() ||
-       dock->widget()->findChild<QPushButton*>("graphRename"))return;
-    // Keep right-button interaction in the canvas available to the renderer.
-    auto sidebars=dock->widget()->findChildren<QScrollArea*>();
-    if(auto* common=dock->widget()->findChild<QScrollArea*>("numericGraphSettings")){sidebars.removeAll(common);sidebars.prepend(common);}
-    for(auto* scroll:sidebars) {
-        auto* settings=scroll->widget();if(!settings || !settings->layout())continue;
-        auto* rename=ui::make<QPushButton>("Rename graph",settings);
-        rename->setObjectName("graphRename");
-        if(auto* form=qobject_cast<QFormLayout*>(settings->layout()))form->insertRow(0,rename);
-        else if(auto* box=qobject_cast<QVBoxLayout*>(settings->layout()))box->insertWidget(0,rename);
-        else settings->layout()->addWidget(rename);
-        connect(rename,&QPushButton::clicked,this,[this,dock]{request_graph_rename(dock);});
-        return;
-    }
+    if(!dock || dock->property("graphViewKey").toString().isEmpty())return;
+    auto* panel=qobject_cast<GraphPanel*>(dock->widget());
+    if(!panel || panel->property("graphRenameConnected").toBool())return;
+    panel->setProperty("graphRenameConnected",true);
+    connect(panel,&GraphPanel::rename_requested,this,[this,dock]{request_graph_rename(dock);});
 }
 void MainWindow::request_graph_rename(WorkspaceDock *dock) {
     const auto key=dock->property("graphViewKey").toString();if(key.isEmpty())return;
@@ -619,19 +607,37 @@ void MainWindow::refresh_graph_title(WorkspaceDock *dock) {
          _active_node_views.value(dock->property("graphNode").toInt())==key);
     auto* model=current && dock->property("graphNode").isValid() && _application.state().data_flow_graph?
         _application.state().data_flow_graph->delegateModel<AudioNodeModel>(dock->property("graphNode").toUInt()):nullptr;
+    if(!model || model->name()!="ScalarView")if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())) {
+        for(const auto& connection:panel->property("scalarInputConnections").value<QList<QMetaObject::Connection>>())QObject::disconnect(connection);
+        panel->setProperty("scalarInputConnections",QVariant{});
+        panel->setProperty("scalarInputsModel",QVariant{});
+        panel->set_scalar_inputs({},false);
+    }
     if(model && numeric_editor::is_graph_view(model->name())){
-        if(model->name()=="ScalarView")if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
-            if(auto* sidebar=panel->findChild<QScrollArea*>("numericGraphSettings"))
-                if(auto* form=qobject_cast<QFormLayout*>(sidebar->widget()->layout())){
-                    auto* old=sidebar->findChild<QWidget*>("scalarInputsEditor");
-                    if(!old || old->property("scalarInputsModel").value<QObject*>()!=model){
-                        if(old)delete old;
-                        auto* controls=model->scalar_inputs_widget(sidebar->widget());
-                        controls->setProperty("scalarInputsModel",QVariant::fromValue(static_cast<QObject*>(model)));
-                        connect(model,&QObject::destroyed,controls,[controls]{controls->setProperty("scalarInputsModel",QVariant{});});
-                        form->addRow(controls);
-                    }
-                }
+        if(model->name()=="ScalarView")if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())) {
+            QVariantList inputs;
+            const auto metadata=model->presentation().value("scalar_inputs").toObject();
+            if(const auto* numeric=model->numeric_node())for(const auto& input:numeric->inputs) {
+                const auto preferences=metadata.value(QString::number(input.id)).toObject();
+                inputs.append(QVariantMap{{"port",int(input.id)},{"name",preferences.value("display_name").toString()},
+                    {"enabled",preferences.value("enabled").toBool(true)},{"removeEnabled",numeric->inputs.size()>1}});
+            }
+            panel->set_scalar_inputs(inputs,inputs.size()<qsizetype(numeric_editor::limits().max_ports_per_node));
+            if(panel->property("scalarInputsModel").value<QObject*>()!=model) {
+                for(const auto& connection:panel->property("scalarInputConnections").value<QList<QMetaObject::Connection>>())QObject::disconnect(connection);
+                const QPointer<AudioNodeModel> guard(model);
+                QList<QMetaObject::Connection> connections;
+                connections.append(connect(panel,&GraphPanel::add_scalar_input_requested,panel,[guard]{if(guard)guard->add_scalar_input();}));
+                connections.append(connect(panel,&GraphPanel::remove_scalar_input_requested,panel,[guard](int port){if(guard && port>=0 && port<=65535)guard->remove_scalar_input(domain::PortId(port));}));
+                connections.append(connect(panel,&GraphPanel::scalar_input_name_requested,panel,[guard](int port,const QString& name){if(guard && port>=0 && port<=65535)guard->edit_scalar_input_name(domain::PortId(port),name);}));
+                connections.append(connect(panel,&GraphPanel::scalar_input_enabled_requested,panel,[guard](int port,bool enabled){if(guard && port>=0 && port<=65535)guard->set_scalar_input_enabled(domain::PortId(port),enabled);}));
+                connections.append(connect(model,&QObject::destroyed,panel,[panel,model]{
+                    if(panel->property("scalarInputsModel").value<QObject*>()==model){panel->setProperty("scalarInputsModel",QVariant{});panel->set_scalar_inputs({},false);}
+                }));
+                panel->setProperty("scalarInputsModel",QVariant::fromValue(static_cast<QObject*>(model)));
+                panel->setProperty("scalarInputConnections",QVariant::fromValue(connections));
+            }
+        }
 
         if(dock->property("graphCaptionModel").value<QObject*>()!=model){
             dock->setProperty("graphCaptionModel",QVariant::fromValue(static_cast<QObject*>(model)));

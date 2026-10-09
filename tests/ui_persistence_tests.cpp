@@ -24,7 +24,8 @@ int main() {
         auto *theme = settings->findChild<QComboBox *>("interfaceTheme");
         gui_fixture::check(theme != nullptr, "theme selector");
         theme->setCurrentIndex(1); // Dark, routed as application preferences only.
-        QCoreApplication::processEvents();
+        // The preferences commit is synchronous. Do not also run the independent
+        // editor debounce/autosave timer while measuring this command's delta.
         desktop::NumericProjectDocument after;
         domain::NumericProcessingGraph persisted;
         gui_fixture::check(bool(desktop::load_numeric_project(path, after, persisted)), "read preferences-only commit");

@@ -8,7 +8,6 @@
 #include <QJsonObject>
 #include <QSet>
 #include <QElapsedTimer>
-#include <QSplitter>
 #include <QPair>
 #include <QVariantMap>
 #include <vector>
@@ -24,44 +23,29 @@
 #include "visualization/abstract/mixins.h"
 
 class SpectrogramRenderer;
-// Renderer coordinates are a bounded projection. Geometry remains indexed;
-// labels/readouts map those indices to declared coordinates without changing data.
-struct SpectrogramAxisMetadata {
-    QString time_title_key=QStringLiteral("Temporal frame (X)");
-    QString column_title_key=QStringLiteral("Frequency, Mel bands (Z)");
-    QString value_title_key=QStringLiteral("Amplitude (Y)");
-    QString column_index_title_key=QStringLiteral("Column index (Z)");
-    QString time_index_title_key=QStringLiteral("Temporal frame (X)");
-    bool time_coordinates=false,column_coordinates=false;
-    bool age_axis=true;
-    std::vector<double> ages,columns,row_indices;
-    bool operator==(const SpectrogramAxisMetadata&) const=default;
-    static double coordinate(const std::vector<double>& values,double index) noexcept {
-        if(!std::isfinite(index) || index<0 || values.empty() || index>double(values.size()-1))return std::numeric_limits<double>::quiet_NaN();
-        const auto lower=std::size_t(index),upper=std::min(lower+1,values.size()-1);
-        return values[lower]+(values[upper]-values[lower])*(index-double(lower));
-    }
-    double age(double index) const noexcept {return time_coordinates || (!age_axis && !ages.empty())?coordinate(ages,index):index;}
-    double column(double index) const noexcept {return column_coordinates?coordinate(columns,index):index;}
-    SpectrogramAxisMetadata displayed(const QString& frequencyMode,const QString& timeMode) const {
-        auto result=*this;
-        if(frequencyMode=="positions") {
-            result.column_coordinates=false;result.columns.clear();result.column_title_key=column_index_title_key;
-        }
-        if(timeMode=="positions") {
-            result.ages=row_indices;result.time_coordinates=!row_indices.empty();result.time_title_key=time_index_title_key;
-        }
-        return result;
-    }
-};
+#include "visualization/spectrogram_axis_metadata.h"
+class QQuickWidget;
+class SurfaceQuickItem;
 class SpectrogramGraph : public QWidget {
     Q_OBJECT
+    Q_PROPERTY(QVariantMap quickState READ quick_state NOTIFY quick_state_changed)
+    Q_PROPERTY(QVariantMap overlay READ overlay NOTIFY overlay_changed)
 
   public:
     explicit SpectrogramGraph(QWidget *parent = nullptr);
 
     ~SpectrogramGraph() override;
 
+    QVariantMap quick_state() const;
+    QVariantMap overlay() const {return _overlay;}
+    Q_INVOKABLE void quick_action(const QString &action, const QVariant &value = {});
+    Q_INVOKABLE void quick_range(int axis,double low,double high,bool automatic);
+    Q_INVOKABLE void quick_pointer(int type,double x,double y,int button,int buttons,int modifiers);
+    Q_INVOKABLE void quick_wheel(double horizontal,double vertical,bool pixels);
+    Q_INVOKABLE void quick_key(bool pressed,int key,int modifiers,bool repeat);
+    Q_INVOKABLE void quick_viewport(double width,double height);
+    Q_INVOKABLE void quick_cancel_input();
+    void accept_render_feedback(const QVariantMap &feedback);
     bool initialize(const QSize &minimumGraphSize, const QSize &maximumGraphSize);
 
     void update(const std::vector<std::vector<float>> &spectrogram);
@@ -110,6 +94,8 @@ class SpectrogramGraph : public QWidget {
     void set_camera_state(const QJsonObject &state);
 
   signals:
+    void quick_state_changed();
+    void overlay_changed();
     void axis_metadata_changed();
     void presentation_changed(const QJsonObject &state);
     void surface_settings_error(const QString &message);
@@ -131,7 +117,9 @@ class SpectrogramGraph : public QWidget {
     void _camera_changed();
     void _stop_camera();
     void _refresh_camera_keys(Qt::KeyboardModifiers modifiers);
-    QSplitter *_splitter = nullptr;
+    QQuickWidget *_quick_view = nullptr;
+    SurfaceQuickItem *_quick_item = nullptr;
+    QVariantMap _overlay;
     float _side_panel_ratio = 0.25f;
     QJsonObject _camera_state, _presentation_state;
     QJsonObject _surface_settings;

@@ -1,48 +1,11 @@
 #include <core_app/numeric_view_adapter.h>
-#include <visualization/abstract/abs.h>
-#include <visualization/charts/freq.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/numeric_image_view.h>
-#include <visualization/numeric_pie_view.h>
-#include <visualization/numeric_metrics_view.h>
-#include <visualization/ui_text.h>
-#include <wled_protocol/wled_packet.h>
-#include <QLabel>
+#include <cmath>
+#include <algorithm>
 namespace presentation {
 using namespace signal_contracts;
 namespace {
-// Caption properties own only bounded text. One language connection per target
-// avoids accumulating frame callbacks or retaining any frame/arena in a widget.
-void refresh_caption(QObject* target) {
-    const auto source=target->property("numericCaptionSource").toString();
-    const auto args=target->property("numericCaptionArguments").toStringList();
-    auto text=source.isEmpty()?QString{}:ui::text(source.toUtf8().constData());
-    switch(args.size()) {
-    case 1:text=text.arg(args[0]);break;
-    case 2:text=text.arg(args[0],args[1]);break;
-    case 3:text=text.arg(args[0],args[1],args[2]);break;
-    default:break;
-    }
-    if(target->property("numericCaptionLoss").toBool())text+=(text.isEmpty()?QString{}:QStringLiteral(" · "))+ui::text("Renderer precision loss");
-    if(target->property("numericCaptionUnavailable").toBool())text+=(text.isEmpty()?QString{}:QStringLiteral(" · "))+ui::text("Renderer projection unavailable");
-    if(auto* surface=qobject_cast<SpectrogramGraph*>(target))surface->set_projection_status(text);
-    else if(auto* image=dynamic_cast<NumericImageView*>(target))image->set_projection_status(text);
-    else if(auto* pie=dynamic_cast<NumericPieView*>(target))pie->set_projection_status(text);
-    else if(auto* label=qobject_cast<QLabel*>(target)){label->setTextFormat(Qt::PlainText);label->setText(text);}
-    else if(auto* axis=qobject_cast<QAbstractAxis*>(target))axis->setTitleText(text);
-    else target->setProperty("title",text.toHtmlEscaped());
-}
-void caption(QObject* target,const char* source,QStringList arguments={},bool loss=false,bool unavailable=false) {
-    if(!target)return;
-    target->setProperty("numericCaptionSource",QString::fromUtf8(source));
-    target->setProperty("numericCaptionArguments",arguments);
-    target->setProperty("numericCaptionLoss",loss);
-    target->setProperty("numericCaptionUnavailable",unavailable);
-    if(!target->property("numericCaptionConnected").toBool()) {
-        target->setProperty("numericCaptionConnected",true);
-        QObject::connect(&ui::Language::instance(),&ui::Language::changed,target,[target]{refresh_caption(target);});
-    }
-    refresh_caption(target);
+void caption(NumericCaptionPort* target,const char* source,QStringList args={},bool loss=false,bool unavailable=false) {
+    if(target && target->caption)target->caption(source,std::move(args),loss,unavailable);
 }
 Status coordinates(const NumericView& view,size_t axis,size_t size,std::vector<double>& output) {
     const auto& declared=view.contract->coordinates[axis];
@@ -71,7 +34,7 @@ void NumericViewAdapter::clear() noexcept {
 }
 void NumericViewAdapter::clear_render_target(NumericRenderTarget target) {
     if(target.metrics)target.metrics->clear_values();
-    if(target.chart){target.chart->update({});target.chart->set_scalar_readout({},false);caption(target.chart->chart(),"");}
+    if(target.chart){target.chart->update({});target.chart->set_scalar_readout({},false,true);caption(target.chart,"");}
     if(target.spectrogram){target.spectrogram->update_frame_history({});caption(target.spectrogram,"");}
     if(target.image){target.image->set_matrix({});caption(target.image,"");}
     if(target.pie){target.pie->set_values({});caption(target.pie,"");}
@@ -143,7 +106,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
     auto& state=found->second;
     const auto failure=[&](Status status) {
         if(target.metrics)target.metrics->set_unavailable(endpoint.port);
-        if(target.chart){target.chart->update({});target.chart->set_scalar_readout({},target.chart->scalar_readout_enabled(),false);caption(target.chart->chart(),"Renderer projection unavailable");}
+        if(target.chart){target.chart->update({});target.chart->set_scalar_readout({},target.chart->scalar_readout_enabled(),false);caption(target.chart,"Renderer projection unavailable");}
         if(target.spectrogram){target.spectrogram->update_frame_history({});caption(target.spectrogram,"Renderer projection unavailable");}
         if(target.image){target.image->set_matrix({});caption(target.image,"Renderer projection unavailable");}
         if(target.pie){target.pie->set_values({});caption(target.pie,"Renderer projection unavailable");}
@@ -218,7 +181,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
         const char* xTitle="Value index (X)";
         NumericLiteral current;
         if(scalar && pipeline::read_numeric_literal(numeric,{plane,0,0},current)!=Status::ok)return failure(Status::malformed);
-        target.chart->set_scalar_readout(scalar?QString::fromStdString(pipeline::exact_scalar_text(current)):QString{},scalar);
+        target.chart->set_scalar_readout(scalar?QString::fromStdString(pipeline::exact_scalar_text(current)):QString{},scalar,true);
         std::vector<double> coordinates;
         if(!scalar && numeric.contract->shape.rank==Rank::Vector) {
             switch(numeric.contract->shape.axes[0]) {
@@ -245,11 +208,11 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
                 xTitle=axis.unit==NumericUnit::Hertz?"Frequency, Hz (X)":"Time, seconds (X)";
             }
         }
-        if(auto* frequency=dynamic_cast<FreqChartView*>(target.chart))frequency->update_freq_step(1);
+
         if(!target.chart->set_x_coordinates(coordinates))return failure(Status::malformed);
         const char* yTitle=numeric.contract->quantity==Quantity::FilledFrameCount || numeric.contract->unit==NumericUnit::Frames?"Frames (Y)":
             numeric.contract->quantity==Quantity::Amplitude || numeric.contract->unit==NumericUnit::NormalizedAmplitude || numeric.contract->unit==NumericUnit::RawAmplitude?"Amplitude (Y)":"Value (Y)";
-        for(auto* axis:target.chart->chart()->axes())caption(axis,axis->orientation()==Qt::Horizontal?xTitle:yTitle);
+        target.chart->set_axis_title_keys(QString::fromUtf8(xTitle),QString::fromUtf8(yTitle));
     }
     std::vector<float> projection;
     pipeline::FloatProjectionReport report;Status status;
@@ -271,7 +234,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
         failure(status);
         if(!exact.isEmpty()) {
             if(!target.spectrogram || !target.spectrogram->paused())caption(target.exact_label,"Exact value: %1",{exact},false,true);
-            if(target.chart){target.chart->set_scalar_readout(exact,true);caption(target.chart->chart(),"Renderer projection unavailable",{},false,true);}
+            if(target.chart){target.chart->set_scalar_readout(exact,true,true);caption(target.chart,"Renderer projection unavailable",{},false,true);}
         }
         return status;
     }
@@ -328,7 +291,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
             }
             if(target.image){
                 if(!target.image->set_axis_metadata(metadata))return failure(Status::malformed);
-                target.image->set_snapshot(matrix);
+                target.image->set_snapshot(matrix,false);
             }
         }
     }
@@ -336,7 +299,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
     const auto source=exact.isEmpty()?"":"Exact value: %1";
     const auto args=exact.isEmpty()?QStringList{}:QStringList{exact};
     if(!target.spectrogram || !target.spectrogram->paused())caption(target.exact_label,source,args,loss);
-    if(target.chart)caption(target.chart->chart(),numeric.contract->shape.rank==Rank::Scalar?"":source,
+    if(target.chart)caption(target.chart,numeric.contract->shape.rank==Rank::Scalar?"":source,
         numeric.contract->shape.rank==Rank::Scalar?QStringList{}:args,loss);
     return Status::ok;
 }

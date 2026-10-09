@@ -94,7 +94,7 @@ if(BUILD_GUI)
         set_tests_properties(${test} PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     endforeach()
-    foreach(test IN ITEMS gui_views_tests workspace_tests graph_settings_tests render_tests graph_panel_axes_tests)
+    foreach(test IN ITEMS gui_views_tests workspace_tests graph_settings_tests render_tests graph_panel_axes_tests qml_graph_tests)
         add_desktop_check(${test} desktop_gui_composition)
         target_link_libraries(${test} PRIVATE Qt6::Test)
         set_tests_properties(${test} PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 60
@@ -147,4 +147,16 @@ if(BUILD_GUI)
     add_desktop_check(workspace_ide_tests qt_workspace)
     target_link_libraries(workspace_ide_tests PRIVATE Qt6::Test)
     set_tests_properties(workspace_ide_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1" LABELS "ui;workspace;integration")
+endif()
+
+# Qt Quick software rendering gives deterministic offscreen 2D pixels. These
+# checks do not claim acceptance of the native OpenGL/FBO surface pipeline.
+if(BUILD_GUI)
+    get_property(desktop_checks DIRECTORY PROPERTY TESTS)
+    foreach(desktop_check IN LISTS desktop_checks)
+        get_test_property(${desktop_check} ENVIRONMENT desktop_check_environment)
+        if(desktop_check_environment MATCHES "QT_QPA_PLATFORM=offscreen")
+            set_property(TEST ${desktop_check} APPEND PROPERTY ENVIRONMENT "QT_QUICK_BACKEND=software")
+        endif()
+    endforeach()
 endif()

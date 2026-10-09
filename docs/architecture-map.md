@@ -63,7 +63,12 @@ with undo. Input captions show dtype/rank; views do not edit producer dimensions
 are presentation metadata and do not rename stable kinds or ports.
 
 GraphPanel selects line/points/bars/pie for vectors, image2d/surface3d for matrices,
-and current numeric metrics for scalars. There is no implicit flattening or
+and current numeric metrics for scalars. These presentations and their controls
+use QML/Qt Quick; QWidget remains the dock/workspace host. NumericViewAdapter
+targets callback ports, with GraphPanel assembling concrete Quick presentations.
+The surface uses a render-thread-owned OpenGL FBO renderer and immutable snapshot
+handoff; [QML presentation details](qml-graphs.md) describe limits and verification.
+There is no implicit flattening or
 scalar-to-series conversion. ScalarView supports independent stable input ports,
 with per-input presentation names/visibility. IndexExtract is a prepared processing
 operation selecting a logical vector/matrix element and channel into an exact

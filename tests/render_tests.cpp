@@ -1,3 +1,4 @@
+#include "numeric_render_fixture.h"
 #include "numeric_gui_fixture.h"
 #include <core_app/numeric_view_adapter.h>
 #include <visualization/spectrograms/spectrogram_graph.h>
@@ -12,7 +13,7 @@ int main(int argc,char** argv) {
         const auto graph=numeric_test_graph();auto ctx=context(graph,8,domain::PortDirection::Input);
         presentation::NumericViewAdapter adapter({4,{400,50,1048576,{true,32768}},{true,32768}});check(adapter.bind(ctx->endpoint)==signal_contracts::Status::ok,"bind History input");
         SpectrogramGraph surface;QLabel label;
-        presentation::NumericRenderTarget target{nullptr,&surface,&label,false};
+        render_fixture::Target target{nullptr,&surface,&label,false};
         for(unsigned i=1;i<=20;++i)check(adapter.accept_history_snapshot(full_history(ctx,{3,7},i,float(i)),i,std::min(std::uint64_t(i),std::uint64_t(400)))==signal_contracts::Status::ok,"accept hidden row");
         check(adapter.render(ctx->endpoint,0,target)==signal_contracts::Status::ok,"hidden render");
         check(surface.projected_history_frames()==0,"hidden view projected data");
@@ -34,7 +35,7 @@ int main(int argc,char** argv) {
         check(surface.projected_history_sample(0,0,sample) && sample==6,"ring oldest row");
         check(surface.projected_history_sample(399,49,sample) && sample==405,"ring newest row");
         NumericImageView image;
-        check(adapter.render(ctx->endpoint,0,{nullptr,nullptr,nullptr,true,&image})==signal_contracts::Status::ok,"shared 2D history render");
+        check(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,&image})==signal_contracts::Status::ok,"shared 2D history render");
         const auto* storage=surface.projection_storage_identity();
         check(storage && storage==image.projection_storage_identity(),"2D/3D History must share immutable projection");
         adapter.render(ctx->endpoint,0,target);

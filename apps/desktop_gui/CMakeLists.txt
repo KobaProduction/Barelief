@@ -10,4 +10,4 @@ target_include_directories(desktop_gui_composition PUBLIC ${CMAKE_CURRENT_SOURCE
 target_link_libraries(desktop_gui_composition PUBLIC core_app_components desktop_gui_configuration desktop_numeric_defaults desktop_numeric_remote desktop_numeric_routing desktop_processor_discovery)
 add_executable(core_app main.cpp)
 target_link_libraries(core_app PRIVATE desktop_gui_composition)
-deploy_desktop_runtime(core_app)
+deploy_desktop_runtime(core_app QML)

@@ -1723,4 +1723,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Hertz unavailable: source has no coordinates</source><translation>Герцы недоступны: нет координат источника</translation></message>
 <message><source>Seconds unavailable: source has no timestamps</source><translation>Секунды недоступны: нет временных меток</translation></message>
 </context>
+<context><name>Ui</name>
+<message><source>Channels</source><translation>Каналы</translation></message>
+</context>
 </TS>

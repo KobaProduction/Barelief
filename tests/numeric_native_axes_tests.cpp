@@ -7,6 +7,7 @@
 #include <visualization/axis_tick_labels.h>
 #include <visualization/spectrograms/spectrogram_graph.h>
 #include <visualization/spectrograms/spectrogram_selection.h>
+#include <visualization/quick/quick_ui.h>
 #include <visualization/ui_text.h>
 #include <QApplication>
 #include <QComboBox>
@@ -16,7 +17,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMouseEvent>
-#include <QOpenGLWidget>
+#include <QQuickWidget>
+#include <QQuickItem>
+#include <visualization/quick3d/surface_quick_item.h>
 #include <QStandardItemModel>
 #include <QThread>
 #include <QTimer>
@@ -56,16 +59,14 @@ bool enabled(QComboBox* combo,int index){
 void select(QComboBox* combo,const char* mode){
     const auto index=combo->findData(mode);require(enabled(combo,index),"requested axis mode disabled despite valid source metadata");combo->setCurrentIndex(index);
 }
-void click_owned(QOpenGLWidget* renderer,QPointF position){
-    // Synchronous events to our widget only. Never desktop input or focus.
-    QMouseEvent down(QEvent::MouseButtonPress,position,position,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(renderer,&down);
-    QMouseEvent up(QEvent::MouseButtonRelease,position,position,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(renderer,&up);
+void click_owned(SpectrogramGraph* surface,QPointF position){
+    surface->quick_pointer(0,position.x(),position.y(),Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    surface->quick_pointer(2,position.x(),position.y(),Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
 }
 }
 
 int main(int argc,char** argv){
+    ui::quick::configure();
     QApplication app(argc,argv);
     if(QGuiApplication::platformName()=="offscreen"||QGuiApplication::platformName()=="minimal"){
         std::fprintf(stderr,"native axes test requires a native OpenGL platform\n");return 2;
@@ -92,26 +93,32 @@ int main(int argc,char** argv){
         const EndpointIdentity history{"main",7,domain::PortDirection::Output,0};DeliveredNumericFrame frame;std::uint64_t ordinal=0,filled=0;
         require(engine.query_numeric(history,frame,&ordinal,&filled)==Status::ok&&filled==400&&ordinal>400,"actual History did not reach full timestamp coverage");
         presentation::NumericViewAdapter adapter({1,{400,50,1048576,{true,32768}},{true,32768}});require(adapter.bind(history)==Status::ok,"bind actual History");
+        QWidget dockHost;
+        dockHost.setAttribute(Qt::WA_ShowWithoutActivating);dockHost.setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);dockHost.resize(900,650);
         GraphPanel panel("nativeAxes",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","surface3d"}},nullptr);
         panel.setAttribute(Qt::WA_ShowWithoutActivating);panel.setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);panel.resize(1280,800);
         auto* surface=panel.active_spectrogram();require(surface,"native 3D surface");surface->set_y_range(0,2);
         auto options=surface->surface_settings();options["axis_grid"]=true;options["floor_grid"]=true;options["shadows"]=false;surface->set_surface_settings(options);
-        require(adapter.accept_history_snapshot(frame,ordinal,filled)==Status::ok&&adapter.render(history,0,{nullptr,surface,nullptr,true})==Status::ok,"actual source projection");frame={};
-        panel.show();auto* renderer=surface->findChild<QOpenGLWidget*>();require(renderer,"native renderer widget missing");
-        require(wait_for([&]{return renderer->isValid()&&surface->axis_layout_telemetry().value("paintCount").toULongLong()>0;}),"native renderer never painted");
-        auto save=[&](const QString& name){auto image=renderer->grabFramebuffer();require(!image.isNull(),"native framebuffer unavailable");require(image.save(artifacts.filePath(name+".png")),"save own framebuffer");
+        require(adapter.accept_history_snapshot(frame,ordinal,filled)==Status::ok&&adapter.render(history,0,panel.render_target(true))==Status::ok,"actual source projection");frame={};
+        panel.show();auto* host=surface->findChild<QQuickWidget*>("spectrogramQuickView");
+        auto* renderer=host && host->rootObject()?host->rootObject()->findChild<SurfaceQuickItem*>():nullptr;require(host && renderer,"native QML surface item missing");
+        renderer->backend()->setProperty("verifyGeometryUpload",true);renderer->update();
+        require(wait_for([&]{const auto state=surface->axis_layout_telemetry();return host->status()==QQuickWidget::Ready&&state.value("paintCount").toULongLong()>0&&state.value("rendererReady").toBool()&&state.value("axisLabelsReady").toBool();}),"native renderer or axis shaders never became ready");
+        require(host->property("qmlErrors").toStringList().isEmpty(),"native QML scene has errors");
+        auto save=[&](const QString& name){auto image=host->grabFramebuffer();require(!image.isNull(),"native framebuffer unavailable");require(image.save(artifacts.filePath(name+".png")),"save own framebuffer");
             QFile file(artifacts.filePath(name+".json"));require(file.open(QIODevice::WriteOnly),"telemetry output");file.write(QJsonDocument(QJsonObject::fromVariantMap(surface->axis_layout_telemetry())).toJson());};
-        auto* frequency=panel.findChild<QComboBox*>("frequencyAxisMode");auto* time=panel.findChild<QComboBox*>("timeAxisMode");require(frequency&&time,"actual axis selectors missing");
-        auto rendered=[&]{const auto before=surface->axis_layout_telemetry().value("paintCount").toULongLong();renderer->update();require(wait_for([&]{return surface->axis_layout_telemetry().value("paintCount").toULongLong()>before;}),"axis change never reached native paintGL");};
+        require(panel.physical_frequency() && panel.physical_time(),"physical selector capabilities unavailable");
+        // A new Quick scene/context after docking can recreate the renderer and reset its counter.
+        auto rendered=[&]{for(int fence=0;fence<2;++fence){const auto before=surface->axis_layout_telemetry().value("paintCount").toULongLong();renderer->update();require(wait_for([&]{return surface->axis_layout_telemetry().value("paintCount").toULongLong()!=before;}),"axis change never reached native Quick FBO renderer");}};
         const auto owner=surface->projection_storage_identity();const auto revision=surface->history_projection_revision();const auto amplitude=surface->y_range();
-        select(frequency,"coordinates");select(time,"coordinates");rendered();
+        panel.changePreference("frequency_axis_mode","coordinates");panel.changePreference("time_axis_mode","coordinates");rendered();
         const auto physical=surface->projected_axis_metadata();require(physical.column_coordinates&&physical.columns.size()==50&&physical.column(49)>1000,"Hertz selector still displays Mel positions");
         require(physical.time_coordinates&&physical.ages.size()==400&&physical.age(0)==0&&physical.age(399)>6&&physical.age(399)<7,"seconds selector does not use actual History timing");
         auto physicalTelemetry=surface->axis_layout_telemetry();require(physicalTelemetry.value("bandAxisTitle")=="Frequency, Hz (Z)"&&physicalTelemetry.value("timeAxisTitle")=="Time delay, seconds (X)","native renderer titles not physical");
         const auto frequencyTicks=physicalTelemetry.value("bandAxisTickValues").toList(),delayTicks=physicalTelemetry.value("timeAxisTickValues").toList();
         const auto maximumTick=[](const QVariantList& values){double maximum=-1;for(const auto& value:values)maximum=std::max(maximum,value.toDouble());return maximum;};
         require(maximumTick(frequencyTicks)>1000&&maximumTick(delayTicks)>6&&maximumTick(delayTicks)<7,"native physical tick values are still positions");
-        save("physical");select(frequency,"positions");select(time,"positions");rendered();
+        save("physical");panel.changePreference("frequency_axis_mode","positions");panel.changePreference("time_axis_mode","positions");rendered();
         const auto positions=surface->projected_axis_metadata();require(!positions.column_coordinates&&positions.column(49)==49&&positions.age(399)==399,"positions selector not applied");
         auto baseline=surface->axis_layout_telemetry();require(baseline.value("valueAxisSections").toInt()>=4&&baseline.value("horizontalGridLines").toInt()>=5,"height grid is missing or under-divided");save("positions");
         const QStringList stableKeys{"timeAxisSections","bandAxisSections","valueAxisSections","timeAxisTickValues","bandAxisTickValues","valueAxisTickValues","axisPolicyRevision","gridRevision","horizontalGridLines","horizontalGridLinesTotal"};
@@ -129,24 +136,30 @@ int main(int argc,char** argv){
             for(const auto& key:stableKeys)require(current.value(key)==baseline.value(key),qPrintable("camera changed axis/grid policy: "+key));
             require(surface->projection_storage_identity()==owner&&surface->history_projection_revision()==revision&&surface->y_range()==amplitude,"camera mutated matrix or amplitude");save(QString("camera-%1").arg(++pose));
         }
-        select(frequency,"coordinates");select(time,"coordinates");surface->reset_camera();rendered();require(surface->projected_axis_metadata()==physical,"physical selector roundtrip changed source axes");
-        const auto restored=surface->axis_layout_telemetry();require(restored.value("bandAxisTickValues")==physicalTelemetry.value("bandAxisTickValues")&&restored.value("timeAxisTickValues")==physicalTelemetry.value("timeAxisTickValues"),"native ticks failed physical roundtrip");
+        panel.changePreference("frequency_axis_mode","coordinates");panel.changePreference("time_axis_mode","coordinates");surface->reset_camera();rendered();require(surface->projected_axis_metadata()==physical,"physical selector roundtrip changed source axes");
+        const auto restored=surface->axis_layout_telemetry();save("physical-roundtrip");require(restored.value("bandAxisTickValues")==physicalTelemetry.value("bandAxisTickValues")&&restored.value("timeAxisTickValues")==physicalTelemetry.value("timeAxisTickValues"),"native ticks failed physical roundtrip");
+        require(restored.value("geometryUploadVerified").toBool() && restored.value("vertexCount").toInt()>0,"native Quick VBO exact readback failed");
         // Pick a real visible sample through this test widget's event filter.
-        bool picked=false;for(int y=renderer->height()/5;y<renderer->height()*4/5&&!picked;y+=std::max(1,renderer->height()/10))for(int x=renderer->width()/5;x<renderer->width()*4/5&&!picked;x+=std::max(1,renderer->width()/10)){
-            click_owned(renderer,{double(x),double(y)});picked=wait_for([&]{return renderer->property("selectedBand").isValid();},80);
+        bool picked=false;for(int y=renderer->height()/5;y<renderer->height()*4/5&&!picked;y+=std::max(1,int(renderer->height()/10)))for(int x=renderer->width()/5;x<renderer->width()*4/5&&!picked;x+=std::max(1,int(renderer->width()/10))){
+            click_owned(surface,{double(x),double(y)});picked=wait_for([&]{return surface->axis_layout_telemetry().value("selectedBand").isValid();},80);
         }
-        require(picked,"could not select a visible native sample");rendered();const auto age=renderer->property("selectedAge").toInt(),band=renderer->property("selectedBand").toInt();
-        const auto readout=renderer->property("selectionReadoutRows").toStringList();require(readout.size()==3,"point readout must contain all three coordinates");
+        require(picked,"could not select a visible native sample");rendered();const auto age=surface->axis_layout_telemetry().value("selectedAge").toInt(),band=surface->axis_layout_telemetry().value("selectedBand").toInt();
+        const auto readout=surface->axis_layout_telemetry().value("selectionReadoutRows").toStringList();require(readout.size()==3,"point readout must contain all three coordinates");
         const QLocale locale("en_US");const auto precision=surface->surface_settings()["axis_precision"].toInt();
         require(readout[0]==ui::text("Time delay (s): %1").arg(axisReadoutLabel(physical.age(age),locale,precision))&&readout[1]==ui::text("Frequency (Hz)")+": "+axisReadoutLabel(physical.column(band),locale,precision),"point coordinate values differ from source axes");
         auto state=surface->presentation_state();state["selection"]=2;surface->set_presentation_state(state);rendered();
-        require(renderer->property("sliceSampleCount").toInt()==50,"time slice missing");const auto indices=renderer->property("sliceEndpointIndices").toPoint();const auto coordinates=renderer->property("sliceEndpointCoordinates").toPointF();
+        require(surface->axis_layout_telemetry().value("sliceSampleCount").toInt()==50,"time slice missing");const auto indices=surface->axis_layout_telemetry().value("sliceEndpointIndices").toPoint();const auto coordinates=surface->axis_layout_telemetry().value("sliceEndpointCoordinates").toPointF();
         require(std::abs(coordinates.x()-physical.column(indices.x()))<1e-6&&std::abs(coordinates.y()-physical.column(indices.y()))<1e-6,"time slice coordinates differ from native frequency axis");save("physical-time-slice");
-        state["selection"]=3;surface->set_presentation_state(state);rendered();require(renderer->property("sliceSampleCount").toInt()==400,"frequency slice missing");
-        const auto timeIndices=renderer->property("sliceEndpointIndices").toPoint();const auto delays=renderer->property("sliceEndpointCoordinates").toPointF();
+        state["selection"]=3;surface->set_presentation_state(state);rendered();require(surface->axis_layout_telemetry().value("sliceSampleCount").toInt()==400,"frequency slice missing");
+        const auto timeIndices=surface->axis_layout_telemetry().value("sliceEndpointIndices").toPoint();const auto delays=surface->axis_layout_telemetry().value("sliceEndpointCoordinates").toPointF();
         require(std::abs(delays.x()-physical.age(timeIndices.x()))<1e-6&&std::abs(delays.y()-physical.age(timeIndices.y()))<1e-6,"frequency slice coordinates differ from native time axis");save("physical-frequency-slice");
         require(surface->projection_storage_identity()==owner&&surface->history_projection_revision()==revision,"axis selectors copied or changed matrix data");
         panel.resize(760,500);rendered();save("resized");panel.hide();
+        QCoreApplication::processEvents();panel.show();rendered();save("shown-again");
+        panel.setParent(&dockHost);panel.move(0,0);panel.resize(900,650);dockHost.show();panel.show();rendered();save("reparented");
+        require(surface->projection_storage_identity()==owner && surface->history_projection_revision()==revision && surface->y_range()==amplitude,"hide/show or dock reparent changed source data");
+        require(surface->axis_layout_telemetry().value("rendererReady").toBool() && host->property("qmlErrors").toStringList().isEmpty(),"dock reparent lost native renderer");
+        panel.hide();dockHost.hide();
         std::printf("native axes PASS actual default graph: History=%llu/%llu, sample=(%d,%d), physical/index selectors, six camera poses, both slices; own framebuffer artifacts only\n",(unsigned long long)filled,(unsigned long long)ordinal,age,band);return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"native axes FAIL: %s\n",error.what());return 1;}
 }

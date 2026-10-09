@@ -3,6 +3,7 @@
 #include <FloatingDockContainer.h>
 #include <QGraphicsView>
 #include <QPointer>
+#include <QProcess>
 #include <QtTest/QTest>
 #include <cstdio>
 using namespace gui_fixture;
@@ -29,7 +30,7 @@ static void placement(WorkspaceDock* dock,int value){
     auto* action=dock->findChild<QAction*>("graphPlacement");check(action && action->menu(),"Graph placement menu absent");
     action->menu()->actions()[value]->trigger();workspace_drag::settle();
 }
-int main(){try {
+static QJsonObject initial_session(){
     App app;app.apply();auto* flow=app.dock("dataFlowDock");
     const auto baseline=app.presenter().client().snapshot();
     for(auto* dock:app.window->workspaceDocks())if(dock!=flow)dock->toggleView(false);
@@ -83,17 +84,40 @@ int main(){try {
     check(external->isFloating() && externalAgain->isFloating() && !external->sharesHost(flow),"Floating pipeline replacement consumed graph-only host");
     const auto final=app.presenter().client().snapshot();
     check(final.graph_revision==baseline.graph_revision && final.epoch==baseline.epoch && final.statuses.value("analyzer").state==pipeline::State::Running,"Workspace gesture changed continuous processing");
-    app.application.reset();
-    App restarted(numeric_test_graph(),{},joinedProject);restarted.apply();
+    return {{"joinedProject",QString::fromLatin1(joinedProject.toBase64())},{"firstActiveProject",QString::fromLatin1(firstActiveProject.toBase64())},
+        {"identity",identity},{"firstIdentity",firstIdentity},{"inactiveIdentity",inactiveIdentity},
+        {"instance",QJsonValue::fromVariant(instance)},{"binding",QJsonObject::fromVariantMap(binding)},{"extension",prefs.value("extension")}};
+}
+static void restart_session(const QJsonObject& handoff,bool firstActive){
+    const auto identity=handoff["identity"].toString(),firstIdentity=handoff["firstIdentity"].toString(),inactiveIdentity=handoff["inactiveIdentity"].toString();
+    const auto instance=handoff["instance"].toVariant();const auto binding=handoff["binding"].toObject().toVariantMap();
+    const auto project=QByteArray::fromBase64(handoff[firstActive?"firstActiveProject":"joinedProject"].toString().toLatin1());
+    App restarted(numeric_test_graph(),{},project);restarted.apply();
     auto* restored=restarted.dock(identity);auto* restoredFirst=restarted.dock(firstIdentity);auto* restoredInactive=restarted.dock(inactiveIdentity);
-    const bool restoredJoin=wait([&]{return !restored->isClosed() && !restored->isFloating() && restored->dockAreaWidget()==restoredFirst->dockAreaWidget() && restored->dockAreaWidget()==restoredInactive->dockAreaWidget() && restored->dockAreaWidget()->currentDockWidget()==restored;});
+    const bool restoredJoin=wait([&]{return !restored->isClosed() && !restored->isFloating() && restored->dockAreaWidget()==restoredFirst->dockAreaWidget() && restored->dockAreaWidget()==restoredInactive->dockAreaWidget() && restored->dockAreaWidget()->currentDockWidget()==(firstActive?restoredFirst:restored);});
     check(restoredJoin,"Restart lost joined topology/active tab");
     check(restored->dockAreaWidget()->dockWidgets().indexOf(restored)==1 && restored->property("viewInstance")==instance && restored->property("numericEndpoint").toMap()==binding,"Restart lost insertion order/instance/port binding");
-    check(restarted.application->_ctx.file_configs.ui.graph_views.value(key).toObject().value("extension")==prefs.value("extension"),"Restart lost gestured instance settings");
-    restarted.application.reset();
-    App firstActive(numeric_test_graph(),{},firstActiveProject);firstActive.apply();
-    auto* firstAfterRestart=firstActive.dock(firstIdentity);auto* gestureAfterRestart=firstActive.dock(identity);
-    check(wait([&]{return firstAfterRestart->dockAreaWidget()==gestureAfterRestart->dockAreaWidget() && firstAfterRestart->dockAreaWidget()->currentDockWidget()==firstAfterRestart;}),"Restart overwrote the saved first active tab");
-    check(gestureAfterRestart->dockAreaWidget()->dockWidgets().indexOf(gestureAfterRestart)==1 && gestureAfterRestart->property("numericEndpoint").toMap()==binding,"First-active restart changed gestured insertion/binding");
-    std::puts("Actual Qt docking gestures and pipeline-slot click scope, stable identity/settings/port bindings PASS");return 0;
+    const auto key=identity.mid(QStringLiteral("nodeView_").size());
+    check(restarted.application->_ctx.file_configs.ui.graph_views.value(key).toObject().value("extension")==handoff["extension"],"Restart lost gestured instance settings");
+}
+int main(int argc,char** argv){try {
+    if(argc==3){
+        const auto phase=QString::fromLocal8Bit(argv[1]);QFile file(QString::fromLocal8Bit(argv[2]));
+        if(phase=="--initial"){
+            const auto bytes=QJsonDocument(initial_session()).toJson();
+            check(file.open(QIODevice::WriteOnly) && file.write(bytes)==bytes.size(),"write gesture restart handoff");return 0;
+        }
+        check(phase=="--joined" || phase=="--first-active","unknown gesture phase");
+        check(file.open(QIODevice::ReadOnly),"read gesture restart handoff");const auto handoff=QJsonDocument::fromJson(file.readAll());
+        check(handoff.isObject(),"invalid gesture restart handoff");restart_session(handoff.object(),phase=="--first-active");return 0;
+    }
+    QCoreApplication coordinator(argc,argv);QTemporaryDir directory;check(directory.isValid(),"gesture restart directory");
+    for(const auto* phase:{"--initial","--joined","--first-active"}){
+        QProcess process;process.setProcessChannelMode(QProcess::ForwardedChannels);
+        process.start(QCoreApplication::applicationFilePath(),{QString::fromLatin1(phase),directory.filePath("handoff.json")});
+        check(process.waitForStarted(),"start isolated gesture phase");
+        if(!process.waitForFinished(45000)){process.kill();process.waitForFinished();throw std::runtime_error("gesture phase timeout");}
+        check(process.exitStatus()==QProcess::NormalExit && process.exitCode()==0,"isolated gesture phase failed");
+    }
+    std::puts("Actual Qt docking gestures and process restart, stable identity/settings/port bindings PASS");return 0;
 }catch(const std::exception& error){std::fprintf(stderr,"workspace graph gestures: %s\n",error.what());return 1;}}

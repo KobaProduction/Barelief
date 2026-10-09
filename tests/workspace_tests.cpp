@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QPointer>
 #include <QStatusBar>
+#include <QProcess>
 #include <DockAreaWidget.h>
 #include <FloatingDockContainer.h>
 #include <cstdio>
@@ -71,8 +72,7 @@ static QByteArray initial_session(){
         check(model->nodeData(1,QtNodes::NodeRole::Position).toPointF()==QPointF(42,73),"preset coordinates inherited previous positions");
         auto* restoredPanel=qobject_cast<GraphPanel*>(first->widget());
         auto* chart=restoredPanel?restoredPanel->active_chart():nullptr;check(chart,"restored active chart");
-        QValueAxis* axis=nullptr;for(auto* candidate:chart->chart()->axes(Qt::Horizontal))if(candidate->isVisible())axis=qobject_cast<QValueAxis*>(candidate);
-        check(axis&&axis->min()==100&&axis->max()==500&&axis->isReverse(),"preset manual axis restoration");
+        check(chart->x_range().first==100 && chart->x_range().second==500 && chart->reverse_x(),"preset manual axis restoration");
         check(app.editor->load_preset(several),"load multiple");
         external=app.window->workspaceDock(externalName);neighbor=app.window->workspaceDock(neighborName);inactive=app.window->workspaceDock(inactiveName);
         check(external&&external->isFloating()&&!external->isClosed()&&neighbor&&!neighbor->isClosed()&&inactive&&!inactive->isClosed(),"multiple preset lost host/open state");
@@ -99,9 +99,25 @@ static QByteArray initial_session(){
         check(app.presenter().client().snapshot().graph_revision==revision,"save/open changed processing");
         QFile retained(QString::fromLocal8Bit(app.path));check(retained.open(QIODevice::ReadOnly),"restart source read");return retained.readAll();
 }
-int main(){
+int main(int argc,char** argv){
     try {
-        const auto stored=initial_session();
+        if(argc==3 && QString::fromLocal8Bit(argv[1])=="--initial"){
+            const auto stored=initial_session();QFile file(QString::fromLocal8Bit(argv[2]));
+            gui_fixture::check(file.open(QIODevice::WriteOnly) && file.write(stored)==stored.size(),"write restart handoff");return 0;
+        }
+        if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--restart"){
+            QCoreApplication coordinator(argc,argv);QTemporaryDir directory;
+            gui_fixture::check(directory.isValid(),"restart test directory");const auto path=directory.filePath("session.json");
+            for(const auto* phase:{"--initial","--restart"}){
+                QProcess process;process.setProcessChannelMode(QProcess::ForwardedChannels);
+                process.start(QCoreApplication::applicationFilePath(),{QString::fromLatin1(phase),path});
+                gui_fixture::check(process.waitForStarted(),"start isolated workspace phase");
+                if(!process.waitForFinished(45000)){process.kill();process.waitForFinished();throw std::runtime_error("workspace phase timeout");}
+                gui_fixture::check(process.exitStatus()==QProcess::NormalExit && process.exitCode()==0,"isolated workspace phase failed");
+            }
+            return 0;
+        }
+        QFile file(QString::fromLocal8Bit(argv[2]));gui_fixture::check(file.open(QIODevice::ReadOnly),"read restart handoff");const auto stored=file.readAll();file.close();
         gui_fixture::App restarted(numeric_test_graph(),{},stored);restarted.apply();
         int external=0;for(auto* dock:dynamic_docks(restarted.window))if(!dock->isClosed()&&dock->isFloating())++external;
         gui_fixture::check(external==1,"process restart lost floating representation");

@@ -1,3 +1,4 @@
+#include "numeric_render_fixture.h"
 #include <core_app/numeric_view_adapter.h>
 #include <visualization/charts/line.h>
 #include <visualization/charts/freq.h>
@@ -11,7 +12,6 @@
 #include <QJsonArray>
 #include <QElapsedTimer>
 #include <QThread>
-#include <QLineSeries>
 #include <array>
 #include <cstdio>
 using namespace signal_contracts;
@@ -52,36 +52,35 @@ void hidden_scalar_and_contract_transition() {
     presentation::NumericViewAdapter adapter({4,{3,2,56,{true,2}},{true,128}});
     CHECK(adapter.bind(ctx->endpoint)==Status::ok);CHECK(adapter.bind(other->endpoint)==Status::ok);
     NumericMetricsView metrics;metrics.set_inputs({{0,"First"},{9,"Second"}});
-    auto* first=metrics.findChild<QLabel*>("metricValue_0");auto* second=metrics.findChild<QLabel*>("metricValue_9");
-    CHECK(first && second);
-    presentation::NumericRenderTarget target;target.metrics=&metrics;
+    CHECK(metrics.input_count()==2);
+    render_fixture::Target target{nullptr,nullptr,nullptr,false,nullptr,nullptr,&metrics};
     for(std::uint64_t i=0;i<130;++i) {
         CHECK(adapter.accept(scalar(storage,ctx,contract,i,i))==Status::ok);
         CHECK(adapter.accept(scalar(storage,other,contract,i,1000+i))==Status::ok);
         CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
     }
-    CHECK(!first->property("metricAvailable").toBool());target.visible=true;
-    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(first->text()=="129");
-    CHECK(adapter.render(other->endpoint,0,target)==Status::ok);CHECK(second->text()=="1129" && first->text()=="129");
+    CHECK(!metrics.value_available(0));target.visible=true;
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="129");
+    CHECK(adapter.render(other->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(9)=="1129" && metrics.exact_value(0)=="129");
     pipeline::DeliveredNumericFrame unavailable{ctx,{1,1},{},Status::unavailable};
     CHECK(adapter.accept(unavailable)==Status::unavailable);
     CHECK(adapter.render(ctx->endpoint,0,target)==Status::unavailable);
-    CHECK(!first->property("metricAvailable").toBool() && second->text()=="1129");
+    CHECK(!metrics.value_available(0) && metrics.exact_value(9)=="1129");
     CHECK(adapter.accept(scalar(storage,ctx,contract,130,130))==Status::ok);
-    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(first->text()=="130");
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="130");
     auto count_contract=contract;count_contract.quantity=Quantity::FilledFrameCount;count_contract.unit=NumericUnit::Frames;
     auto count_context=context(count_contract,1);
     CHECK(adapter.accept(scalar(storage,count_context,count_contract,131,3,{2,1}))==Status::ok);
-    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(first->text()=="3");
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="3");
     CHECK(adapter.accept(scalar(storage,count_context,count_contract,132,4,{3,1}))==Status::ok);
     unavailable.context=count_context;unavailable.delivery={2,1};adapter.accept(unavailable);
-    CHECK(adapter.render(count_context->endpoint,0,target)==Status::ok);CHECK(first->text()=="4");
+    CHECK(adapter.render(count_context->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="4");
     adapter.clear();CHECK(adapter.render(count_context->endpoint,0,target)==Status::unavailable);
-    CHECK(!first->property("metricAvailable").toBool());
+    CHECK(!metrics.value_available(0));
     CHECK(adapter.accept(scalar(storage,count_context,count_contract,0,7,{1,0}))==Status::ok);
-    CHECK(adapter.render(count_context->endpoint,0,target)==Status::ok);CHECK(first->text()=="7");
-    for(const auto* language:{"ru","en"}){ui::Language::instance().set(language);CHECK(first->text()=="7");}
-    metrics.set_inputs({{9,"Renamed"}});CHECK(!metrics.findChild<QLabel*>("metricValue_0"));
+    CHECK(adapter.render(count_context->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="7");
+    for(const auto* language:{"ru","en"}){ui::Language::instance().set(language);CHECK(metrics.exact_value(0)=="7");}
+    metrics.set_inputs({{9,"Renamed"}});CHECK(metrics.input_count()==1 && metrics.input_name(0).isEmpty());
     CHECK(adapter.render(other->endpoint,0,target)==Status::unavailable);
 }
 void hidden_history_and_markers() {
@@ -91,7 +90,7 @@ void hidden_history_and_markers() {
     auto ctx=context(history,3);auto row=history;row.semantic=Semantic::Numeric;
     row.shape={Rank::Vector,{Axis::Declared,Axis::None},{ExtentBounds{2,2},ExtentBounds{}}};
     presentation::NumericViewAdapter adapter({1,{3,2,56,{true,2}},{true,128}});adapter.bind(ctx->endpoint);
-    QLabel label;label.setText("hidden history");presentation::NumericRenderTarget target{nullptr,nullptr,&label,false};
+    QLabel label;label.setText("hidden history");render_fixture::Target target{nullptr,nullptr,&label,false};
     const auto snapshot=[&](std::uint64_t ordinal) {
         std::array<std::uint64_t,6> values{};const auto filled=std::min(ordinal,std::uint64_t{3});
         for(std::size_t i=0;i<filled;++i){values[(3-filled+i)*2]=ordinal-filled+i+1;values[(3-filled+i)*2+1]=ordinal-filled+i+2;}
@@ -120,7 +119,7 @@ void hidden_history_and_markers() {
     CHECK(label.property("numericCaptionUnavailable").toBool());
     // Missing authoritative payload clears both the previous geometry and its
     // occupied-count caption, rather than preserving stale History rows.
-    SpectrogramGraph surface;target.spectrogram=&surface;
+    SpectrogramGraph surface;target=render_fixture::Target{nullptr,&surface,&label,target.visible};
     CHECK(adapter.render(ctx->endpoint,0,target)==Status::malformed);
     CHECK(surface.projected_history_frames()==3);
     pipeline::DeliveredNumericFrame unavailable{ctx,{3,5},{},Status::unavailable};
@@ -140,27 +139,27 @@ void scalar_timed_readout() {
     auto ctx=context(contract,20);presentation::NumericViewAdapter adapter({1,{3,2,56,{true,2}},{true,128}});
     CHECK(adapter.bind(ctx->endpoint)==Status::ok);
     NumericMetricsView metrics;metrics.set_inputs({{0,"Exact metric"}});
-    auto* value=metrics.findChild<QLabel*>("metricValue_0");
-    presentation::NumericRenderTarget target;target.metrics=&metrics;
+
+    render_fixture::Target target{nullptr,nullptr,nullptr,false,nullptr,nullptr,&metrics};
     for(std::uint64_t i=0;i<140;++i) {
         CHECK(adapter.accept(scalar(storage,ctx,contract,i,9007199254740993ULL+i,{1,1},std::int64_t(i*i)))==Status::ok);
         CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
     }
-    CHECK(!value->property("metricAvailable").toBool());target.visible=true;
-    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(value->text()=="9007199254741132");
-    CHECK(metrics.findChildren<QLabel*>().size()==2); // name and current value, no history or chart
+    CHECK(!metrics.value_available(0));target.visible=true;
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="9007199254741132");
+    CHECK(metrics.input_count()==1 && metrics.presentation_model()->state().value("metrics").toList().size()==1); // exact current value, no graph-owned history
     LineChartView chart;SpectrogramGraph surface;NumericImageView image;NumericPieView pie;
-    CHECK(adapter.render(ctx->endpoint,0,{&chart,nullptr,nullptr,true})==Status::incompatible_contract);
-    CHECK(adapter.render(ctx->endpoint,0,{nullptr,&surface,nullptr,true})==Status::incompatible_contract);
-    CHECK(adapter.render(ctx->endpoint,0,{nullptr,nullptr,nullptr,true,&image})==Status::incompatible_contract);
-    CHECK(adapter.render(ctx->endpoint,0,{nullptr,nullptr,nullptr,true,nullptr,&pie})==Status::incompatible_contract);
+    CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,nullptr,true})==Status::incompatible_contract);
+    CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::incompatible_contract);
+    CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,&image})==Status::incompatible_contract);
+    CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,nullptr,&pie})==Status::incompatible_contract);
     CHECK(adapter.accept(scalar(storage,ctx,contract,141,std::numeric_limits<std::uint64_t>::max()))==Status::ok);
-    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(value->text()=="18446744073709551615");
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="18446744073709551615");
     pipeline::DeliveredNumericFrame unavailable{ctx,{1,1},{},Status::unavailable};
     CHECK(adapter.accept(unavailable)==Status::unavailable);CHECK(adapter.render(ctx->endpoint,0,target)==Status::unavailable);
-    CHECK(!value->property("metricAvailable").toBool());
+    CHECK(!metrics.value_available(0));
     CHECK(adapter.accept(scalar(storage,ctx,contract,142,40,{1,1},400))==Status::ok);
-    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok && value->text()=="40");
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok && metrics.exact_value(0)=="40");
 }
 void universal_numeric_ranks() {
     Storage storage;presentation::NumericViewAdapter adapter({4,{4,4,256,{true,16}},{true,16}});
@@ -181,18 +180,18 @@ void universal_numeric_ranks() {
         CHECK(adapter.accept(frame)==Status::ok);
         const auto vectorStatus=rank==Rank::Vector?Status::ok:Status::incompatible_contract;
         const auto matrixStatus=rank==Rank::Matrix?Status::ok:Status::incompatible_contract;
-        CHECK(adapter.render(ctx->endpoint,0,{&chart,nullptr,&exact,true})==vectorStatus);
-        CHECK(adapter.render(ctx->endpoint,0,{nullptr,nullptr,nullptr,true,nullptr,&pie})==vectorStatus);
-        CHECK(adapter.render(ctx->endpoint,0,{nullptr,&surface,nullptr,true,&image})==matrixStatus);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,&exact,true})==vectorStatus);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,nullptr,&pie})==vectorStatus);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true,&image})==matrixStatus);
         if(rank==Rank::Vector){CHECK(chart.value_count()==values.size());CHECK(pie.slice_count()==values.size());}
         if(rank!=Rank::Matrix)return;
         CHECK(surface.projection_storage_identity()!=nullptr);
         CHECK(surface.projection_storage_identity()==image.projection_storage_identity());
         const auto* shared_storage=surface.projection_storage_identity();
         SpectrogramGraph second_surface;
-        CHECK(adapter.render(ctx->endpoint,0,{nullptr,&second_surface,nullptr,true})==Status::ok);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&second_surface,nullptr,true})==Status::ok);
         CHECK(second_surface.projection_storage_identity()==shared_storage);
-        CHECK(adapter.render(ctx->endpoint,0,{nullptr,&surface,nullptr,true,&image})==Status::ok);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true,&image})==Status::ok);
         CHECK(surface.projection_storage_identity()==shared_storage && image.projection_storage_identity()==shared_storage);
         CHECK(image.matrix_dimensions()==QSize(int(columns),int(rows)));
         CHECK(surface.projected_history_frames()==rows && surface.projected_history_bands()==columns);
@@ -212,7 +211,7 @@ void universal_numeric_ranks() {
     auto ctx=context(contract,34);CHECK(adapter.bind(ctx->endpoint)==Status::ok);
     const std::array<float,6> values{1,2,3,4,5,6};const std::array<PlaneLayout,1> planes{{{0,{12,4}}}};
     pipeline::DeliveredNumericFrame frame;CHECK(pipeline::retain_numeric_delivery(ctx,{1,1},{{},NumericView{&contract,std::as_bytes(std::span(values)),planes,{2,3}}},Status::ok,limits,storage.p,storage.m,frame)==Status::ok);
-    CHECK(adapter.accept(frame)==Status::ok && adapter.render(ctx->endpoint,0,{nullptr,&surface,nullptr,true,&image})==Status::ok);
+    CHECK(adapter.accept(frame)==Status::ok && adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true,&image})==Status::ok);
     CHECK(surface.projected_axis_metadata().age(0)==7 && surface.projected_axis_metadata().age(1)==5);
     CHECK(image.row_coordinate(0)==5 && image.row_coordinate(1)==7);
 }
@@ -233,23 +232,21 @@ void vector_coordinate_axes() {
         pipeline::DeliveredNumericFrame event;
         CHECK(pipeline::retain_numeric_delivery(ctx,{1,1},{stamp,numeric},Status::ok,limits,storage.p,storage.m,event)==Status::ok);
         CHECK(adapter.accept(event)==Status::ok);
-        CHECK(adapter.render(ctx->endpoint,0,{&frequency,nullptr,nullptr,true})==Status::ok);
-        CHECK(adapter.render(ctx->endpoint,0,{&line,nullptr,nullptr,true})==Status::ok);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&frequency,nullptr,nullptr,true})==Status::ok);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&line,nullptr,nullptr,true})==Status::ok);
     };
-    const auto horizontal=[](AbstractChartView& view) {
-        return qobject_cast<QValueAxis*>(view.chart()->axes(Qt::Horizontal,view.chart()->series().front()).front());
-    };
+
     deliver(contract,10);
     for(AbstractChartView* chart:{static_cast<AbstractChartView*>(&frequency),static_cast<AbstractChartView*>(&line)}) {
-        auto* axis=horizontal(*chart);CHECK(axis->min()==50 && axis->max()==70);
-        CHECK(axis->titleText()=="Frequency, Hz (X)");
+        CHECK(chart->x_range().first==50 && chart->x_range().second==70);
+        CHECK(chart->x_title()=="Frequency, Hz (X)");
         CHECK(chart->projected_x_coordinate(0)==50 && chart->projected_x_coordinate(2)==70);
     }
     contract.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{701,10},{1,20}};
     deliver(contract,13);
-    CHECK(std::abs(horizontal(frequency)->min()-70.1)<1e-10 &&
-          std::abs(horizontal(frequency)->max()-70.2)<1e-10);
-    CHECK(horizontal(frequency)->labelFormat()!="%.0f");
+    CHECK(std::abs(frequency.x_range().first-70.1)<1e-10 &&
+          std::abs(frequency.x_range().second-70.2)<1e-10);
+    CHECK(frequency.projected_x_coordinate(1)>70.1 && frequency.projected_x_coordinate(1)<70.2);
     std::array<std::byte,24> coordinates{};
     const std::array<double,3> hz{70,95,180};
     for(size_t i=0;i<hz.size();++i) {
@@ -258,13 +255,11 @@ void vector_coordinate_axes() {
     }
     contract.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz};
     deliver(contract,11,coordinates);
-    CHECK(horizontal(frequency)->min()==70 && horizontal(frequency)->max()==180);
+    CHECK(frequency.x_range().first==70 && frequency.x_range().second==180);
     CHECK(line.projected_x_coordinate(1)==95 && frequency.projected_x_coordinate(1)==95);
     frequency.resize(400,240);line.resize(400,240);frequency.show();line.show();
     const auto hasCentre=[](AbstractChartView& view) {
-        auto* series=qobject_cast<QLineSeries*>(view.chart()->series().front());
-        if(!series)return false;
-        const auto points=series->points();
+        const auto points=view.projected_points();
         return std::any_of(points.begin(),points.end(),[](auto point){
             return point.x()==95 && std::abs(point.y()-.2)<1e-6;
         });
@@ -278,13 +273,13 @@ void vector_coordinate_axes() {
 
     contract.semantic=Semantic::MelEnergy;contract.shape.axes[0]=Axis::Band;contract.coordinates[0]={};
     deliver(contract,12);
-    CHECK(horizontal(frequency)->titleText()=="Band (X)");
-    CHECK(horizontal(line)->titleText()=="Band (X)");
-    CHECK(horizontal(frequency)->min()==0 && horizontal(frequency)->max()==2);
+    CHECK(frequency.x_title()=="Band (X)");
+    CHECK(line.x_title()=="Band (X)");
+    CHECK(frequency.x_range().first==0 && frequency.x_range().second==2);
     CHECK(line.projected_x_coordinate(2)==2);
     // The axis is structural; descriptive tags cannot relabel identical geometry.
     contract.semantic=Semantic::Numeric;deliver(contract,12);
-    CHECK(horizontal(frequency)->titleText()=="Band (X)" && horizontal(line)->titleText()=="Band (X)");
+    CHECK(frequency.x_title()=="Band (X)" && line.x_title()=="Band (X)");
 }
 void actual_scene_aspect_projection() {
     SpectrogramGraph surface;
@@ -378,7 +373,7 @@ void fixed_capacity_history_and_resize() {
     history.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds};
     auto ctx=context(history,25);
     presentation::NumericViewAdapter adapter({1,{8,2,136,{true,2}},{true,128}});adapter.bind(ctx->endpoint);
-    SpectrogramGraph surface;QLabel label;presentation::NumericRenderTarget target{nullptr,&surface,&label,true};
+    SpectrogramGraph surface;QLabel label;render_fixture::Target target{nullptr,&surface,&label,true};
     const std::array<PlaneLayout,1> full_planes{{{0,{8,4}}}};
     const std::array<float,8> zero{};const std::array<std::byte,32> zero_times{};
     NumericView full{&history,std::as_bytes(std::span(zero)),full_planes,{4,2},{4,0},{{zero_times,{}}}};
@@ -480,7 +475,7 @@ void cold_history_resynchronization() {
     const auto axes=trail.render_axes();CHECK(axes.seconds && axes.ages==std::vector<double>({0,.25,.5}));
     CHECK(axes.column_axis==pipeline::HistoryColumnAxis::Hertz && axes.columns==std::vector<double>({70,95}));
     presentation::NumericViewAdapter adapter({1,{3,2,56,{true,2}},{true,128}});adapter.bind(ctx->endpoint);
-    SpectrogramGraph surface;QLabel label;presentation::NumericRenderTarget target{nullptr,&surface,&label,false};
+    SpectrogramGraph surface;QLabel label;render_fixture::Target target{nullptr,&surface,&label,false};
     CHECK(adapter.accept_history_snapshot(snapshot,80,3)==Status::ok);CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
     CHECK(surface.projected_history_frames()==0);target.visible=true;
     CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);float sample=0;

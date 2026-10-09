@@ -2,6 +2,7 @@
 #include <core_app/main_window.h>
 #include <core_app/numeric_default_graph.h>
 #include <core_app/numeric_view_adapter.h>
+#include "numeric_render_fixture.h"
 #include <visualization/spectrograms/spectrogram_graph.h>
 #include <core_app/scheme_editor/editor_widget.h>
 #include <desktop/numeric_project_document.h>
@@ -72,7 +73,7 @@ int main(int argc,char** argv){
         for(size_t row=0;row<400;++row)for(size_t band=0;band<50;++band){float v=1;require(load_element(coldView,{0,row,band},v)==Status::ok && v==0,"cold History is not fully zero-filled");}
         presentation::NumericViewAdapter historyDisplay({1,{400,50,1048576,{true,32768}},{true,32768}});
         require(historyDisplay.bind(history)==Status::ok,"bind live History renderer");SpectrogramGraph surface;
-        require(historyDisplay.accept_history_snapshot(cold,0,0)==Status::ok && historyDisplay.render(history,0,{nullptr,&surface,nullptr,true})==Status::ok,"cold authoritative History rendering failed");
+        require(historyDisplay.accept_history_snapshot(cold,0,0)==Status::ok && historyDisplay.render(history,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::ok,"cold authoritative History rendering failed");
         require(surface.projected_history_frames()==400 && surface.projected_axis_metadata().ages.size()==400 && surface.projected_axis_metadata().age(399)==399,"cold plot does not expose full fixed extent");cold={};
         std::uint64_t sequence=0,pcm=0;
         QObject::connect(&app.presenter(),&GuiPresenter::numeric_frame_ready,&app,[&](const DeliveredNumericFrame& frame){if(frame.context&&frame.context->endpoint.node==9&&frame.frame&&frame.frame.view().stamp.available)++pcm;});
@@ -91,7 +92,7 @@ int main(int argc,char** argv){
         feed(probes[0],1400);
         DeliveredNumericFrame full;std::uint64_t fullOrdinal=0,fullFilled=0;
         require(app.pipeline().query_numeric(history,full,&fullOrdinal,&fullFilled)==Status::ok && fullFilled==400 && fullOrdinal>400,"History never reaches full fixed capacity");
-        require(historyDisplay.accept_history_snapshot(full,fullOrdinal,fullFilled)==Status::ok && historyDisplay.render(history,0,{nullptr,&surface,nullptr,true})==Status::ok,"full History renderer failed");
+        require(historyDisplay.accept_history_snapshot(full,fullOrdinal,fullFilled)==Status::ok && historyDisplay.render(history,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::ok,"full History renderer failed");
         const auto fullView=std::get<NumericView>(full.frame.view().payload);
         require(fullView.contract->coordinates[0].unit==NumericUnit::Seconds && fullView.contract->coordinates[1].unit==NumericUnit::Hertz && fullView.coordinates.axes[0].size()==400*8 && fullView.coordinates.axes[1].size()==50*8,"factory pipeline lost explicit physical History coordinates");
         const auto physicalAxes=surface.projected_axis_metadata();
@@ -114,7 +115,7 @@ int main(int argc,char** argv){
         feed(probes[0],24);
         DeliveredNumericFrame rolling;std::uint64_t rollingOrdinal=0,rollingFilled=0;
         require(app.pipeline().query_numeric(history,rolling,&rollingOrdinal,&rollingFilled)==Status::ok && rollingOrdinal>fullOrdinal && rollingFilled==400,"History stopped replacing rows after capacity");
-        require(historyDisplay.accept_history_snapshot(rolling,rollingOrdinal,rollingFilled)==Status::ok && historyDisplay.render(history,0,{nullptr,&surface,nullptr,true})==Status::ok,"rolling History render failed");
+        require(historyDisplay.accept_history_snapshot(rolling,rollingOrdinal,rollingFilled)==Status::ok && historyDisplay.render(history,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::ok,"rolling History render failed");
         require(surface.projected_history_frames()==400 && surface.history_projection_revision()>fullRevision,"full graph froze after History filled");rolling={};
         require(editor->load_preset("synthetic"),"synthetic preset load");apply();
         require(wait_for([&]{return probes.size()==2;}),"new preset source absent");require(probes[1]->kind==AudioSourceKind::TestSignal,"preset reused prior physical source");

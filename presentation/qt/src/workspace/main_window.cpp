@@ -345,7 +345,7 @@ void MainWindow::setup_ui() {
 
     // Raw Samples
     _raw_signal_chart = new LineChartView();
-    _raw_signal_chart->chart()->setTitle(QString());
+    _raw_signal_chart->setTitle(QString());
     _raw_signal_chart->set_range(-1, 1);
     _raw_signal_chart->set_auto_resizing(true);
     _raw_signal_chart->set_auto_gain(true, 1, -1);
@@ -353,7 +353,7 @@ void MainWindow::setup_ui() {
 
     // Window signal before weighting
     _window_signal_chart = new LineChartView();
-    _window_signal_chart->chart()->setTitle(QString());
+    _window_signal_chart->setTitle(QString());
     _window_signal_chart->set_range(-1, 1);
     _window_signal_chart->set_auto_resizing(true);
     _window_signal_chart->set_auto_gain(true, 1, -1);
@@ -361,7 +361,7 @@ void MainWindow::setup_ui() {
 
     // Window signal after applying the window function
     _windowed_signal_chart = new LineChartView();
-    _windowed_signal_chart->chart()->setTitle(QString());
+    _windowed_signal_chart->setTitle(QString());
     _windowed_signal_chart->set_range(-1, 1);
     _windowed_signal_chart->set_auto_resizing(true);
     _windowed_signal_chart->set_auto_gain(true, 1, -1);
@@ -369,13 +369,13 @@ void MainWindow::setup_ui() {
 
     //  window function
     _window_function_chart = new LineChartView();
-    _window_function_chart->chart()->setTitle(QString());
+    _window_function_chart->setTitle(QString());
     _window_function_chart->set_range(-0.2, 1.2);
     add_panel("windowFunction", "Window function", _window_function_chart, &UIApplicationConfig::show_window_function);
 
     // Amplitudes (FFT)
     _amplitudes_chart = new FreqChartView();
-    _amplitudes_chart->chart()->setTitle(QString());
+    _amplitudes_chart->setTitle(QString());
     _amplitudes_chart->set_range(0, 1);
     _amplitudes_chart->set_auto_resizing(true);
     _amplitudes_chart->set_auto_gain(true, 1, 0);
@@ -384,7 +384,7 @@ void MainWindow::setup_ui() {
 
     // Test Amplitudes (Mel)
     _test_amplitudes_chart = new LineChartView();
-    _test_amplitudes_chart->chart()->setTitle(QString());
+    _test_amplitudes_chart->setTitle(QString());
     _test_amplitudes_chart->set_range(0, 1);
     _test_amplitudes_chart->set_auto_resizing(true);
     _test_amplitudes_chart->set_auto_gain(true, 1, 0);
@@ -447,7 +447,8 @@ void MainWindow::setup_ui() {
             [this] {
                 const auto controls = _application.state().file_configs.ui.camera_controls;
                 _spectrogram_view->set_camera_controls(controls);
-                for (auto &view : _node_views) if (view.spectrogram) view.spectrogram->set_camera_controls(controls);
+                for(auto* dock:graph_docks())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
+                    if(auto* surface=panel->owned_surface())surface->set_camera_controls(controls);
                 if (auto *editor = data_flow_editor())
                     editor->set_navigation_speed(CameraControls::movementSpeed(controls));
             });

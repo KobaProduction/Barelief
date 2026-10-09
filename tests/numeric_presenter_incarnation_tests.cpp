@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <core_app/gui_presenter.h>
 #include <core_app/numeric_view_adapter.h>
+#include "numeric_render_fixture.h"
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <desktop/numeric_project_document.h>
 #include <cstdio>
@@ -34,7 +35,7 @@ int main(int argc,char**argv){
  check(numeric_editor::set_dtype(node,domain::PortDirection::Input,0,DType::UInt64),"contract fixture");graph.nodes.push_back(node);
  QByteArray bytes;check(bool(desktop::encode_numeric_graph(graph,bytes)),"canonical same graph fixture");
  auto context=std::make_shared<NumericDeliveryContext>();context->endpoint={"main",12,domain::PortDirection::Input,0};context->contract=node.inputs[0].contract;
- presentation::NumericViewAdapter adapter({8,{8,8,4096,{true,64}},{true,128}});adapter.bind(context->endpoint);QLabel label;presentation::NumericRenderTarget target{nullptr,nullptr,&label,true};
+ presentation::NumericViewAdapter adapter({8,{8,8,4096,{true,64}},{true,128}});adapter.bind(context->endpoint);QLabel label;render_fixture::Target target{nullptr,nullptr,&label,true};
  int clears=0;QObject::connect(&presenter,&GuiPresenter::views_cleared,&app,[&]{++clears;adapter.clear();});
  QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,&app,[&](const auto& frame){adapter.accept(frame);adapter.render(context->endpoint,0,target);});
  std::array<std::byte,8192> payload{},metadata{};std::array<BufferSlot,16> ps{},ms{};BufferPool p(payload,ps,512),m(metadata,ms,512);std::array<PlaneLayout,1> planes{{{0,{8,8}}}};

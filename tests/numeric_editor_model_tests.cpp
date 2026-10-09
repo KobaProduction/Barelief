@@ -8,7 +8,11 @@
 #include <desktop/numeric_project_document.h>
 
 #include <QApplication>
-#include <QOpenGLWidget>
+#include <QQuickWidget>
+#include <QQuickItem>
+#include <QElapsedTimer>
+#include <QThread>
+#include <visualization/quick3d/surface_quick_item.h>
 #include <QSurfaceFormat>
 #include <QTextStream>
 #include <visualization/spectrograms/spectrogram_graph.h>
@@ -68,14 +72,17 @@ int main(int argc,char** argv){
         for(size_t r=0;r<history.size();++r)for(size_t b=0;b<50;++b)if(history[r][b]>peak){peak=history[r][b];peakAge=history.size()-1-r;peakBand=b;}
         SpectrogramGraph view;view.resize(900,600);check(view.initialize({240,180},{1200,900}),"native renderer initialization");
         view.set_history_dimensions(400,50);view.update_frame_history(history);view.set_y_range(0,peak);
-        auto* gl=view.findChild<QOpenGLWidget*>("spectrogramContainer");check(gl,"native renderer container");
-        gl->setProperty("verifyGeometryUpload",true);gl->resize(640,480);
-        const auto image=gl->grabFramebuffer();
+        view.setAttribute(Qt::WA_ShowWithoutActivating);view.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+        auto* host=view.findChild<QQuickWidget*>("spectrogramQuickView");
+        auto* gl=host && host->rootObject()?host->rootObject()->findChild<SurfaceQuickItem*>():nullptr;check(gl,"native Quick renderer container");
+        gl->backend()->setProperty("verifyGeometryUpload",true);view.show();gl->update();
+        QElapsedTimer timer;timer.start();while(!view.axis_layout_telemetry().value("geometryUploadVerified").toBool() && timer.elapsed()<5000){QCoreApplication::processEvents();QThread::msleep(2);}
+        const auto telemetry=view.axis_layout_telemetry();const auto image=host->grabFramebuffer();
         if(!image.isNull())image.save(QFileInfo(file).absolutePath()+"/native-history-frame.png");
-        check(!image.isNull() && gl->isValid() && gl->property("rendererReady").toBool(),"hidden native FBO rendering");
-        check(gl->property("geometryUploadVerified").toBool() && gl->property("vertexCount").toInt()==49*399*6,"actual GPU VBO exact readback/mesh topology");
-        check(gl->property("surfacePeakAge").toULongLong()==peakAge && gl->property("surfacePeakBand").toULongLong()==peakBand,"GPU mesh retains History band/age peak");
-        std::printf("hidden native runtime History rows=%zu bands=50 peak=%.9g age=%zu band=%zu GPU vertices=%d exact VBO PASS\n",history.size(),peak,peakAge,peakBand,gl->property("vertexCount").toInt());return 0;
+        check(!image.isNull() && host->status()==QQuickWidget::Ready && telemetry.value("rendererReady").toBool(),"native Quick FBO rendering");
+        check(telemetry.value("geometryUploadVerified").toBool() && telemetry.value("vertexCount").toInt()==49*399*6,"actual GPU VBO exact readback/mesh topology");
+        check(telemetry.value("surfacePeakAge").toULongLong()==peakAge && telemetry.value("surfacePeakBand").toULongLong()==peakBand,"GPU mesh retains History band/age peak");
+        std::printf("native Quick runtime History rows=%zu bands=50 peak=%.9g age=%zu band=%zu GPU vertices=%d exact VBO PASS\n",history.size(),peak,peakAge,peakBand,telemetry.value("vertexCount").toInt());return 0;
     }
 
 

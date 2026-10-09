@@ -1,3 +1,5 @@
+#include <QQuickWidget>
+#include <QQuickItem>
 #include "numeric_gui_fixture.h"
 #include <control/numeric_control_server.h>
 #include <pipeline/numeric_engine.h>
@@ -41,7 +43,6 @@
 #include <QColorDialog>
 #include <QTimer>
 #include <QDialog>
-#include <QOpenGLWidget>
 #include <QInputDialog>
 #include <QTreeWidget>
 #include <QDockWidget>
@@ -78,15 +79,16 @@ int main() {
         const auto namedGraphKey=namedGraph->property("graphViewKey").toString();
         check(namedGraphKey=="fft","Rename regression must exercise the primary non-hex graph key");
         const auto defaultGraphTitle=namedGraph->windowTitle();
-        auto* renameGraph=namedGraph->findChild<QPushButton*>("graphRename");
-        auto* graphSettings=namedGraph->widget()->findChild<QScrollArea*>();
-        check(renameGraph && graphSettings && graphSettings->widget()->isAncestorOf(renameGraph),"Rename graph sidebar control missing");
+        auto* graphPanel=qobject_cast<GraphPanel*>(namedGraph->widget());
+        auto* graphSettings=graphPanel?graphPanel->findChild<QQuickWidget*>("numericGraphSettings"):nullptr;
+        auto* renameGraph=graphSettings && graphSettings->rootObject()?graphSettings->rootObject()->findChild<QObject*>("graphRename"):nullptr;
+        check(renameGraph && graphSettings && graphSettings->status()==QQuickWidget::Ready,"Rename graph sidebar control missing");
         const auto chartPanels=window->findChildren<GraphPanel*>();
         check(!chartPanels.empty(),"Chart panels missing");
         for(auto* panel:chartPanels) {
-            auto* sidebar=panel->findChild<QScrollArea*>();
-            auto* diagnostic=panel->findChild<QLabel*>("numericExactValue");
-            check(sidebar && diagnostic && sidebar->widget()->isAncestorOf(diagnostic),"Numeric diagnostics must live inside the settings sidebar");
+            auto* sidebar=panel->findChild<QQuickWidget*>("numericGraphSettings");
+            auto* diagnostic=sidebar && sidebar->rootObject()?sidebar->rootObject()->findChild<QObject*>("numericExactValue"):nullptr;
+            check(sidebar && diagnostic && sidebar->status()==QQuickWidget::Ready,"Numeric diagnostics must live inside the settings sidebar");
             check(panel->layout()->count()==1,"Graph still reserves a footer row below its splitter");
         }
         check(namedGraph->contextMenuPolicy()!=Qt::ActionsContextMenu && !namedGraph->findChild<QAction*>("graphRename"),"Canvas still exposes rename context action");
@@ -100,7 +102,7 @@ int main() {
                     dialog->setTextValue(name);if(accept)dialog->accept();else dialog->reject();
                 }
             });
-            (origin?origin:renameGraph)->click();
+            if(origin)origin->click();else graphPanel->rename();
             QCoreApplication::processEvents();
         };
         renameTo(QString::fromUtf8("Мой спектр"));
@@ -461,9 +463,8 @@ int main() {
         const auto intervalPanels=window->findChildren<GraphPanel*>();
         check(!intervalPanels.empty(),"Chart panels missing before interval Save/load");
         const auto chartIntervalKey=intervalPanels.front()->objectName().chopped(QStringLiteral("GraphPanel").size());
-        auto* chartInterval=intervalPanels.front()->findChild<QDoubleSpinBox*>(chartIntervalKey+"AutoRangeIntervalSeconds");
-        check(chartInterval,"Chart auto range interval missing");
-        chartInterval->setValue(7.5);
+        intervalPanels.front()->changePreference("auto_range_interval_seconds",7.5);
+        check(intervalPanels.front()->preferences().value("auto_range_interval_seconds").toDouble()==7.5,"Chart auto range interval missing");
         // Offscreen skips native 3D controls; exercise their settings signal
         // through the same persistence boundary used by a native user edit.
         auto intervalOptions=surface->surface_settings();intervalOptions["auto_range_interval_seconds"]=6.5;

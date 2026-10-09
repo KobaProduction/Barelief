@@ -45,6 +45,13 @@ set(QT_PRESENTATION_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/node_views.cpp"
 )
 set(QT_RENDERER_HEADERS
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick/quick_ui.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick/numeric_render_ports.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick2d/plot_model.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick2d/plot_ticks.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick3d/surface_quick_item.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick3d/surface_overlay_commands.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrogram_axis_metadata.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/numeric_image_view.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/abstract/abs.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/abstract/fps.h"
@@ -55,12 +62,13 @@ set(QT_RENDERER_HEADERS
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/charts/freq.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/charts/line.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrograms/spectrogram_graph.h"
-    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrograms/spectrogram_graph_modifier.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrograms/spectrogram_scene_geometry.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/surface_settings.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/ui_text.h"
 )
 set(QT_RENDERER_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/quick/quick_ui.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/quick2d/plot_model.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/abs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/fps.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/mixins.cpp"
@@ -68,7 +76,6 @@ set(QT_RENDERER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/charts/freq.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/charts/line.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/spectrograms/spectrogram_graph.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/spectrograms/spectrogram_graph_modifier.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/settings/axis_control_widget.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/theme/ui_text.cpp"
 )

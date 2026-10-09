@@ -55,7 +55,7 @@ QString MainWindow::ensure_node_view(int node, const QString &kind, const QStrin
     }
     view.chart = kind == "FFTView" ? static_cast<AbstractChartView *>(new FreqChartView)
                                    : static_cast<AbstractChartView *>(new LineChartView);
-    view.chart->chart()->setTitle({});
+    view.chart->setTitle({});
     view.chart->set_range(-1, 1);
     view.chart->set_auto_resizing(true);
     view.chart->set_auto_gain(true, 1, -1);
@@ -74,8 +74,6 @@ QString MainWindow::ensure_node_view(int node, const QString &kind, const QStrin
         _numeric_render_dirty=true;render_numeric_views();
     });
     dock->setWidget(panel);
-    view.exact_label=panel->findChild<QLabel*>("numericExactValue");
-    ui::bind(view.exact_label,"text","Renderer projection unavailable");
     connect(panel, &GraphPanel::channel_requested, this,
             [this,key](int plane) {select_numeric_plane(key,std::size_t(std::max(0,plane)));});
     connect(panel, &GraphPanel::presentation_changed, this, [this](const QString &id, const QJsonObject &updates) {
@@ -265,15 +263,15 @@ void MainWindow::sync_node_views(const QJsonObject& document) {
     for(const auto& key:targets)if(!bindings.contains(key) && !_metric_bindings.contains(key)) {
         auto* dock=_node_views.contains(key)?_node_views[key].dock:_panels.value(key);
         if(!dock)continue;
-        auto* chart=_node_views.contains(key)?_node_views[key].chart:dynamic_cast<AbstractChartView*>(dock->findChild<QChartView*>());
-        auto* surface=_node_views.contains(key)?_node_views[key].spectrogram:qobject_cast<SpectrogramGraph*>(dock->widget());
-        auto* label=dock->findChild<QLabel*>("numericExactValue");
-        NumericImageView* image=nullptr;
-        if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())){chart=panel->active_chart();surface=panel->active_spectrogram();image=panel->image_view();}
-        presentation::NumericViewAdapter::clear_render_target({chart,surface,label,true,image,
-            qobject_cast<GraphPanel*>(dock->widget())?qobject_cast<GraphPanel*>(dock->widget())->pie_view():nullptr});
-        if(label)label->setText(ui::text("Renderer projection unavailable"));
-        if(surface)surface->set_projection_status(ui::text("Renderer projection unavailable"));
+        if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())) {
+            auto target=panel->all_render_targets();
+            presentation::NumericViewAdapter::clear_render_target(target);
+            if(!panel->active_spectrogram() || !panel->active_spectrogram()->paused())
+                target.exact_label->caption("Renderer projection unavailable",{},false,false);
+            if(target.spectrogram)target.spectrogram->caption("Renderer projection unavailable",{},false,false);
+            if(target.image)target.image->caption("Renderer projection unavailable",{},false,false);
+            if(target.pie)target.pie->caption("Renderer projection unavailable",{},false,false);
+        }
     }
     for(auto it=_numeric_bindings.begin();it!=_numeric_bindings.end();++it) {
         // Several dock instances share one endpoint/plane presentation state.
@@ -305,16 +303,8 @@ void MainWindow::sync_node_views(const QJsonObject& document) {
 }
 void MainWindow::clear_node_views() {
     _numeric_views.clear();
-    for(auto* chart:{_raw_signal_chart,_window_signal_chart,_windowed_signal_chart,_window_function_chart,_amplitudes_chart,_test_amplitudes_chart})
-        presentation::NumericViewAdapter::clear_render_target({chart});
-    presentation::NumericViewAdapter::clear_render_target({nullptr,_spectrogram_view});
-    for(auto& view:_node_views)
-        presentation::NumericViewAdapter::clear_render_target({view.chart,view.spectrogram,view.exact_label});
-    for(auto* panel:_panels)if(panel)if(auto* label=panel->findChild<QLabel*>("numericExactValue"))
-        presentation::NumericViewAdapter::clear_render_target({nullptr,nullptr,label});
     for(auto* dock:graph_docks())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
-        presentation::NumericViewAdapter::clear_render_target({panel->active_chart(),panel->active_spectrogram(),
-            dock->findChild<QLabel*>("numericExactValue"),true,panel->image_view(),panel->pie_view(),panel->metrics_view()});
+        presentation::NumericViewAdapter::clear_render_target(panel->all_render_targets());
 }
 void MainWindow::consume_numeric_frame(const pipeline::DeliveredNumericFrame& frame) {
     _numeric_views.accept(frame);_numeric_render_dirty=true;
@@ -332,28 +322,19 @@ void MainWindow::render_numeric_views() {
     // preset-owned docks are being replaced. Project only the completed set.
     if(_restoring_preset)return;
     if(_numeric_snapshot_dirty){_numeric_snapshot_dirty=false;_application.client().request_numeric_snapshots();}
-    const QMap<QString,AbstractChartView*> charts{{"rawSamples",_raw_signal_chart},{"windowSignal",_window_signal_chart},
-        {"windowedSignal",_windowed_signal_chart},{"windowFunction",_window_function_chart},{"fft",_amplitudes_chart},{"mel",_test_amplitudes_chart}};
     for(auto it=_numeric_bindings.cbegin();it!=_numeric_bindings.cend();++it) {
         if(it->device!=_application.device_id())continue;
-        presentation::NumericRenderTarget target;
-        WorkspaceDock* dock=nullptr;
-        if(_node_views.contains(it.key())) {
-            const auto& view=_node_views[it.key()];target.chart=view.chart;target.spectrogram=view.spectrogram;target.exact_label=view.exact_label;dock=view.dock;
-        } else {target.chart=charts.value(it.key());target.spectrogram=it.key()=="spectrogram"?_spectrogram_view:nullptr;dock=_panels.value(it.key());
-            if(dock)target.exact_label=dock->findChild<QLabel*>("numericExactValue");}
-        if(auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr) {
-            target.chart=panel->active_chart();target.spectrogram=panel->active_spectrogram();target.image=panel->image_view();target.pie=panel->pie_view();
-        }
-        target.visible=dock && !dock->isHidden() && dock->property("renderExposed").toBool();
+        auto* dock=_node_views.contains(it.key())?_node_views[it.key()].dock:_panels.value(it.key());
+        auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
+        if(!panel)continue;
+        auto target=panel->render_target(!dock->isHidden() && dock->property("renderExposed").toBool());
         _numeric_views.render(it->endpoint,it->plane,target);
     }
     for(auto it=_metric_bindings.cbegin();it!=_metric_bindings.cend();++it) {
         auto* dock=_node_views.contains(it.key())?_node_views[it.key()].dock:_panels.value(it.key());
         auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
         if(!panel || !panel->metrics_view())continue;
-        presentation::NumericRenderTarget target;
-        target.metrics=panel->metrics_view();target.visible=!dock->isHidden() && dock->property("renderExposed").toBool();
+        auto target=panel->render_target(!dock->isHidden() && dock->property("renderExposed").toBool());
         for(const auto& b:it.value())if(b.device==_application.device_id())_numeric_views.render(b.endpoint,b.plane,target);
     }
 }

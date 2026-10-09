@@ -3,7 +3,6 @@
 #include <core_app/graph_panel.h>
 #include <visualization/charts/line.h>
 #include <visualization/numeric_metrics_view.h>
-#include <QtCharts/QChartView>
 #include <QPointer>
 #include <QTimer>
 #include <cstdio>
@@ -46,8 +45,7 @@ int main(){
         check(historyPort->property("numericEndpoint").toMap()["node"].toInt()==8 && countPort->property("numericEndpoint").toMap()["node"].toInt()==12,"independent sink endpoints collide");
         auto countContext=context(app.graph,12,domain::PortDirection::Input,0);
         emit app.presenter().numeric_frame_ready(scalar(countContext,{snapshot.graph_revision,snapshot.epoch},1,9007199254740993ULL));
-        auto* exact=countPanel->metrics_view()->findChild<QLabel*>("metricValue_0");
-        check(exact && wait([&]{return exact->text().contains("9007199254740993");}),"count port exact UInt64 caption");
+        check(wait([&]{return countPanel->metrics_view()->exact_value(0)=="9007199254740993";}),"count port exact UInt64 caption");
         auto* metricNode=app.application->_ctx.data_flow_graph->delegateModel<AudioNodeModel>(12);
         check(metricNode && metricNode->add_scalar_input(),"add independent scalar metric port");
         check(metricNode->edit_scalar_input_name(1,"Second metric"),"name scalar metric port");app.apply();
@@ -57,15 +55,15 @@ int main(){
         auto firstContext=context(metricGraph,12,domain::PortDirection::Input,0);
         emit app.presenter().numeric_frame_ready(scalar(firstContext,{snapshot.graph_revision,snapshot.epoch},2,9007199254740993ULL));
         emit app.presenter().numeric_frame_ready(scalar(secondContext,{snapshot.graph_revision,snapshot.epoch},2,18446744073709551615ULL));
-        check(wait([&]{auto* second=countPanel->metrics_view()->findChild<QLabel*>("metricValue_1");auto* first=countPanel->metrics_view()->findChild<QLabel*>("metricValue_0");return second && first && second->text()=="18446744073709551615" && first->text()=="9007199254740993";}),"multiple exact scalar inputs are independently bound");
-        check(countPanel->findChild<QWidget*>("scalarInputsEditor"),"graph sidebar metric input controls");
+        check(wait([&]{return countPanel->metrics_view()->exact_value(1)=="18446744073709551615" && countPanel->metrics_view()->exact_value(0)=="9007199254740993";}),"multiple exact scalar inputs are independently bound");
+        check(!countPanel->scalar_inputs().isEmpty(),"graph sidebar metric input controls");
         const auto metricRevision=app.presenter().client().snapshot().graph_revision;
         metricNode=app.application->_ctx.data_flow_graph->delegateModel<AudioNodeModel>(12);
         check(metricNode && metricNode->set_scalar_input_enabled(1,false),"hide metric input");
-        check(wait([&]{return !countPanel->metrics_view()->findChild<QLabel*>("metricValue_1");}),"hidden metric remains displayed");
+        check(wait([&]{return countPanel->metrics_view()->input_count()==1;}),"hidden metric remains displayed");
         check(app.presenter().client().snapshot().graph_revision==metricRevision,"hiding metric reconfigures DSP");
         check(metricNode->set_scalar_input_enabled(1,true),"show metric input");
-        check(wait([&]{return countPanel->metrics_view()->findChild<QLabel*>("metricValue_1");}),"reenabled metric missing");
+        check(wait([&]{return countPanel->metrics_view()->input_count()==2;}),"reenabled metric missing");
         metricNode=app.application->_ctx.data_flow_graph->delegateModel<AudioNodeModel>(12);
         check(metricNode && metricNode->remove_scalar_input(1),"remove metric port");app.apply();
         // A live contract change retains dock identities and layout, rebuilding

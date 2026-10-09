@@ -1,3 +1,4 @@
+#include <QQuickItem>
 #include "synthetic_engine_provider.h"
 #include "numeric_gui_fixture.h"
 #include "core_app/gui_presenter.h"
@@ -332,16 +333,13 @@ static void chart_fill(GuiPresenter &presenter) {
         require(QLineF(chart->geometry().topLeft(),stack->contentsRect().topLeft()).length()<=2 &&
                 std::abs(chart->width()-stack->contentsRect().width())<=2 &&
                 std::abs(chart->height()-stack->contentsRect().height())<=2,"active chart does not fill renderer stack");
-        require(std::abs(chart->viewport()->width()-chart->contentsRect().width())<=2 &&
-                std::abs(chart->viewport()->height()-chart->contentsRect().height())<=2,"chart viewport does not fill active renderer");
-        const auto plot=chart->chart()->plotArea();
-        require(plot.width()>0 && plot.height()>0 &&
-                QRectF(QPointF{},QSizeF(chart->viewport()->size())).adjusted(-2,-2,2,2).contains(plot),
-                "logical plot lies outside the active viewport");
+        require(chart->rootObject() && chart->rootObject()->width()==chart->width() &&
+                chart->rootObject()->height()==chart->height(),"QML plot root does not fill active renderer");
         chart->set_auto_resizing(false);chart->set_range(.0001,.0009);chart->set_axis_precision(0);
-        auto *axis=qobject_cast<QValueAxis *>(chart->chart()->axes(Qt::Vertical).front());
-        require(axis && axis->labelFormat()=="%.4f","2D small-range ticks lose precision");
-        require(axis->min()==.0001 && axis->max()==.0009,"formatter changes actual range");
+        const auto ticks=chart->presentation_model()->state().value("yTicks").toList();
+        QSet<QString> labels;for(const auto& tick:ticks)labels.insert(tick.toMap().value("text").toString());
+        require(labels.size()>1,"2D small-range ticks lose precision");
+        require(chart->y_range().first==.0001 && chart->y_range().second==.0009,"formatter changes actual range");
     };
     fft->raise();checkFill();window.resize(1000,700);checkFill();
     mel->raise();settle();fft->raise();checkFill();

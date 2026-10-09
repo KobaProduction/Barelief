@@ -8,10 +8,14 @@ function(deploy_desktop_runtime target)
         HINTS "${Qt6_DIR}/../../../bin" REQUIRED NO_DEFAULT_PATH)
     get_filename_component(qt_runtime_bin "${QT_WINDEPLOYQT_EXECUTABLE}" DIRECTORY)
     get_filename_component(runtime_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set(qml_deploy_args)
+    if(ARGV1 STREQUAL "QML")
+        list(APPEND qml_deploy_args --qmldir "${CMAKE_SOURCE_DIR}/presentation/qt/qml")
+    endif()
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E env
             "PATH=${runtime_compiler_bin};${qt_runtime_bin};$ENV{PATH}"
-            "${QT_WINDEPLOYQT_EXECUTABLE}" --no-translations --compiler-runtime
+            "${QT_WINDEPLOYQT_EXECUTABLE}" --no-translations --compiler-runtime ${qml_deploy_args}
             --dir "$<TARGET_FILE_DIR:${target}>" "$<TARGET_FILE:${target}>"
         COMMENT "Deploying Qt runtime for ${target}" VERBATIM)
     if(MINGW)

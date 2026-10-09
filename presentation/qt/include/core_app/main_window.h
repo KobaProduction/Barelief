@@ -77,7 +77,6 @@ class MainWindow final : public WorkspaceWindow {
         WorkspaceDock *dock = nullptr;
         AbstractChartView *chart = nullptr;
         SpectrogramGraph *spectrogram = nullptr;
-        QLabel* exact_label=nullptr;
         uint64_t scalar_sequence=0,scalar_epoch=0;
     };
     QMap<QString, NodeView> _node_views;

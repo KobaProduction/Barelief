@@ -2,26 +2,12 @@
 #include <pipeline/numeric_projection.h>
 #include <map>
 #include <visualization/numeric_matrix_snapshot.h>
-class AbstractChartView;
-class SpectrogramGraph;
-class QLabel;
-class NumericImageView;
-class NumericPieView;
-class NumericMetricsView;
+#include <visualization/quick/numeric_render_ports.h>
 namespace presentation {
 struct NumericViewLimits {
     std::size_t max_bindings=0;
     pipeline::HistoryPresentationLimits history;
     pipeline::FloatProjectionPolicy vectors;
-};
-struct NumericRenderTarget {
-    AbstractChartView* chart=nullptr;
-    SpectrogramGraph* spectrogram=nullptr;
-    QLabel* exact_label=nullptr;
-    bool visible=false;
-    NumericImageView* image=nullptr;
-    NumericPieView* pie=nullptr;
-    NumericMetricsView* metrics=nullptr;
 };
 // GUI event-loop adapter. Binding is explicit: Sink Input or Source Output;
 // panel/device identity and workspace preferences remain the composition's concern.

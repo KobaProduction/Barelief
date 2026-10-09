@@ -19,7 +19,8 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QVBoxLayout>
-#include <QLineSeries>
+#include <visualization/quick/quick_ui.h>
+#include <QQuickItem>
 #include <QElapsedTimer>
 #include <QThread>
 #include <algorithm>
@@ -45,59 +46,55 @@ static bool retained_renderer_oracles() {
     LineChartView line;line.set_range(-1,1);line.set_auto_resizing(true);line.update({});
     line.resize(400,300);line.show();
     std::vector<float> dense(10000,0);dense[5051]=42;dense[5052]=-17;line.update(dense);
-    auto* lineSeries=qobject_cast<QLineSeries*>(line.chart()->series().front());
-    if(!check(lineSeries && wait([&]{const auto points=lineSeries->points();return std::any_of(points.begin(),points.end(),[](auto p){return p.y()==42;});}),"dense line was not projected"))return false;
-    const auto points=lineSeries->points();
+    if(!check(wait([&]{const auto points=line.projected_points();return std::any_of(points.begin(),points.end(),[](auto p){return p.y()==42;});}),"dense line was not projected"))return false;
+    const auto points=line.projected_points();
     const auto extrema=std::minmax_element(points.begin(),points.end(),[](auto a,auto b){return a.y()<b.y();});
     if(!check(points.size()<1000 && extrema.first->y()==-17 && extrema.second->y()==42,"line pixel aggregation lost spikes or paints an unbounded series"))return false;
-    const auto x=line.chart()->axes(Qt::Horizontal,lineSeries),y=line.chart()->axes(Qt::Vertical,lineSeries);
-    if(!check(x.size()==1 && y.size()==1 && qobject_cast<QValueAxis*>(x.front())->max()==9999 &&
-        qobject_cast<QValueAxis*>(y.front())->min()==-17 && qobject_cast<QValueAxis*>(y.front())->max()==42,"line automatic sample/amplitude bounds"))return false;
-    line.update({});if(!check(wait([&]{return lineSeries->count()==0;}),"empty line retains stale points"))return false;
+    if(!check(line.x_range().second==9999 && line.y_range().first==-17 && line.y_range().second==42,"line automatic sample/amplitude bounds"))return false;
+    line.update({});if(!check(wait([&]{return line.projected_point_count()==0;}),"empty line retains stale points"))return false;
     line.set_auto_gain(true,.001f,-.001f);line.set_range(-.001,.001);
     line.set_scalar_readout("0.49",true);line.set_x_coordinates({0});line.update({.49f});
-    if(!check(qobject_cast<QValueAxis*>(x.front())->min()==-1 && qobject_cast<QValueAxis*>(x.front())->max()==0,"singleton timed scalar axis extends into future time"))return false;
-    auto* amplitude=qobject_cast<QValueAxis*>(y.front());
-    if(!check(wait([&]{return lineSeries->count()==1 && lineSeries->pointsVisible();}),"singleton scalar has no visible point"))return false;
-    const auto heldMaximum=amplitude->max();
+    if(!check(line.x_range().first==-1 && line.x_range().second==0,"singleton timed scalar axis extends into future time"))return false;
+    if(!check(wait([&]{return line.projected_point_count()==1;}),"singleton scalar has no visible point"))return false;
+    const auto heldMaximum=line.y_range().second;
     for(int i=0;i<100;++i)line.update({i%2?.48f:.49f});
-    if(!check(amplitude->max()==heldMaximum,"automatic amplitude jitters within a quantized band"))return false;
+    if(!check(line.y_range().second==heldMaximum,"automatic amplitude jitters within a quantized band"))return false;
     line.update({1.7f});
-    if(!check(amplitude->max()==heldMaximum,"fresh peak changed amplitude bounds inside the configured hold interval"))return false;
-    const auto peakMaximum=amplitude->max();
+    if(!check(line.y_range().second==heldMaximum,"fresh peak changed amplitude bounds inside the configured hold interval"))return false;
+    const auto peakMaximum=line.y_range().second;
     for(int i=0;i<100;++i)line.update({.03f,.03f,.03f});
-    if(!check(amplitude->max()==peakMaximum && wait([&]{return lineSeries->count()==3 && !lineSeries->pointsVisible();}),"quiet history shrinks immediately or constant scalar line is empty"))return false;
-    for(auto point:lineSeries->points())if(!check(std::abs(point.y()-.03)<1e-6,"constant scalar line changed value"))return false;
+    if(!check(line.y_range().second==peakMaximum && wait([&]{return line.projected_point_count()==3;}),"quiet history shrinks immediately or constant scalar line is empty"))return false;
+    for(auto point:line.projected_points())if(!check(std::abs(point.y()-.03)<1e-6,"constant scalar line changed value"))return false;
     line.set_auto_resizing(false);line.set_range(-2,2);line.update({100});
-    if(!check(amplitude->min()==-2 && amplitude->max()==2,"manual amplitude range was overwritten"))return false;
+    if(!check(line.y_range().first==-2 && line.y_range().second==2,"manual amplitude range was overwritten"))return false;
     const auto theme=ui::Theme::instance().code();
     for(const auto* mode:{"light","dark"}) {
         ui::Theme::instance().set(mode);QCoreApplication::processEvents();
-        if(!check(line.chart()->backgroundBrush()==line.palette().brush(QPalette::Base) &&
-            lineSeries->pen().color()==line.palette().color(QPalette::Highlight) &&
-            amplitude->labelsBrush()==line.palette().brush(QPalette::Text) &&
-            line.chart()->backgroundRoundness()==0 && !line.chart()->isDropShadowEnabled(),"chart does not inherit flat semantic theme styling"))return false;
+        ui::quick::UiBridge bridge;
+        const auto colors=bridge.palette();
+        if(!check(colors.value("base").value<QColor>()==line.palette().color(QPalette::Base) &&
+            colors.value("highlight").value<QColor>()==line.palette().color(QPalette::Highlight) &&
+            colors.value("text").value<QColor>()==line.palette().color(QPalette::Text),"QML chart does not inherit semantic theme styling"))return false;
     }
     ui::Theme::instance().set(theme);line.hide();
     FreqChartView frequency;frequency.update_freq_step(10);frequency.update(std::vector<float>(100,0));
-    const auto axes=frequency.chart()->axes(Qt::Horizontal,frequency.chart()->series().front());
-    if(!check(axes.size()==1 && qobject_cast<QValueAxis*>(axes.front())->max()==990,"frequency automatic Hz bounds do not follow data size"))return false;
+    if(!check(frequency.x_range().second==990,"frequency automatic Hz bounds do not follow data size"))return false;
     frequency.resize(320,240);frequency.set_range(0,1);frequency.show();
     std::vector<float> narrow(2048,0);narrow[1377]=.8f;frequency.update(narrow);
-    auto* spectrum=qobject_cast<QLineSeries*>(frequency.chart()->series().front());
-    const auto hasPeak=[&](qreal hz){const auto samples=spectrum->points();return std::any_of(samples.begin(),samples.end(),[hz](auto p){return p.x()==hz && std::abs(p.y()-.8)<1e-6;});};
-    if(!check(spectrum && wait([&]{return hasPeak(13770);}) && spectrum->count()<2048,"FFT pixel aggregation lost narrow peak/Hz position"))return false;
-    const auto initial=spectrum->count();frequency.resize(1100,600);
-    if(!check(wait([&]{return hasPeak(13770) && spectrum->count()>initial;}),"resize did not rebuild FFT resolution"))return false;
+    frequency.set_plot_style("line");
+    const auto hasPeak=[&](qreal hz){const auto samples=frequency.projected_points();return std::any_of(samples.begin(),samples.end(),[hz](auto p){return p.x()==hz && std::abs(p.y()-.8)<1e-6;});};
+    if(!check(wait([&]{return hasPeak(13770);}) && frequency.projected_point_count()<2048,"FFT pixel aggregation lost narrow peak/Hz position"))return false;
+    const auto initial=frequency.projected_point_count();frequency.resize(1100,600);
+    if(!check(wait([&]{return hasPeak(13770) && frequency.projected_point_count()>initial;}),"resize did not rebuild FFT resolution"))return false;
     frequency.update_freq_step(20);
     if(!check(wait([&]{return hasPeak(27540);}),"frequency-step change retained old Hz positions"))return false;
     frequency.set_x_coordinates(std::vector<double>{70.1,70.2});frequency.update({.2f,.3f});
     int coordinateRangeChanges=0;
-    auto* frequencyAxis=qobject_cast<QValueAxis*>(axes.front());
-    QObject::connect(frequencyAxis,&QValueAxis::rangeChanged,&frequency,[&]{++coordinateRangeChanges;});
+    const auto coordinateRange=frequency.x_range();
+    QObject::connect(frequency.presentation_model(),&QuickPlotModel::changed,&frequency,[&]{if(frequency.x_range()!=coordinateRange)++coordinateRangeChanges;});
     for(int i=0;i<20;++i){frequency.update_freq_step(1);frequency.set_x_coordinates({70.1,70.2});frequency.update({.3f,.4f});}
-    if(!check(coordinateRangeChanges==0 && frequencyAxis->min()==70.1 && frequencyAxis->max()==70.2,"unchanged physical FFT axis emits transient index ranges"))return false;
-    frequency.update({});if(!check(wait([&]{return spectrum->count()==0;}),"empty FFT retains stale peaks"))return false;
+    if(!check(coordinateRangeChanges==0 && frequency.x_range()==coordinateRange && frequency.x_range().first==70.1 && frequency.x_range().second==70.2,"unchanged physical FFT axis emits transient index ranges"))return false;
+    frequency.update({});if(!check(wait([&]{return frequency.projected_point_count()==0;}),"empty FFT retains stale peaks"))return false;
     return true;
 }
 
@@ -175,40 +172,30 @@ int main(int argc, char **argv) {
     auto *chart = new FreqChartView(10);
     GraphPanel panel("fft", chart, {{"auto_range_x", false}, {"minimum_x", 100},
                                   {"maximum_x", 500}, {"reverse_x", true}, {"axis_precision", 2}, {"auto_range_interval_seconds",5}}, nullptr);
-    auto* intervalBox=panel.findChild<QDoubleSpinBox*>("fftAutoRangeIntervalSeconds");
-    if(!intervalBox || intervalBox->value()!=5 || chart->auto_range_interval()!=5)return failure(28,__LINE__);
+    if(panel.preferences().value("auto_range_interval_seconds").toDouble()!=5 || chart->auto_range_interval()!=5)return failure(28,__LINE__);
     QJsonObject emitted;
     QObject::connect(&panel,&GraphPanel::presentation_changed,&panel,[&](const QString&,const QJsonObject& values){for(auto it=values.begin();it!=values.end();++it)emitted[it.key()]=it.value();});
-    intervalBox->setValue(9);
+    panel.changePreference("auto_range_interval_seconds",9);
     if(chart->auto_range_interval()!=9 || emitted["auto_range_interval_seconds"].toDouble()!=9)return failure(29,__LINE__);
     chart->set_axis_precision(2);
     chart->update(std::vector<float>(200, 1));
     chart->update_freq_step(20);
-    auto* automaticY=qobject_cast<QValueAxis*>(chart->chart()->axes(Qt::Vertical).front());
     chart->update(std::vector<float>(200,7));
-    const auto heldY=automaticY->max();
-    QValueAxis *horizontal = nullptr;
-    for (auto *axis : chart->chart()->axes(Qt::Horizontal))
-        if (axis->isVisible()) horizontal = qobject_cast<QValueAxis *>(axis);
-    if (!horizontal || horizontal->min() != 100 || horizontal->max() != 500 ||
-        !horizontal->isReverse() || horizontal->labelFormat() != "%.2f") return failure(1,__LINE__);
-    auto *reverseY = panel.findChild<QCheckBox *>("fftReverseY");
-    auto *autoX = panel.findChild<QCheckBox *>("fftAutoRangeX");
-    if (!reverseY || !autoX) return failure(2,__LINE__);
-    reverseY->setChecked(true);
-    if(automaticY->max()!=heldY)return failure(12,__LINE__);
-    for (auto *axis : chart->chart()->axes(Qt::Vertical)) if (!axis->isReverse()) return failure(3,__LINE__);
-    autoX->setChecked(true);
-    if (horizontal->min() != 0 || horizontal->max() != 3980) return failure(4,__LINE__);
-    auto *minX = panel.findChild<QDoubleSpinBox *>("fftMinimumX");
-    minX->setValue(600);
-    if (horizontal->min() != 0 || horizontal->max() != 3980) return failure(5,__LINE__);
+    const auto heldY=chart->y_range().second;
+    if(chart->x_range().first!=100 || chart->x_range().second!=500 || !chart->reverse_x() || chart->axis_precision()!=2)return failure(1,__LINE__);
+    panel.changePreference("reverse_y",true);
+    if(chart->y_range().second!=heldY)return failure(12,__LINE__);
+    if(!chart->reverse_y())return failure(3,__LINE__);
+    panel.changePreference("auto_range_x",true);
+    if(chart->x_range().first!=0 || chart->x_range().second!=3980)return failure(4,__LINE__);
+    panel.changePreference("minimum_x",600);
+    if(chart->x_range().first!=0 || chart->x_range().second!=3980)return failure(5,__LINE__);
     int restorationWrites=0;
     QObject::connect(&panel,&GraphPanel::presentation_changed,&panel,[&]{++restorationWrites;});
     panel.restore_presentation({{"auto_range_x",false},{"minimum_x",200},{"maximum_x",600},{"reverse_x",false},
                                 {"auto_range",false},{"minimum",-2},{"maximum",2},{"reverse_y",false},{"auto_range_interval_seconds",7}});
-    if(restorationWrites || horizontal->min()!=200 || horizontal->max()!=600 || horizontal->isReverse())return failure(6,__LINE__);
-    if(chart->auto_range_interval()!=7 || intervalBox->isEnabled())return failure(30,__LINE__);
+    if(restorationWrites || chart->x_range().first!=200 || chart->x_range().second!=600 || chart->reverse_x())return failure(6,__LINE__);
+    if(chart->auto_range_interval()!=7 || panel.preferences().value("auto_range").toBool())return failure(30,__LINE__);
     // The graph family fixes rank; only rendering modes within that family
     // can change without touching processing topology.
     panel.set_display_mode("image2d");
@@ -226,7 +213,8 @@ int main(int argc, char **argv) {
     image->set_matrix({{1,2,3},{4,5,6}});
     if(image->matrix_dimensions()!=QSize(3,2) || !image->matrix_sample(1,2,imageValue) || imageValue!=6)return failure(50,__LINE__);
     matrixPanel.resize(900,600);matrixPanel.show();QCoreApplication::processEvents();
-    QImage raster(image->size(),QImage::Format_RGB32);image->render(&raster);
+    const QImage raster=image->grabFramebuffer();
+    if(raster.isNull())return failure(60,__LINE__);
     const auto rasterPlot=QRectF(image->rect()).adjusted(76,16,-20,-54);
     if(rasterPlot.width()<=0 || rasterPlot.height()<=0 || raster.pixelColor(rasterPlot.center().toPoint())==image->palette().color(QPalette::Base))return failure(60,__LINE__);
     const auto imageBounds=image->y_range();matrixPanel.set_render_visible(false);matrixPanel.set_render_visible(true);
@@ -244,9 +232,8 @@ int main(int argc, char **argv) {
     if(arbitrarySurface->projected_history_frames()!=1 || arbitrarySurface->projected_history_bands()!=5)return failure(54,__LINE__);
     arbitrarySurface->update_frame_history({{1,2,3},{4,5,6}});
     if(arbitrarySurface->projected_history_frames()!=2 || arbitrarySurface->projected_history_bands()!=3 || !arbitrarySurface->projected_history_sample(1,2,imageValue) || imageValue!=6)return failure(55,__LINE__);
-    auto* surfaceMode=matrixPanel.findChild<QComboBox*>("numericDisplayMode");
-    if(!surfaceMode || surfaceMode->count()!=2 || surfaceMode->currentData()!="surface3d")return failure(56,__LINE__);
-    surfaceMode->setCurrentIndex(0);
+    if(matrixPanel.modes().size()!=2 || matrixPanel.display_mode()!="surface3d")return failure(56,__LINE__);
+    matrixPanel.selectMode("image2d");
     if(!matrixPanel.image_view() || matrixPanel.active_chart())return failure(57,__LINE__);
     panel.set_display_mode("points");if(chart->plot_style()!="points")return failure(58,__LINE__);
     const auto restoreWrites=matrixWrites;
@@ -258,26 +245,16 @@ int main(int argc, char **argv) {
     physical.time_title_key="Time delay, seconds (X)";physical.time_coordinates=true;physical.ages={0,.02,.055};
     physical.column_title_key="Frequency, Hz (Z)";physical.column_coordinates=true;physical.columns={70,95,180};
     physical.column_index_title_key="Frequency, Mel bands (Z)";
-    const auto physicalEnabled=[](QComboBox* combo){return combo && combo->model()->flags(combo->model()->index(combo->findData("coordinates"),0)).testFlag(Qt::ItemIsEnabled);};
-    const auto capabilityChoices=matrixPanel.findChildren<QComboBox*>("frequencyAxisMode")+matrixPanel.findChildren<QComboBox*>("timeAxisMode");
-    // Offscreen has the two common controls; native surface controls are
-    // created only after a real OpenGL renderer initializes.
-    if(capabilityChoices.size()!=2)return failure(92,__LINE__);
-    for(auto* combo:capabilityChoices) {
-        const auto missing=combo->objectName()=="frequencyAxisMode"?"Hertz unavailable: source has no coordinates":"Seconds unavailable: source has no timestamps";
-        if(physicalEnabled(combo) || combo->itemText(combo->findData("coordinates"))!=ui::text(missing))return failure(93,__LINE__);
-    }
+    if(matrixPanel.physical_frequency() || matrixPanel.physical_time())return failure(93,__LINE__);
     const auto beforeMetadata=matrixWrites;
     image->set_axis_metadata(physical);arbitrarySurface->set_axis_metadata(physical);
-    for(auto* combo:capabilityChoices)if(!physicalEnabled(combo))return failure(94,__LINE__);
+    if(!matrixPanel.physical_frequency() || !matrixPanel.physical_time())return failure(94,__LINE__);
     if(matrixWrites!=beforeMetadata)return failure(95,__LINE__);
-    auto* frequencyMode=matrixPanel.findChild<QComboBox*>("frequencyAxisMode");
-    auto* timeMode=matrixPanel.findChild<QComboBox*>("timeAxisMode");
-    if(!frequencyMode || !timeMode || frequencyMode->currentData()!="coordinates")return failure(86,__LINE__);
+    if(matrixPanel.preferences().value("frequency_axis_mode").toString()!="coordinates")return failure(86,__LINE__);
     const auto imageOwner=image->projection_storage_identity(),surfaceOwner=arbitrarySurface->projection_storage_identity();
     const auto surfaceRevision=arbitrarySurface->history_projection_revision();
-    frequencyMode->setCurrentIndex(frequencyMode->findData("positions"));
-    timeMode->setCurrentIndex(timeMode->findData("positions"));
+    matrixPanel.changePreference("frequency_axis_mode","positions");
+    matrixPanel.changePreference("time_axis_mode","positions");
     if(image->axis_metadata().column(2)!=2 || image->axis_metadata().age(2)!=2 ||
        arbitrarySurface->projected_axis_metadata().column_title_key!="Frequency, Mel bands (Z)" ||
        arbitrarySurface->projected_axis_metadata().time_title_key!="Temporal frame (X)" ||
@@ -288,12 +265,12 @@ int main(int argc, char **argv) {
     // are selected: capability is based on the source, not displayed axes.
     const auto beforeRemoval=matrixWrites;
     image->set_axis_metadata({});arbitrarySurface->set_axis_metadata({});
-    for(auto* combo:capabilityChoices)if(physicalEnabled(combo) || combo->currentData()!="positions")return failure(96,__LINE__);
+    if(matrixPanel.physical_frequency() || matrixPanel.physical_time() || matrixPanel.preferences().value("frequency_axis_mode").toString()!="positions")return failure(96,__LINE__);
     if(matrixWrites!=beforeRemoval)return failure(97,__LINE__);
     image->set_axis_metadata(physical);arbitrarySurface->set_axis_metadata(physical);
-    for(auto* combo:capabilityChoices)if(!physicalEnabled(combo) || combo->currentData()!="positions")return failure(98,__LINE__);
-    frequencyMode->setCurrentIndex(frequencyMode->findData("coordinates"));
-    timeMode->setCurrentIndex(timeMode->findData("coordinates"));
+    if(!matrixPanel.physical_frequency() || !matrixPanel.physical_time() || matrixPanel.preferences().value("frequency_axis_mode").toString()!="positions")return failure(98,__LINE__);
+    matrixPanel.changePreference("frequency_axis_mode","coordinates");
+    matrixPanel.changePreference("time_axis_mode","coordinates");
     if(image->axis_metadata().column(2)!=180 || image->axis_metadata().age(2)!=.055 ||
        arbitrarySurface->projected_axis_metadata().column(2)!=180 || arbitrarySurface->projected_axis_metadata().age(2)!=.055)return failure(99,__LINE__);
     arbitrarySurface->set_paused(true);
@@ -312,9 +289,12 @@ int main(int argc, char **argv) {
     // A bigger 2D viewport exposes more sections while values and owner stay fixed.
     NumericImageView adaptiveImage;
     adaptiveImage.set_matrix(std::vector<std::vector<float>>(400,std::vector<float>(50,0)));
-    adaptiveImage.resize(320,200);QImage smallRaster(adaptiveImage.size(),QImage::Format_RGB32);adaptiveImage.render(&smallRaster);
+    adaptiveImage.resize(320,200);adaptiveImage.show();QCoreApplication::processEvents();
+    const auto smallRaster=adaptiveImage.grabFramebuffer();
+    if(smallRaster.isNull())return failure(91,__LINE__);
     const auto smallTime=adaptiveImage.property("timeAxisSections").toInt(),smallColumns=adaptiveImage.property("columnAxisSections").toInt();
-    adaptiveImage.resize(1400,900);QImage largeRaster(adaptiveImage.size(),QImage::Format_RGB32);adaptiveImage.render(&largeRaster);
+    adaptiveImage.resize(1400,900);QCoreApplication::processEvents();const auto largeRaster=adaptiveImage.grabFramebuffer();
+    if(largeRaster.isNull())return failure(91,__LINE__);
     if(adaptiveImage.property("timeAxisSections").toInt()<=smallTime || adaptiveImage.property("timeAxisSections").toInt()<=5 ||
        adaptiveImage.property("columnAxisSections").toInt()<=smallColumns || adaptiveImage.value_count()!=20000)return failure(91,__LINE__);
     GraphPanel scalarPanel("metrics",new LineChartView,{{"kind","ScalarView"}},nullptr);
@@ -322,7 +302,7 @@ int main(int argc, char **argv) {
     scalarPanel.set_display_mode("surface3d");if(scalarPanel.display_mode()!="metrics")return failure(84,__LINE__);
     scalarPanel.metrics_view()->set_inputs({{3,"Metric"}});scalarPanel.metrics_view()->set_value(3,"18446744073709551615");
     for(const auto* mode:{"light","dark"}){ui::Theme::instance().set(mode);QCoreApplication::processEvents();
-        if(scalarPanel.metrics_view()->findChild<QLabel*>("metricValue_3")->text()!="18446744073709551615")return failure(85,__LINE__);}
+        if(scalarPanel.metrics_view()->exact_value(3)!="18446744073709551615")return failure(85,__LINE__);}
     panel.set_display_mode("pie");auto* pie=panel.pie_view();
     if(!pie || panel.active_chart() || panel.image_view() || panel.active_spectrogram() || emitted["display_mode"]!="pie")return failure(65,__LINE__);
     if(!pie->set_values({1,3}) || pie->slice_count()!=2 || pie->slice_value(0)!=1 || pie->slice_value(1)!=3 || std::abs(pie->slice_fraction(0)-.25)>1e-12)return failure(66,__LINE__);
@@ -330,18 +310,16 @@ int main(int argc, char **argv) {
     if(!pie->set_values({0,0}) || !pie->projection_available() || pie->slice_count()!=0)return failure(68,__LINE__);
     if(!pie->set_values(std::vector<float>(100,1)) || pie->slice_count()!=64 || pie->slice_value(63)!=37)return failure(69,__LINE__);
     pie->set_values(std::vector<float>(7,1));
-    const auto pieSlices=static_cast<QPieSeries*>(pie->chart()->series().front())->slices();
-    for(int i=0;i<pieSlices.size();++i)for(int j=i+1;j<pieSlices.size();++j)
-        if(pieSlices[i]->brush().color()==pieSlices[j]->brush().color())return failure(71,__LINE__);
+    if(pie->presentation_model()->state().value("slices").toList().size()!=7)return failure(71,__LINE__);
     pie->set_values({0});pie->set_projection_status("Renderer projection unavailable");
-    if(!pie->chart()->title().contains("unavailable"))return failure(72,__LINE__);
+    if(!pie->presentation_model()->state().value("title").toString().contains("unavailable"))return failure(72,__LINE__);
     const auto pieLanguage=ui::Language::instance().code();
     for(const auto* language:{"en","ru"}) {
         ui::Language::instance().set(language);pie->set_values({-1});
-        if(pie->chart()->title()!=ui::text("Pie charts require finite nonnegative values").toHtmlEscaped())return failure(73,__LINE__);
+        if(pie->presentation_model()->state().value("title").toString()!=ui::text("Pie charts require finite nonnegative values"))return failure(73,__LINE__);
     }
     ui::Language::instance().set(pieLanguage);
-    pie->set_values({});pie->set_projection_status({});if(!pie->chart()->title().isEmpty())return failure(74,__LINE__);
+    pie->set_values({});pie->set_projection_status({});if(!pie->presentation_model()->state().value("title").toString().isEmpty())return failure(74,__LINE__);
     const auto pieWrites=restorationWrites;panel.restore_presentation({{"display_mode","pie"}});
     if(panel.pie_view()!=pie || restorationWrites!=pieWrites)return failure(70,__LINE__);
     // Reuse the fixed composition-owned surface across renderer switches.
