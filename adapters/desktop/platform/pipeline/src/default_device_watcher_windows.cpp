@@ -16,6 +16,7 @@ class Notifications final : public IMMNotificationClient {
     std::atomic<bool> &_changed;
     const EDataFlow _flow;
     const std::wstring _id;
+    const bool _follow_default;
     template <typename Predicate> void changed(Predicate relevant) noexcept {
         ++_inflight;
         // Protect endpoint/flow reads as well as flag publication from teardown.
@@ -24,8 +25,8 @@ class Notifications final : public IMMNotificationClient {
         --_inflight;
     }
 public:
-    Notifications(EDataFlow flow, std::wstring id, std::atomic<bool> &flag)
-        : _changed(flag), _flow(flow), _id(std::move(id)) {}
+    Notifications(EDataFlow flow, std::wstring id, std::atomic<bool> &flag, bool follow_default)
+        : _changed(flag), _flow(flow), _id(std::move(id)), _follow_default(follow_default) {}
     void deactivate() { _active = false; }
     void drain() { while (_inflight.load()) std::this_thread::yield(); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **object) override {
@@ -41,7 +42,7 @@ public:
         const auto count = --_references; if (!count) delete this; return count;
     }
     HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR id) override {
-        changed([&] { return flow == _flow && role == eConsole && (!id || _id != id); }); return S_OK;
+        changed([&] { return _follow_default && flow == _flow && role == eConsole && (!id || _id != id); }); return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR id, DWORD state) override {
         changed([&] { return id && _id == id && !(state & DEVICE_STATE_ACTIVE); }); return S_OK;
@@ -69,7 +70,7 @@ struct WindowsDefaultDeviceWatcher::Impl {
         if (com) CoUninitialize();
     }
 };
-WindowsDefaultDeviceWatcher::WindowsDefaultDeviceWatcher(bool loopback, std::atomic<bool> &changed)
+WindowsDefaultDeviceWatcher::WindowsDefaultDeviceWatcher(bool loopback, std::atomic<bool> &changed, std::wstring selected)
     : _impl(std::make_unique<Impl>()) {
     check(CoInitializeEx(nullptr, COINIT_MULTITHREADED), "Initialize endpoint notifications");
     _impl->com = true;
@@ -78,11 +79,13 @@ WindowsDefaultDeviceWatcher::WindowsDefaultDeviceWatcher(bool loopback, std::ato
     const auto flow = loopback ? eRender : eCapture;
     // Register before resolving the endpoint so a change during opening is retained.
     // The initial listener marks any default change; the final listener also watches removal.
-    _impl->notifications = new Notifications(flow, {}, changed);
+    const bool follow_default=selected.empty();
+    _impl->notifications = new Notifications(flow, selected, changed, follow_default);
     check(_impl->enumerator->RegisterEndpointNotificationCallback(_impl->notifications), "Watch default endpoint");
     _impl->registered = true;
     IMMDevice *endpoint = nullptr;
-    check(_impl->enumerator->GetDefaultAudioEndpoint(flow, eConsole, &endpoint), "Find default endpoint");
+    check(follow_default ? _impl->enumerator->GetDefaultAudioEndpoint(flow, eConsole, &endpoint)
+        : _impl->enumerator->GetDevice(selected.c_str(), &endpoint), "Find audio endpoint");
     LPWSTR id = nullptr;
     const auto result = endpoint->GetId(&id);
     endpoint->Release();
@@ -90,7 +93,7 @@ WindowsDefaultDeviceWatcher::WindowsDefaultDeviceWatcher(bool loopback, std::ato
     const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> endpoint_id(id, &CoTaskMemFree);
     _impl->id = endpoint_id.get();
     // The default listener remains registered until the endpoint-specific one is installed.
-    auto *specific = new Notifications(flow, _impl->id, changed);
+    auto *specific = new Notifications(flow, _impl->id, changed, follow_default);
     const auto registration = _impl->enumerator->RegisterEndpointNotificationCallback(specific);
     if (FAILED(registration)) { specific->Release(); check(registration, "Watch capture endpoint"); }
     _impl->notifications->deactivate();

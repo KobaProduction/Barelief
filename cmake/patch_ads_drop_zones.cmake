@@ -12,6 +12,31 @@ if(NOT content MATCHES "Application invisible docking indicators")
     string(REPLACE "#include \"DockOverlay.h\"" "#include \"DockOverlay.h\"\n#include <QGraphicsOpacityEffect>" content "${content}")
     string(REPLACE "${indicator}" "${indicator}\n        // Application invisible docking indicators: retain hit geometry.\n        auto *effect = new QGraphicsOpacityEffect(widget);\n        effect->setOpacity(0); widget->setGraphicsEffect(effect);" content "${content}")
 endif()
+if(NOT content MATCHES "Application tab insertion before broad bands")
+    set(tab_anchor "\tDockWidgetArea Result = d->Cross->cursorLocation(GlobalPos);")
+    string(FIND "${content}" "${tab_anchor}" tab_found)
+    if(tab_found EQUAL -1)
+        message(FATAL_ERROR "ADS tab insertion patch no longer matches the pinned source")
+    endif()
+    set(tab_priority [=[
+    // Application tab insertion before broad bands. A real title/tab bar is
+    // a center insertion target, not the broad top/left split band below it.
+    if (auto *area = qobject_cast<CDockAreaWidget*>(d->TargetWidget.data());
+        area && d->AllowedAreas.testFlag(CenterDockWidgetArea) &&
+        area->allowedAreas().testFlag(CenterDockWidgetArea) &&
+        !area->titleBar()->isHidden() &&
+        area->titleBarGeometry().contains(area->mapFromGlobal(GlobalPos)))
+    {
+        auto *tabs = area->titleBar()->tabBar();
+        d->TabIndex = tabs->tabInsertIndexAt(tabs->mapFromGlobal(GlobalPos));
+        return CenterDockWidgetArea;
+    }
+
+]=])
+    string(REPLACE "${tab_anchor}" "${tab_priority}${tab_anchor}" content "${content}")
+endif()
+string(REPLACE "area && area->allowedAreas().testFlag(CenterDockWidgetArea) &&"
+    "area && d->AllowedAreas.testFlag(CenterDockWidgetArea) &&\n        area->allowedAreas().testFlag(CenterDockWidgetArea) &&" content "${content}")
 if(content MATCHES "Application broad drop bands")
     file(WRITE "${source}" "${content}")
     return()

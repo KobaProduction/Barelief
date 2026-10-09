@@ -9,6 +9,7 @@ protected:
     QValueAxis  _freq_axis;
     void _on_updated_data_size(size_t new_size) override;
     void _update_chart_data() override;
+    qreal _x_step() const override {return _freq_step>0?_freq_step:1;}
 
 public:
     explicit FreqChartView(qreal freq_step = 1);

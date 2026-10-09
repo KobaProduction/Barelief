@@ -10,6 +10,7 @@ size_t payload_size(const Frame &f) {
     if (!f.available)
         return Header + f.stream_id.size();
     size_t n = 0;
+    if(f.type==Type::WledPacket)return Header+f.stream_id.size()+f.packet.size();
     if (int(f.type) <= 3)
         n = f.left.size() + f.right.size();
     else if (f.type != Type::History)
@@ -21,7 +22,7 @@ size_t payload_size(const Frame &f) {
 }
 bool valid(const Frame &f) {
     auto t = int(f.type);
-    if (t < 0 || t > 6 || (f.available && (!f.sample_rate || !f.sequence)) || f.sample_rate > 768000 ||
+    if (t < 0 || t > 8 || (t!=8 && !f.packet.empty()) || (f.available && (!f.sample_rate || !f.sequence)) || f.sample_rate > 768000 ||
         f.stream_id.size() > 256 || f.fft_size > 65536 || f.bands > 4096 || f.history_capacity > 2000 ||
         payload_size(f) > MaxFrameBytes)
         return false;
@@ -29,7 +30,7 @@ bool valid(const Frame &f) {
         !std::isfinite(f.magnitude))
         return false;
     if (!f.available)
-        return f.sequence == 0 && f.left.empty() && f.right.empty() && f.values.empty() && f.history.empty();
+        return f.sequence == 0 && f.left.empty() && f.right.empty() && f.values.empty() && f.history.empty() && f.packet.empty();
     auto finite = [](const auto &v) {
         for (float x : v)
             if (!std::isfinite(x))
@@ -39,18 +40,25 @@ bool valid(const Frame &f) {
     if (!finite(f.left) || !finite(f.right) || !finite(f.values))
         return false;
     if (t <= 3) {
-        if (f.left.empty() || f.left.size() != f.right.size())
+        if (f.left.empty() || f.left.size() != f.right.size() || !f.values.empty() || !f.history.empty())
             return false;
+    } else if(t==8) {
+        if(f.packet.size()!=44 || !f.left.empty() || !f.right.empty() || !f.values.empty() || !f.history.empty() || f.fft_size || f.bands || f.history_capacity || f.frequency_step || f.bark_weighted)return false;
+    } else if(t==7) {
+        if(f.values.size()!=1 || !f.left.empty() || !f.right.empty() || !f.history.empty() || f.fft_size || f.bands || f.history_capacity || f.frequency_step || f.bark_weighted)return false;
     } else if (t <= 5) {
-        if (f.values.empty())
+        if (f.values.empty() || !f.left.empty() || !f.right.empty() || !f.history.empty())
             return false;
     } else {
-        if (f.history.empty() || f.history[0].empty())
+        if (f.history.empty() || f.history[0].empty() || !f.left.empty() || !f.right.empty() || !f.values.empty())
             return false;
         for (auto &r : f.history)
             if (r.size() != f.history[0].size() || !finite(r))
                 return false;
     }
+    signal_contracts::FrameMetadata metadata;metadata.available=f.available;metadata.fft_size=f.fft_size;metadata.bands=f.bands;metadata.history_capacity=f.history_capacity;
+    const auto columns=t<=3?f.left.size():t==8?11:t==6?f.history[0].size():f.values.size();
+    if(!bdsp_protocol::compatible_geometry(f.type,metadata,columns,t==6?f.history.size():1))return false;
     return true;
 }
 std::vector<uint8_t> encode(const Frame &f) {
@@ -63,7 +71,7 @@ std::vector<uint8_t> encode(const Frame &f) {
     m.sample_rate=f.sample_rate; m.fft_size=f.fft_size; m.bands=f.bands; m.history_capacity=f.history_capacity;
     m.frequency_step=f.frequency_step; m.peak_hz=f.peak_hz; m.magnitude=f.magnitude; m.stream_id=f.stream_id;
     m.discontinuity=f.discontinuity; m.bark_weighted=f.bark_weighted; m.available=f.available;
-    view.left=f.left; view.right=f.right; view.values=f.values;
+    view.left=f.left; view.right=f.right; view.values=f.values;view.packet=f.packet;
     std::vector<float> history;
     if(f.available && f.type==Type::History) {
         history.reserve(f.history.size()*f.history[0].size());
@@ -76,13 +84,14 @@ std::vector<uint8_t> encode(const Frame &f) {
 }
 bool decode(std::span<const uint8_t> bytes, Frame &out, std::string &error) {
     signal_contracts::FrameView view;
-    auto result=bdsp_protocol::decode(bytes,{}, {},view);
+    auto result=bdsp_protocol::decode(bytes,{}, {},{},view);
     if(!result && result.status!=signal_contracts::Status::buffer_too_small) {
         error=bdsp_protocol::error_message(result.error); return false;
     }
     std::vector<float> samples(result.required_samples);
+    std::vector<uint8_t> packet(result.required_packet_bytes);
     std::string stream_id(result.required_id_bytes,'\0');
-    result=bdsp_protocol::decode(bytes,samples,stream_id,view);
+    result=bdsp_protocol::decode(bytes,samples,stream_id,packet,view);
     if(!result){error=bdsp_protocol::error_message(result.error);return false;}
     Frame f; const auto &m=view.metadata;
     f.type=view.type;f.sequence=m.sequence;f.generation=m.generation;f.epoch=m.epoch;f.graph_revision=m.graph_revision;
@@ -92,6 +101,7 @@ bool decode(std::span<const uint8_t> bytes, Frame &out, std::string &error) {
     f.discontinuity=m.discontinuity;f.bark_weighted=m.bark_weighted;f.available=m.available;
     f.left.assign(view.left.begin(),view.left.end());f.right.assign(view.right.begin(),view.right.end());
     f.values.assign(view.values.begin(),view.values.end());
+    f.packet=std::move(packet);
     for(size_t i=0;i<view.history.frames;++i) {
         const auto row=view.history.row(i); f.history.emplace_back(row.begin(),row.end());
     }

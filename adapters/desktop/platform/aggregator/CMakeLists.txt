@@ -28,6 +28,7 @@ target_include_directories(${LIB_NAME} PUBLIC
 )
 
 target_link_libraries(${LIB_NAME} PUBLIC
+        signal_contracts
         Qt6::Core
         Qt6::Network
         core
@@ -35,3 +36,11 @@ target_link_libraries(${LIB_NAME} PUBLIC
 )
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/apps/registry ${CMAKE_BINARY_DIR}/apps/registry)
+
+# Desktop discovery implements a presentation port; concrete assembly is GUI composition.
+add_library(desktop_processor_discovery STATIC
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/src/processor_discovery_adapter.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/desktop/processor_discovery_adapter.h
+    ${CMAKE_SOURCE_DIR}/presentation/ports/include/presentation/processor_discovery_port.h)
+target_include_directories(desktop_processor_discovery PUBLIC ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
+target_link_libraries(desktop_processor_discovery PUBLIC aggregator-library qt_engine_ports)

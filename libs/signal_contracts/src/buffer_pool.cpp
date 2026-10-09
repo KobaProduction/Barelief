@@ -37,8 +37,9 @@ Status retain(const FrameView &f, BufferPool &pool, RetainedFrame &out) noexcept
     auto add=[&](std::size_t n){if(n>(std::numeric_limits<std::size_t>::max()-count))return false;count+=n;return true;};
     if(!add(f.left.size()) || !add(f.right.size()) || !add(f.values.size()) ||
        (history.bands && history.frames>std::numeric_limits<std::size_t>::max()/history.bands) ||
-       !add(history.frames*history.bands) || count>(std::numeric_limits<std::size_t>::max()-f.metadata.stream_id.size())/sizeof(float))return Status::overflow;
-    RetainedFrame x;status=pool.acquire(count*sizeof(float)+f.metadata.stream_id.size(),x.buffer);
+       !add(history.frames*history.bands) || f.packet.size()>std::numeric_limits<std::size_t>::max()-f.metadata.stream_id.size() ||
+       count>(std::numeric_limits<std::size_t>::max()-f.metadata.stream_id.size()-f.packet.size())/sizeof(float))return Status::overflow;
+    RetainedFrame x;status=pool.acquire(count*sizeof(float)+f.metadata.stream_id.size()+f.packet.size(),x.buffer);
     if(status!=Status::ok)return status;
     auto bytes=x.buffer.bytes();
     if(count && reinterpret_cast<std::uintptr_t>(bytes.data())%alignof(float))return Status::invalid_argument;
@@ -54,6 +55,8 @@ Status retain(const FrameView &f, BufferPool &pool, RetainedFrame &out) noexcept
             history.bands,history.frames,history.frames,0};
     }
     // Retained history stores logical rows contiguously; capacity remains semantic metadata.
+    if(!f.packet.empty())std::memcpy(bytes.data()+offset,f.packet.data(),f.packet.size());
+    x.view.packet={reinterpret_cast<const std::uint8_t *>(bytes.data()+offset),f.packet.size()};offset+=f.packet.size();
     if(!f.metadata.stream_id.empty())std::memcpy(bytes.data()+offset,f.metadata.stream_id.data(),f.metadata.stream_id.size());
     x.view.metadata.stream_id={reinterpret_cast<const char *>(bytes.data()+offset),f.metadata.stream_id.size()};
     out=std::move(x);return Status::ok;

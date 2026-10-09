@@ -21,6 +21,14 @@ advertised metadata history capacity; a compact retained snapshot may contain
 only the active rows. `row` requires a validated descriptor and an in-range
 logical index. No physical time/frequency coordinates are invented.
 
+History time coordinates use logical oldest-to-newest row order. Gathering a
+Regular time axis returns `origin + logical_row * step`, including for wrapped
+storage, matching full-frame coordinates. A rolling presentation uses accepted
+row ordinals for relative ages so repeated logical indices after wrap do not
+freeze time. Explicit Seconds retains individual source-clock times. A None
+time axis remains frame indices for both compact rows and full snapshots; a
+single frame timestamp cannot reconstruct earlier row times.
+
 BufferPool uses caller-provided byte storage and initially unused BufferSlots;
 the pool and both arrays must outlive every BufferHandle. Handles share a block
 with atomic reference counts and prevent reuse until the last reference is
@@ -35,3 +43,17 @@ failure. After publication treat the buffer as immutable. RetainedFrame copies
 retain ownership; its view remains valid only while at least one owner exists.
 Pool exhaustion, unavailable markers, invalid contracts and ordinary typed
 zero data are explicit states. Pool exhaustion does not allocate fallback memory.
+
+Numeric processing types are primitive dtype, scalar/vector/matrix shape, channel
+identity and explicit storage representation. `semantic` and `history_element`
+remain descriptive serialized metadata; they never select admission, conversion,
+processing or transport operations. `same_contract` still compares every field
+for exact metadata identity; `same_physical_contract` ignores only these two tags.
+Clock, coordinates and normalization remain explicit, truthful physical metadata.
+Unsigned normalized silence is selected by `UnsignedUnit`, not by a PCM label.
+
+Ring storage is explicit in `NumericView::ring`; an ordinary Matrix remains an
+ordinary Matrix even when descriptively labelled History. Gather selects one row
+only when its prepared request sets `matrix_row`; otherwise it copies the whole
+numeric value. DSP block kind chooses the algorithm and validates its supported
+primitive geometry. View block kinds accept any numeric dtype and rank.

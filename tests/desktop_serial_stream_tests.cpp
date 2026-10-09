@@ -1,103 +1,64 @@
-#include <pipeline/stream_transport.h>
-#include <pipeline/audio_pipeline.h>
-#include <pipeline/network_runtime.h>
+#include "numeric_transport_fixture.h"
+#include <desktop/qt_byte_transport.h>
 #include <pipeline/serial_config.h>
-#include <bdsp_protocol/stream_fragments.h>
-#include <QCoreApplication>
 #include <QJsonArray>
-#include <array>
-#include <iostream>
-#include <stdexcept>
-using namespace pipeline;
-using signal_contracts::Status;
-static void require(bool ok,const char *message) {if(!ok) throw std::runtime_error(message);}
-class FakeUart final : public QIODevice {
+#include <cstdio>
+using namespace transport_fixture;
+namespace nd=bdsp_protocol::numeric_data;
+class FakeUart final:public QIODevice{
 public:
-    QByteArray received,sent; qint64 pending=0;
-    FakeUart(){open(ReadWrite);}
-    bool isSequential() const override{return true;}
-    qint64 bytesAvailable() const override{return received.size()+QIODevice::bytesAvailable();}
-    qint64 bytesToWrite() const override{return pending;}
-    void inject(const QByteArray &bytes){received+=bytes;emit readyRead();}
+    QByteArray received,sent;qint64 pending=0;
+    FakeUart(){open(ReadWrite);}bool isSequential()const override{return true;}
+    qint64 bytesAvailable()const override{return received.size()+QIODevice::bytesAvailable();}
+    qint64 bytesToWrite()const override{return pending;}
+    void inject(QByteArray bytes){received+=bytes;emit readyRead();}
     void drain(){pending=0;emit bytesWritten(1);}
 protected:
-    qint64 readData(char *out,qint64 n) override {
-        const auto count=std::min(n,qint64(received.size()));std::copy_n(received.data(),count,out);
-        received.remove(0,count);return count;
-    }
-    qint64 writeData(const char *data,qint64 n) override {
-        const auto count=std::min(n,qint64(3));sent.append(data,count);pending+=count;return count;
-    }
+    qint64 readData(char* out,qint64 n)override{auto size=std::min(n,qint64(received.size()));std::copy_n(received.data(),size,out);received.remove(0,size);return size;}
+    qint64 writeData(const char* data,qint64 n)override{auto size=std::min(n,qint64(3));sent.append(data,size);pending+=size;return size;}
 };
-static QByteArray packet(quint8 id,const QByteArray &payload) {
-    std::array<uint8_t,65539> bytes{};
-    auto encoded=bdsp_protocol::encode_packet(id,{reinterpret_cast<const uint8_t *>(payload.data()),size_t(payload.size())},bytes);
-    require(bool(encoded),"BDSP packet fixture");return {reinterpret_cast<const char *>(bytes.data()),qsizetype(encoded.written_bytes)};
-}
-static QByteArray data(const TypedFrame &frame) {
-    const auto encoded=stream::encode(frame);QByteArray result;
-    std::array<uint8_t,bdsp_protocol::StreamFragmentBytes+8> fragment{};
-    for(size_t offset=0;offset<encoded.size();offset+=bdsp_protocol::StreamFragmentBytes) {
-        const auto chunk=bdsp_protocol::encode_fragment(encoded,offset,fragment);require(bool(chunk),"fragment fixture");
-        result+=packet(13,{reinterpret_cast<const char *>(fragment.data()),qsizetype(chunk.written_bytes)});
-    }
-    return result;
-}
-int main(int argc,char **argv) {
-    QCoreApplication app(argc,argv);
-    try {
-        AudioPipeline engine;QString error;
-        QJsonObject graph{{"version",2},{"nodes",QJsonArray{
-            QJsonObject{{"id",0},{"internal-data",QJsonObject{{"model-name","NetworkInput"},{"data_type","mel"},{"stream_id","uart"}}}},
-            QJsonObject{{"id",1},{"internal-data",QJsonObject{{"model-name","Spectrogram"},{"history_size",4}}}},
-            QJsonObject{{"id",2},{"internal-data",QJsonObject{{"model-name","SpectrogramView"}}}}}},
-            {"connections",QJsonArray{
-                QJsonObject{{"outNodeId",0},{"outPortIndex",0},{"inNodeId",1},{"inPortIndex",0}},
-                QJsonObject{{"outNodeId",1},{"outPortIndex",0},{"inNodeId",2},{"inPortIndex",0}}}}};
-        require(engine.apply_graph(graph,error),qPrintable(error));engine.start_analyzer();
-        FakeUart uart;desktop::QtDeviceByteTransport io(uart,12);desktop::QtPacketChannel channel(uart,io);
-        NetworkSubscriber subscriber;int delivered=0;bool ready=false;
-        subscriber.set_status_handler([&](QString status){ready=status=="Running";if(!ready)engine.clear_ingress(0);});
-        subscriber.set_frame_handler([&](TypedFrame frame){++delivered;engine.feed_typed(0,std::move(frame),engine.epoch(),engine.ingress_serial(0));});
-        subscriber.start_channel(channel,"uart",FrameType::Mel);
-        while(channel.pending_bytes())uart.drain();
-        const auto subscribe=QByteArray::fromHex("000205")+"uart";
-        require(uart.sent==packet(11,subscribe),"UART subscribe changed existing TCP wire");
-        const auto ack=packet(12,subscribe);
-        for(char byte:ack)uart.inject(QByteArray(1,byte));
-        require(ready,"fragmented UART Ack");
-        TypedFrame mel;mel.type=FrameType::Mel;mel.stream_id="uart";mel.sample_rate=48000;mel.sequence=1;mel.epoch=99;
-        mel.values={1,2,3};const auto wire=data(mel);
-        for(char byte:wire)uart.inject(QByteArray(1,byte));
-        require(delivered==1 && engine.latest_views()[2].history==std::vector<std::vector<float>>{{1,2,3}},
-                "UART packet did not execute actual desktop graph");
-        TypedFrame unavailable;unavailable.type=FrameType::Mel;unavailable.available=false;unavailable.epoch=99;
-        unavailable.stream_id="uart";
-        uart.inject(data(unavailable));require(delivered==2 && !engine.latest_views()[2].available,"UART unavailable retained history");
-        mel.sequence=2;uart.inject(data(mel));require(engine.latest_views()[2].history.size()==1,"UART resume failed");
-        // Stop from a callback must fence remaining coalesced bytes and assembly.
-        subscriber.set_frame_handler([&](TypedFrame frame){++delivered;engine.feed_typed(0,std::move(frame));subscriber.stop();});
-        mel.sequence=3;const auto one=data(mel);mel.sequence=4;
-        uart.inject(one+data(mel));require(delivered==4 && !engine.latest_views()[2].available,"Stop admitted coalesced stale packet");
-        uart.sent.clear();subscriber.start_channel(channel,"uart",FrameType::Mel);
-        while(channel.pending_bytes())uart.drain();uart.inject(ack);
-        subscriber.set_frame_handler([&](TypedFrame frame){++delivered;engine.feed_typed(0,std::move(frame));});
-        mel.sequence=1;mel.epoch=100;uart.inject(data(mel));
-        require(delivered==5 && engine.latest_views()[2].history.size()==1,"Fresh UART binding retained old assembly/history");
-        subscriber.stop();engine.stop_analyzer();
-        QJsonObject config{{"unknown",42},{"network",QJsonObject{{"unknown-network",true},{"serial",QJsonObject{
-            {"port_name","explicit-fixture"},{"baud_rate",115200},{"input_node",0},{"unknown-serial","preserved"}}}}}};
-        const auto binding=read_serial_binding(config);
-        require(binding && binding.configured && binding.input_node==0 && binding.endpoint.port_name=="explicit-fixture","Serial config mapping");
-        QCommandLineParser options;add_serial_options(options);
-        require(options.parse({"fixture","--serial-baud","230400"}),"Serial options parse");
-        require(apply_serial_options(options,config,error) && config["unknown"]==42 &&
-                config["network"].toObject()["serial"].toObject()["unknown-serial"]=="preserved","Serial override lost JSON extensions");
-        auto network=config["network"].toObject();auto serial=network["serial"].toObject();serial["baud_rate"]="115200";
-        network["serial"]=serial;config["network"]=network;
-        require(!read_serial_binding(config),"String baud rate accepted");
-        serial["baud_rate"]=115200;serial["input_node"]=1;network["serial"]=serial;config["network"]=network;
-        NetworkRuntime runtime(engine,config);require(!runtime.refresh(error) && error.contains("NetworkInput"),"UART attached to DSP node");
-        std::cout<<"Explicit UART typed-stream framing, desktop execution, Stop/rebind and config boundaries passed\n";
-    } catch(const std::exception &e) {std::cerr<<e.what()<<'\n';return 1;}
-}
+static QByteArray packet(quint8 id,QByteArray payload){std::vector<std::uint8_t> bytes(payload.size()+64);auto result=bdsp_protocol::encode_packet(id,
+    {reinterpret_cast<const std::uint8_t*>(payload.data()),std::size_t(payload.size())},bytes);require(bool(result),"UART BDSP envelope");return {reinterpret_cast<const char*>(bytes.data()),qsizetype(result.written_bytes)};}
+int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
+    NumericEngine engine;Replies replies(engine);auto g=graph("uart",10000);replies.accepted(apply(g));
+    FrameProbe observation(engine,sink(g));
+    FakeUart uart;desktop::QtDeviceByteTransport io(uart,12);desktop::QtPacketChannel channel(uart,io);
+    remote_numeric::CodecStorage encoder,decoder;auto arena=std::make_shared<remote_numeric::Arena>(encoder.limits.frame);remote_numeric::Binding binding;
+    require(remote_numeric::make_binding(sink(g),g.nodes[1].inputs[0].contract,1,arena,binding)==Status::ok,"UART numeric binding");
+    std::vector<std::uint64_t> samples(10000,9007199254740993ULL);PlaneLayout plane{0,{8,0}};
+    auto local=contract(10000);NumericView input{&local,std::as_bytes(std::span(samples)),std::span(&plane,1),{10000,1}};
+    NumericContract wireContract;NumericView wireView;require(encoder.project(input,wireContract,wireView)==Status::ok,"UART exact wire projection");
+    nd::Message message;message.contract=wireContract;message.endpoint=binding.view().endpoint;message.envelope={1,2,1,3,1,4,0};
+    message.stamp.sequence=1;message.stamp.producer_epoch=99;message.stamp.generation=1;message.stamp.stream_id="uart";
+    message.numeric={wireView.storage,wireView.planes,wireView.actual};
+    auto data=[&](std::uint64_t sequence){message.stamp.sequence=sequence;message.envelope.delivery_sequence=sequence;
+        const auto encoded=nd::encode(message,encoder.wire,encoder.scratch,encoder.limits);require(bool(encoded),"DATA4 encode");
+        std::span raw(reinterpret_cast<const std::uint8_t*>(encoder.wire.data()),encoded.produced);QByteArray result;std::array<std::uint8_t,511> fragment;
+        for(std::size_t offset=0;offset<raw.size();offset+=503){const auto f=bdsp_protocol::encode_fragment(raw,offset,fragment,503);require(bool(f),"bounded UART fragment");
+            result+=packet(nd::FragmentId,{reinterpret_cast<const char*>(fragment.data()),qsizetype(f.written_bytes)});}return result;};
+    int delivered=0;bool stopInCallback=false;
+    QObject::connect(&channel,&desktop::QtPacketChannel::packetReceived,&app,[&](quint8 id,QByteArray payload){
+        require(id==nd::FragmentId,"canonical fragment ID");std::span<const std::uint8_t> complete;
+        const auto status=decoder.assembler.accept({reinterpret_cast<const std::uint8_t*>(payload.data()),std::size_t(payload.size())},complete);
+        if(status==Status::would_block)return;require(status==Status::ok,"UART reassembly");nd::Message decoded;
+        require(decoder.decode(complete,decoded)==Status::ok&&decoder.restore(decoded,binding)==Status::ok,"UART DATA4 decode/native restore");
+        require(decoded.envelope.delivery_generation==decoded.stamp.generation&&!decoded.envelope.request,"UART event delivery fence");
+        require(engine.feed_numeric(0,decoded.frame_view())==Status::ok,"UART canonical graph execution");++delivered;
+        if(stopInCallback){channel.reset();decoder.assembler.reset();replies.accepted(apply(g));}
+    });
+    const auto first=data(1);for(char byte:first)uart.inject(QByteArray(1,byte));
+    require(delivered==1&&wait([&]{return observation.available()&&value(observation.latest(),9999)==9007199254740993ULL;}),"fragmented UART exact64 actual graph");
+    // Shared framing writer retains suffixes while QIODevice accepts 3 bytes.
+    const auto outbound=QByteArray("control-frame");require(channel.send_packet(28,outbound)==Status::ok,"UART write queue");
+    while(channel.pending_bytes())uart.drain();require(uart.sent==packet(28,outbound),"partial UART write changed bytes");
+    stopInCallback=true;uart.inject(data(2)+data(3));require(delivered==2,"Stop/reset admitted coalesced stale packet");
+    stopInCallback=false;message.stamp.producer_epoch=100;
+    uart.inject(data(1));require(delivered==3&&wait([&]{auto f=observation.latest();return observation.equals(9007199254740993ULL)&&f.frame.view().stamp.producer_epoch==100;}),"UART new incarnation/rebind");
+    QJsonObject config{{"unknown",42},{"network",QJsonObject{{"serial",QJsonObject{{"port_name","explicit-fixture"},{"baud_rate",115200},{"input_node",0},{"unknown-serial","preserved"}}}}}};
+    require(bool(read_serial_binding(config)),"explicit UART config");QCommandLineParser options;add_serial_options(options);
+    require(options.parse({"fixture","--serial-baud","230400"}),"serial CLI parse");QString error;
+    require(apply_serial_options(options,config,error)&&config["unknown"]==42&&config["network"].toObject()["serial"].toObject()["unknown-serial"]=="preserved","serial override lost unknown config");
+    auto network=config["network"].toObject(),serial=network["serial"].toObject();serial["baud_rate"]="115200";network["serial"]=serial;config["network"]=network;
+    require(!read_serial_binding(config),"string baud rate accepted");
+    std::puts("fake UART DATA4 exact64 + actual engine + partial writes + callback Stop/reset + new incarnation passed");return 0;
+}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

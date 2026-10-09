@@ -4,6 +4,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <functional>
+#include <wled_protocol/wled_packet.h>
 #include <qloggingcategory.h>
 #include <QHostAddress>
 #include <QUdpSocket>
@@ -15,6 +16,8 @@ Q_DECLARE_LOGGING_CATEGORY(wled_audio_reactive_server);
 
 class WLEDAudioReactiveServer final: public QObject, public ITask {
     std::vector<float> _data;
+    wled_protocol::WledPacket _prepared_packet{};
+    bool _has_prepared_packet=false;
     QHostAddress _interface_address;
     QHostAddress _broadcast_address;
     quint16 _broadcast_port;
@@ -32,6 +35,7 @@ public:
     ~WLEDAudioReactiveServer() override;
 
     void update(const std::vector<float>& spectrum, float peak_hz = 0, float magnitude = 0);
+    void update_packet(std::span<const std::uint8_t> packet);
     void set_error_handler(std::function<void(QString)> handler) { _error_handler = std::move(handler); }
     bool ready() const { return _bound; }
     QString error() const { return _error; }

@@ -62,6 +62,7 @@ public:
     signal_contracts::Status send_packet(quint8, const QByteArray &);
     void reset() noexcept;
     std::size_t pending_bytes() const noexcept { return stream_.pending_bytes(); }
+    qint64 device_pending_bytes() const { return device_.bytesToWrite(); }
     std::uint64_t overflow_count() const noexcept { return stream_.overflow_count(); }
 Q_SIGNALS:
     void packetReceived(quint8 id, QByteArray payload);
@@ -74,6 +75,7 @@ private:
     bdsp_protocol::ByteTransport &transport_;
     std::vector<std::uint8_t> incoming_, outgoing_;
     bdsp_protocol::PacketStream stream_;
+    std::uint64_t receive_generation_=0;
 };
 // Session open/close explicitly fence framing state as well as the OS endpoint.
 class QtSerialPacketSession final {

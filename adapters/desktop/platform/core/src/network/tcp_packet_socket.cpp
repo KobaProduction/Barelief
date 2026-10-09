@@ -4,7 +4,7 @@
 Q_LOGGING_CATEGORY(tcp_bdsp_socket, "tcp_socket.bdsp")
 
 TcpBDSPSocket::TcpBDSPSocket(QObject *parent)
-    : QTcpSocket(parent), _transport(*this), _channel(*this, _transport) {
+    : QTcpSocket(parent), _transport(*this,2*1024*1024), _channel(*this, _transport) {
     connect(&_channel, &desktop::QtPacketChannel::packetReceived, this,
             [this](quint8 id, QByteArray payload) {
         BDSP::packet_context_t context{};

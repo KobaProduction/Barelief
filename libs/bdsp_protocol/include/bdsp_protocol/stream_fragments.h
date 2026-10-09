@@ -4,7 +4,8 @@ namespace bdsp_protocol {
 inline constexpr std::size_t StreamFragmentBytes = 60000;
 // Existing BDSP ID 13 payload: little-endian uint32 total, uint32 offset, contiguous bytes.
 CodecResult encode_fragment(std::span<const std::uint8_t> frame,std::size_t offset,
-                            std::span<std::uint8_t> destination) noexcept;
+                            std::span<std::uint8_t> destination,
+                            std::size_t max_chunk_bytes=StreamFragmentBytes) noexcept;
 class FrameAssembler {
 public:
     explicit FrameAssembler(std::span<std::uint8_t> storage) noexcept :storage_(storage) {}

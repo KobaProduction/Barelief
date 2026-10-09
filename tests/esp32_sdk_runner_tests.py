@@ -11,13 +11,16 @@ spec.loader.exec_module(runner)
 
 class EnvironmentTests(unittest.TestCase):
     def test_caller_paths_and_no_platform_dependency(self):
-        original = {"PATH": "existing", "IDF_PATH": "old", "PYTHONPATH": "foreign"}
+        original = {"PATH": "existing", "IDF_PATH": "old", "PYTHONPATH": "foreign", "PYTHONHOME": "foreign-home"}
         env = runner.build_environment(original, Path("idf"), Path("compiler"), None)
         self.assertEqual(original["IDF_PATH"], "old")
         self.assertEqual(env["IDF_PATH"], str(Path("idf").resolve()))
         self.assertEqual(env["ESP32_TOOLCHAIN_DIR"], str(Path("compiler").resolve()))
         self.assertEqual(env["PATH"], str(Path("compiler/bin").resolve()) + os.pathsep + "existing")
         self.assertNotIn("PYTHONPATH", env)
+        self.assertNotIn("PYTHONHOME", env)
+        self.assertEqual(original["PYTHONHOME"], "foreign-home")
+        self.assertEqual(env["IDF_COMPONENT_MANAGER"], "0")
         self.assertNotIn("IDF_TOOLS_PATH", env)
 
     def test_python_cache_only_when_requested(self):

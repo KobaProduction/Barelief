@@ -7,9 +7,61 @@
 #include <QJsonArray>
 #include <QScopedValueRollback>
 #include <desktop/graph_document.h>
+#include <array>
 namespace pipeline {
+struct AudioPipeline::PortDeliveryState {
+    struct Entry {EndpointIdentity identity;dataflow_runtime::RetainedPortFrame retained;bool override_latest=false,dirty=false;};
+    std::vector<Entry> entries;
+    std::vector<std::byte> payload_storage,identity_storage;
+    std::unique_ptr<signal_contracts::BufferSlot[]> payload_slots,identity_slots;
+    std::unique_ptr<signal_contracts::BufferPool> payload_pool,identity_pool;
+    uint64_t dropped=0;
+    explicit PortDeliveryState(const domain::GraphDefinition &graph,size_t max_samples) {
+        std::array<domain::PortDescriptor,8> inputs{},outputs{};
+        for(const auto &node:graph.nodes) {
+            domain::ConfiguredNodeDescriptor desc;
+            if(domain::describe_node(node,inputs,outputs,desc)!=signal_contracts::Status::ok)throw std::runtime_error("Invalid delivery descriptor");
+            for(const auto &port:desc.outputs)entries.push_back({{graph.graph_id,node.id,PortDirection::Output,port.identity.port}});
+            if(desc.role==domain::NodeRole::Sink)for(const auto &port:desc.inputs)entries.push_back({{graph.graph_id,node.id,PortDirection::Input,port.identity.port}});
+        }
+        const auto slot_count=entries.size()+2;
+        if(entries.size()>2048 || max_samples>65536 || graph.graph_id.size()>65536)throw std::runtime_error("Delivery admission exceeded");
+        const auto payload_bytes=std::max(size_t{512},max_samples*2*sizeof(float)+256);
+        const auto identity_bytes=std::max(size_t{1},graph.graph_id.size());
+        if(payload_bytes+identity_bytes>(64*1024*1024)/slot_count)throw std::runtime_error("Delivery budget exceeded");
+        payload_storage.resize(slot_count*payload_bytes);identity_storage.resize(slot_count*identity_bytes);
+        payload_slots=std::make_unique<signal_contracts::BufferSlot[]>(slot_count);identity_slots=std::make_unique<signal_contracts::BufferSlot[]>(slot_count);
+        payload_pool=std::make_unique<signal_contracts::BufferPool>(payload_storage,std::span(payload_slots.get(),slot_count),payload_bytes);
+        identity_pool=std::make_unique<signal_contracts::BufferPool>(identity_storage,std::span(identity_slots.get(),slot_count),identity_bytes);
+        for(auto &entry:entries) {
+            const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto &n){return n.id==entry.identity.node;});
+            domain::ConfiguredNodeDescriptor desc;domain::describe_node(*node,inputs,outputs,desc);
+            const auto ports=entry.identity.direction==PortDirection::Input?desc.inputs:desc.outputs;
+            signal_contracts::FrameView marker;marker.type=ports[entry.identity.port].type;
+            marker.metadata.available=false;marker.metadata.discontinuity=true;
+            dataflow_runtime::PortFrameView view{graph.graph_id,{node->id,entry.identity.port},entry.identity.direction,node->kind,{},false,marker,false,{}};
+            view.contract.type=marker.type;
+            const auto marker_status=dataflow_runtime::retain_port_frame(view,*payload_pool,*identity_pool,entry.retained);
+            if(marker_status!=signal_contracts::Status::ok) {
+                entries.clear(); // release retained handles before failed construction destroys pools
+                throw std::runtime_error("Delivery marker admission failed: node="+std::to_string(node->id)+", status="+std::to_string(int(marker_status)));
+            }
+            entry.dirty=true;
+        }
+    }
+    ~PortDeliveryState(){entries.clear();} // release handles before pools/storage
+};
 signal_contracts::Status AudioPipeline::prepare_runtime(const domain::GraphDefinition &graph,
         std::vector<dataflow_runtime::IngressSpec> specs, application::RuntimeLimits limits) {
+    std::unique_ptr<PortDeliveryState> delivery;
+    try {delivery=std::make_unique<PortDeliveryState>(graph,limits.max_frame_samples);}catch(const std::exception &error){qWarning().noquote()<<"Canonical delivery preparation:"<<error.what();return signal_contracts::Status::exhausted;}
+    size_t retire_count=_retired_port_frames.size();
+    if(_port_delivery)for(const auto &entry:_port_delivery->entries) {
+        const auto replacement=std::find_if(delivery->entries.begin(),delivery->entries.end(),[&](const auto &e){return e.identity==entry.identity;});
+        if((replacement==delivery->entries.end() || replacement->retained.contract.type!=entry.retained.contract.type) &&
+           std::none_of(_retired_port_frames.begin(),_retired_port_frames.end(),[&](const auto &v){return v.endpoint==entry.identity;}))++retire_count;
+    }
+    if(retire_count>2048)return signal_contracts::Status::exhausted;
     _executor.ingress_specs(specs);
     _lifecycle.runtime_limits(limits);
     auto result=_lifecycle.prepare(graph);
@@ -21,6 +73,27 @@ signal_contracts::Status AudioPipeline::prepare_runtime(const domain::GraphDefin
     }
     _ingress_specs=std::move(specs);
     _runtime_limits=limits;
+    if(_port_delivery)for(const auto &entry:_port_delivery->entries) {
+        const auto replacement=std::find_if(delivery->entries.begin(),delivery->entries.end(),[&](const auto &e){return e.identity==entry.identity;});
+        if(replacement==delivery->entries.end() || replacement->retained.contract.type!=entry.retained.contract.type) {
+            auto marker=GraphProgram::owned_port_snapshot(entry.retained.view());
+            marker.frame.left.clear();marker.frame.right.clear();marker.frame.values.clear();marker.frame.history.clear();marker.frame.packet.clear();
+            marker.frame.available=false;marker.frame.sequence=0;marker.frame.discontinuity=true;
+            const auto prior=std::find_if(_retired_port_frames.begin(),_retired_port_frames.end(),[&](const auto &v){return v.endpoint==marker.endpoint;});
+            if(prior==_retired_port_frames.end())_retired_port_frames.push_back(std::move(marker));else *prior=std::move(marker);
+        }
+    }
+    if(_port_delivery)for(auto &entry:delivery->entries) {
+        const auto old=std::find_if(_port_delivery->entries.begin(),_port_delivery->entries.end(),[&](const auto &e){return e.identity==entry.identity;});
+        const auto resets=_executor.plan()->reset_nodes();
+        if(old!=_port_delivery->entries.end() && std::find(resets.begin(),resets.end(),entry.identity.node)==resets.end() &&
+           old->retained.contract.type==entry.retained.contract.type && old->retained.kind==entry.retained.kind) {
+            const auto view=old->retained.view();
+            dataflow_runtime::retain_port_frame(view,*delivery->payload_pool,*delivery->identity_pool,entry.retained);
+            entry.override_latest=old->override_latest;
+        }
+    }
+    _port_delivery=std::move(delivery);_port_delivery_pending=true;
     return signal_contracts::Status::ok;
 }
 signal_contracts::Status AudioPipeline::negotiate_ingress(int id,const signal_contracts::FrameView &frame) {
@@ -46,9 +119,30 @@ signal_contracts::Status AudioPipeline::negotiate_ingress(int id,const signal_co
     return prepare_runtime(_executor.plan()->definition(),std::move(specs),limits);
 }
 std::vector<std::vector<float>> AudioPipeline::runtime_history(int node) const {
+    auto direction=PortDirection::Output;
+    if(_executor.plan())for(const auto &definition:_executor.plan()->definition().nodes)if(definition.id==node && domain::node_role(definition.kind)==domain::NodeRole::Sink)direction=PortDirection::Input;
+    return runtime_port_history(node,direction,0);
+}
+std::vector<std::vector<float>> AudioPipeline::runtime_port_history(int node,PortDirection direction,uint16_t port) const {
     std::vector<std::vector<float>> result;
     if(!_executor.plan() || !_executor.context()) return result;
-    const auto history=_executor.plan()->history(node,*_executor.context());
+    auto history=direction==PortDirection::Output?_executor.plan()->history(node,port,*_executor.context()):_executor.plan()->history(node,*_executor.context());
+    std::vector<float> external_storage;
+    const auto ingress=_executor.plan()->history_ingress(node);
+    const auto owner=_incoming_histories.constFind(ingress);
+    if(ingress>=0 && owner!=_incoming_histories.cend()) {
+        // frame_view borrows supplied contiguous storage; it does not flatten it.
+        // This full copy belongs only to the requested History snapshot boundary.
+        if(owner->history.empty() || owner->history.size()>std::min(size_t{2000},_runtime_limits.max_history_frames))return result;
+        const auto columns=owner->history.front().size();
+        if(!columns || columns>50 || std::any_of(owner->history.begin(),owner->history.end(),[&](const auto &row){return row.size()!=columns;}))return result;
+        // Match desktop ingress admission: at most 2000x50 floats, checked
+        // before allocation/copy; the accepted source remains owned and immutable.
+        external_storage.reserve(owner->history.size()*columns);
+        for(const auto &row:owner->history)external_storage.insert(external_storage.end(),row.begin(),row.end());
+        const auto source=GraphProgram::frame_view(owner.value(),external_storage);
+        history=_executor.plan()->apply_history_route(node,direction,port,source,*_executor.context());
+    }
     result.reserve(history.frames);
     for(size_t i=0;i<history.frames;++i) {
         const auto row=history.row(i);result.emplace_back(row.begin(),row.end());
@@ -62,14 +156,19 @@ AudioPipeline::AudioPipeline(AudioSourceFactory source_factory) : _source_factor
     QString error;
     _graph = GraphProgram::compile(GraphProgram::defaults(), error);
     const auto definition=desktop::read_graph_document(_graph->document());
-    if(prepare_runtime(definition.graph,{},_runtime_limits)!=signal_contracts::Status::ok)
-        throw std::runtime_error("Default graph preparation failed");
+    const auto default_status=prepare_runtime(definition.graph,{},_runtime_limits);
+    if(default_status!=signal_contracts::Status::ok)
+        throw std::runtime_error("Default graph preparation failed (status="+std::to_string(int(default_status))+")");
     _runtime = new QObject;
     _runtime->moveToThread(&_thread);
     QObject::connect(&_thread, &QThread::finished, _runtime, &QObject::deleteLater);
     _thread.setObjectName("AudioPipeline");
     _thread.start();
     command([this] {
+        _port_delivery_timer=new QTimer(_runtime);
+        _port_delivery_timer->setInterval(33);
+        QObject::connect(_port_delivery_timer,&QTimer::timeout,_runtime,[this]{flush_port_delivery();});
+        _port_delivery_timer->start();
         _history_timer = new QTimer(_runtime);
         _history_timer->setInterval(17);
         _history_timer->setTimerType(Qt::PreciseTimer);
@@ -90,7 +189,7 @@ AudioPipeline::AudioPipeline(AudioSourceFactory source_factory) : _source_factor
 }
 AudioPipeline::~AudioPipeline() {
     { std::lock_guard lock(_callback_mutex);_spectrum_handler={};_audio_handler={};_status_handler={}; }
-    { std::lock_guard lock(_typed_callback_mutex);_typed_handlers.clear(); }
+    { std::lock_guard lock(_typed_callback_mutex);_typed_handlers.clear();_port_handlers.clear(); }
     stop_capture();
     stop_analyzer();
     stop_wled();
@@ -402,7 +501,11 @@ void AudioPipeline::process(const SpectrumFrame &frame, int ingress_node) {
     }
     if (_wled_active.load()) {
         const auto light=output.ports.constFind(_compat_wled_node);
-        if(light!=output.ports.cend() && !light->values.empty()) publish_wled(light->values,light->peak_hz,light->magnitude,revision);
+        if(light!=output.ports.cend()) {
+            if(!light->available)publish_wled_packet({},revision);
+            else if(!light->packet.empty())publish_wled_packet(light->packet,revision);
+            else if(!light->values.empty())publish_wled(light->values,light->peak_hz,light->magnitude,revision);
+        }
     }
     if (handler) {
         core::perf::Scope trace(core::perf::Stage::SpectrumPublish);
@@ -496,7 +599,7 @@ bool AudioPipeline::apply_graph(const QJsonObject &document, QString &error) {
         const auto obj=n.toObject();if(obj.value("internal-data").toObject().value("model-name").toString()=="Spectrogram") {
             const int id=obj.value("id").toInt();if(_compat_history_node<0 || id<_compat_history_node) _compat_history_node=id;
         }
-        if(obj.value("internal-data").toObject().value("model-name").toString()=="WLED") {
+        if(QStringList{"WLED","WLEDOutput"}.contains(obj.value("internal-data").toObject().value("model-name").toString())) {
             const int id=obj.value("id").toInt();if(_compat_wled_node<0 || id<_compat_wled_node) _compat_wled_node=id;
         }
     }
@@ -603,6 +706,10 @@ void AudioPipeline::publish_wled(const std::vector<float> &mel, float hz, float 
     // Retire the superseded frame outside the mailbox lock. DSP never posts a
     // Qt event: GUI/native window operations can contend with Qt event posting.
 }
+void AudioPipeline::publish_wled_packet(const std::vector<std::uint8_t> &packet,uint64_t revision) {
+    std::optional<WledFrame> next(WledFrame{{},0,0,_network_generation.load(),revision,core::perf::now(),packet});
+    std::lock_guard lock(_wled_mailbox_mutex);next.swap(_pending_wled);
+}
 void AudioPipeline::start_wled(const QHostAddress &address, quint16 port, const QHostAddress &destination) {
     command([this, address, port, destination] {
         if (_wled)
@@ -628,8 +735,10 @@ void AudioPipeline::start_wled(const QHostAddress &address, quint16 port, const 
                 }
                 if (!frame) return;
                 core::perf::duration(core::perf::Stage::WledQueue, core::perf::now() - frame->enqueued_ns);
-                if (_wled && frame->generation == _network_generation.load() && frame->graph_revision == graph_revision())
-                    _wled->update(frame->mel, frame->hz, frame->magnitude);
+                if (_wled && frame->generation == _network_generation.load() && frame->graph_revision == graph_revision()) {
+                    if(!frame->packet.empty() || frame->mel.empty())_wled->update_packet(frame->packet);
+                    else _wled->update(frame->mel, frame->hz, frame->magnitude);
+                }
             });
         }
         _wled_active = true;
@@ -735,6 +844,101 @@ WLEDAudioReactiveServer *AudioPipeline::wled() const {
 }
 } // namespace pipeline
 namespace pipeline {
+void AudioPipeline::retain_port_delivery(const dataflow_runtime::PortFrameView &output) noexcept {
+    if(!_port_delivery)return;
+    const auto found=std::find_if(_port_delivery->entries.begin(),_port_delivery->entries.end(),[&](const auto &entry) {
+        return entry.identity.node==output.identity.node && entry.identity.port==output.identity.port &&
+            entry.identity.direction==output.direction && entry.identity.graph_id==output.graph_id;
+    });
+    if(found==_port_delivery->entries.end())return;
+    auto thin=output;
+    found->override_latest=!thin.frame.history.newest_override.empty();
+    if(thin.frame.type==FrameType::History && thin.frame.metadata.available && thin.frame.history.frames) {
+        const auto row=thin.frame.history.row(thin.frame.history.frames-1);
+        thin.frame.history={row,row.size(),1,1,0};
+    }
+    if(dataflow_runtime::retain_port_frame(thin,*_port_delivery->payload_pool,*_port_delivery->identity_pool,found->retained)!=signal_contracts::Status::ok) {
+        ++_port_delivery->dropped;
+        // An allocation failure must retire stale data, not extend its lifetime.
+        auto &retained=found->retained;retained.payload.buffer.reset();retained.payload.view={};
+        retained.payload.view.type=output.frame.type;retained.payload.view.metadata.available=false;
+        retained.payload.view.metadata.discontinuity=true;retained.delivery=output.delivery;
+    }
+    found->dirty=true;_port_delivery_pending=true;
+}
+std::vector<DeliveredPortFrame> AudioPipeline::latest_port_frames(const std::vector<EndpointIdentity> &endpoints) const {
+    std::lock_guard lock(_evaluation_mutex);
+    std::vector<DeliveredPortFrame> frames;
+    if(!_port_delivery)return frames;
+    frames.reserve(_port_delivery->entries.size());
+    for(const auto &entry:_port_delivery->entries) {
+        if(!endpoints.empty() && std::find(endpoints.begin(),endpoints.end(),entry.identity)==endpoints.end())continue;
+        auto view=entry.retained.view();view.delivery={_graph_revision,_epoch};
+        auto frame=GraphProgram::owned_port_snapshot(view);
+        if(frame.frame.available && frame.frame.type==FrameType::History && _executor.plan()) {
+                frame.frame.history=runtime_port_history(entry.identity.node,entry.identity.direction,entry.identity.port);
+            if(entry.override_latest && !frame.frame.history.empty() && !view.frame.history.storage.empty()) {
+                const auto row=view.frame.history.row(0);frame.frame.history.back().assign(row.begin(),row.end());
+            }
+            frame.frame.values.clear(); // canonical History is a matrix, not a preview vector
+        }
+        frames.push_back(std::move(frame));
+    }
+    return frames;
+}
+std::vector<EndpointIdentity> AudioPipeline::port_endpoints() const {std::lock_guard lock(_evaluation_mutex);return _graph->endpoints();}
+uint64_t AudioPipeline::subscribe_ports(PortHandler handler,std::vector<EndpointIdentity> endpoints) {
+    std::lock_guard evaluation(_evaluation_mutex);
+    const auto configured=_graph->endpoints();
+    if(endpoints.size()>configured.size())return 0;
+    for(size_t i=0;i<endpoints.size();++i) {
+        if(std::find(configured.begin(),configured.end(),endpoints[i])==configured.end())return 0;
+        for(size_t j=0;j<i;++j)if(endpoints[i]==endpoints[j])return 0;
+    }
+    std::lock_guard lock(_typed_callback_mutex);
+    if(!handler || _port_handlers.size()>=128)return 0;
+    const auto token=++_next_typed_token;_port_handlers[token]=std::move(handler);_port_filters[token]=std::move(endpoints);
+    for(auto &entry:_port_delivery->entries)entry.dirty=true;
+    _port_delivery_pending=true;return token;
+}
+void AudioPipeline::unsubscribe_ports(uint64_t token) {
+    std::lock_guard lock(_typed_callback_mutex);_port_handlers.remove(token);_port_filters.remove(token);
+}
+void AudioPipeline::flush_port_delivery() {
+    if(!_port_delivery_pending.exchange(false))return;
+    std::vector<DeliveredPortFrame> pending;
+    {
+        std::lock_guard evaluation(_evaluation_mutex);std::lock_guard callbacks(_typed_callback_mutex);
+        if(!_port_delivery || _port_handlers.isEmpty())return;
+        for(auto &retired:_retired_port_frames){retired.delivery={_graph_revision,_epoch};pending.push_back(std::move(retired));}
+        _retired_port_frames.clear();
+        for(auto &entry:_port_delivery->entries) {
+            if(!entry.dirty)continue;
+            const auto interested=[&](uint64_t token){const auto &filter=_port_filters[token];return filter.empty() || std::find(filter.begin(),filter.end(),entry.identity)!=filter.end();};
+            bool wanted=false;for(auto it=_port_handlers.cbegin();it!=_port_handlers.cend();++it)if(interested(it.key())){wanted=true;break;}
+            if(!wanted){entry.dirty=false;continue;}
+            auto view=entry.retained.view();view.delivery={_graph_revision,_epoch};
+            auto frame=GraphProgram::owned_port_snapshot(view);
+            if(frame.frame.available && frame.frame.type==FrameType::History && _executor.plan()) {
+                frame.frame.history=runtime_port_history(entry.identity.node,entry.identity.direction,entry.identity.port);
+                if(entry.override_latest && !frame.frame.history.empty() && view.frame.history.frames) {
+                    const auto row=view.frame.history.row(0);frame.frame.history.back().assign(row.begin(),row.end());
+                }
+                frame.frame.values.clear();
+            }
+            pending.push_back(std::move(frame));entry.dirty=false;
+        }
+    }
+    std::lock_guard evaluation(_evaluation_mutex);
+    std::lock_guard callbacks(_typed_callback_mutex);
+    for(auto &frame:pending) {
+        if(frame.delivery.epoch!=epoch() || frame.delivery.graph_revision!=graph_revision())continue;
+        for(auto it=_port_handlers.cbegin();it!=_port_handlers.cend();++it) {
+            const auto &filter=_port_filters[it.key()];
+            if(filter.empty() || std::find(filter.begin(),filter.end(),frame.endpoint)!=filter.end())it.value()(frame);
+        }
+    }
+}
 bool AudioPipeline::process_without_delivery(int ingress,const TypedFrame &input) {
     if(_wled_active.load()) return false;
     {std::lock_guard lock(_callback_mutex);if((_view_subscription.load()&1) && _spectrum_handler)return false;}
@@ -754,8 +958,11 @@ bool AudioPipeline::process_without_delivery(int ingress,const TypedFrame &input
     if(negotiate_ingress(ingress,frame)!=signal_contracts::Status::ok)return true;
     struct Sink {AudioPipeline *owner;size_t windows=0;bool emitted=false;};
     Sink sink{this};
-    _executor.process(ingress,frame,[](void *user,const dataflow_runtime::OutputView &output) {
+    const auto callback=[](void *user,const dataflow_runtime::PortFrameView &port) {
         auto &sink=*static_cast<Sink *>(user);auto &owner=*sink.owner;
+        owner.retain_port_delivery(port);
+        if(port.identity.port)return;
+        dataflow_runtime::OutputView output{port.identity.node,port.kind,port.frame,port.window_emitted,{},port.identity.port,port.direction,port.graph_id,port.delivery};
         sink.emitted=true;sink.windows+=output.window_emitted;
         using K=domain::NodeKind;
         const bool view=output.kind==K::AudioView || output.kind==K::FFTView || output.kind==K::MelView ||
@@ -787,9 +994,16 @@ bool AudioPipeline::process_without_delivery(int ingress,const TypedFrame &input
                 owner._history->push(owner._compat_history_row);
             }
         }
-    },&sink);
+    };
+    _executor.process_ports(ingress,frame,{_graph_revision,_epoch},{callback,callback,&sink});
     if(sink.emitted) {
-        if(input.type==FrameType::History)_incoming_histories[ingress]=input;
+        if(input.type==FrameType::History) {
+            auto &owned=_incoming_histories[ingress];owned=input;
+            // Cache the metadata actually admitted by the legacy ingress adapter.
+            // Overlay queries must use the same contract/lineage as processing.
+            owned.sequence=frame.metadata.sequence;owned.producer_epoch=frame.metadata.producer_epoch;
+            owned.history_capacity=frame.metadata.history_capacity;
+        }
         const auto &nodes=_executor.plan()->definition().nodes;
         const bool window=std::any_of(nodes.begin(),nodes.end(),[](const auto &n){return n.kind==domain::NodeKind::Window;});
         std::lock_guard lock(_history_mutex);_processed+=window?sink.windows:1;
@@ -811,12 +1025,16 @@ GraphOutput AudioPipeline::evaluate_view(int ingress,const TypedFrame &input,con
     }
     struct Sink {AudioPipeline *owner;GraphOutput *result;bool previews;};
     Sink sink{this,&result,(_view_subscription.load()&8)!=0};
-    _executor.process(ingress,frame,[](void *user,const dataflow_runtime::OutputView &output) {
+    const auto callback=[](void *user,const dataflow_runtime::PortFrameView &port) {
         auto &sink=*static_cast<Sink *>(user);auto &r=*sink.result;
+        sink.owner->retain_port_delivery(port);
+        if(port.identity.port)return;
+        dataflow_runtime::OutputView output{port.identity.node,port.kind,port.frame,port.window_emitted,{},port.identity.port,port.direction,port.graph_id,port.delivery};
         auto borrowed=output.frame;
         // Keep the history ring in the runtime. Presentation snapshots separately.
         borrowed.history={};
-        auto f=GraphProgram::owned_snapshot(borrowed);
+        auto display=output;display.frame=borrowed;
+        auto f=sink.owner->_graph->display_snapshot(display);
         if(output.frame.type==FrameType::History && output.frame.history.frames) {
             const auto row=output.frame.history.row(output.frame.history.frames-1);
             f.values.assign(row.begin(),row.end());
@@ -842,10 +1060,18 @@ GraphOutput AudioPipeline::evaluate_view(int ingress,const TypedFrame &input,con
             float peak=0;for(float value:values)peak=std::max(peak,std::abs(value));
             r.previews[output.node]={values.size(),peak};
         }
-    },&sink);
+    };
+    _executor.process_ports(ingress,frame,{_graph_revision,_epoch},{callback,callback,&sink});
     return result;
 }
 void AudioPipeline::invalidate_views() {
+    if(_port_delivery)for(auto &entry:_port_delivery->entries) {
+        auto &retained=entry.retained;const auto type=retained.payload.view.type;
+        retained.payload.buffer.reset();retained.payload.view={};retained.payload.view.type=type;
+        retained.payload.view.metadata.available=false;retained.payload.view.metadata.discontinuity=true;
+        entry.dirty=true;
+    }
+    _port_delivery_pending=true;
     _incoming_histories.clear();
     _history_zero_latest.clear();
     _views.clear();
@@ -858,6 +1084,7 @@ void AudioPipeline::invalidate_views() {
             else if(definition.input=="stereo-spectrum") empty.type=FrameType::StereoSpectrum;
             else if(definition.input=="window") empty.type=FrameType::Window;
             else if(definition.input=="windowed") empty.type=FrameType::Windowed;
+            else if(definition.input=="scalar") empty.type=FrameType::Scalar;
             _views[obj.value("id").toInt()]=empty;
         }
     }
@@ -882,10 +1109,7 @@ void AudioPipeline::deliver_typed(const GraphOutput &output) {
     };
     const auto snapshot=[this](int id,TypedFrame f) {
         if(f.available && f.type==FrameType::History && f.history.empty()) {
-            const auto ingress=_executor.plan()->history_ingress(id);
-            f.history=ingress>=0?_incoming_histories.value(ingress).history:runtime_history(id);
-            if(ingress>=0 && _history_zero_latest.value(id) && !f.history.empty())
-                std::fill(f.history.back().begin(),f.history.back().end(),0);
+            f.history=runtime_history(id);
         }
         return f;
     };
@@ -924,13 +1148,7 @@ QMap<int,TypedFrame> AudioPipeline::latest_views() const {
     // QMap would force detach/container allocation on its next processing tick.
     for(auto it=_views.cbegin();it!=_views.cend();++it)views.insert(it.key(),it.value());
     for(auto it=views.begin();it!=views.end();++it) if(it->available && it->type==FrameType::History) {
-        const auto ingress=_executor.plan()->history_ingress(it.key());
-        if(ingress>=0) {
-            it->history=_incoming_histories.value(ingress).history;
-            if(_history_zero_latest.value(it.key()) && !it->history.empty())
-                std::fill(it->history.back().begin(),it->history.back().end(),0);
-        }
-        else it->history=runtime_history(it.key());
+        it->history=runtime_history(it.key());
     }
     return views;
 }
@@ -947,11 +1165,18 @@ void AudioPipeline::clear_ingress(int ingress, uint64_t expected_epoch) {
         for(auto &branch:_local_branches) if(branch->id==ingress) branch->analyzer->set_ingress_serial(serial);
     }
     const auto affected=_executor.plan()->clear_ingress(ingress,*_executor.context());
+    if(_port_delivery)for(auto &entry:_port_delivery->entries)if(std::find(affected.begin(),affected.end(),entry.identity.node)!=affected.end()) {
+        auto &retained=entry.retained;const auto type=retained.payload.view.type;
+        retained.payload.buffer.reset();retained.payload.view={};retained.payload.view.type=type;
+        retained.payload.view.metadata.available=false;retained.payload.view.metadata.discontinuity=true;
+        entry.dirty=true;entry.override_latest=false;
+    }
+    _port_delivery_pending=true;
     GraphOutput markers;
     auto frame_type=[](const QString &type) {
         return type=="window"?FrameType::Window:type=="windowed"?FrameType::Windowed:
             type=="stereo-spectrum"?FrameType::StereoSpectrum:type=="spectrum"?FrameType::Spectrum:
-            type=="mel"?FrameType::Mel:type=="history"?FrameType::History:FrameType::PCM;
+            type=="mel"?FrameType::Mel:type=="history"?FrameType::History:type=="scalar"?FrameType::Scalar:type=="wled-packet"?FrameType::WledPacket:FrameType::PCM;
     };
     for(const auto &j:_graph->document().value("nodes").toArray()) {
         const auto node=j.toObject();const int id=node.value("id").toInt();
@@ -959,7 +1184,7 @@ void AudioPipeline::clear_ingress(int ingress, uint64_t expected_epoch) {
         const auto parameters=node.value("internal-data").toObject();const auto kind=parameters.value("model-name").toString();
         const auto definition=node_definition(kind);
         TypedFrame marker;marker.available=false;marker.discontinuity=true;marker.epoch=_epoch;marker.graph_revision=_graph_revision;
-        marker.type=frame_type(definition.category=="views" || kind=="WLED"?definition.input:_graph->port_type(id));
+        marker.type=frame_type(definition.category=="views" || definition.category=="outputs"?definition.input:_graph->port_type(id));
         marker.stream_id=parameters.value("stream_id").toString().toStdString();
         if(definition.category=="views") markers.views[id]=marker;
         if(definition.category=="outputs") { markers.ports[id]=marker;markers.output_events.emplace_back(id,marker); }
@@ -1018,7 +1243,14 @@ void AudioPipeline::feed_typed(int ingress, const TypedFrame &frame, uint64_t ex
     if(process_without_delivery(ingress,frame))return;
     auto output=evaluate_view(ingress,frame,*_graph);
     if(output.ports.isEmpty() && output.views.isEmpty() && output.output_events.empty()) return;
-    if(frame.type==FrameType::History)_incoming_histories[ingress]=std::move(frame);
+    if(frame.type==FrameType::History) {
+        const auto accepted=output.ports.constFind(ingress);
+        if(accepted!=output.ports.cend()) {
+            auto &owned=_incoming_histories[ingress];owned=std::move(frame);
+            owned.sequence=accepted->sequence;owned.producer_epoch=accepted->producer_epoch;
+            owned.history_capacity=accepted->history_capacity;
+        }
+    }
     deliver_typed(output);
     {
         std::lock_guard lock(_history_mutex);
@@ -1031,7 +1263,11 @@ void AudioPipeline::feed_typed(int ingress, const TypedFrame &frame, uint64_t ex
     }
     if(_wled_active.load()) {
         const auto light=output.ports.constFind(_compat_wled_node);
-        if(light!=output.ports.cend() && !light->values.empty()) publish_wled(light->values,light->peak_hz,light->magnitude,_graph_revision);
+        if(light!=output.ports.cend()) {
+            if(!light->available)publish_wled_packet({},_graph_revision);
+            else if(!light->packet.empty())publish_wled_packet(light->packet,_graph_revision);
+            else if(!light->values.empty())publish_wled(light->values,light->peak_hz,light->magnitude,_graph_revision);
+        }
     }
     std::function<void(ViewFrame)> handler;
     { std::lock_guard lock(_callback_mutex);handler=_spectrum_handler; }

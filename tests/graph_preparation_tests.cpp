@@ -29,8 +29,50 @@ private:
     std::shared_ptr<std::function<void()>> tick;
     bool running=false;
 };
+static void external_history_defaults() {
+    AudioPipeline desktop([](AudioSourceKind){return std::unique_ptr<IAudioSource>{};});QString error;
+    QJsonObject graph{{"version",2},{"nodes",QJsonArray{
+        node(0,"NetworkInput",{{"data_type","history"},{"stream_id","history"}}),
+        node(1,"Gate",{{"data_type","history"}}),node(2,"SpectrogramView"),node(10,"TestSignal",{{"amplitude",.1}}),
+        node(20,"NetworkInput",{{"data_type","history"},{"stream_id","second"}}),node(21,"SpectrogramView")}},
+        {"connections",QJsonArray{edge(0,1),edge(1,2),edge(20,21)}}};
+    assert(desktop.apply_graph(graph,error));desktop.set_view_subscription(0);
+    TypedFrame input;input.type=FrameType::History;input.sample_rate=48000;input.epoch=700;input.graph_revision=800;input.history={{1,2},{3,4}};
+    const EndpointIdentity sink{"main",2,PortDirection::Input,0};
+    desktop.feed_typed(0,input);
+    assert(desktop.latest_views()[2].history==input.history);
+    auto canonical=desktop.latest_port_frames({sink});assert(canonical.size()==1 && canonical[0].frame.history==input.history);
+    assert(input.sequence==0 && input.producer_epoch==0 && input.history_capacity==0);
+    assert(canonical[0].frame.sequence==1 && canonical[0].frame.producer_epoch==700 && canonical[0].frame.history_capacity==2 &&
+           canonical[0].frame.epoch==700 && canonical[0].frame.graph_revision==800);
+    TypedFrame second;second.type=FrameType::History;second.sample_rate=48000;second.epoch=1700;second.producer_epoch=1701;
+    second.graph_revision=1800;second.sequence=77;second.generation=9;second.history_capacity=4;second.source_sequence=100;second.timestamp_ns=123;
+    second.history={{11,12},{13,14}};desktop.feed_typed(20,second);
+    const EndpointIdentity second_sink{"main",21,PortDirection::Input,0};
+    const auto second_owned=desktop.latest_port_frames({second_sink})[0].frame;
+    assert(second_owned.history==second.history && second_owned.sequence==77 && second_owned.epoch==1700 && second_owned.producer_epoch==1701 &&
+           second_owned.graph_revision==1800 && second_owned.history_capacity==4 && second_owned.source_sequence==100 && second_owned.timestamp_ns==123);
+    assert(second.sequence==77 && second.epoch==1700 && second.producer_epoch==1701 && second.graph_revision==1800 && second.history_capacity==4);
+    second.history.clear();assert(desktop.latest_views()[21].history==second_owned.history);
+    auto nodes=graph["nodes"].toArray();nodes[3]=node(10,"TestSignal",{{"amplitude",.2}});graph["nodes"]=nodes;
+    assert(desktop.apply_graph(graph,error));assert(desktop.latest_views()[2].history==input.history);
+    canonical=desktop.latest_port_frames({sink});assert(canonical[0].frame.history==input.history && canonical[0].frame.sequence==1);
+    assert(desktop.latest_port_frames({second_sink})[0].frame.history==second_owned.history && desktop.latest_views()[21].history==second_owned.history);
+    nodes=graph["nodes"].toArray();nodes[1]=node(1,"Gate",{{"data_type","history"},{"enabled",false}});graph["nodes"]=nodes;
+    assert(desktop.apply_graph(graph,error));input.history={{3,4},{5,6}};desktop.feed_typed(0,input);input.history={{5,6},{7,8}};desktop.feed_typed(0,input);
+    const std::vector<std::vector<float>> silence{{0,0},{0,0}};
+    assert(desktop.latest_views()[2].history==silence);canonical=desktop.latest_port_frames({sink});assert(canonical[0].frame.history==silence);
+    const auto independent=desktop.latest_port_frames({second_sink})[0].frame;
+    assert(independent.history==second_owned.history && independent.sequence==77 && independent.producer_epoch==1701 && independent.graph_revision==1800);
+    assert(input.history==std::vector<std::vector<float>>({{5,6},{7,8}}) && input.sequence==0 && input.producer_epoch==0 && input.history_capacity==0);
+    input.history.clear();nodes=graph["nodes"].toArray();nodes[3]=node(10,"TestSignal",{{"amplitude",.3}});graph["nodes"]=nodes;
+    assert(desktop.apply_graph(graph,error));assert(desktop.latest_views()[2].history==silence);
+    assert(desktop.latest_port_frames({sink})[0].frame.history==silence);
+    assert(desktop.latest_port_frames({second_sink})[0].frame.history==second_owned.history);
+}
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
+    if(app.arguments().contains("--external-history-only")){external_history_defaults();return 0;}
     QString error;
     auto doc = GraphProgram::defaults();
     auto nodes = doc["nodes"].toArray();

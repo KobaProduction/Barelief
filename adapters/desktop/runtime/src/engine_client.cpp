@@ -2,7 +2,9 @@
 #include "pipeline/stream_codec.h"
 #include "pipeline/engine_client.h"
 #include "core/network/tcp_packet_socket.h"
+#include "pipeline/port_delivery_codec.h"
 #include "core/latest_delivery.h"
+#include <desktop/graph_document.h>
 #include <QTcpServer>
 #include <QTimer>
 #include <QDateTime>
@@ -11,6 +13,9 @@
 #include <QRandomGenerator>
 #include <QPointer>
 #include <algorithm>
+#include <map>
+#include <utility>
+#include <QElapsedTimer>
 namespace pipeline {
 namespace {
 constexpr quint8 CommandId = 5, ReplyId = 6, SnapshotId = 7, ViewId = 8, AudioId = 9, FragmentId = 10,
@@ -324,38 +329,6 @@ EngineReply execute(AudioPipeline &e, const EngineCommand &c, quint64 id, quint6
             case EngineCommand::ApplyGraph:
                 r.accepted = e.apply_graph(c.graph, r.error);
                 break;
-            case EngineCommand::StartAnalyzer:
-                e.start_analyzer();
-                break;
-            case EngineCommand::StopAnalyzer:
-                e.stop_analyzer();
-                break;
-            case EngineCommand::StartCapture:
-                e.start_capture();
-                break;
-            case EngineCommand::StopCapture:
-                e.stop_capture();
-                break;
-            case EngineCommand::StartWled:
-                e.start_wled(c.interface_address, c.port, c.destination);
-                break;
-            case EngineCommand::StopWled:
-                e.stop_wled();
-                break;
-            case EngineCommand::SetMerge:
-                if (c.value < 0 || c.value > 2) {
-                    r.accepted = false;
-                    r.error = "Invalid merge";
-                } else
-                    e.set_merge(static_cast<SpectrumMerge>(c.value));
-                break;
-            case EngineCommand::SetDisplayChannel:
-                if (c.value < 0 || c.value > 2) {
-                    r.accepted = false;
-                    r.error = "Invalid channel";
-                } else
-                    e.set_display_channel(c.value);
-                break;
             default:
                 r.accepted = false;
                 r.error = "Unknown command";
@@ -369,6 +342,35 @@ EngineReply execute(AudioPipeline &e, const EngineCommand &c, quint64 id, quint6
     r.snapshot = collect(e, ep, rev);
     return r;
 }
+class PortMailbox : public std::enable_shared_from_this<PortMailbox> {
+    QObject *owner;
+    std::mutex mutex;
+    std::map<EndpointIdentity,DeliveredPortFrame> pending;
+    size_t bytes=0;
+    bool failed=false,cancelled=false;
+    std::function<void(std::vector<DeliveredPortFrame>,bool)> handler;
+public:
+    PortMailbox(QObject *o,std::function<void(std::vector<DeliveredPortFrame>,bool)> h):owner(o),handler(std::move(h)){}
+    void publish(DeliveredPortFrame value) {
+        std::lock_guard lock(mutex);if(cancelled)return;
+        const auto size=stream::payload_size(value.frame)+value.endpoint.graph_id.size()+128;
+        const auto old=pending.find(value.endpoint);const auto previous=old==pending.end()?0:stream::payload_size(old->second.frame)+old->second.endpoint.graph_id.size()+128;
+        if(size>2*1024*1024 || bytes-previous>2*1024*1024-size || (old==pending.end() && pending.size()>=2048)){failed=true;return;}
+        bytes=bytes-previous+size;pending[value.endpoint]=std::move(value);
+    }
+    void start() {
+        auto timer=new QTimer(owner);timer->setInterval(17);
+        QObject::connect(timer,&QTimer::timeout,owner,[weak=weak_from_this()] {
+            const auto self=weak.lock();if(!self)return;
+            std::vector<DeliveredPortFrame> values;bool overflow=false;
+            {std::lock_guard lock(self->mutex);if(self->cancelled)return;
+                values.reserve(self->pending.size());for(auto &[key,value]:self->pending)values.push_back(std::move(value));
+                self->pending.clear();self->bytes=0;overflow=std::exchange(self->failed,false);}
+            if(!values.empty() || overflow)self->handler(std::move(values),overflow);
+        });timer->start();
+    }
+    void cancel(){std::lock_guard lock(mutex);cancelled=true;pending.clear();bytes=0;}
+};
 // One bounded assembly per socket. TCP preserves fragment order. A new message cannot interleave.
 struct Wire {
     TcpBDSPSocket *socket;
@@ -379,50 +381,68 @@ struct Wire {
     quint32 subscriptions =
         EngineCommand::Views | EngineCommand::History | EngineCommand::Previews | EngineCommand::TypedViews;
     std::shared_ptr<const HistorySnapshot> last_history;
-    void send(quint8 id, const QByteArray &b) {
-        if (b.size() > MaxMessage || socket->bytesToWrite() + b.size() > MaxQueued) {
-            socket->abort();
-            return;
+    bool canonical=false;
+    uint64_t port_nonce=0,port_last_nonce=0,port_session=0,port_sequence=0,port_revision=0,port_epoch=0;
+    std::string port_graph;
+    port_delivery::Subscribe port_subscription;
+    std::vector<DeliveredPortFrame> port_markers;
+    std::vector<port_delivery::PortBinding> port_admitted;
+    QElapsedTimer assembly_time;
+    void reset_assembly() noexcept {receiving=0;total=0;kind=0;partial=QByteArray{};assembly_time.invalidate();}
+    bool send(quint8 id, const QByteArray &b) {
+        const auto bound=stream::fragmented_message_bound(size_t(b.size()),23,true);
+        if(socket->bytesToWrite()<0 || !stream::peer_budget_fits(size_t(socket->bytesToWrite()),socket->pending_packet_bytes(),receiving?total:0,bound)){reset_assembly();socket->abort();return false;}
+        if(b.size()<=65535) {if(socket->send_packet(id,b))return true;reset_assembly();socket->abort();return false;}
+        if(serial==UINT64_MAX){reset_assembly();socket->abort();return false;}
+        const auto message=++serial;
+        for(qsizetype off=0;off<b.size();off+=FragmentSize) {
+            auto fragment=encode([&](QDataStream &s){s<<id<<message<<quint32(b.size())<<quint32(off)<<b.mid(off,FragmentSize);});
+            if(!socket->send_packet(FragmentId,fragment)){reset_assembly();socket->abort();return false;}
         }
-        if (b.size() <= 65535) {
-            socket->send_data(id, reinterpret_cast<uint8_t *>(const_cast<char *>(b.data())), b.size());
-            return;
-        }
-        const auto message = ++serial;
-        for (qsizetype off = 0; off < b.size(); off += FragmentSize) {
-            auto fragment = encode([&](QDataStream &s) {
-                s << id << message << quint32(b.size()) << quint32(off) << b.mid(off, FragmentSize);
-            });
-            socket->send_data(FragmentId, reinterpret_cast<uint8_t *>(fragment.data()), fragment.size());
-        }
+        return true;
     }
     bool receive(quint8 &id, QByteArray &b) {
-        if (id != FragmentId)
-            return b.size() <= 65535;
+        const auto reject=[&]{reset_assembly();socket->abort();return false;};
+        if (id != FragmentId) {
+            if(receiving || b.size()>65535)return reject();
+            return true;
+        }
         quint8 k = 0;
         quint64 seq = 0;
         quint32 n = 0, off = 0;
         QByteArray chunk;
+        // Fragment v1 is fixed-width through its QByteArray length. Inspect the
+        // complete geometry before QDataStream allocates the chunk.
+        const auto u32=[&](int p){const auto *x=reinterpret_cast<const uint8_t*>(b.constData()+p);return uint32_t(x[0])|(uint32_t(x[1])<<8)|(uint32_t(x[2])<<16)|(uint32_t(x[3])<<24);};
+        if(b.size()<23 || uint8_t(b[0])!=1 || uint8_t(b[1])!=0) {return reject();}
+        const auto bytes=u32(19),length=u32(11),offset=u32(15);
+        const auto fragment_kind=uint8_t(b[2]);uint64_t fragment_sequence=0;
+        for(int i=0;i<8;++i)fragment_sequence|=uint64_t(uint8_t(b[3+i]))<<(i*8);
+        if(!bytes || bytes>FragmentSize || b.size()!=qsizetype(23)+bytes || length>MaxMessage || length<=65535 ||
+           offset>length || bytes>length-offset || (socket->bytesToWrite()<0 || !stream::peer_budget_fits(size_t(socket->bytesToWrite()),socket->pending_packet_bytes(),length,0)) || !fragment_sequence ||
+           ((fragment_kind<CommandId || fragment_kind>AudioId) && fragment_kind!=TypedViewsId && !(canonical && fragment_kind==port_delivery::FramesId)) ||
+           (!offset && receiving) || (offset && (!receiving || fragment_sequence!=receiving || fragment_kind!=kind || length!=total || offset!=uint32_t(partial.size()) || assembly_time.elapsed()>=5000))) {return reject();}
         if (!decode(b,
                     [&](QDataStream &s) {
                         s >> k >> seq >> n >> off;
                         read_blob(s, chunk, FragmentSize);
                     }) ||
-            (k < CommandId || k > AudioId) && k != TypedViewsId || n > MaxMessage || n <= 65535 ||
-            chunk.size() > FragmentSize || off + chunk.size() > n) {
-            socket->abort();
-            return false;
+            ((k < CommandId || k > AudioId) && k != TypedViewsId && !(canonical && k==port_delivery::FramesId)) || n > MaxMessage || n <= 65535 ||
+            chunk.isEmpty() || chunk.size() > FragmentSize || off>n || quint64(chunk.size())>quint64(n)-off ||
+            (socket->bytesToWrite()<0 || !stream::peer_budget_fits(size_t(socket->bytesToWrite()),socket->pending_packet_bytes(),n,0))) {
+            return reject();
         }
         if (off == 0) {
+            if(receiving){return reject();}
             receiving = seq;
             kind = k;
             total = n;
             partial.clear();
             partial.reserve(n);
+            assembly_time.start();
         }
-        if (seq != receiving || k != kind || n != total || off != quint32(partial.size())) {
-            socket->abort();
-            return false;
+        if (!receiving || !seq || assembly_time.elapsed()>=5000 || seq != receiving || k != kind || n != total || off != quint32(partial.size())) {
+            return reject();
         }
         partial.append(chunk);
         if (partial.size() != total)
@@ -430,6 +450,7 @@ struct Wire {
         id = kind;
         b = std::move(partial);
         receiving = 0;
+        total=0;kind=0;assembly_time.invalidate();
         return true;
     }
 };
@@ -455,11 +476,45 @@ class EngineClient::Impl {
     quint32 subscriptions =
         EngineCommand::Views | EngineCommand::History | EngineCommand::Previews | EngineCommand::TypedViews;
     EngineSnapshot cache;
+    QJsonObject presentation_graph;
     QMap<quint64, qint64> pending;
     std::function<void(EngineSnapshot)> snapshot_handler;
     std::function<void(ViewFrame)> view_handler;
     std::function<void(AudioFrame)> audio_handler;
     std::function<void(EngineReply)> reply_handler;
+    std::function<void(DeliveredPortFrame)> port_handler;
+    std::shared_ptr<PortMailbox> ports;
+    uint64_t port_token=0,port_nonce=0,last_port_sequence=0;
+    qint64 port_requested_at=0;
+    bool port_requested=false;
+    EnginePort::PortDeliveryMode port_mode=EnginePort::PortDeliveryMode::Unsupported;
+    port_delivery::Subscribe port_request;
+    void deliver_ports(std::vector<DeliveredPortFrame> values,bool snapshot) {
+        if(snapshot)cache.port_frames.clear();
+        for(auto &value:values) {
+            const auto found=std::find_if(cache.port_frames.begin(),cache.port_frames.end(),[&](const auto &f){return f.endpoint==value.endpoint;});
+            if(found==cache.port_frames.end())cache.port_frames.push_back(value);else *found=value;
+            if(port_handler)port_handler(std::move(value));
+        }
+    }
+    bool request_ports(std::vector<EndpointIdentity> selected,QString *error) {
+        if(engine) {
+            const auto token=engine->subscribe_ports([mailbox=ports](DeliveredPortFrame value){mailbox->publish(std::move(value));},selected);
+            if(!token){if(error)*error="Invalid canonical subscription";return false;}
+            if(port_token)engine->unsubscribe_ports(port_token);
+            port_token=token;port_request.endpoints=selected;cache.port_frames=engine->latest_port_frames(selected);port_mode=EnginePort::PortDeliveryMode::CanonicalPortsV1;return true;
+        }
+        if(!socket || socket->state()!=QAbstractSocket::ConnectedState){if(error)*error="Canonical negotiation requires connection";return false;}
+        if(port_nonce==UINT64_MAX){if(error)*error="Canonical nonce exhausted; reconnect required";return false;}
+        port_request.endpoints=std::move(selected);port_request.nonce=++port_nonce;
+        port_request.limits.max_message_bytes=uint32_t(MaxMessage-2048);
+        std::vector<uint8_t> bytes(MaxMessage);
+        auto result=port_delivery::encode(port_request,bytes);
+        if(!result){if(error)*error="Invalid canonical subscription";return false;}
+        port_requested=true;port_requested_at=QDateTime::currentMSecsSinceEpoch();port_mode=EnginePort::PortDeliveryMode::Unsupported;
+        wire->send(port_delivery::SubscribeId,QByteArray(reinterpret_cast<const char*>(bytes.data()),qsizetype(result.written_bytes)));
+        return true;
+    }
     using LocalView = std::pair<ViewFrame, uint64_t>;
     using LocalAudio = std::pair<AudioFrame, uint64_t>;
     std::shared_ptr<LatestDelivery<LocalView>> views;
@@ -472,6 +527,11 @@ class EngineClient::Impl {
         expiry->setInterval(100);
         QObject::connect(expiry, &QTimer::timeout, o, [this] {
             const auto now = QDateTime::currentMSecsSinceEpoch();
+            if(wire && wire->receiving && wire->assembly_time.elapsed()>=5000)socket->abort();
+            if(port_requested && now-port_requested_at>=5000) {
+                port_requested=false;connection(State::Failed,"Canonical port delivery negotiation timed out");
+                enabled=false;socket->abort();
+            }
             for (auto id : pending.keys())
                 if (pending.contains(id) && now - pending.value(id) >= 5000) {
                     pending.remove(id);
@@ -492,6 +552,7 @@ class EngineClient::Impl {
             snapshot_handler(cache);
     }
     void publish(EngineSnapshot v) {
+        if(socket && !presentation_graph.isEmpty())v.graph=desktop::restore_graph_layout(v.graph,presentation_graph);
         // Validate against the original generation before monotonic state merging.
         if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation))
             v.history.reset();
@@ -524,6 +585,8 @@ class EngineClient::Impl {
         if (!compatible_history(v.history, v.graph_revision, v.analyzer_generation) ||
             v.statuses.value("Analyzer").state != State::Running)
             v.history.reset();
+        if(engine && port_token)v.port_frames=engine->latest_port_frames(port_request.endpoints);
+        else if(v.epoch==cache.epoch)v.port_frames=std::move(cache.port_frames);
         cache = std::move(v);
         if (snapshot_handler)
             snapshot_handler(cache);
@@ -544,6 +607,12 @@ class EngineClient::Impl {
         QObject::connect(&commands, &QThread::finished, worker, &QObject::deleteLater);
         commands.start();
         cache = collect(*engine, ep, rev);
+        port_mode=EnginePort::PortDeliveryMode::CanonicalPortsV1;
+        ports=std::make_shared<PortMailbox>(owner,[this](std::vector<DeliveredPortFrame> values,bool overflow) {
+            if(overflow){connection(State::Failed,"Canonical port mailbox exhausted");return;}
+            std::erase_if(values,[&](const auto &f){return f.delivery.epoch!=engine->epoch() || f.delivery.graph_revision!=engine->graph_revision();});
+            deliver_ports(std::move(values),false);
+        });ports->start();
         views = std::make_shared<LatestDelivery<LocalView>>(owner, [this](LocalView queued) {
             if (!(subscriptions & EngineCommand::Views) || queued.second != view_subscription_generation.load())
                 return;
@@ -600,6 +669,9 @@ class EngineClient::Impl {
             owner->submit(c);
         });
         QObject::connect(socket, &QTcpSocket::disconnected, owner, [this] {
+            wire->reset_assembly();
+            wire->canonical=false;port_mode=EnginePort::PortDeliveryMode::Unsupported;port_requested=false;
+            last_port_sequence=0;port_nonce=0;cache.port_frames.clear();
             for (auto id : pending.keys()) {
                 if (reply_handler)
                     reply_handler({id, false, "Disconnected", cache});
@@ -630,7 +702,79 @@ class EngineClient::Impl {
             if (!wire->receive(id, b))
                 return;
             bool ok = true;
-            if (id == ReplyId) {
+            if(id==port_delivery::AckId) {
+                port_delivery::Ack ack;
+                ok=bool(port_delivery::decode({reinterpret_cast<const uint8_t*>(b.constData()),size_t(b.size())},ack));
+                if(!port_requested || ack.nonce!=port_request.nonce)ok=false;
+                if(ok && ack.status!=port_delivery::Status::Accepted) {
+                    port_requested=false;port_mode=wire->canonical?EnginePort::PortDeliveryMode::CanonicalPortsV1:EnginePort::PortDeliveryMode::Unsupported;
+                    connection(State::Failed,QString::fromStdString(ack.error));return;
+                }
+                if(ok && ((ack.type_mask&port_request.type_mask)!=port_request.type_mask || ack.limits.max_endpoints<port_request.endpoints.size() ||
+                          ack.limits.max_message_bytes>port_request.limits.max_message_bytes || ack.limits.max_endpoints>port_request.limits.max_endpoints))ok=false;
+                if(ok){wire->canonical=true;wire->port_nonce=ack.nonce;wire->port_session=ack.session_epoch;wire->port_subscription=port_request;
+                    wire->port_subscription.limits=ack.limits;wire->port_subscription.type_mask=ack.type_mask;wire->port_graph=ack.graph_id;
+                    wire->port_admitted.clear();
+                    last_port_sequence=0;wire->port_revision=0;wire->port_epoch=0;port_requested=false;port_mode=EnginePort::PortDeliveryMode::CanonicalPortsV1;}
+            } else if(id==port_delivery::FramesId) {
+                port_delivery::Frames frames;
+                ok=wire->canonical && bool(port_delivery::decode({reinterpret_cast<const uint8_t*>(b.constData()),size_t(b.size())},frames,wire->port_subscription.limits));
+                if(ok && (frames.nonce!=wire->port_nonce || frames.session_epoch!=wire->port_session || frames.sequence<=last_port_sequence ||
+                    frames.delivery.graph_revision<wire->port_revision || frames.delivery.epoch<wire->port_epoch))return;
+                if(wire->canonical && !ok)return; // Reject malformed active batches without clearing accepted state.
+                if(ok && (frames.graph_id!=wire->port_graph || (!last_port_sequence && !frames.snapshot)))ok=false;
+                if(ok && frames.snapshot && !wire->port_subscription.endpoints.empty() &&
+                   frames.entries.size()!=wire->port_subscription.endpoints.size())ok=false;
+                if(ok)for(const auto &entry:frames.entries) {
+                    const auto &selected=wire->port_subscription.endpoints;
+                    if(!(wire->port_subscription.type_mask&(uint16_t(1)<<uint8_t(entry.frame.type))) ||
+                       (!selected.empty() && std::find(selected.begin(),selected.end(),entry.endpoint)==selected.end())){ok=false;break;}
+                }
+                const auto graph=desktop::read_graph_document(cache.graph);
+                std::vector<port_delivery::PortBinding> admitted;
+                const bool configured=cache.graph.contains("nodes");
+                if(configured) {
+                    if(!graph.error.isEmpty())ok=false;
+                    for(const auto &node:graph.graph.nodes) {
+                        for(uint16_t port=0;port<domain::output_ports(node);++port)if(const auto type=domain::output_type(node,port))admitted.push_back({{frames.graph_id,node.id,PortDirection::Output,port},node.kind,*type});
+                        if(domain::node_role(node.kind)==domain::NodeRole::Sink)for(uint16_t port=0;port<domain::input_ports(node);++port)if(const auto type=domain::input_type(node,port))admitted.push_back({{frames.graph_id,node.id,PortDirection::Input,port},node.kind,*type});
+                    }
+                } else if(last_port_sequence)admitted=wire->port_admitted;
+                else if(ok && frames.snapshot)for(const auto &entry:frames.entries) {
+                    const port_delivery::PortBinding binding{entry.endpoint,entry.kind,entry.frame.type};
+                    if(!port_delivery::valid_bootstrap_binding(binding)){ok=false;break;}
+                    admitted.push_back(binding);
+                }
+                if(!wire->port_subscription.endpoints.empty()) {
+                    std::vector<port_delivery::PortBinding> selected;
+                    for(const auto &endpoint:wire->port_subscription.endpoints) {
+                        const auto binding=std::find_if(admitted.begin(),admitted.end(),[&](const auto &value){return value.endpoint==endpoint;});
+                        if(binding!=admitted.end())selected.push_back(*binding);
+                        else {
+                            const auto previous=std::find_if(wire->port_admitted.begin(),wire->port_admitted.end(),[&](const auto &value){return value.endpoint==endpoint;});
+                            if(previous==wire->port_admitted.end()){ok=false;break;}
+                            auto marker=*previous;marker.unavailable_only=true;selected.push_back(std::move(marker));
+                        }
+                    }
+                    admitted=std::move(selected);
+                }
+                if(ok && !port_delivery::validate_admitted_membership(frames,admitted))ok=false;
+                if(ok)for(const auto &entry:frames.entries) {
+                    const auto previous=std::find_if(cache.port_frames.begin(),cache.port_frames.end(),[&](const auto &value){return value.endpoint==entry.endpoint;});
+                    if(previous!=cache.port_frames.end() && previous->delivery.graph_revision==frames.delivery.graph_revision &&
+                       (previous->kind!=entry.kind || previous->frame.type!=entry.frame.type)){ok=false;break;}
+                }
+                if(wire->canonical && !ok)return;
+                if(ok) {
+                    const bool stopped_data=cache.statuses.value("Analyzer").state==State::Stopped &&
+                        std::any_of(frames.entries.begin(),frames.entries.end(),[](const auto &value){return value.frame.available;});
+                    if(stopped_data || frames.delivery.graph_revision<cache.graph_revision)return;
+                    wire->port_admitted=std::move(admitted);
+                    last_port_sequence=frames.sequence;
+                    wire->port_revision=frames.delivery.graph_revision;wire->port_epoch=frames.delivery.epoch;
+                    deliver_ports(std::move(frames.entries),frames.snapshot);
+                }
+            } else if (id == ReplyId) {
                 EngineReply r;
                 ok = decode(b, [&](QDataStream &s) {
                     s >> r.request_id >> r.accepted;
@@ -653,8 +797,11 @@ class EngineClient::Impl {
             } else if (id == TypedViewsId) {
                 ViewFrame v;
                 ok = read_typed_views(b, v);
+                // Status snapshots may arrive before the polling mailbox's
+                // unavailable snapshot. Stop fences data, but must deliver its clear.
+                const bool clear_only=!v.views.isEmpty() && std::all_of(v.views.cbegin(),v.views.cend(),[](const auto &frame){return !frame.available;});
                 if (ok && (subscriptions & EngineCommand::Views) && (subscriptions & EngineCommand::TypedViews) &&
-                    cache.statuses.value("Analyzer").state != State::Stopped &&
+                    (cache.statuses.value("Analyzer").state != State::Stopped || clear_only) &&
                     v.epoch == cache.epoch && v.graph_revision == cache.graph_revision && view_handler)
                     view_handler(std::move(v));
             } else if (id == ViewId) {
@@ -707,12 +854,13 @@ class EngineClient::Impl {
     }
     void connect() {
         if (socket && enabled && socket->state() == QAbstractSocket::UnconnectedState) {
-            wire->partial.clear();
+            wire->reset_assembly();
             connection(State::Starting);
             socket->connectToHost(host, port);
         }
     }
     ~Impl() {
+        port_handler={};if(ports)ports->cancel();if(engine && port_token)engine->unsubscribe_ports(port_token);
         snapshot_handler = {};
         view_handler = {};
         audio_handler = {};
@@ -779,10 +927,11 @@ quint64 EngineClient::submit(EngineCommand c) {
             },
             Qt::QueuedConnection);
     } else if (d->socket->state() == QAbstractSocket::ConnectedState) {
+        if(c.kind==EngineCommand::ApplyGraph)d->presentation_graph=c.graph;
         auto b = encode([&](QDataStream &s) {
             s << id << quint8(c.kind) << c.expected_revision << qint32(c.value) << c.subscriptions
               << c.interface_address.toString() << c.destination.toString() << c.port
-              << QJsonDocument(c.graph).toJson(QJsonDocument::Compact);
+              << QJsonDocument(desktop::processing_graph_document(c.graph)).toJson(QJsonDocument::Compact);
         });
         d->wire->send(CommandId, b);
     } else
@@ -801,6 +950,9 @@ void EngineClient::set_audio_handler(std::function<void(AudioFrame)> h) {
 void EngineClient::set_reply_handler(std::function<void(EngineReply)> h) {
     d->reply_handler = std::move(h);
 }
+EnginePort::PortDeliveryMode EngineClient::port_delivery_mode() const noexcept {return d->port_mode;}
+bool EngineClient::subscribe_port_frames(std::vector<EndpointIdentity> endpoints,QString *error) {return d->request_ports(std::move(endpoints),error);}
+void EngineClient::set_port_frame_handler(std::function<void(DeliveredPortFrame)> h) {d->port_handler=std::move(h);}
 EngineSnapshot EngineClient::snapshot() const {
     return d->cache;
 }
@@ -862,11 +1014,101 @@ class EngineServer::Impl {
     DescriptorServer server;
     bool writable = false;
     quint64 ep = epoch(), rev = 0;
+    quint64 canonical_sessions=epoch() & 0x7fffffffffffffffULL;
     QMap<TcpBDSPSocket *, std::shared_ptr<Wire>> clients;
     std::shared_ptr<LatestDelivery<ViewFrame>> views;
     std::shared_ptr<LatestDelivery<AudioFrame>> audios;
     std::shared_ptr<LatestDelivery<bool>> statuses;
+    std::shared_ptr<PortMailbox> ports;
+    uint64_t port_token=0;
+    bool selected(const Wire &wire,const EndpointIdentity &id) const {
+        const auto &selection=wire.port_subscription.endpoints;
+        return selection.empty() || std::find(selection.begin(),selection.end(),id)!=selection.end();
+    }
+    bool send_ports(const std::shared_ptr<Wire> &wire,std::vector<DeliveredPortFrame> values,bool snapshot) {
+        port_delivery::Frames frames;frames.snapshot=snapshot;frames.nonce=wire->port_nonce;frames.session_epoch=wire->port_session;
+        frames.sequence=wire->port_sequence+1;frames.delivery={engine.graph_revision(),engine.epoch()};
+        frames.graph_id=engine.graph().value("graph_id").toString("main").toStdString();
+        for(auto &value:values)if(value.delivery==frames.delivery && selected(*wire,value.endpoint))frames.entries.push_back(std::move(value));
+        if(snapshot)for(const auto &endpoint:wire->port_subscription.endpoints) {
+            if(std::any_of(frames.entries.begin(),frames.entries.end(),[&](const auto &value){return value.endpoint==endpoint;}))continue;
+            const auto marker=std::find_if(wire->port_markers.begin(),wire->port_markers.end(),[&](const auto &value){return value.endpoint==endpoint;});
+            if(marker==wire->port_markers.end())return false;
+            auto value=*marker;value.delivery=frames.delivery;frames.entries.push_back(std::move(value));
+        }
+        if(!snapshot && frames.entries.empty())return true;
+        std::vector<uint8_t> bytes(wire->port_subscription.limits.max_message_bytes);
+        const auto result=port_delivery::encode(frames,bytes,wire->port_subscription.limits);
+        if(!result){wire->send(14,"Canonical port snapshot exceeds negotiated limits");wire->socket->disconnectFromHost();return false;}
+        if(!wire->port_subscription.endpoints.empty())for(const auto &entry:frames.entries) {
+            DeliveredPortFrame marker;marker.endpoint=entry.endpoint;marker.delivery=entry.delivery;marker.kind=entry.kind;marker.contract=entry.contract;marker.contract_known=entry.contract_known;
+            marker.frame.type=entry.frame.type;marker.frame.available=false;marker.frame.sample_rate=entry.frame.sample_rate;marker.frame.fft_size=entry.frame.fft_size;marker.frame.bands=entry.frame.bands;marker.frame.history_capacity=entry.frame.history_capacity;
+            marker.frame.epoch=entry.frame.epoch;marker.frame.producer_epoch=entry.frame.producer_epoch;marker.frame.generation=entry.frame.generation;marker.frame.graph_revision=entry.frame.graph_revision;marker.frame.stream_id=entry.frame.stream_id;
+            auto previous=std::find_if(wire->port_markers.begin(),wire->port_markers.end(),[&](const auto &value){return value.endpoint==entry.endpoint;});
+            if(previous==wire->port_markers.end())wire->port_markers.push_back(std::move(marker));else *previous=std::move(marker);
+        }
+        if(!wire->send(port_delivery::FramesId,QByteArray(reinterpret_cast<const char*>(bytes.data()),qsizetype(result.written_bytes))))return false;
+        wire->port_sequence=frames.sequence;wire->port_revision=frames.delivery.graph_revision;wire->port_epoch=frames.delivery.epoch;
+        return true;
+    }
+    void refresh_ports() {
+        std::vector<EndpointIdentity> requested;
+        bool any=false,all=false;
+        for(auto wire:clients.values())if(wire->canonical) {
+            any=true;all|=wire->port_subscription.endpoints.empty();
+            for(const auto &endpoint:wire->port_subscription.endpoints)if(std::find(requested.begin(),requested.end(),endpoint)==requested.end())requested.push_back(endpoint);
+        }
+        if(port_token){engine.unsubscribe_ports(port_token);port_token=0;}
+        if(!any)return;
+        const auto available=engine.port_endpoints();
+        if(!all)requested.erase(std::remove_if(requested.begin(),requested.end(),[&](const auto &endpoint){return std::find(available.begin(),available.end(),endpoint)==available.end();}),requested.end());
+        if(!all && requested.empty())return;
+        port_token=engine.subscribe_ports([mailbox=ports](DeliveredPortFrame value){mailbox->publish(std::move(value));},all?std::vector<EndpointIdentity>{}:requested);
+    }
+    void subscribe_ports(const std::shared_ptr<Wire> &wire,const QByteArray &bytes) {
+        port_delivery::Subscribe request;
+        const auto decoded=port_delivery::decode({reinterpret_cast<const uint8_t*>(bytes.constData()),size_t(bytes.size())},request);
+        if(!decoded || request.nonce<=wire->port_last_nonce){wire->send(14,"Invalid or replayed canonical port subscription");wire->socket->disconnectFromHost();return;}
+        // The replay fence advances on every syntactically valid request, including refusal.
+        wire->port_last_nonce=request.nonce;
+        port_delivery::Ack ack;ack.nonce=request.nonce;ack.session_epoch=wire->port_session;ack.graph_revision=engine.graph_revision();
+        ack.graph_id=engine.graph().value("graph_id").toString("main").toStdString();ack.limits=request.limits;ack.type_mask=request.type_mask;
+        ack.limits.max_message_bytes=std::min<uint32_t>(ack.limits.max_message_bytes,MaxMessage-2048);
+        auto frames=engine.latest_port_frames(request.endpoints);
+        for(const auto &endpoint:request.endpoints)if(std::none_of(frames.begin(),frames.end(),[&](const auto &f){return f.endpoint==endpoint;}))ack.status=port_delivery::Status::InvalidEndpoint;
+        if(frames.size()>ack.limits.max_endpoints)ack.status=port_delivery::Status::LimitExceeded;
+        for(const auto &frame:frames)if(!(ack.type_mask&(uint16_t(1)<<uint8_t(frame.frame.type))))ack.status=port_delivery::Status::UnsupportedType;
+        port_delivery::Frames probe;probe.snapshot=true;probe.nonce=request.nonce;probe.session_epoch=wire->port_session;probe.sequence=1;
+        probe.delivery={engine.graph_revision(),engine.epoch()};probe.graph_id=ack.graph_id;probe.entries=frames;
+        if(ack.status==port_delivery::Status::Accepted) {
+            std::vector<uint8_t> storage(ack.limits.max_message_bytes);
+            const auto encoded=port_delivery::encode(probe,storage,ack.limits);
+            const auto bound=encoded?stream::fragmented_message_bound(encoded.written_bytes,23,true):stream::InvalidByteBound;
+            const auto ack_bound=stream::framed_packet_bound(40+ack.graph_id.size());
+            if(!encoded || bound>stream::InvalidByteBound-ack_bound || wire->socket->bytesToWrite()<0 ||
+               !stream::peer_budget_fits(size_t(wire->socket->bytesToWrite()),wire->socket->pending_packet_bytes(),wire->receiving?wire->total:0,bound+ack_bound))ack.status=port_delivery::Status::LimitExceeded;
+        }
+        if(ack.status!=port_delivery::Status::Accepted)ack.error="Requested endpoints, types or complete snapshot exceed server capabilities";
+        std::array<uint8_t,1024> storage{};const auto result=port_delivery::encode(ack,storage);
+        if(!result){wire->socket->abort();return;}
+        if(!wire->send(port_delivery::AckId,QByteArray(reinterpret_cast<const char*>(storage.data()),qsizetype(result.written_bytes))))return;
+        if(ack.status!=port_delivery::Status::Accepted)return;
+        wire->port_markers.clear();
+        wire->port_nonce=request.nonce;wire->port_subscription=request;wire->port_subscription.limits=ack.limits;wire->canonical=true;wire->port_sequence=0;
+        send_ports(wire,std::move(frames),true);refresh_ports();
+    }
     Impl(EngineServer *o, AudioPipeline &e) : owner(o), engine(e) {
+        ports=std::make_shared<PortMailbox>(o,[this](std::vector<DeliveredPortFrame> frames,bool overflow) {
+            for(auto wire:clients.values())if(wire->canonical) {
+                if(overflow){wire->send(14,"Canonical delivery queue exceeded 2 MiB");wire->socket->disconnectFromHost();continue;}
+                if(wire->port_revision!=engine.graph_revision() || wire->port_epoch!=engine.epoch()) {
+                    send_ports(wire,frames,false);
+                    send_ports(wire,engine.latest_port_frames(wire->port_subscription.endpoints),true);
+                } else send_ports(wire,frames,false);
+            }
+        });ports->start();
+        auto fragment_expiry=new QTimer(o);fragment_expiry->setInterval(100);
+        QObject::connect(fragment_expiry,&QTimer::timeout,o,[this]{for(auto wire:clients.values())if(wire->receiving && wire->assembly_time.elapsed()>=5000)wire->socket->abort();});fragment_expiry->start();
         views = std::make_shared<LatestDelivery<ViewFrame>>(o, [this](ViewFrame v) {
             if (v.epoch != engine.epoch() || v.graph_revision != engine.graph_revision())
                 return;
@@ -882,7 +1124,7 @@ class EngineServer::Impl {
                         if (!bytes.isEmpty())
                             wire->send(TypedViewsId, bytes);
                         else {
-                            wire->socket->send_packet(14, "Invalid or oversized typed view snapshot (2 MiB limit)");
+                            wire->send(14, "Invalid or oversized typed view snapshot (2 MiB limit)");
                             wire->socket->disconnectFromHost();
                         }
                         continue;
@@ -937,12 +1179,14 @@ class EngineServer::Impl {
                 s->deleteLater();
                 return;
             }
-            auto w = std::make_shared<Wire>(Wire{s});
+            if(canonical_sessions==UINT64_MAX){s->abort();s->deleteLater();return;}
+            auto w = std::make_shared<Wire>(Wire{s});w->port_session=++canonical_sessions;
             clients[s] = w;
             update_subscriptions();
             s->setReadBufferSize(MaxMessage);
             QObject::connect(s, &QTcpSocket::disconnected, owner, [this, s] {
                 clients.remove(s);
+                refresh_ports();
                 update_subscriptions();
                 s->deleteLater();
             });
@@ -950,6 +1194,7 @@ class EngineServer::Impl {
             QObject::connect(s, &TcpBDSPSocket::packetReceived, owner, [this, w](quint8 id, QByteArray b) {
                 if (!w->receive(id, b))
                     return;
+                if(id==port_delivery::SubscribeId){subscribe_ports(w,b);return;}
                 if (id != CommandId) {
                     w->socket->abort();
                     return;
@@ -970,7 +1215,7 @@ class EngineServer::Impl {
                             }) ||
                     kind > EngineCommand::Subscribe) {
                     if (b.size() >= 2 && (quint8(b[0]) != 1 || quint8(b[1]) != 0)) {
-                        w->socket->send_packet(14, "Unsupported engine protocol version");
+                        w->send(14, "Unsupported engine protocol version");
                         w->socket->disconnectFromHost();
                         return;
                     }
@@ -1015,6 +1260,7 @@ class EngineServer::Impl {
             w->send(SnapshotId, b);
     }
     ~Impl() {
+        ports->cancel();if(port_token)engine.unsubscribe_ports(port_token);
         views->cancel();
         audios->cancel();
         statuses->cancel();

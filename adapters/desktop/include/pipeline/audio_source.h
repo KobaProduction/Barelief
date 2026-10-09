@@ -10,9 +10,15 @@
 
 namespace pipeline {
 enum class AudioSourceKind { SystemOutput = 0, Microphone = 1, TestSignal = 2 };
+struct AudioCaptureDevice { QString id, name; bool is_default = false; };
+// Cold platform discovery. Empty device_id in source settings follows the OS
+// default; nonempty IDs select an explicit endpoint, independently of its name.
+std::vector<AudioCaptureDevice> enumerate_audio_capture_devices(AudioSourceKind kind, QString *error = nullptr);
 struct AudioSourceDiagnostics {
-    QString backend, device;
+    QString backend, device, endpoint_id;
     uint32_t sample_rate = 0;
+    uint32_t native_sample_rate = 0, native_channels = 0;
+    uint64_t callback_count = 0, callback_frames = 0, silence_frames = 0;
     uint64_t buffered_frames = 0, capacity_frames = 0, dropped_frames = 0, discontinuities = 0;
     uint64_t dispatch_latency_ns = 0;
 };
@@ -28,6 +34,9 @@ class IAudioSource {
     virtual ~IAudioSource() = default;
     virtual void start() = 0;
     virtual void configure(const QJsonObject &) {}
+    // Compatible control-plane update preserving producer clock and lifetime.
+    // False means this source requires an explicit stopped reconfiguration.
+    virtual bool reconfigure_live(const QJsonObject &) { return false; }
     virtual void stop() = 0;
     virtual bool is_running() const = 0;
     virtual AudioSourceKind source() const = 0;

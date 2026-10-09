@@ -1,9 +1,24 @@
 #include "dsp_kernels/dsp.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <climits>
 #include "backend.h"
 
 namespace dsp_kernels {
+namespace {
+// Scale only large blocks; ordinary/subnormal input keeps its original precision.
+int fft_scale(std::span<const float> input,std::size_t n) {
+    float maximum=0;for(float x:input){if(!std::isfinite(x))return INT_MIN;maximum=std::max(maximum,std::abs(x));}
+    int exponent=0;std::frexp(maximum,&exponent);
+    int growth=0;for(auto size=n;size>1;size>>=1)++growth;
+    return std::max(0,exponent+growth-120);
+}
+float fft_magnitude(float re,float im,std::size_t n,int scale,bool hartley=false) {
+    const double magnitude=hartley?std::abs(double(re)-double(im)):std::hypot(double(re),double(im));
+    return float(std::scalbn(magnitude/double(n),scale));
+}
+}
 void hann_window(std::span<float> output) {
     for (size_t i = 0; i < output.size(); ++i)
         output[i] = output.size() < 2 ? 1 : 0.5 * (1 - std::cos(float(i * 2 * 3.14159265358979323846 * (1 / float(output.size() - 1)))));
@@ -30,7 +45,7 @@ std::optional<MemoryRequirements> estimate_memory(std::size_t n, std::size_t ban
     MemoryRequirements memory;
     // Bounds above make every multiplication and sum fit even 32-bit size_t.
     memory.fft_scratch_bytes = 2 * n * sizeof(float);
-    memory.mel_boundaries_bytes = (bands + 2) * sizeof(std::size_t);
+    memory.mel_boundaries_bytes = (bands + 2) * sizeof(double);
     memory.window_bytes = n * sizeof(float);
     memory.weights_bytes = (n / 2) * sizeof(float);
     memory.stereo_input_bytes = 2 * n * sizeof(float);
@@ -57,21 +72,54 @@ bool FFT::process(std::span<const float> input, std::span<float> output, bool ha
     const auto n = scratch_.size() / 2;
     if (!n || input.size() != n || output.size() != n / 2)
         return false;
+    const auto scale=fft_scale(input,n);if(scale==INT_MIN)return false;
     for (std::size_t i = 0; i < n; ++i) {
-        scratch_[2 * i] = input[i];
+        scratch_[2 * i] = std::scalbn(input[i],-scale);
         scratch_[2 * i + 1] = 0;
     }
     if (!detail::transform(scratch_.data(), n, radix4_))
         return false;
     for (std::size_t i = 0; i < output.size(); ++i) {
         const auto re = scratch_[2 * i], im = scratch_[2 * i + 1];
-        output[i] = (hartley ? std::abs(re - im) : std::hypot(re, im)) / n;
+        const auto value=fft_magnitude(re,im,n,scale,hartley);
+        if(!std::isfinite(value))return false;
+        // Stage results in the consumed real scratch lane before publishing.
+        scratch_[2*i]=value;
     }
+    for(std::size_t i=0;i<output.size();++i)output[i]=scratch_[2*i];
     return true;
+}
+signal_contracts::Status FFT::process_plane(const signal_contracts::NumericView& input,
+    signal_contracts::MutableNumericView& output, std::size_t plane) {
+    using namespace signal_contracts;
+    const auto n = scratch_.size() / 2;
+    if (!n || input.actual[0] != n || output.actual[0] != n / 2 ||
+        plane >= input.planes.size() || plane >= output.planes.size()) return Status::invalid_argument;
+    for (std::size_t i = 0; i < n; ++i) {
+        auto status = load_element(input, {plane, i, 0}, scratch_[2 * i]);
+        if (status != Status::ok) return status;
+        scratch_[2 * i + 1] = 0;
+    }
+    float maximum=0;for(std::size_t i=0;i<n;++i){const float x=scratch_[2*i];if(!std::isfinite(x))return Status::invalid_argument;maximum=std::max(maximum,std::abs(x));}
+    int exponent=0;std::frexp(maximum,&exponent);int growth=0;for(auto size=n;size>1;size>>=1)++growth;
+    const int scale=std::max(0,exponent+growth-120);
+    for(std::size_t i=0;i<n;++i)scratch_[2*i]=std::scalbn(scratch_[2*i],-scale);
+    if (!detail::transform(scratch_.data(), n, radix4_)) return Status::unavailable;
+    for (std::size_t i = 0; i < n / 2; ++i) {
+        const auto value = fft_magnitude(scratch_[2 * i], scratch_[2 * i + 1],n,scale);
+        if (!std::isfinite(value)) return Status::overflow;
+        scratch_[2*i]=value;
+    }
+    for(std::size_t i=0;i<n/2;++i){
+        auto status = store_element(output, {plane, i, 0}, scratch_[2*i]);
+        if (status != Status::ok) return status;
+    }
+    return Status::ok;
 }
 bool MelFilterBank::prepare(std::size_t bins, std::size_t rate, std::size_t bands) {
     bins_ = bands_ = 0;
     boundaries_.clear();
+    frequency_step_=0;
     if (bins > max_fft_samples / 2 || bands > max_mel_bands)
         return false;
     bins_ = bins;
@@ -79,12 +127,11 @@ bool MelFilterBank::prepare(std::size_t bins, std::size_t rate, std::size_t band
     boundaries_.assign(bands + 2, 0);
     if (!bins || !rate)
         return true; // Legacy zero-rate frames produce zero Mel.
-    const float mel_max = 2595.0f * std::log10(1.0f + (rate * 0.5f) / 700.0f);
+    frequency_step_=double(rate)/double(bins*2);
+    const double mel_max = 2595.0 * std::log10(1.0 + (double(rate) * 0.5) / 700.0);
     for (std::size_t i = 0; i < boundaries_.size(); ++i) {
-        const float point = mel_max * i / (bands + 1);
-        const float hz = 700.0f * (std::pow(10.0f, point / 2595.0f) - 1.0f);
-        boundaries_[i] =
-            std::clamp(static_cast<std::size_t>(std::floor((bins * 2 + 1) * hz / rate)), std::size_t{0}, bins);
+        const double point = mel_max * double(i) / double(bands + 1);
+        boundaries_[i] = 700.0 * std::expm1(point/2595.0*std::log(10.0));
     }
     return true;
 }
@@ -93,12 +140,14 @@ bool MelFilterBank::process(std::span<const float> input, std::span<float> outpu
         return false;
     for (std::size_t m = 1; m <= bands_; ++m) {
         const auto left = boundaries_[m - 1], center = boundaries_[m], right = boundaries_[m + 1];
-        float energy = 0;
-        for (auto k = left; k < center; ++k)
-            energy += input[k] * (float(k - left) / (center - left));
-        for (auto k = center; k < right; ++k)
-            energy += input[k] * (float(right - k) / (right - center));
-        output[m - 1] = energy;
+        double weighted_magnitude = 0;
+        for(std::size_t k=0;k<bins_;++k){const double hz=double(k)*frequency_step_;
+            const double weight=hz<=left || hz>=right || center<=left || right<=center?0:
+                hz<center?(hz-left)/(center-left):(right-hz)/(right-center);
+            if(!std::isfinite(input[k]))return false;
+            weighted_magnitude+=double(input[k])*weight;}
+        const float result=float(weighted_magnitude);if(!std::isfinite(result))return false;
+        output[m - 1] = result;
     }
     return true;
 }

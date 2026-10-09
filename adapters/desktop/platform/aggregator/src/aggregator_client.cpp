@@ -68,6 +68,7 @@ void AggregatorClient::_set_status(core::RuntimeState state, QString error) {
     emit status_changed(_state, _error);
 }
 void AggregatorClient::disconnect_from_aggregator_server() {
+    _connection_request.reset();
     _enabled = false;
     _reconnect_timer.stop();
     _timeout_timer.stop();
@@ -75,6 +76,7 @@ void AggregatorClient::disconnect_from_aggregator_server() {
     _is_registered = false;
     _invalidate_discovery();
     _set_status(core::RuntimeState::Stopped);
+    emit disconnection_requested();
 }
 bool AggregatorClient::connect_to_aggregator_server(QHostAddress address, uint16_t port, int32_t timeout_ms) {
     disconnect_from_aggregator_server();
@@ -88,6 +90,8 @@ bool AggregatorClient::connect_to_aggregator_server(QHostAddress address, uint16
     _timeout_ms = timeout_ms;
     _enabled = true;
     _current_reconnect_attempt = 0;
+    _connection_request=ConnectionRequest{_aggregator_server_address,port,timeout_ms};
+    emit connection_requested(_aggregator_server_address,port,timeout_ms);
     _set_status(core::RuntimeState::Starting);
     _begin_connection();
     return true;
@@ -276,7 +280,7 @@ void AggregatorClient::_send_registration_request() {
 }
 
 void AggregatorClient::set_capabilities(QJsonObject metadata) {
-    metadata["version"] = 2;
+    metadata["version"] = 3;
     metadata["uuid"] = _cfg.uuid.toString(QUuid::WithoutBraces);
     if (!aggregator_capabilities::valid(metadata))
         return;
@@ -337,6 +341,8 @@ QJsonObject AggregatorClient::resolve_engine(const QUuid &uuid, QString *error) 
         return failure("This core publishes streams but has no control endpoint. Enable its engine server to open it "
                        "for remote viewing or editing.");
     auto result = _capabilities.value(uuid);
+    if(!aggregator_capabilities::valid(result))
+        return failure("Canonical numeric CONTROL/DATA endpoint metadata is unavailable.");
     result["uuid"] = uuid.toString();
     result["address"] = info.address.toString();
     result["port"] = info.component_server_port;

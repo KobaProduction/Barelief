@@ -78,6 +78,10 @@ class AggregatorClient final : public QObject {
     /// @brief Проверка регистрации клиента как компонента
     /// @return true если зарегистрирован, false в противном случае
     bool is_registered() const;
+    struct ConnectionRequest {QHostAddress address;quint16 port=0;qint32 timeout_ms=0;};
+    // Read only on this QObject's thread. A worker observer mirrors immutable
+    // explicit intent, never this object's mutable discovery/cache state.
+    std::optional<ConnectionRequest> connection_request() const {return _connection_request;}
 
     /// @brief Настройка режима переподключения
     /// @param infinite_mode true для бесконечных попыток переподключения
@@ -87,6 +91,8 @@ class AggregatorClient final : public QObject {
                             int32_t reconnect_interval_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS);
 
   Q_SIGNALS:
+    void connection_requested(QHostAddress address,quint16 port,qint32 timeout_ms);
+    void disconnection_requested();
     void status_changed(core::RuntimeState state, const QString &error);
     /// @brief Сигнал о закрытии клиента
     void on_client_disconnected();
@@ -110,6 +116,7 @@ class AggregatorClient final : public QObject {
 
   private:
     AggregatorClientConfig _cfg{};
+    std::optional<ConnectionRequest> _connection_request;
     QJsonObject _own_capabilities;
     QMap<QUuid, QJsonObject> _capabilities;
     QMap<QUuid, component_info_t> _components;

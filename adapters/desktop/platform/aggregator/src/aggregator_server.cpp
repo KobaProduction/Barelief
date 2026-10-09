@@ -199,6 +199,12 @@ void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, Tc
             return;
         }
         metadata["address"] = socket->peerAddress().toString();
+        const auto previous=_capabilities.value(QUuid(metadata["uuid"].toString()));
+        if(previous.value("publisher_incarnation")==metadata.value("publisher_incarnation") &&
+           previous.value("graph_revision")==metadata.value("graph_revision") &&
+           !aggregator_capabilities::same_stream_bindings(previous.value("streams").toArray(),metadata.value("streams").toArray())) {
+            _reject(socket,"Canonical stream bindings cannot change within a publisher incarnation");return;
+        }
         const auto component = _registered_components_map[QUuid(metadata["uuid"].toString())].info;
         metadata["state"] = int(component.state);
         metadata["component_type"] = int(component.type);

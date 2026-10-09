@@ -39,3 +39,11 @@ and contiguous offsets, resets on errors and returns a borrowed complete frame.
 Offset zero restarts assembly, matching the current desktop receiver. Application
 subscription, unavailable-marker priority, timeouts and retry policy remain
 outside this codec/framing library.
+
+Numeric DATA dispatch uses explicit record kinds, not descriptive semantic tags.
+`Frame` carries an ordinary numeric value (including dense Matrix); `Snapshot`,
+`Query`, `Empty`, `Reset` and `HistoryRow` explicitly select ring transport.
+Unavailable ring markers carry nonzero history capacity. Snapshot actual row
+count equals capacity while `filled` remains the real retained occupancy.
+A Matrix binding also derives its compact vector contract for `HistoryRow`, so
+ordinary Matrix frames and explicit ring records share stable endpoint IDs.

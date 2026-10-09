@@ -19,6 +19,8 @@ NodeDefinition node_definition(const QString &name);
 QString canonical_node_name(const QString &name);
 QJsonObject canonical_graph_document(QJsonObject document);
 struct GraphOutput {
+    std::vector<DeliveredPortFrame> port_frames;
+    std::vector<PortPreview> port_previews;
     QMap<int, TypedFrame> ports, views;
     std::vector<std::pair<int, TypedFrame>> output_events;
     std::vector<std::pair<int, std::vector<float>>> history_events;
@@ -77,6 +79,10 @@ class GraphProgram final {
                                              GraphEvaluationContext &) const;
     signal_contracts::Status process_view(int node, const signal_contracts::FrameView &, GraphEvaluationContext &,
                                           dataflow_runtime::OutputCallback, void *user = nullptr) const noexcept;
+    signal_contracts::Status process_ports(int node, const signal_contracts::FrameView &, GraphEvaluationContext &,
+                                          dataflow_runtime::DeliveryStamp, dataflow_runtime::RuntimeCallbacks) const noexcept;
+    std::vector<EndpointIdentity> endpoints() const;
+    static DeliveredPortFrame owned_port_snapshot(const dataflow_runtime::PortFrameView &);
     std::vector<std::vector<float>> history_snapshot(int node, const GraphEvaluationContext &) const;
     int history_ingress(int node, const GraphEvaluationContext &) const noexcept;
     void reset_history(int node, GraphEvaluationContext &) const noexcept;
@@ -84,6 +90,8 @@ class GraphProgram final {
                                 uint64_t generation) const noexcept;
     static signal_contracts::FrameView frame_view(const TypedFrame &, std::span<const float> history_storage = {});
     static TypedFrame owned_snapshot(const signal_contracts::FrameView &);
+    // Display selection is an adapter concern. No transformed output port.
+    TypedFrame display_snapshot(const dataflow_runtime::OutputView &) const;
     const QJsonObject &document() const {
         return _document;
     }

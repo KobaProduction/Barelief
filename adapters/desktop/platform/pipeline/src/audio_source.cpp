@@ -84,6 +84,7 @@ PulseSource pulse_default_source(AudioSourceKind kind, const std::function<bool(
 
 class MiniaudioAudioSource final : public IAudioSource {
     AudioSourceKind _kind;
+    QString _device_id;
     AudioHandler _audio;
     StatusHandler _status;
     LifecycleHandler _lifecycle;
@@ -95,10 +96,14 @@ class MiniaudioAudioSource final : public IAudioSource {
     AudioSourceDiagnostics _diagnostics;
     CaptureBuffer _buffer;
     std::atomic<uint64_t> _queued{0}, _dropped{0}, _discontinuities{0}, _latency{0};
+    std::atomic<uint64_t> _callbacks{0}, _callback_frames{0}, _silence_frames{0};
+    std::atomic<uint32_t> _requested_rate{0};
     uint64_t _base = 0, _sample_clock = 0;
     static void receive(ma_device *device, void *, const void *input, ma_uint32 frames) noexcept {
         auto &self = *static_cast<MiniaudioAudioSource *>(device->pUserData);
         if (self._cancel.load(std::memory_order_relaxed)) return;
+        self._callbacks.fetch_add(1, std::memory_order_relaxed);
+        self._callback_frames.fetch_add(frames, std::memory_order_relaxed);
         auto timestamp = self._base + (self._sample_clock / device->sampleRate) * 1000000000ULL +
             (self._sample_clock % device->sampleRate) * 1000000000ULL / device->sampleRate;
         const auto now = clock_ns();
@@ -167,7 +172,7 @@ class MiniaudioAudioSource final : public IAudioSource {
                 throw std::runtime_error("Capture supports Windows and Linux");
 #endif
                 auto result = ma_context_init(&backend, 1, nullptr, &context);
-                if (result != MA_SUCCESS) throw std::runtime_error(ma_result_description(result));
+                if (result != MA_SUCCESS) throw std::runtime_error(std::string("Audio backend initialization: ")+ma_result_description(result));
                 context_ready = true;
                 QString name;
                 uint32_t native_rate = 0;
@@ -175,7 +180,7 @@ class MiniaudioAudioSource final : public IAudioSource {
 #if defined(__linux__)
                 default_device(id, name, native_rate);
 #elif defined(_WIN32)
-                watcher = std::make_unique<WindowsDefaultDeviceWatcher>(_kind == AudioSourceKind::SystemOutput, _reopen);
+                watcher = std::make_unique<WindowsDefaultDeviceWatcher>(_kind == AudioSourceKind::SystemOutput, _reopen, _device_id.toStdWString());
                 const auto &endpoint = watcher->device_id();
                 if (endpoint.size() >= sizeof(id.wasapi) / sizeof(id.wasapi[0]))
                     throw std::runtime_error("Windows endpoint identifier too long");
@@ -191,12 +196,12 @@ class MiniaudioAudioSource final : public IAudioSource {
                 config.wasapi.noAutoStreamRouting = MA_TRUE;
 #endif
                 config.capture.format = ma_format_f32;
-                config.capture.channels = 2; config.sampleRate = native_rate;
+                config.capture.channels = 2; config.sampleRate = _requested_rate.load()?_requested_rate.load():native_rate;
                 config.periodSizeInMilliseconds = 10; config.periods = 2;
                 config.capture.channelMixMode = ma_channel_mix_mode_default;
                 config.dataCallback = receive; config.notificationCallback = notification; config.pUserData = this;
                 result = ma_device_init(&context, &config, &device);
-                if (result != MA_SUCCESS) throw std::runtime_error(ma_result_description(result));
+                if (result != MA_SUCCESS) throw std::runtime_error(std::string("Audio endpoint initialization: ")+ma_result_description(result));
                 device_ready = true;
 #if defined(_WIN32)
                 name = QString::fromUtf8(device.capture.name);
@@ -208,11 +213,18 @@ class MiniaudioAudioSource final : public IAudioSource {
                 { std::lock_guard lock(_diagnostic_mutex);
                     _diagnostics.backend = QString::fromUtf8(ma_get_backend_name(backend));
                     _diagnostics.device = name; _diagnostics.sample_rate = device.sampleRate;
+                    _diagnostics.native_sample_rate = device.capture.internalSampleRate;
+                    _diagnostics.native_channels = device.capture.internalChannels;
+#if defined(_WIN32)
+                    _diagnostics.endpoint_id = QString::fromWCharArray(id.wasapi);
+#elif defined(__linux__)
+                    _diagnostics.endpoint_id = name;
+#endif
                     _diagnostics.capacity_frames = device.sampleRate / 4;
                 }
                 if (_cancel) throw std::runtime_error("Capture cancelled");
                 result = ma_device_start(&device);
-                if (result != MA_SUCCESS) throw std::runtime_error(ma_result_description(result));
+                if (result != MA_SUCCESS) throw std::runtime_error(std::string("Audio endpoint start: ")+ma_result_description(result));
                 _running = true; failures = 0;
                 if (_status) _status(true, {});
                 if (_lifecycle) _lifecycle(true, 0, {});
@@ -255,6 +267,7 @@ class MiniaudioAudioSource final : public IAudioSource {
                         if (!frames) { pause(std::chrono::milliseconds(1)); continue; }
                         if (!audio_end) audio_end = capture_start;
                         synthesized = true;
+                        _silence_frames.fetch_add(frames, std::memory_order_relaxed);
                         frame.sample_rate = device.sampleRate; frame.timestamp_ns = audio_end;
                         frame.discontinuity = first;
                         first = false;
@@ -296,8 +309,15 @@ class MiniaudioAudioSource final : public IAudioSource {
   public:
     explicit MiniaudioAudioSource(AudioSourceKind kind) : _kind(kind) {}
     ~MiniaudioAudioSource() override { stop(); }
+    void configure(const QJsonObject& settings) override {
+        const auto rate=settings.value("sample_rate").toInt();
+        if(rate>=1000 && rate<=192000)_requested_rate=uint32_t(rate);
+        _device_id=settings.value("device_id").toString();
+    }
     void start() override {
         stop(); _dropped = 0; _discontinuities = 0; _latency = 0;
+        _callbacks = 0; _callback_frames = 0; _silence_frames = 0;
+        { std::lock_guard lock(_diagnostic_mutex); _diagnostics = {}; }
         _cancel = false; _worker = std::thread([this] { run(); });
     }
     void stop() override {
@@ -308,7 +328,9 @@ class MiniaudioAudioSource final : public IAudioSource {
     AudioSourceDiagnostics diagnostics() const override {
         std::lock_guard lock(_diagnostic_mutex); auto value = _diagnostics;
         value.buffered_frames = _queued.load(); value.dropped_frames = _dropped.load();
-        value.discontinuities = _discontinuities.load(); value.dispatch_latency_ns = _latency.load(); return value;
+        value.discontinuities = _discontinuities.load(); value.dispatch_latency_ns = _latency.load();
+        value.callback_count = _callbacks.load(); value.callback_frames = _callback_frames.load();
+        value.silence_frames = _silence_frames.load(); return value;
     }
     void set_audio_handler(AudioHandler handler) override { _audio = std::move(handler); }
     void set_status_handler(StatusHandler handler) override { _status = std::move(handler); }
@@ -320,5 +342,27 @@ AudioSourceFactory default_audio_source_factory() {
         if (kind == AudioSourceKind::TestSignal) return make_test_signal_source();
         return std::make_unique<MiniaudioAudioSource>(kind);
     };
+}
+std::vector<AudioCaptureDevice> enumerate_audio_capture_devices(AudioSourceKind kind, QString *error) {
+    if(error)error->clear();
+    if(kind==AudioSourceKind::TestSignal)return {};
+#if defined(_WIN32)
+    ma_context context{};const ma_backend backend=ma_backend_wasapi;
+    auto result=ma_context_init(&backend,1,nullptr,&context);
+    if(result!=MA_SUCCESS){if(error)*error=QStringLiteral("Audio device discovery: ")+QString::fromUtf8(ma_result_description(result));return {};}
+    ma_device_info *playback=nullptr,*capture=nullptr;ma_uint32 playback_count=0,capture_count=0;
+    result=ma_context_get_devices(&context,&playback,&playback_count,&capture,&capture_count);
+    std::vector<AudioCaptureDevice> devices;
+    if(result==MA_SUCCESS){
+        const auto* entries=kind==AudioSourceKind::SystemOutput?playback:capture;
+        const auto count=kind==AudioSourceKind::SystemOutput?playback_count:capture_count;
+        devices.reserve(count);
+        for(ma_uint32 i=0;i<count;++i)devices.push_back({QString::fromWCharArray(entries[i].id.wasapi),QString::fromUtf8(entries[i].name),bool(entries[i].isDefault)});
+    }else if(error)*error=QStringLiteral("Audio endpoint enumeration: ")+QString::fromUtf8(ma_result_description(result));
+    ma_context_uninit(&context);return devices;
+#else
+    if(error)*error=QStringLiteral("Explicit audio endpoint discovery is unavailable on this platform");
+    return {};
+#endif
 }
 }

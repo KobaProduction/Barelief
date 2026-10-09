@@ -40,7 +40,7 @@ int main(int argc,char **argv){QCoreApplication app(argc,argv);try{
     require(channel.pending_bytes()==0,"reconnect drops old queued bytes");
     uart.sent.clear();uart.chunk=3;uart.writable();require(channel.send_packet(7,QByteArray("new"))==Status::ok,"post reset send");
     while(channel.pending_bytes())uart.writable();uart.inject(uart.sent);require(count==2&&last=="new","no stale packet after reconnect");
-    std::array<std::uint8_t,12> bytes{};uart.pending=6;require(transport.write(bytes).status==Status::overflow&&transport.overflow_count()>0,"device queue overflow diagnostic");
+    std::array<std::uint8_t,12> bytes{};uart.pending=6;require(transport.write(bytes).status==Status::would_block&&transport.overflow_count()>0,"device queue full retains pending bytes without fatal overflow");
     uart.close();require(transport.read(bytes).status==Status::disconnected,"closed UART disconnected");
     uart.open(QIODevice::ReadWrite);uart.pending=0;uart.fault=true;
     require(channel.send_packet(7,QByteArray("fault"))==Status::unavailable&&channel.pending_bytes()==0,"failed device write is not reported as accepted");

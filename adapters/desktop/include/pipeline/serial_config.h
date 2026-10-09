@@ -26,9 +26,9 @@ inline SerialBinding read_serial_binding(const QJsonObject &config) {
     if(!port.isString() || port.toString().trimmed().isEmpty() ||
        (serial.contains("baud_rate") && !serial.value("baud_rate").isDouble()) ||
        !std::isfinite(baud) || baud<=0 || baud>std::numeric_limits<qint32>::max() || std::floor(baud)!=baud ||
-       !node.isDouble() || !std::isfinite(node.toDouble()) || node.toDouble()<0 ||
-       node.toDouble()>=std::numeric_limits<int>::max() || std::floor(node.toDouble())!=node.toDouble()) {
-        result.error="network.serial requires explicit port_name, positive integer baud_rate and NetworkInput input_node";
+       (!node.isUndefined() && (!node.isDouble() || !std::isfinite(node.toDouble()) || node.toDouble()<0 ||
+       node.toDouble()>=std::numeric_limits<int>::max() || std::floor(node.toDouble())!=node.toDouble()))) {
+        result.error="network.serial requires explicit port_name and positive integer baud_rate";
         return result;
     }
     result.endpoint.port_name=port.toString();result.endpoint.baud_rate=qint32(baud);
@@ -36,7 +36,7 @@ inline SerialBinding read_serial_binding(const QJsonObject &config) {
     return result;
 }
 inline void add_serial_options(QCommandLineParser &parser) {
-    parser.addOption({"serial-port","Explicit UART typed-stream endpoint (requires configured NetworkInput)","name"});
+    parser.addOption({"serial-port","Explicit canonical numeric UART processing endpoint","name"});
     parser.addOption({"serial-baud","UART baud rate (default 115200)","baud"});
     parser.addOption({"serial-input-node","Existing NetworkInput node ID for UART stream","id"});
 }

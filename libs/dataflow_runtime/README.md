@@ -1,72 +1,111 @@
 # Portable dataflow executor
 
-`dataflow_runtime/runtime.h` is C++20 and depends on `graph_application`,
-`graph_domain`, `signal_contracts` and `dsp_kernels`. It has no Qt, JSON, socket,
-device or GUI dependency. `PreparedGraph` is the actual application `PreparedPlan`;
-`RuntimeContext` owns every mutable kernel, cadence counter, producer marker and
-buffer. Different contexts can execute the same immutable plan independently.
-Owner access to an individual context is serialized.
+`dataflow_runtime/runtime.h` is C++20 and depends on application/domain,
+`signal_contracts` and `dsp_kernels`, without Qt, JSON, transport or device I/O.
+`PreparedGraph` is the single executor plan; `RuntimeContext` owns mutable
+operation state. A node stores only its applicable FFT or Mel kernel. Contexts
+are independent, and an owner serializes each context's processing and Apply.
 
-`PreparedGraph::prepare` validates the definition, calculates a deterministic
-topological plan and detached clock dependencies once, checks ingress contracts
-and `RuntimeLimits`, and allocates buffers and FFT/Mel workspaces. Ingress specs
-describe actual rate, semantic type, dimensions and maximum PCM block size.
-Unknown ingress has no prepared contract and `process` returns `unavailable`.
-Contract/rate/shape changes require preparation outside processing. No sample rate
-is guessed. History ingress needs its declared capacity so storage can be bounded.
+`prepare_numeric` validates bounded DTO ownership before lowering dtype edges,
+checks full contracts/capabilities/resources, and prepares topology, storage,
+operation workspaces and physical-sample scheduling. Processing never expands
+containers, parses documents or waits on I/O. Backend FFT tables are shared
+process resources initialized during preparation, not on the processing path.
 
-All 19 canonical kinds use the same executor. AudioSource/TestSignal and
-NetworkInput accept externally produced frames; capture/generation is an adapter
-responsibility. Window preserves the existing fractional 60 Hz hop cadence and
-can emit multiple windows in one tick. Legacy stereo-spectrum ingress through
-the local source/window route passes the already computed spectrum onward.
-Local source ingress accepts PCM or geometrically valid legacy stereo spectrum.
-Owned desktop Window ingress requires the explicit `allow_legacy_window` flag;
-the adapter normalizes omitted legacy FFT metadata before preparation.
-Windowing, FFT and Mel call `dsp_kernels`; Bark and RMS merging preserve existing
-operation order. Sinks emit their semantic frame without performing I/O.
+The graph's `execution_interval` is a positive reduced rational duration in
+seconds, default `{1,60}`, within 1 ms through 60 s. Window derives a fractional
+sample hop from this interval and the declared physical sample rate. Targets
+requiring less than one sample per hop are refused. Maximum windows and callback
+expansion per ingress are bounded by the runtime profile. Changing the interval
+restarts Window phase, retains compatible History and preserves source clocks;
+it neither resamples PCM nor changes its timestamp unit. A Window timestamp is
+its input block timestamp plus the exact integer floor of the consumed sample
+duration in the declared clock ticks. Coarse clocks therefore quantize time.
+Startup windows use zero padding until enough real samples arrive. Unavailable
+intervals, declared discontinuities and recovery discard Window accumulation.
 
-`process` validates a borrowed `FrameView` before mutation and returns an explicit
-status. Its prepared adjacency has bounded graph depth; processing does not
-allocate, grow containers, parse documents, wait on sockets or copy complete
-history. Each Spectrogram has one contiguous `[frame][band]` ring. Detached/gated
-known contracts produce typed zeros on the retained clock. A newest-row overlay
-provides gated history without modifying the producer ring. Compatible histories
-and cadence survive re-preparation; incompatible descendants reset. Epoch
-retirement is bounded to the latest 16 producer incarnations. Explicit ingress
-unavailability clears dependent state and emits typed unavailable outputs; Stop
-is a separate lifecycle operation. Detached history resumes with zero rows after
-unavailability or an explicit history reset.
+Disabled computational nodes with identical full input/output contracts forward
+an immutable identity view. Different contracts produce typed zeros with the
+input time. Disabled Window advances its schedule without reading PCM, and its
+buffer is cleared on enable transitions. Disabled History appends typed-zero
+rows and time coordinates. Source acquisition is an adapter concern and continues;
+a disabled Source produces typed zeros. Gate/Switch/Splitter routing mute remains
+a separate policy. Sink disable cannot stop upstream processing.
 
-An `OutputCallback` receives each output as it is produced, including individual
-windows. All spans and row overlays are valid **only during that callback**.
-Callbacks must not retain these views or recursively operate on the same context.
-A consumer can encode into a bounded caller buffer or copy into its own bounded
-retention pool. Owned desktop snapshots are a separate compatibility adapter and
-are excluded from the runtime allocation guarantee. Consumers choose when to
-materialize history for display; the runtime does not create GUI snapshots.
+History storage is `[row][feature]`, with bounded mirrored row masks. Local History
+allocates and exposes its entire fixed capacity from preparation onward; older
+unused rows contain semantic typed zero (including unsigned PCM midpoint). The
+separate filled count reports real retained iterations. A capacity-only Apply
+preserves the newest rows, exact row coordinates and accepted ordinal, truncating
+older rows or extending the older tail with typed zero. Snapshot consumers must
+use the explicit filled count, rather than infer occupancy from array shape. Routing
+updates every changed row in an external batch and never modifies the producer
+payload. Converter replacement, rewire, ordinal regression and reset rebase its
+retained rows. Full History snapshots are a separate serialized borrowed boundary.
 
-MemoryRequirements reports owned object and payload/workspace bytes. Allocator
-bookkeeping, call stack, caller ingress/output storage and process-wide DSP backend
-tables are separate budgets. No ingress/event queue exists in this executor;
-callback output expansion is bounded by graph size and maximum PCM block size.
-The desktop adapter may negotiate a larger block limit explicitly during
-preparation. Preparation may allocate; allocation failure follows the host
-allocator policy. Reported validation/limit/process failures require no exceptions
-or RTTI.
-The desktop adapter retains the maximum negotiated block capacity across its
-ingresses and graph rebinds. Failed preparation leaves the working plan and
-context unchanged.
+Local History admits fixed-width vectors only: every retained row shares one
+feature geometry. Variable-width vectors are rejected during domain admission,
+before execution, consistently with the runtime's existing support policy.
+For physical time use explicit Seconds coordinates: each appended row stores its
+source-clock timestamp in bounded mirrored coordinate storage. The desktop
+default uses this contract, so compact rows and wrapped snapshots retain identical
+times without deriving analysis cadence from the PCM sample rate. Local History
+rejects Regular Seconds because processing does not guarantee regular arrivals.
+External History sources may declare Regular Seconds; their regular row spacing
+is part of the producer contract.
+Asynchronous adapters retain bounded owning rows before returning from callbacks;
+borrowed history ingress is rejected. All callback views expire when the callback
+returns. Reentrant processing of the same context is unsupported.
 
-`GraphExecutor` implements the real application preparation/runtime ports for
-`GraphLifecycle`. It validates prepared bundle identity without RTTI, consumes it
-atomically on Apply, preserves compatible state, and gates processing on Start
-and Stop. Apply refreshes compatible state from the latest live context into the
-prepared buffers at the serialized owner boundary. Ticks or Stop between Prepare
-and Apply cannot rewind history or restore cleared state. It owns no transport
-retry or delivery queue: adapters must cancel and
-fence their own queued deliveries on the lifecycle boundary.
+Apply activates continuous processing immediately. There is no user Start/Stop
+or writable run intent. `shutdown` is an owner teardown operation. Apply checks
+preparation identity and refreshes compatible state from the latest live context
+before consuming the prepared bundle. Failed preparation or Apply preserves the
+working plan. Source incarnation retirement retains the latest 16 epochs.
 
-`tests/dataflow_runtime_tests.cpp` exercises all canonical kinds, multiple windows
-at 44100 Hz, allocation guards, a wrapped history overlay, limits, marker fences,
-detached zeros, context deep copies and a real GraphLifecycle transaction.
+`GraphExecutor::snapshot_preparation_base` takes an owning state snapshot under
+the processing lock. `prepare_numeric_detached` prepares from it outside that
+lock; `register_prepared` verifies the working plan and private preparation token
+under the lock. The adapter separately serializes control transactions. Snapshot
+copying still allocates and holds the processing lock for bounded state-copy time;
+detached admission conservatively charges a full extra working allocation. The
+ordinary serialized preparation API avoids that extra snapshot. In no-exceptions
+builds allocation failure follows the platform allocator policy.
+
+Memory admission includes DTO, buffers, operation workspaces and conservative
+stack reservation. Allocator overhead, actual platform stack high-water, callback
+cost and optimized-backend WCET require measurement on the target. Portable
+source support does not establish ESP32 hardware timing or native GUI acceptance.
+
+`PcmResampler` is an explicit PCM-to-PCM rate boundary (`output_rate`). Both
+contracts retain the clock domain but use their own sample rate and canonical
+`1 / sample_rate` tick. Frames have variable length; ingress may produce no output.
+Timestamps start at the input stream origin converted with mathematical floor to
+output ticks, then advance by the exact output sample count. Unavailable/error
+markers use the same output clock and producer sequence. Discontinuities,
+epoch/generation changes, timestamp gaps and unavailable ingress reset fractional
+phase and FIR history; the next actual output is discontinuous. Unchanged Apply
+preserves phase/history through allocation-free prepared state transfer. Disabled
+conversion between incompatible clocks keeps the output grid and emits typed
+zeros. See the kernel README for filter delay and quality bounds.
+
+Numeric view endpoints accept every primitive dtype within their structural rank:
+line/frequency views take Vector, SpectrogramView takes Matrix, and ScalarView
+takes one to eight independent single-channel Scalar inputs with stable port IDs. Their labels
+select presentation initial settings, never PCM/FFT/Mel admission. Semantic labels do not execute DSP
+or allocate an accumulator. Only the explicit History operation accumulates rows;
+remote ring snapshots carry explicit ring geometry/ordinal/occupancy. Dense Matrix
+input remains a current value and is routed, converted or reduced as such.
+
+`IndexExtract` selects a primitive Vector/Matrix element without numeric conversion.
+Its zero-based `channel_index` selects a channel position, `index` selects a vector
+element or logical matrix row, and `column` selects a matrix column (zero for a
+Vector). Ring rows use logical oldest-first order. The Scalar output preserves
+dtype, representation, quantity, unit and processing clock; coordinates are absent
+because the selected result has no array axes. Its timestamp is the evaluation
+time of the incoming value. Admission checks maximum extents; a shorter actual
+frame produces an unavailable error marker, never stale data. Disabled extraction
+emits typed silence on the declared output. All buffers and index records are
+prepared before processing. Disconnected ScalarView inputs independently emit
+typed silence on a matching known source clock or unavailable markers when no
+such clock is known; other connected inputs continue delivering independently.

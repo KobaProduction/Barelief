@@ -4,17 +4,22 @@
 #include "core_app/workspace/workspace_window.h"
 #include <QMap>
 #include <QPointer>
+#include <memory>
 
 #include "core_app/gui_presenter.h"
+#include "core_app/ui/settings_change_request.h"
+#include "core_app/numeric_view_adapter.h"
 #include "visualization/abstract/abs.h"
 #include "visualization/spectrograms/spectrogram_graph.h"
 
 class SchemeEditorWidget;
+class QLabel;
+namespace presentation { class UiCommandRegistry; class ProcessorDiscoveryPort; }
 
 class MainWindow final : public WorkspaceWindow {
     Q_OBJECT
   public:
-    explicit MainWindow(GuiPresenter &application);
+    explicit MainWindow(GuiPresenter &application, std::shared_ptr<presentation::ProcessorDiscoveryPort> discovery = {});
     ~MainWindow() override;
 
   signals:
@@ -22,31 +27,34 @@ class MainWindow final : public WorkspaceWindow {
     void stop_wled_server_requested();
     void wled_server_config_changed();
     void on_config_updated();
+    void settings_change_requested(ui::SettingsChangeRequest request);
     void save_configuration_as_requested(const QString &path);
     void open_configuration_requested(const QString &path);
+    void default_graph_requested();
 
   private slots:
     void on_update_chart_visibility();
-    void on_raw_signal_ready(const std::vector<float> &data);
-    void on_window_signal_ready(const std::vector<float> &data);
-    void on_windowed_signal_ready(const std::vector<float> &data);
-    void on_window_function_ready(const std::vector<float> &data);
-    void on_amplitudes_ready(const std::vector<float> &data);
-    void on_test_amplitudes_ready(const std::vector<float> &data);
-    void on_spectrogram_updated(const std::vector<std::vector<float>> &data) const;
-    void on_sample_rate_changed(uint32_t sample_rate);
 
   private:
     QTimer _camera_save_timer, _workspace_save_timer;
+    QTimer _numeric_render_timer;
+    bool _numeric_render_dirty=false;
+    bool _numeric_snapshot_dirty=false;
     QMap<QString, WorkspaceDock *> _panels;
     QMap<QString, bool> _render_visible;
     QByteArray _default_workspace_state;
     bool _restoring_layout = true, _workspace_closed = false;
+    bool _restoring_preset = false;
+    std::optional<domain::NumericProcessingGraph> _view_draft;
+    QString _view_draft_device;
+    QJsonObject capture_preset_presentation();
+    void restore_preset_presentation(const QJsonObject &presentation);
     QPointer<WorkspaceDock> _last_graph_slot;
     int _next_view_instance = 1;
     QList<WorkspaceDock *> graph_docks() const;
     bool in_editor_window(WorkspaceDock *dock) const;
-    WorkspaceDock *new_graph_view(int node);
+    WorkspaceDock *new_graph_view(int node,std::optional<domain::PortId> port=std::nullopt);
+    bool graph_for_view(int node,domain::NumericProcessingGraph &graph) const;
     void populate_graph_menu(int node, QMenu *menu);
     void rebuild_graph_areas(WorkspaceDock *dock, WorkspaceDock *anchor, int placement);
     void add_graph_node(int node, int placement);
@@ -54,6 +62,10 @@ class MainWindow final : public WorkspaceWindow {
     WorkspaceDock *add_panel(const QString &id, const QString &title, QWidget *view, bool UIApplicationConfig::*flag);
     void reset_workspace();
     void setup_graph_dock_controls(WorkspaceDock *dock);
+    void install_graph_name_control(WorkspaceDock *dock);
+    void request_graph_rename(WorkspaceDock *dock);
+    void refresh_graph_title(WorkspaceDock *dock);
+    void rename_graph(WorkspaceDock *dock, const QString &name);
     void set_graph_exposed(const QString &key, WorkspaceDock *dock, bool exposed);
     void place_graph(WorkspaceDock *dock, int placement);
     WorkspaceDock *graph_dock(int node) const;
@@ -65,16 +77,27 @@ class MainWindow final : public WorkspaceWindow {
         WorkspaceDock *dock = nullptr;
         AbstractChartView *chart = nullptr;
         SpectrogramGraph *spectrogram = nullptr;
+        QLabel* exact_label=nullptr;
+        uint64_t scalar_sequence=0,scalar_epoch=0;
     };
     QMap<QString, NodeView> _node_views;
     QMap<int, QString> _active_node_views;
     bool _graph_navigation_initialized=false;
     void restore_node_views();
     void sync_node_views(const QJsonObject &graph);
-    void consume_node_views(const QMap<int, pipeline::TypedFrame> &views);
+    void consume_numeric_frame(const pipeline::DeliveredNumericFrame&);
+    void consume_numeric_history(const pipeline::DeliveredNumericHistoryRow&);
+    void consume_numeric_history_snapshot(const pipeline::DeliveredNumericFrame&,quint64 ordinal,quint64 filled_count);
+    void render_numeric_views();
+    void select_numeric_plane(const QString&,std::size_t);
+    struct NumericBinding {pipeline::EndpointIdentity endpoint;std::size_t plane=0;QString device;};
+    QMap<QString,NumericBinding> _numeric_bindings;
+    QMap<QString,QList<NumericBinding>> _metric_bindings;
+    presentation::NumericViewAdapter _numeric_views{{64,{2000,4096,8*1024*1024,{true,32768}},{true,32768}}};
     void clear_node_views();
     QString ensure_node_view(int node, const QString &kind, const QString &device, const QString &graph,
-                             bool open = false, int instance = 0);
+                             bool open = false, int instance = 0,
+                             const domain::ConfiguredProcessingNode *configured = nullptr);
     void save_workspace();
     void refresh_subscriptions();
     void apply_surface_settings();
@@ -88,6 +111,7 @@ class MainWindow final : public WorkspaceWindow {
     void moveEvent(QMoveEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     GuiPresenter &_application;
+    presentation::UiCommandRegistry *_commands = nullptr;
 
     // Статические графики
     AbstractChartView *_raw_signal_chart = nullptr;

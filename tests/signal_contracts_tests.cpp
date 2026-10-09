@@ -1,5 +1,9 @@
 #include <signal_contracts/frame.h>
+// Qt's default slots keyword expands away. Public portable headers must retain
+// the caller-supplied pool capacity when included after QObject as well.
+#define slots
 #include <signal_contracts/buffer_pool.h>
+#undef slots
 #include <array>
 #include <cassert>
 #include <iostream>
@@ -7,6 +11,20 @@
 #include <string>
 using namespace signal_contracts;
 int main() {
+    assert(frame_descriptor(FrameType::PCM)->stereo && !frame_descriptor(FrameType::Mel)->stereo);
+    assert(!frame_descriptor(static_cast<FrameType>(-1)) && !frame_descriptor(static_cast<FrameType>(99)));
+    FrameView wrong_type; wrong_type.type=static_cast<FrameType>(99);
+    wrong_type.metadata.available=false;
+    assert(validate(wrong_type)==Status::invalid_argument);
+    FrameView scalar;std::array<float,1> zero{};
+    scalar.type=FrameType::Scalar;scalar.metadata.sample_rate=48000;scalar.metadata.sequence=1;scalar.values=zero;
+    assert(validate(scalar)==Status::ok);
+    scalar.left=zero;assert(validate(scalar)==Status::invalid_argument);scalar.left={};
+    scalar.metadata.bands=1;assert(validate(scalar)==Status::invalid_argument);scalar.metadata.bands=0;
+    zero[0]=std::numeric_limits<float>::infinity();assert(validate(scalar)==Status::invalid_argument);zero[0]=0;
+    for(const auto& descriptor:frame_descriptors()) {
+        assert(frame_descriptor(descriptor.type)==&descriptor && data_shape(descriptor.type)==descriptor.shape && type_id(descriptor.type)==descriptor.id);
+    }
     std::array<float,6> data{1,2,3,4,5,6};
     FrameView f; f.type=FrameType::Mel; f.metadata.sample_rate=48000;
     f.metadata.sequence=1; f.metadata.bands=3; f.values=std::span(data).first(3);
@@ -79,5 +97,23 @@ int main() {
     FrameView empty_marker;empty_marker.metadata.available=false;
     assert(retain(empty_marker,retained_pool,queued)==Status::ok && !queued.view.metadata.available);
     assert(validate(queued.view)==Status::unavailable);
+    // Generic packet contracts describe opaque geometry, not AudioSync wire fields.
+    std::array<std::uint8_t,44> opaque{};FrameView packet;
+    packet.type=FrameType::WledPacket;packet.packet=opaque;packet.metadata.sequence=1;
+    packet.metadata.sample_rate=48000;
+    assert(validate(packet)==Status::ok);
+    packet.packet=std::span(opaque).first(43);assert(validate(packet)==Status::invalid_argument);
+    std::array<float,6> mask_values{1,2,3,4,5,6};std::array<float,2> mask_zero{};
+    std::array<std::uint8_t,4> mask{0,1,0,1};
+    FrameView masked;masked.type=FrameType::History;masked.metadata.sample_rate=48000;
+    masked.metadata.sequence=1;masked.metadata.bands=2;masked.metadata.history_capacity=4;
+    masked.history={mask_values,2,3,3,1,{},mask,mask_zero,1};
+    assert(validate(masked)==Status::ok && masked.history.row(0)[0]==0 && masked.history.row(1)[0]==5 && masked.history.row(2)[0]==0);
+    assert(retain(masked,retained_pool,queued)==Status::ok);
+    assert(queued.view.history.row(0)[0]==0 && queued.view.history.row(1)[0]==5 && queued.view.history.zero_rows.empty());
+    queued={};masked.history.zero_oldest=4;assert(validate(masked)==Status::invalid_argument);
+    masked.history.zero_oldest=1;mask[0]=2;assert(validate(masked)==Status::invalid_argument);mask[0]=0;
+    mask_zero[0]=1;assert(validate(masked)==Status::invalid_argument);mask_zero[0]=0;
+    masked.type=FrameType::Mel;assert(validate(masked)==Status::invalid_argument);
     std::cout<<"semantic contracts and bounded ownership passed\n";
 }

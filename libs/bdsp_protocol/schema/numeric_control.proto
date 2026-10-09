@@ -1,0 +1,201 @@
+syntax = "proto2";
+package bdsp.numeric_control.v2;
+// Explicit typed canonical schema; presence/alternatives validated by shared traversal.
+message Literal {
+  optional uint32 kind = 1;
+  optional sint64 signed_value = 2;
+  optional uint64 unsigned_value = 3;
+  optional fixed32 float32_bits = 4;
+  optional fixed64 float64_bits = 5;
+}
+message Ratio {
+  optional sint64 numerator = 1;
+  optional uint64 denominator = 2;
+}
+message Extent {
+  optional uint64 minimum = 1;
+  optional uint64 maximum = 2;
+}
+message Coordinates {
+  optional uint32 mode = 1;
+  optional uint32 unit = 2;
+  optional Ratio origin = 3;
+  optional Ratio step = 4;
+}
+message Representation {
+  optional uint32 encoding = 1;
+  optional uint32 valid_bits = 2;
+  optional uint32 placement = 3;
+  optional uint32 layout = 4;
+  optional uint32 normalization = 5;
+  optional uint64 alignment = 6;
+}
+message Numeric {
+  optional uint32 dtype = 1;
+  optional uint32 rank = 2;
+  optional uint32 axis0 = 3;
+  optional uint32 axis1 = 4;
+  optional Extent extent0 = 5;
+  optional Extent extent1 = 6;
+  optional uint32 semantic = 7;
+  optional uint32 history_element = 8;
+  optional uint32 quantity = 9;
+  optional uint32 unit = 10;
+  repeated uint32 channels = 11;
+  optional Representation representation = 12;
+  optional Coordinates coordinates0 = 13;
+  optional Coordinates coordinates1 = 14;
+  optional string clock_domain = 15;
+  optional Ratio tick_seconds = 16;
+  optional uint32 sample_rate = 17;
+}
+message Structured {
+  optional string schema = 1;
+  optional uint32 version = 2;
+  optional string encoding = 3;
+  optional uint64 minimum = 4;
+  optional uint64 maximum = 5;
+}
+message Contract {
+  optional Numeric numeric = 1;
+  optional Structured structured = 2;
+}
+message Policy {
+  optional uint32 rounding = 1;
+  optional uint32 overflow = 2;
+  optional uint32 precision_loss = 3;
+  optional uint32 nonfinite = 4;
+  optional uint32 scale_mode = 5;
+  optional Dyadic gain = 6;
+  optional Dyadic offset = 7;
+  optional Literal nan_replacement = 8;
+  optional Literal negative_inf_replacement = 9;
+  optional Literal positive_inf_replacement = 10;
+}
+message Dyadic {
+  optional Literal numerator = 1;
+  optional sint64 exponent2 = 2;
+}
+message Parameter {
+  optional string key = 1;
+  optional uint32 kind = 2;
+  optional Literal literal = 3;
+  optional bool boolean = 4;
+  optional string text = 5;
+}
+message Parameters {
+  optional uint32 kind = 1;
+  repeated Parameter values = 2;
+  optional Policy policy = 3;
+  optional uint32 outputs = 4;
+  optional uint32 selected = 5;
+  optional bool open = 6;
+  optional uint32 operation = 7;
+  optional uint32 channels = 8;
+  optional uint32 rows = 9;
+  repeated uint32 selected_channels = 10;
+  optional uint32 precision_loss = 11;
+  optional uint32 rounding = 12;
+  optional uint64 capacity = 13;
+}
+message Port {
+  optional uint32 id = 1;
+  optional uint32 direction = 2;
+  optional Contract contract = 3;
+}
+message Node {
+  optional sint64 id = 1;
+  optional string kind = 2;
+  optional Parameters parameters = 3;
+  repeated Port inputs = 4;
+  repeated Port outputs = 5;
+  optional bool enabled = 6;
+}
+message Edge {
+  optional sint64 from = 1;
+  optional sint64 to = 2;
+  optional uint32 output_port = 3;
+  optional uint32 input_port = 4;
+  optional uint32 conversion = 5;
+}
+message Versions {
+  optional uint32 document = 1;
+  optional uint32 graph = 2;
+  optional uint32 processing = 3;
+  optional uint32 control = 4;
+  optional uint32 data = 5;
+}
+message Graph {
+  optional string graph_id = 1;
+  optional Versions versions = 2;
+  repeated Node nodes = 3;
+  repeated Edge edges = 4;
+  optional Ratio execution_interval = 5;
+}
+message Command {
+  optional uint32 id = 1;
+  optional Graph graph = 2;
+  optional Parameters parameters = 3;
+  optional string graph_id = 4;
+  optional uint64 token = 5;
+  optional uint64 graph_revision = 6;
+  optional sint64 node = 7;
+  optional bool enabled = 8;
+}
+message Resources {
+  optional uint64 plan = 1;
+  optional uint64 payload = 2;
+  optional uint64 scratch = 3;
+  optional uint64 stack = 4;
+  optional uint64 peak = 5;
+}
+message CapabilityRow {
+  optional Node combination = 1;
+  optional string kernel = 2;
+  optional string backend = 3;
+  optional uint32 values = 4;
+  optional Resources resources = 5;
+}
+message Capabilities {
+  optional uint32 control_version = 1;
+  optional uint32 data_version = 2;
+  optional uint32 codec_mask = 3;
+  repeated CapabilityRow rows = 4;
+  optional Resources maximum = 5;
+}
+message Diagnostic {
+  optional sint64 node = 1;
+  optional uint32 port = 2;
+  optional uint64 edge = 3;
+  optional string parameter = 4;
+}
+message State {
+  optional uint32 lifecycle = 1;
+  optional bool run_intent = 2;
+  optional uint64 revision = 3;
+  optional uint64 token = 4;
+  optional Graph applied = 5;
+  optional Resources resources = 6;
+}
+message Reply {
+  optional uint32 command = 1;
+  optional uint32 error = 2;
+  optional Diagnostic diagnostic = 3;
+  optional State state = 4;
+  optional Capabilities capabilities = 5;
+}
+message Extension {
+  optional uint32 tag = 1;
+  optional bytes bytes = 2;
+}
+message Message {
+  optional uint32 schema_version = 1;
+  optional uint64 client = 2;
+  optional uint64 session = 3;
+  optional uint64 epoch = 4;
+  optional uint64 request = 5;
+  optional uint64 expected_revision = 6;
+  optional Command command = 7;
+  optional Reply reply = 8;
+  repeated Extension extensions = 9;
+}

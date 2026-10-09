@@ -1,274 +1,108 @@
-#include "pipeline/stream_transport.h"
-#include "pipeline/engine_client.h"
-#include "pipeline/test_signal.h"
-#include "aggregator/aggregator_server.h"
-#include "aggregator/aggregator_client.h"
-#include <QCoreApplication>
-#include <QProcess>
-#include <QTemporaryDir>
-#include <QFile>
-#include <QJsonDocument>
+#include "numeric_transport_fixture.h"
+#include <control/numeric_routing_adapter.h>
+#include <control/numeric_desktop_host.h>
+#include <aggregator/aggregator_client.h>
+#include <aggregator/aggregator_server.h>
 #include <QJsonArray>
-#include <QElapsedTimer>
-#include <QThread>
-#include <QTcpServer>
-#include <cmath>
-#include <stdexcept>
-using namespace pipeline;
-static void require(bool b, const char *m) {
-    if (!b)
-        throw std::runtime_error(m);
+#include <cstdio>
+using namespace transport_fixture;
+static QJsonObject advertised(NumericEngine& e,quint16 port,const char* graphId){
+    return {{"control_version",2},{"data_version",4},{"stream_port",int(port)},
+        {"publisher_incarnation",QString::number(e.snapshot().epoch)},{"graph_revision",QString::number(e.snapshot().graph_revision)},
+        {"streams",QJsonArray{QJsonObject{{"id","relay"},{"graph_id",graphId},{"node_id",1},{"direction","input"},{"port_index",0},{"payload_version",4}}}}};
 }
-static bool wait(std::function<bool()> f, int ms = 5000) {
-    QElapsedTimer t;
-    t.start();
-    while (!f() && t.elapsed() < ms) {
-        QCoreApplication::processEvents();
-        QThread::msleep(1);
+static QJsonObject binding(QUuid provider){return {{"network",QJsonObject{{"routes",QJsonArray{QJsonObject{{"node_id",0},{"provider_uuid",provider.toString(QUuid::WithoutBraces)},{"stream_id","relay"},
+    // An offline UUID must never fall through to this otherwise valid direct route.
+    {"host","127.0.0.1"},{"port",1},{"remote_endpoint",QJsonObject{{"graph_id","wrong"},{"node_id",1},{"direction","input"},{"port_index",0}}}}}}}}};}
+class WorkerDirectory {
+    QThread thread;QObject* worker=new QObject;std::unique_ptr<AggregatorServer> server;
+public:
+    quint16 port=0;
+    WorkerDirectory(){worker->moveToThread(&thread);QObject::connect(&thread,&QThread::finished,worker,&QObject::deleteLater);thread.start();
+        QMetaObject::invokeMethod(worker,[this]{server=std::make_unique<AggregatorServer>();if(server->start(0))port=server->serverPort();},Qt::BlockingQueuedConnection);
+        require(port!=0,"worker directory listen");}
+    ~WorkerDirectory(){QMetaObject::invokeMethod(worker,[this]{server.reset();},Qt::BlockingQueuedConnection);thread.quit();thread.wait();}
+    void stop(){QMetaObject::invokeMethod(worker,[this]{server->stop();},Qt::BlockingQueuedConnection);}
+};
+static void worker_routing(){
+    WorkerDirectory directory;NumericDesktopHost a,b,c;Replies ar(a),br(b),cr(c);
+    auto ga=graph("worker-a"),gb=graph("worker-b"),gc=graph("worker-c");
+    ar.accepted(apply(ga));br.accepted(apply(gb));cr.accepted(apply(gc));
+
+    require(a.listen(QHostAddress::LocalHost,0,true)&&b.listen(QHostAddress::LocalHost,0,true)&&c.listen(QHostAddress::LocalHost,0,true),"worker CONTROL2 listeners");
+    const auto aid=QUuid::createUuid(),bid=QUuid::createUuid();a.set_registry_identity(aid);b.set_registry_identity(bid);
+    a.set_registry_capabilities(advertised(*a.local_engine(),a.server_port(),"worker-a"));b.set_registry_capabilities(advertised(*b.local_engine(),b.server_port(),"worker-b"));
+    for(auto* host:{&a,&b,&c})host->configure_registry(QHostAddress::LocalHost,directory.port);
+    require(b.configure_network(binding(aid))&&c.configure_network(binding(bid)),"worker provider routes");
+    FrameProbe workerObservation(*c.local_engine(),sink(gc));
+    std::uint64_t sequence=0;auto arrives=[&](std::uint64_t expected){feed(a,1,++sequence,expected);return workerObservation.equals(expected);};
+    require(wait([&]{return arrives(31);},6000),"worker registry discovery and two-hop DATA4");
+    const auto baseline=workerObservation.latest().frame.view().stamp;
+    require(c.subscribe_numeric_frames({sink(gc)}),"GUI-facing subscriber");
+    // No processEvents or GUI callbacks here. Worker registry, control, stream
+    // transports and route input must advance while the GUI thread is blocked.
+    for(std::size_t i=0;i<160;++i){feed(a,1,++sequence,9007199254740993ULL+i);QThread::msleep(2);}
+    QThread::msleep(250);
+    require(workerObservation.equals(9007199254741152ULL),"TCP DATA4/registry routing stalls or loses pool slots with blocked GUI");
+    const auto final=workerObservation.latest().frame.view().stamp;
+    require(final.producer_epoch==baseline.producer_epoch&&final.generation==baseline.generation,"blocked GUI burst changed producer provenance");
+    const auto before=c.snapshot().graph_revision;
+    // CONTROL mutation travels through a remote worker host while GUI delivery
+    // of the owning reply is intentionally paused.
+    NumericDesktopHost remote({},"127.0.0.1",c.server_port());Replies rr(remote);remote.connect_remote();
+    require(wait([&]{return remote.snapshot().graph_revision==before&&remote.snapshot().epoch!=0;}),"worker remote CONTROL2 bootstrap");
+    auto changed=gc;auto extra=gc.nodes[0];extra.id=2;extra.enabled=false;changed.nodes.push_back(extra);
+    const auto id=remote.submit(apply(changed));QThread::msleep(150);
+    require(c.snapshot().graph_revision==before+1,"CONTROL2 mutation stalls with blocked GUI");
+    require(wait([&]{return rr.values.contains(id)&&rr.values.at(id).accepted;}),"queued worker CONTROL reply lost");
+    directory.stop();QThread::msleep(150);
+    require(b.routing_diagnostics()["peer_count"].toInt()==0&&c.routing_diagnostics()["peer_count"].toInt()==0,"directory retirement stalls with blocked GUI");
+}
+int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
+    AggregatorServer registry;require(registry.start(0),"directory listen");
+    auto a=std::make_unique<NumericEngine>();NumericEngine b,c;auto ga=graph("a"),gb=graph("b"),gc=graph("c");
+    // B has a second, unrelated ingress that must survive A's retirement.
+    auto independent=gb.nodes;independent[0].id=2;independent[1].id=3;
+    gb.nodes.insert(gb.nodes.end(),independent.begin(),independent.end());gb.edges.push_back({2,3,0,0});
+    auto ar=std::make_unique<Replies>(*a);Replies br(b),cr(c);ar->accepted(apply(ga));br.accepted(apply(gb));cr.accepted(apply(gc));
+
+    auto as=std::make_unique<NumericControlServer>(*a);NumericControlServer bs(b),cs(c);
+    require(as->listen(QHostAddress::LocalHost,0,true)&&bs.listen(QHostAddress::LocalHost,0,true)&&cs.listen(QHostAddress::LocalHost,0,true),"three CONTROL2 servers");
+    const auto aid=QUuid::createUuid(),bid=QUuid::createUuid();
+    auto ac=std::make_unique<AggregatorClient>(AggregatorClientConfig{aid,ComponentType::core,as->port(),321});
+    AggregatorClient bc({bid,ComponentType::core,bs.port(),322}),directoryB({QUuid::createUuid(),ComponentType::data_sink,0}),directoryC({QUuid::createUuid(),ComponentType::data_sink,0});
+    ac->set_capabilities(advertised(*a,as->port(),"a"));bc.set_capabilities(advertised(b,bs.port(),"b"));
+    for(auto* client:{ac.get(),&bc,&directoryB,&directoryC})client->connect_to_aggregator_server(QHostAddress::LocalHost,registry.serverPort(),1000);
+    require(wait([&]{return !directoryB.resolve_engine(aid).isEmpty()&&!directoryC.resolve_engine(bid).isEmpty();}),"directory stream discovery");
+    NumericRoutingAdapter rb(b,&directoryB),rc(c,&directoryC);require(rb.configure(binding(aid))&&rc.configure(binding(bid)),"provider routes");
+    FrameProbe bObservation(b,sink(gb)),cObservation(c,sink(gc)),unrelated(b,{"b",3,domain::PortDirection::Input,0});
+    NumericRemoteEndpoint fanout("127.0.0.1",cs.port());connect(fanout);fanout.subscribe_numeric_frames({sink(gc)});std::uint64_t observed=0;
+    fanout.set_numeric_frame_handler([&](auto f){if(f.frame&&f.frame.view().stamp.available)observed=value(f);});
+    std::uint64_t sequence=0;auto endToEnd=[&](std::uint64_t expected){feed(*a,1,++sequence,expected);return cObservation.equals(expected)&&observed==expected;};
+    const auto relayed=wait([&]{return endToEnd(9007199254740993ULL);},6000);
+    if(!relayed){
+        std::fprintf(stderr,"routing B=%s C=%s fanout epoch=%llu graphrev=%llu observed=%llu warning=%s\n",
+            QJsonDocument(rb.diagnostics()).toJson(QJsonDocument::Compact).constData(),QJsonDocument(rc.diagnostics()).toJson(QJsonDocument::Compact).constData(),
+            (unsigned long long)fanout.snapshot().epoch,(unsigned long long)fanout.snapshot().graph_revision,(unsigned long long)observed,qPrintable(fanout.network_warning()));
+        for(auto* probe:{&bObservation,&cObservation}){auto f=probe->latest();
+            std::fprintf(stderr,"probe status=%d frame=%d available=%d producer=%llu sequence=%llu\n",int(f.status),bool(f.frame),f.frame&&f.frame.view().stamp.available,
+                f.frame?(unsigned long long)f.frame.view().stamp.producer_epoch:0,f.frame?(unsigned long long)f.frame.view().stamp.sequence:0);}
     }
-    return f();
-}
-static int port() {
-    QTcpServer s;
-    require(s.listen(QHostAddress::LocalHost, 0), "reserve port");
-    return s.serverPort();
-}
-static QJsonObject graph(QStringList kinds, QMap<int, QJsonObject> params = {}) {
-    QJsonArray nodes, edges;
-    for (int i = 0; i < kinds.size(); ++i) {
-        auto p = params.value(i);
-        p["model-name"] = kinds[i];
-        nodes.append(QJsonObject{{"id", i}, {"internal-data", p}});
-        if (i)
-            edges.append(QJsonObject{{"outNodeId", i - 1}, {"outPortIndex", 0}, {"inNodeId", i}, {"inPortIndex", 0}});
-    }
-    return {{"version", 2}, {"nodes", nodes}, {"connections", edges}};
-}
-static void compare(const TypedFrame &a, const TypedFrame &b) {
-    require(a.history.size() == b.history.size(), "History rows mismatch");
-    for (size_t r = 0; r < a.history.size(); ++r) {
-        require(a.history[r].size() == b.history[r].size(), "History columns mismatch");
-        for (size_t c = 0; c < a.history[r].size(); ++c)
-            require(std::abs(a.history[r][c] - b.history[r][c]) < 1e-5f, "Distributed numeric mismatch");
-    }
-}
-int main(int argc, char **argv) {
-    QCoreApplication app(argc, argv);
-    QProcess processes[3];
-    try {
-        QTemporaryDir dir;
-        require(dir.isValid(), "temp dir");
-        AggregatorServer aggregator;
-        require(aggregator.start(0), "aggregator start");
-        int ap = port(), bp = port(), cp = port(), control = port();
-        QString uuids[3];
-        for (auto &u : uuids)
-            u = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        AggregatorClient observer({QUuid::createUuid(), ComponentType::data_sink, 0});
-        observer.connect_to_aggregator_server(QHostAddress::LocalHost, aggregator.serverPort(), 2000);
-        require(wait([&] { return observer.is_registered(); }), "observer registration");
-        auto tones = TestSignalSettings{}.json();
-        tones["amplitude"] = 0.04;
-        auto a =
-            graph({"TestSignal", "NetworkOutput"}, {{0, tones}, {1, {{"data_type", "audio"}, {"stream_id", "pcm"}}}});
-        auto b = graph({"NetworkInput", "Window", "WindowFunction", "StereoFFT", "BarkWeighting", "SpectrumMerge",
-                        "Mel", "NetworkOutput"},
-                       {{0, {{"data_type", "audio"}, {"stream_id", "pcm"}, {"provider_uuid", uuids[0]}}},
-                        {7, {{"data_type", "mel"}, {"stream_id", "mel"}}}});
-        auto branchNodes = b["nodes"].toArray();
-        auto branchEdges = b["connections"].toArray();
-        auto independentTone = tones;
-        independentTone["model-name"] = "TestSignal";
-        branchNodes.append(QJsonObject{{"id", 100}, {"internal-data", independentTone}});
-        branchNodes.append(QJsonObject{
-            {"id", 101},
-            {"internal-data",
-             QJsonObject{{"model-name", "NetworkOutput"}, {"data_type", "audio"}, {"stream_id", "independent"}}}});
-        branchEdges.append(QJsonObject{{"outNodeId", 100}, {"outPortIndex", 0}, {"inNodeId", 101}, {"inPortIndex", 0}});
-        b["nodes"] = branchNodes;
-        b["connections"] = branchEdges;
-        auto c = graph({"NetworkInput", "Spectrogram", "NetworkOutput"},
-                       {{0, {{"data_type", "mel"}, {"stream_id", "mel"}, {"provider_uuid", uuids[1]}}},
-                        {1, {{"history_size", 32}}},
-                        {2, {{"data_type", "history"}, {"stream_id", "history"}}}});
-        QJsonObject graphs[] = {a, b, c};
-        int ports[] = {ap, bp, cp};
-        for (int i = 2; i >= 0; --i) {
-            QJsonObject cfg{{"device", QJsonObject{{"uuid", uuids[i]}}},
-                            {"core", QJsonObject{{"run_loopback", i == 1}, {"run_analyser", true}}},
-                            {"aggregator", QJsonObject{{"enabled", true}, {"port", int(aggregator.serverPort())}}},
-                            {"network", QJsonObject{{"stream_port", ports[i]}}},
-                            {"pipeline_graph", graphs[i]}};
-            if (i == 0)
-                cfg["engine_server"] = QJsonObject{{"enabled", true}, {"port", control}, {"allow_mutations", true}};
-            QFile f(dir.filePath(QString::number(i) + ".json"));
-            require(f.open(QIODevice::WriteOnly), "write fixture");
-            f.write(QJsonDocument(cfg).toJson());
-            f.close();
-            processes[i].setProcessChannelMode(QProcess::MergedChannels);
-            processes[i].start(QCoreApplication::applicationDirPath() + "/pipeline_cli.exe",
-                               {"--config", f.fileName(), "--duration", "15000"});
-            require(processes[i].waitForStarted(), "CLI start");
-        }
-          // Registration is announced before the separate capabilities packet.
-          // Wait for each expected participant's metadata, then assert its wire
-          // version below. Empty registration placeholders are not readiness.
-          require(wait([&] {
-              const auto capabilities=observer.capabilities();
-              return std::all_of(std::begin(uuids),std::end(uuids),[&](const auto &id) {
-                  return capabilities.value(QUuid(id)).value("protocol_versions").isArray();
-              });
-          }), "cores capabilities");
-        for (auto &u : uuids) {
-            auto m = observer.capabilities().value(QUuid(u));
-            require(m["protocol_versions"].toArray().contains(2), "protocol capability");
-        }
-        auto local = graph({"NetworkInput", "Window", "WindowFunction", "StereoFFT", "BarkWeighting", "SpectrumMerge",
-                            "Mel", "Spectrogram", "NetworkOutput"},
-                           {{0, {{"data_type", "audio"}, {"stream_id", "local-pcm"}, {"host", "127.0.0.1"}}},
-                            {7, {{"history_size", 32}}},
-                            {8, {{"data_type", "history"}, {"stream_id", "local-history"}}}});
-        QString error;
-        auto program = GraphProgram::compile(local, error);
-        require(bool(program), qPrintable(error));
-        GraphEvaluationContext context;
-        QMap<quint64, TypedFrame> expected, actual;
-        NetworkSubscriber pcm, history, second, independent;
-        int independent_count = 0;
-        bool source_down = false;
-        int ready = 0, second_count = 0;
-        bool unavailable = false;
-        auto status = [&](QString s) {
-            if (s == "Running")
-                ++ready;
-        };
-        pcm.set_status_handler(status);
-        history.set_status_handler(status);
-        second.set_status_handler(status);
-        independent.set_status_handler(status);
-        independent.set_frame_handler([&](TypedFrame f) {
-            if (f.available)
-                ++independent_count;
-        });
-        pcm.set_frame_handler([&](TypedFrame f) {
-            f.producer_epoch = f.epoch;
-            auto out = program->evaluate(0, f, context);
-            if (out.ports.contains(8))
-                expected[out.ports[8].source_sequence] = out.ports[8];
-        });
-        history.set_frame_handler([&](TypedFrame f) {
-            if (!f.available) {
-                unavailable = true;
-                actual.clear();
-                return;
-            }
-            require(!source_down || !unavailable, "stale history arrived after unavailable marker");
-            actual[f.source_sequence] = std::move(f);
-        });
-        second.set_frame_handler([&](TypedFrame f) {
-            if (f.available)
-                ++second_count;
-        });
-        pcm.start("127.0.0.1", ap, "pcm", FrameType::PCM);
-        history.start("127.0.0.1", cp, "history", FrameType::History);
-        second.start("127.0.0.1", cp, "history", FrameType::History);
-        independent.start("127.0.0.1", bp, "independent", FrameType::PCM);
-        require(wait([&] { return ready == 4; }), "subscriptions handshake");
-        // Give registry-derived bindings time to complete before starting the only source.
-        QElapsedTimer settle;
-        settle.start();
-        wait([&] { return settle.elapsed() > 300; }, 1000);
-        EngineClient client("127.0.0.1", control);
-        require(wait([&] { return client.snapshot().epoch != 0; }), "control handshake");
-        bool accepted = false;
-        client.set_reply_handler([&](EngineReply r) {
-            if (r.accepted)
-                accepted = true;
-        });
-        EngineCommand start;
-        start.kind = EngineCommand::StartCapture;
-        client.submit(start);
-        require(wait([&] { return accepted; }), "start capture ACK");
-        require(wait([&] { return actual.size() >= 40 && expected.size() >= 40 && second_count >= 40; }, 7000),
-                "three-core frames");
-        int compared = 0;
-        for (auto it = actual.begin(); it != actual.end(); ++it)
-            if (expected.contains(it.key())) {
-                compare(it.value(), expected[it.key()]);
-                ++compared;
-            }
-        require(compared >= 30, "numeric matched sequence count");
-        const auto old_epoch = client.snapshot().epoch;
-        const int independent_before = independent_count;
-        unavailable = false;
-        source_down = true;
-        client.disconnect_remote();
-        processes[0].kill();
-        require(processes[0].waitForFinished(2000), "publisher kill");
-        require(wait([&] {
-                    return observer.capabilities().value(QUuid(uuids[0]))["state"].toInt() ==
-                           int(ComponentState::disconnected);
-                }),
-                "publisher offline registry");
-        require(wait([&] { return unavailable; }), "A disconnect did not propagate unavailable through live B to C");
-        require(processes[1].state() == QProcess::Running && processes[2].state() == QProcess::Running,
-                "dependent cores exited");
-        settle.restart();
-        wait([&] { return settle.elapsed() > 300; }, 1000);
-        require(independent_count > independent_before + 20, "independent B stream stopped after A disconnect");
-        require(actual.isEmpty(), "history branch did not stay cleared");
-        source_down = false;
-        expected.clear();
-        actual.clear();
-        const int old_ready = ready;
-        processes[0].start(QCoreApplication::applicationDirPath() + "/pipeline_cli.exe",
-                           {"--config", dir.filePath("0.json"), "--duration", "15000"});
-        require(processes[0].waitForStarted(), "publisher restart");
-        require(wait(
-                    [&] {
-                        return observer.capabilities().value(QUuid(uuids[0]))["state"].toInt() >= 3 &&
-                               ready > old_ready;
-                    },
-                    4000),
-                "publisher rediscovery and subscription reconnect");
-        client.connect_remote();
-        require(wait([&] { return client.snapshot().epoch != 0 && client.snapshot().epoch != old_epoch; }),
-                "new control epoch");
-        settle.restart();
-        wait([&] { return settle.elapsed() > 300; }, 1000);
-        accepted = false;
-        client.submit(start);
-        require(wait([&] { return accepted; }), "restart capture ACK");
-        require(wait([&] { return actual.size() >= 40 && expected.size() >= 40; }, 5000), "new publisher epoch frames");
-        int restarted = 0;
-        for (auto it = actual.begin(); it != actual.end(); ++it)
-            if (expected.contains(it.key())) {
-                compare(it.value(), expected[it.key()]);
-                ++restarted;
-            }
-        require(restarted >= 30, "restart numeric comparison");
-        EngineCommand stop;
-        stop.kind = EngineCommand::StopCapture;
-        client.submit(stop);
-        require(wait([&] { return client.snapshot().statuses.value("Capture").state == State::Stopped; }),
-                "capture stop");
-        qInfo() << "3 CLI cores, registry UUID resolving, PCM -> FFT/Mel -> history, multicast; numeric frames"
-                << compared;
-        for (auto &p : processes) {
-            p.terminate();
-            if (!p.waitForFinished(2000)) {
-                p.kill();
-                p.waitForFinished();
-            }
-        }
-        return 0;
-    } catch (const std::exception &e) {
-        qCritical() << e.what();
-        for (auto &p : processes) {
-            qCritical().noquote() << p.readAll();
-            p.kill();
-            p.waitForFinished(1000);
-        }
-        return 1;
-    }
-}
+    require(relayed,"three-engine directory relay and fanout exact64");
+    const auto firstProducer=cObservation.latest().frame.view().stamp.producer_epoch;
+    ac->disconnect_from_aggregator_server();as.reset();
+    require(wait([&]{return directoryB.resolve_engine(aid).isEmpty()&&!cObservation.available();},6000),"offline provider propagated typed unavailable");
+    feed(b,1,1,73,2);require(wait([&]{return unrelated.equals(73);}),"retirement cleared unrelated branch");
+    // Replace publisher process identity while retaining its persistent directory UUID.
+    ac.reset();ar.reset();a.reset();a=std::make_unique<NumericEngine>();ar=std::make_unique<Replies>(*a);
+    ar->accepted(apply(ga));as=std::make_unique<NumericControlServer>(*a);
+    require(as->listen(QHostAddress::LocalHost,0,true),"replacement publisher server");
+    ac=std::make_unique<AggregatorClient>(AggregatorClientConfig{aid,ComponentType::core,as->port(),321});
+    ac->set_capabilities(advertised(*a,as->port(),"a"));ac->connect_to_aggregator_server(QHostAddress::LocalHost,registry.serverPort(),1000);sequence=0;
+    require(wait([&]{return endToEnd(UINT64_MAX);},6000),"same UUID new publisher incarnation with restarted sequence");
+    require(cObservation.latest().frame.view().stamp.producer_epoch!=firstProducer,"publisher provenance was rewritten or stale");
+    require(unrelated.equals(73),"publisher restart reset unrelated branch");
+    registry.stop();require(wait([&]{return !directoryB.is_registered()&&!directoryC.is_registered();}),"directory disconnection");
+    require(wait([&]{return rb.diagnostics()["peer_count"].toInt()==0&&rc.diagnostics()["peer_count"].toInt()==0;}),"directory loss retained cached/direct fallback peer");
+    worker_routing();std::puts("three canonical engines + directory + fanout + selective retirement + same UUID incarnation + blocked GUI worker DATA/CONTROL/directory passed");return 0;
+}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

@@ -47,6 +47,11 @@ class AudioPipeline final {
     // Keeps independent branches and output counters alive; resume signals a gap.
     void clear_ingress(int ingress_node, uint64_t expected_epoch = UINT64_MAX);
     using TypedHandler = std::function<void(int, TypedFrame)>;
+    using PortHandler = std::function<void(DeliveredPortFrame)>;
+    uint64_t subscribe_ports(PortHandler,std::vector<EndpointIdentity> endpoints = {});
+    void unsubscribe_ports(uint64_t token);
+    std::vector<DeliveredPortFrame> latest_port_frames(const std::vector<EndpointIdentity> &endpoints = {}) const;
+    std::vector<EndpointIdentity> port_endpoints() const;
     uint64_t subscribe_typed(TypedHandler handler);
     uint64_t subscribe_typed(TypedHandler handler, std::vector<int> nodes);
     void unsubscribe_typed(uint64_t token);
@@ -98,6 +103,15 @@ class AudioPipeline final {
     QMap<uint64_t, TypedHandler> _typed_handlers;
     QMap<uint64_t, std::vector<int>> _typed_nodes;
     uint64_t _next_typed_token = 0;
+    struct PortDeliveryState;
+    std::unique_ptr<PortDeliveryState> _port_delivery;
+    QMap<uint64_t,PortHandler> _port_handlers;
+    QMap<uint64_t,std::vector<EndpointIdentity>> _port_filters;
+    std::vector<DeliveredPortFrame> _retired_port_frames;
+    QTimer *_port_delivery_timer=nullptr;
+    std::atomic<bool> _port_delivery_pending{false};
+    void retain_port_delivery(const dataflow_runtime::PortFrameView &) noexcept;
+    void flush_port_delivery();
     QMap<int, TypedFrame> _views;
     uint64_t _epoch = 0;
     int _compat_history_node = 4;
@@ -116,6 +130,7 @@ class AudioPipeline final {
                                              application::RuntimeLimits);
     signal_contracts::Status negotiate_ingress(int, const signal_contracts::FrameView &);
     std::vector<std::vector<float>> runtime_history(int) const;
+    std::vector<std::vector<float>> runtime_port_history(int node,PortDirection direction,uint16_t port) const;
     QMap<int,TypedFrame> _incoming_histories;
     QMap<int,bool> _history_zero_latest;
     QMap<QString, ComponentStatus> _statuses;
@@ -157,6 +172,7 @@ class AudioPipeline final {
         std::vector<float> mel;
         float hz, magnitude;
         uint64_t generation, graph_revision, enqueued_ns;
+        std::vector<std::uint8_t> packet;
     };
     QTimer *_wled_timer = nullptr;
     std::mutex _wled_mailbox_mutex;
@@ -164,5 +180,6 @@ class AudioPipeline final {
     std::atomic<bool> _wled_active{false};
     std::atomic<uint64_t> _network_generation{0};
     void publish_wled(const std::vector<float> &mel, float hz, float magnitude, uint64_t graph_revision);
+    void publish_wled_packet(const std::vector<std::uint8_t> &,uint64_t graph_revision);
 };
 } // namespace pipeline

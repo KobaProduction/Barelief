@@ -2,712 +2,279 @@
 #include "core_app/gui_presenter.h"
 #include "core_app/scheme_editor/editor_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
+#include "core_app/scheme_editor/numeric_editor_model.h"
+#include "core_app/scheme_editor/node_parameter_model.h"
 #include "visualization/ui_text.h"
-#include <QtNodes/internal/NodeGraphicsObject.hpp>
-#include <QtNodes/internal/AbstractNodeGeometry.hpp>
+#include <desktop/numeric_project_document.h>
+#include <pipeline/numeric_projection.h>
+#include <QtNodes/DataFlowGraphicsScene>
 #include <QApplication>
-#include <QMainWindow>
-#include <QDockWidget>
 #include <QPushButton>
-#include <QDoubleSpinBox>
 #include <QLabel>
-#include <QComboBox>
-#include <QTreeWidget>
-#include <QLineEdit>
-#include <QMouseEvent>
-#include <QWheelEvent>
-#include <QKeyEvent>
-#include <QFocusEvent>
-#include <QLayout>
-#include <QMenu>
+#include <QInputDialog>
+#include <QTimer>
 #include <QClipboard>
-#include <QMimeData>
-#include <QSplitter>
-#include <QSplitterHandle>
-#include <QContextMenuEvent>
+#include <QLineEdit>
+#include <QCheckBox>
+#include <QLineF>
+#include <QVBoxLayout>
+#include <QtNodes/GraphicsView>
+#include <QTreeWidget>
+#include <QMenu>
+#include <QComboBox>
+#include <QtNodes/internal/ConnectionGraphicsObject.hpp>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QDataStream>
-#include <QTcpServer>
-#include "core/network/tcp_packet_socket.h"
-#include <QUndoStack>
 #include <QtTest/QTest>
 #include <QtTest/QSignalSpy>
-#include <stdexcept>
+#include <array>
+#include <bit>
 #include <limits>
-#include <cmath>
-#include <QDir>
-#include <QScrollArea>
-#include <QCheckBox>
-#include <QStyle>
-#include <QStyleOptionButton>
-static void require(bool value, const char *message) { if (!value) throw std::runtime_error(message); }
-static void move_mouse(QWidget *widget, QPoint point) {
-    QMouseEvent event(QEvent::MouseMove,QPointF(point),QPointF(widget->mapToGlobal(point)),
-                      Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
-    QApplication::sendEvent(widget,&event);
-}
-static void drag(QWidget *widget, QPoint from, QPoint to) {
-    QTest::mousePress(widget,Qt::LeftButton,Qt::NoModifier,from);
-    move_mouse(widget,to); QTest::mouseRelease(widget,Qt::LeftButton,Qt::NoModifier,to);
-}
-static void click_checkbox(QCheckBox *checkbox) {
-    require(checkbox,"Missing checkbox");
-    QStyleOptionButton option; option.initFrom(checkbox); option.text=checkbox->text();
-    const auto indicator=checkbox->style()->subElementRect(QStyle::SE_CheckBoxIndicator,&option,checkbox);
-    QTest::mouseClick(checkbox,Qt::LeftButton,Qt::NoModifier,indicator.center());
-}
-static void node_output_controls() {
-    for(const auto &definition:pipeline::node_definitions()) {
-        AudioNodeModel model(definition.name);
-        require(model.save().value("enabled")==true,"Node output default is not enabled");
-        std::unique_ptr<QWidget> controls(model.parameter_widget());
-        require(controls->findChild<QCheckBox *>("enabled"),"Generated node output control missing");
-    }
-    AudioNodeModel model("WLED");
-    auto parameters=model.save(); parameters["extension"]=QJsonArray{1,2,3}; model.load(parameters);
-    std::unique_ptr<QWidget> inspector(model.parameter_widget());
-    std::unique_ptr<QWidget> embedded(model.embeddedWidget());
-    auto *toggle=inspector->findChild<QCheckBox *>("enabled");
-    auto *embedded_toggle=embedded->findChild<QCheckBox *>("enabled");
-    inspector->show(); QTest::qWait(10);
-    model.preview({2048,0});
-    require(embedded->findChild<QLabel *>("previewValues")->text()=="2048" &&
-            embedded->findChild<QLabel *>("previewPeak")->text()=="0","Zero peak was treated as unavailable");
-    const auto unchanged=model.save();
-    model.preview({2048,std::numeric_limits<float>::quiet_NaN()});
-    require(model.save()==unchanged && embedded->findChild<QLabel *>("previewPeak")->text()==QStringLiteral("—"),
-            "Nonfinite preview polluted parameters or rendered a numeric value");
-    click_checkbox(toggle);
-    require(!model.save().value("enabled").toBool() && !embedded_toggle->isChecked(),"Output toggle did not synchronize controls");
-    require(embedded->findChild<QLabel *>("previewStatus")->text()==ui::text("Output disabled") &&
-            embedded->findChild<QLabel *>("previewValues")->text()==QStringLiteral("—"),"Muted output retained available telemetry");
-    auto expected=parameters; expected["enabled"]=false;
-    require(model.save()==expected,"Output toggle changed unrelated parameters");
-    AudioNodeModel restored("WLED"); restored.load(model.save());
-    std::unique_ptr<QWidget> restored_controls(restored.parameter_widget());
-    require(!restored_controls->findChild<QCheckBox *>("enabled")->isChecked() && restored.save()==expected,
-            "Saved output gate was not restored");
-    click_checkbox(toggle);
-    require(model.save()==parameters && embedded_toggle->isChecked(),"Reenabled output did not restore exact configuration");
-    require(embedded->findChild<QLabel *>("previewStatus")->text()==ui::text("Waiting for data"),"Reenabled output reused stale telemetry");
-    AudioNodeModel function("WindowFunction");
-    std::unique_ptr<QWidget> functions(function.parameter_widget());
-    auto *window=functions->findChild<QComboBox *>("function");
-    require(window && window->count()==4,"Window function metadata did not expose supported algorithms");
-    window->setCurrentIndex(window->findData("hamming"));
-    require(function.save().value("function")=="hamming","Window function selection did not persist");
-    qInfo("Editor: node output toggles, read-only telemetry and window parameter checks passed");
-}
-static void selection_and_theme(SchemeEditorWidget &editor, QtNodes::DataFlowGraphModel &graph,
-                                QtNodes::DataFlowGraphicsScene &scene) {
-    auto *view=editor.findChild<QtNodes::GraphicsView *>();
-    const auto previous_theme=ui::Theme::instance().code();
-    const auto previous_center=view->mapToScene(view->viewport()->rect().center());
-    QtNodes::NodeId mel=QtNodes::InvalidNodeId, wled=QtNodes::InvalidNodeId;
-    for (auto id:graph.allNodeIds()) {
-        const auto name=graph.delegateModel<AudioNodeModel>(id)->name();
-        if(name=="MelView") mel=id;
-        if(name=="WLED") wled=id;
-    }
-    require(mel!=QtNodes::InvalidNodeId && wled!=QtNodes::InvalidNodeId,"Missing selection fixtures");
-    auto *model=graph.delegateModel<AudioNodeModel>(wled);
-    auto parameters=model->save(); parameters["extension"]=QJsonObject{{"preserved",true}};
-    model->load(parameters);
-    for(const auto &theme:QStringList{"light","dark","light"}) {
-        require(ui::Theme::instance().set(theme),"Cannot switch editor theme");
-        QTest::qWait(20);
-        for(int repetition=0;repetition<8;++repetition) for(auto id:{mel,wled}) {
-            const auto bounds=scene.nodeGraphicsObject(id)->sceneBoundingRect();
-            view->centerOn(bounds.center());
-            QTest::mouseClick(view->viewport(),Qt::LeftButton,Qt::NoModifier,
-                              view->mapFromScene(bounds.topLeft()+QPointF(45,18)));
-            QApplication::processEvents();
-            if(id==wled) {
-                auto *inspector=editor.findChild<QScrollArea *>("pipelineInspector");
-                auto *spin=inspector->findChild<QDoubleSpinBox *>("gain");
-                require(spin && spin->value()==parameters.value("gain").toDouble(),"WLED selection lost numeric gain");
-                auto *line=spin->findChild<QLineEdit *>();
-                require(line && !line->text().contains("null") && line->text()==spin->text(),"WLED gain displays null");
-                spin->setFocus(); QTest::keyClick(spin,Qt::Key_Tab);
-                model->preview({16,std::numeric_limits<float>::quiet_NaN()});
-                require(model->save()==parameters,"Selection or preview polluted WLED parameters");
-                require(scene.nodeGraphicsObject(wled)->opacity()==1,"Node body remains translucent");
-                require(model->embeddedWidget()->palette().color(QPalette::Window)==QApplication::palette().color(QPalette::Window),
-                        "Embedded controls retained the previous theme");
-            }
+#include <stdexcept>
+static void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
+static void bypass_controls_checks(){
+    for(const auto& kind:numeric_editor::catalog()){
+        AudioNodeModel model(kind);
+        std::unique_ptr<QWidget> body(model.embeddedWidget()),inspector(model.parameter_widget());
+        auto* inlineBypass=body->findChild<QCheckBox*>("numericBypass");auto* inspectorBypass=inspector->findChild<QCheckBox*>("numericBypass");
+        require(inlineBypass && inspectorBypass && model.numeric_node()->enabled && !inlineBypass->isChecked() && !inspectorBypass->isChecked(),"Every new node must expose unchecked bypass with processing enabled");
+        auto* form=body->findChild<QWidget*>("numericNodeParameters");
+        auto* inspectorForm=inspector->objectName()=="numericNodeParameters"?inspector.get():inspector->findChild<QWidget*>("numericNodeParameters");
+        require(form && inspectorForm && form->layout()->itemAt(0)->widget()==inlineBypass && inspectorForm->layout()->itemAt(0)->widget()==inspectorBypass,"Bypass must precede parameter menus/sections in the actual block and inspector forms");
+        if(kind=="ScalarView"){
+            const auto ordered=[](QWidget* parameters){auto* wrapper=parameters->parentWidget();return wrapper && wrapper->layout() && wrapper->layout()->count()==2 && wrapper->layout()->itemAt(0)->widget()==parameters && wrapper->layout()->itemAt(1)->widget() && wrapper->layout()->itemAt(1)->widget()->objectName()=="scalarInputsEditor";};
+            require(ordered(form) && ordered(inspectorForm),"Scalar wrappers must place the bypass/parameter form before metric input controls");
         }
-        // Render an empty portion after the first paint and a theme change: the
-        // cached QtNodes background brush used to survive and make a white grid.
-        view->centerOn(90000,90000); QApplication::processEvents();
-        const auto image=view->viewport()->grab().toImage();
-        const auto background=QApplication::palette().color(QPalette::Window);
-        int grid_pixels=0,total=0;
-        for(int y=10;y<image.height()-10;++y) for(int x=10;x<image.width()-10;++x) {
-            const auto color=image.pixelColor(x,y); ++total;
-            const int distance=std::max({std::abs(color.red()-background.red()),std::abs(color.green()-background.green()),
-                                       std::abs(color.blue()-background.blue())});
-            require(distance<=30,"Editor grid has excessive contrast or a stale background");
-            if(distance>0) ++grid_pixels;
-        }
-        require(total>0 && grid_pixels<total/8,"Editor grid is too dense");
-        const auto screenshots=qEnvironmentVariable("QT_VIS_EDITOR_SCREENSHOT_DIR");
-        if(!screenshots.isEmpty()) { QDir().mkpath(screenshots); image.save(screenshots+"/editor-grid-"+theme+".png"); }
+        require(!model.parameter_model()->field("numericEnabled") && !model.parameter_model()->field("numericBypass") && !inspector->findChild<QAction*>("showOnBlock_numericEnabled") && !inspector->findChild<QAction*>("showOnBlock_numericBypass"),"Bypass must not be a pinnable processing parameter");
+        require(!model.set_parameter_on_block("numericBypass",false) && !model.parameter_model()->setOnBlock("numericEnabled",true),"Presentation pinning cannot hide or duplicate bypass");
+        const auto presentation=model.presentation();
+        inlineBypass->setChecked(true);
+        require(!model.numeric_node()->enabled && inspectorBypass->isChecked() && model.presentation()==presentation,"Bypass must invert only the execution mode and synchronize forms");
+        inspectorBypass->setChecked(false);
+        require(model.numeric_node()->enabled && !inlineBypass->isChecked(),"Inspector must restore processing and synchronize inline bypass");
+        model.set_numeric_edit_handler([](const auto&){return false;});inlineBypass->setChecked(true);
+        require(model.numeric_node()->enabled && !inlineBypass->isChecked() && !inspectorBypass->isChecked(),"Rejected bypass edit must restore both controls");
     }
-    for(const auto value:graph.save().value("nodes").toArray())
-        if(value.toObject().value("id").toInt()==int(wled))
-            require(value.toObject().value("internal-data").toObject()==parameters,"Saved WLED parameters changed after selection");
-    ui::Theme::instance().set(previous_theme.isEmpty()?"system":previous_theme);
-    view->centerOn(previous_center);
-    qInfo("Editor: repeated Mel/WLED selection, saved parameters and light/dark grid checks passed");
 }
-// Real BDSP transport, but no runtime or audio endpoint: verify preset command
-// ordering and start intent without opening capture on the test computer.
-class PresetEnginePeer final : public QTcpServer {
-public:
-    QJsonObject active=pipeline::GraphProgram::defaults();
-    std::vector<pipeline::EngineCommand::Kind> commands;
-    quint64 revision=1;
-protected:
-    void incomingConnection(qintptr descriptor) override {
-        auto *peer=new TcpBDSPSocket(this);
-        require(peer->setSocketDescriptor(descriptor),"Cannot accept preset test peer");
-        connect(peer,&TcpBDSPSocket::packetReceived,this,[this,peer](quint8 packet,QByteArray bytes) {
-            require(packet==5,"Unexpected preset test packet");
-            QDataStream input(bytes); input.setVersion(QDataStream::Qt_6_0);
-            input.setByteOrder(QDataStream::LittleEndian); input.setFloatingPointPrecision(QDataStream::SinglePrecision);
-            quint16 version,port; quint64 id,expected; quint8 kind; qint32 value; quint32 subscriptions;
-            QString interface_address,destination; QByteArray graph;
-            input>>version>>id>>kind>>expected>>value>>subscriptions>>interface_address>>destination>>port>>graph;
-            require(version==1 && input.status()==QDataStream::Ok,"Invalid preset command");
-            commands.push_back(pipeline::EngineCommand::Kind(kind));
-            if(kind==pipeline::EngineCommand::ApplyGraph) {active=QJsonDocument::fromJson(graph).object();++revision;}
-            QByteArray reply; QDataStream output(&reply,QIODevice::WriteOnly);
-            output.setVersion(QDataStream::Qt_6_0); output.setByteOrder(QDataStream::LittleEndian);
-            output.setFloatingPointPrecision(QDataStream::SinglePrecision);
-            output<<quint16(1)<<id<<true<<QString{}<<quint64(123)<<revision<<revision<<quint64(0)<<quint64(0)
-                <<QJsonDocument(active).toJson(QJsonDocument::Compact)<<quint32(0)<<false;
-            require(peer->send_packet(6,reply),"Cannot send preset ACK");
-        });
-    }
+struct PreviewPools {
+    alignas(64) std::array<std::byte,8192> payload{},metadata{};
+    std::array<signal_contracts::BufferSlot,4> ps{},ms{};
+    signal_contracts::BufferPool p{payload,ps,2048},m{metadata,ms,2048};
 };
-static void held_key_pan_checks(bool overlay_only=false,bool clipboard_only=false) {
-    require(qApp->platformName()=="offscreen","Pan-only checks require QT_QPA_PLATFORM=offscreen");
-    PresetEnginePeer peer; require(peer.listen(QHostAddress::LocalHost,0),"Cannot listen for pan test peer");
-    GuiState state; state.file_configs.ui.autosave_enabled=false; state.file_configs.ui.pipeline_auto_apply=false;
-    state.file_configs.scene_graph=peer.active; state.file_configs.pipeline_graph=peer.active;
-    state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto &definition:pipeline::node_definitions())
-        state.delegate_model_registry->registerModel([kind=definition.name] {return std::make_unique<AudioNodeModel>(kind);},definition.category);
-    state.data_flow_graph=std::make_shared<QtNodes::DataFlowGraphModel>(state.delegate_model_registry);
-    state.data_flow_graph->load(peer.active);
-    GuiPresenter presenter(state, test_fixture::synthetic_engine_provider(), "127.0.0.1",peer.serverPort()); presenter.initialize();
-    // Establish the initial remote document before measuring selection effects.
-    // A fixed delay can let the initial snapshot/re-layout arrive during selection.
-    QElapsedTimer handshake;handshake.start();
-    while(!presenter.client().snapshot().epoch && handshake.elapsed()<1000) QTest::qWait(5);
-    require(presenter.client().snapshot().epoch!=0,"Pan peer handshake did not complete");
-    SchemeEditorWidget editor(presenter); editor.resize(1000,700); editor.show();
-    auto *view=editor.findChild<QtNodes::GraphicsView *>();
-    QApplication::setActiveWindow(&editor); view->setFocus(); QTest::qWait(20);
-    require(view->hasFocus(),"Offscreen view did not receive Qt focus");
-    auto center=[&] {return view->mapToScene(view->viewport()->rect().center());};
-    if(clipboard_only) {
-        auto *scene=editor.findChild<QtNodes::DataFlowGraphicsScene *>();
-        auto &graph=*state.data_flow_graph;
-        auto *model=graph.delegateModel<AudioNodeModel>(1);
-        auto parameters=model->save(); parameters["clipboard-extension"]=73; model->load(parameters);
-        scene->clearSelection(); scene->nodeGraphicsObject(1)->setSelected(true); view->setFocus();
-        const int undo=scene->undoStack().count(); const auto count=graph.allNodeIds().size();
-        QTest::keyClick(view,Qt::Key_C,Qt::ControlModifier);
-        const auto *mime=QApplication::clipboard()->mimeData();
-        require(mime && mime->hasFormat("application/qt-nodes-graph"),"Ctrl+C did not copy graph MIME");
-        auto copied=QJsonDocument::fromJson(mime->data("application/qt-nodes-graph")).object();
-        require(copied.value("nodes").toArray().size()==1 && copied.value("connections").toArray().isEmpty(),
-                "Copy retained incident edges to unselected nodes");
-        require(scene->undoStack().count()==undo,"Copy polluted undo stack");
-        const QPoint pointer(85,95); const auto target=view->mapToScene(pointer);
-        QMouseEvent move(QEvent::MouseMove,QPointF(pointer),QPointF(view->viewport()->mapToGlobal(pointer)),
-                         Qt::NoButton,Qt::NoButton,Qt::NoModifier);
-        QApplication::sendEvent(view->viewport(),&move);
-        QTest::keyClick(view,Qt::Key_V,Qt::ControlModifier);
-        require(graph.allNodeIds().size()==count+1 && scene->undoStack().count()==undo+1,"Ctrl+V did not paste with one undo");
-        QtNodes::NodeId pasted=QtNodes::InvalidNodeId;
-        for(auto *item:scene->selectedItems()) if(auto *node=qgraphicsitem_cast<QtNodes::NodeGraphicsObject *>(item)) pasted=node->nodeId();
-        require(pasted!=QtNodes::InvalidNodeId && graph.delegateModel<AudioNodeModel>(pasted)->save()==parameters,
-                "Paste lost node parameters or unknown fields");
-        require(QLineF(graph.nodeData(pasted,QtNodes::NodeRole::Position).toPointF(),target).length()<1,
-                "Paste used desktop cursor instead of viewport pointer");
-        scene->undoStack().undo(); require(graph.allNodeIds().size()==count,"Paste undo failed");
-        scene->undoStack().redo(); require(graph.allNodeIds().size()==count+1,"Paste redo failed");
-        scene->undoStack().undo();
-        QLineEdit field(&editor); field.show(); field.setText("native text"); field.selectAll(); field.setFocus();
-        QTest::keyClick(&field,Qt::Key_C,Qt::ControlModifier); field.clear();
-        QTest::keyClick(&field,Qt::Key_V,Qt::ControlModifier);
-        require(field.text()=="native text" && graph.allNodeIds().size()==count,"Native text copy/paste was intercepted");
-        field.hide(); view->setFocus();
-        QtNodes::NodeId graph_id=QtNodes::InvalidNodeId;
-        for(auto id:graph.allNodeIds()) if(pipeline::node_definition(graph.delegateModel<AudioNodeModel>(id)->name()).category=="views") {graph_id=id;break;}
-        require(graph_id!=QtNodes::InvalidNodeId,"Missing graph activation fixture");
-        QSignalSpy focus(&editor,&SchemeEditorWidget::graph_view_requested), opened(&editor,&SchemeEditorWidget::graph_open_requested);
-        const auto bounds=scene->nodeGraphicsObject(graph_id)->sceneBoundingRect(); view->centerOn(bounds.center());
-        const auto point=view->mapFromScene(bounds.topLeft()+QPointF(45,18));
-        QTest::mouseClick(view->viewport(),Qt::LeftButton,Qt::NoModifier,point);
-        require(focus.count()==1 && opened.isEmpty() && view->hasFocus(),"Single graph click did not preserve editor focus");
-        QTest::mouseClick(view->viewport(),Qt::LeftButton,Qt::AltModifier,point);
-        require(opened.isEmpty() && focus.count()==1,"Alt click unexpectedly opened or activated a graph");
-        for(int placement=0;placement<3;++placement) {
-            bool menu_seen=false;
-            QTimer::singleShot(0,[&] {
-                auto *menu=qobject_cast<QMenu *>(QApplication::activePopupWidget());
-                if(!menu) return;
-                menu_seen=true;
-                if(auto *action=menu->findChild<QAction *>(QStringLiteral("openGraphPlacement%1").arg(placement))) action->trigger();
-                menu->close();
-            });
-            QContextMenuEvent context(QContextMenuEvent::Mouse,point,view->viewport()->mapToGlobal(point));
-            QApplication::sendEvent(view->viewport(),&context);
-            require(menu_seen && opened.count()==placement+1 && opened.last()[0].toInt()==int(graph_id) &&
-                    opened.last()[1].toInt()==placement,"Viewport right-click did not open placement menu");
-        }
-        require(editor.findChild<QMenu *>("pipelinePresetsMenu")->title()==ui::text("Presets"),"Presets menu title empty");
-        require(std::count(peer.commands.begin(),peer.commands.end(),pipeline::EngineCommand::ApplyGraph)==0,"Clipboard checks dispatched DSP");
-        qInfo("Editor offscreen clipboard and graph click checks passed"); return;
-    }
-    if(overlay_only) {
-        auto *scene=editor.findChild<QtNodes::DataFlowGraphicsScene *>();
-        auto *inspector=editor.findChild<QScrollArea *>("pipelineInspector");
-        auto *library=editor.findChild<QTreeWidget *>("pipelineNodeLibrary");
-        const auto size=view->viewport()->size();
-        const auto origin=center();
-        auto *splitter=editor.findChild<QSplitter *>("pipelineSplitter");
-        require(splitter && splitter->count()==3 && inspector->parentWidget()==splitter && inspector->isVisible() &&
-                inspector->findChild<QLabel *>("pipelineInspectorPlaceholder"),"Inspector is not a permanent third pane");
-        const auto graph_before=state.data_flow_graph->save();
-        for(auto id:{0,1,8}) {
-            scene->clearSelection(); scene->nodeGraphicsObject(id)->setSelected(true);
-            emit scene->nodeSelected(id); QApplication::processEvents();
-            require(inspector->isVisible() && view->viewport()->size()==size && QLineF(origin,center()).length()<1,
-                    "Inspector selection resized viewport or moved the camera");
-            scene->clearSelection(); QApplication::processEvents();
-            require(inspector->isVisible() && inspector->findChild<QLabel *>("pipelineInspectorPlaceholder") &&
-                    view->viewport()->size()==size && QLineF(origin,center()).length()<1,
-                    "Clearing selection moved the camera");
-        }
-        auto *handle=splitter->handle(2); const auto before_collapse=center();
-        QTest::mouseClick(handle,Qt::LeftButton); QApplication::processEvents();
-        require(splitter->sizes()[2]==0 && QLineF(before_collapse,center()).length()<4/view->getScale(),"Handle click did not collapse or preserve camera");
-        emit scene->nodeSelected(8); QApplication::processEvents();
-        require(splitter->sizes()[2]==0,"Node selection reopened collapsed inspector");
-        QTest::mouseClick(handle,Qt::LeftButton); QApplication::processEvents();
-        require(splitter->sizes()[2]>0,"Divider click did not restore collapsed inspector");
-        const QPoint handle_point=handle->rect().center();
-        QTest::mousePress(handle,Qt::LeftButton,Qt::NoModifier,handle_point);
-        move_mouse(handle,handle_point+QPoint(35,0));
-        QTest::mouseRelease(handle,Qt::LeftButton,Qt::NoModifier,handle_point+QPoint(35,0));
-        require(splitter->sizes()[2]>0,"Handle drag toggled collapse");
-        scene->clearSelection();
-        require(state.data_flow_graph->save()==graph_before,"Inspector changed graph contents");
-        QSignalSpy graph_requested(&editor,&SchemeEditorWidget::graph_view_requested);
-        int view_nodes=0;
-        for(auto id:state.data_flow_graph->allNodeIds()) {
-            const auto *model=state.data_flow_graph->delegateModel<AudioNodeModel>(id);
-            const bool is_view=pipeline::node_definition(model->name()).category=="views";
-            bool marker=false;
-            for(auto *child:scene->nodeGraphicsObject(id)->childItems())
-                if(child->toolTip()==ui::text("Double-click to open graph")) marker=true;
-            require(marker==is_view,"Graph indicator is missing or attached to a processing node");
-            const int before=graph_requested.count(); emit scene->nodeDoubleClicked(id);
-            require(graph_requested.count()==before+(is_view?1:0),"Node activation emitted incorrect graph request");
-            if(is_view) { ++view_nodes; require(graph_requested.last()[0].toInt()==int(id),"Graph request used the wrong node ID"); }
-        }
-        require(view_nodes>0,"Activation fixture has no view nodes");
-        const auto theme_before=ui::Theme::instance().code();
-        for(const auto &theme:QStringList{"dark","light"}) {
-            ui::Theme::instance().set(theme); QApplication::processEvents();
-            require(library->viewport()->backgroundRole()==QPalette::Window &&
-                    library->viewport()->palette().color(QPalette::Window)==QApplication::palette().color(QPalette::Window),
-                    "Node library did not inherit central theme");
-            std::unique_ptr<QMenu> menu(scene->createSceneMenu({90000,90000}));
-            auto *tree=menu->findChild<QTreeWidget *>(); require(tree,"Context node tree missing");
-            const QMap<QString,const char *> category_labels{{"inputs","Inputs"},{"transforms","Transforms"},
-                {"views","Graphs"},{"outputs","Outputs"}};
-            require(tree->topLevelItemCount()==4,"Context categories changed");
-            for(int i=0;i<tree->topLevelItemCount();++i) {
-                auto *category=tree->topLevelItem(i); const auto stable=category->data(0,Qt::UserRole).toString();
-                require(category_labels.contains(stable) && category->text(0)==ui::text(category_labels.value(stable)),
-                        "Context category was not localized without changing its stable key");
-                for(int j=0;j<category->childCount();++j)
-                    require(!pipeline::node_definition(category->child(j)->text(0)).name.isEmpty(),"Context model ID was translated");
-            }
-        }
-        ui::Theme::instance().set(theme_before.isEmpty()?"system":theme_before);
-        auto *bar=editor.layout()->itemAt(0)->layout();
-        auto *arrange=editor.findChild<QPushButton *>("arrangePipeline");
-        auto *fit=editor.findChild<QPushButton *>("fitPipeline");
-        auto *zoom=editor.findChild<QDoubleSpinBox *>("pipelineZoom");
-        require(bar->indexOf(arrange)+1==bar->indexOf(fit) && bar->indexOf(fit)<bar->indexOf(zoom),"Toolbar navigation order is wrong");
-        require(!arrange->text().contains("Alt+A") && !fit->text().contains("Alt+F") &&
-                arrange->toolTip().contains("Alt+A") && fit->toolTip().contains("Alt+F"),"Navigation hints do not show shortcuts");
-        require(editor.arrange_action()==view->findChild<QAction *>("arrangePipelineShortcut") &&
-                editor.center_action()==view->findChild<QAction *>("fitPipelineShortcut"),"Menu action API did not expose the scoped actions");
-        view->setFocus();
-        const int undo=scene->undoStack().count(); QTest::keyClick(view,Qt::Key_A,Qt::AltModifier);
-        require(scene->undoStack().count()==undo+1,"Scoped Alt+A did not arrange");
-        view->centerOn(90000,90000); QTest::keyClick(view,Qt::Key_F,Qt::AltModifier);
-        require(QLineF(center(),QPointF(90000,90000)).length()>100,"Scoped Alt+F did not center");
-        emit scene->nodeSelected(8); QApplication::processEvents();
-        auto *gain=inspector->findChild<QDoubleSpinBox *>("gain"); require(gain,"Missing inspector input");
-        gain->setFocus(); const int typing_undo=scene->undoStack().count();
-        QTest::keyClick(gain,Qt::Key_A,Qt::AltModifier);
-        require(scene->undoStack().count()==typing_undo,"Arrange intercepted inspector input");
-        fit->setFocus(); const auto outside=center(); QTest::keyClick(fit,Qt::Key_F,Qt::AltModifier);
-        require(QLineF(outside,center()).length()<1,"Center shortcut fired outside canvas");
-        editor.resize(470,330); QApplication::processEvents();
-        require(splitter->count()==3 && splitter->widget(2)==inspector,"Resize detached inspector pane");
-        require(std::count(peer.commands.begin(),peer.commands.end(),pipeline::EngineCommand::ApplyGraph)==0,"Overlay UI dispatched a DSP graph");
-        qInfo("Editor offscreen permanent inspector and scoped shortcut checks passed"); return;
-    }
-    auto key=[&](QEvent::Type type,int value,quint32 scan=0,bool repeat=false) {
-        QKeyEvent event(type,value,Qt::NoModifier,scan,0,0,{},repeat);
-        QApplication::sendEvent(view,&event);
-    };
-    const auto graph_before=state.data_flow_graph->save();
-    const auto start=center();
-    key(QEvent::KeyPress,Qt::Key_W);
-    require(QLineF(start,center()).length()<2,"Key press still moves in chunks");
-    QTest::qWait(112); const auto axis=center();
-    const double axis_pixels=QLineF(start,axis).length()*view->getScale();
-    require(axis.y()<start.y() && axis_pixels>15 && axis_pixels<80,"Held key did not pan at bounded speed");
-    for(int i=0;i<12;++i) key(QEvent::KeyPress,Qt::Key_W,0,true);
-    key(QEvent::KeyRelease,Qt::Key_W,0,true);
-    require(QLineF(axis,center()).length()<2,"Autorepeat added chunks");
-    QTest::qWait(32); require(center().y()<axis.y()-3,"Autorepeat release stopped a held key");
-    key(QEvent::KeyRelease,Qt::Key_W); const auto released=center();
-    QTest::qWait(48); require(QLineF(released,center()).length()<2,"Release did not stop pan");
-    const auto diagonal_start=center();
-    key(QEvent::KeyPress,Qt::Key_W); key(QEvent::KeyPress,Qt::Key_D); QTest::qWait(112);
-    key(QEvent::KeyRelease,Qt::Key_W); key(QEvent::KeyRelease,Qt::Key_D);
-    const auto diagonal=center()-diagonal_start;
-    const double ratio=std::hypot(diagonal.x(),diagonal.y())/QLineF(start,axis).length();
-    require(diagonal.x()>10 && diagonal.y()<-10 && ratio>0.65 && ratio<1.3,"Diagonal pan is not normalized");
-#ifdef Q_OS_WIN
-    const auto physical_start=center(); key(QEvent::KeyPress,0x0426,0x11); QTest::qWait(48);
-    key(QEvent::KeyRelease,0x0426,0x11);
-    require(center().y()<physical_start.y()-5,"Physical W scan failed with a Cyrillic key");
-#endif
-    key(QEvent::KeyPress,Qt::Key_D); QFocusEvent focus_out(QEvent::FocusOut);
-    QApplication::sendEvent(view,&focus_out); const auto unfocused=center();
-    QTest::qWait(48); require(QLineF(unfocused,center()).length()<2,"Focus loss did not stop pan");
-    key(QEvent::KeyPress,Qt::Key_D); editor.hide(); const auto hidden=center();
-    QTest::qWait(48); require(QLineF(hidden,center()).length()<2,"Hide did not stop pan");
-    editor.show(); QApplication::setActiveWindow(&editor); view->setFocus(); QTest::qWait(20);
-    QLineEdit text(&editor); text.show(); text.setFocus();
-    const auto typing=center(); key(QEvent::KeyPress,Qt::Key_D); QTest::qWait(48);
-    require(QLineF(typing,center()).length()<2,"Text focus did not guard WASD");
-    require(state.data_flow_graph->save()==graph_before,"Panning changed graph parameters or coordinates");
-    require(std::count(peer.commands.begin(),peer.commands.end(),pipeline::EngineCommand::ApplyGraph)==0,
-            "Panning dispatched a DSP graph command");
-    qInfo("Editor offscreen held-key pan checks passed");
+static pipeline::DeliveredNumericFrame scalar_delivery(PreviewPools& pools,const domain::ConfiguredProcessingNode& node,
+    pipeline::DeliveryStamp delivery,std::uint64_t value,std::uint64_t sequence) {
+    using namespace signal_contracts;
+    auto context=std::make_shared<pipeline::NumericDeliveryContext>();context->endpoint={"main",node.id,domain::PortDirection::Input,0};context->contract=node.inputs[0].contract;
+    auto contract=std::get<NumericContract>(context->contract.view());
+    alignas(64) std::array<std::byte,8> bytes{};const std::array<PlaneLayout,1> planes{{{0,{8,8}}}};
+    MutableNumericView numeric{&contract,bytes,planes,{1,1},{},{}};require(store_element(numeric,{},value)==Status::ok,"Fixture UInt64 storage");
+    FrameStamp stamp;stamp.sequence=sequence;stamp.producer_epoch=1;stamp.epoch=delivery.epoch;stamp.graph_revision=delivery.graph_revision;
+    DataFrameView frame{stamp,numeric.view()};pipeline::DeliveredNumericFrame result;
+    require(pipeline::retain_numeric_delivery(context,delivery,frame,Status::ok,numeric_editor::limits().frame,pools.p,pools.m,result)==Status::ok,"Fixture bounded retention");return result;
 }
-static void standard_presets() {
-    PresetEnginePeer peer; require(peer.listen(QHostAddress::LocalHost,0),"Cannot listen for preset test peer");
-    GuiState state;
-    state.file_configs.core.run_loopback=false; state.file_configs.core.run_analyser=false;
-    state.file_configs.ui.autosave_enabled=false;
-    state.file_configs.scene_graph=pipeline::GraphProgram::defaults();
-    state.file_configs.pipeline_graph=state.file_configs.scene_graph;
-    state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto &definition:pipeline::node_definitions())
-        state.delegate_model_registry->registerModel([kind=definition.name] {return std::make_unique<AudioNodeModel>(kind);});
-    state.data_flow_graph=std::make_shared<QtNodes::DataFlowGraphModel>(state.delegate_model_registry);
-    auto &graph=*state.data_flow_graph; graph.load(state.file_configs.scene_graph);
-    GuiPresenter presenter(state, test_fixture::synthetic_engine_provider(), "127.0.0.1",peer.serverPort()); presenter.initialize(); QTest::qWait(100);
-    require(presenter.client().snapshot().epoch!=0,"Preset peer handshake did not complete");
-    SchemeEditorWidget editor(presenter); editor.resize(1500,900); editor.show(); QTest::qWait(60);
-    auto *scene=editor.findChild<QtNodes::DataFlowGraphicsScene *>();
-    require(!editor.findChild<QCheckBox *>("pipelineCapture") && !editor.findChild<QCheckBox *>("pipelineAnalyzer"),
-            "Execution toggles remain in the editor toolbar");
-    const auto defaults=pipeline::GraphProgram::defaults();
-    auto check_layout=[&] {
-        require(graph.allNodeIds().size()==size_t(defaults.value("nodes").toArray().size()),"Standard preset lost nodes");
-        require(graph.save().value("connections").toArray().size()==defaults.value("connections").toArray().size(),"Standard preset lost connections");
-        for(auto a:graph.allNodeIds()) for(auto b:graph.allNodeIds()) if(a<b)
-            require(!scene->nodeGraphicsObject(a)->sceneBoundingRect().intersects(scene->nodeGraphicsObject(b)->sceneBoundingRect()),
-                    "Standard preset node rectangles intersect");
-        for(const auto &value:graph.save().value("connections").toArray()) {
-            const auto edge=value.toObject();
-            require(scene->nodeGraphicsObject(edge.value("outNodeId").toInt())->sceneBoundingRect().right()<
-                    scene->nodeGraphicsObject(edge.value("inNodeId").toInt())->sceneBoundingRect().left(),
-                    "Standard preset connection does not progress left to right");
-        }
-        QString error; require(bool(pipeline::GraphProgram::compile(editor.document(),error)),"Standard preset does not compile");
+static void preview_model_checks() {
+    using namespace signal_contracts;
+    AudioNodeModel model("ScalarView");auto node=*model.numeric_node();node.id=12;
+    require(numeric_editor::set_dtype(node,domain::PortDirection::Input,0,DType::UInt64),"UInt64 scalar contract");model.set_numeric_node(node);
+    std::unique_ptr<QWidget> card(model.preview_widget());auto* exact=card->findChild<QLabel*>("previewExactValue");auto* status=card->findChild<QLabel*>("previewStatus");
+    PreviewPools pools;auto frame=scalar_delivery(pools,node,{3,5},std::numeric_limits<std::uint64_t>::max(),8);const auto snapshot=model.save();
+    require(model.preview(frame) && exact->text()=="18446744073709551615","Preview rounds UInt64 maximum");
+    require(model.save()==snapshot,"Diagnostic changed configured parameters");
+    auto stale=scalar_delivery(pools,node,{3,5},7,7);require(!model.preview(stale) && exact->text()=="18446744073709551615","Late frame replaced newer exact value");
+    auto foreign=frame;auto wrong=std::make_shared<pipeline::NumericDeliveryContext>(*frame.context);wrong->endpoint.node=13;foreign.context=wrong;
+    require(!model.preview(foreign) && exact->text()=="18446744073709551615","Foreign endpoint changed preview");
+    auto unavailable=frame;unavailable.status=Status::unavailable;require(model.preview(unavailable) && exact->text()==QStringLiteral("—"),"Unavailable frame retained stale value");
+    require(!model.preview(stale),"Unavailable discarded sequence fence");
+    model.clear_preview();frame={};stale={};foreign={};unavailable={};
+    require(pools.p.in_use()==0 && pools.m.in_use()==0,"Preview retains pooled frame storage");
+    auto next=scalar_delivery(pools,node,{3,5},9007199254740993ULL,9);require(model.preview(next) && exact->text()=="9007199254740993","Preview loses integer above binary64 exact range");
+    for(const auto& theme:{QString("light"),QString("dark")}){
+        require(ui::Theme::instance().set(theme),"Theme switch refused");QApplication::processEvents();
+        require(card->palette().color(QPalette::WindowText)==QApplication::palette().color(QPalette::WindowText),"Preview breaks inherited palette");
+        require(exact->text()=="9007199254740993","Theme mutates diagnostic value");
+    }
+    require(ui::Language::instance().set("ru"),"RU language unavailable");require(status->text()==QString::fromUtf8("Входной порт 0 · Данные доступны"),"Live preview status not translated");
+    require(card->findChild<QLabel*>("previewUnit")->text().contains(QString::fromUtf8("Входной порт")),"Live endpoint label not translated");
+    require(ui::Language::instance().set("en"),"EN language unavailable");require(status->text()=="Input port 0 · Available","Preview fails live EN language update");
+    node.enabled=false;model.set_numeric_node(node);require(status->text()=="Input port 0 · Bypass · Waiting for data" && exact->text()==QStringLiteral("—"),"Bypass transition reused stale diagnostics");
+    auto bypassZero=scalar_delivery(pools,node,{3,5},0,10);
+    require(model.preview(bypassZero) && status->text()=="Input port 0 · Bypass · Available" && exact->text()=="0","Bypass must preview actual typed-zero output instead of reporting a stopped node");
+    auto bypassUnavailable=bypassZero;bypassUnavailable.status=Status::unavailable;
+    require(model.preview(bypassUnavailable) && status->text()=="Input port 0 · Bypass · Unavailable" && exact->text()==QStringLiteral("—"),"Bypass must preserve actual unavailability diagnostics");
+    bypassZero={};bypassUnavailable={};
+    node.enabled=true;model.set_numeric_node(node);require(exact->text()==QStringLiteral("—"),"Reenable reused old diagnostic");
+    auto tagged=std::get<NumericContract>(node.inputs[0].contract.view());tagged.semantic=Semantic::History;
+    require(numeric_editor::set_contract(node,domain::PortDirection::Input,0,tagged),"Passive preview tag fixture");model.set_numeric_node(node);
+    auto taggedScalar=scalar_delivery(pools,node,{3,5},42,11);
+    require(model.preview(taggedScalar) && exact->text()=="42","A passive History tag must not suppress a physical scalar preview");taggedScalar={};
+    next={};AudioNodeModel history("Spectrogram");auto h=*history.numeric_node();h.id=14;
+    auto historyContract=std::get<NumericContract>(h.outputs[0].contract.view());historyContract.shape.extents[0].maximum=4;
+    require(domain::own_processing_contract(historyContract,numeric_editor::limits().frame,2048,h.outputs[0].contract)==Status::ok,"Bounded History preview fixture contract");h.parameters=domain::HistoryProcessingParameters{4};history.set_numeric_node(h);std::unique_ptr<QWidget> historyCard(history.preview_widget());
+    auto context=std::make_shared<pipeline::NumericDeliveryContext>();context->endpoint={"main",14,domain::PortDirection::Output,0};context->contract=h.outputs[0].contract;
+    pipeline::DeliveredNumericHistoryRow row;row.compact.context=context;row.compact.delivery={3,5};row.event=pipeline::NumericHistoryEvent::Empty;
+    row.capacity=std::get<NumericContract>(context->contract.view()).shape.extents[0].maximum;
+    require(history.preview(row) && historyCard->findChild<QLabel*>("previewValues")->text()==QStringLiteral("0\n—"),"Empty history count not available zero");
+    row.filled_count=row.capacity+1;require(!history.preview(row),"Invalid filled count accepted");
+    row.filled_count=0;row.event=pipeline::NumericHistoryEvent::Unavailable;require(history.preview(row) && historyCard->findChild<QLabel*>("previewValues")->text()==QStringLiteral("—\n—"),"Unavailable history retained count");
+    require(historyCard->findChild<QLabel*>("previewStatus")->text().split('\n').size()==2 && !historyCard->findChild<QLabel*>("previewStatus")->text().contains("Input port"),"Processor preview advertises unsupported input callback");
+    const auto historyConfigured=history.save();
+    require(historyContract.coordinates[0].mode==CoordinateMode::ExplicitFloat64LE && historyContract.coordinates[0].unit==NumericUnit::Seconds,"History fixture must preserve the explicit source-clock contract");
+    const auto encodeTime=[](double seconds,std::span<std::byte> bytes){
+        const auto bits=std::bit_cast<std::uint64_t>(seconds);for(unsigned byte=0;byte<8;++byte)bytes[byte]=std::byte((bits>>(8*byte))&255);
     };
-    require(graph.delegateModel<AudioNodeModel>(0)->name()=="AudioSource","First standard document uses a generator");
-    check_layout();
-    selection_and_theme(editor,graph,*scene);
-    int acknowledgements=0;
-    QObject::connect(&presenter,&GuiPresenter::graph_apply_finished,&editor,[&](quint64,bool accepted,const QString &) {
-        require(accepted,"Standard preset Apply rejected"); ++acknowledgements;
-    });
-    editor.findChild<QAction *>("defaultPipeline")->trigger(); QTest::qWait(500);
-    check_layout();
-    require(acknowledgements==1,"Explicit Default did not Apply the same processing graph exactly once");
-    auto start_count=[&](auto kind) {return std::count(peer.commands.begin(),peer.commands.end(),kind);};
-    require(start_count(pipeline::EngineCommand::StartAnalyzer)==1 && start_count(pipeline::EngineCommand::StartCapture)==1,
-        "Default did not start Analyzer/Capture after successful ACK");
-    const auto apply_at=std::find(peer.commands.begin(),peer.commands.end(),pipeline::EngineCommand::ApplyGraph);
-    require(apply_at<std::find(peer.commands.begin(),peer.commands.end(),pipeline::EngineCommand::StartAnalyzer) &&
-        apply_at<std::find(peer.commands.begin(),peer.commands.end(),pipeline::EngineCommand::StartCapture),"Default started before Apply");
-    require(graph.delegateModel<AudioNodeModel>(0)->name()=="AudioSource","Default preset kept the test generator");
-    graph.setNodeData(0,QtNodes::NodeRole::Position,QPointF(-999,777));
-    editor.findChild<QAction *>("loadActivePipeline")->trigger(); QTest::qWait(60);
-    check_layout();
-    require(graph.nodeData(0,QtNodes::NodeRole::Position).toPointF()!=QPointF(-999,777),"Active preset did not replace draft positions");
-    require(acknowledgements==1,"Loading Active unexpectedly applied a graph");
-    state.file_configs.ui.pipeline_auto_apply=false;
-    const auto before_test_source=graph.nodeData(0,QtNodes::NodeRole::Position).toPointF();
-    editor.findChild<QAction *>("useTestSource")->trigger(); QTest::qWait(30);
-    require(graph.delegateModel<AudioNodeModel>(0)->name()=="TestSignal" &&
-        graph.nodeData(0,QtNodes::NodeRole::Position).toPointF()==before_test_source &&
-        graph.save().value("connections").toArray().size()==defaults.value("connections").toArray().size(),
-        "Test source preset changed positions or lost routes");
-    QString test_source_error;
-    require(bool(pipeline::GraphProgram::compile(editor.document(),test_source_error)),"Standard test source preset does not compile");
-    editor.findChild<QAction *>("defaultPipeline")->trigger(); QTest::qWait(30); check_layout();
-    require(graph.delegateModel<AudioNodeModel>(0)->name()=="AudioSource","Default did not replace the test source with real capture");
-    graph.setNodeData(0,QtNodes::NodeRole::Position,QPointF(13,27));
-    require(editor.save_preset("custom"),"Cannot save standard graph user coordinates");
-    const auto custom=state.file_configs.ui.pipeline_presets.last().toObject().value("id").toString();
-    editor.findChild<QAction *>("defaultPipeline")->trigger(); QTest::qWait(400); check_layout();
-    require(acknowledgements==1,"Manual mode Default silently applied the draft");
-    require(editor.load_preset(custom),"Cannot restore custom coordinates"); QTest::qWait(30);
-    require(graph.nodeData(0,QtNodes::NodeRole::Position).toPointF()==QPointF(13,27),"Custom preset coordinates were automatically arranged");
-    editor.findChild<QAction *>("defaultPipeline")->trigger(); QTest::qWait(30); check_layout();
-    graph.delegateModel<AudioNodeModel>(8)->set_parameter("gain",2);
-    QTest::mouseClick(editor.findChild<QPushButton *>("applyPipeline"),Qt::LeftButton); QTest::qWait(200);
-    require(acknowledgements==2,"Manual Default Apply was not acknowledged");
-    require(start_count(pipeline::EngineCommand::StartAnalyzer)==2 && start_count(pipeline::EngineCommand::StartCapture)==2,
-        "Manual Default lost its start intent before Apply");
-    // A source checkbox is an explicit start request; coordinate changes retain
-    // it in manual mode, while subsequent ordinary Applies preserve Stop.
-    auto *source_model=graph.delegateModel<AudioNodeModel>(0);
-    source_model->set_parameter("enabled",false);
-    std::unique_ptr<QWidget> source_controls(source_model->parameter_widget());
-    source_controls->show(); QTest::qWait(10);
-    QSignalSpy requested(&editor,&SchemeEditorWidget::source_start_requested);
-    click_checkbox(source_controls->findChild<QCheckBox *>("enabled"));
-    require(source_model->save().value("enabled")==true,"Source checkbox mouse click missed its indicator");
-    require(requested.count()==1,"Source checkbox did not emit an explicit start request");
-    graph.setNodeData(0,QtNodes::NodeRole::Position,QPointF(20,30)); QTest::qWait(400);
-    require(requested.count()==1 && acknowledgements==2 && start_count(pipeline::EngineCommand::StartCapture)==2,
-            "Manual source enable sent commands before Apply or failed to request Start");
-    QTest::mouseClick(editor.findChild<QPushButton *>("applyPipeline"),Qt::LeftButton); QTest::qWait(200);
-    require(acknowledgements==3 && start_count(pipeline::EngineCommand::StartCapture)==3 &&
-            start_count(pipeline::EngineCommand::StartAnalyzer)==3,"Source checkbox did not start after Apply ACK");
-    graph.setNodeData(0,QtNodes::NodeRole::Position,QPointF(25,35));
-    QTest::mouseClick(editor.findChild<QPushButton *>("applyPipeline"),Qt::LeftButton); QTest::qWait(200);
-    require(acknowledgements==4 && start_count(pipeline::EngineCommand::StartCapture)==3,
-            "Ordinary coordinate Apply repeated source Start");
-    click_checkbox(source_controls->findChild<QCheckBox *>("enabled"));
-    click_checkbox(source_controls->findChild<QCheckBox *>("enabled"));
-    editor.cancel_start_intent(); // MainWindow explicit Stop takes precedence.
-    QTest::mouseClick(editor.findChild<QPushButton *>("applyPipeline"),Qt::LeftButton); QTest::qWait(200);
-    require(acknowledgements==5 && start_count(pipeline::EngineCommand::StartCapture)==3,
-            "Explicit Stop cancellation did not suppress pending source Start");
-    qInfo("Editor: first/default/active/manual/custom standard preset checks passed");
+    auto retainedHistory=[&](bool compact,std::uint64_t sequence){
+        auto contract=std::get<NumericContract>(context->contract.view());
+        if(compact){contract.semantic=contract.history_element;contract.history_element=Semantic::Numeric;contract.shape={Rank::Vector,{contract.shape.axes[1],Axis::None},{contract.shape.extents[1],ExtentBounds{}}};contract.coordinates={contract.coordinates[1],AxisCoordinates{}};}
+        std::array<float,200> values{};values.fill(7);if(!compact)std::fill_n(values.begin(),50,0.f);PlaneLayout plane{0,compact?std::array<std::size_t,2>{4,0}:std::array<std::size_t,2>{200,4}};
+        FrameStamp stamp;stamp.producer_epoch=701;stamp.generation=17;stamp.sequence=sequence;stamp.epoch=3;stamp.graph_revision=5;stamp.timestamp_ticks=compact?64800:64000;
+        std::array<std::byte,32> times{};for(std::size_t rowIndex=1;rowIndex<4;++rowIndex)encodeTime(double(77+rowIndex)/60.,std::span(times).subspan(rowIndex*8,8));
+        std::array<std::byte,50*8> frequencies{};for(std::size_t band=0;band<50;++band)encodeTime(double(band+1)*100.,std::span(frequencies).subspan(band*8,8));
+        CoordinateView coordinates;if(!compact)coordinates.axes[0]=times;coordinates.axes[compact?0:1]=frequencies;
+        DataFrameView input{stamp,NumericView{&contract,std::as_bytes(std::span(values)),std::span(&plane,1),compact?std::array<std::size_t,2>{50,1}:std::array<std::size_t,2>{4,50},compact?RingRows{}:RingRows{4,0},coordinates}};
+        pipeline::DeliveredNumericFrame result{context,{3,5},{},Status::ok};require(retain_frame(input,numeric_editor::limits().frame,pools.p,pools.m,result.frame)==Status::ok,"Cold History fixture retention");return result;
+    };
+    auto full=retainedHistory(false,800);const auto beforeCold=historyCard->findChild<QLabel*>("previewValues")->text();const auto retainedPayload=pools.p.in_use(),retainedMetadata=pools.m.in_use();
+    const auto retainedTimes=std::get<NumericView>(full.frame.view().payload).coordinates.axes[0];
+    require(retainedTimes.size()==32 && pipeline::decode_coordinate(retainedTimes.subspan(0,8))==0 && pipeline::decode_coordinate(retainedTimes.subspan(8,8))==78./60. && pipeline::decode_coordinate(retainedTimes.subspan(24,8))==80./60.,"Cold History fixture must own individual real row times after its donor expires");
+    require(!history.preview_history_snapshot(full,2,3) && historyCard->findChild<QLabel*>("previewValues")->text()==beforeCold && history.save()==historyConfigured && pools.p.in_use()==retainedPayload && pools.m.in_use()==retainedMetadata,"Malformed cold ordinal changes preview/count/parameters/storage");
+    require(history.preview_history_snapshot(full,80,3) && historyCard->findChild<QLabel*>("previewValues")->text()==QStringLiteral("3\n—"),"Cold History snapshot count unavailable");
+    row.compact=retainedHistory(true,801);row.event=pipeline::NumericHistoryEvent::Row;row.filled_count=4;row.accepted_row_ordinal=81;
+    row.has_time_coordinate=true;encodeTime(81./60.,row.time_coordinate);
+    require(history.preview(row) && historyCard->findChild<QLabel*>("previewValues")->text()==QStringLiteral("4\n—"),"Compact History does not continue after cold snapshot");
+    require(!history.preview_history_snapshot(full,80,3) && historyCard->findChild<QLabel*>("previewValues")->text()==QStringLiteral("4\n—"),"Late cold snapshot replaces newer compact ordinal");
+    require(history.save()==historyConfigured,"Cold History preview mutates parameters");full={};row.compact={};require(pools.p.in_use()==0 && pools.m.in_use()==0,"Cold History preview retains pooled storage");
 }
-int main(int argc, char **argv) {
+int main(int argc,char** argv) {
     QApplication app(argc,argv);
     try {
-        if(app.arguments().contains("--pan-only")) { held_key_pan_checks(); return 0; }
-        if(app.arguments().contains("--overlay-only")) { held_key_pan_checks(true); return 0; }
-        if(app.arguments().contains("--inspector-only")) { held_key_pan_checks(true); return 0; }
-        if(app.arguments().contains("--clipboard-only")) { held_key_pan_checks(false,true); return 0; }
-        node_output_controls();
-        standard_presets();
-        GuiState state;
-        state.file_configs.core.run_loopback=false; state.file_configs.core.run_analyser=false;
-        state.file_configs.ui.autosave_enabled=false;
-        state.file_configs.ui.editor_view={{"version",1},{"scale",0.75},{"center_x",800},{"center_y",600},{"extension",42}};
+        ui::Language::instance().set("en");bypass_controls_checks();preview_model_checks();
+        GuiState state;state.file_configs.ui.autosave_enabled=false;state.file_configs.ui.pipeline_auto_apply=false;
         state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-        for (const auto &definition : pipeline::node_definitions())
-            state.delegate_model_registry->registerModel([kind=definition.name] { return std::make_unique<AudioNodeModel>(kind); });
-        state.data_flow_graph=std::make_shared<QtNodes::DataFlowGraphModel>(state.delegate_model_registry);
-        QJsonObject source{{"id",0},{"position",QJsonObject{{"x",0},{"y",0}}},{"internal-data",QJsonObject{{"model-name","TestSignal"}}}};
-        QJsonObject sink{{"id",1},{"position",QJsonObject{{"x",500},{"y",0}}},{"internal-data",QJsonObject{{"model-name","AudioView"}}}};
-        QJsonObject document{{"version",1},{"nodes",QJsonArray{source,sink}},{"connections",QJsonArray{}}};
-        document["extension"]=43;
-        auto extended=source; extended["node-extension"]=44; document["nodes"]=QJsonArray{extended,sink};
-        state.file_configs.scene_graph=document; state.file_configs.pipeline_graph=document;
-        auto &graph=*state.data_flow_graph; graph.load(document);
-        GuiPresenter presenter(state, test_fixture::synthetic_engine_provider()); presenter.initialize();
-        // Enabled local sources now start on valid bootstrap Apply. Keep this
-        // interaction fixture stopped so its explicit preview injections test
-        // delivery/invalidation instead of racing the 100 ms live-preview gate.
-        presenter.stop_analyzer();
-        presenter.stop_loopback();
-        QTest::qWait(60);
-        state.file_configs.ui.pipeline_presets.append(QJsonObject{{"version",1},{"id","race"},{"name","race"},
-            {"graph",document},{"view",QJsonObject{{"version",1},{"scale",0.75},{"center_x",1200},{"center_y",900}}}});
-        QMainWindow window;
-        auto *dock=new QDockWidget("Editor",&window);
-        auto *editor=new SchemeEditorWidget(presenter,dock); dock->setWidget(editor);
-        require(editor->load_preset("race"),"Cannot replace document before startup callback");
-        require(editor->remove_preset("race"),"Cannot remove fixture preset");
-        window.addDockWidget(Qt::BottomDockWidgetArea,dock);
-        window.resize(1300,900); window.show(); QTest::qWait(70);
-        window.move(100,100);
-        auto *view=editor->findChild<QtNodes::GraphicsView *>();
-        auto *scene=editor->findChild<QtNodes::DataFlowGraphicsScene *>();
-        auto center=[&] { return view->mapToScene(view->viewport()->rect().center()); };
-        auto near=[&](QPointF point) { return QLineF(center(),point).length()<4/view->getScale(); };
-        require(near({1200,900}),"Stale startup callback overwrote replacement camera");
-        emit presenter.pipeline_preview({{0,{16,0.5f}}});
-        require(graph.delegateModel<AudioNodeModel>(0)->last_preview().values==16,"Current document preview was not delivered");
-        require(editor->document().value("extension")==43,"Document replacement lost graph extensions");
-        bool extension=false;
-        for(const auto &value:editor->document().value("nodes").toArray())
-            if(value.toObject().value("id").toInt()==0) extension=value.toObject().value("node-extension")==44;
-        require(extension,"Document save lost node extensions");
-        require(editor->findChild<QTreeWidget *>("pipelineNodeLibrary")->topLevelItemCount()==4,"Node library does not have four categories");
+        for(const auto& kind:numeric_editor::catalog())state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+        auto graph=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);state.data_flow_graph=graph;
+        domain::NumericProcessingGraph empty;empty.graph_id="main";require(graph->set_numeric_graph(empty),"Empty canonical fixture rejected");state.file_configs.scene_graph=graph->save();
+        GuiPresenter presenter(state,test_fixture::synthetic_engine_provider(false));SchemeEditorWidget editor(presenter);editor.resize(1000,700);editor.show();QApplication::processEvents();
+        QSignalSpy typedSave(&editor,&SchemeEditorWidget::numeric_draft_changed),applied(&presenter,&GuiPresenter::graph_apply_finished);
+        // Presentation-only capture status: injected projected backend states,
+        // never physical capture, OS input or a forged successful Apply.
+        auto* capture=editor.toolbar()->findChild<QLabel*>("pipelineCaptureStatus");
+        auto* validation=editor.toolbar()->findChild<QLabel*>("pipelineValidation");
+        require(capture && validation,"Capture status indicator absent");
+        const auto beforeCapture=editor.document();const int beforeCaptureUndo=editor.history().index();
+        emit presenter.apply_status_changed("Not applied: fixture contract");const auto admissionWarning=validation->toolTip();
+        emit presenter.component_status_changed("capture",int(pipeline::State::Failed),"fixture: loopback device unavailable");
+        require(capture->isVisibleTo(editor.toolbar()) && capture->text()==ui::text("Capture failed") && capture->toolTip().contains("fixture: loopback device unavailable"),"Projected capture failure is not visible with backend error");
+        emit presenter.apply_status_changed("Applied");
+        emit presenter.component_status_changed("analyzer",int(pipeline::State::Running),{});
+        require(capture->text()==ui::text("Capture failed") && validation->toolTip()==admissionWarning,"Apply or analyzer status masks capture/admission failure");
+        ui::Language::instance().set("ru");
+        require(capture->text()==QString::fromUtf8("Ошибка захвата") && capture->toolTip().contains("fixture: loopback device unavailable"),"Live capture failure is not translated to RU");
+        emit presenter.component_status_changed("capture",int(pipeline::State::Starting),{});
+        require(capture->text()==ui::text("Capture starting") && !capture->toolTip().contains("fixture:"),"Capture starting retains stale failure");
+        emit presenter.component_status_changed("capture",int(pipeline::State::Running),{});
+        require(capture->text()==ui::text("Capture running") && validation->toolTip()==admissionWarning,"Capture recovery overwrites admission warning");
+        ui::Language::instance().set("en");require(capture->text()=="Capture running","Live capture recovery fails EN refresh");
+        emit presenter.component_status_changed("capture",int(pipeline::State::Stopped),{});
+        require(!capture->isVisibleTo(editor.toolbar()) && capture->toolTip().isEmpty() && editor.document()==beforeCapture && editor.history().index()==beforeCaptureUndo,"Capture status mutates draft/history or retains stopped error");
+
+        auto* library=editor.findChild<QTreeWidget*>("pipelineNodeLibrary");require(library && library->topLevelItemCount()==3,"Sidebar categories differ from shared roles");
+        auto* scene=editor.findChild<QtNodes::DataFlowGraphicsScene*>();std::unique_ptr<QMenu> menu(scene->createSceneMenu({9000,9000}));
+        auto* context=menu->findChild<QTreeWidget*>("numericContextCatalog");require(context && context->topLevelItemCount()==3,"Context catalog missing shared roles");
+        auto kinds=[](QTreeWidget* tree){QStringList result;std::function<void(QTreeWidgetItem*)> visit=[&](auto* item){const auto kind=item->data(0,Qt::UserRole).toString();if(!kind.isEmpty())result.append(kind);for(int i=0;i<item->childCount();++i)visit(item->child(i));};for(int i=0;i<tree->topLevelItemCount();++i)visit(tree->topLevelItem(i));result.sort();return result;};
+        auto expectedKinds=numeric_editor::catalog();expectedKinds.sort();require(kinds(context)==kinds(library) && kinds(library)==expectedKinds,"Sidebar/context must expose every catalog leaf in the shared hierarchy");
         {
-            AudioNodeModel network("NetworkInput");
-            network.load({{"model-name","NetworkInput"},{"data_type","audio"},{"extension",45}});
-            require(network.dataType(QtNodes::PortType::Out,0).id=="audio","Network output has no concrete type");
-            std::unique_ptr<QWidget> parameters(network.parameter_widget());
-            auto *type=parameters->findChild<QComboBox *>("data_type");
-            require(type && type->count()==7 && parameters->findChild<QLineEdit *>("provider_uuid"),"Network registry inspector missing typed bindings");
-            type->setCurrentIndex(type->findData("history"));
-            require(network.dataType(QtNodes::PortType::Out,0).id=="history" && network.save().value("extension")==45,
-                    "Parameter edit lost concrete type or unknown fields");
+            const auto source=graph->addNode("TestSignal"),sink=graph->addNode("Converter");auto node=*graph->delegateModel<AudioNodeModel>(sink)->numeric_node();numeric_editor::set_dtype(node,domain::PortDirection::Input,0,signal_contracts::DType::UInt16);graph->edit_node(sink,node);
+            const QtNodes::ConnectionId edge{source,0,sink,0};graph->addConnection(edge);scene->connectionGraphicsObject(edge)->setSelected(true);
+            auto* policy=editor.findChild<QComboBox*>("connectionConversionPolicy");require(policy && policy->currentIndex()==0 && editor.findChild<QLabel*>("connectionRisk"),"Selecting a dtype edge must expose its actual policy in the existing inspector");
+            policy->setCurrentIndex(3);require(graph->connection_policy(edge)==3,"Inspector policy must edit the processing graph");editor.history().undo();require(graph->connection_policy(edge)==0 && policy->currentIndex()==0,"Inspector policy undo must refresh both representations");
+            graph->deleteNode(sink);graph->deleteNode(source);
         }
-        const auto old_center=center();
-        for (int i=0;i<12;++i) {
-            dock->hide(); view->resize(0,0); window.resize(160,100); QTest::qWait(1);
-            window.resize(1300+i*10,900-i*8); dock->show(); QTest::qWait(2);
-            dock->setFloating(i%2==0); QTest::qWait(2);
-            require(near(old_center),"Hide/show/strong resize/docking lost camera");
+        auto converter=numeric_editor::default_node("Converter");converter.id=3;
+        std::get<domain::ConverterProcessingParameters>(converter.parameters).policy.nan_replacement=std::uint64_t{9007199254740993ULL};
+        domain::NumericProcessingGraph draft;draft.graph_id="main";draft.nodes.push_back(converter);QString error;
+        require(editor.load_numeric_draft(draft,&error),"Widget canonical load failed");domain::NumericProcessingGraph exported;
+        require(editor.numeric_draft(exported,&error) && exported.nodes.size()==1 && exported.nodes[0].id==3,"Widget export lost owning node/id");
+        const auto before=editor.document();auto invalid=draft;invalid.nodes[0].kind="UnknownNumericNode";
+        require(!editor.load_numeric_draft(invalid,&error) && editor.document()==before,"Rejected load changed current draft");
+        graph->setNodeData(3,QtNodes::NodeRole::Position,QPointF(420,230));
+        auto* converterModel=graph->delegateModel<AudioNodeModel>(3);require(converterModel->set_parameter_on_block("numericNan",true),"Preset visibility edit failed");
+        auto* editorView=editor.findChild<QtNodes::GraphicsView*>();require(editorView,"Graph clipboard view missing");
+        int clipboardActions=0;
+        for(auto* action:editorView->actions())if(action->shortcuts().contains(QKeySequence(QKeySequence::Copy)) || action->shortcuts().contains(QKeySequence(QKeySequence::Paste))) {
+            ++clipboardActions;require(action->shortcutContext()==Qt::WidgetWithChildrenShortcut && !action->autoRepeat(),"Graph clipboard shortcuts escape the focused view or repeat");
         }
-        dock->setFloating(false); window.resize(1300,900); QTest::qWait(30);
-        qInfo("Editor: camera lifecycle passed");
-        const auto pan_start=view->viewport()->rect().center();
-        const auto before_pan=center();
-        drag(view->viewport(),pan_start,pan_start+QPoint(70,35));
-        const auto after_pan=center();
-        require(QLineF(before_pan,after_pan).length()>40,"Real blank-canvas mouse pan failed");
-        dock->hide(); view->resize(0,0); dock->show(); QTest::qWait(20);
-        require(near(after_pan),"Show lost mouse pan position");
-        const auto cursor=view->viewport()->rect().center()+QPoint(80,30);
-        const auto anchor=view->mapToScene(cursor);
-        QWheelEvent wheel(cursor,view->viewport()->mapToGlobal(cursor),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
-        QApplication::sendEvent(view->viewport(),&wheel);
-        require(QLineF(anchor,view->mapToScene(cursor)).length()<3/view->getScale(),"Wheel anchor moved");
-        require(view->transform().dx()==0 && view->transform().dy()==0,"Zoom accumulated unsaved transform translation");
-        editor->flush_presentation();
-        require(state.file_configs.ui.editor_view.value("extension")==42,"Saving camera discarded extension fields");
-        require(editor->save_preset("A"),"Cannot save preset A");
-        const auto a=state.file_configs.ui.pipeline_presets.last().toObject().value("id").toString();
-        const auto a_center=center(); const auto a_scale=view->getScale();
-        editor->findChild<QDoubleSpinBox *>("pipelineZoom")->setValue(120);
-        view->centerOn(-1000,700); editor->flush_presentation();
-        graph.setNodeData(1,QtNodes::NodeRole::Position,QPointF(650,70));
-        require(editor->save_preset("B"),"Cannot save preset B");
-        const auto b=state.file_configs.ui.pipeline_presets.last().toObject().value("id").toString();
-        for (int i=0;i<20;++i) {
-            require(editor->load_preset(b) && editor->load_preset(a),"Preset replacement failed");
-            QTest::qWait(1);
-            require(near(a_center) && std::abs(view->getScale()-a_scale)<1e-6,"Preset camera restore drifted");
-            require(graph.nodeData(1,QtNodes::NodeRole::Position).toPointF()==QPointF(500,0),"Delayed callback moved preset node");
-            require(scene->undoStack().count()==0,"Replacement retained old undo history");
-        }
-        qInfo("Editor: preset replacement passed");
-        QTest::mouseClick(editor->findChild<QPushButton *>("fitPipeline"),Qt::LeftButton);
-        QRectF bounds;
-        for (auto id:graph.allNodeIds()) bounds=bounds.united(scene->nodeGraphicsObject(id)->sceneBoundingRect());
-        require(near(bounds.center()),"Fit misses real node bounds");
-        const auto original=graph.nodeData(1,QtNodes::NodeRole::Position).toPointF();
-        const auto press=view->mapFromScene(scene->nodeGraphicsObject(1)->sceneBoundingRect().topLeft()+QPointF(40,18));
-        drag(view->viewport(),press,press+QPoint(40,25));
-        const auto moved=graph.nodeData(1,QtNodes::NodeRole::Position).toPointF();
-        require(moved!=original,"Mouse drag was not saved in model");
-        scene->undoStack().undo(); require(graph.nodeData(1,QtNodes::NodeRole::Position).toPointF()==original,"Mouse drag undo failed");
-        scene->undoStack().redo(); require(graph.nodeData(1,QtNodes::NodeRole::Position).toPointF()==moved,"Mouse drag redo failed");
-        const auto count=scene->undoStack().count();
-        editor->arrange_nodes(); require(scene->undoStack().count()==count+1,"Arrange is not one undo command");
-        scene->undoStack().undo();
-        qInfo("Editor: node drag/arrange passed");
-        auto port=[&](int id,QtNodes::PortType type) {
-            auto *item=scene->nodeGraphicsObject(id);
-            return view->mapFromScene(scene->nodeGeometry().portScenePosition(id,type,0,item->sceneTransform()));
-        };
-        int applied=0;
-        QObject::connect(&presenter,&GuiPresenter::graph_apply_finished,&window,[&](quint64,bool,const QString &) { ++applied; });
-        QTest::qWait(400); const auto baseline=applied;
-        const auto out=port(0,QtNodes::PortType::Out),in=port(1,QtNodes::PortType::In);
-        require(view->viewport()->rect().contains(out) && view->viewport()->rect().contains(in),"Test ports outside viewport");
-        drag(view->viewport(),out,in);
-        qInfo("Editor: connection created");
-        require(graph.save().value("connections").toArray().size()==1,"Real mouse connect failed");
-        QTest::qWait(450); require(applied>baseline && state.editor_draft_modified,"Mouse connect did not auto apply draft");
-        const auto before_disconnect=applied;
-        drag(view->viewport(),in,in+QPoint(0,100));
-        qInfo("Editor: connection disconnected");
-        require(graph.save().value("connections").toArray().isEmpty(),"Real mouse disconnect failed");
-        QTest::qWait(450); require(applied>before_disconnect,"Mouse disconnect did not auto apply");
-        scene->undoStack().undo(); require(graph.save().value("connections").toArray().size()==1,"Disconnect undo failed");
-        scene->undoStack().redo(); require(graph.save().value("connections").toArray().isEmpty(),"Disconnect redo failed");
-        scene->clearSelection();
-        QTest::mouseClick(view->viewport(),Qt::LeftButton,Qt::NoModifier,view->mapFromScene(scene->nodeGraphicsObject(1)->sceneBoundingRect().topLeft()+QPointF(40,18)));
-        require(scene->nodeGraphicsObject(1)->isSelected(),"Real mouse click did not select removed node");
-        // Use the same public Delete action as the context menu. Offscreen windows
-        // cannot reliably activate native WidgetShortcut keyboard focus after docking.
-        view->deleteSelectionAction()->trigger();
-        require(!graph.nodeExists(1),"Mouse selection/Delete did not remove node");
-        scene->undoStack().undo(); require(graph.nodeExists(1),"Remove undo did not restore node");
-        scene->undoStack().redo(); require(!graph.nodeExists(1),"Remove redo failed");
-        qInfo("Editor: disconnect/remove undo/redo passed");
-        auto parameters=graph.delegateModel<AudioNodeModel>(0)->save(); parameters["tones"]=1;
-        graph.delegateModel<AudioNodeModel>(0)->load(parameters); emit graph.nodeUpdated(0);
-        QTest::mouseClick(editor->findChild<QPushButton *>("applyPipeline"),Qt::LeftButton);
-        QTest::qWait(450);
-        auto *status=editor->findChild<QLabel *>("pipelineValidation");
-        require(status->isVisible() && !status->toolTip().isEmpty(),"Invalid apply has no permanent visible status");
-        require(status->toolTip().contains("1") || status->toolTip().contains("5") || status->toolTip().contains("tones") || status->toolTip().contains(QString::fromUtf8("Не применено")),"Invalid apply did not expose rejection");
-        emit presenter.pipeline_preview({{0,{16,0.5f}}});
-        require(graph.delegateModel<AudioNodeModel>(0)->last_preview().values==0,"Old active graph preview leaked into invalid draft");
-        auto unknown=editor->document();
-        auto unknown_nodes=unknown.value("nodes").toArray();
-        const QJsonObject opaque{{"id",99},{"position",QJsonObject{{"x",900},{"y",700}}},
-            {"internal-data",QJsonObject{{"model-name","FutureProcessor"},{"private-setting",46}}}};
-        unknown_nodes.append(opaque); unknown["nodes"]=unknown_nodes;
-        const QJsonObject unknown_edge{{"outNodeId",99},{"outPortIndex",2},{"inNodeId",0},{"inPortIndex",3},{"extension",47}};
-        unknown["connections"]=QJsonArray{unknown_edge};
-        const auto before_switch=applied;
-        emit presenter.selected_device_changed(unknown,{{"version",1},{"scale",1},{"center_x",222},{"center_y",333}});
-        QTest::qWait(400); require(applied==before_switch,"Device replacement auto-applied unsupported draft");
-        require(near({222,333}),"Device replacement did not restore camera");
-        const auto roundtrip=editor->document();
-        require(roundtrip.value("nodes").toArray().contains(opaque) && roundtrip.value("connections").toArray().contains(unknown_edge),
-                "Unsupported node or attached connection lost on roundtrip");
-        graph.setNodeData(0,QtNodes::NodeRole::Position,QPointF(70,80));
-        QTest::qWait(400); require(applied==before_switch,"Unsupported draft editing auto-applied a partial graph");
-        const QJsonObject invalid_edge{{"outNodeId",0},{"outPortIndex",5},{"inNodeId",1},{"inPortIndex",6},{"extension",48}};
-        auto invalid_document=document; invalid_document["connections"]=QJsonArray{invalid_edge};
-        emit presenter.selected_device_changed(invalid_document,{{"version",1},{"scale",1},{"center_x",222},{"center_y",333}});
-        QTest::qWait(400);
-        require(editor->document().value("connections").toArray().contains(invalid_edge) && applied==before_switch,
-            "Unrenderable known-node connection lost or partially applied");
-        state.file_configs.ui.autosave_enabled=true;
-        int saves=0; QObject::connect(&presenter,&GuiPresenter::on_config_updated,&window,[&] { ++saves; });
-        graph.setNodeData(0,QtNodes::NodeRole::Position,QPointF(1234,567));
-        view->centerOn(456,789); const auto closing_center=center();
-        delete dock;
-        require(saves>0,"Close did not flush pending presentation save");
-        require(QLineF(closing_center,QPointF(state.file_configs.ui.editor_view.value("center_x").toDouble(),
-            state.file_configs.ui.editor_view.value("center_y").toDouble())).length()<5,"Close saved wrong view center");
-        window.close();
-        qInfo("Editor native mouse, view-state, replacement, auto-apply and rejection checks passed");
-    } catch(const std::exception &error) { qCritical("Editor regression: %s",error.what()); return 1; }
-    return 0;
+        require(clipboardActions==2,"Graph Ctrl+C/V shortcuts were remapped or missing");
+        scene->nodeSelected(3);auto* renameBlock=editor.findChild<QPushButton*>("pipelineRenameNode");require(renameBlock,"Ordinary processor inspector lacks rename control");
+        auto* textEditor=editor.findChild<QLineEdit*>("numericNan");require(textEditor,"Exact numeric text editor absent");
+        const auto clipboardNodeCount=graph->allNodeIds().size();textEditor->setFocus();textEditor->selectAll();
+        QTest::keyClick(textEditor,Qt::Key_C,Qt::ControlModifier);
+        require(QApplication::clipboard()->text()=="9007199254740993" && graph->allNodeIds().size()==clipboardNodeCount,"Copy inside a parameter field copied graph nodes instead of text");
+        const auto renameUndo=editor.history().index();
+        QTimer::singleShot(0,[]{for(auto* widget:QApplication::topLevelWidgets())if(auto* dialog=qobject_cast<QInputDialog*>(widget)){dialog->setTextValue("Exact converter");dialog->accept();}});
+        renameBlock->click();require(converterModel->caption()=="Exact converter" && converterModel->name()=="Converter" && editor.history().index()==renameUndo+1,"Inspector rename did not update user caption with one undo command");
+        editor.history().undo();require(converterModel->caption()!="Exact converter","Inspector rename undo did not restore default");editor.history().redo();
+        require(editor.save_preset("exact snapshot"),"Canonical preset save failed");const auto preset=state.file_configs.ui.pipeline_presets.last().toObject();
+        graph->deleteNode(3);require(editor.load_preset(preset["id"].toString()),"Canonical preset reload failed");
+        require(editor.numeric_draft(exported) && std::get<std::uint64_t>(std::get<domain::ConverterProcessingParameters>(exported.nodes[0].parameters).policy.nan_replacement)==9007199254740993ULL,"Preset rounds exact UInt64 literal");
+        require(graph->nodeData(3,QtNodes::NodeRole::Position).toPointF()==QPointF(420,230),"Preset loses node position");
+        require(graph->delegateModel<AudioNodeModel>(3)->parameter_on_block("numericNan"),"Preset loses presentation flag");
+        require(graph->delegateModel<AudioNodeModel>(3)->caption()=="Exact converter","Preset loses the user display name");
+        editor.findChild<QPushButton*>("applyPipeline")->click();
+        for(int i=0;i<100 && applied.isEmpty();++i)QTest::qWait(10);
+        require(!applied.isEmpty() && applied.last()[1].toBool() && typedSave.count()>=1,"Canonical Apply not acknowledged by executor");
+        require(!QJsonDocument(presenter.client().snapshot().graph).toJson().contains("inline_parameters"),"Presentation flags reached engine Apply snapshot");
+        domain::NumericProcessingGraph actual;require(bool(desktop::decode_numeric_editor_graph(QJsonDocument(presenter.client().snapshot().graph).toJson(QJsonDocument::Compact),actual)) && actual.nodes.size()==1 && actual.nodes[0].id==3,"Apply did not reach canonical engine snapshot");
+        graph->deleteNode(3);editor.flush_presentation();require(graph->has_numeric_nodes() && typedSave.count()>=2,"Empty draft drops owning save notification");
+        require(editor.remove_preset(preset["id"].toString()),"Preset removal failed");
+        domain::NumericProcessingGraph diagnostic;diagnostic.graph_id="main";
+        auto scalar=numeric_editor::default_node("ScalarView");scalar.id=12;
+        require(numeric_editor::set_dtype(scalar,domain::PortDirection::Input,0,signal_contracts::DType::UInt64),"Diagnostic UInt64 input");diagnostic.nodes.push_back(scalar);
+        require(editor.load_numeric_draft(diagnostic),"Diagnostic graph load");applied.clear();editor.findChild<QPushButton*>("applyPipeline")->click();
+        for(int i=0;i<100 && applied.isEmpty();++i)QTest::qWait(10);
+        require(!applied.isEmpty() && applied.last()[1].toBool(),"Diagnostic graph Apply failed");
+        auto* model=graph->delegateModel<AudioNodeModel>(12);std::unique_ptr<QWidget> diagnosticCard(model->preview_widget());auto* exact=diagnosticCard->findChild<QLabel*>("previewExactValue");
+        require(exact,"Registered diagnostic preview value absent");
+        for(int i=0;i<200 && presenter.client().snapshot().statuses.value("analyzer").state!=pipeline::State::Running;++i)QTest::qWait(10);
+        require(presenter.client().snapshot().statuses.value("analyzer").state==pipeline::State::Running,"Preview fixture must run actual current graph");
+        const auto snapshot=presenter.client().snapshot();PreviewPools pools;
+        auto frame=scalar_delivery(pools,scalar,{snapshot.graph_revision,snapshot.epoch},9007199254740993ULL,1);
+        emit presenter.numeric_frame_ready(frame);require(exact->text()=="9007199254740993","Connected presenter signal fails inline preview");
+        const auto parameters=model->save();editor.hide();require(exact->text()==QStringLiteral("—"),"Hidden editor retains available stale diagnostic");
+        emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"Hidden editor consumes numeric delivery");editor.show();
+        emit presenter.numeric_frame_ready(frame);require(exact->text()=="9007199254740993","Reopened editor fails current delivery");
+        presenter.apply_pipeline_graph(editor.document());
+        for(int i=0;i<200 && (presenter.client().snapshot().graph_revision==snapshot.graph_revision || presenter.graph_request_pending());++i)QTest::qWait(10);
+        QCoreApplication::processEvents();
+        require(presenter.client().snapshot().graph_revision>snapshot.graph_revision && presenter.client().snapshot().statuses.value("analyzer").state==pipeline::State::Running,"Apply did not advance the continuous graph");
+        emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"New graph revision accepts stale preview frame");
+        auto* bypass=model->embeddedWidget()->findChild<QCheckBox*>("numericBypass");require(bypass,"Connected node bypass absent");
+        const int bypassUndo=editor.history().index();bypass->setChecked(true);
+        require(!model->numeric_node()->enabled && editor.history().index()==bypassUndo+1,"Bypass edit bypasses editor command/undo path");
+        editor.history().undo();require(model->numeric_node()->enabled && !bypass->isChecked(),"Undo fails to restore bypass control");
+        editor.history().redo();require(!model->numeric_node()->enabled && bypass->isChecked(),"Redo fails to restore bypass control");
+        editor.history().undo();
+        auto changed=*model->numeric_node();changed.enabled=false;require(graph->edit_node(12,changed),"Draft parameter edit failed");
+        changed.enabled=true;require(graph->edit_node(12,changed),"Draft reenable failed");
+        auto alternate=*model->numeric_node();numeric_editor::set_dtype(alternate,domain::PortDirection::Input,0,signal_contracts::DType::Int64);require(graph->edit_node(12,alternate),"Diverging contract edit failed");
+        emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"Divergent draft displays active graph data");
+        require(parameters!=model->save(),"Fixture draft edit failed to change typed snapshot");
+        auto badFrame=frame;auto badContext=std::make_shared<pipeline::NumericDeliveryContext>(*frame.context);badContext->endpoint.graph_id="foreign";badFrame.context=badContext;
+        emit presenter.numeric_frame_ready(badFrame);require(exact->text()==QStringLiteral("—"),"Foreign graph populates inline preview");
+        std::unique_ptr<QWidget> controls(model->parameter_widget());auto* inspectorBypass=controls->findChild<QCheckBox*>("numericBypass");require(inspectorBypass,"Missing dedicated bypass control");
+        ui::Language::instance().set("ru");require(inspectorBypass->text()==ui::text("Bypass") && bypass->text()==ui::text("Bypass"),"Bypass controls not live translated");ui::Language::instance().set("en");
+        auto* view=editor.findChild<QtNodes::GraphicsView*>();const auto retainedPosition=graph->nodeData(12,QtNodes::NodeRole::Position).toPointF();const auto retainedScale=view->getScale();
+        editor.hide();editor.show();QApplication::processEvents();require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==retainedPosition && view->getScale()==retainedScale,"Ordinary show resets explicit layout");
+        editor.hide();graph->setNodeData(12,QtNodes::NodeRole::Position,QPointF(9000,7000));editor.initialize_default_layout();QApplication::processEvents();
+        require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(9000,7000),"Default layout runs before editor viewport visible");
+        const auto processingBefore=editor.document().value("nodes").toArray().first().toObject().value("internal-data").toObject().value("numeric_processing");
+        editor.show();QApplication::processEvents();const auto arranged=graph->nodeData(12,QtNodes::NodeRole::Position).toPointF();
+        require(arranged!=QPointF(9000,7000) && editor.document().value("nodes").toArray().first().toObject().value("internal-data").toObject().value("numeric_processing")==processingBefore,"One-time default layout missing or mutates processing");
+        require(QLineF(view->mapToScene(view->viewport()->rect().center()),scene->itemsBoundingRect().center()).length()<5/view->getScale(),"Default fit fails to center ready viewport");
+        graph->setNodeData(12,QtNodes::NodeRole::Position,QPointF(111,222));editor.hide();editor.show();QApplication::processEvents();
+        require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(111,222),"Default layout repeats and destroys user positions");
+        editor.hide();editor.initialize_default_layout();
+        require(editor.load_numeric_draft(diagnostic),"Explicit typed replacement rejected");graph->setNodeData(12,QtNodes::NodeRole::Position,QPointF(333,444));
+        editor.show();QApplication::processEvents();require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(333,444),"Stale initial layout overwrites explicit typed replacement");
+        qInfo("Canonical editor: catalog, atomic import, presets, Apply, exact bounded diagnostic, fences, live theme/RU/EN passed");return 0;
+    }catch(const std::exception& error){qCritical("%s",error.what());return 1;}
 }

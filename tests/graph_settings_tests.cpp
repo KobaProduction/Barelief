@@ -1,11 +1,16 @@
-#include "synthetic_capture.h"
+#include "numeric_gui_fixture.h"
+#include <control/numeric_control_server.h>
+#include <pipeline/numeric_engine.h>
 #include "core_app/core_application.h"
 #include "core_app/main_window.h"
+#include "core_app/graph_panel.h"
+#include "core_app/workspace/processor_directory_model.h"
 #include "core_app/settings_widget.h"
 #include "core_app/config_manager.h"
 #include "core_app/scheme_editor/audio_node_model.h"
 #include "visualization/ui_text.h"
 #include "visualization/surface_settings.h"
+#include "visualization/scene_aspect_control.h"
 #include <QtNodes/StyleCollection>
 #include <QTemporaryDir>
 #include <QFile>
@@ -13,6 +18,8 @@
 #include <QDoubleSpinBox>
 #include <QSlider>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QLayout>
 #include <QToolButton>
 #include "core_app/scheme_editor/editor_widget.h"
 #include <QStyleHints>
@@ -35,41 +42,25 @@
 #include <QTimer>
 #include <QDialog>
 #include <QOpenGLWidget>
+#include <QInputDialog>
 #include <QTreeWidget>
 #include <QDockWidget>
 #include <QTabWidget>
 #include <QtTest/QTest>
 #include <stdexcept>
 static void check(bool condition, const char *message) {
-    if (!condition)
+    if (!condition) {
+        std::fprintf(stderr,"Graph settings oracle: %s\n",message);std::fflush(stderr);
         throw std::runtime_error(message);
+    }
 }
 int main() {
-    QTemporaryDir dir;
-    auto path = dir.filePath("graphs.json");
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly))
-        return 1;
-    const QByteArray initial =
-        R"({"extension":{"keep":17},"core":{"run_loopback":false,"run_analyser":false},"ui":{"autosave_enabled":false,"theme":"system","graph_rendering":{"version":1,"extension":42,"defaults":{"gradient":"green_red","extra":23,"axis_grid":true,"floor_grid":false,"light_strength":1.2345}},"graph_views":{}},"wled_ar_server":{"enabled":false}})";
-    auto fixture = QJsonDocument::fromJson(initial).object();
-    auto fixtureUi = fixture["ui"].toObject();
-    auto fixtureRendering = fixtureUi["graph_rendering"].toObject();
-    auto fixtureDefaults = fixtureRendering["defaults"].toObject();
-    fixtureDefaults["mesh_width"] = 1.2345;
-    fixtureRendering["defaults"] = fixtureDefaults;
-    fixtureUi["graph_rendering"] = fixtureRendering;
-    fixture["ui"] = fixtureUi;
-    fixture["pipeline_graph"] = pipeline::GraphProgram::test_signal_defaults();
-    fixture["scene_graph"] = fixture["pipeline_graph"];
-    const auto originalBytes = QJsonDocument(fixture).toJson();
-    file.write(originalBytes);
-    file.close();
-    auto bytes = path.toLocal8Bit();
-    char name[] = "graph_settings_tests", flag[] = "--config";
-    char *argv[]{name, flag, bytes.data(), nullptr};
-    int argc = 3;
-    CoreApplication app(argc, argv, test_fixture::synthetic_capture_factory());
+    QJsonObject rendering{{"version",1},{"extension",42},{"defaults",QJsonObject{{"gradient","green_red"},{"extra",23},{"axis_grid",true},{"floor_grid",false},{"light_strength",1.2345},{"mesh_width",1.2345}}}};
+    gui_fixture::App fixture(numeric_test_graph(),{{"theme","system"},{"language","ru"},{"graph_rendering",rendering}});
+    fixture.apply();
+    auto& app=*fixture.application;
+    const auto path=QString::fromLocal8Bit(fixture.path);QFile file(path);
+    check(file.open(QIODevice::ReadOnly),"read canonical baseline");const auto originalBytes=file.readAll();file.close();
     try {
         MainWindow *window = nullptr;
         for (auto *widget : QApplication::topLevelWidgets())
@@ -77,17 +68,88 @@ int main() {
                 window = candidate;
         check(window, "MainWindow missing");
         QTest::qWait(100);
+        fixture.editor->graph_view_requested(10);
+        WorkspaceDock* namedGraph=nullptr;
+        for(auto* dock:window->workspaceDocks())
+            if(dock->property("graphNode").toInt()==10)namedGraph=dock;
+        for(auto* dock:window->workspaceDocks())
+            if(dock->property("graphViewKey").toString()=="fft" && dock->property("graphNode").toInt()==10)namedGraph=dock;
+        check(namedGraph,"Rename graph fixture missing");
+        const auto namedGraphKey=namedGraph->property("graphViewKey").toString();
+        check(namedGraphKey=="fft","Rename regression must exercise the primary non-hex graph key");
+        const auto defaultGraphTitle=namedGraph->windowTitle();
+        auto* renameGraph=namedGraph->findChild<QPushButton*>("graphRename");
+        auto* graphSettings=namedGraph->widget()->findChild<QScrollArea*>();
+        check(renameGraph && graphSettings && graphSettings->widget()->isAncestorOf(renameGraph),"Rename graph sidebar control missing");
+        const auto chartPanels=window->findChildren<GraphPanel*>();
+        check(!chartPanels.empty(),"Chart panels missing");
+        for(auto* panel:chartPanels) {
+            auto* sidebar=panel->findChild<QScrollArea*>();
+            auto* diagnostic=panel->findChild<QLabel*>("numericExactValue");
+            check(sidebar && diagnostic && sidebar->widget()->isAncestorOf(diagnostic),"Numeric diagnostics must live inside the settings sidebar");
+            check(panel->layout()->count()==1,"Graph still reserves a footer row below its splitter");
+        }
+        check(namedGraph->contextMenuPolicy()!=Qt::ActionsContextMenu && !namedGraph->findChild<QAction*>("graphRename"),"Canvas still exposes rename context action");
+        QTest::qWait(400);
+        const auto processingBeforeRename=fixture.editor->document();
+        const auto revisionBeforeRename=app.presenter().client().snapshot().graph_revision;
+        const auto undoBeforeRename=fixture.editor->history().count();
+        const auto renameTo=[&](const QString& name,bool accept=true,QPushButton* origin=nullptr) {
+            QTimer::singleShot(0,[name,accept]{
+                for(auto* widget:QApplication::topLevelWidgets())if(auto* dialog=qobject_cast<QInputDialog*>(widget)) {
+                    dialog->setTextValue(name);if(accept)dialog->accept();else dialog->reject();
+                }
+            });
+            (origin?origin:renameGraph)->click();
+            QCoreApplication::processEvents();
+        };
+        renameTo(QString::fromUtf8("Мой спектр"));
+        auto* renameModel=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
+        auto* namedNode=renameModel?dynamic_cast<QtNodes::DataFlowGraphModel*>(&renameModel->graphModel())->delegateModel<AudioNodeModel>(10):nullptr;
+        check(namedNode && namedNode->caption()==QString::fromUtf8("Мой спектр"),"Graph sidebar rename must update the processing-editor block caption");
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр") &&
+              namedGraph->toggleViewAction()->text()==namedGraph->windowTitle() &&
+              app._ctx.file_configs.ui.graph_views[namedGraphKey].toObject()["display_name"]==QString::fromUtf8("Мой спектр"),
+              "Custom graph name not reflected or persisted");
+        ui::Language::instance().set("en");
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Language replaced custom graph name");
+        renameTo("Cancelled",false);
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Cancel renamed graph");
+        renameTo(QString(257,'x'));
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Oversize graph name accepted");
+        auto* renameScene=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
+        check(renameScene,"Pipeline rename scene missing");
+        renameScene->nodeSelected(10);
+        auto* pipelineRename=fixture.editor->findChild<QPushButton*>("pipelineRenameGraph");
+        check(pipelineRename,"Pipeline sidebar rename control missing");
+        renameTo("Pipeline title",true,pipelineRename);
+        check(namedGraph->windowTitle()=="Pipeline title","Pipeline sidebar did not rename the representation");
+        renameTo("");
+        check(!app._ctx.file_configs.ui.graph_views[namedGraphKey].toObject().contains("display_name"),"Empty graph name did not restore default");
+        ui::Language::instance().set("ru");
+        check(namedGraph->windowTitle()==defaultGraphTitle,"Default graph name no longer localized");
+        QTest::qWait(400);
+        check(fixture.editor->document()==processingBeforeRename && fixture.editor->history().count()==undoBeforeRename+3 &&
+              app.presenter().client().snapshot().graph_revision==revisionBeforeRename,"Three accepted renames must be presentation-only undo commands without changing the applied graph revision");
+        fixture.editor->history().undo();
+        check(namedGraph->windowTitle()=="Pipeline title" && namedNode && namedNode->caption()=="Pipeline title","Graph rename undo must synchronize block caption and graph title");
+        fixture.editor->history().redo();
+        check(namedGraph->windowTitle()==defaultGraphTitle,"Graph rename redo restores the translated default");
+        // Offscreen does not restore the parent window's active context after a modal dialog.
+        window->activateWindow();window->setFocus();QTest::qWait(20);
         auto *settings = window->findChild<SettingsWidget *>();
         check(settings, "Settings missing");
         settings->select_section(SettingsWidget::Graphs);
         auto *tabs = settings->findChild<QTabWidget *>("settingsSections");
         check(tabs && tabs->count() == 6 && tabs->currentIndex() == 2, "Graphs section order");
-        for (const auto section : {SettingsWidget::Graphs, SettingsWidget::WLED, SettingsWidget::Controls}) {
+        for (const auto section : {SettingsWidget::Graphs, SettingsWidget::Controls}) {
             auto *action = window->findChild<QAction *>(QString("openSettingsSection%1").arg(section));
             check(action, "Settings section action missing");
             action->trigger();
             check(tabs->currentIndex() == section, "Settings menu targets wrong section");
         }
+        check(!window->findChild<QAction *>("openSettingsSection3") &&
+              !window->findChild<QAction *>("openSettingsSection4"), "Hidden settings retain navigation commands");
         settings->select_section(SettingsWidget::Graphs);
         check(tabs->tabText(SettingsWidget::Graphs) == QString::fromUtf8("Графики"),
               "Graphs Russian translation missing");
@@ -215,6 +277,21 @@ int main() {
         lighting->setChecked(true);
         check(reset->text() == QString::fromUtf8("Сброс") && brightness->tickPosition() == QSlider::NoTicks,
               "Compact slider/reset translation missing");
+        auto* aspectMode=settings->findChild<QComboBox*>("surface_scene_aspect_mode");
+        auto* timeAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_time_aspect");
+        auto* bandAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_band_aspect");
+        check(aspectMode && timeAspect && bandAspect && aspectMode->currentIndex()==0 &&
+              timeAspect->value()==2 && bandAspect->value()==1,"Scene aspect defaults/form missing");
+        timeAspect->setValue(3.25);bandAspect->setValue(.75);
+        auto appearance=SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering);
+        check(appearance["scene_time_aspect"].toDouble()==3.25 && appearance["scene_band_aspect"].toDouble()==.75,
+              "Global scene ratios did not persist");
+        aspectMode->setCurrentIndex(1);
+        check(!timeAspect->isEnabled() && !bandAspect->isEnabled() &&
+              SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["scene_aspect_mode"]=="sample_counts",
+              "Sample count mode/disabled custom ratios not synchronized");
+        aspectMode->setCurrentIndex(0);
+        check(timeAspect->isEnabled() && bandAspect->isEnabled(),"Fixed aspect controls not restored");
         auto *meshWidth = settings->findChild<QSlider *>("surface_mesh_width");
         auto *meshContrast = settings->findChild<QSlider *>("surface_mesh_contrast");
         check(
@@ -229,7 +306,7 @@ int main() {
                       .35,
               "Mesh controls do not persist");
         const QString key =
-            QString::fromLatin1(QJsonDocument(QJsonArray{app.presenter().device_id(), app.presenter().graph_id(), 7})
+            QString::fromLatin1(QJsonDocument(QJsonArray{app.presenter().device_id(), app.presenter().graph_id(), 8})
                                     .toJson(QJsonDocument::Compact)
                                     .toHex());
         auto preservedView = app._ctx.file_configs.ui.graph_views[key].toObject();
@@ -315,13 +392,65 @@ int main() {
                                                 QJsonObject{{"position", 1}, {"color", "#ffffff"}}})
                   .isEmpty(),
               "Duplicate gradient positions accepted");
-        auto *surface = window->findChild<SpectrogramGraph *>();
+        auto *surface = window->workspaceDock("spectrogramDock")->findChild<SpectrogramGraph*>();
         check(surface, "Surface missing");
         check(!surface->surface_settings()["mesh_grid"].toBool() &&
                   surface->surface_settings()["brightness"].toDouble() == 1.4,
               "Global settings did not reach renderer API");
         check(surface->surface_settings()["gradient_stops"].toArray() == stops,
               "Per-graph color scale did not reach renderer");
+        // Exercise the same shared control used beside a native spectrogram,
+        // through its real surface API and per-view persistence signal.
+        ui::SceneAspectControl preciseAspect;
+        const QJsonObject preciseOptions{{"scene_time_aspect",2.123456789},{"scene_band_aspect",.75},
+            {"extension",43},{"y_range_mode","manual"},{"y_min",-.123456789},{"y_max",3.23456789}};
+        int preciseWrites=0;preciseAspect.changed=[&]{++preciseWrites;};
+        preciseAspect.set_options(preciseOptions);
+        auto preciseResult=preciseAspect.apply(preciseOptions);
+        check(preciseWrites==0 && preciseResult["scene_time_aspect"].toDouble()==2.123456789,
+              "Loading aspect control quantized or wrote exact stored ratio");
+        preciseAspect.findChild<QDoubleSpinBox*>("surface_scene_band_aspect")->setValue(1.5);
+        preciseResult=preciseAspect.apply(preciseOptions);
+        check(preciseWrites==1 && preciseResult["scene_time_aspect"].toDouble()==2.123456789 &&
+              preciseResult["scene_band_aspect"].toDouble()==1.5 && preciseResult["extension"].toInt()==43 &&
+              preciseResult["y_min"].toDouble()==-.123456789 && preciseResult["y_max"].toDouble()==3.23456789,
+              "Editing band ratio quantized time ratio or changed unknown metadata/manual Y");
+        ui::SceneAspectControl localAspect;
+        int localWrites=0;
+        localAspect.changed=[&]{
+            ++localWrites;
+            const auto options=localAspect.apply(surface->surface_settings());
+            surface->set_surface_settings(options);emit surface->surface_settings_changed(options);
+        };
+        localAspect.set_options(surface->surface_settings());
+        check(localWrites==0,"Loading scene controls wrote view preferences");
+        localAspect.findChild<QDoubleSpinBox*>("surface_scene_band_aspect")->setValue(1.5);
+        const auto aspectView=SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering,
+            app._ctx.file_configs.ui.graph_views[key].toObject());
+        check(localWrites==1 && aspectView["scene_band_aspect"].toDouble()==1.5 &&
+              aspectView["scene_time_aspect"].toDouble()==3.25 &&
+              SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["scene_band_aspect"].toDouble()==.75,
+              "Per-view visual aspect was not isolated from global defaults");
+        check(surface->projected_scene_geometry().scaleX==3.25f &&
+              surface->projected_scene_geometry().scaleZ==1.5f,"Effective visual ratios did not reach geometry");
+        // Coincidental global equality must not erase an explicitly pinned
+        // scene policy when the user edits only its colour scale.
+        bandAspect->setValue(1.5);
+        auto colourOnly=surface->surface_settings();colourOnly["gradient_layout"]="linear";
+        surface->set_surface_settings(colourOnly);emit surface->surface_settings_changed(colourOnly);
+        const auto retainedAspect=app._ctx.file_configs.ui.graph_views[key].toObject()["surface_override"]
+            .toObject()["values"].toObject();
+        check(retainedAspect["scene_aspect_mode"]=="fixed" && retainedAspect["scene_time_aspect"].toDouble()==3.25 &&
+              retainedAspect["scene_band_aspect"].toDouble()==1.5,
+              "Unrelated colour edit removed pinned geometry after coincidental global equality");
+        aspectMode->setCurrentIndex(1);
+        const auto fixedView=SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering,
+            app._ctx.file_configs.ui.graph_views[key].toObject());
+        check(fixedView["scene_aspect_mode"]=="fixed" && fixedView["scene_time_aspect"].toDouble()==3.25 &&
+              fixedView["scene_band_aspect"].toDouble()==1.5 &&
+              surface->projected_scene_geometry().scaleX==3.25f,
+              "Changing global aspect mode disabled explicit fixed per-view geometry");
+        aspectMode->setCurrentIndex(0);bandAspect->setValue(.75);
         const auto editedOverride = app._ctx.file_configs.ui.graph_views[key].toObject()["surface_override"].toObject();
         brightness->setValue(150);
         check(app._ctx.file_configs.ui.graph_views[key].toObject()["surface_override"].toObject() == editedOverride,
@@ -329,42 +458,38 @@ int main() {
         check(surface->surface_settings()["brightness"].toDouble() == 1.5,
               "Per-graph color scale pinned unrelated global lighting defaults");
         brightness->setValue(140);
+        const auto intervalPanels=window->findChildren<GraphPanel*>();
+        check(!intervalPanels.empty(),"Chart panels missing before interval Save/load");
+        const auto chartIntervalKey=intervalPanels.front()->objectName().chopped(QStringLiteral("GraphPanel").size());
+        auto* chartInterval=intervalPanels.front()->findChild<QDoubleSpinBox*>(chartIntervalKey+"AutoRangeIntervalSeconds");
+        check(chartInterval,"Chart auto range interval missing");
+        chartInterval->setValue(7.5);
+        // Offscreen skips native 3D controls; exercise their settings signal
+        // through the same persistence boundary used by a native user edit.
+        auto intervalOptions=surface->surface_settings();intervalOptions["auto_range_interval_seconds"]=6.5;
+        surface->set_surface_settings(intervalOptions);emit surface->surface_settings_changed(intervalOptions);
+        check(app._ctx.file_configs.ui.graph_views[chartIntervalKey].toObject()["auto_range_interval_seconds"].toDouble()==7.5,
+              "Chart interval edit did not update presentation preferences");
         check(file.open(QIODevice::ReadOnly), "Read config failed");
         check(file.readAll() == originalBytes, "Autosave disabled wrote file");
         file.close();
-        ConfigManager manager(path);
-        check(manager.save(app._ctx.file_configs), "Explicit save failed");
-        FileSaveApplicationConfig loaded;
-        check(manager.load(loaded), "Roundtrip failed");
-        check(loaded.ui.graph_rendering == app._ctx.file_configs.ui.graph_rendering &&
-                  loaded.raw_document["extension"].toObject()["keep"].toInt() == 17,
-              "Settings/unknown extension roundtrip");
-        check(loaded.ui.graph_rendering["extension"].toInt() == 42, "Schema unknown field lost");
+        window->activateWindow(); window->setFocus();
+        auto* save=window->findChild<QAction*>("saveSettings");
+        check(gui_fixture::wait([&]{return save && save->isEnabled();}),"explicit Save in active workspace");save->trigger();
+        ConfigManager manager(path);desktop::NumericProjectDocument source;domain::NumericProcessingGraph graph;
+        check(manager.loadNumeric(source,graph),"canonical roundtrip load");FileSaveApplicationConfig loaded;
+        check(manager.readNumericSettings(source,loaded),"canonical settings projection");
+        check(loaded.ui.graph_views[chartIntervalKey].toObject()["auto_range_interval_seconds"].toDouble()==7.5 &&
+              loaded.ui.graph_views[key].toObject()["surface_override"].toObject()["values"].toObject()["auto_range_interval_seconds"].toDouble()==6.5,
+              "Per-graph auto range intervals did not survive explicit Save/load");
+        check(loaded.ui.graph_rendering==app._ctx.file_configs.ui.graph_rendering,"settings roundtrip");
+        check(loaded.ui.graph_rendering["extension"].toInt()==42 && loaded.ui.graph_rendering["defaults"].toObject()["extra"].toInt()==23,"unknown rendering descendants lost");
         surface->surface_settings_error("Test shadow unavailable");
         auto *status = window->findChild<QLabel *>("surfaceSettingsStatus");
         check(status && status->text().contains("Test shadow unavailable"), "Renderer failure not visible");
         surface->surface_settings_error({});
         check(status->isHidden(), "Renderer status did not clear");
-        const auto legacyPath = dir.filePath("legacy.json");
-        QFile legacyFile(legacyPath);
-        check(legacyFile.open(QIODevice::WriteOnly), "Legacy fixture open");
-        legacyFile.write(
-            R"({"ui":{"graph_rendering":{"unknown":77},"graph_views":{"spectrogram":{"renderer":{"gradient":0,"selection":2,"unknown":88}}}}})");
-        legacyFile.close();
-        ConfigManager legacyManager(legacyPath);
-        FileSaveApplicationConfig migrated;
-        check(legacyManager.load(migrated), "Legacy load");
-        check(SurfaceSettings::effective(migrated.ui.graph_rendering)["gradient"] == "black_yellow" &&
-                  migrated.ui.graph_rendering["unknown"].toInt() == 77,
-              "Legacy gradient migration");
-        const auto oldRenderer = migrated.ui.graph_views["spectrogram"].toObject()["renderer"].toObject();
-        check(!oldRenderer.contains("gradient") && oldRenderer["unknown"].toInt() == 88 &&
-                  oldRenderer["selection"].toInt() == 2,
-              "Legacy renderer preferences lost");
-        check(legacyManager.save(migrated), "Legacy save");
-        FileSaveApplicationConfig once;
-        check(legacyManager.load(once), "Migrated reload");
-        check(once.ui.graph_rendering == migrated.ui.graph_rendering, "Migration repeated");
+        // Legacy gradient migration is unsupported by the canonical-only document contract.
         auto *statusTheme = window->findChild<QComboBox *>("statusTheme");
         check(statusTheme, "Status theme selector missing");
         statusTheme->setCurrentIndex(statusTheme->findData("light"));
@@ -373,15 +498,15 @@ int main() {
               "Status/settings theme not synchronized");
         statusTheme->setCurrentIndex(statusTheme->findData("dark"));
         check(app._ctx.file_configs.ui.theme == "dark", "Status dark theme not persisted in memory");
-        auto *applyStatus = window->findChild<QLabel *>("graphApplyStatus");
-        emit app.presenter().apply_status_changed("Running");
-        check(applyStatus && applyStatus->isHidden(), "Permanent applied status remains");
-        if (auto *editor = window->findChild<SchemeEditorWidget *>())
-            emit editor->status_message(ui::text("Data Flow applied"));
-        check(applyStatus->isHidden(), "Editor applied status remains");
+        check(!window->findChild<QLabel *>("graphApplyStatus"), "Global applied status indicator must be removed");
+        auto* diagnosticEditor=window->findChild<SchemeEditorWidget*>();check(diagnosticEditor,"Editor diagnostics missing");
+        auto* validation=diagnosticEditor->toolbar()->findChild<QLabel*>("pipelineValidation");check(validation,"Editor warning indicator missing");
         emit app.presenter().apply_status_changed("Error: test");
-        check(!applyStatus->isHidden(), "Error status hidden");
+        check(!validation->isHidden() && validation->toolTip().contains("test"),"Error is absent from editor toolbar");
+        const auto errorTooltip=validation->toolTip();
         emit app.presenter().apply_status_changed("Running");
+        check(!validation->isHidden() && validation->toolTip()==errorTooltip,"Routine status cleared editor error");
+        check(!window->findChild<QLabel*>("savedPipelineWarning"),"Duplicate schema warning remains in global strip");
         auto *renderStatus = window->findChild<QLabel *>("renderStatus");
         check(!renderStatus,"Aggregate FPS remains in main window");
         auto *pipelineToggle = window->findChild<QToolButton *>("pipelineToggle");
@@ -393,21 +518,28 @@ int main() {
         check(themeButton && themeButton->menu() && themeButton->text() == QString::fromUtf8("Тема"),
               "Theme menu missing");
         for (auto *action : window->findChildren<QAction *>())
-            for (const auto &shortcut : action->shortcuts())
+            for (const auto &shortcut : action->shortcuts()) {
+                if(!shortcut.isEmpty() && (shortcut[0].keyboardModifiers() & Qt::ControlModifier))
+                    std::fprintf(stderr,"Ctrl action name=%s shortcut=%s context=%d parent=%s\n",qPrintable(action->objectName()),qPrintable(shortcut.toString()),int(action->shortcutContext()),action->parent()?action->parent()->metaObject()->className():"null");
                 check(shortcut.isEmpty() || !(shortcut[0].keyboardModifiers() & Qt::ControlModifier) ||
                           (action->objectName() == "saveSettings" && shortcut == QKeySequence(QKeySequence::Save)) ||
                           (action->objectName() == "saveSettingsAs" && shortcut == QKeySequence(QKeySequence::SaveAs)) ||
                           (action->objectName() == "openSettingsFile" && shortcut == QKeySequence(QKeySequence::Open)) ||
-                          (action->shortcutContext() == Qt::WidgetShortcut &&
+                          (action->objectName() == "workspaceToggleTools" && shortcut == QKeySequence("Ctrl+Shift+F12")) ||
+                          (action->objectName() == "workspaceSwitcher" && shortcut == QKeySequence("Ctrl+Tab")) ||
+                          (action->shortcutContext()==Qt::WidgetWithChildrenShortcut &&
+                           qobject_cast<QtNodes::GraphicsView*>(action->parent()) && shortcut==QKeySequence("Ctrl+D")) ||
+                          ((action->shortcutContext() == Qt::WidgetShortcut || action->shortcutContext() == Qt::WidgetWithChildrenShortcut) &&
                            (shortcut == QKeySequence(QKeySequence::Copy) ||
                             shortcut == QKeySequence(QKeySequence::Cut) ||
                             shortcut == QKeySequence(QKeySequence::Paste))),
                       "Unexpected application Ctrl shortcut remains");
+            }
         auto *saveShortcut = window->findChild<QAction *>("saveSettings");
         check(saveShortcut && saveShortcut->shortcut() == QKeySequence(QKeySequence::Save),
               "Save settings Ctrl+S missing");
         auto &theme = ui::Theme::instance();
-        const auto revision = app.pipeline().graph_revision();
+        const auto revision = app.presenter().client().snapshot().graph_revision;
         for (const auto *mode : {"dark", "light"}) {
             theme.set(mode);
             QTest::qWait(20);
@@ -420,7 +552,7 @@ int main() {
                                fresh.palette().color(QPalette::Base).lightness()) > 100,
                   "New standard widgets do not inherit the central theme");
             check((QApplication::palette().color(QPalette::Window).lightness() < 128) == dark, "Application theme");
-            for (const auto *menuName : {"graphsMenu", "wledMenu", "settingsMenu"}) {
+            for (const auto *menuName : {"graphsMenu", "settingsMenu"}) {
                 auto *menu = window->findChild<QMenu *>(menuName);
                 check(menu, "Menu missing");
                 check((menu->palette().color(QPalette::Window).lightness() < 128) == dark, "Menu theme mismatch");
@@ -555,27 +687,27 @@ int main() {
         auto *registryHost = window->findChild<QLineEdit *>("registryHost");
         auto *registryStatus = window->findChild<QLabel *>("engineRegistryStatus");
         auto *discover = window->findChild<QPushButton *>("discoverEngines");
-        auto *devices = window->findChild<QComboBox *>("engineDeviceSelector");
+        auto *devices = window->findChild<presentation::ProcessorDirectoryModel *>();
         const auto oldRegistry = app._ctx.file_configs.raw_document.value("aggregator");
-        check(registryHost && registryStatus && discover && devices && devices->count() == 1,
+        check(registryHost && registryStatus && discover && devices && devices->processors().size() == 1,
               "Registry local/observer state invalid");
         auto *selector = window->findChild<QToolButton *>("engineSelectorButton");
         auto *list = window->findChild<QTreeWidget *>("processorManagerList");
-        check(selector && selector->menu() && devices->isHidden() && list && list->topLevelItemCount() == 1,
+        check(selector && selector->menu() && list && list->topLevelItemCount() == 1,
               "Processor manager integration missing");
         emit selector->menu()->aboutToShow();
-        check(selector->menu()->actions().last()->text() == ui::text("Manage processors…"),
+        check(selector->menu()->actions().last() == window->findChild<QAction *>("openEngineRegistry"),
               "Processor menu lacks connection management");
         window->findChild<QLineEdit *>("processorHost")->setText("invalid-address");
         window->findChild<QPushButton *>("connectProcessor")->click();
-        check(registryStatus->text() == ui::text("Processor address must be an IP address") && devices->count() == 1,
+        check(registryStatus->text() == ui::text("Processor address must be an IP address") && devices->processors().size() == 1,
               "Invalid processor endpoint was added");
         registryHost->setText("not-an-ip");
         discover->click();
         check(registryStatus->text().contains(QString::fromUtf8("IP-адрес")) &&
                   oldRegistry == app._ctx.file_configs.raw_document.value("aggregator"),
               "Discovery error hidden or discovery rewrote settings");
-        check(devices->itemText(0) == QString::fromUtf8("Обработка в приложении"),
+        check(selector->text() == QString::fromUtf8("Обработка в приложении"),
               "Local processor explanation missing");
         {
             const auto waitRegistry = [](auto predicate) {
@@ -587,35 +719,38 @@ int main() {
             };
             AggregatorServer directory;
             check(directory.start(0), "GUI registry fixture listen");
-            pipeline::AudioPipeline external(test_fixture::synthetic_capture_factory());
-            pipeline::EngineServer endpoint(external);
+            pipeline::NumericEngine external(test_fixture::synthetic_capture_factory(false));
+            pipeline::NumericControlServer endpoint(external);
             check(endpoint.listen(QHostAddress::LocalHost, 0), "External processor fixture listen");
             const auto uuid = QUuid::createUuid();
             AggregatorClient processor({uuid, ComponentType::core, endpoint.port()});
+            processor.set_capabilities({{"control_version",2},{"data_version",4},{"stream_port",endpoint.port()},
+                {"publisher_incarnation",QString::number(external.snapshot().epoch)},
+                {"graph_revision",QString::number(external.snapshot().graph_revision)},{"streams",QJsonArray{}}});
             processor.connect_to_aggregator_server(QHostAddress::LocalHost, directory.serverPort(), 1000);
             registryHost->setText("127.0.0.1");
             window->findChild<QSpinBox *>("registryPort")->setValue(directory.serverPort());
             discover->click();
-            check(waitRegistry([&] { return devices->count() == 2; }),
+            check(waitRegistry([&] { return devices->processors().size() == 2 &&
+                QUuid(devices->processors()[1].id)==uuid && devices->processors()[1].available &&
+                devices->processors()[1].port == endpoint.port(); }),
                   "Registry did not expose external processor in GUI");
-            auto *deviceModel = qobject_cast<QStandardItemModel *>(devices->model());
-            check(deviceModel && deviceModel->item(1)->isEnabled() &&
-                      devices->itemData(1).toJsonObject()["port"].toInt() == endpoint.port(),
+            check(devices->processors()[1].available && devices->processors()[1].port == endpoint.port(),
                   "Discovered endpoint metadata invalid");
             processor.disconnect_from_aggregator_server();
-            check(waitRegistry([&] { return !deviceModel->item(1)->isEnabled(); }),
+            check(waitRegistry([&] { return !devices->processors()[1].available; }),
                   "Offline processor remains selectable in GUI");
             processor.connect_to_aggregator_server(QHostAddress::LocalHost, directory.serverPort(), 1000);
-            check(waitRegistry([&] { return deviceModel->item(1)->isEnabled(); }),
+            check(waitRegistry([&] { return devices->processors()[1].available; }),
                   "Reconnected processor not re-enabled in GUI");
             directory.stop();
-            check(waitRegistry([&] { return !deviceModel->item(1)->isEnabled(); }),
+            check(waitRegistry([&] { return !devices->processors()[1].available; }),
                   "Directory loss leaves stale processor enabled");
             check(oldRegistry == app._ctx.file_configs.raw_document.value("aggregator"),
                   "Registry connection rewrote user preferences");
-            window->findChild<AggregatorClient *>("engineRegistryClient")->disconnect_from_aggregator_server();
+            devices->disconnect_registry();
         }
-        check(app.pipeline().graph_revision() == revision, "Presentation changed processing graph");
+        check(app.presenter().client().snapshot().graph_revision == revision, "Presentation changed processing graph");
         qInfo("Graphs global/per-node/apply/manual-save/unknown-field roundtrip and light/dark/system/menu/QtNodes "
               "contrast PASS");
         return 0;

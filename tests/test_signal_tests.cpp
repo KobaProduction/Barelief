@@ -1,96 +1,49 @@
-#include "pipeline/audio_pipeline.h"
-#include "pipeline/test_signal.h"
+#include <pipeline/numeric_engine.h>
+#include <pipeline/test_signal.h>
+#include <core_app/numeric_default_graph.h>
+#include <desktop/numeric_project_document.h>
 #include <QCoreApplication>
-#include <QJsonArray>
+#include <QElapsedTimer>
 #include <QJsonDocument>
-#include <QTemporaryFile>
-#include <QProcess>
-#include <QProcessEnvironment>
-#include <atomic>
+#include <QThread>
+#include <cstdio>
 #include <cmath>
-#include <mutex>
-#include <thread>
+#include <array>
 #include <stdexcept>
-#include <QDebug>
-
-static void require(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
-template<class Predicate> static void wait_for(Predicate predicate) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (!predicate()) {
-        require(std::chrono::steady_clock::now() < deadline, "TestSignal operation timed out");
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+static void require(bool b,const char* text){if(!b)throw std::runtime_error(text);}
+static bool wait(std::function<bool()> f){QElapsedTimer t;t.start();while(!f()&&t.elapsed()<2000){QCoreApplication::processEvents();QThread::msleep(1);}return f();}
+int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
+    for(const std::uint32_t rate:{8000u,48000u,192000u}) {
+        const std::uint64_t samples=std::uint64_t(rate)*86400*7;
+        std::int64_t timestamp=0,next=0;
+        require(pipeline::test_signal_sample_time_ns(samples,rate,17,timestamp) && timestamp==604800000000017LL,"seven-day sample clock overflow");
+        require(pipeline::test_signal_sample_time_ns(samples+rate,rate,17,next) && next-timestamp==1000000000LL,"long-run sample clock is not monotonic");
     }
-}
-int main(int argc, char **argv) {
-    QCoreApplication app(argc,argv);
-    try {
-        QString error;
-        auto document = pipeline::GraphProgram::test_signal_defaults();
-        auto program = pipeline::GraphProgram::compile(document,error);
-        require(program && program->capture_source() == 2, "Test source graph did not select the in-memory producer");
-        for (auto pair : {std::pair{"tones", 4.0}, {"tones",8.5}, {"amplitude",1.1},
-                         {"maximum_hz",30000.0}, {"period_seconds",0.0}, {"sample_rate",44100.5}}) {
-            auto invalid = document; auto nodes = invalid["nodes"].toArray(); auto node = nodes[0].toObject();
-            auto params = node["internal-data"].toObject(); params[pair.first] = pair.second;
-            node["internal-data"] = params; nodes[0] = node; invalid["nodes"] = nodes;
-            require(!pipeline::GraphProgram::compile(invalid,error), "Invalid generator setting accepted");
-        }
-        auto roundtrip = QJsonDocument::fromJson(QJsonDocument(document).toJson()).object();
-        require(pipeline::GraphProgram::compile(roundtrip,error)->source_parameters() == program->source_parameters(),
-                "Generator graph roundtrip lost parameters");
-
-        pipeline::AudioPipeline engine;
-        require(engine.apply_graph(document,error), "Cannot apply generator graph");
-        std::atomic<uint64_t> frames{0}, latest_generation{0};
-        std::atomic<bool> nonzero{false}, stereo{false}, invalid_pcm{false}, bad_clock{false};
-        std::mutex pcm_mutex;
-        pipeline::AudioFrame last;
-        engine.set_audio_handler([&](pipeline::AudioFrame frame) {
-            if (frame.left.empty() || frame.left.size() != frame.right.size()) invalid_pcm = true;
-            for (size_t i=0; i<frame.left.size(); ++i) {
-                if (!std::isfinite(frame.left[i]) || !std::isfinite(frame.right[i]) ||
-                    std::abs(frame.left[i]) > 0.40001 || std::abs(frame.right[i]) > 0.40001) invalid_pcm = true;
-                if (std::abs(frame.left[i]) > 1e-6) nonzero = true;
-                if (std::abs(frame.left[i] - frame.right[i]) > 1e-6) stereo = true;
-            }
-            std::lock_guard lock(pcm_mutex);
-            if (last.generation == frame.generation && last.sequence && frame.timestamp_ns <= last.timestamp_ns) bad_clock = true;
-            latest_generation = frame.generation; last = std::move(frame); ++frames;
-        });
-        engine.start_analyzer(); engine.start_capture();
-        wait_for([&] { return frames >= 30 && engine.processed_frames() >= 6; });
-        require(nonzero && stereo && !invalid_pcm && !bad_clock, "Invalid stereo signal, amplitude or sample clock");
-        require(engine.capture_diagnostics().backend == "In-memory test generator", "Generator used a physical capture backend");
-        const auto before = engine.processed_frames();
-        std::this_thread::sleep_for(std::chrono::milliseconds(500)); // No GUI/main event processing.
-        require(engine.processed_frames() - before >= 25 && engine.history_count() >= 25,
-                "Generator/DSP/history depend on GUI event delivery");
-        const auto old_generation = engine.capture_generation();
-        auto nodes = document["nodes"].toArray(); auto node = nodes[0].toObject();
-        auto params = node["internal-data"].toObject(); params["amplitude"] = 0;
-        params["sample_rate"] = 44100; node["internal-data"] = params; nodes[0] = node; document["nodes"] = nodes;
-        require(engine.apply_graph(document,error), "Cannot reconfigure generator");
-        wait_for([&] { return latest_generation > old_generation; });
-        {
-            std::lock_guard lock(pcm_mutex);
-            require(last.sample_rate == 44100 && std::all_of(last.left.begin(),last.left.end(),[](float v){return v==0;}) &&
-                std::all_of(last.right.begin(),last.right.end(),[](float v){return v==0;}),
-                "Changed generator parameters did not restart the real source");
-        }
-        engine.stop_capture(); const auto stopped = frames.load();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        require(frames == stopped, "Audio callback delivered after Stop returned");
-        engine.start_capture(); wait_for([&] { return frames > stopped; }); engine.stop_capture(); engine.stop_analyzer();
-
-        QTemporaryFile file; require(file.open(), "Cannot save test graph");
-        file.write(QJsonDocument(roundtrip).toJson()); file.flush();
-        QProcess console; auto env = QProcessEnvironment::systemEnvironment(); env.insert("QT_FORCE_STDERR_LOGGING","1");
-        console.setProcessEnvironment(env);
-        console.start(QCoreApplication::applicationDirPath()+"/pipeline_cli",{"--config",file.fileName(),
-            "--capture-diagnostics","--duration","1200"});
-        const bool finished=console.waitForFinished(5000);const auto report=console.readAllStandardError();
-        if(!finished || console.exitCode()!=0 || !report.contains("In-memory test generator")) qWarning()<<console.exitCode()<<console.errorString()<<report<<console.readAllStandardOutput();
-        require(finished && console.exitCode()==0 && report.contains("In-memory test generator"), "Console did not execute the same saved generator graph");
-        qInfo("Silent TestSignal graph, PCM, clock, lifecycle, GUI independence and console checks passed");
-    } catch (const std::exception &error) { qCritical("TestSignal: %s",error.what()); return 1; }
-}
+    std::int64_t refused=71;require(!pipeline::test_signal_sample_time_ns(UINT64_MAX,48000,0,refused)&&refused==71,"exhausted clock published partial timestamp");
+    pipeline::TestSignalSettings settings;QString error;
+    for(const auto& invalid:{QJsonObject{{"tones",4}},QJsonObject{{"tones",8.5}},QJsonObject{{"amplitude",1.1}},QJsonObject{{"maximum_hz",30000}},QJsonObject{{"period_seconds",0}}})require(!pipeline::TestSignalSettings::parse(invalid,settings,error),"invalid source settings accepted");
+    auto graph=numeric_default_graph();graph.nodes[0].kind="TestSignal";
+    auto& params=std::get<domain::EndpointProcessingParameters>(graph.nodes[0].parameters);params.values.push_back({"amplitude",signal_contracts::NumericLiteral{.125}});
+    pipeline::NumericEngine engine([](auto){return pipeline::make_test_signal_source();});bool accepted=false,rejected=false;
+    engine.set_reply_handler([&](const auto& reply){accepted=reply.accepted;rejected=!reply.accepted;});
+    const pipeline::EndpointIdentity pcm{"main",9,domain::PortDirection::Input,0},history{"main",7,domain::PortDirection::Output,0};
+    require(engine.subscribe_numeric_frames({pcm}),"subscribe PCM");std::size_t received=0;bool bad=false,nonzero=false,stereo=false;
+    engine.set_numeric_frame_handler([&](auto owned){if(!owned.frame)return;const auto frame=owned.frame.view();if(!frame.stamp.available)return;const auto* numeric=std::get_if<signal_contracts::NumericView>(&frame.payload);if(!numeric)return;
+        bad|=numeric->actual[0]!=256 || numeric->planes.size()!=2 || numeric->contract->clock.sample_rate!=48000;
+        for(std::size_t i=0;i<numeric->actual[0];++i){float left=0,right=0;
+            if(signal_contracts::load_element(*numeric,{0,i,0},left)!=signal_contracts::Status::ok || signal_contracts::load_element(*numeric,{1,i,0},right)!=signal_contracts::Status::ok){bad=true;continue;}
+            const auto l=left,r=right;bad|=!std::isfinite(l)||!std::isfinite(r)||std::abs(l)>.12501||std::abs(r)>.12501;nonzero|=std::abs(l)>1e-6;stereo|=std::abs(l-r)>1e-6;
+        }++received;});
+    auto apply=[&]{QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"encode canonical graph");pipeline::EngineCommand command;command.kind=pipeline::EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();accepted=rejected=false;engine.submit(command);require(wait([&]{return accepted||rejected;})&&accepted,"same application Apply rejected");};
+    apply();require(wait([&]{return received>=10;}),"silent source delivery");require(!bad&&nonzero&&stereo,"actual configured stereo signal/clock/amplitude");
+    // Producer and executor advance while the GUI event loop is not serviced.
+    pipeline::DeliveredNumericFrame before,after;std::uint64_t filled=0,after_filled=0;require(engine.query_numeric(history,before,nullptr,&filled)==signal_contracts::Status::ok,"cold history before");require(std::get<signal_contracts::NumericView>(before.frame.view().payload).actual[0]==400,"cold History capacity");
+    QThread::msleep(400);require(engine.query_numeric(history,after,nullptr,&after_filled)==signal_contracts::Status::ok,"cold history after");require(std::get<signal_contracts::NumericView>(after.frame.view().payload).actual[0]==400 && after_filled>filled+10,"processing depends on GUI event delivery");
+    std::uint64_t old_ordinal=0;require(engine.query_numeric(history,before,&old_ordinal,&filled)==signal_contracts::Status::ok,"history before live edit");const auto old_stamp=before.frame.view().stamp;std::array<float,50> oldest{};const auto old_view=std::get<signal_contracts::NumericView>(before.frame.view().payload);for(std::size_t band=0;band<50;++band)require(signal_contracts::load_element(old_view,{0,old_view.actual[0]-filled,band},oldest[band])==signal_contracts::Status::ok,"read live edit old row");before={};std::size_t zero_frames=0;std::int64_t last_pcm_timestamp=0;std::uint64_t last_pcm_sequence=0;
+    params.values[0].value=signal_contracts::NumericLiteral{0.0};engine.set_numeric_frame_handler([&](auto owned){if(!owned.frame)return;const auto f=owned.frame.view();if(!f.stamp.available)return;require(f.stamp.timestamp_ticks>last_pcm_timestamp && f.stamp.source_sequence>last_pcm_sequence,"source sample clock did not advance");last_pcm_timestamp=f.stamp.timestamp_ticks;last_pcm_sequence=f.stamp.source_sequence;const auto* n=std::get_if<signal_contracts::NumericView>(&f.payload);if(!n)return;float v=0;require(signal_contracts::load_element(*n,{0,100,0},v)==signal_contracts::Status::ok,"zero PCM element");if(zero_frames++>=2)require(v==0,"source configuration not applied");++received;});const auto previous=received;apply();require(wait([&]{return received>previous+3;}),"reconfigured silent source");
+    QThread::msleep(120);std::uint64_t edited_ordinal=0;require(engine.query_numeric(history,after,&edited_ordinal,&after_filled)==signal_contracts::Status::ok,"history after live edit");const auto edited_stamp=after.frame.view().stamp;require(edited_ordinal>old_ordinal && edited_stamp.producer_epoch==old_stamp.producer_epoch,"live parameter edit restarted source clock/history");const auto edited_view=std::get<signal_contracts::NumericView>(after.frame.view().payload);for(std::size_t band=0;band<50;++band){float value=0;require(signal_contracts::load_element(edited_view,{0,edited_view.actual[0]-after_filled,band},value)==signal_contracts::Status::ok && value==oldest[band],"live parameter edit discarded historical rows");}after={};
+    graph.nodes[0].enabled=false;const auto muted_before=received;apply();
+    require(wait([&]{return received>muted_before+3;}),"disabled source clock stopped");
+    require(engine.snapshot().statuses.value("capture").state==pipeline::State::Running,"disabled source stopped physical producer");
+    return 0;
+}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

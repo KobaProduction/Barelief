@@ -19,13 +19,14 @@ elseif(DSP_KERNELS_BACKEND STREQUAL "ESP_DSP")
 else()
     message(FATAL_ERROR "DSP_KERNELS_BACKEND must be ANSI or ESP_DSP")
 endif()
-add_library(dsp_kernels STATIC src/dsp.cpp src/backend_tables.cpp ${dsp_backend_source})
+add_library(dsp_kernels STATIC src/dsp.cpp src/backend_tables.cpp src/scalar_reduce.cpp
+    src/kernel_support.cpp src/numeric_convert.cpp src/numeric_reduce.cpp ${dsp_backend_source})
 target_compile_definitions(dsp_kernels PUBLIC PORTABLE_DSP_MAX_FFT_SIZE=${PORTABLE_DSP_MAX_FFT_SIZE})
 target_include_directories(dsp_kernels PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 target_compile_features(dsp_kernels PUBLIC cxx_std_20)
-target_link_libraries(dsp_kernels PRIVATE ${dsp_backend_target})
+target_link_libraries(dsp_kernels PUBLIC signal_contracts PRIVATE ${dsp_backend_target})
 # Preserve the historical consumer target without a second implementation.
 add_library(portable_dsp INTERFACE)
 target_link_libraries(portable_dsp INTERFACE dsp_kernels)

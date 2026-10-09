@@ -1,0 +1,118 @@
+{
+  "repository": "https://github.com/intel/tinycbor",
+  "tag": "v7.0",
+  "name": "tinycbor",
+  "commit": "6442e749ca811e24afad1551338a45c75e09808f",
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "3c6ba0b5bfa7830505301ffb336a17b0748e0d61c4d34216e9dc98f10e40395e",
+      "git_blob": "4aad977ceb5eff86d2e86b6e22c6626e27c2e388",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/LICENSE"
+    },
+    {
+      "path": "src/cbor.h",
+      "sha256": "4de3076ed4c09c81388a9e70387cc551c16b8312b2a4cae3014fcafb2cb37cff",
+      "git_blob": "d557026540d7e783fb76d2ed72471d2a18bc03bb",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cbor.h"
+    },
+    {
+      "path": "src/cborencoder_close_container_checked.c",
+      "sha256": "c398fde2f23909f86f2887d19aa8b30d05ddf6859e712acf628e500c6a122aec",
+      "git_blob": "fd203a8564dfb36375c38ba8c1b716678729c5ca",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborencoder_close_container_checked.c"
+    },
+    {
+      "path": "src/cborencoder_float.c",
+      "sha256": "bb34cfd8502e14c3e5501ffafe3d81f2a73e0bf757393d1fa540b22b29779ab3",
+      "git_blob": "ff87942375165980a0d6ab0bcaa5027a50276d1f",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborencoder_float.c"
+    },
+    {
+      "path": "src/cborencoder.c",
+      "sha256": "b236e5c080b952986bd737ad33df05e48c85c6c8a247feafc67201209c8082f2",
+      "git_blob": "ad242e3072e4909942965800573ca475918f0bb1",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborencoder.c"
+    },
+    {
+      "path": "src/cborerrorstrings.c",
+      "sha256": "c5b8931317863f936011dfe0c1e437a434e9d4501cd91bedc06596fabc9e1a52",
+      "git_blob": "44f766a3c4528b3d72b191ad737a70ee88af03e3",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborerrorstrings.c"
+    },
+    {
+      "path": "src/cborinternal_p.h",
+      "sha256": "aedf9a9b0dd24e50a45cbfac8949c0226e674bcc8d6d3e877ac1599e87aa6660",
+      "git_blob": "ee9c117ec3f08b290b1bcbef561e34c7d2fa68a4",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborinternal_p.h"
+    },
+    {
+      "path": "src/cborinternalmacros_p.h",
+      "sha256": "10deb0959b71262595396564e9083e2e888885918404efee5a3fc26dfa2fb7d2",
+      "git_blob": "8450a3b8bf5ac0d3385bd0b1ed7ef109b361c9f5",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborinternalmacros_p.h"
+    },
+    {
+      "path": "src/cborparser_float.c",
+      "sha256": "78c4222c48f38ae2ecf713803041047c255b84507801cc5f3c5b2e6b6b6b68a1",
+      "git_blob": "f7d0189e97431301f0fecb7687e199e666e6d072",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborparser_float.c"
+    },
+    {
+      "path": "src/cborparser.c",
+      "sha256": "28f5f23480108ddf4a4c6666a3e7f036ca7f13b001f2f748c428b7d17c858893",
+      "git_blob": "31c8d8bf55d8a9a48dc4b2d89f4bef2a24f6f789",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborparser.c"
+    },
+    {
+      "path": "src/cborvalidation.c",
+      "sha256": "e14f20a04f268d3379e8681ffeb3b8b9a0eb61e65583c4e2699c23b808760b3b",
+      "git_blob": "2ad0c18cf1a633d84dfa5e897067eb094e29ecb2",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/cborvalidation.c"
+    },
+    {
+      "path": "src/compilersupport_p.h",
+      "sha256": "08a613f3e67a3a159ff9d7a9d8394579def058ce1f18fe9f88041803f389aaaf",
+      "git_blob": "7f247730b3d3efd505564b3418fe0fe4430b4d5d",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/compilersupport_p.h"
+    },
+    {
+      "path": "src/memory.h",
+      "sha256": "e2c454d07bc2c3a0a5f5bea8c6cbe40567c566f228cb80d3d7989dd020a09220",
+      "git_blob": "6686eb26357dcaae83f2ada56450a5a433d1367a",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/memory.h"
+    },
+    {
+      "path": "src/tinycbor-export.h.in",
+      "sha256": "6c6e94232282b6d3cf008ed55f7ecc81b7398724f261814d2647f59545c06897",
+      "git_blob": "a181cce72519c5e5e6eb37ee56611180dcc28dbe",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/tinycbor-export.h.in"
+    },
+    {
+      "path": "src/tinycbor-version.h.in",
+      "sha256": "33a0f2f2383cec50a00346dfae19f020567d9a89be3fafa1ddd21413df27a78e",
+      "git_blob": "5ea04e641c14b3d993fcf4a2963bf0a5178daa3d",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/tinycbor-version.h.in"
+    },
+    {
+      "path": "src/utf8_p.h",
+      "sha256": "110af1a73417d83b8096a356d271f5f21b773a1179b063c568d74d99e215bbde",
+      "git_blob": "ca438350d938d054d1ba1849b1bb6887b71e75ad",
+      "source_url": "https://raw.githubusercontent.com/intel/tinycbor/6442e749ca811e24afad1551338a45c75e09808f/src/utf8_p.h"
+    }
+  ],
+  "derived_files": [
+    {
+      "path": "include/tinycbor-export.h",
+      "sha256": "d06b0886be9c7f305376d95f45bbc36eb605daaba35dd1d4d2a27706205e778a",
+      "derived_from": "src/tinycbor-export.h.in",
+      "note": "Checked-in static-library configuration; no build-time generation"
+    },
+    {
+      "path": "include/tinycbor-version.h",
+      "sha256": "8fc484f8b9b87633d7010671d1f11a770bfbb159784691102d59059c015ecdff",
+      "derived_from": "src/tinycbor-version.h.in",
+      "note": "Checked-in static-library configuration; no build-time generation"
+    }
+  ]
+}

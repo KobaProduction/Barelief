@@ -1,10 +1,13 @@
 set(desktop_pipeline_sources ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/pipeline/src)
 set(desktop_runtime_sources ${CMAKE_SOURCE_DIR}/adapters/desktop/runtime/src)
-add_library(audio_pipeline STATIC ${desktop_runtime_sources}/audio_pipeline.cpp ${desktop_pipeline_sources}/audio_source.cpp
-    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/audio_source.h ${desktop_runtime_sources}/graph.cpp ${desktop_runtime_sources}/engine_client.cpp
-    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/engine_client.h
-    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/graph.h
-    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/audio_pipeline.h)
+add_library(audio_pipeline STATIC ${desktop_runtime_sources}/numeric_engine.cpp ${desktop_pipeline_sources}/audio_source.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/audio_source.h
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/numeric_engine.h)
+add_library(desktop_numeric_defaults STATIC ${CMAKE_SOURCE_DIR}/apps/desktop_gui/src/numeric_default_graph.cpp)
+set_target_properties(desktop_numeric_defaults PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+target_compile_features(desktop_numeric_defaults PUBLIC cxx_std_20)
+target_include_directories(desktop_numeric_defaults PUBLIC ${CMAKE_SOURCE_DIR}/apps/desktop_gui/include)
+target_link_libraries(desktop_numeric_defaults PUBLIC graph_domain)
 add_library(miniaudio_capture STATIC ${desktop_pipeline_sources}/miniaudio_impl.c)
 target_sources(audio_pipeline PRIVATE ${desktop_pipeline_sources}/test_signal.cpp)
 set_target_properties(miniaudio_capture PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
@@ -23,14 +26,20 @@ if(WIN32)
     target_link_libraries(audio_pipeline PRIVATE ole32 uuid)
 endif()
 target_include_directories(audio_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
-target_link_libraries(audio_pipeline PUBLIC qt_engine_ports analyzer wled core Qt6::Core Qt6::Network graph_document_adapter dataflow_runtime)
-add_library(portable_stream_codec STATIC ${desktop_runtime_sources}/stream_codec.cpp)
-set_target_properties(portable_stream_codec PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
-target_include_directories(portable_stream_codec PUBLIC ${CMAKE_SOURCE_DIR}/adapters/desktop/include
-    ${CMAKE_SOURCE_DIR}/presentation/ports/include)
-target_link_libraries(portable_stream_codec PUBLIC bdsp_protocol)
-target_link_libraries(audio_pipeline PUBLIC portable_stream_codec)
-target_sources(audio_pipeline PRIVATE ${desktop_pipeline_sources}/stream_transport.cpp)
+target_link_libraries(audio_pipeline PUBLIC qt_engine_ports core Qt6::Core Qt6::Network graph_document_adapter dataflow_runtime portable_control_mapper)
 add_subdirectory(${CMAKE_SOURCE_DIR}/apps/desktop_core ${CMAKE_BINARY_DIR}/apps/desktop_core)
-target_sources(audio_pipeline PRIVATE ${desktop_pipeline_sources}/network_runtime.cpp)
 target_link_libraries(audio_pipeline PUBLIC aggregator-library)
+add_library(desktop_numeric_remote STATIC ${desktop_runtime_sources}/numeric_remote_endpoint.cpp
+    ${desktop_runtime_sources}/numeric_control_server.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/control/numeric_remote_endpoint.h
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/control/numeric_control_server.h)
+target_include_directories(desktop_numeric_remote PUBLIC ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
+target_link_libraries(desktop_numeric_remote PUBLIC audio_pipeline portable_numeric_control_session core
+    graph_document_adapter Qt6::Core Qt6::Network Qt6::SerialPort)
+
+add_library(desktop_numeric_routing STATIC ${desktop_runtime_sources}/numeric_routing_adapter.cpp
+    ${desktop_runtime_sources}/numeric_desktop_host.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/control/numeric_desktop_host.h
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/include/control/numeric_routing_adapter.h)
+target_include_directories(desktop_numeric_routing PUBLIC ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
+target_link_libraries(desktop_numeric_routing PUBLIC desktop_numeric_remote aggregator-library)

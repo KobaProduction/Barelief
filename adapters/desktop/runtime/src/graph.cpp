@@ -23,7 +23,14 @@ const std::vector<NodeDefinition> &node_definitions() {
         {"BarkWeighting", "stereo-spectrum", "stereo-spectrum", "transforms"},
         {"WindowView", "window", "", "views"}, {"WindowedView", "windowed", "", "views"},
         {"NetworkInput", "", "typed", "inputs", {{"data_type","mel"}}},
-        {"NetworkOutput", "typed", "", "outputs", {{"data_type","mel"}}}};
+        {"NetworkOutput", "typed", "", "outputs", {{"data_type","mel"}}},
+        {"Splitter","typed","typed","transforms",{{"data_type","mel"},{"outputs",2},{"selected",0}}},
+        {"Switch","typed","typed","transforms",{{"data_type","mel"},{"outputs",2},{"selected",0}}},
+        {"Gate","typed","typed","transforms",{{"data_type","mel"},{"outputs",2},{"selected",0}}},
+        {"ScalarReduce","typed","scalar","transforms",{{"data_type","mel"},{"operation",0}}},
+        {"ScalarView","scalar","","views"},
+        {"WLEDEncode","mel","wled-packet","transforms",{{"gain",1}},{{"gain_min",0},{"gain_max",100}}},
+        {"WLEDOutput","wled-packet","","outputs"}};
     for(auto &d:definitions) {
         d.defaults["enabled"]=true;
         QJsonObject constraints;
@@ -41,12 +48,27 @@ const std::vector<NodeDefinition> &node_definitions() {
         if(d.name=="SpectrumMerge" || d.name=="FFTView") enumeration("merge",{{QJsonObject{{"label","Mean"},{"value",0}}}, {QJsonObject{{"label","Maximum"},{"value",1}}}, {QJsonObject{{"label","RMS"},{"value",2}}}});
         if(d.name=="FFTView") enumeration("channel",{{QJsonObject{{"label","Left"},{"value",0}}}, {QJsonObject{{"label","Right"},{"value",1}}}, {QJsonObject{{"label","Merged"},{"value",2}}}});
         if(d.name=="NetworkInput" || d.name=="NetworkOutput") {
-            QJsonArray options;for(const auto &t:QStringList{"audio","window","windowed","stereo-spectrum","spectrum","mel","history"}) options.append(QJsonObject{{"label",t},{"value",t}});
+            QJsonArray options;for(const auto &t:QStringList{"audio","window","windowed","stereo-spectrum","spectrum","mel","history","scalar","wled-packet"}) options.append(QJsonObject{{"label",t},{"value",t}});
             enumeration("data_type",options);
             for(const auto &key:QStringList{"provider_uuid","stream_id","host"}) {
                 d.defaults[key]="";constraints[key]=QJsonObject{{"type","string"},{"label",key}};
             }
             d.defaults["port"]=8214;constraints["port"]=QJsonObject{{"type","integer"},{"label","port"},{"min",1},{"max",65535}};
+        }
+        if(d.name=="Splitter" || d.name=="Switch" || d.name=="Gate" || d.name=="ScalarReduce") {
+            QJsonArray options;
+            for(int i=0;i<=int(d.name=="ScalarReduce"?domain::FrameType::Scalar:domain::FrameType::WledPacket);++i) {
+                const auto id=QString::fromUtf8(signal_contracts::type_id(domain::FrameType(i)));
+                options.append(QJsonObject{{"label",id},{"value",id}});
+            }
+            enumeration("data_type",options);
+            if(d.name=="ScalarReduce")enumeration("operation",{QJsonObject{{"label","Maximum"},{"value",0}},QJsonObject{{"label","Mean"},{"value",1}},QJsonObject{{"label","RMS"},{"value",2}}});
+            else {
+                constraints["outputs"]=QJsonObject{{"type","integer"},{"label","Output count"},{"min",2},{"max",8}};
+                constraints["selected"]=QJsonObject{{"type","integer"},{"label","Active output (zero based)"},{"min",0},{"max",7}};
+                if(d.name!="Switch") {d.defaults.remove("selected");constraints.remove("selected");}
+                if(d.name=="Gate") {d.defaults.remove("outputs");constraints.remove("outputs");}
+            }
         }
         if(d.name=="TestSignal") {
             auto range=[&](QString key,QString type,double lo,double hi) { constraints[key]=QJsonObject{{"type",type},{"label",key},{"min",lo},{"max",hi}}; };
@@ -117,12 +139,19 @@ QJsonObject GraphProgram::defaults(int channel, SpectrumMerge merge, int source)
     node(5, "FFTView", 500, 250, {{"channel", channel}, {"merge", static_cast<int>(merge)}});
     node(6, "MelView", 1000, 250);
     node(7, "SpectrogramView", 1250, 0);
-    node(8, "WLED", 1000, 450, {{"gain", 1.0}});
+    node(8, "WLEDEncode", 1000, 450, {{"gain", 1.0}});
     node(9, "AudioView", 250, 250);
     for (auto pair : {std::pair{0, 1}, {1, 2}, {2, 3}, {3, 4}, {1, 5}, {3, 6}, {4, 7}, {3, 8}, {0, 9}})
         edges.append(
             QJsonObject{{"outNodeId", pair.first}, {"outPortIndex", 0}, {"inNodeId", pair.second}, {"inPortIndex", 0}});
-    return canonical_graph_document({{"version", 1}, {"layout_pending", true}, {"nodes", nodes}, {"connections", edges}});
+    auto document=canonical_graph_document({{"version", 1}, {"layout_pending", true}, {"nodes", nodes}, {"connections", edges}});
+    auto prepared_nodes=document.value("nodes").toArray();
+    int sink_id=0;for(const auto &value:prepared_nodes)sink_id=std::max(sink_id,value.toObject().value("id").toInt()+1);
+    prepared_nodes.append(QJsonObject{{"id",sink_id},{"internal-data",QJsonObject{{"model-name","WLEDOutput"}}},
+        {"position",QJsonObject{{"x",1250},{"y",450}}}});
+    auto prepared_edges=document.value("connections").toArray();
+    prepared_edges.append(QJsonObject{{"outNodeId",8},{"outPortIndex",0},{"inNodeId",sink_id},{"inPortIndex",0}});
+    document["nodes"]=prepared_nodes;document["connections"]=prepared_edges;return document;
 }
 std::shared_ptr<const GraphProgram> GraphProgram::compile(const QJsonObject &original, QString &error) {
     error.clear();
@@ -209,6 +238,10 @@ bool GraphProgram::same_processing_as(const GraphProgram &other) const {
         return false;
     if (_ordered.size() != other._ordered.size())
         return false;
+    // Stored edge order has no processing meaning. Compare the multiset so
+    // endpoints, port indices and repeated entries remain significant.
+    if(!std::is_permutation(_definition.edges.begin(),_definition.edges.end(),
+                            other._definition.edges.begin(),other._definition.edges.end()))return false;
     for (size_t i = 0; i < _ordered.size(); ++i) {
         const auto &a = _ordered[i], &b = other._ordered[i];
         if (a.id != b.id || a.input != b.input || a.kind != b.kind)
@@ -244,15 +277,16 @@ std::vector<int> GraphProgram::ingress_nodes() const {
 QString GraphProgram::port_type(int id) const {
     for (const auto &n : _ordered)
         if (n.id == id) {
-            if (n.kind == "NetworkInput" || n.kind == "NetworkOutput")
+            if (n.kind == "NetworkInput" || n.kind == "NetworkOutput" || n.kind=="Splitter" || n.kind=="Switch" || n.kind=="Gate")
                 return n.parameters.value("data_type").toString(n.parameters.value("type").toString("mel"));
-            return node_definition(n.kind).output;
+            const auto d=node_definition(n.kind);return d.output.isEmpty()?d.input:d.output;
         }
     return {};
 }
 signal_contracts::FrameView GraphProgram::frame_view(const TypedFrame &f, std::span<const float> storage) {
     signal_contracts::FrameView v;
     v.type = f.type;
+    v.packet=f.packet;
     v.metadata = {f.sequence,     f.generation,  f.epoch,     f.graph_revision, f.source_sequence,  f.producer_epoch,
                   f.timestamp_ns, f.sample_rate, f.fft_size,  f.bands,          f.history_capacity, f.frequency_step,
                   f.peak_hz,      f.magnitude,   f.stream_id, f.discontinuity,  f.bark_weighted,    f.available};
@@ -261,7 +295,9 @@ signal_contracts::FrameView GraphProgram::frame_view(const TypedFrame &f, std::s
         v.right = f.right;
         if (f.type == FrameType::Window && !v.metadata.fft_size)
             v.metadata.fft_size = v.left.size();
-    } else if (f.type != FrameType::History)
+    } else if(f.type==FrameType::WledPacket)
+        v.packet=f.packet;
+    else if (f.type != FrameType::History)
         v.values = f.values;
     else if (!f.history.empty())
         v.history = {storage, f.history.front().size(), f.history.size(), f.history.size(), 0};
@@ -292,12 +328,53 @@ TypedFrame GraphProgram::owned_snapshot(const signal_contracts::FrameView &v) {
     f.left.assign(v.left.begin(), v.left.end());
     f.right.assign(v.right.begin(), v.right.end());
     f.values.assign(v.values.begin(), v.values.end());
+    f.packet.assign(v.packet.begin(),v.packet.end());
     for (size_t row = 0; row < v.history.frames; ++row) {
         const auto r = v.history.row(row);
         f.history.emplace_back(r.begin(), r.end());
     }
     if (f.type == FrameType::History && f.values.empty() && !f.history.empty())
         f.values = f.history.back();
+    return f;
+}
+DeliveredPortFrame GraphProgram::owned_port_snapshot(const dataflow_runtime::PortFrameView &v) {
+    DeliveredPortFrame out;
+    out.endpoint={std::string(v.graph_id),v.identity.node,
+        v.direction==domain::PortDirection::Input?PortDirection::Input:PortDirection::Output,v.identity.port};
+    out.kind=v.kind;
+    out.delivery={v.delivery.graph_revision,v.delivery.epoch};
+    out.contract=v.contract;out.contract_known=v.contract_known;
+    out.window_emitted=v.window_emitted;out.frame=owned_snapshot(v.frame);
+    return out;
+}
+std::vector<EndpointIdentity> GraphProgram::endpoints() const {
+    std::vector<EndpointIdentity> result;
+    std::array<domain::PortDescriptor,8> inputs{},outputs{};
+    for(const auto &node:_definition.nodes) {
+        domain::ConfiguredNodeDescriptor descriptor;
+        if(domain::describe_node(node,inputs,outputs,descriptor)!=signal_contracts::Status::ok)continue;
+        for(const auto &port:descriptor.outputs)
+            result.push_back({_definition.graph_id,node.id,PortDirection::Output,port.identity.port});
+        if(descriptor.role==domain::NodeRole::Sink)
+            for(const auto &port:descriptor.inputs)
+                result.push_back({_definition.graph_id,node.id,PortDirection::Input,port.identity.port});
+    }
+    return result;
+}
+TypedFrame GraphProgram::display_snapshot(const dataflow_runtime::OutputView &out) const {
+    auto f=owned_snapshot(out.frame);
+    if(out.kind!=domain::NodeKind::FFTView || !f.available)return f;
+    const auto n=std::find_if(_definition.nodes.begin(),_definition.nodes.end(),[&](const auto &n){return n.id==out.node;});
+    if(n==_definition.nodes.end())return f;
+    const auto p=std::get<domain::FFTViewParameters>(n->parameters);
+    if(p.channel!=domain::Channel::Merged)f.values=p.channel==domain::Channel::Left?f.left:f.right;
+    else {
+        f.values.resize(f.left.size());
+        for(std::size_t i=0;i<f.values.size();++i) {
+            const auto l=f.left[i],r=f.right[i];
+            f.values[i]=p.merge==domain::MergeMode::Mean?(l+r)*.5f:p.merge==domain::MergeMode::Maximum?std::max(l,r):std::hypot(l,r)/std::sqrt(2.f);
+        }
+    }
     return f;
 }
 signal_contracts::Status GraphProgram::prepare_ingress(int id, const signal_contracts::FrameView &f,
@@ -350,6 +427,11 @@ signal_contracts::Status GraphProgram::process_view(int id, const signal_contrac
         return signal_contracts::Status::unavailable;
     return c._plan->process(id, f, *c._runtime, callback, user);
 }
+signal_contracts::Status GraphProgram::process_ports(int id,const signal_contracts::FrameView &f,
+    GraphEvaluationContext &c,dataflow_runtime::DeliveryStamp stamp,dataflow_runtime::RuntimeCallbacks callbacks) const noexcept {
+    if(c._program!=this || !c._plan || !c._runtime)return signal_contracts::Status::unavailable;
+    return c._plan->process_ports(id,f,*c._runtime,stamp,callbacks);
+}
 std::vector<int> GraphProgram::clear_ingress(int id, GraphEvaluationContext &c) const {
     if (c._program != this)
         c = GraphEvaluationContext{};
@@ -366,6 +448,22 @@ bool GraphProgram::marker_current(int id, const TypedFrame &f, const GraphEvalua
 }
 GraphOutput GraphProgram::disabled_output(bool previews) const {
     GraphOutput result;
+    std::array<domain::PortDescriptor,8> inputs{},outputs{};
+    for(const auto &node:_definition.nodes) {
+        const auto desktop=std::find_if(_ordered.begin(),_ordered.end(),[&](const auto &n){return n.id==node.id;});
+        if(desktop==_ordered.end() || desktop->active)continue;
+        domain::ConfiguredNodeDescriptor descriptor;
+        if(domain::describe_node(node,inputs,outputs,descriptor)!=signal_contracts::Status::ok)continue;
+        const auto add=[&](const domain::PortDescriptor &port) {
+            DeliveredPortFrame out;
+            out.endpoint={_definition.graph_id,node.id,port.direction==domain::PortDirection::Input?PortDirection::Input:PortDirection::Output,port.identity.port};
+            out.kind=node.kind;out.contract.type=port.type;
+            out.frame.type=port.type;out.frame.available=false;out.frame.discontinuity=true;
+            result.port_frames.push_back(std::move(out));
+        };
+        for(const auto &port:descriptor.outputs)add(port);
+        if(descriptor.role==domain::NodeRole::Sink)for(const auto &port:descriptor.inputs)add(port);
+    }
     for (const auto &node : _ordered)
         if (!node.active) {
             const auto definition = node_definition(node.kind);
@@ -380,6 +478,8 @@ GraphOutput GraphProgram::disabled_output(bool previews) const {
                           : type == "spectrum"        ? FrameType::Spectrum
                           : type == "mel"             ? FrameType::Mel
                           : type == "history"         ? FrameType::History
+                          : type == "scalar"          ? FrameType::Scalar
+                          : type == "wled-packet"     ? FrameType::WledPacket
                                                       : FrameType::PCM;
             marker.stream_id = node.parameters.value("stream_id").toString().toStdString();
             if (definition.category == "views")
@@ -498,13 +598,23 @@ GraphOutput GraphProgram::evaluate(int id, const TypedFrame &input, GraphEvaluat
     struct Sink {
         GraphOutput *out;
         bool previews;
+        const GraphProgram *program;
     };
-    Sink sink{&result, previews};
-    const auto callback = [](void *user, const dataflow_runtime::OutputView &output) {
+    Sink sink{&result, previews,this};
+    const auto callback = [](void *user, const dataflow_runtime::PortFrameView &port) {
         auto &sink = *static_cast<Sink *>(user);
         auto &r = *sink.out;
+        r.port_frames.push_back(GraphProgram::owned_port_snapshot(port));
+        if(sink.previews) {
+            const auto &frame=r.port_frames.back().frame;
+            const auto &values=frame.values.empty()?frame.left:frame.values;
+            float peak=0;for(float value:values)peak=std::max(peak,std::abs(value));
+            r.port_previews.push_back({r.port_frames.back().endpoint,r.port_frames.back().delivery,frame.available,values.size(),peak});
+        }
+        if(port.identity.port)return; // Explicit primary-only legacy projection.
+        dataflow_runtime::OutputView output{port.identity.node,port.kind,port.frame,port.window_emitted,{},port.identity.port,port.direction,port.graph_id,port.delivery};
         const auto kind = QString::fromUtf8(domain::kind_id(output.kind));
-        auto f = GraphProgram::owned_snapshot(output.frame);
+        auto f = sink.program->display_snapshot(output);
         const auto d = node_definition(kind);
         if (!output.display_values.empty())
             f.values.assign(output.display_values.begin(), output.display_values.end());
@@ -540,7 +650,7 @@ GraphOutput GraphProgram::evaluate(int id, const TypedFrame &input, GraphEvaluat
             r.previews[output.node] = {values.size(), peak};
         }
     };
-    process_view(id, view, c, callback, &sink);
+    process_ports(id,view,c,{}, {callback,callback,&sink});
     // Preserve desktop event ordering: node schedule first, then source cadence.
     auto rank = [&](int id) {
         for (size_t i = 0; i < _ordered.size(); ++i)

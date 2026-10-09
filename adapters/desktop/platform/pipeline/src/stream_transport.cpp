@@ -12,6 +12,9 @@ namespace pipeline {
 namespace {
 constexpr quint8 Subscribe = 11, Ack = 12, Data = 13, Error = 14;
 constexpr qsizetype Chunk = bdsp_protocol::StreamFragmentBytes, Queue = 2 * 1024 * 1024;
+bool send_bounded_packet(TcpBDSPSocket &socket,quint8 kind,const QByteArray &payload) {
+    if(socket.bytesToWrite()<0 || !stream::peer_budget_fits(size_t(socket.bytesToWrite()),socket.pending_packet_bytes(),0,stream::framed_packet_bound(size_t(payload.size()))) || !socket.send_packet(kind,payload)){socket.abort();return false;}return true;
+}
 uint64_t scoped_producer(uint64_t publisher, uint64_t producer) {
     // Local producer epochs can repeat in a new process. Scope inherited identity
     // by this publisher incarnation, including at stable intermediate relays.
@@ -24,12 +27,13 @@ uint64_t scoped_producer(uint64_t publisher, uint64_t producer) {
 QByteArray request(QString id, stream::Type type) {
     auto b = id.toUtf8();
     b.prepend(char(type));
-    b.prepend(char(2));
+    b.prepend(char(int(type)>=7?3:2));
     b.prepend(char(0));
     return b;
 }
 bool parse(const QByteArray &b, QString &id, stream::Type &type) {
-    if (b.size() < 4 || b.size() > 259 || b[0] != 0 || b[1] != 2 || uint8_t(b[2]) > 6)
+    if (b.size() < 4 || b.size() > 259 || b[0] != 0 || !signal_contracts::frame_descriptor(stream::Type(uint8_t(b[2]))) ||
+        b[1] != (uint8_t(b[2])>=7?3:2))
         return false;
     type = stream::Type(uint8_t(b[2]));
     id = QString::fromUtf8(b.mid(3));
@@ -77,12 +81,12 @@ class NetworkPublisher::Impl {
                 QString id;
                 stream::Type type;
                 if (kind != Subscribe || !parse(b, id, type) || !streams.contains(id) || streams[id] != type) {
-                    s->send_packet(Error, "Unsupported stream/version/type");
+                    send_bounded_packet(*s,Error,"Unsupported stream/version/type");
                     s->disconnectFromHost();
                     return;
                 }
                 peers[s] = {id, type, true};
-                s->send_packet(Ack, b);
+                send_bounded_packet(*s,Ack,b);
             });
             QTimer::singleShot(5000, s, [this, s] {
                 if (peers.contains(s) && peers[s].id.isEmpty())
@@ -111,20 +115,32 @@ void NetworkPublisher::stop() {
     d->peers.clear();
 }
 void NetworkPublisher::advertise(QString id, stream::Type t) {
-    d->streams[id] = t;
-    d->last_producers.try_emplace(id,0);
+    try_advertise(std::move(id),t);
 }
+bool NetworkPublisher::try_advertise(QString id,stream::Type t) {
+    const auto bytes=id.toUtf8();
+    if(bytes.isEmpty() || bytes.size()>256 || bytes.contains(char(0)) || !signal_contracts::frame_descriptor(t) ||
+       (d->streams.contains(id)?d->streams.value(id)!=t:d->streams.size()>=128))return false;
+    d->streams[id]=t;d->last_producers.try_emplace(id,0);return true;
+}
+StreamLimits NetworkPublisher::limits() const {return {};}
 uint64_t NetworkPublisher::dropped() const {
     return d->drops;
 }
+uint64_t NetworkPublisher::incarnation() const {return d->epoch;}
 bool NetworkPublisher::publish(const QString &id, const stream::Frame &f) {
     if (!stream::valid(f) || !d->streams.contains(id) || d->streams.value(id) != f.type)
         return false;
+    const auto id_size=size_t(id.toUtf8().size());const auto without_id=stream::payload_size(f)-f.stream_id.size();
+    if(id_size>limits().max_frame_bytes || without_id>limits().max_frame_bytes-id_size)return false;
     auto &last_producer=d->last_producers.at(id);
     const bool unknown_marker=!f.available && !f.producer_epoch && !f.generation;
     const auto producer=unknown_marker && last_producer?last_producer:
         scoped_producer(d->epoch,unknown_marker?0:(f.producer_epoch?f.producer_epoch:f.epoch));
     last_producer=producer;
+    bool accepted=true;
+    const auto serialized_size=without_id+id_size;
+    const auto framed_bound=stream::fragmented_message_bound(serialized_size,8);
     auto recipients = d->peers.keys();
     for (auto s : recipients) {
         if (!d->peers.contains(s))
@@ -132,8 +148,9 @@ bool NetworkPublisher::publish(const QString &id, const stream::Frame &f) {
         auto &peer = d->peers[s];
         if (peer.id != id)
             continue;
-        if (s->bytesToWrite() + qsizetype(stream::payload_size(f) + 256) > Queue) {
+        if (s->bytesToWrite()<0 || !stream::peer_budget_fits(size_t(s->bytesToWrite()),s->pending_packet_bytes(),0,framed_bound)) {
             peer.gap = true;
+            accepted=false;
             ++d->drops;
             if (!f.available)
                 s->abort(); // A control marker must not disappear behind stale data.
@@ -145,7 +162,7 @@ bool NetworkPublisher::publish(const QString &id, const stream::Frame &f) {
         x.producer_epoch=producer;
         x.discontinuity |= peer.gap;
         auto bytes = stream::encode(x);
-        peer.gap = false;
+        bool sent=true;
         std::array<std::uint8_t, bdsp_protocol::StreamFragmentBytes + 8> fragment;
         for (size_t off = 0; off < bytes.size(); off += Chunk) {
             const auto encoded = bdsp_protocol::encode_fragment(bytes, off, fragment);
@@ -153,12 +170,13 @@ bool NetworkPublisher::publish(const QString &id, const stream::Frame &f) {
                                                             qsizetype(encoded.written_bytes)))) {
                 if (d->peers.contains(s))
                     d->peers[s].gap = true;
-                ++d->drops;
+                ++d->drops;accepted=false;sent=false;s->abort();
                 break;
             }
         }
+        if(d->peers.contains(s) && s->state()==QAbstractSocket::ConnectedState)d->peers[s].gap=!sent;
     }
-    return true;
+    return accepted;
 }
 class NetworkSubscriber::Impl {
   public:
@@ -178,13 +196,14 @@ class NetworkSubscriber::Impl {
     int attempt = 0;
     std::vector<std::uint8_t> assembly_storage = std::vector<std::uint8_t>(bdsp_protocol::MaxFrameBytes);
     bdsp_protocol::FrameAssembler assembler{assembly_storage};
+    uint64_t expected_publisher_incarnation=0;
     uint64_t epoch = 0, producer_epoch = 0, generation = 0, sequence = 0;
     struct ProducerIdentity {
         uint64_t publisher=0,producer=0;
         bool operator==(const ProducerIdentity &) const = default;
     };
     std::array<ProducerIdentity,16> retired{};
-    size_t retired_count=0,retired_next=0;
+    size_t retired_count=0;
     bool identity_known=false;
     std::function<void(stream::Frame)> frame;
     std::function<void(QString)> status;
@@ -204,8 +223,9 @@ class NetworkSubscriber::Impl {
             if(opened!=signal_contracts::Status::ok) {
                 report(serial->transport().error_string());
                 recover();
-            } else if(channel->send_packet(Subscribe,request(id,type))!=signal_contracts::Status::ok) {
-                abort();
+            } else {
+                const auto payload=request(id,type);const auto queued=channel->device_pending_bytes();
+                if(queued<0 || !stream::peer_budget_fits(size_t(queued),channel->pending_bytes(),0,stream::framed_packet_bound(size_t(payload.size()))) || channel->send_packet(Subscribe,payload)!=signal_contracts::Status::ok)abort();
             }
         } else socket.connectToHost(host, port);
     }
@@ -234,7 +254,7 @@ class NetworkSubscriber::Impl {
             recover();
         });
         QObject::connect(&socket, &QTcpSocket::connected, o,
-                         [this] { socket.send_packet(Subscribe, request(id, type)); });
+                         [this] { send_bounded_packet(socket,Subscribe,request(id,type)); });
         QObject::connect(&socket, &QTcpSocket::disconnected, o, [this] { recover(); });
         QObject::connect(&socket, &QTcpSocket::errorOccurred, o, [this] { recover(); });
         QObject::connect(&socket, &TcpBDSPSocket::packetReceived, o,
@@ -266,6 +286,11 @@ class NetworkSubscriber::Impl {
                 abort();
                 return;
             }
+            const auto *raw=reinterpret_cast<const uint8_t*>(b.constData());
+            const size_t declared=size_t(raw[0])|(size_t(raw[1])<<8)|(size_t(raw[2])<<16)|(size_t(raw[3])<<24);
+            const auto queued=channel?channel->device_pending_bytes():socket.bytesToWrite();
+            const size_t pending=channel?channel->pending_bytes():socket.pending_packet_bytes();
+            if(queued<0 || !stream::peer_budget_fits(size_t(queued),pending,declared,0)){abort();return;}
             std::span<const std::uint8_t> complete;
             const auto assembled = assembler.accept({reinterpret_cast<const std::uint8_t *>(b.constData()),
                                                       std::size_t(b.size())}, complete);
@@ -283,6 +308,8 @@ class NetworkSubscriber::Impl {
                 abort();
                 return;
             }
+            // Registry identity authorizes the publisher; first DATA cannot establish or replace it.
+            if(expected_publisher_incarnation && f.epoch!=expected_publisher_incarnation)return;
             auto producer=f.producer_epoch?f.producer_epoch:f.epoch;
             if(!f.available && !f.producer_epoch && !f.generation && identity_known && f.epoch==epoch)producer=producer_epoch;
             const ProducerIdentity incoming{f.epoch,producer},current{epoch,producer_epoch};
@@ -293,9 +320,9 @@ class NetworkSubscriber::Impl {
             if(f.available && same_identity && f.sequence<=sequence)return;
             f.discontinuity |= gap || !same_identity || (f.available && f.sequence != sequence + 1);
             if(!same_producer && identity_known) {
-                retired[retired_next]=current;
-                retired_next=(retired_next+1)%retired.size();
-                retired_count=std::min(retired_count+1,retired.size());
+                // Finite policy: never forget a retired producer; only explicit start may resynchronize.
+                if(retired_count==retired.size()){enabled=false;retry.stop();timeout.stop();assembler.reset();report("Producer retirement exhausted; explicit resubscription required");abort();return;}
+                retired[retired_count++]=current;
             }
             if(f.available || !same_identity)sequence=f.sequence;
             gap = !f.available;
@@ -341,9 +368,24 @@ NetworkSubscriber::~NetworkSubscriber() {
     stop();
 }
 void NetworkSubscriber::start(QString h, quint16 p, QString id, stream::Type t) {
+    start(std::move(h),p,std::move(id),t,{});
+}
+void NetworkSubscriber::start(QString h, quint16 p, QString id, stream::Type t,StreamLimits limits) {
+    start(std::move(h),p,std::move(id),t,limits,0);
+}
+void NetworkSubscriber::start(QString h, quint16 p, QString id, stream::Type t,StreamLimits limits,uint64_t publisher_incarnation) {
     stop();
     d->serial.reset();
     d->channel=nullptr;
+    const auto bytes=id.toUtf8();
+    if(limits.max_frame_bytes<113 || limits.max_frame_bytes>stream::MaxFrameBytes || !limits.max_stream_id_bytes ||
+       limits.max_stream_id_bytes>256 || !limits.max_streams || limits.max_streams>128 || bytes.isEmpty() ||
+       size_t(bytes.size())>limits.max_stream_id_bytes || bytes.contains(char(0)) || 112+size_t(bytes.size())>limits.max_frame_bytes ||
+       !signal_contracts::frame_descriptor(t)){d->report("Unsupported stream limits/id/type");return;}
+    d->assembly_storage.resize(limits.max_frame_bytes);
+    d->assembler=bdsp_protocol::FrameAssembler{d->assembly_storage};
+    d->socket.setReadBufferSize(qint64(limits.max_frame_bytes));
+    d->expected_publisher_incarnation=publisher_incarnation;
     d->host = std::move(h);
     d->port = p;
     d->id = std::move(id);
@@ -354,12 +396,16 @@ void NetworkSubscriber::start(QString h, quint16 p, QString id, stream::Type t) 
 }
 void NetworkSubscriber::start_serial(desktop::SerialEndpoint endpoint,QString id,stream::Type type) {
     stop();
+    d->assembly_storage.resize(stream::MaxFrameBytes);d->assembler=bdsp_protocol::FrameAssembler{d->assembly_storage};
+    if(id.isEmpty() || id.toUtf8().size()>256 || id.contains(QChar(0)) || !signal_contracts::frame_descriptor(type)){d->report("Unsupported stream id/type");return;}
     d->serial_session(std::move(endpoint));
     d->id=std::move(id);d->type=type;d->enabled=true;d->attempt=0;
     d->connect();
 }
 void NetworkSubscriber::start_channel(desktop::QtPacketChannel &channel,QString id,stream::Type type) {
     stop();d->serial.reset();
+    d->assembly_storage.resize(stream::MaxFrameBytes);d->assembler=bdsp_protocol::FrameAssembler{d->assembly_storage};
+    if(id.isEmpty() || id.toUtf8().size()>256 || id.contains(QChar(0)) || !signal_contracts::frame_descriptor(type)){d->report("Unsupported stream id/type");return;}
     d->bind_channel(channel);
     d->id=std::move(id);d->type=type;d->enabled=true;d->attempt=0;d->connect();
 }
@@ -377,7 +423,8 @@ void NetworkSubscriber::stop() {
     d->ready = false;
     d->gap = true;
     d->epoch=d->producer_epoch=d->generation=d->sequence=0;
-    d->identity_known=false;d->retired_count=d->retired_next=0;
+    d->identity_known=false;d->retired_count=0;
+    d->expected_publisher_incarnation=0;
     d->report("Stopped");
 }
 void NetworkSubscriber::set_frame_handler(std::function<void(stream::Frame)> h) {

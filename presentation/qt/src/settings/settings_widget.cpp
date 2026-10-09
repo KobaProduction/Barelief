@@ -1,5 +1,9 @@
+#include "visualization/scene_aspect_control.h"
+#include "visualization/auto_range_interval_control.h"
 #include "visualization/ui_text.h"
 #include "core_app/settings_widget.h"
+#include "core_app/ui/field_row.h"
+#include "core_app/ui/slider_value_control.h"
 
 #include <QVBoxLayout>
 #include <QGroupBox>
@@ -36,6 +40,11 @@
 
 Q_LOGGING_CATEGORY(core_app_settings, "core_app.settings")
 
+std::vector<SettingsWidget::SectionDescriptor> SettingsWidget::available_sections() {
+    return {{General,"General","Alt+,"}, {Processing,"Audio processing","Alt+2"},
+            {Graphs,"Graphs","Alt+3"}, {Controls,"Controls","Alt+6"}};
+}
+
 SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent) : QWidget(parent), _context(context) {
     _setup_ui();
     _setup_camera_controls();
@@ -45,7 +54,12 @@ SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent) : QWidget(par
     auto *general = findChild<QScrollArea *>();
     outer->removeWidget(general);
     outer->addWidget(sections);
-    ui::tab(sections, general, "General");
+    auto title_for = [](Section section) {
+        for (const auto &descriptor : available_sections())
+            if (descriptor.section == section) return QString::fromUtf8(descriptor.title_key);
+        return QString{};
+    };
+    ui::tab(sections, general, title_for(General).toUtf8().constData());
     auto add_section = [sections](QWidget *group, const QString &title) {
         auto *scroll = new QScrollArea(sections);
         scroll->setWidgetResizable(true);
@@ -59,24 +73,21 @@ SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent) : QWidget(par
     };
     auto *processing = new QGroupBox(this);
     auto *processing_layout = new QVBoxLayout(processing);
-    auto *automatic = ui::make<QCheckBox>("Automatically apply Data Flow changes", processing);
-    automatic->setObjectName("pipelineAutoApply");
-    automatic->setChecked(_context.file_configs.ui.pipeline_auto_apply);
-    processing_layout->addWidget(automatic);
-    connect(automatic, &QCheckBox::toggled, this, [this](bool checked) {
-        _context.file_configs.ui.pipeline_auto_apply = checked;
-        emit presentation_preferences_changed();
-        _on_config_change();
-    });
-    add_section(processing, "Audio processing");
-    add_section(_setup_graphs(), "Graphs");
+    auto* running=ui::make<QLabel>("Data Flow runs continuously; valid changes apply automatically.",processing);
+    running->setWordWrap(true);processing_layout->addWidget(running);
+    add_section(processing, title_for(Processing));
+    add_section(_setup_graphs(), title_for(Graphs));
     _main_layout->removeWidget(_wled_group);
     add_section(_wled_group, "WLED");
     _main_layout->removeWidget(_network_group);
     add_section(_network_group, "Network");
+    // Output settings belong to registered graph parameters. Retain section
+    // indices for workspace preferences while hiding obsolete global controls.
+    sections->setTabVisible(WLED,false);
+    sections->setTabVisible(Network,false);
     auto *controls = findChild<QGroupBox *>("cameraControls");
     _main_layout->removeWidget(controls);
-    add_section(controls, "Controls");
+    add_section(controls, title_for(Controls));
     for (int i = _main_layout->count() - 1; i >= 0; --i)
         if (_main_layout->itemAt(i)->spacerItem())
             delete _main_layout->takeAt(i);
@@ -99,8 +110,7 @@ void SettingsWidget::_setup_ui() {
     language->addItem(QString::fromUtf8("Русский"), "ru");
     language->addItem("English", "en");
     language->setCurrentIndex(_context.file_configs.ui.language == "en" ? 1 : 0);
-    _main_layout->addWidget(ui::make<QLabel>("Interface language", this));
-    _main_layout->addWidget(language);
+    _main_layout->addWidget(new ui::FieldRow("Interface language", language, this));
     connect(language, &QComboBox::currentIndexChanged, this, [this, language](int index) {
         const auto code = language->itemData(index).toString();
         if (ui::Language::instance().set(code)) {
@@ -113,8 +123,7 @@ void SettingsWidget::_setup_ui() {
     ui::items(theme, {"System theme", "Dark", "Light"});
     const QStringList themes{"system", "dark", "light"};
     theme->setCurrentIndex(qMax(0, themes.indexOf(_context.file_configs.ui.theme)));
-    _main_layout->addWidget(ui::make<QLabel>("Interface theme", this));
-    _main_layout->addWidget(theme);
+    _main_layout->addWidget(new ui::FieldRow("Interface theme", theme, this));
     connect(theme, &QComboBox::currentIndexChanged, this, [this, themes](int index) {
         if (ui::Theme::instance().set(themes[index])) {
             _context.file_configs.ui.theme = themes[index];
@@ -266,48 +275,50 @@ void SettingsWidget::_connect_signals() {
 
     connect(_enable_autosave_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.autosave_enabled = checked;
-        _on_config_change(true);
+        // Disabling autosave stops writes immediately; manual Save persists it.
+        // Enabling autosave persists the accumulated UI preferences.
+        _on_config_change(checked);
     });
 
     connect(_show_raw_samples_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_raw_samples = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
     connect(_show_window_signal_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_window_signal = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
     connect(_show_windowed_signal_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_windowed_signal = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
     connect(_show_window_function_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_window_function = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
     connect(_show_amplitudes_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_amplitudes = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
     connect(_show_test_amplitudes_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_test_amplitudes = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
     connect(_show_spectrogram_cb, &QCheckBox::toggled, this, [this](const bool checked) {
         _context.file_configs.ui.show_spectrogram = checked;
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         emit on_rebuild_charts();
     });
 
@@ -319,7 +330,7 @@ void SettingsWidget::_connect_signals() {
         } else {
             emit stop_wled_server_requested();
         }
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::NodeAdapters);
     });
 
     connect(_network_adapter_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](const int index) {
@@ -327,30 +338,43 @@ void SettingsWidget::_connect_signals() {
             _context.file_configs.wled_ar_server.network_interface_name =
                 _network_adapter_combo->itemData(index).toString();
             emit wled_server_config_changed();
-            _on_config_change();
+            _on_config_change(ui::SettingsChangeScope::NodeAdapters);
         }
     });
 
     connect(_port_spinbox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](const int value) {
         _context.file_configs.wled_ar_server.port = static_cast<quint16>(value);
         emit wled_server_config_changed();
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::NodeAdapters);
     });
 }
 
 void SettingsWidget::_on_config_change(const bool force_save) {
+    _on_config_change(ui::SettingsChangeScope::ApplicationPreferences, force_save);
+}
+
+void SettingsWidget::_on_config_change(ui::SettingsChangeScope scope, const bool force_save) {
     if (_context.file_configs.ui.autosave_enabled or force_save) {
-        emit on_config_changed();
+        emit settings_change_requested({scope, force_save});
     }
 }
 
 void SettingsWidget::select_section(int index) {
+    const auto descriptors = available_sections();
+    if (std::none_of(descriptors.begin(), descriptors.end(), [index](const auto &entry) {
+        return entry.section == index;
+    })) return;
     if (index == Graphs && _refresh_graph_targets)
         _refresh_graph_targets();
-    if (auto *tabs = findChild<QTabWidget *>("settingsSections"))
+    if (auto *tabs = findChild<QTabWidget *>("settingsSections"); tabs && tabs->isTabVisible(index))
         tabs->setCurrentIndex(index);
 }
 
+void SettingsWidget::refresh_graph_preferences() {
+    if(_refresh_graph_targets)_refresh_graph_targets();
+    if(_refresh_screen_rate)_refresh_screen_rate();
+    if(_refresh_dimensions)_refresh_dimensions();
+}
 void SettingsWidget::set_graph_actions(const QList<QAction *> &actions) {
     QList<QPointer<QAction>> canonical;
     QSet<QAction *> seen;
@@ -824,7 +848,7 @@ void SettingsWidget::edit_color_scale(const QString &identity) {
     ui.graph_views[identity] = view;
     ui.graph_rendering["color_presets"] = presets;
     emit surface_settings_changed();
-    _on_config_change();
+    _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
 }
 
 QWidget *SettingsWidget::_setup_graphs() {
@@ -871,11 +895,11 @@ QWidget *SettingsWidget::_setup_graphs() {
     const QStringList positions{"bottom","top","left","right"};
     for(int i=0;i<positions.size();++i) position->setItemData(i,positions[i]);
     position->setCurrentIndex(std::max(0,int(positions.indexOf(_context.file_configs.ui.workspace.value("data_flow_position").toString("bottom")))));
-    workspaceForm->addRow(ui::make<QLabel>("Data Flow position",workspace),position);
+    workspaceForm->addRow(new ui::FieldRow("Data Flow position",position,workspace));
     pageLayout->insertWidget(0,workspace);
     connect(position,&QComboBox::currentIndexChanged,this,[this,position] {
         _context.file_configs.ui.workspace["data_flow_position"]=position->currentData().toString();
-        emit workspace_position_changed(); _on_config_change();
+        emit workspace_position_changed(); _on_config_change(ui::SettingsChangeScope::SessionWorkspace);
     });
     const auto initialCadence = SurfaceSettings::normalizedCadence(_context.file_configs.ui.graph_rendering);
     const int initialFps = initialCadence["gui_target_fps"].toInt();
@@ -902,7 +926,7 @@ QWidget *SettingsWidget::_setup_graphs() {
         schema["gui_target_fps"] = fpsValue->value();
         _context.file_configs.ui.graph_rendering = SurfaceSettings::normalizedCadence(schema);
         emit surface_settings_changed();
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
     };
     connect(fpsMode, &QComboBox::currentIndexChanged, this, [fpsMode, fpsValue, saveCadence](int index) {
         const QSignalBlocker block(fpsValue);
@@ -913,16 +937,11 @@ QWidget *SettingsWidget::_setup_graphs() {
         saveCadence();
     });
     connect(fpsValue, &QSpinBox::valueChanged, this, saveCadence);
-    auto *precisionRow = new QWidget(group);
-    auto *precisionLayout = new QHBoxLayout(precisionRow);
-    precisionLayout->setContentsMargins(0, 0, 0, 0);
-    auto *precision = new QSlider(Qt::Horizontal, precisionRow);
+    auto *precisionRow = new ui::SliderValueControl(group);
+    auto *precision = precisionRow->slider();
     precision->setObjectName("surface_axis_precision");
     precision->setRange(0, 8);
-    auto *precisionValue = new QLabel(precisionRow);
-    precisionValue->setMinimumWidth(24);
-    precisionLayout->addWidget(precision, 1);
-    precisionLayout->addWidget(precisionValue);
+    auto *precisionValue = precisionRow->valueLabel();
     precision->setValue(SurfaceSettings::effective(_context.file_configs.ui.graph_rendering)["axis_precision"].toInt());
     precisionValue->setText(QString::number(precision->value()));
     connect(precision, &QSlider::valueChanged, this, [this, precisionValue](int value) {
@@ -932,9 +951,12 @@ QWidget *SettingsWidget::_setup_graphs() {
         defaults["axis_precision"] = value;
         schema["defaults"] = defaults;
         emit surface_settings_changed();
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
     });
-    form->addRow(ui::make<QLabel>("Axis decimal places", group), precisionRow);
+    form->addRow(new ui::FieldRow("Axis decimal places", precisionRow, group));
+    auto* sceneAspect=new ui::SceneAspectControl(group);form->addRow(sceneAspect);
+    auto* rangeInterval=new ui::AutoRangeIntervalControl(group);form->addRow(rangeInterval);
+    rangeInterval->box->setObjectName("surface_auto_range_interval_seconds");
     auto checks = std::make_shared<QMap<QString, QCheckBox *>>();
     const std::pair<const char *, const char *> flags[] = {
         {"mesh_grid", "Surface mesh"}, {"space_grid", "Space grid"}, {"shadows", "Shadows"}, {"light", "Lighting"}};
@@ -950,65 +972,40 @@ QWidget *SettingsWidget::_setup_graphs() {
     const std::pair<const char *, const char *> scalars[] = {
         {"brightness", "Brightness"}, {"light_strength", "Light strength"}, {"ambient_strength", "Ambient light"}};
     for (const auto &[key, title] : scalars) {
-        auto *row = new QWidget(group);
-        auto *layout = new QVBoxLayout(row);
-        layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(2);
-        auto *line = new QHBoxLayout;
-        auto *slider = new QSlider(Qt::Horizontal, row);
+        auto *row = new ui::SliderValueControl(group);
+        auto *slider = row->slider();
         slider->setObjectName("surface_" + QString(key));
         slider->setRange(QString(key) == "brightness" ? 10 : 0, 200);
         slider->setSingleStep(1);
         slider->setPageStep(10);
         slider->setTickInterval(50);
         slider->setTickPosition(QSlider::NoTicks);
-        auto *value = new QLabel(row);
+        row->setFormatter([](int n) { return QString::number(n) + "%"; });
+        row->setDefaultValue(100);
+        auto *value = row->valueLabel();
         value->setObjectName("surface_" + QString(key) + "_value");
-        value->setMinimumWidth(48);
-        auto *reset = ui::make<QPushButton>("Reset", row);
-        reset->setObjectName("surface_" + QString(key) + "_default");
-        ui::bind(reset, "toolTip", "Reset to default");
-        line->addWidget(slider, 1);
-        line->addWidget(value);
-        line->addWidget(reset);
-        layout->addLayout(line);
-        connect(reset, &QPushButton::clicked, slider, [slider] { slider->setValue(100); });
-        connect(slider, &QSlider::valueChanged, value, [value](int n) { value->setText(QString::number(n) + "%"); });
+        row->resetButton()->setObjectName("surface_" + QString(key) + "_default");
         (*numbers)[key] = slider;
         (*numberLabels)[key] = value;
-        form->addRow(ui::make<QLabel>(title, group), row);
+        form->addRow(new ui::FieldRow(title, row, group));
     }
     auto *meshGroup = ui::make<QGroupBox>("Surface mesh", group);
     meshGroup->setObjectName("surfaceMeshSettings");
     auto *meshForm = new QFormLayout(meshGroup);
     meshForm->addRow((*checks)["mesh_grid"]);
-    auto *meshWidth = new QSlider(Qt::Horizontal, meshGroup);
+    auto *widthRow = new ui::SliderValueControl(meshGroup);
+    auto *meshWidth = widthRow->slider();
     meshWidth->setObjectName("surface_mesh_width");
     meshWidth->setRange(50, 300);
     meshWidth->setSingleStep(5);
-    auto *widthRow = new QWidget(meshGroup);
-    auto *widthLayout = new QHBoxLayout(widthRow);
-    widthLayout->setContentsMargins(0, 0, 0, 0);
-    auto *widthValue = new QLabel(widthRow);
-    widthValue->setMinimumWidth(48);
-    widthLayout->addWidget(meshWidth, 1);
-    widthLayout->addWidget(widthValue);
-    connect(meshWidth, &QSlider::valueChanged, widthValue,
-            [widthValue](int n) { widthValue->setText(QString::number(n / 100.0, 'f', 2)); });
-    meshForm->addRow(ui::make<QLabel>("Mesh thickness", meshGroup), widthRow);
-    auto *meshContrast = new QSlider(Qt::Horizontal, meshGroup);
+    widthRow->setFormatter([](int n) { return QString::number(n / 100.0, 'f', 2); });
+    meshForm->addRow(new ui::FieldRow("Mesh thickness", widthRow, meshGroup));
+    auto *contrastRow = new ui::SliderValueControl(meshGroup);
+    auto *meshContrast = contrastRow->slider();
     meshContrast->setObjectName("surface_mesh_contrast");
     meshContrast->setRange(0, 100);
-    auto *contrastRow = new QWidget(meshGroup);
-    auto *contrastLayout = new QHBoxLayout(contrastRow);
-    contrastLayout->setContentsMargins(0, 0, 0, 0);
-    auto *contrastValue = new QLabel(contrastRow);
-    contrastValue->setMinimumWidth(48);
-    contrastLayout->addWidget(meshContrast, 1);
-    contrastLayout->addWidget(contrastValue);
-    connect(meshContrast, &QSlider::valueChanged, contrastValue,
-            [contrastValue](int value) { contrastValue->setText(QString::number(value) + "%"); });
-    meshForm->addRow(ui::make<QLabel>("Mesh contrast", meshGroup), contrastRow);
+    contrastRow->setFormatter([](int n) { return QString::number(n) + "%"; });
+    meshForm->addRow(new ui::FieldRow("Mesh contrast", contrastRow, meshGroup));
     auto *meshColor = ui::make<QPushButton>("Mesh color", meshGroup);
     meshColor->setObjectName("surface_mesh_color");
     auto *meshColorRow = new QWidget(meshGroup);
@@ -1027,8 +1024,10 @@ QWidget *SettingsWidget::_setup_graphs() {
     auto *scope = ui::make<QLabel>("Axis ranges and color scales are configured beside each graph.", group);
     scope->setWordWrap(true);
     form->insertRow(0, scope);
-    auto load = [this, checks, numbers, numberLabels, color, meshWidth, meshContrast, meshColor, refreshScreenRate] {
+    auto load = [this, checks, numbers, numberLabels, color, meshWidth, meshContrast, meshColor, refreshScreenRate, sceneAspect, rangeInterval] {
         const auto settings = SurfaceSettings::effective(_context.file_configs.ui.graph_rendering);
+        sceneAspect->set_options(settings);
+        rangeInterval->set_seconds(settings["auto_range_interval_seconds"].toDouble(10));
         for (auto it = checks->begin(); it != checks->end(); ++it) {
             const QSignalBlocker block(it.value());
             if (it.key() == "space_grid") {
@@ -1074,7 +1073,7 @@ QWidget *SettingsWidget::_setup_graphs() {
                                                                : settings["mesh_color"].toString());
         refreshScreenRate();
     };
-    auto save = [this, checks, numbers, color, meshWidth, meshContrast, meshColor, load] {
+    auto save = [this, checks, numbers, color, meshWidth, meshContrast, meshColor, load, sceneAspect, rangeInterval] {
         auto &ui = _context.file_configs.ui;
         auto values = ui.graph_rendering["defaults"].toObject();
         const auto previous = SurfaceSettings::effective(ui.graph_rendering);
@@ -1100,11 +1099,14 @@ QWidget *SettingsWidget::_setup_graphs() {
             qRound(contrast * 100) == meshContrast->value() ? contrast : meshContrast->value() / 100.0;
         values["mesh_color"] = meshColor->property("selectedColor").toString();
         ui.graph_rendering["version"] = 1;
-        ui.graph_rendering["defaults"] = SurfaceSettings::normalized(values);
+        values["auto_range_interval_seconds"]=rangeInterval->seconds();
+        ui.graph_rendering["defaults"] = sceneAspect->apply(values);
         emit surface_settings_changed();
-        _on_config_change();
+        _on_config_change(ui::SettingsChangeScope::ProjectPresentation);
         load();
     };
+    sceneAspect->changed=save;
+    connect(rangeInterval->box,&QDoubleSpinBox::valueChanged,this,save);
     for (auto it = checks->begin(); it != checks->end(); ++it) {
         if (it.key() == "space_grid")
             connect(it.value(), &QCheckBox::checkStateChanged, this, save);

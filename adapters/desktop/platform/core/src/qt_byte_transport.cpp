@@ -24,7 +24,9 @@ bdsp_protocol::IoResult QtDeviceByteTransport::write(std::span<const std::uint8_
     if(state()!=TransportState::connected || !device_.isWritable()) return {Status::disconnected,0};
     if(source.empty()) return {Status::ok,0};
     const auto room=write_budget_-device_.bytesToWrite();
-    if(room<=0) { ++overflows_; return {Status::overflow,0}; }
+    // A full device queue is reversible backpressure: the packet owner retains
+    // its unwritten bytes and retries after Qt drains the socket/UART.
+    if(room<=0) { ++overflows_; return {Status::would_block,0}; }
     const auto count=device_.write(reinterpret_cast<const char *>(source.data()),qint64(std::min(source.size(),std::size_t(room))));
     if(count<0) return {Status::unavailable,0};
     return {count?Status::ok:Status::would_block,std::size_t(count)};
@@ -90,7 +92,7 @@ QtPacketChannel::QtPacketChannel(QIODevice &device,bdsp_protocol::ByteTransport 
         });
     }
 }
-void QtPacketChannel::reset() noexcept { stream_.reset(); }
+void QtPacketChannel::reset() noexcept { ++receive_generation_;stream_.reset(); }
 Status QtPacketChannel::send_packet(quint8 id,const QByteArray &payload) {
     if(transport_.state()!=TransportState::connected) return Status::disconnected;
     const auto result=stream_.enqueue(id,{reinterpret_cast<const std::uint8_t *>(payload.constData()),std::size_t(payload.size())});
@@ -103,10 +105,20 @@ Status QtPacketChannel::send_packet(quint8 id,const QByteArray &payload) {
 void QtPacketChannel::receive() {
     std::array<std::uint8_t,4096> bytes;
     while(true) {
+        const auto generation=receive_generation_;
         const auto result=transport_.read(bytes);
         if(result.transferred) {
             const auto status=stream_.feed(std::span(bytes).first(result.transferred));
             if(status!=Status::ok)emit protocolError(status);
+        }
+        if(generation!=receive_generation_) {
+            // A callback retired this session. Fence the suffix still buffered
+            // by QIODevice as well as the current PacketStream feed chunk.
+            while(device_.bytesAvailable()>0) {
+                const auto discarded=transport_.read(bytes);
+                if(!discarded.transferred)break;
+            }
+            break;
         }
         if(result.status==Status::unavailable)emit protocolError(result.status);
         if(!result.transferred || result.status!=Status::ok)break;

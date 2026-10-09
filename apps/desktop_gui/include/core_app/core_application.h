@@ -13,6 +13,7 @@
 Q_DECLARE_LOGGING_CATEGORY(core_app_main)
 
 class MainWindow;
+namespace desktop { struct NumericProjectDocument; class ProcessorDiscoveryAdapter; }
 
 class CoreApplication final : public QApplication {
     Q_OBJECT
@@ -31,20 +32,12 @@ class CoreApplication final : public QApplication {
     GuiPresenter &presenter() {
         return *_presenter;
     }
-    // Legacy diagnostics bridge; absent for a remote GUI.
-    pipeline::AudioPipeline &pipeline();
+    pipeline::NumericEngine &pipeline();
 
   public Q_SLOTS:
     void apply_processing_settings();
     void save_configuration_as(const QString &path);
     void open_configuration(const QString &path);
-    void start_analyzer();
-
-    void stop_analyzer();
-
-    void start_loopback();
-
-    void stop_loopback();
 
     void start_wled_audio_reactive_server();
 
@@ -57,41 +50,23 @@ class CoreApplication final : public QApplication {
     void pipeline_preview(const QMap<int, pipeline::NodePreview> &previews);
     void component_status_changed(QString component, int state, QString error);
 
-    void raw_signal_ready(const std::vector<float> &samples);
-
-    void window_signal_ready(const std::vector<float> &samples);
-
-    void windowed_signal_ready(const std::vector<float> &samples);
-
-    void window_function_ready(const std::vector<float> &window);
-
-    void amplitudes_ready(const std::vector<float> &amplitudes);
-
-    void test_amplitudes_ready(const std::vector<float> &test_amplitudes);
-
-    void spectrogram_updated(const std::vector<std::vector<float>> &spectrogram);
-
-    void sample_rate_changed(uint32_t sample_rate);
-
-    void analyzer_started();
-
-    void analyzer_stopped();
-
-    void loopback_started();
-
-    void loopback_stopped();
-
   private:
     std::shared_ptr<DesktopEngineProvider> _engine_provider;
+    std::shared_ptr<desktop::ProcessorDiscoveryAdapter> _processor_discovery;
     std::unique_ptr<GuiPresenter> _presenter;
     QString _remote_host;
     quint16 _remote_port = 8213;
     QStringList _serial_arguments;
     MainWindow *_main_window = nullptr;
     ConfigManager _config_manager;
+    std::unique_ptr<desktop::NumericProjectDocument> _numeric_document;
+    bool _numeric_draft_loaded = false;
+    bool _saving_configuration = false;
+    QString _configuration_load_error;
     bool _opening_configuration = false;
 
     void _parse_command_line();
+    bool _save_ui_preferences(bool force);
     bool _save_configuration(bool force, const QString &saveAsPath = {});
 };
 

@@ -5,6 +5,10 @@
 #include <QPointingDevice>
 #include <QWheelEvent>
 #include <QLoggingCategory>
+#include <QAbstractSpinBox>
+#include <QComboBox>
+#include <QScrollArea>
+#include <QAbstractItemView>
 #include <deque>
 #include <optional>
 #include <vector>
@@ -100,6 +104,35 @@ private:
     bool raw_available=false,owns_raw=false;
 };
 QPointer<WheelDevices> devices;
+class ParameterWheels final : public QObject {
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject* object,QEvent* event) override {
+        if(event->type()!=QEvent::Wheel)return false;
+        auto* control=qobject_cast<QWidget*>(object);
+        if(!control)return false;
+        QWidget* selector=control;
+        while(selector && !qobject_cast<QComboBox*>(selector) && !qobject_cast<QAbstractSpinBox*>(selector))selector=selector->parentWidget();
+        if(!selector)return false;
+        if(auto* combo=qobject_cast<QComboBox*>(selector);combo && combo->view()->isVisible())return false;
+        bool protectedForm=false;QScrollArea* scroll=nullptr;
+        for(auto* parent=selector;parent;parent=parent->parentWidget()) {
+            protectedForm|=parent->property("scrollSafeControls").toBool();
+            if(auto* area=qobject_cast<QScrollArea*>(parent)){scroll=area;break;}
+        }
+        if(!protectedForm)return false;
+        if(scroll){auto* wheel=static_cast<QWheelEvent*>(event);
+            const auto pos=scroll->viewport()->mapFromGlobal(wheel->globalPosition().toPoint());
+            QWheelEvent forwarded(pos,wheel->globalPosition(),wheel->pixelDelta(),wheel->angleDelta(),wheel->buttons(),wheel->modifiers(),wheel->phase(),wheel->inverted(),wheel->source(),wheel->pointingDevice());
+            QApplication::sendEvent(scroll->viewport(),&forwarded);
+        }
+        event->accept();return true;
+    }
+};
+}
+void protect_parameter_wheels() {
+    static QPointer<ParameterWheels> policy;
+    if(!policy){policy=new ParameterWheels(qApp);qApp->installEventFilter(policy);}
 }
 void track_wheel_devices() { if(!devices) devices=new WheelDevices(qApp); }
 bool is_touchpad(const QWheelEvent &event) {

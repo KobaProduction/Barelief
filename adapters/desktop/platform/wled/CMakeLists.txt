@@ -28,6 +28,8 @@ target_link_libraries(${LIB_NAME} PUBLIC
         Qt6::Core
         Qt6::Network
         core
+        bdsp_protocol
+        wled_protocol
 )
 
 

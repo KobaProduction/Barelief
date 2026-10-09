@@ -1,4 +1,5 @@
 cmake-*-*
+/CMakeUserPresets.json
 
 # Independent local build trees used for architecture validation.
 /build-editor/
@@ -24,3 +25,11 @@ cmake-*-*
 /review-final-desktop/
 /review-gui-port-repair/
 /scripts/__pycache__/
+/build-*/
+
+# Local generated caches, build evidence and configuration backups.
+__pycache__/
+*.pyc
+/build-refactor-delivery-configure.log
+/config.pre-numeric.json
+/output/*.exe

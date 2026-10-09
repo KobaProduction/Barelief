@@ -14,20 +14,25 @@
 #include <QtWidgets/QComboBox>
 
 #include "core_app/types.h"
+#include "core_app/ui/settings_change_request.h"
+#include <vector>
 
 class SettingsWidget : public QWidget {
     Q_OBJECT
   public:
     enum Section { General, Processing, Graphs, WLED, Network, Controls };
+    struct SectionDescriptor { Section section; const char *title_key; const char *default_shortcut; };
+    static std::vector<SectionDescriptor> available_sections();
     void select_section(int index);
     explicit SettingsWidget(GuiState &context, QWidget *parent = nullptr);
     void set_display_screen(QScreen *screen);
     void set_graph_actions(const QList<QAction *> &actions);
+    void refresh_graph_preferences();
     void edit_color_scale(const QString &identity);
     void set_graph_dimensions(const QString &identity, size_t frames, size_t bands);
 
   signals:
-    void on_config_changed();
+    void settings_change_requested(ui::SettingsChangeRequest request);
     void camera_controls_changed();
     void presentation_preferences_changed();
     void surface_settings_changed();
@@ -78,6 +83,7 @@ class SettingsWidget : public QWidget {
     void _connect_signals();
     void _load_current_config() const;
     void _on_config_change(bool force_save = false);
+    void _on_config_change(ui::SettingsChangeScope scope, bool force_save = false);
 };
 
 #endif // CORE_APP_SETTINGS_WIDGET_H

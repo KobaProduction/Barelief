@@ -1,0 +1,92 @@
+{
+  "repository": "https://github.com/nanopb/nanopb",
+  "tag": "nanopb-0.4.9.2",
+  "name": "nanopb",
+  "commit": "160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f",
+  "files": [
+    {
+      "path": "LICENSE.txt",
+      "sha256": "e2f2fc8fe3faa7dcb09dbe995db48c6ec5c1f72705db915101e4a83fed44f66d",
+      "git_blob": "d11c9af1d7e469e9a5357a660fd184f58c3a4ff2",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/LICENSE.txt"
+    },
+    {
+      "path": "pb_common.c",
+      "sha256": "8d2ec28baaaf2b7a5e90e4cb2fa9700d21cef7f826f051a637c30b7a1e6a0516",
+      "git_blob": "6aee76b1efa1e6f2f3fe7d43629da9b2114eea19",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb_common.c"
+    },
+    {
+      "path": "pb_common.h",
+      "sha256": "6495a691aca68d6973f2274b5dd54b74fbb57f6b019c45fff255a857fe1abcfd",
+      "git_blob": "58aa90f76d58596d3f45a120b65b4a0bff7fd688",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb_common.h"
+    },
+    {
+      "path": "pb_decode.c",
+      "sha256": "f5b425beaa207251e531c8ce2c86c9b6867e2920ed59cc1b125332af0c147632",
+      "git_blob": "0f71c33b1bd99e531c9eacda5f9b012ddb3c8339",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb_decode.c"
+    },
+    {
+      "path": "pb_decode.h",
+      "sha256": "fcac5f7680fe6e870157e4bcf34d5162bdd4fff0d7db3cad1122f2ad24a6da87",
+      "git_blob": "1ef9d56c6e0b6430f9067cbb911c7e697d034e24",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb_decode.h"
+    },
+    {
+      "path": "pb_encode.c",
+      "sha256": "debb0714dff8d1515b9724eae45531cad912f12028a0311fc3e2c694689e1fed",
+      "git_blob": "1ce4b4c771f83c4315061a82c6e9b48da0ac2681",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb_encode.c"
+    },
+    {
+      "path": "pb_encode.h",
+      "sha256": "9aa00fee4ff08adf0da16e33a55be08810ea657800a648dc78f82e89c60c10cf",
+      "git_blob": "6dc089da307a10a6d440e70acb2775ed6e7fb07c",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb_encode.h"
+    },
+    {
+      "path": "pb.h",
+      "sha256": "e0db84a27e0d41a2d2d347b8c879e30ceb856d36dc192cce0f1124f833c67bc2",
+      "git_blob": "3f181d873a81d82c27c56874f6a63328f38eaaf3",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/pb.h"
+    },
+    {
+      "path": "generator/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/generator/__init__.py"
+    },
+    {
+      "path": "generator/nanopb_generator.py",
+      "sha256": "67d3c5e6de1e5dbd9f45bb4e5b7055d888d1afd6d6e1690791ab8607b6c6b738",
+      "git_blob": "096d5c3b96b8a2712b087fc91e9cf74c2cd989ab",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/generator/nanopb_generator.py"
+    },
+    {
+      "path": "generator/proto/__init__.py",
+      "sha256": "b387c9a6a553ed2184cf8c67243bb26b27bd46baf44465f0d5ffeb139c365105",
+      "git_blob": "b2b47b69d7c15b9ae7cfd95980fc7e0b9b703602",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/generator/proto/__init__.py"
+    },
+    {
+      "path": "generator/proto/_utils.py",
+      "sha256": "6d091e256cdda09002c357da4901d259078fe1ef53a010392a251dd1107d6313",
+      "git_blob": "66229c5e1dbf82e7128304a51366239fe7296d17",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/generator/proto/_utils.py"
+    },
+    {
+      "path": "generator/proto/nanopb.proto",
+      "sha256": "1a50d0822c5ba4395297755b11864af952053be3e0dc44c860f988b1b73c3c55",
+      "git_blob": "1a1cc98f3650c030412fb3ae8ad5eb04d8c350ac",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/generator/proto/nanopb.proto"
+    },
+    {
+      "path": "generator/proto/google/protobuf/descriptor.proto",
+      "sha256": "aee16e1d7f264200cb5c4eacc657a40347350a698faaa700d2585557f4daed11",
+      "git_blob": "4752e3d53311866ffa8e7aa8fc525cd055d08e7f",
+      "source_url": "https://raw.githubusercontent.com/nanopb/nanopb/160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f/generator/proto/google/protobuf/descriptor.proto"
+    }
+  ]
+}

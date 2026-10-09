@@ -10,6 +10,9 @@ class EngineClient final : public QObject, public EnginePort {
     explicit EngineClient(AudioSourceFactory, QObject *parent = nullptr);
     EngineClient(QString host, quint16 port, QObject *parent = nullptr);
     ~EngineClient() override;
+    PortDeliveryMode port_delivery_mode() const noexcept override;
+    bool subscribe_port_frames(std::vector<EndpointIdentity>,QString *error=nullptr) override;
+    void set_port_frame_handler(std::function<void(DeliveredPortFrame)>) override;
     quint64 submit(EngineCommand command) override;
     void set_snapshot_handler(std::function<void(EngineSnapshot)> handler) override;
     void set_view_handler(std::function<void(ViewFrame)> handler) override;

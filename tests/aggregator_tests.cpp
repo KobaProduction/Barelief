@@ -33,10 +33,15 @@ int main(int argc,char **argv) {
         AggregatorClientConfig first_cfg{QUuid::createUuid(),ComponentType::data_source,10001};
         AggregatorClientConfig second_cfg{QUuid::createUuid(),ComponentType::core,10002};
         AggregatorClient first(first_cfg),second(second_cfg);
+        int connectionRequests=0,disconnectionRequests=0;
+        QObject::connect(&first,&AggregatorClient::connection_requested,&app,[&](QHostAddress address,quint16 requestedPort,qint32 timeout){
+            require(address==QHostAddress::LocalHost&&requestedPort==port&&timeout>0,"Registry worker mirror intent changed");++connectionRequests;});
+        QObject::connect(&first,&AggregatorClient::disconnection_requested,&app,[&]{++disconnectionRequests;});
         bool first_saw_second=false,second_saw_first=false;
         QObject::connect(&first,&AggregatorClient::on_update_component_info,&app,[&](const QUuid &id,const component_info_t &info){ if(id==second_cfg.uuid && info.state==ComponentState::registered) first_saw_second=true; });
         QObject::connect(&second,&AggregatorClient::on_update_component_info,&app,[&](const QUuid &id,const component_info_t &info){ if(id==first_cfg.uuid && info.state==ComponentState::registered) second_saw_first=true; });
         require(first.connect_to_aggregator_server(QHostAddress::LocalHost,port),"Connect request rejected");
+        require(connectionRequests==1&&disconnectionRequests==1&&first.connection_request()&&first.connection_request()->port==port,"Explicit registry intent not observable");
         require(wait_for([&]{return first.is_registered();}),"First registration failed");
         second.connect_to_aggregator_server(QHostAddress::LocalHost,port);
         require(wait_for([&]{return second.is_registered()&&first_saw_second&&second_saw_first;}),"New client lacks registry snapshot or broadcast");
@@ -69,6 +74,7 @@ int main(int argc,char **argv) {
         QTest::qWait(100);cancelled.disconnect_from_aggregator_server();QTest::qWait(300);
         require(cancelled.runtime_state()==core::RuntimeState::Stopped,"Retry cancellation failed");
         first.disconnect_from_aggregator_server(); server.stop();
+        require(!first.connection_request()&&disconnectionRequests==2&&connectionRequests==1,"Explicit disconnect retained mirrored intent or retries re-emitted connect");
         // Fill real socket output buffers without pumping: deterministic slow-peer
         // backpressure, without relying on OS TCP window size or timing.
         AggregatorServer overflow_server;

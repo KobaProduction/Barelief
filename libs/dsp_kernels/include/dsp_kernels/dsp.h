@@ -3,6 +3,7 @@
 #include <span>
 #include <optional>
 #include <vector>
+#include <signal_contracts/data_frame.h>
 
 namespace dsp_kernels {
 enum class Backend { Ansi, EspDsp };
@@ -56,6 +57,10 @@ class FFT {
   public:
     bool prepare(std::size_t samples, bool radix4 = false);
     bool process(std::span<const float> input, std::span<float> output, bool hartley = false);
+    // Reads and writes one plane directly; the instance scratch is the only
+    // intermediate payload. Views remain borrowed for this synchronous call.
+    signal_contracts::Status process_plane(const signal_contracts::NumericView& input,
+        signal_contracts::MutableNumericView& output, std::size_t plane);
     std::size_t workspace_bytes() const {
         return scratch_.capacity() * sizeof(float);
     }
@@ -66,17 +71,22 @@ class FFT {
 };
 class MelFilterBank {
   public:
+    // Returns one coefficient per Mel band: sum(input magnitude * triangle).
+    // This is linear magnitude, not squared power, dB or area-normalized energy.
+    // Equal Mel spacing selects triangle centres; Hertz defines their weights
+    // at FFT bin k*sample_rate/(2*bins). Output indices remain Mel band indices.
     // Bins <= max_fft_samples/2 and bands <= max_mel_bands. Zero bins/rate
     // retain legacy zero-energy behavior. Invalid preparation disables the plan.
     bool prepare(std::size_t bins, std::size_t sample_rate, std::size_t bands);
     bool process(std::span<const float> input, std::span<float> output) const;
     std::size_t workspace_bytes() const {
-        return boundaries_.capacity() * sizeof(std::size_t);
+        return boundaries_.capacity() * sizeof(double);
     }
 
   private:
     std::size_t bins_ = 0, bands_ = 0;
-    std::vector<std::size_t> boundaries_;
+    std::vector<double> boundaries_; // Shared continuous-Hertz triangles.
+    double frequency_step_=0;
 };
 // Applies the supplied window and Bark weights in the same order as Analyzer.
 // Input spans are replaced with windowed samples for legacy callbacks.

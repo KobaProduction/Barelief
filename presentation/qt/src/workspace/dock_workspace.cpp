@@ -2,7 +2,12 @@
 #include "core_app/graph_panel.h"
 #include "core_app/settings_widget.h"
 #include "core_app/scheme_editor/editor_widget.h"
+#include "core_app/scheme_editor/audio_node_model.h"
+#include "core_app/scheme_editor/numeric_editor_model.h"
+#include <desktop/numeric_project_document.h>
+#include <DockAreaWidget.h>
 #include "visualization/ui_text.h"
+#include "visualization/charts/line.h"
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -10,7 +15,11 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QLabel>
+#include <QFormLayout>
+#include <QScrollArea>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMoveEvent>
@@ -19,6 +28,10 @@
 #include <QWindow>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QScrollArea>
+#include <QPushButton>
+#include <QFormLayout>
+#include <QVBoxLayout>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QStatusBar>
@@ -41,18 +54,30 @@ WorkspaceDock *MainWindow::add_panel(const QString &id, const QString &title, QW
     dock->setObjectName(id + "Dock");
     dock->setFeatures(WorkspaceDock::DockWidgetClosable | WorkspaceDock::DockWidgetMovable |
                       WorkspaceDock::DockWidgetFloatable);
-    ui::bind(dock, "windowTitle", title);
-    ui::bind(dock->toggleViewAction(), "text", title);
-    if (auto *chart = dynamic_cast<AbstractChartView *>(view)) {
+    if(id=="dataFlow") {
+        ui::bind(dock, "windowTitle", title);
+        ui::bind(dock->toggleViewAction(), "text", title);
+    } else {
+        dock->setProperty("graphViewKey",id);
+        dock->setProperty("graphTitleSource",title);
+    }
+    auto* supplied_surface=qobject_cast<SpectrogramGraph*>(view);
+    auto* chart=dynamic_cast<AbstractChartView*>(view);
+    if(supplied_surface)chart=new LineChartView;
+    if (chart) {
+        auto preferences=_application.state().file_configs.ui.graph_views.value(id).toObject();
+        if(supplied_surface && !preferences.contains("display_mode"))preferences["display_mode"]="surface3d";
         auto *panel =
-            new GraphPanel(id, chart, _application.state().file_configs.ui.graph_views.value(id).toObject(), dock);
+            new GraphPanel(id, chart, preferences, dock,supplied_surface);
         connect(panel, &GraphPanel::presentation_changed, this, [this](const QString &id, const QJsonObject &prefs) {
             auto saved = _application.state().file_configs.ui.graph_views.value(id).toObject();
             for (auto it = prefs.constBegin(); it != prefs.constEnd(); ++it)
                 saved[it.key()] = it.value();
             _application.state().file_configs.ui.graph_views[id] = saved;
+            _numeric_render_dirty=true;
             _workspace_save_timer.start();
         });
+        connect(panel,&GraphPanel::renderer_changed,this,[this]{_numeric_render_dirty=true;render_numeric_views();});
         dock->setWidget(panel);
     } else
         dock->setWidget(view);
@@ -133,10 +158,10 @@ void MainWindow::reset_workspace() {
 void MainWindow::save_workspace() {
     QJsonObject visibility;
     for (auto it = _panels.begin(); it != _panels.end(); ++it)
-        visibility[it.key()] = !it.value()->isHidden();
+        visibility[it.key()] = !it.value()->isClosed();
     auto &ui = _application.state().file_configs.ui;
     for (auto it = _node_views.begin(); it != _node_views.end(); ++it) {
-        const bool open = !it.value().dock->isHidden();
+        const bool open = !it.value().dock->isClosed();
         visibility["nodeView_" + it.key()] = open;
         auto p = ui.graph_views[it.key()].toObject();
         p["open"] = open;
@@ -159,36 +184,100 @@ void MainWindow::save_workspace() {
     workspace["visibility"] = visibility;
     ui.workspace = workspace;
 }
-void MainWindow::refresh_subscriptions() {
-    if (_restoring_layout)
-        return;
-    quint32 mask = 0;
-    const auto visible = [this](const QString &id) {
-        return (id == "dataFlow" || _active_node_views.values().contains(id)) && _render_visible.value(id) &&
-               !_panels[id]->isHidden();
-    };
-    if (visible("dataFlow"))
-        mask |= pipeline::EngineCommand::Previews;
-    if (visible("rawSamples"))
-        mask |= pipeline::EngineCommand::Views;
-    if (visible("spectrogram"))
-        mask |= pipeline::EngineCommand::History | pipeline::EngineCommand::Views;
-    for (const auto &id : {"fft", "mel", "windowSignal", "windowedSignal", "windowFunction"})
-        if (visible(id))
-            mask |= pipeline::EngineCommand::Views;
-    for (const auto &id : {"windowSignal", "windowedSignal", "windowFunction"})
-        if (visible(id))
-            mask |= pipeline::EngineCommand::Diagnostics;
-    for (auto it = _node_views.cbegin(); it != _node_views.cend(); ++it) {
-        const auto &view = it.value();
-        if (view.device == _application.device_id() && view.graph == _application.graph_id() &&
-            _active_node_views.contains(view.node) && _render_visible.value(it.key())) {
-            mask |= pipeline::EngineCommand::Views;
-            if (view.spectrogram)
-                mask |= pipeline::EngineCommand::History;
-        }
+QJsonObject MainWindow::capture_preset_presentation() {
+    save_workspace();
+    auto& ui=_application.state().file_configs.ui;
+    auto surface=ui.graph_views.value("spectrogram").toObject();
+    surface["camera"]=_spectrogram_view->camera_state();surface["renderer"]=_spectrogram_view->presentation_state();
+    surface["side_ratio"]=ui.spectrogram_side_panel_ratio;ui.graph_views["spectrogram"]=surface;
+    auto preset_workspace=ui.workspace;
+    preset_workspace.remove("geometry");
+    QJsonObject result{{"version",1},{"graph_views",ui.graph_views},{"graph_rendering",ui.graph_rendering},{"workspace",preset_workspace},
+        {"show_raw_samples",ui.show_raw_samples},{"show_window_signal",ui.show_window_signal},
+        {"show_windowed_signal",ui.show_windowed_signal},{"show_window_function",ui.show_window_function},
+        {"show_amplitudes",ui.show_amplitudes},{"show_test_amplitudes",ui.show_test_amplitudes},
+        {"show_spectrogram",ui.show_spectrogram},{"show_data_flow",ui.show_data_flow}};
+    QJsonObject checked;
+    const auto admitted=desktop::decode_numeric_preset_presentation(QJsonDocument(result).toJson(QJsonDocument::Compact),checked);
+    if(!admitted)qCWarning(core_app_window) << "Preset display capture rejected:" << admitted.path << admitted.error;
+    return result;
+}
+void MainWindow::restore_preset_presentation(const QJsonObject& supplied) {
+    QJsonObject presentation;
+    if(!supplied.isEmpty() && !desktop::decode_numeric_preset_presentation(QJsonDocument(supplied).toJson(QJsonDocument::Compact),presentation))return;
+    domain::NumericProcessingGraph draft;
+    auto* editor=data_flow_editor();if(!editor || !editor->numeric_draft(draft))return;
+    const bool restoring=_restoring_layout;
+    _restoring_layout=_restoring_preset=true;
+    _workspace_save_timer.stop();_camera_save_timer.stop();_last_graph_slot.clear();
+    // Dock identities and saved ADS groups belong to the selected preset.
+    // Endpoint states survive until the new binding set removes incompatible ones.
+    for(auto& view:_node_views) {
+        disconnect(view.dock,nullptr,this,nullptr);removeDockWidget(view.dock);delete view.dock;
     }
-    _application.set_visible_views(mask);
+    _node_views.clear();_active_node_views.clear();_view_draft=std::move(draft);_view_draft_device=_application.device_id();
+    auto& ui=_application.state().file_configs.ui;
+    ui.graph_views=presentation.value("graph_views").toObject();ui.graph_rendering=presentation.value("graph_rendering").toObject();
+    const auto session_geometry=ui.workspace.value("geometry");
+    ui.workspace=presentation.value("workspace").toObject();
+    ui.workspace.remove("geometry");
+    if (!session_geometry.isUndefined()) ui.workspace["geometry"]=session_geometry;
+    restore_node_views();sync_node_views(_application.client().snapshot().graph);
+    const auto visible=[&](const char* field,const QString& key) {
+        const bool exists=key=="dataFlow" || std::any_of(_active_node_views.cbegin(),_active_node_views.cend(),[&](const auto& value){return value==key;});
+        return exists && presentation.value(field).toBool(true);
+    };
+    ui.show_raw_samples=visible("show_raw_samples","rawSamples");ui.show_window_signal=visible("show_window_signal","windowSignal");
+    ui.show_windowed_signal=visible("show_windowed_signal","windowedSignal");ui.show_window_function=visible("show_window_function","windowFunction");
+    ui.show_amplitudes=visible("show_amplitudes","fft");ui.show_test_amplitudes=visible("show_test_amplitudes","mel");
+    ui.show_spectrogram=visible("show_spectrogram","spectrogram");ui.show_data_flow=visible("show_data_flow","dataFlow");
+    const auto state=QByteArray::fromBase64(ui.workspace.value("ads_state").toString().toLatin1());
+    const bool restored=ui.workspace.value("version").toInt()==1 && ui.workspace.value("layout_version").toInt()==5 && !state.isEmpty() && restoreState(state,1);
+    if(!restored) {
+        auto* flow=_panels.value("dataFlow");placeDock(flow,nullptr,Qt::BottomDockWidgetArea);
+        WorkspaceDock* anchor=nullptr;
+        for(auto* dock:graph_docks()) {
+            if(!anchor){placeDock(dock,flow,Qt::TopDockWidgetArea);anchor=dock;}else tabifyDockWidget(anchor,dock);
+        }
+        if(anchor)anchor->raise();
+    }
+    const auto choices=ui.workspace.value("visibility").toObject();
+    for(auto it=_node_views.begin();it!=_node_views.end();++it) {
+        const auto prefs=ui.graph_views.value(it.key()).toObject();
+        const bool current=it->device==_application.device_id() && it->graph==QString::fromStdString(_view_draft->graph_id);
+        const bool open=current && (restored && choices.value("nodeView_"+it.key()).isBool()
+            ?choices.value("nodeView_"+it.key()).toBool():prefs.value("open").toBool(true));
+        if(it->dock->isClosed()==open)it->dock->toggleView(open);
+    }
+    for(auto it=_panels.begin();it!=_panels.end();++it)if(auto* panel=qobject_cast<GraphPanel*>(it.value()->widget()))
+        panel->restore_presentation(ui.graph_views.value(it.key()).toObject());
+    const auto surface=ui.graph_views.value("spectrogram").toObject();
+    _spectrogram_view->set_presentation_state(surface.value("renderer").toObject());
+    auto camera=surface.value("camera").toObject();
+    if(camera.isEmpty()){SpectrogramGraph defaults;camera=defaults.camera_state();}
+    _spectrogram_view->set_camera_state(camera);
+    _spectrogram_view->set_side_panel_ratio(float(surface.value("side_ratio").toDouble(.25)));
+    ui.camera=_spectrogram_view->camera_state();ui.spectrogram_side_panel_ratio=float(surface.value("side_ratio").toDouble(.25));
+    update_chart_visibility(ui);apply_surface_settings();
+    for(auto* dock:graph_docks())refresh_graph_title(dock);
+    if(auto* settings=findChild<SettingsWidget*>())settings->refresh_graph_preferences();
+    _restoring_preset=false;_restoring_layout=restoring;
+    ui.workspace["graph_navigation_version"]=1;
+    save_workspace();refresh_subscriptions();_workspace_save_timer.start();
+}
+void MainWindow::refresh_subscriptions() {
+    std::vector<pipeline::EndpointIdentity> endpoints;
+    for(const auto& binding:_numeric_bindings) {
+        if(binding.device!=_application.device_id())continue;
+        if(std::find(endpoints.begin(),endpoints.end(),binding.endpoint)==endpoints.end())
+            endpoints.push_back(binding.endpoint);
+    }
+    for(const auto& ports:_metric_bindings)for(const auto& binding:ports) {
+        if(binding.device==_application.device_id() && std::find(endpoints.begin(),endpoints.end(),binding.endpoint)==endpoints.end())
+            endpoints.push_back(binding.endpoint);
+    }
+    _application.set_numeric_endpoints(std::move(endpoints));
+    if(!_restoring_layout)render_numeric_views();
 }
 void MainWindow::recover_offscreen_panels() {
     const auto screens = QGuiApplication::screens();
@@ -240,7 +329,7 @@ void MainWindow::closeEvent(QCloseEvent *event) {
         editor->flush_presentation();
     save_workspace();
     if (_application.state().file_configs.ui.autosave_enabled)
-        emit _application.on_config_updated();
+        emit settings_change_requested({ui::SettingsChangeScope::SessionWorkspace, false});
     _workspace_closed = true;
     _restoring_layout = true;
     QMainWindow::closeEvent(event);
@@ -262,7 +351,6 @@ WorkspaceDock *MainWindow::graph_dock(int node) const {
 }
 void MainWindow::open_graph_node(int node) {
     auto *dock=graph_dock(node);
-    if(!dock) return;
     auto *slot=_last_graph_slot.data();
     if(!slot || slot->isHidden() || !is_graph_dock(slot) || !in_editor_window(slot)) {
         slot=nullptr;
@@ -272,6 +360,8 @@ void MainWindow::open_graph_node(int node) {
             if(in_editor_window(candidate) && candidate->property("renderExposed").toBool()) { slot=candidate; break; }
     }
     if(!slot) return; // Only an explicit context command creates a viewing area.
+    if(!dock)dock=new_graph_view(node);
+    if(!dock)return;
     for(auto *candidate:graph_docks())
         if(candidate->property("graphNode").toInt()==node && in_editor_window(candidate) && !candidate->isHidden()) {
             candidate->raise(); _last_graph_slot=candidate; return;
@@ -282,11 +372,14 @@ void MainWindow::open_graph_node(int node) {
         if(!tabifiedDockWidgets(slot).contains(dock)) {
             dock->setFloating(false);
             tabifyDockWidget(slot,dock);
-            slot->hide(); // Replace, rather than add, a visible tab in this area.
         }
+        // A previously closed representation in this same tab group replaces
+        // the selected slot too. Already-open representations were focused above.
+        slot->hide();
     }
     if(auto *surface=qobject_cast<SpectrogramGraph *>(dock->widget()))
         surface->initialize({240,180},screen()->availableGeometry().size());
+    install_graph_name_control(dock);
     dock->show();dock->raise();
     _last_graph_slot=dock;
     // Activation from the editor must not steal keyboard focus during dragging
@@ -302,9 +395,10 @@ bool MainWindow::is_graph_dock(WorkspaceDock *dock) const {
 }
 QList<WorkspaceDock *> MainWindow::graph_docks() const {
     QList<WorkspaceDock *> result;
+    const auto selected_graph=_view_draft?QString::fromStdString(_view_draft->graph_id):_application.graph_id();
     for(int node:_active_node_views.keys()) if(auto *dock=graph_dock(node)) result.append(dock);
     for(const auto &view:_node_views)
-        if(view.device==_application.device_id() && view.graph==_application.graph_id() && _active_node_views.contains(view.node)
+        if(view.device==_application.device_id() && view.graph==selected_graph && _active_node_views.contains(view.node)
            && !result.contains(view.dock)) result.append(view.dock);
     return result;
 }
@@ -312,18 +406,56 @@ bool MainWindow::in_editor_window(WorkspaceDock *dock) const {
     auto *flow=_panels.value("dataFlow");
     return dock && flow && dock->sharesHost(flow);
 }
-WorkspaceDock *MainWindow::new_graph_view(int node) {
-    for(const auto &value:_application.state().file_configs.scene_graph.value("nodes").toArray()) {
-        const auto entry=value.toObject();
-        if(entry["id"].toInt()==node) {
-            const auto kind=entry["internal-data"].toObject()["model-name"].toString();
-            const auto key=ensure_node_view(node,kind,_application.device_id(),_application.graph_id(),false,_next_view_instance++);
-            return _node_views.value(key).dock;
-        }
+bool MainWindow::graph_for_view(int node,domain::NumericProcessingGraph &graph) const {
+    const auto contains=[node](const auto& candidate) {
+        return std::any_of(candidate.nodes.begin(),candidate.nodes.end(),[node](const auto& entry){return entry.id==node;});
+    };
+    const auto document=_application.client().snapshot().graph;
+    if(_view_draft) {
+        auto* editor=data_flow_editor();
+        if(editor && editor->numeric_draft(graph) && contains(graph))return true;
     }
-    return nullptr;
+    if(desktop::decode_numeric_graph(QJsonDocument(document).toJson(QJsonDocument::Compact),graph) && contains(graph))return true;
+    auto* editor=data_flow_editor();
+    return editor && editor->numeric_draft(graph) && contains(graph);
+}
+WorkspaceDock *MainWindow::new_graph_view(int node,std::optional<domain::PortId> port) {
+    const auto document=_application.client().snapshot().graph;
+    domain::NumericProcessingGraph graph;
+    if(!graph_for_view(node,graph))return nullptr;
+    const auto found=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==node;});
+    if(found==graph.nodes.end() || !numeric_editor::is_graph_view(QString::fromStdString(found->kind)))return nullptr;
+    domain::ResolvedProcessingNode resolved;
+    if(!domain::resolve_processing_node(*found,numeric_editor::limits(),resolved))return nullptr;
+    const auto& ports=resolved.role==domain::NodeRole::Sink?found->inputs:found->outputs;
+    if(ports.empty() || (port && std::none_of(ports.begin(),ports.end(),[&](const auto& p){return p.id==*port;})))return nullptr;
+    const auto instance=_next_view_instance++;
+    const auto identity=QString::fromLatin1(QJsonDocument(QJsonArray{_application.device_id(),QString::fromStdString(graph.graph_id),node,instance}).toJson(QJsonDocument::Compact).toHex());
+    if(port){auto preferences=_application.state().file_configs.ui.graph_views[identity].toObject();preferences["port"]=int(*port);_application.state().file_configs.ui.graph_views[identity]=preferences;}
+    const auto key=ensure_node_view(node,QString::fromStdString(found->kind),_application.device_id(),QString::fromStdString(graph.graph_id),false,instance,&*found);
+    // Only the authoritative snapshot binds data. Opening an unapplied draft
+    // creates an unavailable presentation, never applies or starts processing.
+    if(!document.isEmpty())sync_node_views(document);
+    if(!_active_node_views.contains(node))_active_node_views[node]=key;
+    return _node_views.value(key).dock;
 }
 void MainWindow::populate_graph_menu(int node,QMenu *menu) {
+    domain::NumericProcessingGraph graph;
+    if(!graph_for_view(node,graph))return;
+    const auto shown=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==node;});
+    if(shown==graph.nodes.end() || !numeric_editor::is_graph_view(QString::fromStdString(shown->kind)))return;
+    if(graph_for_view(node,graph)) {
+        const auto found=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==node;});
+        domain::ResolvedProcessingNode resolved;
+        if(found!=graph.nodes.end() && domain::resolve_processing_node(*found,numeric_editor::limits(),resolved))
+        for(const auto& port:resolved.role==domain::NodeRole::Sink?found->inputs:found->outputs) {
+            auto* action=menu->addAction(ui::text(resolved.role==domain::NodeRole::Sink?"Input port %1":"Output port %1").arg(port.id));
+            action->setObjectName(QStringLiteral("openGraphPort%1").arg(port.id));
+            connect(action,&QAction::triggered,this,[this,node,port=port.id] {
+                if(auto* dock=new_graph_view(node,port))place_graph(dock,1);
+            });
+        }
+    }
     auto *focus=menu->addMenu(ui::text("Focus representation")); focus->setObjectName("graphRepresentations");
     int internal=0,external=0;
     for(auto *dock:graph_docks()) {
@@ -353,21 +485,28 @@ void MainWindow::populate_graph_menu(int node,QMenu *menu) {
     beside->setEnabled(!beside->isEmpty());
 }
 void MainWindow::add_graph_node(int node,int placement) {
-    if(auto *dock=graph_dock(node)) {
-        if(dock->isFloating() && !dock->isHidden()) dock=new_graph_view(node);
-        else if(placement==2 && dock->property("renderExposed").toBool()) dock=new_graph_view(node);
-        if(!dock) return;
-        place_graph(dock,placement);
-        if(in_editor_window(dock)) _last_graph_slot=dock;
-    }
+    auto* dock=graph_dock(node);
+    if(!dock || !dock->isClosed())
+        dock=new_graph_view(node);
+    if(!dock)return;
+    place_graph(dock,placement);
+    if(in_editor_window(dock)) _last_graph_slot=dock;
 }
 void MainWindow::set_graph_exposed(const QString &key, WorkspaceDock *dock, bool exposed) {
     _render_visible[key] = exposed;
     dock->setProperty("renderExposed", exposed);
-    if (auto *panel = qobject_cast<GraphPanel *>(dock->widget())) panel->set_render_visible(exposed);
     if (auto *surface = qobject_cast<SpectrogramGraph *>(dock->widget())) surface->set_render_visible(exposed);
     for (auto *view : dock->findChildren<QChartView *>())
         if (auto *chart = dynamic_cast<AbstractChartView *>(view)) chart->set_render_visible(exposed);
+    if (auto *panel = qobject_cast<GraphPanel *>(dock->widget())) panel->set_render_visible(exposed);
+    if(exposed)render_numeric_views();
+    // ADS emits Show while the returning tab can still have its offscreen
+    // geometry. Resolve exposure after the tab selection/layout has settled.
+    QTimer::singleShot(0,dock,[this,key,dock] {
+        auto* area=dock->dockAreaWidget();
+        const bool settled=!dock->isClosed() && dock->isVisible() && area && area->currentDockWidget()==dock;
+        if(dock->property("renderExposed").toBool()!=settled)set_graph_exposed(key,dock,settled);
+    });
 }
 void MainWindow::rebuild_graph_areas(WorkspaceDock *dock,WorkspaceDock *anchor,int placement) {
     auto *flow=_panels.value("dataFlow");
@@ -425,7 +564,10 @@ void MainWindow::setup_graph_dock_controls(WorkspaceDock *dock) {
         ui::bind(action,"text",labels[index]); action->setData(index);
         connect(action,&QAction::triggered,this,[this,dock,index] {place_graph(dock,index);});
     }
+    install_graph_name_control(dock);
     dock->setTitleBarActions({placement});
+    connect(&ui::Language::instance(),&ui::Language::changed,dock,[this,dock]{refresh_graph_title(dock);});
+    refresh_graph_title(dock);
     if (dock==_panels.value("dataFlow")) {
         if(auto *editor=qobject_cast<SchemeEditorWidget *>(dock->widget())) {
             dock->setHeaderControls(editor->toolbar());
@@ -441,7 +583,108 @@ void MainWindow::setup_graph_dock_controls(WorkspaceDock *dock) {
         });
     });
 }
+void MainWindow::install_graph_name_control(WorkspaceDock *dock) {
+    if(!dock || !dock->widget() || dock->property("graphViewKey").toString().isEmpty() ||
+       dock->widget()->findChild<QPushButton*>("graphRename"))return;
+    // Keep right-button interaction in the canvas available to the renderer.
+    auto sidebars=dock->widget()->findChildren<QScrollArea*>();
+    if(auto* common=dock->widget()->findChild<QScrollArea*>("numericGraphSettings")){sidebars.removeAll(common);sidebars.prepend(common);}
+    for(auto* scroll:sidebars) {
+        auto* settings=scroll->widget();if(!settings || !settings->layout())continue;
+        auto* rename=ui::make<QPushButton>("Rename graph",settings);
+        rename->setObjectName("graphRename");
+        if(auto* form=qobject_cast<QFormLayout*>(settings->layout()))form->insertRow(0,rename);
+        else if(auto* box=qobject_cast<QVBoxLayout*>(settings->layout()))box->insertWidget(0,rename);
+        else settings->layout()->addWidget(rename);
+        connect(rename,&QPushButton::clicked,this,[this,dock]{request_graph_rename(dock);});
+        return;
+    }
+}
+void MainWindow::request_graph_rename(WorkspaceDock *dock) {
+    const auto key=dock->property("graphViewKey").toString();if(key.isEmpty())return;
+    bool accepted=false;
+    const auto name=QInputDialog::getText(dock,ui::text("Rename graph"),
+        ui::text("Graph name (empty restores default)"),QLineEdit::Normal,
+        _application.state().file_configs.ui.graph_views.value(key).toObject().value("display_name").toString(),&accepted);
+    if(accepted)rename_graph(dock,name);
+}
+void MainWindow::refresh_graph_title(WorkspaceDock *dock) {
+    const auto key=dock->property("graphViewKey").toString();if(key.isEmpty())return;
+    auto title=_application.state().file_configs.ui.graph_views.value(key).toObject().value("display_name").toString().trimmed();
+    const auto identity=QJsonDocument::fromJson(QByteArray::fromHex(key.toLatin1())).array();
+    const auto selected_graph=_view_draft?QString::fromStdString(_view_draft->graph_id):_application.graph_id();
+    const auto endpoint=dock->property("numericEndpoint").toMap();
+    const bool current=(identity.size()>=3 && identity[0].toString()==_application.device_id() && identity[1].toString()==selected_graph) ||
+        (_panels.value(key)==dock && endpoint.value("device").toString()==_application.device_id() && endpoint.value("graph").toString()==selected_graph &&
+         _active_node_views.value(dock->property("graphNode").toInt())==key);
+    auto* model=current && dock->property("graphNode").isValid() && _application.state().data_flow_graph?
+        _application.state().data_flow_graph->delegateModel<AudioNodeModel>(dock->property("graphNode").toUInt()):nullptr;
+    if(model && numeric_editor::is_graph_view(model->name())){
+        if(model->name()=="ScalarView")if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
+            if(auto* sidebar=panel->findChild<QScrollArea*>("numericGraphSettings"))
+                if(auto* form=qobject_cast<QFormLayout*>(sidebar->widget()->layout())){
+                    auto* old=sidebar->findChild<QWidget*>("scalarInputsEditor");
+                    if(!old || old->property("scalarInputsModel").value<QObject*>()!=model){
+                        if(old)delete old;
+                        auto* controls=model->scalar_inputs_widget(sidebar->widget());
+                        controls->setProperty("scalarInputsModel",QVariant::fromValue(static_cast<QObject*>(model)));
+                        connect(model,&QObject::destroyed,controls,[controls]{controls->setProperty("scalarInputsModel",QVariant{});});
+                        form->addRow(controls);
+                    }
+                }
+
+        if(dock->property("graphCaptionModel").value<QObject*>()!=model){
+            dock->setProperty("graphCaptionModel",QVariant::fromValue(static_cast<QObject*>(model)));
+            connect(model,&QObject::destroyed,dock,[dock,model]{
+                if(dock->property("graphCaptionModel").value<QObject*>()==model)dock->setProperty("graphCaptionModel",QVariant{});
+            });
+            if(model->presentation().value("display_name").toString().trimmed().isEmpty() && !title.isEmpty()){
+                auto presentation=model->presentation();presentation["display_name"]=title;model->set_presentation(presentation);
+            }
+            connect(model,&AudioNodeModel::presentation_changed,dock,[this,dock]{
+                refresh_graph_title(dock);_workspace_save_timer.start();
+                if(dock->property("graphKind").toString()=="ScalarView")QTimer::singleShot(0,this,[this]{sync_node_views(_application.client().snapshot().graph);});
+            });
+        }
+        title=model->presentation().value("display_name").toString().trimmed();
+        auto preferences=_application.state().file_configs.ui.graph_views.value(key).toObject();
+        if(title.isEmpty())preferences.remove("display_name");else preferences["display_name"]=title;
+        _application.state().file_configs.ui.graph_views[key]=preferences;
+    }
+    if(title.isEmpty()) {
+        const auto kind=dock->property("graphKind").toString();
+        title=kind.isEmpty()?ui::text(dock->property("graphTitleSource").toString().toUtf8().constData()):
+            AudioNodeModel(kind).caption()+" #"+QString::number(dock->property("graphNode").toInt());
+    }
+    dock->setWindowTitle(title);dock->toggleViewAction()->setText(title);
+}
+void MainWindow::rename_graph(WorkspaceDock *dock,const QString &name) {
+    const auto key=dock->property("graphViewKey").toString();if(key.isEmpty())return;
+    const auto title=name.trimmed();
+    if(title.size()>256 || std::any_of(title.begin(),title.end(),[](QChar c){return c.category()==QChar::Other_Control;}))return;
+    const auto identity=QJsonDocument::fromJson(QByteArray::fromHex(key.toLatin1())).array();
+    const auto selected_graph=_view_draft?QString::fromStdString(_view_draft->graph_id):_application.graph_id();
+    const auto endpoint=dock->property("numericEndpoint").toMap();
+    const bool current=(identity.size()>=3 && identity[0].toString()==_application.device_id() && identity[1].toString()==selected_graph) ||
+        (_panels.value(key)==dock && endpoint.value("device").toString()==_application.device_id() && endpoint.value("graph").toString()==selected_graph &&
+         _active_node_views.value(dock->property("graphNode").toInt())==key);
+    if(current && dock->property("graphNode").isValid() && _application.state().data_flow_graph){
+        if(auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(dock->property("graphNode").toUInt());model && numeric_editor::is_graph_view(model->name())){
+            model->edit_display_name(title);refresh_graph_title(dock);_workspace_save_timer.start();return;
+        }
+    }
+    auto preferences=_application.state().file_configs.ui.graph_views.value(key).toObject();
+    if(title.isEmpty())preferences.remove("display_name");else preferences["display_name"]=title;
+    _application.state().file_configs.ui.graph_views[key]=preferences;
+    refresh_graph_title(dock);_workspace_save_timer.start();
+}
 void MainWindow::refresh_graph_navigation(const QMap<int,QString> &previous) {
+    // A startup Snapshot can be empty before the first Apply. It must not mark
+    // the default navigation layout initialized without any graph bindings.
+    if(_active_node_views.isEmpty()) {
+        if(auto* settings=findChild<SettingsWidget*>())settings->set_graph_actions({});
+        return;
+    }
     const bool first=!_graph_navigation_initialized;
     const bool migrate=_application.state().file_configs.ui.workspace.value("graph_navigation_version").toInt()!=1;
     _graph_navigation_initialized=true;
@@ -449,20 +692,27 @@ void MainWindow::refresh_graph_navigation(const QMap<int,QString> &previous) {
     WorkspaceDock *anchor=nullptr,*selected=nullptr;
     for(auto it=_active_node_views.begin();it!=_active_node_views.end();++it) {
         auto *dock=graph_dock(it.key());if(!dock) continue;
+        refresh_graph_title(dock);
         actions.append(dock->toggleViewAction());
         if(!dock->isFloating()) {
             if(!anchor || it.value()=="spectrogram") anchor=dock;
             if(dock->widget()->isVisible()) selected=dock;
         }
     }
+    if(_restoring_preset) {
+        if(auto* settings=findChild<SettingsWidget*>())settings->set_graph_actions(actions);
+        return;
+    }
     const bool restoring=_restoring_layout;_restoring_layout=true;
     for(auto it=_active_node_views.begin();it!=_active_node_views.end();++it) {
         auto *dock=graph_dock(it.key());if(!dock) continue;
-        const bool newlyAdded=!first && !previous.contains(it.key());
-        if((migrate || newlyAdded) && !dock->isFloating()) {
+        // Receiving a runtime binding does not place a representation. Saved
+        // ADS groups and explicit placement actions own the dock topology.
+        if(migrate && !dock->isFloating()) {
             if(anchor && dock!=anchor) tabifyDockWidget(anchor,dock);
             if(auto *surface=qobject_cast<SpectrogramGraph *>(dock->widget()))
                 surface->initialize({240,180},screen()->availableGeometry().size());
+            install_graph_name_control(dock);
             dock->show();
         }
     }

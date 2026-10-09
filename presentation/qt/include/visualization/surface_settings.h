@@ -105,7 +105,11 @@ inline QJsonObject defaults() {
             {"gradient", "green_red"},
             {"gradient_layout", "preset"},
             {"axis_precision", 0},
+            {"scene_aspect_mode", "fixed"},
+            {"scene_time_aspect", 2.0},
+            {"scene_band_aspect", 1.0},
             {"y_range_mode", "auto"},
+            {"auto_range_interval_seconds", 10.0},
             {"y_min", 0.0},
             {"y_max", 1.0},
             {"reverse_time", false},
@@ -130,6 +134,10 @@ inline QJsonObject normalized(QJsonObject value) {
         const double n = input.toDouble(base[key].toDouble());
         value[key] = std::isfinite(n) ? std::clamp(n, lower, upper) : base[key].toDouble();
     };
+    if(value["scene_aspect_mode"]!="sample_counts")value["scene_aspect_mode"]="fixed";
+    number("scene_time_aspect", .25, 4.0);
+    number("scene_band_aspect", .25, 4.0);
+    number("auto_range_interval_seconds", 1.0, 60.0);
     number("brightness", 0.1, 2.0);
     number("light_strength", 0.0, 2.0);
     number("ambient_strength", 0.0, 2.0);
@@ -155,7 +163,7 @@ inline QJsonObject normalized(QJsonObject value) {
         value["y_range_mode"] = "auto";
     number("y_min", -1e6, 1e6);
     number("y_max", -1e6, 1e6);
-    if (value["y_max"].toDouble() - value["y_min"].toDouble() < 1e-6) {
+    if (!(float(value["y_max"].toDouble()) > float(value["y_min"].toDouble()))) {
         value["y_min"] = 0.0;
         value["y_max"] = 1.0;
     }

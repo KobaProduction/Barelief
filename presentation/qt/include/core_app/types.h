@@ -7,9 +7,7 @@
 #include <QJsonArray>
 #include "visualization/camera_controls.h"
 
-#include "wled/wled_audio_reactive_server.h"
-#include "analyzer/analyze/analyzer.h"
-#include "analyzer/analyze/spectrogram.h"
+#include "pipeline/engine_models.h"
 
 
 using node_delegate_model_registry_t = std::shared_ptr<QtNodes::NodeDelegateModelRegistry>;
@@ -43,7 +41,7 @@ struct UIApplicationConfig {
 struct WLEDARServerConfig {
     bool enabled = false;
     QString network_interface_name{};
-    quint16 port = wled_audio_reactive::DEFAULT_PORT;
+    quint16 port = 11988;
 };
 
 struct FileCoreApplicationConfig {

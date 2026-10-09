@@ -11,6 +11,8 @@
 #include <QMouseEvent>
 #include <QtTest/QTest>
 #include <stdexcept>
+#include "workspace_drag_fixture.h"
+#include <QAction>
 
 static void check(bool value,const char *message) { if(!value) throw std::runtime_error(message); }
 static void settle() { QCoreApplication::processEvents(); QTest::qWait(30); }
@@ -22,6 +24,8 @@ int main(int argc,char **argv) {
         auto make=[&](const char *id) {
             auto *dock=new WorkspaceDock(QString::fromLatin1(id),&host);
             dock->setObjectName(QString::fromLatin1(id)); dock->setWidget(new QLabel(id));
+            auto* placement=new QAction("Placement",dock);placement->setObjectName("graphPlacement");
+            dock->setTitleBarActions({placement});
             host.addDockWidget(Qt::LeftDockWidgetArea,dock); return dock;
         };
         auto *a=make("graph-a"),*b=make("graph-b"),*flow=make("data-flow");
@@ -38,6 +42,9 @@ int main(int argc,char **argv) {
         const auto nearLeft=a->dockAreaWidget()->mapToGlobal(QPoint(areaSize.width()/10,areaSize.height()/2));
         overlay->showOverlay(a->dockAreaWidget(),nearLeft);
         check(overlay->dropAreaUnderCursor(nearLeft)==ads::LeftDockWidgetArea,"Broad edge docking requires hitting the small indicator");
+        const auto tabDrop=workspace_drag::insertion(a,0);
+        overlay->showOverlay(a->dockAreaWidget(),tabDrop);
+        check(overlay->dropAreaUnderCursor(tabDrop)==ads::CenterDockWidgetArea && overlay->tabIndexUnderCursor()==0,"Existing tabbar intercepted by broad edge drop zone");
         overlay->hideOverlay();
         a->setRenderFPS(0,true); settle();
         auto *fps=a->dockAreaWidget()->titleBar()->findChild<QLabel *>("graphRenderStatus");
@@ -63,14 +70,36 @@ int main(int argc,char **argv) {
         a->setFloating(true); settle();
         check(a->isFloating() && a->floatingDockContainer() && b->dockAreaWidget()!=a->dockAreaWidget(),"Tab tear-off moved the entire source group");
         check(b->dockAreaWidget()->titleBar()->findChild<QToolButton *>("tabsMenuButton")->isHidden(),"Single tab retains a useless selector");
+        QPointer<ads::CFloatingDockContainer> oldHost=a->floatingDockContainer();
+        oldHost->move(1100,40);settle();
+        workspace_drag::tab(a,workspace_drag::insertion(b,0));
+        check(!a->isFloating() && a->dockAreaWidget()==b->dockAreaWidget() && a->dockAreaWidget()->currentDockWidget()==a,"Floating tab gesture did not join/select existing tab group");
+        check(a->dockAreaWidget()->dockWidgets().indexOf(a)==0 && oldHost.isNull(),"Drop lost insertion index or leaked old floating host");
+        check(a->widget()==content && content->property("camera").toInt()==123,"Gesture recreated graph content");
+        workspace_drag::tab(b,workspace_drag::insertion(a,0),true);
+        check(b->dockAreaWidget()->dockWidgets().indexOf(b)==0 && b->dockAreaWidget()->currentDockWidget()==b,"Internal tab reorder lost order/selection");
+        workspace_drag::tab_list(b);
+        // Reverse tear-off is also a real tab gesture, not setFloating().
+        workspace_drag::tab(a,QPoint(1200,900));
+        check(a->isFloating() && !b->isFloating(),"Reverse tab tear-off moved its sibling");
         b->setFloating(true); settle();
         check(a->floatingDockContainer()!=b->floatingDockContainer(),"Separate requests reused the same external window");
-        host.tabifyDockWidget(a,b); b->show(); settle();
+        a->floatingDockContainer()->move(1100,40);b->floatingDockContainer()->move(1600,40);settle();
+        QPointer<ads::CFloatingDockContainer> oldB=b->floatingDockContainer();
+        workspace_drag::tab(b,workspace_drag::insertion(a,0));
         check(a->floatingDockContainer()==b->floatingDockContainer(),"External tabs did not join the requested group");
-        b->setFloating(true); settle();
+        check(oldB.isNull() && a->dockAreaWidget()->currentDockWidget()==b && a->dockAreaWidget()->dockWidgets().indexOf(b)==0,"Cross-host drop failed to release old host/select/insert tab");
+        // Reorder in the existing external tab bar through the real moved signal.
+        workspace_drag::tab(a,workspace_drag::insertion(b,0),true);
+        check(a->dockAreaWidget()->dockWidgets().indexOf(a)==0 && a->dockAreaWidget()->currentDockWidget()==a,"Tab reorder lost exact order/selection");
+        workspace_drag::tab_list(a);
+        workspace_drag::tab(b,QPoint(1900,900));
         check(a->floatingDockContainer()!=b->floatingDockContainer(),"Detaching a tab from an external group was ignored");
-        host.splitDockWidget(flow,a,Qt::Horizontal); a->show(); settle();
+        auto* header=a->dockAreaWidget()->titleBar();
+        QPointer<ads::CFloatingDockContainer> headerHost=a->floatingDockContainer();
+        workspace_drag::drag(header,QPoint(header->width()/2,header->height()/2),workspace_drag::insertion(flow,0));
         check(!a->isFloating() && b->isFloating(),"Returning one tab also moved another external window");
+        check(headerHost.isNull() && a->dockAreaWidget()==flow->dockAreaWidget() && a->dockAreaWidget()->currentDockWidget()==a,"Floating header drop did not select/release its host");
         a->setAutoHide(true,ads::SideBarRight); settle();
         check(a->isAutoHide(),"Pin did not create an auto-hide sidebar");
         const auto saved=host.saveState(1);

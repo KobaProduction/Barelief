@@ -1,4 +1,5 @@
 #include "pipeline/stream_codec.h"
+#include "pipeline/port_delivery_codec.h"
 #include <cassert>
 #include <array>
 #include <iostream>
@@ -6,6 +7,7 @@
 #include <string_view>
 #include <cstdlib>
 #include <new>
+#include <algorithm>
 static bool count_allocations=false;
 static size_t allocations=0;
 void *operator new(size_t n) {if(count_allocations)++allocations;if(auto *p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -21,7 +23,129 @@ static std::vector<uint8_t> hex(std::string_view s) {
     for(size_t i=0;i<s.size();i+=2) out.push_back(uint8_t(nibble(s[i])*16+nibble(s[i+1])));
     return out;
 }
+static void admitted_membership() {
+    using namespace port_delivery;
+    const std::array<PortBinding,3> admitted{{{{"main",1,PortDirection::Output,0},domain::NodeKind::Spectrogram,FrameType::History},{{"main",1,PortDirection::Output,1},domain::NodeKind::Spectrogram,FrameType::Scalar},{{"main",2,PortDirection::Input,0},domain::NodeKind::ScalarView,FrameType::Scalar}}};
+    Frames batch;batch.graph_id="main";batch.snapshot=true;for(const auto &binding:admitted){DeliveredPortFrame value;value.endpoint=binding.endpoint;value.kind=binding.kind;value.frame.type=binding.type;value.frame.available=false;batch.entries.push_back(value);}
+    assert(validate_admitted_membership(batch,admitted));auto delta=batch;delta.snapshot=false;delta.entries.resize(1);assert(validate_admitted_membership(delta,admitted));
+    auto invalid=delta;invalid.entries[0].endpoint.node=99;invalid.sequence=999;invalid.delivery={999,999};assert(!validate_admitted_membership(invalid,admitted));
+    invalid=delta;invalid.entries[0].endpoint.direction=PortDirection::Input;assert(!validate_admitted_membership(invalid,admitted));
+    invalid=delta;invalid.entries[0].frame.type=FrameType::Scalar;assert(!validate_admitted_membership(invalid,admitted));
+    invalid=delta;invalid.entries[0].kind=domain::NodeKind::Gate;assert(!validate_admitted_membership(invalid,admitted));
+    invalid=delta;invalid.entries[0].endpoint.port=3;assert(!validate_admitted_membership(invalid,admitted));
+    invalid=delta;invalid.entries[0].endpoint.graph_id="other";assert(!validate_admitted_membership(invalid,admitted));
+    invalid=batch;invalid.entries.pop_back();assert(!validate_admitted_membership(invalid,admitted));
+    invalid=batch;invalid.entries[1]=invalid.entries[0];assert(!validate_admitted_membership(invalid,admitted));
+    auto retired=admitted;retired[0].unavailable_only=true;assert(validate_admitted_membership(delta,retired));delta.entries[0].frame.available=true;assert(!validate_admitted_membership(delta,retired));
+    assert(batch.entries.size()==3 && batch.sequence==0 && batch.delivery==DeliveryStamp{});assert(validate_admitted_membership(batch,admitted));
+    Frames empty;empty.graph_id="main";empty.snapshot=true;assert(validate_admitted_membership(empty,{}));assert(!validate_admitted_membership(batch,{}));
+}
+static void consolidated_contracts() {
+    using namespace port_delivery;
+    assert(stream::framed_packet_bound(60008)==60283 && stream::framed_packet_bound(60023)==60298);
+    for(size_t bytes:{size_t(0),size_t(1),size_t(65535),size_t(65536),size_t(120005),stream::MaxFrameBytes}) {
+        size_t sum=0;for(size_t offset=0;offset<bytes;offset+=60000)sum+=stream::framed_packet_bound(std::min(size_t(60000),bytes-offset)+8);
+        assert(stream::fragmented_message_bound(bytes,8)==sum);
+        assert(stream::fragmented_message_bound(bytes,23,true)==(bytes<=65535?stream::framed_packet_bound(bytes):stream::fragmented_message_bound(bytes,23)));
+    }
+    assert(stream::fragmented_message_bound(stream::MaxFrameBytes,8)>stream::MaxFrameBytes);
+    assert(!stream::peer_budget_fits(0,0,0,stream::fragmented_message_bound(stream::MaxFrameBytes,8)));
+    assert(stream::peer_budget_fits(100,200,300,stream::MaxFrameBytes-600));assert(!stream::peer_budget_fits(100,200,301,stream::MaxFrameBytes-600));
+    assert(!stream::peer_budget_fits(SIZE_MAX,1,1,1) && !stream::peer_budget_fits(0,SIZE_MAX,0,0));
+    assert(stream::framed_packet_bound(SIZE_MAX)==stream::InvalidByteBound);
+    assert(!valid_bootstrap_binding({{"main",1,PortDirection::Output,1},domain::NodeKind::Spectrogram,FrameType::History}));
+    assert(valid_bootstrap_binding({{"main",1,PortDirection::Output,1},domain::NodeKind::Spectrogram,FrameType::Scalar}));
+    assert(!valid_bootstrap_binding({{"main",1,PortDirection::Input,0},domain::NodeKind::ScalarView,FrameType::History}));
+    assert(valid_bootstrap_binding({{"main",1,PortDirection::Input,0},domain::NodeKind::ScalarView,FrameType::Scalar}));
+    assert(valid_bootstrap_binding({{"main",1,PortDirection::Output,7},domain::NodeKind::Splitter,FrameType::WledPacket}));
+    assert(!valid_bootstrap_binding({{"main",1,PortDirection::Output,8},domain::NodeKind::Splitter,FrameType::Mel}));
+    assert(valid_bootstrap_binding({{"main",1,PortDirection::Output,0},domain::NodeKind::NetworkInput,FrameType::Scalar}));
+    Frames batch;batch.snapshot=true;batch.graph_id="main";batch.nonce=1;batch.session_epoch=2;batch.sequence=1;batch.delivery={1,1};
+    DeliveredPortFrame value;value.endpoint={"main",1,PortDirection::Output,1};value.kind=domain::NodeKind::Spectrogram;value.delivery=batch.delivery;value.contract.type=FrameType::Scalar;value.contract.columns=1;value.contract.sample_rate=48000;value.contract_known=true;value.frame.type=FrameType::Scalar;value.frame.sample_rate=48000;value.frame.sequence=1;value.frame.values={1};batch.entries={value};
+    std::array<uint8_t,1024> bytes{};const auto encoded=encode(batch,bytes);assert(encoded);
+    batch.entries[0].contract_known=false;std::array<uint8_t,1024> destination;destination.fill(77);assert(!encode(batch,destination) && destination[0]==77);
+    auto get16=[&](size_t pos){return size_t(bytes[pos])|(size_t(bytes[pos+1])<<8);};const auto start=44+2+get16(44)+2;const auto flags=start+4+1+2+2+get16(start+7);bytes[flags]&=~1;
+    Frames decoded;decoded.sequence=999;count_allocations=true;allocations=0;assert(!decode(std::span(bytes).first(encoded.written_bytes),decoded));count_allocations=false;assert(allocations==0 && decoded.sequence==999);
+    batch.entries[0].frame.available=false;batch.entries[0].frame.sequence=0;batch.entries[0].frame.values.clear();
+    const auto unavailable=encode(batch,bytes);assert(unavailable);assert(decode(std::span(bytes).first(unavailable.written_bytes),decoded) && !decoded.entries[0].contract_known && !decoded.entries[0].frame.available);
+    std::array<float,2> rows{1,2};signal_contracts::FrameView history;history.type=FrameType::History;history.metadata.sequence=1;history.metadata.sample_rate=48000;history.metadata.bands=1;history.metadata.history_capacity=2;history.history={rows,1,2,2,0};
+    const auto h=bdsp_protocol::encode(history,bytes);assert(h);history.metadata.history_capacity=1;assert(!bdsp_protocol::encode(history,destination));
+    bytes[72]=1;std::array<float,2> samples{77,77};std::array<char,1> id{'x'};signal_contracts::FrameView out;out.metadata.sequence=999;
+    assert(!bdsp_protocol::decode(std::span(bytes).first(h.written_bytes),samples,id,{},out) && out.metadata.sequence==999 && samples[0]==77 && id[0]=='x');
+    TypedFrame owned;owned.sequence=999;std::string error;count_allocations=true;allocations=0;assert(!stream::decode(std::span(bytes).first(h.written_bytes),owned,error));count_allocations=false;assert(owned.sequence==999); // error string may allocate; no payload ownership was admitted.
+    history.metadata.history_capacity=2;const auto correct=bdsp_protocol::encode(history,bytes);assert(correct);bytes[68]=2;
+    out.metadata.sequence=999;assert(!bdsp_protocol::decode(std::span(bytes).first(correct.written_bytes),samples,id,{},out) && out.metadata.sequence==999);
+    signal_contracts::FrameMetadata unspecified;unspecified.available=true;assert(!bdsp_protocol::compatible_geometry(FrameType::History,unspecified,1,2001));
+    history.metadata.bands=0;history.metadata.history_capacity=0;assert(bdsp_protocol::encode(history,bytes)); // characterized missing legacy geometry remains valid.
+    for(const auto type:{FrameType::Window,FrameType::Windowed,FrameType::StereoSpectrum,FrameType::Spectrum,FrameType::Mel}) {
+        signal_contracts::FrameMetadata metadata;metadata.available=true;metadata.fft_size=8;metadata.bands=8;
+        const auto columns=type==FrameType::Mel?8:type==FrameType::Window||type==FrameType::Windowed?8:4;
+        assert(bdsp_protocol::compatible_geometry(type,metadata,columns,1));assert(!bdsp_protocol::compatible_geometry(type,metadata,columns+1,1));
+    }
+}
 int main() {
+    admitted_membership();
+    consolidated_contracts();
+    {
+        port_delivery::Subscribe request;request.nonce=1;
+        request.endpoints.push_back({"ports",1,PortDirection::Output,1});
+        std::array<uint8_t,1024> bytes{};
+        const auto encoded=port_delivery::encode(request,bytes);
+        assert(encoded && encoded.written_bytes>0);
+        port_delivery::Subscribe decoded;
+        assert(port_delivery::decode(std::span(bytes).first(encoded.written_bytes),decoded));
+        assert(decoded.nonce==1 && decoded.endpoints==request.endpoints);
+        auto malformed=bytes;malformed[0]=2;
+        decoded.nonce=99;
+        assert(!port_delivery::decode(std::span(malformed).first(encoded.written_bytes),decoded) && decoded.nonce==99);
+        auto replay=request;replay.nonce=0;
+        assert(!port_delivery::encode(replay,bytes));
+        port_delivery::Ack ack;ack.nonce=1;ack.session_epoch=5;ack.graph_revision=9;ack.graph_id="ports";
+        const auto ack_size=port_delivery::encode(ack,bytes);
+        assert(ack_size && ack_size.required_bytes==45 && ack_size.written_bytes==45);
+        port_delivery::Ack got_ack;
+        assert(port_delivery::decode(std::span(bytes).first(ack_size.written_bytes),got_ack));
+        assert(got_ack.session_epoch==5 && got_ack.graph_revision==9);
+        port_delivery::Frames batch;batch.snapshot=true;batch.nonce=1;batch.session_epoch=5;batch.sequence=1;
+        batch.graph_id="ports";batch.delivery={9,11};
+        DeliveredPortFrame value;value.endpoint={"ports",1,PortDirection::Output,1};value.delivery=batch.delivery;
+        value.kind=domain::NodeKind::Spectrogram;value.contract_known=true;value.contract.type=FrameType::Scalar;
+        value.contract.columns=1;value.contract.sample_rate=48000;
+        value.frame.type=FrameType::Scalar;value.frame.sample_rate=48000;value.frame.sequence=1;
+        value.frame.epoch=700;value.frame.graph_revision=800;value.frame.producer_epoch=701;value.frame.values={0};
+        batch.entries.push_back(value);
+        auto frame_size=port_delivery::encode(batch,bytes);assert(frame_size && frame_size.written_bytes==frame_size.required_bytes);
+        port_delivery::Frames frames;
+        assert(port_delivery::decode(std::span(bytes).first(frame_size.written_bytes),frames));
+        assert(frames.entries.size()==1 && frames.entries[0].endpoint.port==1 && frames.entries[0].frame.values[0]==0);
+        assert(frames.entries[0].frame.graph_revision==800 && frames.delivery.graph_revision==9 && frames.entries[0].frame.epoch==700);
+        bytes[3]=128;frames.nonce=99;
+        count_allocations=true;allocations=0;
+        assert(!port_delivery::decode(std::span(bytes).first(frame_size.written_bytes),frames));
+        count_allocations=false;assert(allocations==0 && frames.nonce==99);
+        batch.entries.push_back(value);assert(!port_delivery::encode(batch,bytes));batch.entries.pop_back();
+        batch.entries[0].endpoint.direction=PortDirection::Input;batch.entries[0].kind=domain::NodeKind::ScalarView;
+        frame_size=port_delivery::encode(batch,bytes);assert(frame_size);
+        assert(port_delivery::decode(std::span(bytes).first(frame_size.written_bytes),frames));
+        assert(frames.entries[0].endpoint.direction==PortDirection::Input);
+        batch.entries[0].frame.available=false;batch.entries[0].frame.sequence=0;batch.entries[0].frame.values.clear();
+        frame_size=port_delivery::encode(batch,bytes);assert(frame_size);
+        assert(port_delivery::decode(std::span(bytes).first(frame_size.written_bytes),frames) && !frames.entries[0].frame.available);
+        std::vector<uint8_t> too_big(2*1024*1024+1);
+        count_allocations=true;allocations=0;assert(!port_delivery::decode(too_big,frames));count_allocations=false;assert(allocations==0);
+    }
+    {
+        TypedFrame packet;packet.type=FrameType::WledPacket;packet.sequence=1;packet.sample_rate=48000;
+        packet.packet.assign(44,0);std::copy_n("00002",6,packet.packet.begin());
+        const auto bytes=stream::encode(packet);
+        std::array<uint8_t,44> storage;storage.fill(77);
+        signal_contracts::FrameView decoded;decoded.metadata.sequence=99;
+        auto result=bdsp_protocol::decode(bytes,{}, {},std::span(storage).first(43),decoded);
+        assert(result.status==signal_contracts::Status::buffer_too_small && result.required_packet_bytes==44);
+        assert(result.required_samples==0 && storage[0]==77 && decoded.metadata.sequence==99);
+        assert(bdsp_protocol::decode(bytes,{}, {},storage,decoded));
+        assert(decoded.packet.data()==storage.data() && storage[0]=='0' && decoded.metadata.sequence==1);
+    }
     TypedFrame f; f.type=FrameType::Mel; f.sample_rate=1; f.sequence=1; f.values={1};
     const auto golden=hex("020005000000000000000000000000000000000000000000000000000100000000000000000000000000000000"
         "000000000000000000000000000000010000000000000000000000000000000000000000000000000000000100"

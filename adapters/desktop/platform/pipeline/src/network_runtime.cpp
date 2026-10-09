@@ -3,6 +3,7 @@
 #include "pipeline/serial_config.h"
 #include "aggregator/aggregator_client.h"
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTimer>
 #include <QThread>
 #include <QRandomGenerator>
@@ -17,6 +18,8 @@ FrameType type(QString s) {
            : s == "stereo-spectrum" ? FrameType::StereoSpectrum
            : s == "spectrum"        ? FrameType::Spectrum
            : s == "history"         ? FrameType::History
+           : s == "scalar"          ? FrameType::Scalar
+           : s == "wled-packet"     ? FrameType::WledPacket
                                     : FrameType::Mel;
 }
 QString data_type(QJsonObject p) {
@@ -43,11 +46,11 @@ class NetworkState {
     std::vector<Input> inputs;
     QMap<int, QString> outputs;
     std::mutex mutex;
-    std::deque<std::pair<int, TypedFrame>> queued;
+    std::deque<std::pair<int, DeliveredPortFrame>> queued;
     size_t queued_bytes = 0;
     uint64_t dropped_frames = 0;
     QMap<int, bool> gaps;
-    QMap<int, TypedFrame> unavailable;
+    QMap<int, DeliveredPortFrame> unavailable;
     QJsonObject metadata;
     NetworkState(AudioPipeline &e, QJsonObject c, QObject *o) : engine(e), owner(o), config(std::move(c)), poll(o) {
         poll.setInterval(5);
@@ -58,8 +61,8 @@ class NetworkState {
                 if (!refresh(error))
                     qWarning().noquote() << "Network:" << error;
             }
-            std::deque<std::pair<int, TypedFrame>> batch;
-            QMap<int, TypedFrame> controls;
+            std::deque<std::pair<int, DeliveredPortFrame>> batch;
+            QMap<int, DeliveredPortFrame> controls;
             {
                 std::lock_guard lock(mutex);
                 queued.swap(batch);
@@ -67,19 +70,19 @@ class NetworkState {
                 queued_bytes = 0;
             }
             for (auto it = controls.begin(); it != controls.end(); ++it)
-                if (publisher && outputs.contains(it.key()) && it->epoch == engine.epoch() &&
-                    it->graph_revision == engine.graph_revision())
-                    publisher->publish(outputs[it.key()], it.value());
+                if (publisher && outputs.contains(it.key()) && it->delivery.epoch == engine.epoch() &&
+                    it->delivery.graph_revision == engine.graph_revision())
+                    if(!publisher->publish(outputs[it.key()], it->frame))qWarning()<<"NetworkOutput delivery refused"<<it.key();
             for (auto &[node, f] : batch)
-                if (publisher && outputs.contains(node) && f.graph_revision == engine.graph_revision() &&
-                    f.epoch == engine.epoch())
-                    publisher->publish(outputs[node], f);
+                if (publisher && outputs.contains(node) && f.delivery.graph_revision == engine.graph_revision() &&
+                    f.delivery.epoch == engine.epoch())
+                    if(!publisher->publish(outputs[node], f.frame))qWarning()<<"NetworkOutput delivery refused"<<node;
         });
         poll.start();
     }
     void stop() {
         if (token) {
-            engine.unsubscribe_typed(token);
+            engine.unsubscribe_ports(token);
             token = 0;
         }
         inputs.clear();
@@ -104,6 +107,9 @@ class NetworkState {
         QString host = p.value("host").toString();
         int port = p.value("port").toInt(8214);
         const QUuid provider(p.value("provider_uuid").toString());
+        QString incarnation,binding_identity;
+        uint64_t expected_incarnation=0;
+        StreamLimits limits;
         if (!provider.isNull() && registry) {
             auto m = registry->capabilities().value(provider);
             if (m.value("state").toInt() < 3) {
@@ -113,14 +119,30 @@ class NetworkState {
             }
             host = m.value("address").toString();
             port = m.value("stream_port").toInt();
+            if(int(type(data_type(p)))>6 && !m.value("stream_delivery_features").toArray().contains("port-identity-v1")) {
+                i.subscriber->stop();i.endpoint.clear();qWarning()<<"NetworkInput"<<i.node<<"provider does not explicitly support Scalar/Packet";return;
+            }
+            const auto streams=m.value("streams").toArray();
+            const auto selected=std::find_if(streams.begin(),streams.end(),[&](const auto &value){const auto s=value.toObject();return s.value("id").toString()==p.value("stream_id").toString() && s.value("data_type").toString()==data_type(p);});
+            if(selected==streams.end()){i.subscriber->stop();i.endpoint.clear();return;}
+            incarnation=m.value("publisher_incarnation").toString();
+            if(m.value("stream_delivery_features").toArray().contains("port-identity-v1")) {
+                bool valid_incarnation=false;expected_incarnation=incarnation.toULongLong(&valid_incarnation);
+                if(!valid_incarnation || !expected_incarnation || QString::number(expected_incarnation)!=incarnation){i.subscriber->stop();i.endpoint.clear();return;}
+                const auto stream_binding=selected->toObject();QJsonObject identity;
+                for(const auto key:{"graph_id","node_id","direction","port_index","id","data_type","payload_version","subscription_version"})identity[key]=stream_binding.value(key);
+                binding_identity=QString::fromUtf8(QJsonDocument(identity).toJson(QJsonDocument::Compact));
+                const auto declared=m.value("stream_limits").toObject();
+                limits={size_t(declared.value("max_frame_bytes").toInt()),size_t(declared.value("max_stream_id_bytes").toInt()),size_t(declared.value("max_streams").toInt())};
+            }
         }
         if (host.isEmpty() || port <= 0 || port > 65535)
             return;
-        QString endpoint = host + ":" + QString::number(port);
+        QString endpoint = host + ":" + QString::number(port)+":"+incarnation+":"+QString::number(limits.max_frame_bytes)+":"+QString::number(limits.max_stream_id_bytes)+":"+QString::number(limits.max_streams)+":"+binding_identity;
         if (endpoint == i.endpoint)
             return;
         i.endpoint = endpoint;
-        i.subscriber->start(host, port, p.value("stream_id").toString("default"), type(data_type(p)));
+        i.subscriber->start(host, port, p.value("stream_id").toString("default"), type(data_type(p)),limits,expected_incarnation);
     }
     bool refresh(QString &error) {
         stop();
@@ -177,8 +199,11 @@ class NetworkState {
                     return false;
                 }
                 outputs[it.key()] = id;
-                publisher->advertise(id, type(data_type(p)));
-                streams.append(QJsonObject{{"id", id}, {"data_type", data_type(p)}});
+                if(!publisher->try_advertise(id,type(data_type(p)))){error="Output exceeds stream limits or changes stream type";stop();return false;}
+                const int version=int(type(data_type(p)))>6?3:2;
+                streams.append(QJsonObject{{"id", id}, {"data_type", data_type(p)},
+                    {"graph_id",graph.value("graph_id").toString("main")},{"node_id",it.key()},
+                    {"direction","input"},{"port_index",0},{"payload_version",version},{"subscription_version",version}});
             }
             if (kind == "NetworkInput") {
                 const bool uart=serial.configured && serial.input_node==it.key();
@@ -221,7 +246,8 @@ class NetworkState {
         metadata = {
             {"version", 2},
             {"graph_version", 2},
-            {"protocol_versions", QJsonArray{1, 2}},
+            {"processing_version",1},
+            {"protocol_versions", QJsonArray{1, 2, 3}},
             {"node_kinds", kinds},
             {"allow_mutations", config.value("engine_server").toObject().value("allow_mutations").toBool(false)},
             {"engine_port", config.value("engine_server").toObject().value("enabled").toBool(false)
@@ -230,6 +256,11 @@ class NetworkState {
             {"control_available", config.value("engine_server").toObject().value("enabled").toBool(false)},
             {"stream_port", publisher ? publisher->port() : 0},
             {"streams", streams}};
+        metadata["stream_delivery_features"]=QJsonArray{"port-identity-v1"};
+        metadata["stream_protocol_versions"]=QJsonArray{2,3};
+        const auto stream_limits=publisher?publisher->limits():StreamLimits{};
+        metadata["stream_limits"]=QJsonObject{{"max_frame_bytes",int(stream_limits.max_frame_bytes)},{"max_stream_id_bytes",int(stream_limits.max_stream_id_bytes)},{"max_streams",int(stream_limits.max_streams)}};
+        metadata["publisher_incarnation"]=QString::number(publisher?publisher->incarnation():uint64_t(1));
         const auto aggregate = config.value("aggregator").toObject();
         if ((publisher || !inputs.empty() || config.value("engine_server").toObject().value("enabled").toBool()) &&
             aggregate.value("enabled").toBool(false)) {
@@ -268,10 +299,15 @@ class NetworkState {
         }
         for (auto &i : inputs)
             resolve(i);
-        if (publisher)
-            token = engine.subscribe_typed([this, binding_epoch = receiver_epoch,
-                                            binding_revision = revision](int node, TypedFrame f) {
-                if (!outputs.contains(node) || f.epoch != binding_epoch || f.graph_revision != binding_revision)
+        if (publisher) {
+            std::vector<EndpointIdentity> endpoints;
+            for(auto node:outputs.keys())endpoints.push_back({graph.value("graph_id").toString("main").toStdString(),node,PortDirection::Input,0});
+            token = engine.subscribe_ports([this, binding_epoch = receiver_epoch,
+                                            binding_revision = revision](DeliveredPortFrame delivered) {
+                const auto node=delivered.endpoint.node;
+                auto &f=delivered.frame;
+                if (delivered.endpoint.direction!=PortDirection::Input || delivered.endpoint.port!=0 || !outputs.contains(node) ||
+                    delivered.delivery.epoch != binding_epoch || delivered.delivery.graph_revision != binding_revision)
                     return;
                 f.stream_id = outputs[node].toStdString();
                 if (int(f.type) <= 3) {
@@ -291,13 +327,13 @@ class NetworkState {
                 if (!f.available) {
                     for (auto it = queued.begin(); it != queued.end();) {
                         if (it->first == node) {
-                            queued_bytes -= stream::payload_size(it->second);
+                            queued_bytes -= stream::payload_size(it->second.frame);
                             it = queued.erase(it);
                         } else
                             ++it;
                     }
                     f.stream_id = outputs[node].toStdString();
-                    unavailable[node] = std::move(f);
+                    unavailable[node] = std::move(delivered);
                     gaps[node] = true;
                     return;
                 }
@@ -309,8 +345,10 @@ class NetworkState {
                 f.stream_id = outputs[node].toStdString();
                 f.discontinuity |= gaps.take(node);
                 queued_bytes += bytes;
-                queued.emplace_back(node, std::move(f));
-            },std::vector<int>(outputs.keyBegin(),outputs.keyEnd()));
+                queued.emplace_back(node, std::move(delivered));
+            },std::move(endpoints));
+            if(!token){error="Cannot subscribe exact NetworkOutput sink endpoints";stop();return false;}
+        }
         error.clear();
         return true;
     }

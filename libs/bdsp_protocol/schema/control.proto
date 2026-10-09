@@ -1,0 +1,158 @@
+syntax = "proto2";
+package bdsp.control.v1;
+
+// Field numbers are CBOR integer map keys too. Payload schema IDs are separate
+// from the coordinated BDSP message registry. No registry IDs assigned here.
+// Every required scalar is transmitted even when zero/false/empty. Unknown tags,
+// duplicates, wrong wire types and multiple exclusive bodies are boundary errors.
+message SessionIdentity {
+  required uint64 client = 1;
+  required uint64 session = 2;
+  required uint64 epoch = 3;
+}
+message NoParameters {}
+message AudioSource { required uint32 source = 1; }
+message Merge { required uint32 merge = 1; }
+message Gain { required double gain = 1; }
+message Mel { required uint32 bands = 1; }
+message History { required uint32 history_size = 1; }
+message Window { required uint32 size = 1; }
+message WindowFunction { required uint32 function = 1; }
+message TestSignal {
+  required uint32 tones = 1;
+  required uint32 sample_rate = 2;
+  required double minimum_hz = 3;
+  required double maximum_hz = 4;
+  required double amplitude = 5;
+  required double period_seconds = 6;
+  required double sweep_depth = 7;
+}
+message Network {
+  required uint32 data_type = 1; // stable FrameType 0..8
+  required string provider_uuid = 2;
+  required string stream_id = 3;
+  required string host = 4;
+  required uint32 port = 5;
+}
+message Routing {
+  required uint32 data_type = 1;
+  required uint32 outputs = 2; // uint16 boundary
+  required uint32 selected = 3; // uint16 boundary
+}
+message Reduction {
+  required uint32 data_type = 1;
+  required uint32 operation = 2;
+}
+// Exactly ONE alternative, including explicit empty NoParameters.
+// Separate optional fields deliberately avoid nanopb oneof callback lifetime
+// hazards; boundary validation enforces exclusivity before decoding into arena.
+message Parameters {
+  optional NoParameters none = 1;
+  optional AudioSource audio_source = 2;
+  optional Merge merge = 3;
+  optional Gain gain = 4;
+  optional Mel mel = 5;
+  optional History history = 6;
+  optional Window window = 7;
+  optional WindowFunction window_function = 8;
+  optional TestSignal test_signal = 9;
+  optional Network network = 10;
+  optional Routing routing = 11;
+  optional Reduction reduction = 12;
+}
+message Node {
+  required sint32 id = 1;
+  required string kind = 2; // unchanged canonical kind_id
+  required Parameters parameters = 3;
+  required bool enabled = 4;
+}
+message Edge {
+  required sint32 from = 1;
+  required sint32 to = 2;
+  required uint32 output_port = 3; // uint16 boundary
+  required uint32 input_port = 4; // uint16 boundary
+}
+message ProcessingGraph {
+  required string graph_identity = 1;
+  required uint32 processing_version = 2;
+  repeated Node nodes = 3;
+  repeated Edge edges = 4;
+}
+message Command {
+  required uint32 id = 1; // WireCommandId 1..9
+  required uint64 request_id = 2;
+  required uint64 expected_revision = 3;
+  optional ProcessingGraph processing = 4; // prepare, required iff id=3
+  optional uint64 token = 5; // apply/release, required iff id=4/5
+  optional string graph_identity = 6; // apply, required iff id=4
+  optional sint32 node = 7; // set_parameters, required iff id=6
+  optional Parameters parameters = 8; // set_parameters, required iff id=6
+  optional bool enabled = 9; // set_parameters, required iff id=6
+  optional uint64 graph_revision = 10; // persist, required iff id=9
+}
+message Diagnostic {
+  required sint32 node = 1;
+  required string parameter_key = 2;
+  optional uint32 direction = 3; // Input=0, Output=1
+  optional uint32 port = 4; // uint16, present zero != absent
+  optional uint64 edge_index = 5; // present zero != absent
+}
+message Memory {
+  required uint64 state_bytes = 1;
+  required uint64 buffer_bytes = 2;
+  required uint64 scratch_bytes = 3;
+}
+message State {
+  required uint64 epoch = 1;
+  required uint64 revision = 2;
+  required uint64 graph_revision = 3;
+  required uint64 persisted_graph_revision = 4;
+  required uint32 lifecycle = 5; // Empty/Ready/Running/Stopped=0..3
+  required bool run_requested = 6;
+  optional ProcessingGraph applied = 7;
+  required uint64 own_prepared_token = 8;
+}
+message Capabilities {
+  repeated string node_kinds = 1;
+  repeated uint32 receive_types = 2 [packed = false];
+  repeated uint32 publish_types = 3 [packed = false];
+  required uint32 processing_version = 4;
+  required uint64 max_wled_outputs = 5;
+  required uint64 max_nodes = 6;
+  required uint64 max_edges = 7;
+  required uint64 max_memory_bytes = 8;
+  required uint64 max_frame_samples = 9;
+  required uint64 max_history_frames = 10;
+  required uint64 max_sessions = 11;
+  required uint64 max_pending_prepared = 12;
+  required uint64 prepared_ttl_ms = 13;
+  required uint64 max_graph_identity_bytes = 14;
+  required uint64 max_prepared_bytes = 15;
+  required uint64 max_field_string_bytes = 16;
+  required uint64 max_replay_bytes_per_session = 17;
+  required uint64 max_replay_bytes_total = 18;
+  required uint64 max_control_scratch_bytes = 19;
+  required bool explicit_persist = 20;
+}
+message Reply {
+  required uint64 request_id = 1;
+  required bool accepted = 2;
+  required uint32 error = 3; // WireControlError 0..12
+  required uint32 status = 4; // WireStatus 0..10
+  required uint32 validation_error = 5; // WireGraphError 0..13
+  required sint32 validation_node = 6;
+  required uint64 validation_edge_index = 7;
+  required Diagnostic validation_location = 8;
+  required Diagnostic error_location = 9;
+  required State state = 10;
+  required uint64 prepared_token = 11;
+  required uint64 expires_at_ms = 12;
+  required Memory memory = 13;
+  optional Capabilities capabilities = 14;
+}
+message ControlMessage {
+  required uint32 schema_version = 1;
+  required SessionIdentity identity = 2;
+  optional Command command = 3;
+  optional Reply reply = 4; // exactly one command/reply
+}

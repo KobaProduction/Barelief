@@ -1,5 +1,6 @@
 #include "visualization/surface_settings.h"
 #include "visualization/camera_controls.h"
+#include "visualization/camera_geometry.h"
 #include <cstdio>
 #include <cmath>
 
@@ -11,12 +12,51 @@ int main() {
             std::fprintf(stderr, "FAIL: %s\n", message);
         return valid;
     };
+    for(const float yaw:{-170.f,-90.f,0.f,45.f,90.f,170.f})for(const float pitch:{-89.f,-60.f,0.f,60.f,89.f}) {
+        const auto orientation=QQuaternion::fromEulerAngles(pitch,yaw,0);
+        const auto forward=CameraGeometry::horizontalMovement(orientation,{0,0,-1});
+        auto expected=orientation.rotatedVector({0,0,-1});expected.setY(0);expected.normalize();
+        const auto backward=CameraGeometry::horizontalMovement(orientation,{0,0,1});
+        const auto right=CameraGeometry::horizontalMovement(orientation,{1,0,0});
+        if(!check((forward-expected).length()<1e-4 && std::abs(forward.y())<1e-6 &&
+                  (forward+backward).length()<1e-5 && std::abs(QVector3D::dotProduct(forward,right))<1e-5 &&
+                  std::abs(forward.length()-1)<1e-5 &&
+                  (CameraGeometry::horizontalMovement(orientation,{0,1,0})-QVector3D(0,1,0)).length()<1e-6,
+                  "WASD follows heading at full speed without changing height at any pitch"))return 1;
+        for(const float drag:{-720.f,720.f}) {
+            const auto look=CameraGeometry::uprightLook(orientation,30,drag);
+            if(!check(look.rotatedVector({0,1,0}).y()>0 &&
+                      std::abs(QVector3D::dotProduct(look.rotatedVector({1,0,0}),QVector3D(0,1,0)))<1e-5,
+                      "Large mouse drags cannot invert or roll the camera"))return 1;
+        }
+    }
+    const QVector3D edge{6,8,0};
+    const auto clipped=CameraGeometry::translatedPosition(edge,{1,0,0});
+    if(!check(clipped.y()==edge.y() && clipped.length()<=10.00001f,
+              "Horizontal movement keeps height at the camera distance limit"))return 1;
     const auto initial = normalized({});
+    if(!check(initial["auto_range_interval_seconds"].toDouble()==10 &&
+        normalized({{"auto_range_interval_seconds",0}})["auto_range_interval_seconds"].toDouble()==1 &&
+        normalized({{"auto_range_interval_seconds",120}})["auto_range_interval_seconds"].toDouble()==60 &&
+        normalized({{"auto_range_interval_seconds","bad"}})["auto_range_interval_seconds"].toDouble()==10,
+        "Automatic amplitude interval defaults and validated seconds bounds"))return 1;
     if (!check(initial["background_mode"] == "auto" && initial["mesh_color"] == "auto" &&
                    initial["axis_precision"].toInt() == 0 && !initial["reverse_amplitude"].toBool() &&
                    initial["y_range_mode"] == "auto",
                "Automatic/theme defaults"))
         return 1;
+    const auto aspect=normalized(QJsonObject{{"scene_aspect_mode","unknown"},{"scene_time_aspect",100},
+        {"scene_band_aspect",-.1},{"extension",42}});
+    if(!check(initial["scene_aspect_mode"]=="fixed" && initial["scene_time_aspect"].toDouble()==2 &&
+        initial["scene_band_aspect"].toDouble()==1 && aspect["scene_time_aspect"].toDouble()==4 &&
+        aspect["scene_band_aspect"].toDouble()==.25 && aspect["extension"].toInt()==42,
+        "Visual aspect defaults, bounds and extensions"))return 1;
+    const auto inherited=effective(QJsonObject{{"defaults",QJsonObject{{"scene_time_aspect",3}}}},
+        QJsonObject{{"surface_override",QJsonObject{{"enabled",true},{"values",QJsonObject{
+            {"scene_aspect_mode","sample_counts"},{"scene_band_aspect",.5},{"extension",77}}}}}});
+    if(!check(inherited["scene_time_aspect"].toDouble()==3 && inherited["scene_band_aspect"].toDouble()==.5 &&
+        inherited["scene_aspect_mode"]=="sample_counts" && inherited["extension"].toInt()==77,
+        "Per-view scene aspect inherits unrelated global settings"))return 1;
     const auto custom = normalized(QJsonObject{{"background_mode", "custom"},
                                                {"background_color", "#123456"},
                                                {"mesh_color", "#abcdef"},
@@ -96,6 +136,24 @@ int main() {
                "Common speed bounds/defaults preserve settings and binding extensions"))
         return 1;
     const auto resetControls = CameraControls::restoreDefaultBindings(normalizedControls);
+    const auto up=CameraControls::defaults()["up"].toArray()[0].toObject();
+    const auto down=CameraControls::defaults()["down"].toArray()[0].toObject();
+    const auto forward=CameraControls::defaults()["forward"].toArray()[0].toObject();
+    const QKeyEvent space(QEvent::KeyPress,Qt::Key_Space,Qt::NoModifier);
+    const QKeyEvent ctrlSpace(QEvent::KeyPress,Qt::Key_Space,Qt::ControlModifier);
+    const QKeyEvent ctrl(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier);
+    const QKeyEvent ctrlW(QEvent::KeyPress,Qt::Key_W,Qt::ControlModifier);
+    const QKeyEvent shiftW(QEvent::KeyPress,Qt::Key_W,Qt::ShiftModifier);
+    const QKeyEvent ctrlShift(QEvent::KeyPress,Qt::Key_Shift,Qt::ShiftModifier|Qt::ControlModifier);
+    const auto fast=CameraControls::defaults()["fast"].toArray()[0].toObject();
+    if(!check(CameraControls::matches(up,space) && !CameraControls::matches(down,space) &&
+              CameraControls::matches(down,ctrlSpace) && !CameraControls::matches(up,ctrlSpace) &&
+              !CameraControls::matches(down,ctrl) && !CameraControls::matches(forward,ctrlW) &&
+              CameraControls::matches(forward,shiftW) && CameraControls::matches(fast,ctrlShift,true) &&
+              !CameraControls::same(up,down) &&
+              CameraControls::label(57,Qt::Key_Space,Qt::ControlModifier)=="Ctrl+Space" &&
+              CameraControls::normalized({{"down",QJsonArray{CameraControls::binding(29,Qt::Key_Control)}}})["down"]==CameraControls::defaults()["down"],
+              "Space/Ctrl+Space are distinct; Ctrl shortcuts remain available and Shift acceleration works"))return 1;
     if (!check(resetControls["movement_speed"] == normalizedControls["movement_speed"] &&
                    resetControls["extension"] == normalizedControls["extension"],
                "Restoring keys erased common speed or extensions"))

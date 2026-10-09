@@ -5,8 +5,10 @@
 #include <QLoggingCategory>
 #include <QMainWindow>
 #include <QString>
+#include <QSet>
 #include <optional>
 #include <map>
+#include <functional>
 
 #include "core_app/types.h"
 #include "pipeline/engine_port.h"
@@ -43,10 +45,13 @@ class GuiPresenter final : public QObject {
         return !_pending_graphs.isEmpty() || _queued_graph.has_value();
     }
     void initialize();
-    void initialize(QJsonObject runtime_config);
+    void initialize(QJsonObject runtime_config, const QString &startup_error = {});
+    void set_graph_adapter_provider(std::function<QJsonObject()> provider) { _graph_adapter_provider=std::move(provider); }
     quint64 set_node_parameters(int node, const QJsonObject &parameters);
     void select_device(const QString &uuid, const QString &host, quint16 port);
     void update_subscription();
+    void set_numeric_endpoints(std::vector<pipeline::EndpointIdentity>);
+    void set_editor_numeric_endpoints(std::vector<pipeline::EndpointIdentity>);
     void set_visible_views(quint32 mask);
     QString local_device_id() const {
         return _local_device_id;
@@ -63,20 +68,14 @@ class GuiPresenter final : public QObject {
     QString saved_graph_warning() const {
         return _saved_graph_warning;
     }
+    QString file_protection_warning() const { return _file_protection_warning; }
+    const std::optional<domain::NumericProcessingGraph>& applied_numeric_graph() const { return _applied_numeric; }
 
   public Q_SLOTS:
     void set_spectrum_channel(int channel);
     void set_spectrum_merge(int merge);
     void apply_processing_settings();
     quint64 apply_pipeline_graph(const QJsonObject &document);
-    quint64 apply_graph_and_start(const QJsonObject &document);
-    void start_analyzer();
-
-    void stop_analyzer();
-
-    void start_loopback();
-
-    void stop_loopback();
 
     void start_wled_audio_reactive_server();
 
@@ -85,9 +84,11 @@ class GuiPresenter final : public QObject {
     void restart_wled_audio_reactive_server();
 
   Q_SIGNALS:
-    void explicit_stop_requested();
     void on_config_updated();
-    void node_views_ready(const QMap<int, pipeline::TypedFrame> &views);
+    void numeric_frame_ready(const pipeline::DeliveredNumericFrame&);
+    void numeric_history_ready(const pipeline::DeliveredNumericHistoryRow&);
+    void numeric_history_snapshot_ready(const pipeline::DeliveredNumericFrame&,quint64 ordinal,quint64 filled_count);
+
     void active_graph_changed(const QJsonObject &graph);
     void views_cleared();
     void selected_device_changed(const QJsonObject &draft, const QJsonObject &editor_view);
@@ -99,35 +100,12 @@ class GuiPresenter final : public QObject {
     void pipeline_preview(const QMap<int, pipeline::NodePreview> &previews);
     void component_status_changed(QString component, int state, QString error);
 
-    void raw_signal_ready(const std::vector<float> &samples);
-
-    void window_signal_ready(const std::vector<float> &samples);
-
-    void windowed_signal_ready(const std::vector<float> &samples);
-
-    void window_function_ready(const std::vector<float> &window);
-
-    void amplitudes_ready(const std::vector<float> &amplitudes);
-
-    void test_amplitudes_ready(const std::vector<float> &test_amplitudes);
-
-    void spectrogram_updated(const std::vector<std::vector<float>> &spectrogram);
-
-    void sample_rate_changed(uint32_t sample_rate);
-
-    void analyzer_started();
-
-    void analyzer_stopped();
-
-    void loopback_started();
-
-    void loopback_stopped();
-
   private:
     quint64 _subscription_epoch = 0;
     std::optional<quint32> _visible_views;
     quint32 _subscription = std::numeric_limits<quint32>::max();
     bool _remote = false;
+    bool _numeric_persistence_mode = false;
     QJsonObject _remote_endpoint;
     GuiState &_state;
     std::shared_ptr<pipeline::EngineProvider> _provider;
@@ -144,7 +122,6 @@ class GuiPresenter final : public QObject {
         quint64 logical_id = 0, epoch = 0, graph_revision = 0;
         QJsonObject document;
         bool bootstrap = false;
-        bool start_analyzer = false, start_capture = false;
         bool settings = false;
         std::vector<DraftPatch> patches;
     };
@@ -156,6 +133,7 @@ class GuiPresenter final : public QObject {
     quint64 dispatch_graph(PendingGraph request);
     void set_apply_status(QString status);
     QJsonObject _active_graph;
+    std::optional<domain::NumericProcessingGraph> _applied_numeric;
     QString _saved_graph_warning;
     bool _saved_draft_unsupported = false;
     bool _preserve_saved_pipeline = false;
@@ -166,5 +144,13 @@ class GuiPresenter final : public QObject {
     void _sync_processing_config();
     void accept_snapshot(const pipeline::EngineSnapshot &snapshot);
     quint64 submit_graph(PendingGraph request);
+    QJsonObject graph_document_with_adapters(QJsonObject document) const;
+    std::function<QJsonObject()> _graph_adapter_provider;
+    QString _file_protection_warning;
+    std::vector<pipeline::EndpointIdentity> _numeric_endpoints;
+    std::vector<pipeline::EndpointIdentity> _editor_numeric_endpoints;
+    quint64 _binding_generation=0;
+    std::optional<quint64> _accepted_service_epoch;
+    QString visible_saved_warning() const;
 };
 #endif

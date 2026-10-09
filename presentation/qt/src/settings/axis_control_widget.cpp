@@ -40,6 +40,8 @@ AxisControlWidget::AxisControlWidget(const char *title,QWidget *parent):QWidget(
     auto *row=new QHBoxLayout;row->setSpacing(6);
     for(const auto &entry:{qMakePair("Min",_minimum),qMakePair("Max",_maximum)}) {
         auto *column=new QVBoxLayout;auto *label=ui::make<QLabel>(entry.first,this);label->setWordWrap(true);
+        label->setBuddy(entry.second);
+        ui::bind(entry.second,"accessibleName",entry.first);
         column->addWidget(label);column->addWidget(entry.second);row->addLayout(column,1);
     }
     layout->addLayout(row);set_state(0,1,true,false);
@@ -60,13 +62,16 @@ void AxisControlWidget::set_state(double minimum,double maximum,bool automatic,b
     const QSignalBlocker b0(_minimum),b1(_maximum),b2(_automatic),b3(_reverse);
     _minimum->setValue(minimum);_maximum->setValue(maximum);_automatic->setChecked(automatic);_reverse->setChecked(reverse);
     _minimum->setEnabled(!automatic);_maximum->setEnabled(!automatic);
+    const double step=std::max(1e-15,(maximum-minimum)/10);
+    _minimum->setSingleStep(step);_maximum->setSingleStep(step);
 }
 void AxisControlWidget::set_hint(const QString &text) {_hint->setText(text);_hint->setVisible(!text.isEmpty());}
 void AxisControlWidget::apply_range(bool minimumChanged) {
     double low=_minimum->value(),high=_maximum->value();
-    if(high-low<1e-6) {
-        if(minimumChanged && low+1e-6<=_maximum->maximum()) high=low+1e-6;
-        else low=high-1e-6;
+    if(high<=low) {
+        const double step=std::max(1e-15,std::max(_minimum->singleStep(),_maximum->singleStep()));
+        if(minimumChanged && low+step<=_maximum->maximum()) high=low+step;
+        else low=high-step;
         const QSignalBlocker b0(_minimum),b1(_maximum);_minimum->setValue(low);_maximum->setValue(high);
         low=_minimum->value();high=_maximum->value();
     }

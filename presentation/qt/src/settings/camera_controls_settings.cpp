@@ -1,5 +1,7 @@
 #include "visualization/ui_text.h"
 #include "core_app/settings_widget.h"
+#include "core_app/ui/field_row.h"
+#include "core_app/ui/slider_value_control.h"
 #include <QDialog>
 #include <QApplication>
 #include <QPushButton>
@@ -45,8 +47,8 @@ class CaptureKey final : public QDialog {
             return true;
         if (key->key() == Qt::Key_Escape)
             reject();
-        else if (key->key() != Qt::Key_unknown) {
-            binding = CameraControls::binding(CameraControls::scan(*key), key->key());
+        else if (key->key() != Qt::Key_unknown && key->key()!=Qt::Key_Control) {
+            binding = CameraControls::binding(CameraControls::scan(*key), key->key(),int(key->modifiers()));
             accept();
         }
         return true;
@@ -57,28 +59,19 @@ class CaptureKey final : public QDialog {
 void SettingsWidget::_setup_camera_controls() {
     auto *group = ui::make<QGroupBox>("Camera controls", this);
     group->setObjectName("cameraControls");
-    group->setStyleSheet(
-        "QGroupBox#cameraControls { border: 1px solid palette(mid); border-radius: 8px; margin-top: 12px; padding: "
-        "14px 10px 10px; } QGroupBox#cameraControls::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; } "
-        "QGroupBox#cameraControls QPushButton { padding: 6px 12px; min-width: 76px; }");
     auto *layout = new QVBoxLayout(group);
-    auto *speedRow = new QWidget(group);
-    auto *speedLayout = new QHBoxLayout(speedRow);
-    speedLayout->setContentsMargins(0, 0, 0, 0);
-    auto *speed = new QSlider(Qt::Horizontal, speedRow);
+    auto *speedEditor = new ui::SliderValueControl(group);
+    auto *speedRow = new ui::FieldRow("Movement speed", speedEditor, group);
+    auto *speed = speedEditor->slider();
     speed->setObjectName("commonMovementSpeed");
     speed->setRange(50, 1000);
     speed->setSingleStep(5);
     speed->setPageStep(50);
-    auto *speedValue = new QLabel(speedRow);
-    speedValue->setMinimumWidth(48);
-    auto *speedReset = ui::make<QPushButton>("Reset", speedRow);
+    speedEditor->setFormatter([](int n) { return QString::number(n / 100.0, 'f', 2); });
+    speedEditor->setDefaultValue(300);
+    auto *speedValue = speedEditor->valueLabel();
+    auto *speedReset = speedEditor->resetButton();
     speedReset->setObjectName("resetCommonMovementSpeed");
-    ui::bind(speedReset, "toolTip", "Reset to default");
-    speedLayout->addWidget(ui::make<QLabel>("Movement speed", speedRow));
-    speedLayout->addWidget(speed, 1);
-    speedLayout->addWidget(speedValue);
-    speedLayout->addWidget(speedReset);
     ui::bind(speedRow, "toolTip", "Common movement speed for the camera and editor.");
     speed->setValue(qRound(CameraControls::movementSpeed(_context.file_configs.ui.camera_controls) * 100));
     speedValue->setText(QString::number(speed->value() / 100.0, 'f', 2));
@@ -88,15 +81,6 @@ void SettingsWidget::_setup_camera_controls() {
         emit camera_controls_changed();
         emit presentation_preferences_changed();
         _on_config_change();
-    });
-    connect(speedReset, &QPushButton::clicked, this, [this, speed] {
-        if (speed->value() == 300) {
-            _context.file_configs.ui.camera_controls["movement_speed"] = 3.0;
-            emit camera_controls_changed();
-            emit presentation_preferences_changed();
-            _on_config_change();
-        } else
-            speed->setValue(300);
     });
     layout->addWidget(speedRow);
     auto *help = ui::make<QLabel>("Click a key to reassign it. Works in any keyboard layout.\nThe second column adds "
@@ -123,7 +107,7 @@ void SettingsWidget::_setup_camera_controls() {
             const auto keys = _context.file_configs.ui.camera_controls[action].toArray();
             const auto key = slot < keys.size() ? keys[slot].toObject() : QJsonObject{};
             button->setText(key.isEmpty() ? ui::text("Unassigned")
-                                          : CameraControls::label(key["scan"].toInt(), key["key"].toInt()));
+                                          : CameraControls::label(key["scan"].toInt(), key["key"].toInt(),key["modifiers"].toInt()));
         }
     };
     auto *status = new QLabel(group);
@@ -137,6 +121,8 @@ void SettingsWidget::_setup_camera_controls() {
         for (int slot = 0; slot < 2; ++slot) {
             auto *button = new QPushButton(group);
             button->setObjectName(QString("bind_%1_%2").arg(action).arg(slot));
+            ui::bind(button, "accessibleName", QString::fromLatin1(title));
+            if (slot == 0) action_label->setBuddy(button);
             button->setProperty("cameraAction", action);
             button->setProperty("cameraSlot", slot);
             if (slot == 1) {

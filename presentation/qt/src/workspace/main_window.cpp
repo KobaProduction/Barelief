@@ -38,7 +38,8 @@
 #include <QHeaderView>
 #include <QTabBar>
 #include <QFileDialog>
-#include "aggregator/aggregator_client.h"
+#include "core_app/workspace/ui_command_registry.h"
+#include "core_app/workspace/processor_manager_dialog.h"
 
 #include "core_app/gui_presenter.h"
 #include "core_app/settings_widget.h"
@@ -50,7 +51,14 @@
 
 Q_LOGGING_CATEGORY(core_app_window, "core_app.window")
 
-MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
+MainWindow::MainWindow(GuiPresenter &application, std::shared_ptr<presentation::ProcessorDiscoveryPort> discovery) : _application(application) {
+    _commands = new presentation::UiCommandRegistry(this);
+    _commands->set_workspace_guard([this] {
+        auto *active = QApplication::activeWindow();
+        if (active == this) return true;
+        for (auto *dock : workspaceDocks()) if (dock->window() == active) return true;
+        return false;
+    });
     ui::Theme::instance().set(_application.state().file_configs.ui.theme);
     ui::Language::instance().set(_application.state().file_configs.ui.language);
     ui::bind(this, "windowTitle", "Data Processing System Core");
@@ -58,28 +66,27 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     resize(1000, 800);
 
     setup_ui();
-    if(auto *editor=data_flow_editor()) {
-        auto *fileMenu=findChild<QMenu *>("fileMenu");
-        fileMenu->addSeparator();
-        auto *undo=editor->history().createUndoAction(fileMenu,ui::text("Undo"));
-        auto *redo=editor->history().createRedoAction(fileMenu,ui::text("Redo"));
-        undo->setObjectName("undoDataFlow"); redo->setObjectName("redoDataFlow");
-        undo->setShortcut(QKeySequence("Alt+Z")); redo->setShortcut(QKeySequence("Alt+Shift+Z"));
-        for(auto *action:{undo,redo}) { action->setShortcutContext(Qt::ApplicationShortcut); action->setShortcutVisibleInContextMenu(true); fileMenu->addAction(action); }
+    connect(&_numeric_render_timer,&QTimer::timeout,this,[this] {
+        if(!_numeric_render_dirty)return;
+        _numeric_render_dirty=false;render_numeric_views();
+    });
+    _numeric_render_timer.start(qMax(1,1000/qMax(1,_render_fps)));
+    if (auto *editor = data_flow_editor()) {
+        _commands->set_editor(editor);
+        auto *menu = findChild<QMenu *>("fileMenu"); menu->addSeparator();
+        menu->addAction(_commands->register_command({"undoDataFlow","Undo",QKeySequence("Alt+Z"),presentation::UiCommandContext::SchemaEditor,
+            [editor] { editor->history().undo(); }, [editor] { return editor->history().canUndo(); }}));
+        menu->addAction(_commands->register_command({"redoDataFlow","Redo",QKeySequence("Alt+Shift+Z"),presentation::UiCommandContext::SchemaEditor,
+            [editor] { editor->history().redo(); }, [editor] { return editor->history().canRedo(); }}));
+        connect(&editor->history(),&QUndoStack::canUndoChanged,_commands,&presentation::UiCommandRegistry::refresh);
+        connect(&editor->history(),&QUndoStack::canRedoChanged,_commands,&presentation::UiCommandRegistry::refresh);
     }
     qApp->installEventFilter(this);
     // Familiar JetBrains navigation belongs to presentation, never the DSP core.
     auto *navigation=findChild<QMenu *>("graphsMenu");
     auto action=[this,navigation](const char *label,const char *id,const char *key,auto callback) {
-        auto *item=navigation->addAction(ui::text(label)); item->setObjectName(id);
-        ui::bind(item,"text",label); item->setShortcut(QKeySequence(QString::fromLatin1(key)));
-        item->setShortcutContext(Qt::ApplicationShortcut); item->setShortcutVisibleInContextMenu(true);
-        connect(item,&QAction::triggered,this,[this,callback] {
-            auto *active=QApplication::activeWindow();
-            bool belongs=active==this;
-            for(auto *dock:workspaceDocks()) if(dock->window()==active) belongs=true;
-            if(belongs) callback();
-        });
+        navigation->addAction(_commands->register_command({QString::fromLatin1(id),label,QKeySequence(QString::fromLatin1(key)),
+            presentation::UiCommandContext::Workspace,callback,{}}));
     };
     navigation->addSeparator();
     action("Next tab","workspaceNextTab","Alt+Right",[this]{activateAdjacentTab(1);});
@@ -89,7 +96,7 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     action("Focus Data Flow","workspaceFocusFlow","F12",[this]{
         auto *flow=_panels.value("dataFlow"); flow->raise(); focusDock(flow);
     });
-    action("Hide or restore tool panels","workspaceToggleTools","Ctrl+Shift+F12",[this]{
+    action("Show or hide Data Flow","workspaceToggleTools","Ctrl+Shift+F12",[this]{
         auto *flow=_panels.value("dataFlow"); flow->toggleView(flow->isHidden());
     });
     action("Switch workspace tab…","workspaceSwitcher","Ctrl+Tab",[this]{
@@ -104,305 +111,47 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
     connect(this,&WorkspaceWindow::graphAreaActivated,this,[this](WorkspaceDock *dock) {
         if (!_restoring_layout && is_graph_dock(dock) && in_editor_window(dock)) _last_graph_slot=dock;
     });
-    auto *devices = new QComboBox(this);
-    devices->setObjectName("engineDeviceSelector");
-    devices->addItem(ui::text("In-app processor"), QJsonObject{{"uuid", _application.local_device_id()}});
-    ui::bind(devices,"toolTip","Processes audio inside this application. External processors connect over TCP.");
-    auto *deviceCorner = new QWidget(menuBar());
-    deviceCorner->setObjectName("navigationControls");
-    auto *deviceLayout = new QHBoxLayout(deviceCorner);
-    deviceLayout->setContentsMargins(4, 0, 4, 0); deviceLayout->setSpacing(4);
-    for(const auto *id:{"pipelinePresets","pipelineToggle"})
-        if(auto *button=findChild<QToolButton *>(id)) { deviceLayout->addWidget(button); button->show(); }
-    devices->hide();
-    auto *engineButton = ui::tool_button(deviceCorner);
-    engineButton->setObjectName("engineSelectorButton");
-    engineButton->setMaximumWidth(260);
-    auto *engineMenu = new QMenu(engineButton);
-    ui::button_menu(engineButton,engineMenu);
-    deviceLayout->addWidget(engineButton);
-    const auto refreshEngineCaption = [devices, engineButton] {
-        engineButton->setText(devices->currentText()); engineButton->setToolTip(devices->currentText());
-    };
-    connect(devices, &QComboBox::currentTextChanged, engineButton, refreshEngineCaption);
-    refreshEngineCaption();
-    menuBar()->setCornerWidget(deviceCorner);
+    auto *directory = new presentation::ProcessorDirectoryModel(_application.local_device_id(),std::move(discovery),this);
     if (_application.is_remote()) {
-        const auto endpoint = _application.device_id();
-        const auto separator = endpoint.lastIndexOf(':');
-        devices->addItem(endpoint, QJsonObject{{"uuid", endpoint},
-            {"address", endpoint.left(separator)}, {"port", endpoint.mid(separator + 1).toInt()}});
-        devices->setCurrentIndex(1);
+        const auto endpoint=_application.device_id(); const auto separator=endpoint.lastIndexOf(':');
+        directory->add_direct(endpoint,endpoint.left(separator),quint16(endpoint.mid(separator+1).toUInt()));
     }
-    auto *permissions = new QLabel(this);
-    permissions->setObjectName("selectedEnginePermission");
-    statusBar()->addPermanentWidget(permissions);
-    connect(devices, &QComboBox::currentIndexChanged, this, [devices, permissions](int index) {
-        const auto metadata = devices->itemData(index).toJsonObject();
-        permissions->setText(metadata.contains("allow_mutations")
-                                 ? (metadata.value("allow_mutations").toBool() ? ui::text("Editing allowed")
-                                                                               : ui::text("Read-only engine"))
-                                 : "");
-    });
-    auto *registry_dialog = new QDialog(this);
-    registry_dialog->setObjectName("engineRegistryDialog");
-    ui::bind(registry_dialog, "windowTitle", "Manage processors");
-    registry_dialog->resize(600, 520);
-    auto *registry_layout = new QVBoxLayout(registry_dialog);
-    auto *explanation = ui::make<QLabel>("Local processing needs no registry. Discover external processors through an aggregator.", registry_dialog);
-    explanation->setWordWrap(true);
-    registry_layout->addWidget(explanation);
-    auto *processorList = new QTreeWidget(registry_dialog);
-    processorList->setObjectName("processorManagerList");
-    processorList->setRootIsDecorated(false);
-    processorList->setHeaderLabels({ui::text("Processor"), ui::text("Endpoint"), ui::text("State")});
-    processorList->setMinimumHeight(110);
-    processorList->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    processorList->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    processorList->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    registry_layout->addWidget(processorList);
-    auto *directGroup = ui::make<QGroupBox>("Direct connection", registry_dialog);
-    auto *directForm = new QFormLayout(directGroup);
-    auto *directHost = new QLineEdit("127.0.0.1", directGroup);
-    directHost->setObjectName("processorHost");
-    auto *directPort = new QSpinBox(directGroup);
-    directPort->setObjectName("processorPort");
-    directPort->setRange(1, 65535); directPort->setValue(8213);
-    directForm->addRow(ui::make<QLabel>("Address", directGroup), directHost);
-    directForm->addRow(ui::make<QLabel>("Port", directGroup), directPort);
-    auto *connectProcessor = ui::make<QPushButton>("Connect processor", directGroup);
-    connectProcessor->setObjectName("connectProcessor");
-    directForm->addRow(connectProcessor);
-    registry_layout->addWidget(directGroup);
-    auto *discoveryGroup = ui::make<QGroupBox>("Discovery through registry", registry_dialog);
-    auto *discoveryLayout = new QVBoxLayout(discoveryGroup);
-    registry_layout->addWidget(discoveryGroup);
-    const auto network = _application.state().file_configs.raw_document.value("aggregator").toObject();
-    auto *host = new QLineEdit(network.value("host").toString("127.0.0.1"), registry_dialog);
-    host->setObjectName("registryHost");
-    auto *port = new QSpinBox(registry_dialog);
-    port->setObjectName("registryPort");
-    port->setRange(1, 65535);
-    port->setValue(network.value("port").toInt(8212));
-    auto *address_form = new QFormLayout;
-    address_form->addRow(ui::make<QLabel>("Registry address", registry_dialog), host);
-    address_form->addRow(ui::make<QLabel>("Registry port", registry_dialog), port);
-    discoveryLayout->addLayout(address_form);
-    auto *discover = ui::make<QPushButton>("Discover engines", registry_dialog);
-    discover->setObjectName("discoverEngines");
-    auto *disconnect = ui::make<QPushButton>("Disconnect registry", registry_dialog);
-    auto *buttons = new QHBoxLayout;
-    buttons->addWidget(discover);
-    buttons->addWidget(disconnect);
-    discoveryLayout->addLayout(buttons);
-    auto *registry_status = new QLabel(registry_dialog);
-    registry_status->setObjectName("engineRegistryStatus");
-    registry_status->setWordWrap(true);
-    registry_status->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    discoveryLayout->addWidget(registry_status);
-    auto *warning = new QLabel(_application.client().network_warning(), registry_dialog);
-    warning->setWordWrap(true);
-    warning->setVisible(!warning->text().isEmpty());
-    registry_layout->addWidget(warning);
-    const auto refreshWarning = [this, warning] {
-        warning->setText(_application.client().network_warning());
-        warning->setVisible(!warning->text().isEmpty());
+    directory->set_selected(_application.device_id());
+    const auto network=_application.state().file_configs.raw_document.value("aggregator").toObject();
+    auto *registry_dialog=new presentation::ProcessorManagerDialog(*directory,network.value("host").toString("127.0.0.1"),quint16(network.value("port").toInt(8212)),this);
+    const auto refreshWarning=[this,registry_dialog] { registry_dialog->set_warning(_application.client().network_warning()); };
+    refreshWarning();
+    connect(&_application,&GuiPresenter::apply_status_changed,registry_dialog,refreshWarning);
+    connect(&_application,&GuiPresenter::selected_device_changed,registry_dialog,refreshWarning);
+    auto *manage=_commands->register_command({"openEngineRegistry","Manage processors",QKeySequence("Alt+P"),presentation::UiCommandContext::Workspace,
+        [registry_dialog] { registry_dialog->show(); registry_dialog->raise(); registry_dialog->activateWindow(); },{}});
+    findChild<QMenu *>("settingsMenu")->addAction(manage);
+    auto *deviceCorner=new QWidget(menuBar()); deviceCorner->setObjectName("navigationControls");
+    auto *deviceLayout=new QHBoxLayout(deviceCorner); deviceLayout->setContentsMargins(4,0,4,0); deviceLayout->setSpacing(4);
+    for (const auto *id : {"pipelinePresets","pipelineToggle"}) if (auto *button=findChild<QToolButton *>(id)) { deviceLayout->addWidget(button); button->show(); }
+    auto *engineButton=new presentation::ProcessorSelector(*directory,manage,deviceCorner); deviceLayout->addWidget(engineButton);
+    menuBar()->setCornerWidget(deviceCorner);
+    auto *permissions=new QLabel(this); permissions->setObjectName("selectedEnginePermission"); statusBar()->addPermanentWidget(permissions);
+    const auto refreshPermissions=[directory,permissions] {
+        const auto *selected=directory->selected();
+        permissions->setText(!selected || selected->local ? QString{} : !selected->available ? ui::text("Unavailable") :
+            selected->allow_mutations ? ui::text("Editing allowed") : ui::text("Read-only engine"));
     };
-    connect(&_application, &GuiPresenter::apply_status_changed, warning, refreshWarning);
-    connect(&_application, &GuiPresenter::selected_device_changed, warning, refreshWarning);
-    auto *registry = new AggregatorClient({QUuid::createUuid(), ComponentType::data_sink, 0}, this);
-    registry->setObjectName("engineRegistryClient");
-    const auto canonical = [](const QString &value) {
-        const QUuid uuid(value);
-        return uuid.isNull() ? value : uuid.toString(QUuid::WithoutBraces);
-    };
-    const auto refreshRegistry = [this, registry, devices, engineButton, permissions, registry_status, canonical, processorList] {
-        const QSignalBlocker blocker(devices);
-        int available = 0;
-        const auto components = registry->components();
-        for (auto it = components.cbegin(); it != components.cend(); ++it) {
-            if (it.value().type != ComponentType::core || canonical(it.key().toString()) == canonical(_application.local_device_id()))
-                continue;
-            const auto endpoint = registry->resolve_engine(it.key());
-            if (endpoint.isEmpty())
-                continue;
-            ++available;
-            int row = -1;
-            for (int i = 0; i < devices->count(); ++i)
-                if (canonical(devices->itemData(i).toJsonObject().value("uuid").toString()) == canonical(it.key().toString()))
-                    row = i;
-            auto data = endpoint;
-            data["from_registry"] = true;
-            if (row < 0) {
-                devices->addItem(data.value("name").toString(canonical(it.key().toString())), data);
-            } else {
-                // Preserve the identity used by the selected device's saved document.
-                data["uuid"] = devices->itemData(row).toJsonObject().value("uuid");
-                devices->setItemData(row, data);
-            }
-        }
-        auto *model = qobject_cast<QStandardItemModel *>(devices->model());
-        for (int i = 0; i < devices->count(); ++i) {
-            auto data = devices->itemData(i).toJsonObject();
-            if (!data.value("from_registry").toBool())
-                continue;
-            QString error;
-            const bool reachable = !registry->resolve_engine(QUuid(data.value("uuid").toString()), &error).isEmpty();
-            data["control_available"] = reachable;
-            devices->setItemData(i, data);
-            devices->setItemData(i, reachable ? (data.value("allow_mutations").toBool() ? ui::text("Editing allowed") : ui::text("Read-only engine")) : error, Qt::ToolTipRole);
-            if (model && model->item(i))
-                model->item(i)->setEnabled(reachable);
-        }
-        switch (registry->runtime_state()) {
-        case core::RuntimeState::Stopped: registry_status->setText(ui::text("Registry disconnected. Local processing remains available.")); break;
-        case core::RuntimeState::Starting: registry_status->setText(ui::text("Connecting to registry…")); break;
-        case core::RuntimeState::Running:
-            registry_status->setText(available ? ui::text("Available external processors: %1").arg(available) : ui::text("Registry connected; no external processors with a control endpoint.")); break;
-        default: registry_status->setText(ui::text("Registry unavailable: %1")
-            .arg(ui::text(registry->error().toUtf8().constData()))); break;
-        }
-        const auto selected = devices->currentData().toJsonObject();
-        if (selected.value("from_registry").toBool() && !selected.value("control_available").toBool())
-            permissions->setText(ui::text("Unavailable"));
-        else
-            permissions->setText(selected.contains("allow_mutations")
-                ? (selected.value("allow_mutations").toBool() ? ui::text("Editing allowed") : ui::text("Read-only engine"))
-                : QString{});
-        processorList->clear();
-        processorList->setHeaderLabels({ui::text("Processor"), ui::text("Endpoint"), ui::text("State")});
-        for (int index = 0; index < devices->count(); ++index) {
-            const auto data = devices->itemData(index).toJsonObject();
-            const bool enabled = !model || model->item(index)->isEnabled();
-            const auto endpoint = index == 0 ? ui::text("Inside this application")
-                : data.value("address").toString() + ":" + QString::number(data.value("port").toInt());
-            auto *row = new QTreeWidgetItem(processorList, {devices->itemText(index), endpoint,
-                enabled ? ui::text("Available") : ui::text("Unavailable")});
-            row->setData(0, Qt::UserRole, index);
-            if (!enabled) row->setDisabled(true);
-            if (index == devices->currentIndex()) processorList->setCurrentItem(row);
-        }
-        engineButton->setText(devices->currentText());
-    };
-    refreshRegistry();
-    connect(discover, &QPushButton::clicked, this, [registry, host, port, registry_status] {
-        const QHostAddress address(host->text().trimmed());
-        if (address.isNull()) {
-            registry_status->setText(ui::text("Registry address must be an IP address"));
-            return;
-        }
-        // Discovery is a transient connection, not an implicit settings save.
-        registry->connect_to_aggregator_server(address, quint16(port->value()));
+    connect(directory,&presentation::ProcessorDirectoryModel::changed,permissions,refreshPermissions);
+    connect(&ui::Language::instance(),&ui::Language::changed,permissions,refreshPermissions); refreshPermissions();
+    connect(directory,&presentation::ProcessorDirectoryModel::selection_requested,this,[this](const presentation::ProcessorEndpoint &endpoint) {
+        if (endpoint.id==_application.device_id()) return;
+        if (!endpoint.local && (endpoint.address.isEmpty() || !endpoint.port)) { statusBar()->showMessage(ui::text("Engine endpoint is unavailable"),5000); return; }
+        if (auto *editor=data_flow_editor()) { editor->flush_presentation(); _application.state().file_configs.scene_graph=editor->document(); }
+        _application.select_device(endpoint.id,endpoint.address,endpoint.port);
     });
-    connect(disconnect, &QPushButton::clicked, registry, &AggregatorClient::disconnect_from_aggregator_server);
-    connect(registry, &AggregatorClient::status_changed, this, refreshRegistry);
-    connect(registry, &AggregatorClient::capabilities_changed, this, refreshRegistry);
-    connect(registry, &AggregatorClient::on_update_component_info, this, refreshRegistry);
-    connect(registry, &AggregatorClient::on_update_component_state, this, refreshRegistry);
-    connect(&ui::Language::instance(), &ui::Language::changed, this, [devices, refreshRegistry] {
-        devices->setItemText(0, ui::text("In-app processor"));
-        refreshRegistry();
-    });
-    auto *registry_action = findChild<QMenu *>("settingsMenu")->addAction(ui::text("Manage processors"));
-    ui::bind(registry_action, "text", "Manage processors");
-    registry_action->setObjectName("openEngineRegistry");
-    const auto showProcessors = [registry_dialog] {
-        registry_dialog->show(); registry_dialog->raise(); registry_dialog->activateWindow();
-    };
-    registry_action->setShortcut(QKeySequence("Alt+P"));
-    connect(registry_action, &QAction::triggered, this, showProcessors);
-    auto *engineActions = new QActionGroup(engineMenu);
-    engineActions->setExclusive(true);
-    connect(engineMenu, &QMenu::aboutToShow, this, [devices, engineMenu, engineActions, showProcessors] {
-        engineMenu->clear();
-        auto *model = qobject_cast<QStandardItemModel *>(devices->model());
-        for (int index = 0; index < devices->count(); ++index) {
-            auto *action = engineMenu->addAction(devices->itemText(index));
-            action->setCheckable(true); action->setChecked(index == devices->currentIndex());
-            action->setEnabled(!model || model->item(index)->isEnabled());
-            engineActions->addAction(action);
-            connect(action, &QAction::triggered, devices, [devices, index] {
-                devices->setCurrentIndex(index);
-                emit devices->activated(index);
-            });
-        }
-        engineMenu->addSeparator();
-        auto *manage = engineMenu->addAction(ui::text("Manage processors…"));
-        connect(manage, &QAction::triggered, engineMenu, showProcessors);
-    });
-    connect(processorList, &QTreeWidget::itemActivated, devices, [devices](QTreeWidgetItem *row, int) {
-        if (row->isDisabled()) return;
-        const int index = row->data(0, Qt::UserRole).toInt();
-        devices->setCurrentIndex(index); emit devices->activated(index);
-    });
-    connect(connectProcessor, &QPushButton::clicked, this, [devices, directHost, directPort, registry_status, refreshRegistry] {
-        const QHostAddress address(directHost->text().trimmed());
-        if (address.isNull()) { registry_status->setText(ui::text("Processor address must be an IP address")); return; }
-        const auto host = address.toString(); const int port = directPort->value();
-        const auto uuid = host + ":" + QString::number(port);
-        int index = -1;
-        for (int i = 0; i < devices->count(); ++i)
-            if (devices->itemData(i).toJsonObject().value("uuid").toString() == uuid) index = i;
-        if (index < 0) {
-            devices->addItem(uuid, QJsonObject{{"uuid", uuid}, {"address", host}, {"port", port}});
-            index = devices->count() - 1;
-        }
-        devices->setCurrentIndex(index); emit devices->activated(index); refreshRegistry();
-    });
-    connect(devices, &QComboBox::activated, this, [this, devices, registry, canonical](int index) {
-        auto data = devices->itemData(index).toJsonObject();
-        auto uuid = data.value("uuid").toString();
-        if (canonical(uuid) == canonical(_application.local_device_id()))
-            uuid = _application.local_device_id();
-        if (canonical(uuid) == canonical(_application.device_id()))
-            return;
-        if (data.value("from_registry").toBool()) {
-            QString error;
-            const auto endpoint = registry->resolve_engine(QUuid(uuid), &error);
-            if (endpoint.isEmpty()) {
-                statusBar()->showMessage(ui::text("Registry unavailable: %1").arg(error), 5000);
-                const QSignalBlocker blocker(devices);
-                for (int i = 0; i < devices->count(); ++i)
-                    if (canonical(devices->itemData(i).toJsonObject().value("uuid").toString()) == canonical(_application.device_id())) devices->setCurrentIndex(i);
-                return;
-            }
-            for (auto it = endpoint.begin(); it != endpoint.end(); ++it) data[it.key()] = it.value();
-        }
-        const auto host = data.value("address").toString();
-        const int port = data.value("port").toInt(0);
-        if (uuid != _application.local_device_id() && (host.isEmpty() || port < 1 || port > 65535)) {
-            statusBar()->showMessage(ui::text("Engine endpoint is unavailable"), 5000);
-            return;
-        }
-        if (auto *editor = data_flow_editor()) {
-            editor->flush_presentation();
-            _application.state().file_configs.scene_graph = editor->document();
-        }
-        _application.select_device(uuid, host, quint16(port));
-    });
-    connect(&_application, &GuiPresenter::explicit_stop_requested, this, [this] {
-        if (auto *editor = data_flow_editor()) editor->cancel_start_intent();
-    });
+    connect(&_application,&GuiPresenter::selected_device_changed,directory,[this,directory] { directory->set_selected(_application.device_id()); });
     connect(&_application, &GuiPresenter::active_graph_changed, this, &MainWindow::sync_node_views);
-    connect(&_application, &GuiPresenter::selected_device_changed, engineButton, refreshEngineCaption);
-    connect(&_application, &GuiPresenter::node_views_ready, this, &MainWindow::consume_node_views);
+    connect(&_application, &GuiPresenter::selected_device_changed, this, [this] { _view_draft.reset(); });
+    connect(&_application, &GuiPresenter::numeric_frame_ready, this, &MainWindow::consume_numeric_frame);
+    connect(&_application, &GuiPresenter::numeric_history_ready, this, &MainWindow::consume_numeric_history);
+    connect(&_application, &GuiPresenter::numeric_history_snapshot_ready, this, &MainWindow::consume_numeric_history_snapshot);
     connect(&_application, &GuiPresenter::views_cleared, this, &MainWindow::clear_node_views);
-    auto *apply_state = new QLabel(this);
-    apply_state->setObjectName("graphApplyStatus");
-    statusBar()->addPermanentWidget(apply_state);
-    auto updateApplyStatus = [apply_state](const QString &text) {
-        // Routine state is already represented by the editor and component icons.
-        // Keep this area for actionable errors rather than transient success noise.
-        const bool error = text.startsWith(ui::text("Not applied: ")) || text.startsWith("Error:");
-        apply_state->setText(error ? QStringLiteral("⚠") : QString{});
-        apply_state->setAccessibleName(text);
-        apply_state->setToolTip(text);
-        apply_state->setVisible(error);
-    };
-    updateApplyStatus(_application.apply_status());
-    connect(&_application, &GuiPresenter::apply_status_changed, apply_state, updateApplyStatus);
-    if (auto *editor = data_flow_editor())
-        connect(editor, &SchemeEditorWidget::status_message, apply_state, updateApplyStatus);
     auto *themeSelector = new QComboBox(this);
     themeSelector->setObjectName("statusTheme");
     ui::items(themeSelector, {"System theme", "Light", "Dark"});
@@ -449,23 +198,12 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
             auto &ui = _application.state().file_configs.ui;
             ui.theme = themeCodes[index];
             if (ui.autosave_enabled)
-                emit _application.on_config_updated();
+                emit settings_change_requested({ui::SettingsChangeScope::ApplicationPreferences,false});
         }
     });
-    auto *saved_warning = new QLabel(this);
-    saved_warning->setObjectName("savedPipelineWarning");
-    saved_warning->setWordWrap(true);
-    saved_warning->setVisible(false);
-    statusBar()->addPermanentWidget(saved_warning, 1);
-    connect(&_application, &GuiPresenter::saved_graph_warning_changed, saved_warning,
-            [saved_warning](const QString &warning) {
-                saved_warning->setText(warning);
-                saved_warning->setVisible(!warning.isEmpty());
-            });
     connect(&_application, &GuiPresenter::command_rejected, this, [this](quint64, const QString &error) {
         statusBar()->showMessage(ui::text("Engine command rejected: %1").arg(error), 10000);
     });
-    connect(&_application, &GuiPresenter::sample_rate_changed, this, &MainWindow::on_sample_rate_changed);
 
     auto *fps_timer = new QTimer(this);
     fps_timer->setInterval(500);
@@ -522,16 +260,16 @@ MainWindow::MainWindow(GuiPresenter &application) : _application(application) {
         apply_render_rate();
     });
     statusBar()->setSizeGripEnabled(false);
-    auto refreshStatusVisibility=[this,apply_state,saved_warning] {
-        statusBar()->setVisible(!statusBar()->currentMessage().isEmpty() || !apply_state->text().isEmpty() || !saved_warning->text().isEmpty());
+    auto refreshStatusVisibility=[this] {
+        statusBar()->setVisible(!statusBar()->currentMessage().isEmpty());
     };
     refreshStatusVisibility();
     connect(statusBar(),&QStatusBar::messageChanged,this,refreshStatusVisibility);
-    connect(&_application,&GuiPresenter::apply_status_changed,this,refreshStatusVisibility);
-    connect(&_application,&GuiPresenter::saved_graph_warning_changed,this,refreshStatusVisibility);
 }
 
 MainWindow::~MainWindow() {
+    delete _commands;
+    _commands = nullptr;
     disconnect(workspace(),nullptr,this,nullptr);
     qApp->removeEventFilter(this);
     _restoring_layout = true;
@@ -549,7 +287,7 @@ MainWindow::~MainWindow() {
     if (!_workspace_closed) {
         save_workspace();
         if (_application.state().file_configs.ui.autosave_enabled)
-            emit _application.on_config_updated();
+            emit settings_change_requested({ui::SettingsChangeScope::SessionWorkspace,false});
     }
 }
 
@@ -633,7 +371,6 @@ void MainWindow::setup_ui() {
     _window_function_chart = new LineChartView();
     _window_function_chart->chart()->setTitle(QString());
     _window_function_chart->set_range(-0.2, 1.2);
-    _window_function_chart->update(_application.window());
     add_panel("windowFunction", "Window function", _window_function_chart, &UIApplicationConfig::show_window_function);
 
     // Amplitudes (FFT)
@@ -665,7 +402,7 @@ void MainWindow::setup_ui() {
     _camera_save_timer.setInterval(500);
     connect(&_camera_save_timer, &QTimer::timeout, this, [this] {
         if (_application.state().file_configs.ui.autosave_enabled)
-            emit on_config_updated();
+            emit settings_change_requested({ui::SettingsChangeScope::ProjectPresentation,false});
     });
     connect(_spectrogram_view, &SpectrogramGraph::presentation_changed, this, [this](const QJsonObject &state) {
         auto prefs = _application.state().file_configs.ui.graph_views.value("spectrogram").toObject();
@@ -681,7 +418,7 @@ void MainWindow::setup_ui() {
         _application.state().file_configs.ui.spectrogram_side_panel_ratio = ratio;
         _camera_save_timer.start();
     });
-    add_panel("spectrogram", "Spectrogram", _spectrogram_view, &UIApplicationConfig::show_spectrogram);
+    add_panel("spectrogram", "Spectrogram graph", _spectrogram_view, &UIApplicationConfig::show_spectrogram);
 
     // Settings
     auto *settings_dialog = new QDialog(this);
@@ -699,18 +436,12 @@ void MainWindow::setup_ui() {
     auto *settings_menu = new QMenu(this);
     settings_menu->setObjectName("settingsMenu");
     ui::bind(settings_menu, "title", "Settings");
-    const char *sections[]{"General", "Audio processing", "Graphs", "WLED", "Network", "Controls"};
-    for (int i : {0, 1, 2, 4, 5}) {
-        auto *action = settings_menu->addAction(ui::text(sections[i]));
-        ui::bind(action, "text", sections[i]);
-        action->setObjectName(i == 0 ? "openSettings" : QString("openSettingsSection%1").arg(i));
-        action->setShortcut(i == 0 ? QKeySequence("Alt+,") : QKeySequence(QString("Alt+%1").arg(i + 1)));
-        connect(action, &QAction::triggered, this, [settings_dialog, settings_widget, i] {
-            settings_widget->select_section(i);
-            settings_dialog->show();
-            settings_dialog->raise();
-            settings_dialog->activateWindow();
-        });
+    for (const auto &section : SettingsWidget::available_sections()) {
+        const auto id=section.section==SettingsWidget::General ? QString("openSettings") : QString("openSettingsSection%1").arg(int(section.section));
+        settings_menu->addAction(_commands->register_command({id,section.title_key,QKeySequence(QString::fromLatin1(section.default_shortcut)),presentation::UiCommandContext::Workspace,
+            [settings_dialog,settings_widget,index=section.section] {
+                settings_widget->select_section(index); settings_dialog->show(); settings_dialog->raise(); settings_dialog->activateWindow();
+            },{}}));
     }
     connect(settings_widget, &SettingsWidget::camera_controls_changed, this,
             [this] {
@@ -723,7 +454,7 @@ void MainWindow::setup_ui() {
     connect(settings_widget, &SettingsWidget::reset_camera_requested, _spectrogram_view,
             &SpectrogramGraph::reset_camera);
     connect(settings_widget, &SettingsWidget::surface_settings_changed, this, &MainWindow::apply_surface_settings);
-    connect(settings_widget, &SettingsWidget::on_config_changed, &_application, &GuiPresenter::on_config_updated);
+    connect(settings_widget, &SettingsWidget::settings_change_requested, this, &MainWindow::settings_change_requested);
     connect(settings_widget, &SettingsWidget::on_rebuild_charts, this, &MainWindow::on_update_chart_visibility);
     connect(settings_widget, &SettingsWidget::start_wled_server_requested, this,
             &MainWindow::start_wled_server_requested);
@@ -731,21 +462,12 @@ void MainWindow::setup_ui() {
             &MainWindow::stop_wled_server_requested);
     connect(settings_widget, &SettingsWidget::wled_server_config_changed, this,
             &MainWindow::wled_server_config_changed);
-    for (auto *dock : _panels) if (auto *panel=qobject_cast<GraphPanel *>(dock->widget())) {
-        auto refresh = [this, panel] {
-            panel->set_processing_choices(_application.state().file_configs.core.spectrum_channel,
-                                          static_cast<int>(_application.state().file_configs.core.spectrum_merge));
-        };
-        refresh();
-        connect(&_application, &GuiPresenter::processing_state_changed, panel, refresh);
-        connect(panel, &GraphPanel::channel_requested, &_application, &GuiPresenter::set_spectrum_channel);
-        if (panel->objectName() == "fftGraphPanel")
-            connect(panel, &GraphPanel::merge_requested, this,
-                    [this](int merge) { _application.set_node_parameters(5, {{"merge", merge}}); });
-        else
-            connect(panel, &GraphPanel::merge_requested, &_application, &GuiPresenter::set_spectrum_merge);
+    for(auto it=_panels.begin();it!=_panels.end();++it)if(auto* panel=qobject_cast<GraphPanel*>(it.value()->widget())) {
+        panel->set_numeric_plane_count(0,0);
+        connect(panel,&GraphPanel::channel_requested,this,[this,key=it.key()](int plane){select_numeric_plane(key,std::size_t(std::max(0,plane)));});
     }
     auto *editor = new SchemeEditorWidget(_application, this);
+    connect(editor,&SchemeEditorWidget::default_graph_requested,this,&MainWindow::default_graph_requested);
     connect(editor, &SchemeEditorWidget::status_message, this, [this](const QString &text) {
         if (text != ui::text("Data Flow applied"))
             statusBar()->showMessage(text, 5000);
@@ -760,7 +482,8 @@ void MainWindow::setup_ui() {
     });
     auto *pipeline_action = pipeline_panel->toggleViewAction();
     pipeline_action->setObjectName("openPipeline");
-    pipeline_action->setShortcut(QKeySequence("Alt+D"));
+    _commands->register_command({"openPipeline","Data Flow",QKeySequence("Alt+D"),presentation::UiCommandContext::Workspace,{},{}},pipeline_action);
+    ui::bind(pipeline_action,"toolTip","Show or hide Data Flow");
     auto *pipeline_toggle = ui::tool_button(this);
     pipeline_toggle->setObjectName("pipelineToggle");
     pipeline_toggle->setDefaultAction(pipeline_action);
@@ -770,8 +493,15 @@ void MainWindow::setup_ui() {
             pipeline_panel->raise();
     });
     connect(editor,&SchemeEditorWidget::graph_view_requested,this,&MainWindow::open_graph_node);
+    connect(editor,&SchemeEditorWidget::graph_rename_requested,this,[this](int node) {
+        auto* dock=graph_dock(node);
+        if(!dock){open_graph_node(node);dock=graph_dock(node);}
+        if(dock)request_graph_rename(dock);
+    });
     connect(editor,&SchemeEditorWidget::graph_open_requested,this,&MainWindow::add_graph_node);
     editor->set_graph_menu_provider([this](int node,QMenu *menu) { populate_graph_menu(node,menu); });
+    editor->set_preset_presentation_provider([this]{return capture_preset_presentation();});
+    connect(editor,&SchemeEditorWidget::preset_presentation_requested,this,&MainWindow::restore_preset_presentation);
     if(auto *presets=editor->findChild<QToolButton *>("pipelinePresets")) {
         presets->hide(); // Added to the shared upper navigation bar by the constructor.
     }
@@ -802,24 +532,24 @@ void MainWindow::setup_ui() {
     if(auto *arrange=editor->findChild<QAction *>("arrangePipelineShortcut")) view_menu->addAction(arrange);
     if(auto *center=editor->findChild<QAction *>("fitPipelineShortcut")) view_menu->addAction(center);
     if(auto *presets=editor->presets_button()) view_menu->addMenu(presets->menu());
-    auto *wled_menu = menuBar()->addMenu("WLED");
-    wled_menu->setObjectName("wledMenu");
-    auto *wled_action = wled_menu->addAction("WLED");
-    wled_action->setObjectName("openSettingsSection3");
-    wled_action->setShortcut(QKeySequence("Alt+4"));
-    connect(wled_action, &QAction::triggered, this, [settings_dialog, settings_widget] {
-        settings_widget->select_section(SettingsWidget::WLED);
-        settings_dialog->show();
-        settings_dialog->raise();
-        settings_dialog->activateWindow();
-    });
     menuBar()->addMenu(settings_menu);
+    for (const auto &entry : std::initializer_list<std::pair<QAction *, const char *>>{
+             {saveAction,"Save settings"},{saveAs,"Save settings as…"},{open,"Open settings…"},
+             {reset,"Reset layout"},{resetCamera,"Reset camera"}}) {
+        _commands->register_command({entry.first->objectName(),entry.second,entry.first->shortcut(),presentation::UiCommandContext::Workspace,{},{}},entry.first);
+    }
+    for (const auto &entry : std::initializer_list<std::pair<const char *,const char *>>{
+             {"arrangePipelineShortcut","Arrange Data Flow"},{"fitPipelineShortcut","Center Data Flow"}}) {
+        if (auto *command=editor->findChild<QAction *>(entry.first))
+            _commands->register_command({command->objectName(),entry.second,command->shortcut(),presentation::UiCommandContext::SchemaEditor,{},{}},command);
+    }
+
     _workspace_save_timer.setSingleShot(true);
     _workspace_save_timer.setInterval(350);
     connect(&_workspace_save_timer, &QTimer::timeout, this, [this] {
         save_workspace();
         if (_application.state().file_configs.ui.autosave_enabled)
-            emit _application.on_config_updated();
+            emit settings_change_requested({ui::SettingsChangeScope::SessionWorkspace,false});
     });
     const auto saved_ui = _application.state().file_configs.ui;
     const auto workspace = saved_ui.workspace;
@@ -838,11 +568,15 @@ void MainWindow::setup_ui() {
             _application.state().file_configs.ui = saved_ui;
             const auto visibility = workspace.value("visibility").toObject();
             for (auto it = _panels.begin(); it != _panels.end(); ++it)
-                if (layout_version >= 4 && visibility.value(it.key()).isBool())
+                if (layout_version >= 4 && visibility.value(it.key()).isBool() &&
+                    it.value()->isClosed()==visibility.value(it.key()).toBool())
                     it.value()->toggleView(visibility.value(it.key()).toBool());
             for (auto it = _node_views.begin(); it != _node_views.end(); ++it) {
                 const auto identity = "nodeView_" + it.key();
-                if (layout_version >= 4 && visibility.value(identity).isBool())
+                // ADS restored the current tab already. Opening an already
+                // open dock raises it and would overwrite that saved selection.
+                if (layout_version >= 4 && visibility.value(identity).isBool() &&
+                    it.value().dock->isClosed()==visibility.value(identity).toBool())
                     it.value().dock->toggleView(visibility.value(identity).toBool());
                 auto p = _application.state().file_configs.ui.graph_views[it.key()].toObject();
                 p["open"] = !it.value().dock->isHidden();
@@ -865,6 +599,17 @@ void MainWindow::setup_ui() {
     if (!restored_workspace) {
         // A damaged serialized layout can partly mutate docks before failing.
         reset_workspace();
+        // Build the default dock topology without replacing the loaded visibility
+        // choices (including the first-run demonstration's explicit view set).
+        auto& ui=_application.state().file_configs.ui;
+        ui.show_spectrogram=saved_ui.show_spectrogram;
+        ui.show_data_flow=saved_ui.show_data_flow;
+        ui.show_amplitudes=saved_ui.show_amplitudes;
+        ui.show_test_amplitudes=saved_ui.show_test_amplitudes;
+        ui.show_raw_samples=saved_ui.show_raw_samples;
+        ui.show_window_signal=saved_ui.show_window_signal;
+        ui.show_windowed_signal=saved_ui.show_windowed_signal;
+        ui.show_window_function=saved_ui.show_window_function;
     }
     _restoring_layout = false;
     QTimer::singleShot(0, this, [this, restored_workspace] {

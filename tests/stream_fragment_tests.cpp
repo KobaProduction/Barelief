@@ -29,5 +29,19 @@ int main() {
     auto short_result=encode_fragment(frame,0,short_buffer);
     assert(short_result.status==Status::buffer_too_small && short_result.required_bytes==60008);
     assert(!encode_fragment(frame,frame.size(),fragment));
-    std::cout<<"BDSP v2 frame fragment wire layout and bounded assembly passed\n";
+    for(const auto chunk:{std::size_t(1016),std::size_t(503)}) {
+        assembler.reset();complete={};
+        for(std::size_t off=0;off<frame.size();off+=chunk) {
+            const auto encoded=encode_fragment(frame,off,fragment,chunk);assert(encoded);
+            assert(encoded.written_bytes==8+std::min(chunk,frame.size()-off));
+            const auto status=assembler.accept(std::span(fragment).first(encoded.written_bytes),complete);
+            assert(status==(off+chunk>=frame.size()?Status::ok:Status::would_block));
+        }
+        assert(complete.size()==frame.size()&&std::equal(complete.begin(),complete.end(),frame.begin()));
+        const auto first=encode_fragment(frame,0,fragment,chunk);assert(first);
+        assert(assembler.accept(std::span(fragment).first(first.written_bytes),complete)==Status::would_block);
+        assembler.reset();const auto second=encode_fragment(frame,chunk,fragment,chunk);assert(second);
+        assert(assembler.accept(std::span(fragment).first(second.written_bytes),complete)==Status::malformed);
+    }
+    std::cout<<"BDSP frame fragment wire, desktop/compact UART chunks and bounded reset passed\n";
 }

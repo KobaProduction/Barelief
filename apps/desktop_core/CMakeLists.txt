@@ -1,3 +1,3 @@
 add_executable(pipeline_cli main.cpp)
-target_link_libraries(pipeline_cli PRIVATE audio_pipeline config_document aggregator-library)
+target_link_libraries(pipeline_cli PRIVATE audio_pipeline desktop_numeric_defaults desktop_numeric_remote desktop_numeric_routing)
 deploy_desktop_runtime(pipeline_cli)

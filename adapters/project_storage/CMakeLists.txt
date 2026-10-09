@@ -1,0 +1,10 @@
+# Lossless document parsing is an outer adapter; it is not a DSP SDK dependency.
+add_library(project_storage STATIC src/project_source.cpp)
+target_compile_features(project_storage PUBLIC cxx_std_20)
+set_target_properties(project_storage PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF CXX_STANDARD 20)
+target_include_directories(project_storage PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+if(MSVC)
+    target_compile_options(project_storage PRIVATE /GR- /EHs-c-)
+else()
+    target_compile_options(project_storage PRIVATE -fno-exceptions -fno-rtti)
+endif()

@@ -27,6 +27,39 @@ int main(int argc,char **argv) {
     QCoreApplication app(argc,argv);
     try {
         QString error;
+        if (argc > 1 && QString::fromUtf8(argv[1]) == "--port-identity-only") {
+            auto document=graph({node(0,"NetworkInput",{{"data_type","mel"}}),
+                node(1,"Spectrogram",{{"history_size",3}}),node(2,"SpectrogramView"),node(3,"ScalarView")},
+                {edge(0,1),edge(1,2),QJsonObject{{"outNodeId",1},{"outPortIndex",1},{"inNodeId",3},{"inPortIndex",0}}});
+            document["graph_id"]="ports";
+            auto program=GraphProgram::compile(document,error);check(bool(program),qPrintable(error));
+            GraphEvaluationContext context; TypedFrame input;
+            input.type=FrameType::Mel; input.sample_rate=48000;input.sequence=1;
+            input.epoch=700;input.graph_revision=800;input.values={0,0,0};
+            auto output=program->evaluate(0,input,context);
+            auto find=[&](int id,PortDirection direction,int port) -> const DeliveredPortFrame& {
+                const auto found=std::find_if(output.port_frames.begin(),output.port_frames.end(),[&](const auto& f) {
+                    return f.endpoint.node==id && f.endpoint.direction==direction && f.endpoint.port==port;
+                });
+                check(found!=output.port_frames.end(),"Missing configured endpoint");return *found;
+            };
+            check(find(1,PortDirection::Output,0).frame.type==FrameType::History,"History port identity");
+            check(find(1,PortDirection::Output,1).frame.values==std::vector<float>{1},"Independent filled count");
+            check(find(3,PortDirection::Input,0).frame.values==std::vector<float>{1},"Sink input identity");
+            check(std::none_of(output.port_frames.begin(),output.port_frames.end(),[](const auto& f) {
+                return f.endpoint.node==3 && f.endpoint.direction==PortDirection::Output;
+            }),"Sink manufactured output");
+            check(output.ports[1].type==FrameType::History,"Legacy primary History overwritten by count");
+            check(find(1,PortDirection::Output,1).frame.graph_revision==800,"Producer revision overwritten");
+            auto disabled=document; auto ns=disabled["nodes"].toArray();auto n=ns[1].toObject();
+            auto params=n["internal-data"].toObject();params["enabled"]=false;n["internal-data"]=params;ns[1]=n;disabled["nodes"]=ns;
+            auto inactive=GraphProgram::compile(disabled,error);check(bool(inactive),qPrintable(error));
+            const auto markers=inactive->disabled_output();
+            check(std::count_if(markers.port_frames.begin(),markers.port_frames.end(),[](const auto& f) {
+                return f.endpoint.node==1 && f.endpoint.direction==PortDirection::Output && !f.frame.available;
+            })==2,"Unavailable lost one configured output");
+            qInfo("Canonical endpoint History/count/Input/zero/legacy identity passed");return 0;
+        }
         auto doc=GraphProgram::defaults();check(doc["version"]==2,"Default is not explicit v2");
         auto p=GraphProgram::compile(doc,error);check(bool(p),qPrintable(error));
         // Gate each category without bypassing type checks or disturbing another ingress.

@@ -24,9 +24,11 @@ struct PartialTransport : ByteTransport {
 };
 int main() {
     std::vector<std::uint8_t> payload(1024);for(size_t i=0;i<payload.size();++i)payload[i]=i%256;
-    std::vector<std::uint8_t> expected;BDSP::COBSZPETransceiver legacy;
-    legacy.get_write_stream().set_stream_writer([](uint8_t b,void *p){static_cast<std::vector<uint8_t>*>(p)->push_back(b);},&expected);
-    assert(legacy.send_data(13,payload.data(),payload.size())==BDSP::SEND_PACKET_OK);
+    // Current framing still uses the upstream COBS-ZPE algorithm. This is a
+    // framing oracle, independent of CONTROL/DATA schema versions.
+    std::vector<std::uint8_t> expected;BDSP::COBSZPETransceiver reference;
+    reference.get_write_stream().set_stream_writer([](uint8_t b,void *p){static_cast<std::vector<uint8_t>*>(p)->push_back(b);},&expected);
+    assert(reference.send_data(13,payload.data(),payload.size())==BDSP::SEND_PACKET_OK);
     std::array<uint8_t,2200> raw{},out{};PacketStream stream(raw,out);
     int received=0;std::vector<uint8_t> received_payload;
     stream.set_packet_handler([](PacketView p,void *ctx){
@@ -42,6 +44,17 @@ int main() {
     transport.limit=3;
     while(stream.pending_bytes())assert(stream.flush(transport).status==Status::ok);
     assert(transport.sent==expected);
+    // Retiring DATA may discard a packet before its first byte, but cannot
+    // truncate a packet already on the shared CONTROL/DATA byte transport.
+    assert(stream.enqueue(13,payload)==Status::ok);
+    assert(stream.discard_unstarted_outgoing() && stream.pending_bytes()==0);
+    assert(stream.enqueue(13,payload)==Status::ok);
+    transport.limit=1;
+    assert(stream.flush(transport).transferred==1);
+    const auto partially_sent=stream.pending_bytes();
+    assert(!stream.discard_unstarted_outgoing() && stream.pending_bytes()==partially_sent);
+    stream.reset();
+    assert(stream.pending_bytes()==0);
     for(auto byte:expected)assert(stream.feed(std::span(&byte,1))==Status::ok);
     assert(received==1 && received_payload[255]==255 && received_payload[256]==0);
     std::vector<BDSP::parse_packet_status_t> errors;
@@ -79,7 +92,7 @@ int main() {
         for(int pattern=0;pattern<3;++pattern) {
             std::vector<uint8_t> input(size);
             for(size_t i=0;i<size;++i)input[i]=pattern==0?0:pattern==1?255:i%256;
-            expected.clear();assert(legacy.send_data(31,input.data(),input.size())==BDSP::SEND_PACKET_OK);
+            expected.clear();assert(reference.send_data(31,input.data(),input.size())==BDSP::SEND_PACKET_OK);
             std::vector<uint8_t> encoded(expected.size(),99);
             CountingMemory memory;BDSP::core::MemoryManager::set_new_manager(&memory);
             const auto actual=encode_packet(31,input,encoded);
@@ -94,5 +107,5 @@ int main() {
             assert(receiver.feed(std::span(expected).subspan(split))==Status::ok && count==1);
         }
     }
-    std::cout<<"BDSP legacy bytes, arbitrary fragments, partial writes and overflow passed\n";
+    std::cout<<"BDSP upstream framing, arbitrary fragments, partial writes and overflow passed\n";
 }

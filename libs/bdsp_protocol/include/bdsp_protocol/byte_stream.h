@@ -35,6 +35,10 @@ public:
     IoResult flush(ByteTransport &) noexcept;
     void reset() noexcept;
     std::size_t pending_bytes() const noexcept {return outgoing_size_-outgoing_offset_;}
+    bool discard_unstarted_outgoing() noexcept {
+        if(outgoing_offset_ || feeding_)return false;
+        outgoing_size_=0;return true;
+    }
     std::uint64_t overflow_count() const noexcept {return overflows_;}
 private:
     void on_byte(std::uint8_t, BDSP::streams::stream_read_status_t) noexcept;

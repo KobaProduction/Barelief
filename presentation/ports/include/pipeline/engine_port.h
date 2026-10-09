@@ -7,17 +7,10 @@
 namespace pipeline {
 struct EngineCommand {
     enum Kind {
-        Snapshot,
-        ApplyGraph,
-        StartAnalyzer,
-        StopAnalyzer,
-        StartCapture,
-        StopCapture,
-        StartWled,
-        StopWled,
-        SetMerge,
-        SetDisplayChannel,
-        Subscribe
+        Snapshot = 0,
+        ApplyGraph = 1,
+        // Retired lifecycle command values remain reserved.
+        Subscribe = 8
     } kind = Snapshot;
     QJsonObject graph;
     quint64 expected_revision = std::numeric_limits<quint64>::max();
@@ -29,12 +22,12 @@ struct EngineCommand {
 };
 struct EngineSnapshot {
     quint64 epoch = 0, revision = 0, graph_revision = 0;
-    quint64 analyzer_generation = 0, capture_generation = 0;
     QJsonObject graph;
     QMap<QString, ComponentStatus> statuses;
-    std::shared_ptr<const HistorySnapshot> history;
-    std::vector<float> window_signal, window, windowed_signal;
-    float frequency_step = 0;
+    // Explicit control-plane query owners. Full History here is a cold snapshot;
+    // realtime History is delivered exclusively through compact row callbacks.
+    std::vector<DeliveredNumericFrame> numeric_frames;
+    std::vector<DeliveredNumericHistoryRow> numeric_history_rows;
 };
 struct EngineReply {
     quint64 request_id = 0;
@@ -46,11 +39,24 @@ struct EngineReply {
 // endpoints before their callback targets; endpoint destruction cancels delivery.
 class EnginePort {
 public:
+    enum class PortDeliveryMode { Unsupported,CanonicalNumericPortsV2 };
+    virtual PortDeliveryMode port_delivery_mode() const noexcept {return PortDeliveryMode::Unsupported;}
+    // An endpoint advertises NumericPortsV2 only after implementing subscription,
+    // ownership and both callbacks.
+    virtual bool subscribe_numeric_frames(std::vector<EndpointIdentity>,QString *error=nullptr) {
+        if(error)*error=QStringLiteral("Canonical numeric delivery unsupported");return false;
+    }
+    virtual void set_numeric_frame_handler(std::function<void(DeliveredNumericFrame)>) {}
+    virtual void set_numeric_history_handler(std::function<void(DeliveredNumericHistoryRow)>) {}
+    // Explicit cold full History resynchronization, with its exact row ordinal.
+    // Full History payload may include zero padding. Occupancy is explicit and
+    // independent from the matrix's displayed capacity and producer ordinal.
+    virtual void set_numeric_history_snapshot_handler(std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)>) {}
+    // Presentation requests complete current values; processing owns all history.
+    virtual void request_numeric_snapshots() {}
     virtual ~EnginePort() = default;
     virtual quint64 submit(EngineCommand command) = 0;
     virtual void set_snapshot_handler(std::function<void(EngineSnapshot)> handler) = 0;
-    virtual void set_view_handler(std::function<void(ViewFrame)> handler) = 0;
-    virtual void set_audio_handler(std::function<void(AudioFrame)> handler) = 0;
     virtual void set_reply_handler(std::function<void(EngineReply)> handler) = 0;
     virtual EngineSnapshot snapshot() const = 0;
     virtual bool configure_network(QJsonObject config, QString *error = nullptr) = 0;

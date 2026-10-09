@@ -1,342 +1,116 @@
-#include "synthetic_capture.h"
-#include "core_app/core_application.h"
-#include "core_app/main_window.h"
-#include "core_app/scheme_editor/editor_widget.h"
-#include "visualization/charts/freq.h"
-#include <QTemporaryDir>
-#include <QFile>
-#include <QJsonDocument>
-#include <QJsonArray>
-#include <DockAreaWidget.h>
-#include <QToolBar>
-#include <FloatingDockContainer.h>
-#include <QTest>
-#include <QProcess>
-#include <QOpenGLWidget>
-#include <QToolButton>
-#include <QMenu>
-#include <QMenuBar>
-#include <QAction>
-#include <QStatusBar>
-#include <QGraphicsView>
-#include <QFocusEvent>
-#include "core_app/settings_widget.h"
-#include "visualization/ui_text.h"
-#include <stdexcept>
-static QRect rectInWindow(QWidget *widget) {
-    if(auto *dock=qobject_cast<WorkspaceDock *>(widget); dock && dock->dockAreaWidget()) widget=dock->dockAreaWidget();
-    return QRect(widget->mapTo(widget->window(),QPoint()),widget->size());
+#include "numeric_gui_fixture.h"
+#include <core_app/numeric_view_adapter.h>
+#include <core_app/graph_panel.h>
+#include <visualization/charts/line.h>
+#include <visualization/numeric_metrics_view.h>
+#include <QtCharts/QChartView>
+#include <QPointer>
+#include <QTimer>
+#include <cstdio>
+static AbstractChartView* chart(WorkspaceDock* dock) {
+    auto* panel=qobject_cast<GraphPanel*>(dock->widget());
+    auto* result=panel?panel->active_chart():nullptr;
+    gui_fixture::check(result,"explicit active chart renderer");return result;
 }
-
-static void require(bool value, const char *message) {
-    if (!value)
-        throw std::runtime_error(message);
-}
-int main(int argc, char **argv) {
+int main(){
     try {
-        QTemporaryDir dir;
-        const bool restore = argc == 3;
-        const auto path = restore ? QString::fromLocal8Bit(argv[2]) : dir.filePath("views.json");
-        auto graph = pipeline::GraphProgram::test_signal_defaults();
-        auto nodes = graph["nodes"].toArray();
-        nodes.append(
-            QJsonObject{{"id", 55},
-                        {"internal-data", QJsonObject{{"model-name", "FFTView"}, {"channel", 1}, {"merge", 2}}},
-                        {"position", QJsonObject{{"x", 1500}, {"y", 400}}}});
-        graph["nodes"] = nodes;
-        auto edges = graph["connections"].toArray();
-        edges.append(QJsonObject{{"outNodeId", 1}, {"outPortIndex", 0}, {"inNodeId", 55}, {"inPortIndex", 0}});
-        graph["connections"] = edges;
-        if (!restore) {
-            QFile file(path);
-            require(file.open(QIODevice::WriteOnly), "fixture");
-            file.write(
-                QJsonDocument(QJsonObject{{"core", QJsonObject{{"run_loopback", false}, {"run_analyser", false}}},
-                                          {"pipeline_graph", graph},
-                                          {"scene_graph", graph}})
-                    .toJson());
-        }
-        auto bytes = path.toLocal8Bit();
-        char name[] = "gui_views_tests", flag[] = "--config";
-        char *args[]{name, flag, bytes.data(), nullptr};
-        int count = 3;
-        CoreApplication app(count, args, test_fixture::synthetic_capture_factory(false));
-        MainWindow *window = nullptr;
-        for (auto *widget : QApplication::topLevelWidgets())
-            if (auto *candidate = qobject_cast<MainWindow *>(widget))
-                window = candidate;
-        require(window, "window");
-        window->show();
-        QTest::qWait(250);
-        const auto extra_key =
-            QString::fromLatin1(QJsonDocument(QJsonArray{app.presenter().local_device_id(), "main", 55})
-                                    .toJson(QJsonDocument::Compact)
-                                    .toHex());
-        auto *extra = window->workspaceDock("nodeView_" + extra_key);
-        require(extra, "second FFT dock not created");
-        require(window->workspaceDocks().size() >= 9, "unexpected duplicate or missing views");
-        auto *first = window->workspaceDock("fftDock");
-        if(argc==2 && QString::fromLocal8Bit(argv[1])=="--navigation-only") {
-            auto *surface=window->workspaceDock("spectrogramDock");
-            auto *editor=window->findChild<SchemeEditorWidget *>();
-            require(surface && editor && !first->isHidden() && !extra->isHidden(),"Active graph tabs absent");
-            require(window->tabifiedDockWidgets(surface).contains(first) &&
-                    window->tabifiedDockWidgets(surface).contains(extra),"Graph nodes were not grouped in tabs");
-            const auto revision=app.pipeline().graph_revision();
-            auto *canvas=editor->findChild<QGraphicsView *>();
-            canvas->setFocus();app.processEvents();
-            emit editor->graph_view_requested(55);app.processEvents();
-            require(extra->widget()->isVisible(),"Graph block activation did not focus its tab");
-            require(canvas->hasFocus(),"Graph activation stole editor shortcut focus");
-            first->hide();emit editor->graph_view_requested(5);app.processEvents();
-            require(!first->isHidden() && first->widget()->isVisible(),"Graph block did not reopen/focus its hidden view");
-            require(!first->findChild<QToolButton *>("graphSelector") &&
-                    !first->findChild<QToolButton *>("toggleFloatingGraph"),"Duplicate graph controls retained");
-            auto *placement = extra->findChild<QAction *>("graphPlacement");
-            auto *renderer = dynamic_cast<FreqChartView *>(extra->findChild<QChartView *>());
-            require(placement && renderer && placement->menu()->actions().size()==4,"Explicit placement actions absent");
-            placement->menu()->actions()[0]->trigger(); app.processEvents();
-            require(extra->isFloating() && extra->property("renderExposed").toBool(),"Separate-window action failed");
-            placement->menu()->actions()[1]->trigger(); app.processEvents();
-            require(!extra->isFloating() && extra->findChild<QChartView *>()==renderer,"Return to tabs recreated view");
-            emit editor->graph_view_requested(5); app.processEvents();
-            require(first->property("renderExposed").toBool() && !extra->property("renderExposed").toBool(),
-                    "Inactive graph tab remains exposed for rendering");
-            pipeline::TypedFrame frame; frame.type=pipeline::FrameType::Spectrum; frame.values={1,2,3};
-            const auto hidden_count=renderer->value_count();
-            emit app.presenter().node_views_ready({{55,frame}});
-            require(renderer->value_count()==hidden_count,"Hidden graph still receives render data");
-            placement->menu()->actions()[2]->trigger(); app.processEvents();
-            require(first->property("renderExposed").toBool() && extra->property("renderExposed").toBool(),
-                    "Side-by-side graphs did not both become exposed");
-            emit app.presenter().node_views_ready({{55,frame}});
-            require(renderer->value_count()==3,"Exposed graph does not resume data updates");
-            placement->menu()->actions()[1]->trigger(); app.processEvents();
-            auto *menu=window->findChild<QMenu *>("graphsMenu");
-            require(menu && menu->title()==ui::text("Display") && !menu->actions().contains(first->toggleViewAction()),
-                    "Top Display menu retained graph list");
-            auto *settings=window->findChild<SettingsWidget *>();
-            require(settings && settings->findChild<QGroupBox *>("graphViewsSettings"),"Graph list was not moved into settings");
-            require(window->findChild<QAction *>("saveSettings")->shortcut()==QKeySequence::Save,"Ctrl+S was not restored");
-            require(window->findChild<QAction *>("saveSettingsAs")->shortcut()==QKeySequence::SaveAs &&
-                    window->findChild<QAction *>("openSettingsFile")->shortcut()==QKeySequence::Open,
-                    "Standard file shortcuts absent");
-            emit editor->graph_open_requested(55,0);app.processEvents();
-            require(extra->isFloating(),"Context graph window request failed");
-            placement->menu()->actions()[1]->trigger();app.processEvents();
-            require(!window->findChild<QMenu *>("pipelinePresetsMenu")->title().isEmpty(),"Display presets submenu has no title");
-            for(auto *dock:window->workspaceDocks()) if(dock->objectName()!="dataFlowDock") dock->hide();
-            app.processEvents();
-            emit editor->graph_view_requested(5);app.processEvents();
-            require(first->isHidden(),"Ordinary graph click created an unreserved area");
-            auto *flow=window->workspaceDock("dataFlowDock");
-            require(flow && rectInWindow(flow).bottom()<(window->statusBar()->isVisible() ? window->statusBar()->geometry().top() : window->height()),
-                    "Single Data Flow overlaps footer");
-            emit editor->graph_open_requested(5,1);app.processEvents();
-            require(!first->isHidden(),"Explicit context command did not reserve a graph area");
-            const auto region=rectInWindow(first);
-            emit editor->graph_view_requested(55);app.processEvents();
-            require(first->isHidden() && !extra->isHidden() && (rectInWindow(extra).center()-region.center()).manhattanLength()<15,
-                    "Switching a graph did not replace the reserved area");
-            emit editor->graph_open_requested(5,2);app.processEvents();
-            const auto untouched=rectInWindow(first), replaced=rectInWindow(extra);
-            QFocusEvent focusIn(QEvent::FocusIn);QApplication::sendEvent(extra->widget(),&focusIn);
-            emit editor->graph_view_requested(6);app.processEvents();
-            auto *mel=window->workspaceDock("melDock");
-            require(!first->isHidden() && extra->isHidden() && !mel->isHidden() &&
-                    (rectInWindow(first).center()-untouched.center()).manhattanLength()<15 &&
-                    (rectInWindow(mel).center()-replaced.center()).manhattanLength()<15,
-                    "Graph switch ignored the last interacted viewing area");
-            require(window->menuBar()->isAncestorOf(window->findChild<QToolButton *>("pipelinePresets")),
-                    "Presets not moved to the upper bar");
-            auto *fileMenu=window->findChild<QMenu *>("fileMenu");
-            require(fileMenu && fileMenu->actions().contains(window->findChild<QAction *>("saveSettings")) &&
-                    window->findChild<QAction *>("saveSettingsAs") && window->findChild<QAction *>("openSettingsFile"),
-                    "File settings actions absent");
-            const auto savedPath=dir.filePath("saved-as.json");
-            emit window->save_configuration_as_requested(savedPath);
-            QFile saved(savedPath);require(saved.open(QIODevice::ReadOnly) &&
-                QJsonDocument::fromJson(saved.readAll()).isObject(),"Save settings as did not write JSON");
-            saved.close();
-            QFile invalid(dir.filePath("invalid.json"));require(invalid.open(QIODevice::WriteOnly),"Invalid fixture");
-            invalid.write("{ invalid json");invalid.close();
-            emit window->open_configuration_requested(invalid.fileName());
-            require(window->isVisible() && !window->statusBar()->currentMessage().isEmpty(),
-                    "Invalid settings open did not retain window and report error");
-            require(window->findChild<QAction *>("resetCameraView")->shortcut()==QKeySequence("Alt+R"),"Reset camera shortcut not discoverable");
-            require(app.pipeline().graph_revision()==revision,"Graph navigation changed DSP revision");
-            window->close();qInfo("Graph tabs, activation, selector, settings and shortcut navigation passed");return 0;
-        }
-        auto *editor = window->findChild<SchemeEditorWidget *>();
-        require(editor, "graph editor absent");
-        first->show();
-        first->raise();
-        extra->show();
-        // Public QDock floating also represents dragging a tab into its own
-        // window; exposure must update without a placement-menu command.
-        extra->setFloating(true);
-        for (int i=0; i<100 && (!first->property("renderExposed").toBool() || !extra->property("renderExposed").toBool()); ++i)
-            QTest::qWait(5);
-        require(first->property("renderExposed").toBool() && extra->property("renderExposed").toBool(),
-                "Floating an inactive tab did not expose both renderers");
-        auto *a = dynamic_cast<FreqChartView *>(first->findChild<QChartView *>());
-        auto *b = dynamic_cast<FreqChartView *>(extra->findChild<QChartView *>());
-        require(a && b && a != b, "independent charts absent");
-        if (restore) {
-            require(extra->isFloating(), "dynamic dock layout not restored");
-            window->close();
-            return 0;
-        }
-        pipeline::TypedFrame left, right;
-        left.type = right.type = pipeline::FrameType::Spectrum;
-        left.values = {1, 2, 3};
-        right.values = {8, 9};
-        left.frequency_step = right.frequency_step = 10;
-        emit app.presenter().node_views_ready({{5, left}, {55, right}});
-        if (a->value_count() != 3 || b->value_count() != 2 || a->peak_value() != 3 || b->peak_value() != 9)
-            qCritical() << "Per-node values/counts:" << a->value_count() << a->peak_value() << b->value_count() << b->peak_value()
-                        << "Visibility:" << first->isVisible() << extra->isVisible();
-        require(a->value_count() == 3 && b->value_count() == 2 && a->peak_value() == 3 && b->peak_value() == 9,
-                "per-node frames cross-fed views");
-        emit app.presenter().node_views_ready({{55, right}});
-        require(a->value_count() == 3 && a->peak_value() == 0 && b->value_count() == 2 && b->peak_value() == 9,
-                "Missing node frame did not zero only its existing geometry");
-        pipeline::TypedFrame unavailable;
-        unavailable.available = false;
-        unavailable.sequence = 0;
-        emit app.presenter().node_views_ready({{5, left}, {55, unavailable}});
-        require(a->value_count() == 3 && a->peak_value() == 3 && b->value_count() == 2 && b->peak_value() == 0,
-                "Unavailable marker did not zero only affected node geometry");
-        if (app.platformName() != "offscreen" && app.platformName() != "minimal") {
-            auto *dock = window->workspaceDock("spectrogramDock");
-            require(dock, "spectrogram dock");
-            dock->show();
-            dock->raise();
-            QTest::qWait(100);
-            auto *surface = dock->findChild<SpectrogramGraph *>();
-            auto *native = surface->findChild<QOpenGLWidget *>("spectrogramContainer");
-            require(native && native->isValid(), "native surface");
-            pipeline::TypedFrame history;
-            history.type = pipeline::FrameType::History;
-            history.history_capacity = 7;
-            history.bands = 3;
-            history.history.assign(10, std::vector<float>(3, .2f));
-            history.history[9][1] = 1.8f;
-            const auto before = native->property("geometryUploads").toULongLong();
-            emit app.presenter().node_views_ready({{5, left}, {55, right}, {7, history}});
-            for (int wait = 0; wait < 50 && native->property("geometryUploads").toULongLong() == before; ++wait)
-                QTest::qWait(10);
-            require(native->property("historyCapacity").toULongLong() == 7 &&
-                        native->property("historyBands").toULongLong() == 3 &&
-                        native->property("validHistoryColumns").toULongLong() == 7,
-                    "Frame history metadata was transposed/clipped");
-            require(native->property("surfacePeakFrame").toULongLong() == 6 &&
-                        native->property("surfacePeakBand").toULongLong() == 1,
-                    "Frame-major history peak crossed time/band axes");
-            qInfo("GUI typed history: frame-major10x3,capacity7,peakframe6/band1 PASS");
-        }
-        emit app.presenter().views_cleared();
-        require(a->value_count() == 0 && b->value_count() == 0, "disconnect retained frame");
-        auto preferences = app._ctx.file_configs.ui.graph_views;
-        bool identity = false;
-        for (auto it = preferences.begin(); it != preferences.end(); ++it) {
-            auto p = it.value().toObject();
-            if (p["node"].toInt() == 55)
-                identity = p["device"].toString() == app.presenter().device_id() &&
-                           p["graph"].toString() == app.presenter().graph_id();
-        }
-        require(identity, "identity not persisted");
-        {
-            pipeline::AudioPipeline remote_engine(test_fixture::synthetic_capture_factory());
-            auto remote_graph = graph;
-            auto remote_nodes = remote_graph["nodes"].toArray();
-            remote_nodes.append(QJsonObject{
-                {"id", 100},
-                {"internal-data",
-                 QJsonObject{{"model-name", "NetworkInput"}, {"data_type", "mel"}, {"stream_id", "gui-control"}}}});
-            remote_nodes.append(QJsonObject{{"id", 101}, {"internal-data", QJsonObject{{"model-name", "MelView"}}}});
-            remote_graph["nodes"] = remote_nodes;
-            auto remote_edges = remote_graph["connections"].toArray();
-            remote_edges.append(
-                QJsonObject{{"outNodeId", 100}, {"outPortIndex", 0}, {"inNodeId", 101}, {"inPortIndex", 0}});
-            remote_graph["connections"] = remote_edges;
-            QString error;
-            if (!remote_engine.apply_graph(remote_graph, error)) {
-                qCritical() << error;
-                return 1;
-            }
-            pipeline::EngineServer server(remote_engine);
-            require(server.listen(QHostAddress::LocalHost, 0, false), "remote server");
-            app.presenter().select_device("remote-test", "127.0.0.1", server.port());
-            auto wait = [&](auto predicate, const char *message) {
-                QElapsedTimer clock;
-                clock.start();
-                while (!predicate() && clock.elapsed() < 4000)
-                    QTest::qWait(5);
-                if (!predicate())
-                    qCritical() << message << "Remote status:" << int(remote_engine.current_status("Capture").state)
-                                << int(remote_engine.current_status("Analyzer").state)
-                                << "processed:" << remote_engine.processed_frames()
-                                << "epoch:" << app.presenter().client().snapshot().epoch
-                                << "GUI status:" << int(app.presenter().client().snapshot().statuses.value("Capture").state)
-                                << int(app.presenter().client().snapshot().statuses.value("Analyzer").state);
-                require(predicate(), message);
-            };
-            wait([&] { return app.presenter().client().snapshot().epoch != 0; }, "Remote control handshake timeout");
-            auto dock_for = [&](int node) {
-                auto key = QString::fromLatin1(
-                    QJsonDocument(QJsonArray{"remote-test", "main", node}).toJson(QJsonDocument::Compact).toHex());
-                return window->workspaceDock("nodeView_" + key);
-            };
-            auto *fft_remote = dock_for(5), *mel_remote = dock_for(101);
-            require(fft_remote && mel_remote, "remote per-node views absent");
-            emit editor->graph_open_requested(5, 0);
-            emit editor->graph_open_requested(101, 0);
-            wait([&] { return fft_remote->property("renderExposed").toBool() && mel_remote->property("renderExposed").toBool(); },
-                 "Remote floating renderer exposure timeout");
-            auto *fft_chart = dynamic_cast<AbstractChartView *>(fft_remote->findChild<QChartView *>());
-            auto *mel_chart = dynamic_cast<AbstractChartView *>(mel_remote->findChild<QChartView *>());
-            require(fft_chart && mel_chart, "remote chart types");
-            remote_engine.start_analyzer();
-            remote_engine.start_capture();
-            wait([&] { return fft_chart->value_count() > 0; }, "Remote synthetic FFT delivery timeout");
-            pipeline::TypedFrame incoming;
-            incoming.type = pipeline::FrameType::Mel;
-            incoming.values = {42, 43};
-            incoming.sequence = 1;
-            incoming.generation = 99;
-            incoming.sample_rate = 48000;
-            incoming.stream_id = "gui-control";
-            remote_engine.feed_typed(100, incoming);
-            wait([&] { return mel_chart->value_count() == 2; }, "Remote injected Mel delivery timeout");
-            remote_engine.clear_ingress(100, remote_engine.epoch());
-            wait([&] { return mel_chart->value_count() == 2 && mel_chart->peak_value() == 0; }, "Remote unavailable Mel zero timeout");
-            require(fft_chart->value_count() > 0, "Upstream unavailable marker cleared independent remote branch");
-            incoming.sequence = 2;
-            remote_engine.feed_typed(100, incoming);
-            wait([&] { return mel_chart->value_count() == 2 && mel_chart->peak_value() == 43; }, "Remote resumed Mel delivery timeout");
-            remote_engine.stop_capture();
-            remote_engine.stop_analyzer();
-            for(int i=0; i<100 && app.presenter().client().snapshot().statuses.value("Analyzer").state!=pipeline::State::Stopped; ++i)
-                QTest::qWait(5);
-            if(mel_chart->value_count() || fft_chart->value_count())
-                qInfo() << "External Stop before clear:" << "FFT" << fft_chart->value_count() << fft_chart->peak_value()
-                        << "Mel" << mel_chart->value_count() << mel_chart->peak_value();
-            wait([&] { return mel_chart->value_count() == 0 && fft_chart->value_count() == 0; }, "Remote explicit Stop clear timeout");
-            wait([&] { return app.presenter().client().snapshot().statuses.value("Analyzer").state==pipeline::State::Stopped; },
-                 "Remote explicit Stop acknowledgement timeout");
-            app.presenter().select_device(app.presenter().local_device_id(), {}, 0);
-        }
-        window->close();
-        QProcess child;
-        child.start(QCoreApplication::applicationFilePath(), {"--restore", path});
-        require(child.waitForStarted(3000) && child.waitForFinished(10000) && child.exitCode() == 0,
-                "dynamic dock restart failed");
-        qInfo("GUI views: independent per-node data, inactive/disconnected clear, identity and floating dock restart "
-              "passed");
-        return 0;
-    } catch (const std::exception &error) {
-        qCritical("%s", error.what());
-        return 1;
-    }
+        using namespace gui_fixture;App app(numeric_test_graph(),{},{},true);app.apply();
+        auto* internal=app.open(10,2);auto* external=app.open(10,0);auto* mel=app.open(11,2);
+        check(internal!=external && external->isFloating(),"independent representations");
+        auto snapshot=app.presenter().client().snapshot();auto ctx=context(app.graph,10,domain::PortDirection::Input);auto other=context(app.graph,11,domain::PortDirection::Input);
+        const auto deliver=[&](std::uint64_t sequence,float value){emit app.presenter().numeric_frame_ready(floats(ctx,{snapshot.graph_revision,snapshot.epoch},sequence,value));};
+        deliver(1,.25f);emit app.presenter().numeric_frame_ready(floats(other,{snapshot.graph_revision,snapshot.epoch},1,3.f));
+        check(wait([&]{return chart(internal)->peak_value()==.25f && chart(external)->peak_value()==.25f && chart(mel)->peak_value()==3.f;}),"endpoint fanout and independent nodes");
+        auto* savedRenderer=internal->widget();internal->toggleView(false);QCoreApplication::processEvents();deliver(2,.5f);
+        check(wait([&]{return chart(external)->peak_value()==.5f;}),"external delivery while internal hidden");
+        check(chart(internal)->peak_value()==.25f,"hidden renderer performed projection");internal->toggleView(true);internal->raise();
+        const bool reopened=wait([&]{return chart(internal)->peak_value()==.5f;});
+        if(!reopened)std::fprintf(stderr,"reopen diagnostic: closed=%d visible=%d exposed=%d enabled=%d count=%zu peak=%g endpoint=%d\n",internal->isClosed(),internal->isVisible(),internal->property("renderExposed").toBool(),chart(internal)->updatesEnabled(),std::size_t(chart(internal)->value_count()),double(chart(internal)->peak_value()),!internal->property("numericEndpoint").toMap().isEmpty());
+        check(reopened,"reopen gets latest delivery");check(internal->widget()==savedRenderer,"reopen recreated renderer");
+        app.apply();snapshot=app.presenter().client().snapshot();deliver(3,.75f);
+        check(wait([&]{return chart(internal)->peak_value()==.75f && chart(external)->peak_value()==.75f;}),"compatible Apply fanout");
+        pipeline::DeliveredNumericFrame marker;marker.context=ctx;marker.delivery={snapshot.graph_revision-1,snapshot.epoch};marker.status=signal_contracts::Status::unavailable;
+        emit app.presenter().numeric_frame_ready(marker);QCoreApplication::processEvents();check(chart(external)->peak_value()==.75f,"stale marker cleared current view");
+        marker.delivery.graph_revision=snapshot.graph_revision;emit app.presenter().numeric_frame_ready(marker);
+        check(wait([&]{return chart(internal)->value_count()==0 && chart(external)->value_count()==0;}),"unavailable clears all instances");
+        check(chart(mel)->peak_value()==3.f,"unavailable leaked to another endpoint");
+        auto* historyPort=app.open(8,1,0);auto* countPort=app.open(12,1,0);
+        auto* historyPanel=qobject_cast<GraphPanel*>(historyPort->widget());auto* countPanel=qobject_cast<GraphPanel*>(countPort->widget());
+        check(historyPanel && countPanel,"all numeric ranks use universal GraphPanel");
+        const auto documentBeforeModes=app.editor->document();const auto revisionBeforeModes=app.presenter().client().snapshot().graph_revision;
+        historyPanel->set_display_mode("surface3d");countPanel->set_display_mode("image2d");
+        check(historyPanel->active_spectrogram() && countPanel->metrics_view() && !countPanel->image_view(),"matrix and scalar graph families enforce rank");
+        countPanel->set_display_mode("points");
+        check(countPanel->metrics_view() && !countPanel->active_chart(),"scalar graph cannot select a vector renderer");
+        check(app.editor->document()==documentBeforeModes && app.presenter().client().snapshot().graph_revision==revisionBeforeModes,"renderer mode edited DSP schema or applied graph");
+        check(historyPort->property("numericEndpoint").toMap()["node"].toInt()==8 && countPort->property("numericEndpoint").toMap()["node"].toInt()==12,"independent sink endpoints collide");
+        auto countContext=context(app.graph,12,domain::PortDirection::Input,0);
+        emit app.presenter().numeric_frame_ready(scalar(countContext,{snapshot.graph_revision,snapshot.epoch},1,9007199254740993ULL));
+        auto* exact=countPanel->metrics_view()->findChild<QLabel*>("metricValue_0");
+        check(exact && wait([&]{return exact->text().contains("9007199254740993");}),"count port exact UInt64 caption");
+        auto* metricNode=app.application->_ctx.data_flow_graph->delegateModel<AudioNodeModel>(12);
+        check(metricNode && metricNode->add_scalar_input(),"add independent scalar metric port");
+        check(metricNode->edit_scalar_input_name(1,"Second metric"),"name scalar metric port");app.apply();
+        snapshot=app.presenter().client().snapshot();domain::NumericProcessingGraph metricGraph;
+        check(app.editor->numeric_draft(metricGraph),"read metrics topology");
+        auto secondContext=context(metricGraph,12,domain::PortDirection::Input,1);
+        auto firstContext=context(metricGraph,12,domain::PortDirection::Input,0);
+        emit app.presenter().numeric_frame_ready(scalar(firstContext,{snapshot.graph_revision,snapshot.epoch},2,9007199254740993ULL));
+        emit app.presenter().numeric_frame_ready(scalar(secondContext,{snapshot.graph_revision,snapshot.epoch},2,18446744073709551615ULL));
+        check(wait([&]{auto* second=countPanel->metrics_view()->findChild<QLabel*>("metricValue_1");auto* first=countPanel->metrics_view()->findChild<QLabel*>("metricValue_0");return second && first && second->text()=="18446744073709551615" && first->text()=="9007199254740993";}),"multiple exact scalar inputs are independently bound");
+        check(countPanel->findChild<QWidget*>("scalarInputsEditor"),"graph sidebar metric input controls");
+        const auto metricRevision=app.presenter().client().snapshot().graph_revision;
+        metricNode=app.application->_ctx.data_flow_graph->delegateModel<AudioNodeModel>(12);
+        check(metricNode && metricNode->set_scalar_input_enabled(1,false),"hide metric input");
+        check(wait([&]{return !countPanel->metrics_view()->findChild<QLabel*>("metricValue_1");}),"hidden metric remains displayed");
+        check(app.presenter().client().snapshot().graph_revision==metricRevision,"hiding metric reconfigures DSP");
+        check(metricNode->set_scalar_input_enabled(1,true),"show metric input");
+        check(wait([&]{return countPanel->metrics_view()->findChild<QLabel*>("metricValue_1");}),"reenabled metric missing");
+        metricNode=app.application->_ctx.data_flow_graph->delegateModel<AudioNodeModel>(12);
+        check(metricNode && metricNode->remove_scalar_input(1),"remove metric port");app.apply();
+        // A live contract change retains dock identities and layout, rebuilding
+        // only the affected renderer and binding the new input contract.
+        internal->toggleView(false);
+        check(wait([&]{return !internal->property("renderExposed").toBool() && external->property("renderExposed").toBool();}),"hidden/exposed replacement precondition");
+        QPointer<QWidget> priorInternal=internal->widget(),priorExternal=external->widget();
+        auto changed=app.graph;auto node=std::find_if(changed.nodes.begin(),changed.nodes.end(),[](const auto& n){return n.id==10;});
+        const auto historyNode=std::find_if(changed.nodes.begin(),changed.nodes.end(),[](const auto& n){return n.id==8;});
+        node->kind="SpectrogramView";node->inputs=historyNode->inputs;
+        for(auto& edge:changed.edges)if(edge.to==10){edge.from=7;edge.output_port=0;}
+        check(app.editor->load_numeric_draft(changed),"live typed contract draft");app.apply();
+        auto* internalPanel=qobject_cast<GraphPanel*>(internal->widget());auto* externalPanel=qobject_cast<GraphPanel*>(external->widget());
+        check(internalPanel && externalPanel,"rank change must retain universal renderer choices");
+        internalPanel->set_display_mode("surface3d");externalPanel->set_display_mode("surface3d");
+        check(internalPanel->active_spectrogram() && externalPanel->active_spectrogram(),"matrix explicitly selects surface mode");
+        check(priorInternal.isNull() && priorExternal.isNull(),"replacement retained incompatible renderer");
+        check(!internalPanel->active_spectrogram()->updatesEnabled() && externalPanel->active_spectrogram()->updatesEnabled(),"replacement lost hidden/exposed renderer state");
+        check(external->isFloating() && internal->property("numericEndpoint").toMap()["direction"]=="input","contract change lost host/binding");
+        internal->toggleView(true);internal->raise();
+        check(wait([&]{return internal->property("renderExposed").toBool() && internalPanel->active_spectrogram()->updatesEnabled();}),"reopen replacement does not resume");
+        internal->toggleView(false);changed=app.graph;
+        check(app.editor->load_numeric_draft(changed),"restore chart contract draft");app.apply();
+        internalPanel=qobject_cast<GraphPanel*>(internal->widget());externalPanel=qobject_cast<GraphPanel*>(external->widget());
+        check(internalPanel && externalPanel,"universal panel after vector contract restoration");
+        internalPanel->set_display_mode("bars");externalPanel->set_display_mode("bars");
+        const auto timers=[&](WorkspaceDock* dock){return dock->widget()->findChildren<QTimer*>(QString{},Qt::FindDirectChildrenOnly);};
+        check(!chart(internal)->updatesEnabled() && chart(external)->updatesEnabled(),"chart replacement exposure state");
+        check(timers(internal).size()==1 && !timers(internal).front()->isActive() && timers(external).size()==1 && timers(external).front()->isActive(),"GraphPanel replacement information timer exposure");
+        internal->toggleView(true);internal->raise();
+        check(wait([&]{return chart(internal)->updatesEnabled() && timers(internal).front()->isActive();}),"reopened chart timer did not resume");
+        changed.nodes.erase(std::remove_if(changed.nodes.begin(),changed.nodes.end(),[](const auto& n){return n.id==10;}),changed.nodes.end());
+        changed.edges.erase(std::remove_if(changed.edges.begin(),changed.edges.end(),[](const auto& e){return e.to==10 || e.from==10;}),changed.edges.end());
+        check(app.editor->load_numeric_draft(changed),"delete draft");app.apply();
+        check(internal->property("numericEndpoint").toMap().isEmpty() && external->property("numericEndpoint").toMap().isEmpty(),"deleted endpoint remains bound");
+        check(chart(external)->value_count()==0,"secondary deleted view retained stale values");
+        std::uint64_t liveFrames=0,totalFrames=0;QString liveError;
+        const auto liveConnection=QObject::connect(&app.presenter(),&GuiPresenter::numeric_frame_ready,app.window,[&](const auto& frame){++totalFrames;if(frame.context && frame.context->endpoint.node==9 && frame.frame && frame.status==signal_contracts::Status::ok)++liveFrames;});
+        const auto rejectedConnection=QObject::connect(&app.presenter(),&GuiPresenter::command_rejected,app.window,[&](quint64,const QString& error){liveError=error;});
+        app.live_delivery->store(true,std::memory_order_release);const bool started=wait([&]{return liveFrames>=3;});
+        if(!started)qWarning()<<"Run diagnostic"<<"live"<<liveFrames<<"total"<<totalFrames<<"error"<<liveError<<"state"<<int(app.presenter().client().snapshot().statuses.value("analyzer").state)<<"raw binding"<<app.dock("rawSamplesDock")->property("numericEndpoint");
+        check(started,"silent actual Run delivery");
+        for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))dock->toggleView(false);
+        const auto hiddenFrames=liveFrames;check(wait([&]{return liveFrames>=hiddenFrames+3;}),"zero graph views stopped working processing/delivery");
+        QObject::disconnect(liveConnection);QObject::disconnect(rejectedConnection);
+        std::puts("Canonical GUI endpoint fanout, hidden/reopen, compatible Apply, unavailable and live renderer lifecycle PASS");return 0;
+    }catch(const std::exception& error){std::fprintf(stderr,"GUI views: %s\n",error.what());return 1;}
 }

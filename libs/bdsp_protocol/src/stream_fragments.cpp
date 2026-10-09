@@ -3,9 +3,9 @@
 #include <cstring>
 namespace bdsp_protocol {
 using signal_contracts::Status;
-CodecResult encode_fragment(std::span<const std::uint8_t> frame,std::size_t offset,std::span<std::uint8_t> out) noexcept {
-    if(frame.size()<StreamHeaderBytes || frame.size()>MaxFrameBytes || offset>=frame.size())return {Status::invalid_argument};
-    const auto chunk=std::min(StreamFragmentBytes,frame.size()-offset);
+CodecResult encode_fragment(std::span<const std::uint8_t> frame,std::size_t offset,std::span<std::uint8_t> out,std::size_t max_chunk_bytes) noexcept {
+    if(!max_chunk_bytes || max_chunk_bytes>StreamFragmentBytes || frame.size()<StreamHeaderBytes || frame.size()>MaxFrameBytes || offset>=frame.size())return {Status::invalid_argument};
+    const auto chunk=std::min(max_chunk_bytes,frame.size()-offset);
     const auto required=8+chunk;
     if(out.size()<required)return {Status::buffer_too_small,required};
     for(int i=0;i<4;++i){out[i]=std::uint8_t(frame.size()>>(8*i));out[4+i]=std::uint8_t(offset>>(8*i));}

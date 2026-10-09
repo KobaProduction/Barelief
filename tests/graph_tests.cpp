@@ -13,9 +13,56 @@
 #include <stdexcept>
 static void require(bool value,const char *message) { if(!value) throw std::runtime_error(message); }
 static QJsonObject edge(int from,int to) { return {{"outNodeId",from},{"outPortIndex",0},{"inNodeId",to},{"inPortIndex",0}}; }
+static void processing_equality_cases() {
+    auto node=[](int id,const QString &kind,QJsonObject p={}) {
+        p["model-name"]=kind;return QJsonObject{{"id",id},{"internal-data",p}};
+    };
+    const QJsonObject document{{"version",2},{"graph_id","equality"},{"nodes",QJsonArray{
+        node(0,"TestSignal"),node(1,"Splitter",{{"data_type","audio"},{"outputs",2}}),
+        node(2,"AudioView"),node(3,"AudioView"),node(4,"TestSignal")}},
+        {"connections",QJsonArray{edge(0,1),edge(1,2),edge(1,3)}}};
+    QString error;
+    const auto original=pipeline::GraphProgram::compile(document,error);require(bool(original),qPrintable(error));
+    auto reordered=document;const auto edges=document["connections"].toArray();
+    reordered["connections"]=QJsonArray{edges[2],edges[0],edges[1]};
+    const auto equivalent=pipeline::GraphProgram::compile(reordered,error);require(bool(equivalent),qPrintable(error));
+    require(original->same_processing_as(*equivalent) && equivalent->same_processing_as(*original),
+            "Reordered identical edge multiset changed processing identity");
+    const auto nodes=document["nodes"].toArray();reordered["nodes"]=QJsonArray{nodes[4],nodes[3],nodes[2],nodes[1],nodes[0]};
+    const auto reordered_nodes=pipeline::GraphProgram::compile(reordered,error);require(bool(reordered_nodes),qPrintable(error));
+    require(original->same_processing_as(*reordered_nodes),"Node serialization/topological order changed processing identity");
+    auto unequal=[&](QJsonObject candidate,const char *message) {
+        const auto changed=pipeline::GraphProgram::compile(candidate,error);require(bool(changed),qPrintable(error));
+        require(!original->same_processing_as(*changed) && !changed->same_processing_as(*original),message);
+    };
+    auto candidate=document;auto changed_edges=edges;changed_edges[0]=edge(4,1);candidate["connections"]=changed_edges;
+    unequal(candidate,"Changed source endpoint was ignored");
+    candidate=document;changed_edges=edges;auto changed_edge=changed_edges[1].toObject();changed_edge["outPortIndex"]=1;
+    changed_edges[1]=changed_edge;candidate["connections"]=changed_edges;
+    unequal(candidate,"Changed output port was ignored");
+    candidate=document;changed_edges=edges;changed_edges.removeAt(2);candidate["connections"]=changed_edges;
+    unequal(candidate,"Removed edge was ignored");
+    candidate=document;auto changed_nodes=nodes;auto changed_node=changed_nodes[0].toObject();
+    auto parameters=changed_node["internal-data"].toObject();parameters["amplitude"]=0.5;
+    changed_node["internal-data"]=parameters;changed_nodes[0]=changed_node;candidate["nodes"]=changed_nodes;
+    unequal(candidate,"Meaningful processing parameter was ignored");
+    candidate=document;changed_nodes=nodes;changed_node=changed_nodes[3].toObject();changed_node["id"]=30;
+    changed_nodes[3]=changed_node;candidate["nodes"]=changed_nodes;changed_edges=edges;changed_edges[2]=edge(1,30);
+    candidate["connections"]=changed_edges;unequal(candidate,"Stable node identity was ignored");
+    candidate=document;changed_edges=edges;changed_edges.append(edges[1]);candidate["connections"]=changed_edges;
+    require(!pipeline::GraphProgram::compile(candidate,error),"Duplicate incoming edge multiplicity accepted");
+    candidate=document;changed_edges=edges;changed_edge=changed_edges[1].toObject();changed_edge["inPortIndex"]=1;
+    changed_edges[1]=changed_edge;candidate["connections"]=changed_edges;
+    require(!pipeline::GraphProgram::compile(candidate,error),"Invalid input port accepted");
+    candidate=document;changed_nodes=nodes;changed_nodes.append(nodes[0]);candidate["nodes"]=changed_nodes;
+    require(!pipeline::GraphProgram::compile(candidate,error),"Duplicate node IDs accepted");
+    candidate=document;candidate["graph_id"]="different";unequal(candidate,"Graph identity was ignored");
+}
 int main(int argc,char **argv) {
     QCoreApplication app(argc,argv);
     try {
+        processing_equality_cases();
+        if(app.arguments().contains("--processing-equality-only"))return 0;
         auto document=pipeline::GraphProgram::defaults(); QString error;
         auto program=pipeline::GraphProgram::compile(document,error); require(bool(program),qPrintable(error));
         auto explicit_defaults=document;

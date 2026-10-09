@@ -1,0 +1,91 @@
+#include "core_app/workspace/processor_manager_dialog.h"
+#include "visualization/ui_text.h"
+#include <QTreeWidget>
+#include <QHeaderView>
+#include <QLabel>
+#include <QGroupBox>
+#include <QFormLayout>
+#include <QVBoxLayout>
+#include <QLineEdit>
+#include <QSpinBox>
+#include <QPushButton>
+#include <QMenu>
+#include <QHostAddress>
+
+namespace presentation {
+QString processor_caption(const ProcessorEndpoint &endpoint) { return endpoint.local ? ui::text("In-app processor") : endpoint.name; }
+ProcessorManagerDialog::ProcessorManagerDialog(ProcessorDirectoryModel &model, QString host, quint16 port, QWidget *parent)
+    : QDialog(parent), _model(model) {
+    setObjectName("engineRegistryDialog"); ui::bind(this,"windowTitle","Manage processors"); resize(600,520);
+    auto *layout = new QVBoxLayout(this);
+    auto *explanation = ui::make<QLabel>("Local processing needs no registry. Discover external processors through an aggregator.",this);
+    explanation->setWordWrap(true); layout->addWidget(explanation);
+    _list = new QTreeWidget(this); _list->setObjectName("processorManagerList"); _list->setRootIsDecorated(false);
+    _list->header()->setSectionResizeMode(QHeaderView::ResizeToContents); layout->addWidget(_list);
+    auto *direct = ui::make<QGroupBox>("Direct connection",this);
+    auto *directForm = new QFormLayout(direct);
+    auto *directHost = new QLineEdit("127.0.0.1",direct); directHost->setObjectName("processorHost");
+    auto *directPort = new QSpinBox(direct); directPort->setObjectName("processorPort"); directPort->setRange(1,65535); directPort->setValue(8213);
+    directForm->addRow(ui::make<QLabel>("Address",direct),directHost); directForm->addRow(ui::make<QLabel>("Port",direct),directPort);
+    auto *connectProcessor = ui::make<QPushButton>("Connect processor",direct); connectProcessor->setObjectName("connectProcessor"); directForm->addRow(connectProcessor);
+    layout->addWidget(direct);
+    auto *registry = ui::make<QGroupBox>("Discovery through registry",this); auto *form = new QFormLayout(registry);
+    auto *registryHost = new QLineEdit(host,registry); registryHost->setObjectName("registryHost");
+    auto *registryPort = new QSpinBox(registry); registryPort->setObjectName("registryPort"); registryPort->setRange(1,65535); registryPort->setValue(port);
+    form->addRow(ui::make<QLabel>("Registry address",registry),registryHost); form->addRow(ui::make<QLabel>("Registry port",registry),registryPort);
+    auto *discover = ui::make<QPushButton>("Discover engines",registry); discover->setObjectName("discoverEngines"); form->addRow(discover);
+    auto *disconnect = ui::make<QPushButton>("Disconnect registry",registry); form->addRow(disconnect);
+    _status = new QLabel(registry); _status->setObjectName("engineRegistryStatus"); _status->setWordWrap(true); form->addRow(_status); layout->addWidget(registry);
+    _warning = new QLabel(this); _warning->setWordWrap(true); layout->addWidget(_warning); set_warning({});
+    connect(discover,&QPushButton::clicked,this,[this,registryHost,registryPort] {
+        if (!_model.connect_registry(registryHost->text().trimmed(),quint16(registryPort->value())))
+            _status->setText(ui::text("Registry address must be an IP address"));
+    });
+    connect(disconnect,&QPushButton::clicked,this,[this] { _model.disconnect_registry(); });
+    connect(connectProcessor,&QPushButton::clicked,this,[this,directHost,directPort] {
+        const QHostAddress address(directHost->text().trimmed());
+        if (address.isNull()) { _status->setText(ui::text("Processor address must be an IP address")); return; }
+        const auto host = address.toString(); const auto port = quint16(directPort->value());
+        const auto id = host+":"+QString::number(port); _model.add_direct(id,host,port); _model.request_selection(id);
+    });
+    connect(_list,&QTreeWidget::itemActivated,this,[this](QTreeWidgetItem *item,int) { _model.request_selection(item->data(0,Qt::UserRole).toString()); });
+    connect(&_model,&ProcessorDirectoryModel::changed,this,[this] { refresh(); });
+    connect(&ui::Language::instance(),&ui::Language::changed,this,[this] { refresh(); }); refresh();
+}
+void ProcessorManagerDialog::set_warning(const QString &warning) { _warning->setText(warning); _warning->setVisible(!warning.isEmpty()); }
+void ProcessorManagerDialog::refresh() {
+    _list->clear(); _list->setHeaderLabels({ui::text("Processor"),ui::text("Endpoint"),ui::text("State")});
+    int available = 0;
+    for (const auto &endpoint : _model.processors()) {
+        if (endpoint.from_registry && endpoint.available) ++available;
+        auto *row = new QTreeWidgetItem(_list,{processor_caption(endpoint),endpoint.local ? ui::text("Inside this application") : endpoint.address+":"+QString::number(endpoint.port),
+            !endpoint.available ? ui::text("Unavailable") : endpoint.local ? ui::text("Available") : endpoint.allow_mutations ? ui::text("Editing allowed") : ui::text("Read-only engine")});
+        row->setData(0,Qt::UserRole,endpoint.id); row->setDisabled(!endpoint.available); row->setToolTip(2,endpoint.error);
+        if (endpoint.id == _model.selected_id()) _list->setCurrentItem(row);
+    }
+    const auto &snapshot = _model.discovery();
+    switch (snapshot.state) {
+    case DiscoveryState::Disconnected: _status->setText(ui::text("Registry disconnected. Local processing remains available.")); break;
+    case DiscoveryState::Connecting: _status->setText(ui::text("Connecting to registry…")); break;
+    case DiscoveryState::Connected: _status->setText(available ? ui::text("Available external processors: %1").arg(available) : ui::text("Registry connected; no external processors with a control endpoint.")); break;
+    case DiscoveryState::Unavailable: _status->setText(ui::text("Registry unavailable: %1").arg(ui::text(snapshot.error.toUtf8().constData()))); break;
+    }
+}
+ProcessorSelector::ProcessorSelector(ProcessorDirectoryModel &model, QAction *manage, QWidget *parent) : QToolButton(parent) {
+    ui::compact_control(this);
+    setObjectName("engineSelectorButton"); setMaximumWidth(260);
+    auto *menu = new QMenu(this); ui::button_menu(this,menu);
+    connect(menu,&QMenu::aboutToShow,this,[menu,&model,manage] {
+        menu->clear();
+        for (const auto &endpoint : model.processors()) {
+            auto *action = menu->addAction(processor_caption(endpoint)); action->setEnabled(endpoint.available);
+            action->setCheckable(true); action->setChecked(endpoint.id == model.selected_id()); action->setToolTip(endpoint.error);
+            QObject::connect(action,&QAction::triggered,menu,[&model,id=endpoint.id] { model.request_selection(id); });
+        }
+        menu->addSeparator(); menu->addAction(manage);
+    });
+    const auto refresh = [this,&model] { if (const auto *endpoint = model.selected()) { setText(processor_caption(*endpoint)); setToolTip(text()); } };
+    connect(&model,&ProcessorDirectoryModel::changed,this,refresh);
+    connect(&ui::Language::instance(),&ui::Language::changed,this,refresh); refresh();
+}
+}

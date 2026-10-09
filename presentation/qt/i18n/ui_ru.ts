@@ -1137,6 +1137,7 @@ Escape — отмена. Поддерживаются все раскладки.
     <message><source>Applied pipeline</source><translation>Применённая схема</translation></message>
     <message><source>Frame lag: %1 · Band: %2 · Value: %3</source><translation>Отставание: %1 · Полоса: %2 · Значение: %3</translation></message>
     <message><source>Generator example</source><translation>Пример с генератором</translation></message>
+    <message><source>Generator and loopback</source><translation>Генератор и loopback</translation></message>
     <message><source>Frame and band counts are defined by each spectrogram node.</source><translation>Число кадров и полос задаётся в узле спектрограммы.</translation></message>
     <message><source>Age range: %1 frames · Band range: %2 bands</source><translation>Диапазон отставания: %1 кадров · Полосы: %2</translation></message>
     <message><source>Amplitude range (y)</source><translation>Диапазон амплитуды (Y)</translation></message>
@@ -1249,7 +1250,44 @@ Escape — отмена. Поддерживаются все раскладки.
     <message><source>Frequency, Mel bands (X)</source><translation>Частота, Mel-полосы (X)</translation></message>
     <message><source>Edit...</source><translation>Изменить…</translation></message>
     <message><source>Time frame: %1 · Band: %2 · Value: %3</source><translation>Время, кадр: %1 · Полоса: %2 · Значение: %3</translation></message>
-  </context>
+    <message><source>Splitter</source><translation>Разделитель</translation></message>
+    <message><source>Route switch</source><translation>Переключатель маршрута</translation></message>
+    <message><source>Gate</source><translation>Разъединитель</translation></message>
+    <message><source>Signal measurement</source><translation>Измерение сигнала</translation></message>
+    <message><source>Value graph</source><translation>График значения</translation></message>
+    <message><source>WLED packet encoder</source><translation>Формирование пакета WLED</translation></message>
+    <message><source>WLED network output</source><translation>Отправка WLED в сеть</translation></message>
+    <message><source>Output count</source><translation>Количество выходов</translation></message>
+    <message><source>Active output (zero based)</source><translation>Активный выход (с нуля)</translation></message>
+    <message><source>Accumulated frames</source><translation>Накоплено кадров</translation></message>
+    <message><source>Frames (X)</source><translation>Кадры (X)</translation></message>
+    <message><source>scalar</source><translation>Скаляр</translation></message>
+    <message><source>wled-packet</source><translation>Пакет WLED</translation></message>
+    <message><source>operation</source><translation>Измерение</translation></message>
+      <message>
+        <source>Indexed spacing; coordinates shown in labels</source>
+        <translation>Шаг по индексам; координаты указаны в подписях</translation>
+    </message>
+    <message><source>Frequency bin (X)</source><translation>Частотный бин (X)</translation></message>
+    <message><source>Sample (X)</source><translation>Сэмпл (X)</translation></message>
+    <message><source>Time, seconds (X)</source><translation>Время, секунды (X)</translation></message>
+    <message><source>Band (X)</source><translation>Полоса (X)</translation></message>
+<message><source>Scene proportions</source><translation>Пропорции сцены</translation></message>
+<message><source>Scene geometry</source><translation>Геометрия сцены</translation></message>
+<message><source>Fixed scene proportions</source><translation>Фиксированные пропорции сцены</translation></message>
+<message><source>Proportions from sample counts</source><translation>Пропорции по числу отсчётов</translation></message>
+<message><source>Time width / height</source><translation>Ширина времени / высота</translation></message>
+<message><source>Band depth / height</source><translation>Глубина полос / высота</translation></message>
+    <message><source>Row index (X)</source><translation>Индекс строки (X)</translation></message>
+    <message><source>Column index (Z)</source><translation>Индекс столбца (Z)</translation></message>
+    <message><source>Band (Z)</source><translation>Полоса (Z)</translation></message>
+    <message><source>Invalid node presentation</source><translation>Некорректные настройки представления узла</translation></message>
+    <message><source>Pie</source><translation>Круговая диаграмма</translation></message>
+    <message><source>Pie charts require finite nonnegative values</source><translation>Круговая диаграмма требует конечных неотрицательных значений</translation></message>
+    <message><source>All values are zero</source><translation>Все значения равны нулю</translation></message>
+    <message><source>Value %1</source><translation>Значение %1</translation></message>
+    <message><source>Other</source><translation>Прочие</translation></message>
+</context>
     <context><name>Ui</name>
     <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
     <message><source>Open settings…</source><translation>Открыть настройки…</translation></message>
@@ -1311,6 +1349,131 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Focus Data Flow</source><translation>Фокус на поток данных</translation></message>
 <message><source>Hide or restore tool panels</source><translation>Скрыть или вернуть панели инструментов</translation></message>
 <message><source>Switch workspace tab…</source><translation>Переключить вкладку…</translation></message>
+<message><source>Sources</source><translation>Источники</translation></message>
+<message><source>Processors</source><translation>Обработчики</translation></message>
+<message><source>Converter</source><translation>Преобразователь</translation></message>
+<message><source>Spectrogram accumulator</source><translation>Накопитель спектрограммы</translation></message>
+<message><source>Edit parameters</source><translation>Изменить параметры</translation></message>
+<message><source>Numeric editor unavailable</source><translation>Числовой редактор недоступен</translation></message>
+<message><source>Legacy draft requires explicit migration</source><translation>Старый черновик требует явной миграции</translation></message>
+<message><source>Draft contains unsupported nodes</source><translation>Черновик содержит неподдерживаемые узлы</translation></message>
+<message><source>Numeric draft; processing integration pending</source><translation>Числовой черновик; подключение обработки ещё не завершено</translation></message>
+<message><source>Invalid node kind</source><translation>Неверный тип узла</translation></message>
+<message><source>Input dtype</source><translation>Тип чисел на входе</translation></message>
+<message><source>Output dtype</source><translation>Тип чисел на выходе</translation></message>
+<message><source>Semantic</source><translation>Смысл данных</translation></message>
+<message><source>Shape</source><translation>Форма</translation></message>
+<message><source>Scalar</source><translation>Число</translation></message>
+<message><source>Vector</source><translation>Вектор</translation></message>
+<message><source>Matrix</source><translation>Матрица</translation></message>
+<message><source>Numeric</source><translation>Числовые данные</translation></message>
+<message><source>Window</source><translation>Окно</translation></message>
+<message><source>Windowed</source><translation>После оконной функции</translation></message>
+<message><source>Spectrum</source><translation>Спектр</translation></message>
+<message><source>History</source><translation>История</translation></message>
+<message><source>First extent</source><translation>Размер первой оси</translation></message>
+<message><source>Second extent</source><translation>Размер второй оси</translation></message>
+<message><source>Unspecified</source><translation>Не задано</translation></message>
+<message><source>Frames</source><translation>Кадры</translation></message>
+<message><source>Layout</source><translation>Расположение</translation></message>
+<message><source>Planar</source><translation>По каналам</translation></message>
+<message><source>Interleaved</source><translation>С чередованием</translation></message>
+<message><source>Encoding</source><translation>Представление</translation></message>
+<message><source>Native</source><translation>Машинное</translation></message>
+<message><source>Little endian</source><translation>Младший байт первым</translation></message>
+<message><source>Big endian</source><translation>Старший байт первым</translation></message>
+<message><source>Packed PCM24 LE</source><translation>Упакованный PCM24 LE</translation></message>
+<message><source>Packed PCM24 BE</source><translation>Упакованный PCM24 BE</translation></message>
+<message><source>Normalization</source><translation>Нормализация</translation></message>
+<message><source>Signed unit</source><translation>Знаковая единичная</translation></message>
+<message><source>Unsigned unit</source><translation>Беззнаковая единичная</translation></message>
+<message><source>Float unit</source><translation>Вещественная единичная</translation></message>
+
+<message><source>History capacity</source><translation>Ёмкость истории</translation></message>
+<message><source>Maximum absolute</source><translation>Максимальный модуль</translation></message>
+<message><source>Rounding</source><translation>Округление</translation></message>
+<message><source>Toward zero</source><translation>К нулю</translation></message>
+<message><source>Nearest ties to even</source><translation>К ближайшему чётному</translation></message>
+<message><source>Overflow</source><translation>Переполнение</translation></message>
+<message><source>Reject</source><translation>Отклонить</translation></message>
+<message><source>Saturate</source><translation>Ограничить</translation></message>
+<message><source>Precision loss</source><translation>Потеря точности</translation></message>
+<message><source>Reject inexact</source><translation>Отклонить неточное</translation></message>
+<message><source>Allow declared</source><translation>Разрешить явно</translation></message>
+<message><source>Nonfinite values</source><translation>Неконечные значения</translation></message>
+<message><source>Replace finite</source><translation>Заменить конечным</translation></message>
+<message><source>Clamp finite</source><translation>Ограничить конечным</translation></message>
+<message><source>Scaling</source><translation>Масштабирование</translation></message>
+<message><source>Identity</source><translation>Без изменения</translation></message>
+<message><source>Integer affine</source><translation>Целочисленное аффинное</translation></message>
+<message><source>Dyadic affine</source><translation>Двоичное аффинное</translation></message>
+<message><source>PCM normalize</source><translation>Нормализовать PCM</translation></message>
+<message><source>PCM denormalize</source><translation>Денормализовать PCM</translation></message>
+<message><source>Binary64 affine</source><translation>Аффинное Binary64</translation></message>
+<message><source>NaN replacement</source><translation>Замена NaN</translation></message>
+<message><source>Negative infinity replacement</source><translation>Замена минус бесконечности</translation></message>
+<message><source>Positive infinity replacement</source><translation>Замена плюс бесконечности</translation></message>
+<message><source>Gain</source><translation>Усиление</translation></message>
+<message><source>Offset</source><translation>Смещение</translation></message>
+<message><source>Gain exponent (base 2)</source><translation>Степень двойки для усиления</translation></message>
+<message><source>Offset exponent (base 2)</source><translation>Степень двойки для смещения</translation></message>
+<message><source>Draft contains incompatible connections</source><translation>Черновик содержит несовместимые связи</translation></message>
+<message><source>Draft contains incompatible connection: %1 [%2], output %3 → %4 [%5], input %6</source><translation>Несовместимая связь в черновике: %1 [%2], выход %3 → %4 [%5], вход %6</translation></message>
+<message><source>Draft exceeds editor limits</source><translation>Черновик превышает ограничения редактора</translation></message>
+<message><source>Unsupported numeric draft version</source><translation>Неподдерживаемая версия числового черновика</translation></message>
+<message><source>Invalid execution interval</source><translation>Некорректный интервал анализа</translation></message>
+<message><source>Processing enabled</source><translation>Вычисления включены</translation></message>
+<message><source>Renderer precision loss</source><translation>Потеря точности при отображении</translation></message>
+<message><source>Age, seconds (X)</source><translation>Возраст, секунды (X)</translation></message>
+<message><source>Frequency, Hz (Z)</source><translation>Частота, Гц (Z)</translation></message>
+<message><source>Frequency bin (Z)</source><translation>Индекс частотного отсчёта (Z)</translation></message>
+<message><source>Sample (Z)</source><translation>Отсчёт (Z)</translation></message>
+<message><source>Value index (Z)</source><translation>Индекс значения (Z)</translation></message>
+<message><source>Frames (Y)</source><translation>Кадры (Y)</translation></message>
+<message><source>Channel %1</source><translation>Канал %1</translation></message>
+<message><source>Output port %1</source><translation>Выходной порт %1</translation></message>
+<message><source>WLED packet available · Peak: %1 Hz · Magnitude: %2 (raw) · Counter: %3</source><translation>WLED-пакет доступен · Пиковая частота: %1 Гц · Величина: %2 (исходная) · Счётчик: %3</translation></message>
+<message><source>WLED packet invalid · Invalid size</source><translation>Некорректный WLED-пакет · Неверный размер</translation></message>
+<message><source>WLED packet invalid · Invalid header</source><translation>Некорректный WLED-пакет · Неверный заголовок</translation></message>
+<message><source>WLED packet invalid · Non-finite metric</source><translation>Некорректный WLED-пакет · Нечисловая или бесконечная метрика</translation></message>
+<message><source>WLED packet invalid · Decode limit exceeded</source><translation>Некорректный WLED-пакет · Превышен предел декодирования</translation></message>
+<message><source>WLED packet invalid · Decode failed</source><translation>Некорректный WLED-пакет · Ошибка декодирования</translation></message>
+<message><source>Show on block</source><translation>Показывать на блоке</translation></message>
+<message><source>Destination IP address</source><translation>IP-адрес назначения</translation></message>
+<message><source>Interface IP address</source><translation>IP-адрес интерфейса</translation></message>
+<message><source>Send interval, ms</source><translation>Интервал отправки, мс</translation></message>
+<message><source>Bytes</source><translation>Байты</translation></message>
+<message><source>First value</source><translation>Первое значение</translation></message>
+<message><source>Input port %1</source><translation>Входной порт %1</translation></message>
+<message><source>Capture source</source><translation>Источник захвата</translation></message>
+<message><source>Merge mode</source><translation>Режим объединения</translation></message>
+<message><source>Mel bands</source><translation>Mel-полосы</translation></message>
+<message><source>Window size</source><translation>Размер окна</translation></message>
+<message><source>Tones</source><translation>Количество тонов</translation></message>
+<message><source>Sample rate</source><translation>Частота дискретизации</translation></message>
+<message><source>Minimum frequency</source><translation>Минимальная частота</translation></message>
+<message><source>Maximum frequency</source><translation>Максимальная частота</translation></message>
+<message><source>Period, seconds</source><translation>Период, секунды</translation></message>
+<message><source>Sweep depth</source><translation>Глубина изменения частоты</translation></message>
+<message><source>Value (Y)</source><translation>Значение (Y)</translation></message>
+<message><source>Value index (X)</source><translation>Индекс значения (X)</translation></message>
+<message><source>Columns: %1</source><translation>Столбцы: %1</translation></message>
+<message><source>Column Slice</source><translation>Срез по столбцу</translation></message>
+<message><source>Age: %1 · Coordinate: %2 · Value: %3</source><translation>Возраст: %1 · Координата: %2 · Значение: %3</translation></message>
+<message><source>Renderer projection unavailable</source><translation>Представление данных недоступно</translation></message>
+<message><source>Waiting for data. Check the source and connections in Data Flow.</source><translation>Ожидание данных. Проверьте источник и связи в схеме обработки.</translation></message>
+<message><source>Exact value: %1</source><translation>Точное значение: %1</translation></message>
+<message><source>Frames: %1</source><translation>Кадры: %1</translation></message>
+<message><source>Schema: %1 · Version: %2 · Bytes: %3</source><translation>Схема: %1 · Версия: %2 · Байты: %3</translation></message>
+<message><source>Unit</source><translation>Единица измерения</translation></message>
+<message><source>Operation</source><translation>Операция</translation></message>
+<message><source>Closed</source><translation>Закрыт</translation></message>
+<message><source>Open</source><translation>Открыт</translation></message>
+<message><source>None</source><translation>Нет</translation></message>
+<message><source>Hz</source><translation>Гц</translation></message>
+<message><source>s</source><translation>с</translation></message>
+<message><source>Show or hide Data Flow</source><translation>Показать или скрыть поток данных</translation></message>
+<message><source>Enter a valid %1 value between %2 and %3.</source><translation>Введите корректное значение %1 в диапазоне от %2 до %3.</translation></message>
 </context>
 
 <context>
@@ -1385,5 +1548,179 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Detach Group</source><translation>Отделить группу</translation></message>
 <message><source>Close Tab</source><translation>Закрыть вкладку</translation></message>
 <message><source>Minimize</source><translation>Свернуть</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Edit network source</source><translation>Изменить сетевой источник</translation></message>
+<message><source>Invalid network source settings</source><translation>Некорректные настройки сетевого источника</translation></message>
+<message><source>Provider UUID</source><translation>UUID провайдера</translation></message>
+<message><source>Stream ID</source><translation>Идентификатор потока</translation></message>
+<message><source>Remote host</source><translation>Удалённый адрес</translation></message>
+<message><source>Remote service port</source><translation>Порт удалённого сервиса</translation></message>
+<message><source>Device identity</source><translation>Идентификатор устройства</translation></message>
+<message><source>Remote graph ID</source><translation>Идентификатор удалённой схемы</translation></message>
+<message><source>Remote node ID</source><translation>Идентификатор удалённого узла</translation></message>
+<message><source>Remote port index</source><translation>Индекс удалённого порта</translation></message>
+<message><source>Remote port direction</source><translation>Направление удалённого порта</translation></message>
+<message><source>Input port</source><translation>Входной порт</translation></message>
+<message><source>Output port</source><translation>Выходной порт</translation></message>
+<message><source>Unspecified</source><translation>Не задано</translation></message>
+<message><source>Run</source><translation>Запустить</translation></message>
+<message><source>Stop</source><translation>Остановить</translation></message>
+<message><source>Reset node settings</source><translation>Сбросить настройки узла</translation></message>
+<message><source>Unsupported node settings</source><translation>Недопустимые настройки узла</translation></message>
+<message><source>Device does not support these node settings</source><translation>Устройство не поддерживает эти настройки узла</translation></message>
+<message><source>Disconnect affected ports before changing their contract</source><translation>Перед изменением контракта отключите затронутые порты</translation></message>
+<message><source>Connection rejected: incompatible or unsupported ports</source><translation>Связь отклонена: несовместимые или неподдерживаемые порты</translation></message>
+<message><source>Capture failed</source><translation>Ошибка захвата</translation></message>
+<message><source>Capture starting</source><translation>Запуск захвата</translation></message>
+<message><source>Capture running</source><translation>Захват работает</translation></message>
+<message><source>Capture recovering</source><translation>Восстановление захвата</translation></message>
+<message><source>Capture device</source><translation>Устройство захвата</translation></message>
+<message><source>Refresh devices</source><translation>Обновить устройства</translation></message>
+<message><source>Capture device status</source><translation>Состояние устройства захвата</translation></message>
+<message><source>Follow system default</source><translation>Следовать системному устройству</translation></message>
+<message><source>Unavailable device: %1</source><translation>Недоступное устройство: %1</translation></message>
+<message><source>Selected capture device is unavailable</source><translation>Выбранное устройство захвата недоступно</translation></message>
+<message><source>Processing stopped</source><translation>Обработка остановлена</translation></message>
+<message><source>Processing starting</source><translation>Запуск обработки</translation></message>
+<message><source>Processing failed</source><translation>Ошибка обработки</translation></message>
+<message><source>Draft not active</source><translation>Черновик не применён</translation></message>
+<message><source>Input selector</source><translation>Выбор входа</translation></message>
+<message><source>Selected input</source><translation>Выбранный вход</translation></message>
+<message><source>Input 0</source><translation>Вход 0</translation></message>
+<message><source>Input 1</source><translation>Вход 1</translation></message>
+<message><source>System audio (loopback)</source><translation>Системный звук (loopback)</translation></message>
+<message><source>Microphone</source><translation>Микрофон</translation></message>
+<message><source>Choose system default before changing capture source</source><translation>Перед сменой источника выберите системное устройство</translation></message>
+<message><source>Audio</source><translation>Аудио</translation></message>
+<message><source>Generators</source><translation>Генераторы</translation></message>
+<message><source>Transport</source><translation>Транспорт</translation></message>
+<message><source>Routing</source><translation>Маршрутизация</translation></message>
+<message><source>Accumulation</source><translation>Накопление</translation></message>
+<message><source>DSP</source><translation>DSP</translation></message>
+<message><source>BDSP input (TCP)</source><translation>Вход BDSP (TCP)</translation></message>
+<message><source>BDSP socket output</source><translation>Выход BDSP через сокет</translation></message>
+<message><source>Visible on block</source><translation>Поля на блоке</translation></message>
+<message><source>Source / route</source><translation>Источник / маршрут</translation></message>
+<message><source>Processing</source><translation>Обработка</translation></message>
+<message><source>Data contract</source><translation>Контракт данных</translation></message>
+<message><source>Additional settings</source><translation>Дополнительные настройки</translation></message>
+<message><source>Editor display</source><translation>Вид редактора</translation></message>
+<message><source>Block width</source><translation>Ширина блока</translation></message>
+<message><source>Port spacing</source><translation>Интервал портов</translation></message>
+<message><source>Port radius</source><translation>Радиус порта</translation></message>
+<message><source>Port font size</source><translation>Размер шрифта портов</translation></message>
+<message><source>Connection conversion</source><translation>Преобразование на связи</translation></message>
+<message><source>Exact; reject inexact or overflow</source><translation>Точно; отказ при потере точности или переполнении</translation></message>
+<message><source>Round nearest; reject overflow</source><translation>К ближайшему; отказ при переполнении</translation></message>
+<message><source>Round toward zero; reject overflow</source><translation>К нулю; отказ при переполнении</translation></message>
+<message><source>Round nearest; saturate overflow</source><translation>К ближайшему; насыщение при переполнении</translation></message>
+<message><source>Dtype only; range and precision checked at runtime</source><translation>Только dtype; диапазон и точность проверяются при обработке</translation></message>
+<message><source>Invalid connection policy</source><translation>Недопустимая политика связи</translation></message>
+<message><source>Range overflow</source><translation>Переполнение диапазона</translation></message>
+<message><source>Precision or value rejected</source><translation>Отказ: точность или значение</translation></message>
+<message><source>Frame %1; timestamp %2 ticks</source><translation>Кадр %1; метка времени %2 тактов</translation></message>
+<message><source>Diagnostics / display</source><translation>Диагностика / отображение</translation></message>
+<message><source>Exact connection</source><translation>Точная связь</translation></message>
+<message><source>Incompatible connection</source><translation>Несовместимая связь</translation></message>
+<message><source>Exact dtype widening</source><translation>Точное расширение dtype</translation></message>
+<message><source>Potential loss: range / rounding / precision</source><translation>Возможные потери: диапазон / округление / точность</translation></message>
+<message><source>Nonfinite values are rejected</source><translation>NaN и бесконечность отвергаются</translation></message>
+    <message><source>History capacity, frames</source><translation>Ёмкость истории, кадров</translation></message>
+    <message><source>Window size, samples</source><translation>Размер окна, отсчётов</translation></message>
+    <message><source>Sample rate, Hz</source><translation>Частота дискретизации, Гц</translation></message>
+    <message><source>Minimum frequency, Hz</source><translation>Минимальная частота, Гц</translation></message>
+    <message><source>Maximum frequency, Hz</source><translation>Максимальная частота, Гц</translation></message>
+    <message><source>Spectrogram graph</source><translation>График спектрограммы</translation></message>
+    <message><source>Not connected</source><translation>Не подключён</translation></message>
+<message><source>Spectrogram data</source><translation>Данные спектрограммы</translation></message>
+
+<message><source>Audio window</source><translation>Окно звука</translation></message>
+<message><source>Windowed audio</source><translation>Звук с оконной функцией</translation></message>
+<message><source>Frame count</source><translation>Число кадров</translation></message>
+<message><source>Data</source><translation>Данные</translation></message>
+<message><source>Number</source><translation>Число</translation></message>
+<message><source>Array</source><translation>Массив</translation></message>
+
+<message><source>Clock</source><translation>Часы</translation></message>
+<message><source>Every finite source value is preserved exactly</source><translation>Все конечные значения источника сохраняются точно</translation></message>
+<message><source>Fractional values require rounding; exact mode rejects them</source><translation>Дробные значения требуют округления; точный режим отклоняет их</translation></message>
+<message><source>Negative values are outside the destination range</source><translation>Отрицательные значения вне диапазона получателя</translation></message>
+<message><source>Some values lose precision in the destination mantissa</source><translation>Некоторые значения теряют точность в мантиссе получателя</translation></message>
+<message><source>Destination range: %1 … %2</source><translation>Диапазон получателя: %1 … %2</translation></message>
+<message><source>Overflow is rejected or saturated according to the selected policy; no wrap</source><translation>Переполнение отклоняется или ограничивается выбранной политикой; циклического переноса нет</translation></message>
+<message><source>↔ Convert</source><translation>↔ Тип</translation></message>
+<message><source>! Risk</source><translation>! Риск</translation></message>
+<message><source>× Error</source><translation>× Ошибка</translation></message>
+<message><source>Click to inspect conversion</source><translation>Нажмите, чтобы посмотреть преобразование</translation></message>
+<message><source>No observed runtime conversion error</source><translation>Ошибка преобразования не зарегистрирована</translation></message>
+<message><source>Runtime error: %1</source><translation>Ошибка обработки: %1</translation></message>
+<message><source>Audio window buffer</source><translation>Буфер окна звука</translation></message>
+<message><source>Audio window graph</source><translation>График окна звука</translation></message>
+<message><source>Windowed audio graph</source><translation>График звука с окном</translation></message>
+<message><source>Window function graph</source><translation>График оконной функции</translation></message>
+<message><source>Invalid policy</source><translation>Неверная политика</translation></message>
+<message><source>Time</source><translation>Время</translation></message>
+<message><source>History element</source><translation>Элемент истории</translation></message>
+<message><source>Sample</source><translation>Отсчёт</translation></message>
+<message><source>Band</source><translation>Полоса</translation></message>
+<message><source>Declared</source><translation>Заданные</translation></message>
+<message><source>Bin</source><translation>Бин</translation></message>
+<message><source>Input %1</source><translation>Вход %1</translation></message>
+<message><source>Input count</source><translation>Количество входов</translation></message>
+<message><source>Add input</source><translation>Добавить вход</translation></message>
+<message><source>Remove last input</source><translation>Удалить последний вход</translation></message>
+<message><source>Remove input</source><translation>Удалить вход</translation></message>
+<message><source>Data Flow runs continuously; valid changes apply automatically.</source><translation>Схема работает непрерывно; допустимые изменения применяются автоматически.</translation></message>
+<message><source>Rename graph</source><translation>Переименовать график</translation></message>
+<message><source>Graph name (empty restores default)</source><translation>Название графика (пустое — стандартное)</translation></message>
+<message><source>Bypass</source><translation>Байпас</translation></message>
+<message><source>Skip processing. Compatible signals pass through; other outputs use typed silence.</source><translation>Пропустить обработку. Совместимые сигналы проходят без изменений; для остальных выходов передаётся типизированная тишина.</translation></message>
+<message><source>Time relative to latest, seconds (X)</source><translation>Время относительно последнего значения, с (X)</translation></message>
+<message><source>Current value unavailable</source><translation>Текущее значение недоступно</translation></message>
+<message><source>PCM resampler</source><translation>Ресемплер PCM</translation></message>
+<message><source>Output sample rate, Hz</source><translation>Выходная частота дискретизации, Гц</translation></message>
+<message><source>Connected nodes do not support this sample rate</source><translation>Подключённые блоки не поддерживают эту частоту дискретизации</translation></message>
+<message><source>Edit sample rate</source><translation>Изменить частоту дискретизации</translation></message>
+<message><source>Change capture source and sample rate separately</source><translation>Меняйте источник захвата и частоту дискретизации по отдельности</translation></message>
+<message><source>Auto range interval (s)</source><translation>Интервал автомасштаба (с)</translation></message>
+<message><source>Age (s): %1</source><translation>Возраст (с): %1</translation></message>
+<message><source>Age (frames): %1</source><translation>Возраст (кадры): %1</translation></message>
+<message><source>Frequency (Hz)</source><translation>Частота (Гц)</translation></message>
+<message><source>Frequency bin</source><translation>Частотный отсчёт</translation></message>
+<message><source>Value index</source><translation>Индекс значения</translation></message>
+<message><source>Value</source><translation>Значение</translation></message>
+<message><source>Line</source><translation>Линия</translation></message>
+<message><source>Points</source><translation>Точки</translation></message>
+<message><source>Bars</source><translation>Столбцы</translation></message>
+<message><source>Image 2D</source><translation>Изображение 2D</translation></message>
+<message><source>Surface 3D</source><translation>Поверхность 3D</translation></message>
+<message><source>Display mode</source><translation>Режим отображения</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Show value</source><translation>Показывать значение</translation></message>
+<message><source>Edit metric inputs</source><translation>Изменить входы показателей</translation></message>
+<message><source>Index extractor</source><translation>Извлечение по индексу</translation></message>
+<message><source>Channel index</source><translation>Индекс канала</translation></message>
+<message><source>Element index</source><translation>Индекс элемента</translation></message>
+<message><source>Column index</source><translation>Индекс столбца</translation></message>
+</context>
+
+<context><name>Ui</name>
+<message><source>Temporal frame (X)</source><translation>Временной кадр (X)</translation></message>
+<message><source>Time delay, seconds (X)</source><translation>Задержка, секунды (X)</translation></message>
+<message><source>Temporal frame: %1</source><translation>Временной кадр: %1</translation></message>
+<message><source>Time delay (s): %1</source><translation>Задержка (с): %1</translation></message>
+<message><source>Frequency axis</source><translation>Ось частоты</translation></message>
+<message><source>Time axis</source><translation>Ось времени</translation></message>
+<message><source>Hertz (source coordinates)</source><translation>Герцы (координаты источника)</translation></message>
+<message><source>Positions</source><translation>Позиции</translation></message>
+<message><source>Delay in seconds (source coordinates)</source><translation>Задержка в секундах (координаты источника)</translation></message>
+<message><source>Temporal frames</source><translation>Временные кадры</translation></message>
+<message><source>Physical coordinates require source metadata; otherwise positions are shown.</source><translation>Физические координаты требуют метаданных источника; иначе отображаются позиции.</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Hertz unavailable: source has no coordinates</source><translation>Герцы недоступны: нет координат источника</translation></message>
+<message><source>Seconds unavailable: source has no timestamps</source><translation>Секунды недоступны: нет временных меток</translation></message>
 </context>
 </TS>

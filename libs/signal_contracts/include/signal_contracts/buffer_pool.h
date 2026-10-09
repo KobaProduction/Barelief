@@ -31,8 +31,8 @@ private:
 // Acquire/release are thread safe; copying or writing the same handle needs synchronization.
 class BufferPool {
 public:
-    BufferPool(std::span<std::byte> storage, std::span<BufferSlot> slots, std::size_t block_bytes) noexcept
-        : storage_(storage), slots_(slots), block_bytes_(block_bytes) {}
+    BufferPool(std::span<std::byte> storage, std::span<BufferSlot> slot_storage, std::size_t block_bytes) noexcept
+        : storage_(storage), slots_(slot_storage), block_bytes_(block_bytes) {}
     BufferPool(const BufferPool &) = delete;
     BufferPool &operator=(const BufferPool &) = delete;
     Status acquire(std::size_t bytes, BufferHandle &out) noexcept;

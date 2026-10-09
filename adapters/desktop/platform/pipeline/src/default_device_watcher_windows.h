@@ -7,7 +7,7 @@ namespace pipeline {
 // Endpoint notifications only; device lifetime belongs to the capture worker.
 class WindowsDefaultDeviceWatcher {
 public:
-    WindowsDefaultDeviceWatcher(bool loopback, std::atomic<bool> &changed);
+    WindowsDefaultDeviceWatcher(bool loopback, std::atomic<bool> &changed, std::wstring selected = {});
     ~WindowsDefaultDeviceWatcher();
     const std::wstring &device_id() const;
 private:

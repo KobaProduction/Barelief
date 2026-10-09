@@ -34,10 +34,17 @@ config STREAMER_FFT_SIZE
     default 2048 if PORTABLE_SDK_MAX_FFT_SIZE >= 2048
     default PORTABLE_SDK_MAX_FFT_SIZE
 config STREAMER_MEMORY_KIB
-    int "Explicit DSP/source/adapter memory budget (KiB)"
-    range 64 512
-    default 384 if STREAMER_FFT_4096
-    default 256
+    int "Explicit DSP/source/control/adapter memory budget (KiB)"
+    range 64 16384
+    default 320
+config STREAMER_CONTROL_WIRE_KIB
+    int "Complete canonical CONTROL message limit (KiB)"
+    range 4 96
+    default 4
+config STREAMER_CONTROL_ARENA_KIB
+    int "Canonical CONTROL decode arena (KiB)"
+    range 8 64
+    default 8
 config STREAMER_EXTERNAL_PCM
     bool "Use explicit host I2S/Bluetooth PCM hook instead of synthetic tones"
     default n

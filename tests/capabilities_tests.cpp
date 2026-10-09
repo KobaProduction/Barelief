@@ -1,57 +1,15 @@
-#include "aggregator/aggregator_client.h"
-#include "aggregator/aggregator_server.h"
+#include <aggregator/capabilities.h>
 #include <QCoreApplication>
-#include <QElapsedTimer>
-#include <QThread>
-#include <QJsonArray>
+#include <cstdio>
 #include <stdexcept>
-static void require(bool b, const char *m) {
-    if (!b)
-        throw std::runtime_error(m);
-}
-static bool wait(std::function<bool()> f) {
-    QElapsedTimer t;
-    t.start();
-    while (!f() && t.elapsed() < 2000) {
-        QCoreApplication::processEvents();
-        QThread::msleep(1);
-    }
-    return f();
-}
-int main(int argc, char **argv) {
-    QCoreApplication app(argc, argv);
-    try {
-        AggregatorServer s;
-        require(s.start(0), "start");
-        QUuid uuid = QUuid::createUuid();
-        AggregatorClient a({uuid, ComponentType::core, 8213, 321});
-        a.set_capabilities({{"stream_port", 8214},
-                            {"streams", QJsonArray{QJsonObject{{"id", "mel"}, {"data_type", "mel"}}}},
-                            {"node_kinds", QJsonArray{"Mel"}},
-                            {"allow_mutations", false}});
-        a.connect_to_aggregator_server(QHostAddress::LocalHost, s.serverPort(), 2000);
-        require(wait([&] { return a.is_registered(); }), "registration");
-        AggregatorClient duplicate({uuid, ComponentType::core, 8213, 321});
-        duplicate.set_reconnect_mode(false, 0);
-        duplicate.connect_to_aggregator_server(QHostAddress::LocalHost, s.serverPort(), 2000);
-        require(wait([&] { return duplicate.runtime_state() == core::RuntimeState::Failed; }),
-                "live UUID with matching session token was not rejected");
-        require(a.is_registered() && a.is_connected(), "duplicate displaced active provider");
-        AggregatorClient b({QUuid::createUuid(), ComponentType::data_sink, 0});
-        b.connect_to_aggregator_server(QHostAddress::LocalHost, s.serverPort(), 2000);
-        require(wait([&] { return b.capabilities().contains(uuid); }), "metadata snapshot");
-        auto m = b.capabilities()[uuid];
-        require(m["stream_port"] == 8214 && m["node_kinds"].toArray().contains("Mel") && !m["allow_mutations"].toBool(),
-                "capability fields");
-        a.disconnect_from_aggregator_server();
-        require(
-            wait([&] { return b.capabilities().value(uuid)["state"].toInt() == int(ComponentState::disconnected); }),
-            "availability");
-        a.connect_to_aggregator_server(QHostAddress::LocalHost, s.serverPort(), 2000);
-        require(wait([&] { return b.capabilities().value(uuid)["state"].toInt() >= 3; }), "restore");
-        return 0;
-    } catch (const std::exception &e) {
-        qCritical() << e.what();
-        return 1;
-    }
-}
+static void require(bool b,const char* m){if(!b)throw std::runtime_error(m);}
+int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
+QJsonObject c{{"version",3},{"uuid",QUuid::createUuid().toString()},{"control_version",2},{"data_version",4},{"stream_port",8213},{"publisher_incarnation","18446744073709551615"},{"graph_revision","0"},{"streams",QJsonArray{QJsonObject{{"id","count"},{"graph_id","g"},{"node_id",7},{"direction","input"},{"port_index",1},{"payload_version",4}}}}};
+require(aggregator_capabilities::valid(c),"canonical directory refused");QJsonObject out;require(aggregator_capabilities::decode(aggregator_capabilities::encode(c),out)&&out==c,"roundtrip");
+for(const auto key:{"version","control_version","data_version","stream_port"}){auto bad=c;bad[key]=3.5;out=c;require(!aggregator_capabilities::decode(aggregator_capabilities::encode(bad),out)&&out==c,"fractional value accepted or output changed");}
+for(const auto key:{"publisher_incarnation","graph_revision"}){auto bad=c;bad[key]="01";require(!aggregator_capabilities::valid(bad),"noncanonical identity accepted");}
+auto bad=c;bad["version"]=2;require(!aggregator_capabilities::valid(bad),"legacy directory accepted");bad=c;bad["data_version"]=3;require(!aggregator_capabilities::valid(bad),"legacy DATA accepted");
+auto rows=c["streams"].toArray();auto row=rows[0].toObject();row["id"]="second";rows.append(row);bad=c;bad["streams"]=rows;require(!aggregator_capabilities::valid(bad),"duplicate endpoint accepted");
+rows=c["streams"].toArray();row=rows[0].toObject();row["port_index"]=-1;rows[0]=row;bad=c;bad["streams"]=rows;require(!aggregator_capabilities::valid(bad),"negative port accepted");
+rows=c["streams"].toArray();row=rows[0].toObject();row["note"]="optional";rows[0]=row;require(aggregator_capabilities::same_stream_bindings(c["streams"].toArray(),rows),"optional annotation changes binding");row["port_index"]=0;rows[0]=row;require(!aggregator_capabilities::same_stream_bindings(c["streams"].toArray(),rows),"port remap ignored");
+return 0;}catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

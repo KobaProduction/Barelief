@@ -54,7 +54,7 @@ int main() {
         require(!dsp_core::estimate_memory(maximum * 2, 50), "Above-profile memory budget accepted");
         const auto memory = dsp_core::estimate_memory(maximum, 50, 16, 2000);
         require(memory && memory->queue_payload_bytes == 16 * 2 * maximum * sizeof(float) && memory->history_payload_bytes == 400000 &&
-                    memory->fft_scratch_bytes == 2 * maximum * sizeof(float) && memory->mel_boundaries_bytes == 52 * sizeof(std::size_t),
+                    memory->fft_scratch_bytes == 2 * maximum * sizeof(float) && memory->mel_boundaries_bytes == 52 * sizeof(double),
                 "Memory estimate has incorrect buffer geometry");
         // Exact payloads for every supported build profile (vendor allocations).
         const auto radix2_bytes = maximum == 512 ? 3008 : maximum == 1024 ? 6080 : maximum == 2048 ? 12160 : 24448;
@@ -63,8 +63,13 @@ int main() {
                 "Shared FFT table estimate differs from vendor allocations");
         require(!fft.prepare(63) && !fft.prepare(maximum * 2) && !fft.prepare(maximum * 2, true),
                 "Invalid or above-profile FFT size accepted");
-        for (std::size_t n : {std::size_t{4}, std::size_t{16}, std::size_t{64}, maximum}) {
-            require(fft.prepare(n), "FFT preparation failed");
+        // Retain the mixed runtime fixture's four FFT/FHT routes with an
+        // independent DFT oracle, including radix4 Hartley normalization.
+        for (bool radix4 : {false, true})
+        for (std::size_t n : {std::size_t{4}, std::size_t{16}, std::size_t{64}, maximum,
+                             dsp_core::max_radix4_samples}) {
+            if (radix4 && (n & 0x55555555) == 0) continue;
+            require(fft.prepare(n, radix4), "FFT preparation failed");
             const auto workspace = fft.workspace_bytes();
             require(workspace >= 2 * n * sizeof(float), "FFT workspace excludes its scratch capacity");
             std::vector<float> input(n), output(n / 2);
@@ -84,10 +89,12 @@ int main() {
                          "FFT differs from DFT oracle");
                 }
             }
-            require(other.prepare(16), "Independent FFT failed");
+            require(other.prepare(16, radix4), "Independent FFT failed");
             std::vector<float> dc(16, 1), dc_output(8);
             require(other.process(dc, dc_output), "Independent processing failed");
             near(dc_output[0], 1, "DC normalization wrong");
+            require(other.process(dc, dc_output, true), "Independent Hartley DC failed");
+            near(dc_output[0], 1, "Hartley DC normalization wrong");
             require(fft.process(input, output), "Other instance invalidated prepared FFT");
             require(fft.workspace_bytes() == workspace, "FFT workspace changes during processing");
         }
@@ -98,21 +105,15 @@ int main() {
         require(std::all_of(output.begin(), output.end(), [](float x) { return x == 0; }), "Zero-rate Mel not silent");
         mel.prepare(32, 48000, 50);
         require(mel.process(spectrum, output), "Mel failed");
-        require(mel.workspace_bytes() >= 52 * sizeof(std::size_t), "Mel workspace excludes boundary capacity");
-        // A unit spectrum integrates each legacy triangular filter's integer-bin weights.
-        const float max_mel = 2595.0f * std::log10(1.0f + 24000.0f / 700.0f);
-        std::vector<int> boundary(52);
-        for (int i = 0; i < 52; ++i) {
-            const float hz = 700.0f * (std::pow(10.0f, (max_mel * i / 51) / 2595.0f) - 1);
-            boundary[i] = std::clamp(int(std::floor(65 * hz / 48000)), 0, 32);
-        }
-        for (int m = 1; m <= 50; ++m) {
-            float expected = 0;
-            for (int k = boundary[m - 1]; k < boundary[m]; ++k)
-                expected += float(k - boundary[m - 1]) / (boundary[m] - boundary[m - 1]);
-            for (int k = boundary[m]; k < boundary[m + 1]; ++k)
-                expected += float(boundary[m + 1] - k) / (boundary[m + 1] - boundary[m]);
-            near(output[m - 1], expected, "Legacy Mel weights changed");
+        require(mel.workspace_bytes() >= 52 * sizeof(double), "Mel workspace excludes boundary capacity");
+        // Continuous-Hertz triangle oracle, independent of integer-bin rounding.
+        std::vector<double> boundary(52);
+        for(int i=0;i<52;++i)boundary[i]=700*(std::pow(1+24000./700,double(i)/51)-1);
+        for(int m=1;m<=50;++m){double expected=0;
+            for(int k=0;k<32;++k){const double hz=k*750.;
+                expected+=std::max(0.,std::min((hz-boundary[m-1])/(boundary[m]-boundary[m-1]),
+                    (boundary[m+1]-hz)/(boundary[m+1]-boundary[m])));}
+            near(output[m-1],float(expected),"Continuous Hz Mel weights");
         }
         dsp_core::StereoProcessor processor;
         require(processor.prepare(64, 48000), "Stereo preparation failed");

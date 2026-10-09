@@ -1,84 +1,105 @@
-#include "pipeline/audio_pipeline.h"
-#include <QCoreApplication>
-#include <QJsonArray>
-#include <QDebug>
+#include <core_app/numeric_default_graph.h>
+#include <dataflow_runtime/runtime.h>
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
-#include <stdexcept>
-using namespace pipeline;
-static void check(bool ok,const char *message) {if(!ok) throw std::runtime_error(message);}
-static QJsonObject node(int id,const char *kind,QJsonObject params={}) {
-    params["model-name"]=kind;
-    if(QString(kind).startsWith("Network")) params["stream_id"]=QString::number(id);
-    return {{"id",id},{"internal-data",params}};
+#include <cstdio>
+#include <cstdlib>
+#include <new>
+#include <vector>
+using namespace domain;
+using namespace signal_contracts;
+using namespace dataflow_runtime;
+namespace {std::size_t allocations=0;int failures=0;}
+void* operator new(std::size_t size){++allocations;auto* value=std::malloc(size?size:1);if(!value)std::abort();return value;}
+void* operator new[](std::size_t size){return ::operator new(size);}
+void operator delete(void* value)noexcept{std::free(value);}void operator delete[](void* value)noexcept{std::free(value);}
+void operator delete(void* value,std::size_t)noexcept{std::free(value);}void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
+namespace {
+#define CHECK(x) do{if(!(x)){std::printf("FAIL line%d %s\n",__LINE__,#x);++failures;}}while(false)
+constexpr FrameLimits frame_limits{8,32768,262144,16384,256,8192};
+NumericRuntimeProfile profile(){return {{32,64,8,16,256,65536,frame_limits},{{1048576,1048576,1048576,65536},0,8388608},{32768,8,262144,262144,262144},{true,true,true}};}
+struct Snapshot {std::size_t rows=0,bands=0,capacity=0;std::uint64_t ordinal=0;std::vector<std::uint64_t> bits;};
+void appended_preserves(const Snapshot& before,const Snapshot& after){
+ CHECK(after.capacity==before.capacity&&after.bands==before.bands&&after.ordinal>before.ordinal);
+ if(after.ordinal<=before.ordinal || after.bands!=before.bands)return;
+ const auto added=after.ordinal-before.ordinal;
+ CHECK(after.rows==std::min<std::uint64_t>(after.capacity,before.rows+added));
+ const auto retained=std::min(before.rows,after.rows-std::min<std::uint64_t>(added,after.rows));
+ CHECK(std::equal(before.bits.end()-retained*before.bands,before.bits.end(),after.bits.begin()));
 }
-static QJsonObject edge(int from,int to) {return {{"outNodeId",from},{"outPortIndex",0},{"inNodeId",to},{"inPortIndex",0}};}
-static void parameter(QJsonObject &document,int id,const char *key,QJsonValue value) {
-    auto nodes=document["nodes"].toArray();
-    for(int i=0;i<nodes.size();++i) {auto n=nodes[i].toObject();if(n["id"].toInt()!=id) continue;
-        auto params=n["internal-data"].toObject();params[key]=value;n["internal-data"]=params;nodes[i]=n;}
-    document["nodes"]=nodes;
+void positive_latest(const Snapshot& snapshot){
+ CHECK(snapshot.rows>0&&snapshot.bands>0);
+ bool positive=false;
+ for(std::size_t band=0;band<snapshot.bands;++band){
+  const auto value=std::bit_cast<float>(std::uint32_t(snapshot.bits[(snapshot.rows-1)*snapshot.bands+band]));
+  CHECK(std::isfinite(value));positive|=value>0;
+ }
+ CHECK(positive);
 }
-static bool zero(const std::vector<float> &values) {return !values.empty() && std::all_of(values.begin(),values.end(),[](float x){return x==0;});}
-int main(int argc,char **argv) {
-    QCoreApplication app(argc,argv);
-    try {
-        const QJsonObject connected{{"version",2},{"custom",QJsonObject{{"preserved",true}}},{"nodes",QJsonArray{
-            node(0,"NetworkInput",{{"data_type","audio"}}),node(1,"Window",{{"size",512}}),node(2,"WindowFunction"),
-            node(3,"StereoFFT"),node(4,"SpectrumMerge"),node(5,"Mel",{{"bands",3}}),node(6,"Spectrogram",{{"history_size",8}}),
-            node(7,"SpectrogramView"),node(8,"NetworkOutput",{{"data_type","history"}}),node(9,"WLED"),
-            node(10,"NetworkInput",{{"data_type","mel"}}),node(11,"Spectrogram",{{"history_size",8}}),node(12,"SpectrogramView")}},
-            {"connections",QJsonArray{edge(0,1),edge(1,2),edge(2,3),edge(3,4),edge(4,5),edge(5,6),edge(6,7),edge(6,8),edge(5,9),edge(10,11),edge(11,12)}}};
-        AudioPipeline runtime([](AudioSourceKind)->std::unique_ptr<IAudioSource>{throw std::runtime_error("Unit opened an audio device");});
-        QString error;check(runtime.apply_graph(connected,error),qPrintable(error));
-        TypedFrame pcm;pcm.type=FrameType::PCM;pcm.sample_rate=48000;pcm.generation=7;pcm.epoch=900;
-        pcm.left.resize(800);for(size_t i=0;i<pcm.left.size();++i) pcm.left[i]=std::sin(2*3.141592653589793*43*i/512);pcm.right=pcm.left;
-        TypedFrame other;other.type=FrameType::Mel;other.sample_rate=48000;other.generation=1;other.epoch=800;other.values={4,5,6};
-        for(int i=1;i<=2;++i) {pcm.sequence=i;pcm.timestamp_ns=i*16666667LL;runtime.feed_typed(0,pcm);other.sequence=i;runtime.feed_typed(10,other);}
-        const auto initial=runtime.latest_views()[7];check(initial.history.size()==2 && !zero(initial.history.back()),"Initial nonzero history missing");
-        auto disconnected=connected;auto edges=disconnected["connections"].toArray();edges.removeAt(1);disconnected["connections"]=edges;
-        const auto old_epoch=runtime.epoch();check(runtime.apply_graph(disconnected,error),qPrintable(error));
-        check(runtime.latest_views()[7].history==initial.history,"Disconnect Apply reset history");
-        GraphOutput events;auto token=runtime.subscribe_typed([&](int id,TypedFrame f){events.ports[id]=std::move(f);});
-        for(int i=3;i<=4;++i) {pcm.sequence=i;pcm.timestamp_ns=i*16666667LL;runtime.feed_typed(0,pcm,runtime.epoch());}
-        const auto silent=runtime.latest_views()[7];
-        check(silent.available && silent.history_capacity==8 && silent.history.size()==4 && silent.history[0]==initial.history[0],"Silence lost capacity or previous rows");
-        check(zero(silent.history[2]) && zero(silent.history[3]) && silent.history[3].size()==3,"Disconnect did not append dimensioned zeros");
-        check(silent.timestamp_ns>initial.timestamp_ns && silent.sequence>initial.sequence,"Disconnect stopped the source clock");
-        check(events.ports[8].available && zero(events.ports[8].history.back()) && zero(events.ports[9].values),"Network/WLED silence contract missing");
-        check(runtime.latest_views()[12].history.size()==2,"Unrelated branch changed on disconnect");
-        check(runtime.apply_graph(connected,error),qPrintable(error));pcm.sequence=5;pcm.timestamp_ns=5*16666667LL;
-        runtime.feed_typed(0,pcm,old_epoch);check(runtime.latest_views()[7].history.size()==4,"Old receiver epoch crossed reconnect");
-        runtime.feed_typed(0,pcm,runtime.epoch());const auto resumed=runtime.latest_views()[7];
-        check(resumed.history.size()==5 && resumed.history[0]==initial.history[0] && !zero(resumed.history.back()),"Reconnect lost history or nonzero values");
-        auto disabled=connected;parameter(disabled,2,"enabled",false);check(runtime.apply_graph(disabled,error),qPrintable(error));
-        pcm.sequence=6;runtime.feed_typed(0,pcm);check(runtime.latest_views()[7].history.size()==6 && zero(runtime.latest_views()[7].history.back()),"Gate did not append silence");
-        check(runtime.apply_graph(connected,error),qPrintable(error));pcm.sequence=7;runtime.feed_typed(0,pcm);
-        check(runtime.latest_views()[7].history.size()==7 && !zero(runtime.latest_views()[7].history.back()),"Reenable reset history");
-        auto dimensions=connected;parameter(dimensions,5,"bands",4);check(runtime.apply_graph(dimensions,error),qPrintable(error));
-        pcm.sequence=8;runtime.feed_typed(0,pcm);check(runtime.latest_views()[7].history.size()==1 && runtime.latest_views()[7].history.back().size()==4,"Dimension change did not reset incompatible history");
-        check(runtime.latest_views()[12].history.size()==2,"Dimension change reset unrelated history");
-        auto invalid=connected;invalid["connections"]=QJsonArray{edge(0,5)};const auto epoch=runtime.epoch();
-        check(!runtime.apply_graph(invalid,error) && runtime.epoch()==epoch,"Invalid graph was executed");
-        check(runtime.graph()["custom"]==connected["custom"],"Unknown metadata lost");
-        runtime.unsubscribe_typed(token);
-        // Pure evaluator: external Mel establishes dimensions even when its
-        // optional bands field is missing or stale. Only width changes reset.
-        const QJsonObject external{{"version",2},{"nodes",QJsonArray{
-            node(0,"NetworkInput",{{"data_type","mel"}}),node(1,"Spectrogram",{{"history_size",4}}),node(2,"SpectrogramView"),
-            node(10,"NetworkInput",{{"data_type","mel"}}),node(11,"Spectrogram"),node(12,"SpectrogramView")}},
-            {"connections",QJsonArray{edge(0,1),edge(1,2),edge(10,11),edge(11,12)}}};
-        const auto program=GraphProgram::compile(external,error);check(bool(program),qPrintable(error));GraphEvaluationContext context;
-        TypedFrame mel;mel.type=FrameType::Mel;mel.sample_rate=48000;mel.epoch=300;mel.sequence=1;mel.values={1,2,3};mel.timestamp_ns=100;
-        auto metadata=program->evaluate(0,mel,context).views[2];
-        check(metadata.bands==3 && metadata.history_capacity==4 && metadata.sequence==1 && metadata.timestamp_ns==100,"External Mel history metadata disagrees with rows");
-        program->evaluate(10,mel,context);mel.sequence=2;mel.timestamp_ns=200;mel.bands=99;
-        metadata=program->evaluate(0,mel,context).views[2];
-        check(metadata.bands==3 && metadata.history.size()==2 && !metadata.discontinuity && metadata.history.front()==std::vector<float>({1,2,3}),"Ordinary frame reset history or trusted stale bands");
-        mel.sequence=3;mel.values={4,5};metadata=program->evaluate(0,mel,context).views[2];
-        check(metadata.bands==2 && metadata.history.size()==1 && metadata.discontinuity,"External width change mixed incompatible history rows");
-        mel.sequence=2;mel.values={1,2,3};metadata=program->evaluate(10,mel,context).views[12];
-        check(metadata.bands==3 && metadata.history.size()==2 && !metadata.discontinuity,"External width change reset unrelated history");
-        qInfo("Disconnect/ticks/reconnect, compatible history, zero contracts, dimensions and unrelated branches passed");
-    } catch(const std::exception &error) {qCritical("Continuity: %s",error.what());return 1;}
+struct Fixture {
+ NumericRuntimeProfile p=profile();GraphExecutor executor{p};application::GraphLifecycle lifecycle{executor,executor,PreparedGraph::numeric_capabilities(p),{p.admission,p.resources}};
+ NumericProcessingGraph graph=numeric_test_graph();std::uint64_t sequence=0,ordinal=0,filled=0,history_sequence=0;std::size_t events=0;
+ NumericContract source;std::array<float,512> samples{};std::array<PlaneLayout,2> planes{{{0,{4,0}},{1024,{4,0}}}};
+ Fixture(){source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
+ ConfiguredProcessingNode& node(NodeId id){auto it=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});CHECK(it!=graph.nodes.end());return *it;}
+ bool apply(){auto prepared=lifecycle.prepare_transactional(graph);CHECK(bool(prepared));if(!prepared)return false;auto applied=lifecycle.apply_transactional();CHECK(bool(applied));return bool(applied);}
+ Snapshot snapshot(){DataFrameView view;std::uint64_t real_filled=0,accepted=0;auto status=executor.plan()->history(7,0,*executor.context(),view,&real_filled,&accepted);
+  if(status!=Status::ok){std::printf("History query status=%d\n",int(status));return {};}
+  const auto& numeric=std::get<NumericView>(view.payload);Snapshot result;result.rows=std::size_t(real_filled);result.capacity=numeric.actual[0];result.ordinal=accepted;result.bands=numeric.actual[1];CHECK(result.capacity==numeric.contract->shape.extents[0].maximum&&result.rows<=result.capacity);
+  for(std::size_t row=0;row<result.capacity-result.rows;++row)for(std::size_t band=0;band<result.bands;++band){std::uint64_t zero=1;CHECK(load_bits(numeric,{0,row,band},numeric.contract->dtype,zero)==Status::ok&&zero==0);}result.bits.resize(result.rows*result.bands);
+  for(std::size_t row=0;row<result.rows;++row)for(std::size_t band=0;band<result.bands;++band)CHECK(load_bits(numeric,{0,result.capacity-result.rows+row,band},numeric.contract->dtype,result.bits[row*result.bands+band])==Status::ok);
+  return result;}
+ void preserved(const Snapshot& before){auto after=snapshot();CHECK(after.rows==before.rows&&after.capacity==before.capacity&&after.ordinal==before.ordinal&&after.bands==before.bands&&after.bits==before.bits);}
+ void feed(std::size_t blocks){for(std::size_t block=0;block<blocks;++block){for(std::size_t i=0;i<256;++i){double value=0;
+   for(std::size_t tone=0;tone<8;++tone)value+=.025*std::sin(6.283185307179586*double(sequence*256+i)*(400+tone*701+sequence*.03)/48000.);
+   samples[i]=float(value);samples[256+i]=float(value*.75);}
+  FrameStamp stamp;stamp.sequence=++sequence;stamp.source_sequence=sequence;stamp.producer_epoch=17;stamp.generation=4;stamp.timestamp_ticks=std::int64_t((sequence-1)*256);stamp.stream_id="edit.source";
+  auto collect=[](void* user,const NumericHistoryRowView& row){if(row.event!=NumericHistoryEventKind::Row || row.endpoint.direction!=PortDirection::Output || row.endpoint.identity.node!=7)return;
+   auto& f=*static_cast<Fixture*>(user);++f.events;
+   if(row.accepted_row_ordinal>1){CHECK(!row.endpoint.frame.stamp.discontinuity);CHECK(row.endpoint.frame.stamp.sequence>f.history_sequence);}
+   f.history_sequence=row.endpoint.frame.stamp.sequence;f.ordinal=row.accepted_row_ordinal;f.filled=row.filled_count;};
+  const auto before=allocations;CHECK(executor.process_numeric_ports(1,{stamp,NumericView{&source,std::as_bytes(std::span(samples)),planes,{256,1},{},{}}},{1,1},{nullptr,nullptr,collect,this})==Status::ok);CHECK(allocations==before);
+ }}
+ void edit_preserves(const char* label){const auto before=snapshot();const auto prior=ordinal;CHECK(apply());preserved(before);feed(8);
+  const auto after=snapshot();CHECK(ordinal>prior&&after.ordinal==ordinal);appended_preserves(before,after);
+  std::printf("EDIT %s before%zu after%zu ordinal%llu\n",label,before.rows,after.rows,(unsigned long long)ordinal);}
+};
+void compatible_edits(){Fixture f;CHECK(f.apply());f.feed(32);CHECK(f.filled>=10);
+ // Retained old lifecycle/continuity oracles, executed through actual preparation and processing.
+ std::get<EndpointProcessingParameters>(f.node(1).parameters).values[0].value=NumericLiteral{std::uint64_t{7}};
+ f.edit_preserves("source parameter");
+ f.node(9).enabled=false;f.edit_preserves("view disabled");f.node(9).enabled=true;f.edit_preserves("view enabled");
+ std::get<TransformProcessingParameters>(f.node(3).parameters).values.push_back({"function",std::string("hamming")});f.edit_preserves("Hann to Hamming");
+ const auto contract=f.node(6).inputs[0].contract;
+ ConfiguredProcessingNode gate;gate.id=20;gate.kind="Gate";gate.parameters=RouteProcessingParameters{1,0,true};gate.inputs={{0,PortDirection::Input,contract}};gate.outputs={{0,PortDirection::Output,contract}};
+ f.graph.nodes.push_back(gate);std::erase_if(f.graph.edges,[](const auto& e){return e.to==6;});f.graph.edges.push_back({5,20,0,0});f.graph.edges.push_back({20,6,0,0});
+ f.edit_preserves("insert compatible Gate");
+ f.node(20).parameters=RouteProcessingParameters{1,0,false};f.edit_preserves("close Gate");auto zero=f.snapshot();
+ CHECK(std::all_of(zero.bits.end()-zero.bands,zero.bits.end(),[](auto value){return value==0;}));
+ f.node(20).parameters=RouteProcessingParameters{1,0,true};f.edit_preserves("open Gate");
+ positive_latest(f.snapshot());
+ std::erase_if(f.graph.edges,[](const auto& e){return e.from==20 || e.to==20;});f.graph.edges.push_back({5,6,0,0});std::erase_if(f.graph.nodes,[](const auto& n){return n.id==20;});
+ f.edit_preserves("bypass/remove Gate");
+ // The window geometry changes, but the final Mel50/History contract and clock do not.
+ for(auto& n:f.graph.nodes)for(auto* ports:{&n.inputs,&n.outputs})for(auto& port:*ports){auto value=std::get<NumericContract>(port.contract.view());
+  if(value.semantic==Semantic::Window || value.semantic==Semantic::Windowed)value.shape.extents[0]={2048,2048};
+  else if(value.semantic==Semantic::SpectrumMagnitude){value.shape.extents[0]={1024,1024};value.coordinates[0].step={48000,2048};}
+  else continue;
+  CHECK(own_processing_contract(value,frame_limits,65536,port.contract)==Status::ok);}
+ std::get<TransformProcessingParameters>(f.node(2).parameters).values[0].value=NumericLiteral{std::uint64_t{2048}};
+ f.edit_preserves("FFT window4096 to2048 compatible Mel50");
+ const auto before=f.snapshot();CHECK(f.lifecycle.disconnect(6));f.graph=*f.lifecycle.working_numeric_graph();f.preserved(before);f.feed(8);zero=f.snapshot();
+ appended_preserves(before,zero);
+ CHECK(std::all_of(zero.bits.end()-zero.bands,zero.bits.end(),[](auto value){return value==0;}));
+ CHECK(f.lifecycle.connect({5,6,0,0}));f.graph=*f.lifecycle.working_numeric_graph();f.preserved(zero);f.feed(8);auto resumed=f.snapshot();appended_preserves(zero,resumed);positive_latest(resumed);
+ const auto newest=std::vector<std::uint64_t>(resumed.bits.end()-resumed.bands,resumed.bits.end());
+ f.feed(8);resumed=f.snapshot();positive_latest(resumed);CHECK(!std::equal(newest.begin(),newest.end(),resumed.bits.end()-resumed.bands));
+ std::reverse(f.graph.nodes.begin(),f.graph.nodes.end());std::reverse(f.graph.edges.begin(),f.graph.edges.end());f.edit_preserves("topology serialization reorder");
+ f.feed(1280);CHECK(f.snapshot().rows==f.snapshot().capacity);f.edit_preserves("full ring continuation");
+ auto bad=f.graph;bad.edges.push_back({6,5,0,0});const auto* working=f.executor.plan();CHECK(!f.lifecycle.prepare_transactional(bad));CHECK(f.executor.plan()==working);f.feed(4);
+ CHECK(f.lifecycle.shutdown_transactional()==Status::ok);CHECK(!f.executor.running());CHECK(f.apply()&&f.executor.running());f.feed(4);CHECK(f.filled==1&&f.ordinal==1);
 }
+}
+int main(){compatible_edits();std::printf("graph continuity failures=%d\n",failures);return failures?1:0;}

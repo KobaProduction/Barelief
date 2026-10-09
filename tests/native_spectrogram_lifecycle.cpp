@@ -56,10 +56,10 @@ static int checkHistoryAxes(const QString &directory) {
     const SpectrogramSceneGeometry scene(12,5,full), crop(12,5,cropped);
     const auto a=scene.point(2,1,.4f), time=scene.point(8,1,.4f), frequency=scene.point(2,4,.4f);
     if(!(time.x()>a.x()) || time.z()!=a.z() || !(frequency.z()<a.z()) || frequency.x()!=a.x() ||
-        crop.xMin!=2.75f || crop.xMax!=8.25f || crop.zMin!=1 || crop.zMax!=4 ||
+        crop.xMin!=2.75f || crop.xMax!=8.25f || crop.zMin!=.8f || crop.zMax!=3.2f ||
         std::abs(crop.point(crop.xMin,1,1).x()+crop.scaleX)>1e-5f ||
         std::abs(crop.point(crop.xMax,1,1).x()-crop.scaleX)>1e-5f ||
-        std::abs(crop.point(crop.xMax,4,1).z()+crop.scaleZ)>1e-5f) return 1;
+        std::abs(crop.point(crop.xMax,crop.zMax,1).z()+crop.scaleZ)>1e-5f) return 1;
     std::vector<std::vector<float>> ages{{.3f,.6f,.9f}};
     if(spectrogramHistorySample(ages,0,0,7)!=.9f || spectrogramHistorySample(ages,0,1,7)!=.6f ||
         spectrogramHistorySample(ages,0,3,7)!=0) return 1;
@@ -94,8 +94,10 @@ static int checkSelectionOverlay(QApplication &app,const QString &directory) {
         graph.set_surface_settings(options);graph.update_frame_history(std::vector<std::vector<float>>(24,std::vector<float>(9,.8f)));
         mode->setCurrentIndex(0);QTest::qWait(100);
         QMatrix4x4 projection,view;projection.perspective(45,float(native->width())/native->height(),.005f,100);
-        view.rotate(top.conjugated());view.translate(0,-4,0);
-        const int full[4]={0,100,0,100};const SpectrogramSceneGeometry scene(24,9,full);
+        const auto actualCamera=graph.camera_state();const auto q=actualCamera["quaternion"].toArray(),eye=actualCamera["position"].toArray();
+        view.rotate(QQuaternion(q[0].toDouble(),q[1].toDouble(),q[2].toDouble(),q[3].toDouble()).conjugated());
+        view.translate(-QVector3D(eye[0].toDouble(),eye[1].toDouble(),eye[2].toDouble()));
+        const auto scene=graph.projected_scene_geometry();
         const auto p=projection*view*QVector4D(scene.point(8,4,.8f),1);
         const QPoint point(qRound((p.x()/p.w()+1)*native->width()/2),qRound((1-p.y()/p.w())*native->height()/2));
         auto pixels=native->grabFramebuffer();const auto dpr=native->devicePixelRatioF();
@@ -112,9 +114,59 @@ static int checkSelectionOverlay(QApplication &app,const QString &directory) {
         }
         pixels.save(directory+(light ? "/point-light.png" : "/point-dark.png"));
         const auto camera=graph.camera_state();
+        // Capture the marker once, then move while holding LMB. Frozen source
+        // data and camera remain unchanged throughout the selection gesture.
+        graph.set_paused(true);
+        graph.update_frame_history(std::vector<std::vector<float>>(24,std::vector<float>(9,.9f)));
+        const auto destination=projection*view*QVector4D(scene.point(17,7,.8f),1);
+        const QPointF destinationPoint((destination.x()/destination.w()+1)*native->width()/2,
+                                      (1-destination.y()/destination.w())*native->height()/2);
+        QTest::mousePress(native,Qt::LeftButton,Qt::NoModifier,center.toPoint());
+        if(!native->property("selectionDragging").toBool())return 1;
+        QMouseEvent drag(QEvent::MouseMove,destinationPoint,native->mapToGlobal(destinationPoint.toPoint()),Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+        QApplication::sendEvent(native,&drag);QTest::qWait(70);
+        if(native->property("selectedAge").toInt()!=17 || native->property("selectedBand").toInt()!=7 ||
+           std::abs(native->property("selectedValue").toFloat()-.8f)>1e-5 || graph.camera_state()!=camera)return 1;
+        const auto rows=native->property("selectionReadoutRows").toStringList();const auto readout=native->property("selectionReadoutRect").toRect();
+        if(rows.size()!=3 || native->property("selectionReadoutLines").toStringList().join("")!=rows.join("") ||
+           !native->rect().contains(readout))return 1;
+        QTest::mouseRelease(native,Qt::LeftButton,Qt::NoModifier,destinationPoint.toPoint());
+        if(native->property("selectionDragging").toBool())return 1;
+        QTest::mouseMove(native,point);QTest::qWait(40);
+        if(native->property("selectedAge").toInt()!=17 || native->property("selectedBand").toInt()!=7)return 1;
+        graph.set_paused(false);
+        std::vector<std::vector<float>> sectionData(24,std::vector<float>(9));
+        for(int frame=0;frame<24;++frame)for(int band=0;band<9;++band)sectionData[frame][band]=.01f*band+.001f*frame;
+        graph.update_frame_history(sectionData);
+        SpectrogramAxisMetadata coordinates;coordinates.time_coordinates=true;coordinates.column_coordinates=true;
+        coordinates.column_title_key="Frequency, Hz (Z)";
+        for(int age=0;age<24;++age)coordinates.ages.push_back(age*.125);
+        for(int band=0;band<9;++band)coordinates.columns.push_back(70.1+band*band*.25);
+        if(!graph.set_axis_metadata(coordinates))return 1;
         for(int selection:{2,3}) {
             mode->setCurrentIndex(selection);QTest::qWait(70);
             if(native->property("sliceSampleCount").toInt()!=(selection==2 ? 9 : 24)) return 1;
+            for(bool reverseTime:{false,true})for(bool reverseBands:{false,true}) {
+                options["reverse_time"]=reverseTime;options["reverse_bands"]=reverseBands;
+                graph.set_surface_settings(options);QTest::qWait(40);
+                const auto endpoints=native->property("sliceEndpointIndices").toPoint();
+                const auto values=native->property("sliceEndpointCoordinates").toPointF();
+                const int last=selection==2?8:23;
+                if(!((endpoints==QPoint(0,last)) || (endpoints==QPoint(last,0))) ||
+                   values.x()!=(selection==2?coordinates.column(endpoints.x()):coordinates.age(endpoints.x())) ||
+                   values.y()!=(selection==2?coordinates.column(endpoints.y()):coordinates.age(endpoints.y())))return 1;
+                const auto samples=native->property("sliceEndpointValues").toPointF();
+                const auto expectedValue=[&](int index){return selection==2?sectionData[24-1-17][index]:sectionData[24-1-index][7];};
+                if(samples.x()!=expectedValue(endpoints.x()) || samples.y()!=expectedValue(endpoints.y()))return 1;
+                const auto geometry=graph.projected_scene_geometry();
+                const auto endpoint=[&](int index){return projection*view*QVector4D(geometry.point(
+                    selection==2?17:index,selection==2?index:7,geometry.signalTick(0)),1);};
+                const auto left=endpoint(endpoints.x()),right=endpoint(endpoints.y());
+                const double dx=right.x()/right.w()-left.x()/left.w();
+                const double dy=right.y()/right.w()-left.y()/left.w();
+                if(dx < -1e-6 || (std::abs(dx)<=1e-6 && dy>1e-6))return 1;
+            }
+            options["reverse_time"]=false;options["reverse_bands"]=false;graph.set_surface_settings(options);QTest::qWait(40);
             pixels=native->grabFramebuffer();const auto panel=native->property("slicePanelRect").toRectF();
             if(pixels.pixelColor(qRound((panel.right()-8)*dpr),qRound((panel.top()+8)*dpr))!=paper) {
                 qCritical("Opaque slice overlay is hidden by the scene");return 1;
@@ -188,7 +240,7 @@ static int checkSurfaceSettings(QApplication &app,const QString &directory) {
     graph.set_history_dimensions(16,3);
     if(!stable(16,12,0,1.1f)) return 1;
     graph.findChild<QSlider *>("axisMinX")->setValue(25);graph.findChild<QSlider *>("axisMaxX")->setValue(75);
-    QTest::qWait(60);if(std::abs(native->property("sceneScaleZ").toFloat()-.8f)>1e-5f) return 1;
+    QTest::qWait(60);if(std::abs(native->property("sceneScaleZ").toFloat()-1.f)>1e-5f) return 1;
     graph.set_presentation_state({});graph.update({});
     if(!stable(16,0,0,0)) {qCritical("Clear reduced configured history geometry");return 1;}
     if(graph.findChild<QWidget *>("spectrogramModel3d") || graph.findChild<QWidget *>("spectrogramGradient")) return 1;
@@ -526,6 +578,36 @@ int main(int argc, char **argv) {
                 qCritical("Native check failed at source line %d", __LINE__);
                 return 1;
             }
+        }
+        // Keyboard translation follows horizontal heading, ignoring camera pitch.
+        graph->set_camera_state({{"version",2},{"position",QJsonArray{0,0,0}},
+            {"quaternion",QJsonArray{.70710678,0,.70710678,0}}});
+        QTest::keyPress(native,Qt::Key_W);QTest::qWait(60);QTest::keyRelease(native,Qt::Key_W);
+        auto moved=graph->camera_state()["position"].toArray();
+        if(moved[0].toDouble()>=0 || std::abs(moved[1].toDouble())>1e-6 || std::abs(moved[2].toDouble())>1e-5)return 1;
+        const auto beforeCtrl=graph->camera_state();
+        QTest::keyPress(native,Qt::Key_Control);QTest::qWait(40);QTest::keyRelease(native,Qt::Key_Control);
+        if(graph->camera_state()!=beforeCtrl)return 1;
+        QTest::keyPress(native,Qt::Key_Space);QTest::qWait(60);
+        const auto raised=graph->camera_state()["position"].toArray()[1].toDouble();
+        QTest::keyPress(native,Qt::Key_Control);QTest::qWait(60);
+        const auto lowered=graph->camera_state()["position"].toArray()[1].toDouble();
+        QTest::keyRelease(native,Qt::Key_Control);QTest::qWait(60);
+        QTest::keyRelease(native,Qt::Key_Space);
+        if(raised<=0 || lowered>=raised || graph->camera_state()["position"].toArray()[1].toDouble()<=lowered)return 1;
+        for(const bool shiftFirst:{true,false}) {
+            graph->set_camera_state({{"version",2},{"position",QJsonArray{0,0,0}},
+                {"quaternion",QJsonArray{1,0,0,0}}});
+            if(shiftFirst)QTest::keyPress(native,Qt::Key_Shift);
+            QTest::keyPress(native,Qt::Key_Control);
+            QTest::keyPress(native,Qt::Key_Space,Qt::ControlModifier);
+            if(!shiftFirst)QTest::keyPress(native,Qt::Key_Shift,Qt::ControlModifier);
+            QTest::qWait(80);
+            const auto fastY=graph->camera_state()["position"].toArray()[1].toDouble();
+            QTest::keyRelease(native,Qt::Key_Shift,Qt::ControlModifier);QTest::qWait(80);
+            const auto slowY=graph->camera_state()["position"].toArray()[1].toDouble();
+            QTest::keyRelease(native,Qt::Key_Space,Qt::ControlModifier);QTest::keyRelease(native,Qt::Key_Control);
+            if(fastY>=0 || slowY>=fastY || std::abs(fastY)<1.5*std::abs(slowY-fastY))return 1;
         }
         const auto before_float = native->property("renderedFrames").toULongLong();
         dock->setFloating(true);

@@ -7,7 +7,7 @@ synthetic source; preserve the user's `config.json` and `output/`.
 
 ## Native Windows desktop
 
-- Launch the rebuilt `build-gui/bin/core_app.exe` with an explicit test config;
+- Launch the rebuilt `cmake-build-release/bin/core_app.exe` with an explicit test config;
   confirm that launching from a fresh shell does not need the Qt SDK in PATH.
 - Check native OpenGL surface rendering, palette/contrast, grid, shadows,
   selection marker, time/frequency slice frame and free camera in Light/Dark.

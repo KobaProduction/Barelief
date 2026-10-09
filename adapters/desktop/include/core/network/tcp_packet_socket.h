@@ -18,6 +18,7 @@ public:
 
     void send_data(uint8_t packet_id, uint8_t *data, size_t size);
     bool send_packet(quint8 packet_id, const QByteArray &payload);
+    size_t pending_packet_bytes() const noexcept { return _channel.pending_bytes(); }
 
 Q_SIGNALS:
     // Owned payload is safe to deliver with a queued connection.

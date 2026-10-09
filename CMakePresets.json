@@ -1,0 +1,65 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 30, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": { "BUILD_TESTING": true }
+    },
+    {
+      "name": "desktop",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT}",
+        "BUILD_DSP_ONLY": false,
+        "BUILD_PORTABLE_SDK": false,
+        "BUILD_GUI": true,
+        "DEPLOY_BUILD_RUNTIME": true,
+        "PORTABLE_DISABLE_EXCEPTIONS_RTTI": false,
+        "PORTABLE_DSP_MAX_FFT_SIZE": "4096"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Desktop Release",
+      "inherits": "desktop",
+      "binaryDir": "${sourceDir}/cmake-build-release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Desktop Debug",
+      "inherits": "desktop",
+      "binaryDir": "${sourceDir}/cmake-build-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "sdk",
+      "displayName": "Portable SDK Release",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/cmake-build-sdk",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_DSP_ONLY": false,
+        "BUILD_PORTABLE_SDK": true,
+        "BUILD_GUI": false,
+        "PORTABLE_DISABLE_EXCEPTIONS_RTTI": true,
+        "PORTABLE_DSP_MAX_FFT_SIZE": "4096",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/cmake-build-sdk/install"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release" },
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "sdk", "configurePreset": "sdk" }
+  ],
+  "testPresets": [
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
+    { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
+    { "name": "sdk", "configurePreset": "sdk", "output": { "outputOnFailure": true } }
+  ]
+}

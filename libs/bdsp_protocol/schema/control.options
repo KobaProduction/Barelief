@@ -1,0 +1,13 @@
+# nanopb 0.4.9.2: callbacks use caller views/arena; no FT_POINTER or malloc.
+bdsp.control.v1.Network.provider_uuid type:FT_CALLBACK
+bdsp.control.v1.Network.stream_id type:FT_CALLBACK
+bdsp.control.v1.Network.host type:FT_CALLBACK
+bdsp.control.v1.Node.kind type:FT_CALLBACK
+bdsp.control.v1.ProcessingGraph.graph_identity type:FT_CALLBACK
+bdsp.control.v1.ProcessingGraph.nodes type:FT_CALLBACK
+bdsp.control.v1.ProcessingGraph.edges type:FT_CALLBACK
+bdsp.control.v1.Command.graph_identity type:FT_CALLBACK
+bdsp.control.v1.Diagnostic.parameter_key type:FT_CALLBACK
+bdsp.control.v1.Capabilities.node_kinds type:FT_CALLBACK
+bdsp.control.v1.Capabilities.receive_types type:FT_CALLBACK
+bdsp.control.v1.Capabilities.publish_types type:FT_CALLBACK
