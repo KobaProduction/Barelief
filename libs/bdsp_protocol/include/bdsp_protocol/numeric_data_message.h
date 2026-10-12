@@ -3,7 +3,7 @@
 namespace bdsp_protocol::numeric_data {
 inline constexpr std::uint8_t SubscribeId = 26, AckId = 27, EventsId = 28, QueryId = 29, SnapshotId = 30,
                               FragmentId = 31;
-inline constexpr std::uint16_t PayloadVersion = 4, DeliveryVersion = 1;
+inline constexpr std::uint16_t PayloadVersion = 5, DeliveryVersion = 1;
 enum class Kind { Frame, HistoryRow, Snapshot, Query, Empty, Reset, Unavailable };
 enum class Direction { Input, Output };
 enum class Feature : std::uint32_t { Numeric = 1, Structured = 2, Rows = 4, Query = 8 };

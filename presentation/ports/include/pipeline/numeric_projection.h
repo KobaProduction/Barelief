@@ -366,19 +366,23 @@ public:
         if(valid){ages[0]=0;result.ages=std::move(ages);result.seconds=true;}return result;
     }
     std::vector<std::vector<float>> render_snapshot() const {
+        std::vector<std::vector<float>> rows;render_snapshot_into(rows);return rows;
+    }
+    // Presentation-only copy into reusable owning storage; processing memory
+    // remains borrowed only within the synchronous copy.
+    void render_snapshot_into(std::vector<std::vector<float>>& rows) const {
         if(authoritative_snapshot_) {
-            if(ring_.empty())return {};
-            std::vector<std::vector<float>> rows(capacity_,std::vector<float>(columns_));
+            if(ring_.empty()){rows.clear();return;}
+            rows.resize(capacity_);for(auto& row:rows)row.resize(columns_);
             for(std::size_t row=0;row<capacity_;++row)
                 std::copy_n(ring_.begin()+row*columns_,columns_,rows[row].begin());
-            return rows;
+            return;
         }
         // The complete represented history exists immediately. Unknown older
         // slots contain projected typed silence (unsigned PCM uses its midpoint);
         // only the newest suffix carries accepted samples.
-        std::vector<std::vector<float>> rows(capacity_,std::vector<float>(columns_,padding_value()));
+        rows.resize(capacity_);for(auto& row:rows){row.resize(columns_);std::fill(row.begin(),row.end(),padding_value());}
         for(std::size_t i=0;i<count_;++i)std::copy_n(ring_.begin()+((start_+i)%capacity_)*columns_,columns_,rows[capacity_-count_+i].begin());
-        return rows;
     }
 private:
     float padding_value() const noexcept {

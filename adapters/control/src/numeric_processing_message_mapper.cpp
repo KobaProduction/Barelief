@@ -36,6 +36,9 @@ nc::Result own_parameters(const nc::Parameters& from,const nc::Limits& limits,do
             v.operation=p.operation; v.channels=p.channels; v.rows=p.rows;
             v.selected_channels.assign(p.selected_channels.begin(),p.selected_channels.end());
             v.precision_loss=p.precision_loss; v.rounding=p.rounding; next=std::move(v);
+        } else if constexpr(std::is_same_v<T,nc::GeneratorParameters>) { domain::SignalGeneratorProcessingParameters g;g.oscillators.assign(p.oscillators.begin(),p.oscillators.end());next=std::move(g);
+        } else if constexpr(std::is_same_v<T,nc::ClockParameters>) {next=domain::SampleClockProcessingParameters{p.sample_rate,std::string(p.domain)};
+        } else if constexpr(std::is_same_v<T,nc::MixerParameters>) {domain::MixerProcessingParameters m;m.mode=p.mode;m.weights.assign(p.weights.begin(),p.weights.end());m.fifo_milliseconds=p.fifo_milliseconds;m.consumption=p.consumption;next=std::move(m);
         } else next=p;
     },from);
     out=std::move(next); return result;
@@ -47,7 +50,7 @@ nc::Result own_graph(const nc::Graph& from,const nc::Limits& limits,domain::Nume
        domain::processing_boundary_version_supported(domain::ProcessingBoundary::Control,from.versions.control)!=signal_contracts::Status::ok)
         return failure(nc::Status::UnsupportedVersion);
     domain::NumericProcessingGraph next; next.graph_id=from.graph_id; next.versions=from.versions; next.execution_interval=from.execution_interval;
-    next.nodes.reserve(from.nodes.size()); next.edges.assign(from.edges.begin(),from.edges.end());
+    next.nodes.reserve(from.nodes.size()); next.edges.assign(from.edges.begin(),from.edges.end());next.configuration_bindings.assign(from.configuration_bindings.begin(),from.configuration_bindings.end());
     std::size_t owned=0;
     for(const auto& node:from.nodes) {
         domain::ConfiguredProcessingNode n; n.id=node.id; n.kind=node.kind; n.enabled=node.enabled;
@@ -107,6 +110,9 @@ nc::Result GraphProjection::assign(const domain::NumericProcessingGraph& from,co
                         if(s->size()>limits.string_bytes||!charge(text,s->size(),limits.total_text_bytes))return false;
                 }
             } else if constexpr(std::is_same_v<T,domain::ReduceProcessingParameters>) return p.selected_channels.size()<=limits.channels;
+            else if constexpr(std::is_same_v<T,domain::SignalGeneratorProcessingParameters>) return p.oscillators.size()<=128 && charge(parameters,p.oscillators.size(),limits.parameters);
+            else if constexpr(std::is_same_v<T,domain::SampleClockProcessingParameters>) return p.domain.size()<=limits.string_bytes && charge(text,p.domain.size(),limits.total_text_bytes);
+            else if constexpr(std::is_same_v<T,domain::MixerProcessingParameters>) return p.weights.size()<=limits.ports && charge(parameters,p.weights.size(),limits.parameters);
             return true;
         },n.parameters);
         if(!bounded)return failure(nc::Status::Limit);
@@ -136,11 +142,14 @@ nc::Result GraphProjection::assign(const domain::NumericProcessingGraph& from,co
                 else w.parameters=nc::TransformParameters{values};
             } else if constexpr(std::is_same_v<T,domain::ReduceProcessingParameters>) {
                 w.parameters=nc::ReductionParameters{p.operation,p.channels,p.rows,p.selected_channels,p.precision_loss,p.rounding};
-            } else w.parameters=p;
+            } else if constexpr(std::is_same_v<T,domain::SignalGeneratorProcessingParameters>) w.parameters=nc::GeneratorParameters{p.oscillators};
+            else if constexpr(std::is_same_v<T,domain::SampleClockProcessingParameters>) w.parameters=nc::ClockParameters{p.sample_rate,p.domain};
+            else if constexpr(std::is_same_v<T,domain::MixerProcessingParameters>) w.parameters=nc::MixerParameters{p.mode,p.weights,p.fifo_milliseconds,p.consumption};
+            else w.parameters=p;
         },n.parameters);
         next->nodes.push_back(w);
     }
-    next->wire={next->graph.graph_id,next->graph.versions,next->nodes,next->graph.edges,next->graph.execution_interval};
+    next->wire={next->graph.graph_id,next->graph.versions,next->nodes,next->graph.edges,next->graph.execution_interval,next->graph.configuration_bindings};
     // Validate before publishing, with the exact same boundary grammar as ingress.
     nc::Message m; nc::Command c; c.id=nc::CommandId::Prepare; c.graph=next->wire; m.body=c;
     auto result=nc::validate(m,limits); if(!result) return result;

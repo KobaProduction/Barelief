@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
 #include <core_app/graph_panel.h>
@@ -22,6 +23,8 @@
 #include <QStatusBar>
 #include <QComboBox>
 #include <QLineEdit>
+#include <QTableWidget>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QThread>
 #include <array>
@@ -32,66 +35,53 @@
 inline bool measure_shipped_gui(CoreApplication& app,MainWindow* window,const char* label) {
     using namespace pipeline;using namespace signal_contracts;
     auto& presenter=app.presenter();
-    auto wait=[](const auto& predicate){QElapsedTimer timer;timer.start();while(timer.elapsed()<5000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}return predicate();};
-    auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());
-    auto* source=model?model->delegateModel<AudioNodeModel>(1):nullptr;
-    std::unique_ptr<QWidget> diagnostics(source?source->preview_widget():nullptr);
-    auto* card=diagnostics.get();
-    auto* values=card?card->findChild<QLabel*>("previewValues"):nullptr;
-    auto* first=card?card->findChild<QLabel*>("previewExactValue"):nullptr;
-    if(!card||!values||!first)return false;
-    struct Stage {unsigned count=0;double first=0,last=0;bool positive=false,changed=false;};
-    std::array<Stage,12> stages{};std::uint64_t scalar=0,ordinal=0;bool bad=false;
-    QObject witness;std::uint64_t revision=0,epoch=0;
-    domain::NumericProcessingGraph expected;
-    auto observe=[&](const DeliveredNumericFrame& frame,unsigned id){
-        if(!frame.context||!frame.frame||!frame.frame.view().stamp.available||frame.delivery.graph_revision!=revision||frame.delivery.epoch!=epoch)return;
-        const auto view=frame.frame.view();const auto* value=std::get_if<NumericView>(&view.payload);if(!value){bad=true;return;}
-        if(id==12||(id==7&&frame.context->endpoint.port==1)){std::uint64_t x=0;bad|=load_element(*value,{0,0,0},x)!=Status::ok;scalar=std::max(scalar,x);return;}
-        if(value->contract->dtype!=DType::Float32){bad=true;return;}double energy=0;
-        if(id==7||id==8){if(value->contract->semantic!=Semantic::MelEnergy||value->actual[0]!=50){bad=true;return;}}
-        else {const auto& port=id<=6?expected.nodes[id-1].outputs[0]:expected.nodes[id-1].inputs[0];
-            const auto contract=std::get<NumericContract>(port.contract.view());
-            if(!same_contract(contract,*value->contract)||value->actual[0]!=contract.shape.extents[0].maximum){bad=true;return;}}
-        for(std::size_t p=0;p<value->planes.size();++p)for(std::size_t i=0;i<value->actual[0];++i){float x=0;if(load_element(*value,{p,i,0},x)!=Status::ok||!std::isfinite(x)){bad=true;return;}energy+=double(x)*x;}
-        auto& stage=stages[id];if(!stage.count)stage.first=energy;++stage.count;stage.last=energy;stage.positive|=energy>1e-12;stage.changed|=std::abs(energy-stage.first)>1e-10;
-    };
-    QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,&witness,[&](const auto& frame){
-        if(!frame.context)return;const auto id=frame.context->endpoint.node;
-        if(id<1||id>12||id==8||(id==7&&frame.context->endpoint.port==0))return;
-        if(frame.context->endpoint.direction!=(id<=7?PortDirection::Output:PortDirection::Input))return;observe(frame,unsigned(id));
-    });
-    QObject::connect(&presenter,&GuiPresenter::numeric_history_ready,&witness,[&](const auto& row){
-        if(row.event!=NumericHistoryEvent::Row||!row.compact.context)return;const auto endpoint=row.compact.context->endpoint;
-        if(!((endpoint.node==7&&endpoint.direction==PortDirection::Output)||(endpoint.node==8&&endpoint.direction==PortDirection::Input)))return;
-        if(row.compact.delivery.graph_revision!=revision||row.compact.delivery.epoch!=epoch)return;
-        bad|=row.capacity!=400||row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400});ordinal=std::max(ordinal,row.accepted_row_ordinal);observe(row.compact,unsigned(endpoint.node));
-    });
+    auto wait=[](const auto& predicate){QElapsedTimer timer;timer.start();while(timer.elapsed()<6000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}return predicate();};
     const auto before=presenter.client().snapshot().graph_revision;presenter.apply_pipeline_graph({});
-    if(!wait([&]{return presenter.client().snapshot().graph_revision>before&&presenter.client().snapshot().statuses.value("analyzer").state==State::Running;}))return false;
-    revision=presenter.client().snapshot().graph_revision;epoch=presenter.client().snapshot().epoch;
-    if(!presenter.applied_numeric_graph())return false;expected=*presenter.applied_numeric_graph();
-    std::vector<EndpointIdentity> endpoints;
-    for(int id=1;id<=7;++id)endpoints.push_back({"main",id,PortDirection::Output,0});
-    endpoints.push_back({"main",7,PortDirection::Output,1});
-    for(int id=8;id<=12;++id)endpoints.push_back({"main",id,PortDirection::Input,0});
+    if(!wait([&]{return presenter.client().snapshot().graph_revision>before && !presenter.graph_request_pending() && presenter.client().snapshot().statuses.value("analyzer").state==State::Running;}))return false;
+    if(!presenter.applied_numeric_graph())return false;const auto expected=*presenter.applied_numeric_graph();
+    const auto revision=presenter.client().snapshot().graph_revision,epoch=presenter.client().snapshot().epoch;
+    struct Stage {EndpointIdentity endpoint;Rank rank;DType dtype;std::size_t width;unsigned count=0;std::uint64_t first=0,last=0;bool positive=false;};
+    std::vector<Stage> stages;std::vector<EndpointIdentity> endpoints;
+    for(const auto& node:expected.nodes){
+        const bool view=node.kind=="AudioView"||node.kind=="FFTView"||node.kind=="MelView"||node.kind=="SpectrogramView"||node.kind=="ScalarView";
+        if(node.kind=="SampleClock"||node.kind=="PcmResampler"||(node.kind=="AudioSource" && node.id!=1))continue;
+        const auto& ports=view?node.inputs:node.outputs;
+        for(const auto& port:ports){if(!port.contract)continue;const auto contract=port.contract.view();const auto* numeric=std::get_if<NumericContract>(&contract);if(!numeric)continue;
+            EndpointIdentity endpoint{expected.graph_id,node.id,view?domain::PortDirection::Input:domain::PortDirection::Output,port.id};
+            stages.push_back({endpoint,numeric->shape.rank,numeric->dtype,numeric->shape.extents[numeric->shape.rank==Rank::Matrix?1:0].maximum});endpoints.push_back(endpoint);
+        }
+    }
+    if(stages.empty())return false;QObject witness;bool bad=false;std::uint64_t ordinal=0;
+    const auto observe=[&](const DeliveredNumericFrame& frame,bool compact){
+        if(!frame.context||!frame.frame||frame.delivery.graph_revision!=revision||frame.delivery.epoch!=epoch||!frame.frame.view().stamp.available)return;
+        auto stage=std::find_if(stages.begin(),stages.end(),[&](const auto& item){return item.endpoint==frame.context->endpoint;});if(stage==stages.end())return;
+        if((stage->rank==Rank::Matrix)!=compact)return;
+        const auto view=frame.frame.view();const auto* numeric=std::get_if<NumericView>(&view.payload);if(!numeric||numeric->contract->dtype!=stage->dtype){bad=true;return;}
+        double energy=0;
+        if(stage->dtype==DType::UInt64){std::uint64_t value=0;if(load_element(*numeric,{0,0,0},value)!=Status::ok){bad=true;return;}energy=double(value);}
+        else if(stage->dtype==DType::Float32){if(numeric->planes.size()!=1 || numeric->actual[0]==0 || numeric->actual[0]>stage->width || (stage->rank==Rank::Matrix && numeric->actual[0]!=stage->width)){bad=true;return;}for(std::size_t i=0;i<numeric->actual[0];++i){float value=0;if(load_element(*numeric,{0,i,0},value)!=Status::ok||!std::isfinite(value)){bad=true;return;}energy+=double(value)*value;}}
+        else {bad=true;return;}
+        if(stage->count && view.stamp.sequence<stage->last){bad=true;return;}
+        if(!stage->count)stage->first=view.stamp.sequence;stage->last=view.stamp.sequence;++stage->count;stage->positive|=energy>1e-12;
+    };
+    QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,&witness,[&](const auto& frame){observe(frame,false);});
+    QObject::connect(&presenter,&GuiPresenter::numeric_history_ready,&witness,[&](const auto& row){if(row.event!=NumericHistoryEvent::Row || row.compact.delivery.graph_revision!=revision || row.compact.delivery.epoch!=epoch)return;bad|=row.capacity!=400 || row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400});ordinal=std::max(ordinal,row.accepted_row_ordinal);observe(row.compact,true);});
     presenter.set_editor_numeric_endpoints(std::move(endpoints));
-    const bool delivered=wait([&]{if(bad)return true;if(scalar<5||ordinal<5)return false;for(unsigned id=1;id<=11;++id)if(stages[id].count<5||!stages[id].positive||!stages[id].changed)return false;return card->property("previewActivity").toString().isEmpty()&&values->text().toULongLong()>0&&first->text()!=QStringLiteral("—");});
-    presenter.set_editor_numeric_endpoints({});
-    bool good=delivered&&!bad&&scalar>=5&&ordinal>=5&&presenter.client().snapshot().statuses.value("analyzer").state==State::Running;
-    std::printf("GUI %s own engine epoch=%llu revision=%llu History ordinal=%llu count=%llu",label,
-        static_cast<unsigned long long>(epoch),static_cast<unsigned long long>(revision),static_cast<unsigned long long>(ordinal),static_cast<unsigned long long>(scalar));
-    for(unsigned id=1;id<=11;++id){const auto& s=stages[id];std::printf(" stage%u=%u/%.9g/%.9g",id,s.count,s.first,s.last);good&=s.count>=5&&s.positive&&s.changed;}
-    auto* validation=window->findChild<QLabel*>("pipelineValidation");good&=validation&&validation->toolTip().isEmpty();
-    std::printf(" %s\n",good?"PASS":"FAIL");return good;
+    const auto complete=[&]{for(const auto& stage:stages)if(stage.count<5 || stage.last<=stage.first || (stage.rank!=Rank::Scalar && !stage.positive))return false;return ordinal>=5;};
+    const bool delivered=wait([&]{return bad||complete();});presenter.set_editor_numeric_endpoints({});
+    bool good=delivered&&!bad&&complete();
+    std::printf("GUI %s own engine epoch=%llu revision=%llu History=%llu",label,(unsigned long long)epoch,(unsigned long long)revision,(unsigned long long)ordinal);
+    for(const auto& stage:stages)std::printf(" stage%d:%u=%u/%llu",int(stage.endpoint.node),unsigned(stage.endpoint.port),stage.count,(unsigned long long)stage.last);
+    auto* validation=window->findChild<QLabel*>("pipelineValidation");good&=validation&&validation->toolTip().isEmpty();std::printf(" %s\n",good?"PASS":"FAIL");return good;
 }
 
 inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool unavailable) {
     using namespace pipeline;using namespace signal_contracts;
     auto& presenter=app.presenter();
     auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());
+    if(!model)return false;
     auto* source=model?model->delegateModel<AudioNodeModel>(1):nullptr;
-    auto* selector=model?model->delegateModel<AudioNodeModel>(14):nullptr;
+    auto* selector=model?model->delegateModel<AudioNodeModel>(200):nullptr;
     std::unique_ptr<QWidget> sourceDiagnostics(source?source->preview_widget():nullptr);
     auto* card=sourceDiagnostics.get();
     auto* values=card?card->findChild<QLabel*>("previewValues"):nullptr;
@@ -100,33 +90,57 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
     auto* selectorBody=selector->embeddedWidget();
     auto* editor=window->findChild<SchemeEditorWidget*>();
     if(!editor||selector->selected_input()!=0||selectorBody->findChild<QWidget*>("pipelineDataStatus"))return false;
+    if(selector->numeric_node()->inputs.size()!=6 || selector->numeric_node()->outputs.size()!=2 || selector->grouped_channels(QtNodes::PortType::In)!=2)return false;
     auto click_input=[&](domain::PortId id){
         for(auto* view:editor->findChildren<QGraphicsView*>()){
             auto* scene=dynamic_cast<QtNodes::BasicGraphicsScene*>(view->scene());if(!scene)continue;
-            auto* node=scene->nodeGraphicsObject(14);auto* geometry=dynamic_cast<EditorNodeGeometry*>(&scene->nodeGeometry());
-            if(!node || !geometry)continue;const auto port=selector->port_index(QtNodes::PortType::In,id);if(port==QtNodes::InvalidPortIndex)return false;
-            geometry->recomputeSize(14);view->centerOn(node->mapToScene(geometry->selectorButtonRect(14,port).center()));
+            auto* node=scene->nodeGraphicsObject(200);auto* geometry=dynamic_cast<EditorNodeGeometry*>(&scene->nodeGeometry());
+            if(!node || !geometry)continue;const auto port=selector->port_index(QtNodes::PortType::In,id*2);if(port==QtNodes::InvalidPortIndex)return false;
+            geometry->recomputeSize(200);view->centerOn(node->mapToScene(geometry->selectorButtonRect(200,port).center()));
             // Growing a selector rebuilds its embedded form asynchronously.
             // Layout delivery can change node height and hence every pin centre;
             // derive the click from the final geometry after that delivery.
-            QCoreApplication::processEvents();geometry->recomputeSize(14);
-            const auto point=node->mapToScene(geometry->selectorButtonRect(14,port).center());
+            QCoreApplication::processEvents();geometry->recomputeSize(200);
+            const auto point=node->mapToScene(geometry->selectorButtonRect(200,port).center());
             view->centerOn(point);const auto local=view->mapFromScene(point);const QPointF global=view->viewport()->mapToGlobal(local);
             QMouseEvent press(QEvent::MouseButtonPress,QPointF(local),global,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
             QMouseEvent release(QEvent::MouseButtonRelease,QPointF(local),global,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
             QApplication::sendEvent(view->viewport(),&press);QApplication::sendEvent(view->viewport(),&release);
+            if(selector->selected_input()!=id)std::fprintf(stderr,"selector click miss input=%u actual=%u local=%d,%d viewport=%dx%d items=%lld\n",unsigned(id),unsigned(selector->selected_input()),local.x(),local.y(),view->viewport()->width(),view->viewport()->height(),static_cast<long long>(view->items(local).size()));
             return selector->selected_input()==id;
         }
         return false;
     };
     std::unique_ptr<QWidget> selectorDiagnostics(selector->preview_widget());
+    const auto liveCard=[](QWidget* widget,std::size_t outputs){
+        const auto* count=widget?widget->findChild<QLabel*>("previewValues"):nullptr;
+        const auto* first=widget?widget->findChild<QLabel*>("previewExactValue"):nullptr;
+        if(!widget || !count || !first || !widget->property("previewActivity").toString().isEmpty())return false;
+        const auto counts=count->text().split('\n'),values=first->text().split('\n');
+        if(counts.size()!=qsizetype(outputs) || values.size()!=qsizetype(outputs))return false;
+        for(qsizetype lane=0;lane<counts.size();++lane){
+            bool countOk=false,valueOk=false;const auto n=counts[lane].toULongLong(&countOk);const auto v=values[lane].toDouble(&valueOk);
+            if(!countOk || n==0 || !valueOk || !std::isfinite(v))return false;
+        }
+        return true;
+    };
     QObject witness;bool bad=false;int selected=0;std::uint64_t revision=0,epoch=0,ordinal=0,history_sequence=0;
     std::uint64_t transition_after=presenter.client().snapshot().graph_revision;
     unsigned generator_frames=0,capture_frames=0,selected_frames=0,unavailable_frames=0,fft_frames=0;
-    auto* fftDock=window->workspaceDock("fftDock");if(!fftDock)return false;fftDock->raise();
+    auto* fftDock=window->workspaceDock("fftDock");if(!fftDock)return false;
+    // The startup workspace need not expose every representation. Rendering
+    // assertions require an explicitly opened FFT dock; raising a closed ADS
+    // dock leaves the renderer correctly suspended.
+    fftDock->toggleView(true);fftDock->raise();
     int phase=0;
     struct Diagnostic {std::function<void()> print;~Diagnostic(){print();}} diagnostic{[&]{
         const auto snapshot=presenter.client().snapshot();
+        domain::NumericProcessingGraph selectorDraft;QString selectorDraftError;
+        const bool validDraft=editor->numeric_draft(selectorDraft,&selectorDraftError);
+        std::fprintf(stderr,"selector draft group=%u valid=%d error=%s undo=%d fft_frames=%u\n",unsigned(selector->selected_input()),int(validDraft),qPrintable(selectorDraftError),editor->history().count(),fft_frames);
+        if(const auto active=presenter.applied_numeric_graph())for(const auto& node:active->nodes)if(node.id==200)
+            for(const auto& p:std::get<domain::TransformProcessingParameters>(node.parameters).values)if(p.key=="selected_input")
+                std::fprintf(stderr,"selector applied group=%llu\n",(unsigned long long)std::visit([](auto value){return std::uint64_t(value);},std::get<NumericLiteral>(p.value)));
         std::fprintf(stderr,"selector diagnostic phase=%d selected=%d bad=%d unavailable=%d rev=%llu current=%llu state=%d gen=%u cap=%u chosen=%u unavailable_frames=%u ordinal=%llu seq=%llu cardActivity=%s values=%s first=%s apply=%s\n",phase,selected,int(bad),int(unavailable),static_cast<unsigned long long>(revision),static_cast<unsigned long long>(snapshot.graph_revision),int(snapshot.statuses.value("analyzer").state),generator_frames,capture_frames,selected_frames,unavailable_frames,static_cast<unsigned long long>(ordinal),static_cast<unsigned long long>(history_sequence),qPrintable(card->property("previewActivity").toString()),qPrintable(values->text()),qPrintable(first->text()),qPrintable(presenter.apply_status()));
     }};
     auto wait=[](const auto& predicate){QElapsedTimer timer;timer.start();while(timer.elapsed()<6000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}return predicate();};
@@ -144,15 +158,15 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
             return;
         }
         if(endpoint.direction!=PortDirection::Output||endpoint.port!=0)return;
-        if(endpoint.node!=1&&endpoint.node!=13&&endpoint.node!=14)return;
+        if(endpoint.node!=1&&endpoint.node!=13&&endpoint.node!=200)return;
         const auto view=frame.frame.view();
-        if(!view.stamp.available){if(endpoint.node==14)++unavailable_frames;return;}
+        if(!view.stamp.available){if(endpoint.node==200)++unavailable_frames;return;}
         const auto* numeric=std::get_if<NumericView>(&view.payload);
-        if(!numeric||numeric->contract->semantic!=Semantic::PCM||numeric->contract->dtype!=DType::Float32||numeric->planes.size()!=2||numeric->actual[0]!=256){bad=true;return;}
-        double energy=0;for(std::size_t p=0;p<2;++p)for(std::size_t i=0;i<256;++i){float x=0;if(load_element(*numeric,{p,i,0},x)!=Status::ok||!std::isfinite(x)){bad=true;return;}energy+=double(x)*x;}
+        if(!numeric||numeric->contract->semantic!=Semantic::PCM||numeric->contract->dtype!=DType::Float32||numeric->planes.size()!=1||numeric->actual[0]==0||numeric->actual[0]>numeric->contract->shape.extents[0].maximum){bad=true;return;}
+        double energy=0;for(std::size_t p=0;p<1;++p)for(std::size_t i=0;i<numeric->actual[0];++i){float x=0;if(load_element(*numeric,{p,i,0},x)!=Status::ok||!std::isfinite(x)){bad=true;return;}energy+=double(x)*x;}
         if(endpoint.node==1)++generator_frames;
         if(endpoint.node==13)++capture_frames;
-        if(endpoint.node==14){++selected_frames;bad|=energy<=0||(selected==0?energy<=0.002:energy>=0.002);}
+        if(endpoint.node==200){++selected_frames;bad|=selected==0?energy<=0.002:(unavailable?energy!=0:energy<=0||energy>=0.002);}
     });
     QObject::connect(&presenter,&GuiPresenter::numeric_history_ready,&witness,[&](const auto& row){
         const auto current=presenter.client().snapshot();
@@ -175,24 +189,37 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
         const auto prior_fft=fft_frames;const auto prior_revision=revision,prior_ordinal=ordinal;const auto prior_generator=generator_frames,prior_capture=capture_frames;
         transition_after=prior_revision;revision=0;selected=choice;selected_frames=0;unavailable_frames=0;if(transition==1)editor->history().undo();else if(transition==2)editor->history().redo();else if(!click_input(domain::PortId(choice)))return false;
         ++transition;
-        if(!wait([&]{return presenter.client().snapshot().graph_revision>prior_revision&&!presenter.graph_request_pending();}))return false;
+        if(!wait([&]{
+            if(presenter.client().snapshot().graph_revision<=prior_revision || presenter.graph_request_pending())return false;
+            const auto active=presenter.applied_numeric_graph();if(!active)return false;
+            for(const auto& node:active->nodes)if(node.id==200)
+                for(const auto& parameter:std::get<domain::TransformProcessingParameters>(node.parameters).values)if(parameter.key=="selected_input")
+                    return std::visit([choice](auto value){return value==choice;},std::get<NumericLiteral>(parameter.value));
+            return false;
+        }))return false;
+        phase=choice==1?21:31;
+        if(selector->selected_input()!=choice || !selector->operation_summary().contains(selector->stream_name(unsigned(choice))))return false;
         subscribe();
         const auto switched=model->numeric_graph();
         if(!std::is_permutation(original_edges.begin(),original_edges.end(),switched.edges.begin(),switched.edges.end()))return false;
-        if(unavailable&&choice==1){if(!wait([&]{return bad||(unavailable_frames>0&&generator_frames>prior_generator+5);})||bad||selected_frames!=0)return false;const auto capture=presenter.client().snapshot().statuses.value("capture");
+        if(unavailable&&choice==1){if(!wait([&]{return bad||(selected_frames>=5&&ordinal>prior_ordinal&&generator_frames>prior_generator+5);})||bad)return false;const auto capture=presenter.client().snapshot().statuses.value("capture");
             if(capture.state!=State::Failed || !capture.error.contains("Injected loopback unavailable"))return false;
-            auto* panel=qobject_cast<GraphPanel*>(fftDock->widget());auto* chart=panel?panel->active_chart():nullptr;
-            if(!chart || !wait([&]{return chart->value_count()==0;}))return false;
         }
         else if(!wait([&]{return bad||(selected_frames>=5&&fft_frames>prior_fft&&ordinal>prior_ordinal&&generator_frames>prior_generator+5&&(unavailable||capture_frames>prior_capture+5));})||bad)return false;
         if(presenter.client().snapshot().statuses.value("analyzer").state!=State::Running)return false;
         if(!unavailable || choice==0) {
+            phase=choice==1?22:32;
             auto* panel=qobject_cast<GraphPanel*>(fftDock->widget());auto* chart=panel?panel->active_chart():nullptr;
-            if(!chart || !wait([&]{return chart->value_count()>0 && chart->peak_value()>0;}))return false;
+            if(!chart || !wait([&]{return chart->value_count()>0 && chart->peak_value()>0;})){
+                std::fprintf(stderr,"selector FFT projection closed=%d hidden=%d exposed=%d count=%zu peak=%g mode=%s\n",int(fftDock->isClosed()),int(fftDock->isHidden()),int(fftDock->property("renderExposed").toBool()),chart?chart->value_count():0,chart?double(chart->peak_value()):0,panel?qPrintable(panel->display_mode()):"missing");return false;
+            }
             auto* selectorCard=selectorDiagnostics.get();
             auto* selectorValues=selectorCard->findChild<QLabel*>("previewValues");
             auto* selectorFirst=selectorCard->findChild<QLabel*>("previewExactValue");
-            if(!wait([&]{return selectorCard->property("previewActivity").toString().isEmpty() && selectorValues->text().toULongLong()>0 && selectorFirst->text()!=QStringLiteral("—");}))return false;
+            phase=choice==1?23:33;
+            if(!wait([&]{return liveCard(selectorCard,selector->numeric_node()->outputs.size());})){
+                std::fprintf(stderr,"selector card activity=%s values=%s first=%s lanes=%zu\n",qPrintable(selectorCard->property("previewActivity").toString()),qPrintable(selectorValues->text()),qPrintable(selectorFirst->text()),selector->numeric_node()->outputs.size());return false;
+            }
         }
     }
     if(generator_frames<=source_before+10)return false;
@@ -213,30 +240,40 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
         phase=6;
         if(!wait([&]{return presenter.client().snapshot().graph_revision>prior_revision&&!presenter.graph_request_pending();}))return false;
         subscribe();
-        if(!wait([&]{return captureCard->property("previewActivity").toString().isEmpty()&&captureValues->text().toULongLong()>0&&captureFirst->text()!=QStringLiteral("—")&&ordinal>prior_ordinal;}))return false;
+        if(!wait([&]{return liveCard(captureCard,capture->numeric_node()->outputs.size())&&ordinal>prior_ordinal;}))return false;
         std::puts("captureDevice automatic live Apply/current values/History recovery PASS");
     }
     phase=7;
     const auto prior_revision=revision,prior_ordinal=ordinal;
     transition_after=prior_revision;revision=0;
-    auto expanded=*selector->numeric_node();if(!numeric_editor::set_input_count(expanded,3))return false;
-    phase=71;if(!model->edit_node(14,expanded))return false;
+    auto expanded=*selector->numeric_node();if(!numeric_editor::set_input_count(expanded,4))return false;
+    phase=71;if(!model->edit_node(200,expanded))return false;
     phase=72;
-    model->addConnection({1,0,14,2});QCoreApplication::processEvents();
-    if(selector->nPorts(QtNodes::PortType::In)!=3 || !model->connectionExists({1,0,14,2}))return false;
-    phase=73;if(!click_input(2))return false;selected=0;selected_frames=0;
+    model->addConnection({1,0,200,6});model->addConnection({101,0,200,7});QCoreApplication::processEvents();
+    const auto configInputs=unsigned(selector->configuration_port(QtNodes::PortType::In,domain::ConfigurationRole::SampleClock)!=QtNodes::InvalidPortIndex)+unsigned(selector->configuration_port(QtNodes::PortType::In,domain::ConfigurationRole::FrequencyGrid)!=QtNodes::InvalidPortIndex);
+    if(selector->numeric_node()->inputs.size()!=8 || selector->nPorts(QtNodes::PortType::In)!=8+configInputs || !model->connectionExists({1,0,200,6}) || !model->connectionExists({101,0,200,7})){
+        std::fprintf(stderr,"selector growth inputs=%zu ports=%u config=%u edge6=%d edge7=%d possible6=%d possible7=%d\n",selector->numeric_node()->inputs.size(),selector->nPorts(QtNodes::PortType::In),configInputs,int(model->connectionExists({1,0,200,6})),int(model->connectionExists({101,0,200,7})),int(model->connectionPossible({1,0,200,6})),int(model->connectionPossible({101,0,200,7})));return false;
+    }
+    phase=73;if(!click_input(3))return false;selected=0;selected_frames=0;
     phase=74;
-    if(!wait([&]{return presenter.client().snapshot().graph_revision>prior_revision&&!presenter.graph_request_pending();}))return false;
+    if(!wait([&]{
+        if(presenter.client().snapshot().graph_revision<=prior_revision || presenter.graph_request_pending())return false;
+        const auto active=presenter.applied_numeric_graph();if(!active)return false;
+        for(const auto& node:active->nodes)if(node.id==200)
+            for(const auto& parameter:std::get<domain::TransformProcessingParameters>(node.parameters).values)if(parameter.key=="selected_input")
+                return std::visit([](auto value){return value==3;},std::get<NumericLiteral>(parameter.value));
+        return false;
+    }))return false;
     phase=75;subscribe();if(!wait([&]{return bad || selected_frames>=5 && ordinal>prior_ordinal;})||bad)return false;
     // A newer edit made with a graph request in flight must win reconciliation.
     const auto before_pending=presenter.client().snapshot().graph_revision;
     phase=76;presenter.apply_pipeline_graph({});selector->select_input(0);
     if(!wait([&]{const auto active=presenter.applied_numeric_graph();if(!active||presenter.graph_request_pending()||presenter.client().snapshot().graph_revision<=before_pending)return false;
-        for(const auto& node:active->nodes)if(node.id==14){domain::ResolvedProcessingNode resolved;domain::ProcessingParameterView value;
+        for(const auto& node:active->nodes)if(node.id==200){domain::ResolvedProcessingNode resolved;domain::ProcessingParameterView value;
             return bool(domain::resolve_processing_node(node,numeric_editor::limits(),resolved))&&domain::resolve_processing_parameter(resolved,"selected_input",value)==Status::ok&&std::visit([](auto x){return x==0;},std::get<NumericLiteral>(value));}return false;
     }))return false;
     phase=77;subscribe();
-    auto* surfaceDock=window->workspaceDock("spectrogramDock");if(!surfaceDock)return false;surfaceDock->raise();
+    auto* surfaceDock=window->workspaceDock("spectrogramDock");if(!surfaceDock)return false;surfaceDock->toggleView(true);surfaceDock->raise();
     auto* surface=surfaceDock->findChild<SpectrogramGraph*>();if(!surface)return false;
     auto* surfacePanel=qobject_cast<GraphPanel*>(surfaceDock->widget());
     std::fprintf(stderr,"selector surface mode=%s active=%d hidden=%d exposed=%d frames=%zu bands=%zu revision=%llu endpoint=%d\n",
@@ -262,7 +299,7 @@ inline bool verify_example_autosave(CoreApplication& app,MainWindow* window,cons
     auto encoded=[](auto graph){std::sort(graph.edges.begin(),graph.edges.end(),[](const auto& a,const auto& b){return std::tie(a.from,a.to,a.output_port,a.input_port)<std::tie(b.from,b.to,b.output_port,b.input_port);});QByteArray bytes;desktop::encode_numeric_graph(graph,bytes);return bytes;};
     autosave->setChecked(false);const auto revision=presenter.client().snapshot().graph_revision;
     auto* source=model->delegateModel<AudioNodeModel>(1);if(!source)return false;
-    std::unique_ptr<QWidget> form(source->parameter_widget());auto* amplitude=form->findChild<QLineEdit*>("amplitude");if(!amplitude)return false;
+    std::unique_ptr<QWidget> form(source->parameter_widget());auto* amplitude=form->findChild<QLineEdit*>("oscillator0amplitude");if(!amplitude)return false;
     amplitude->setText("0.2");amplitude->setModified(true);QMetaObject::invokeMethod(amplitude,"editingFinished",Qt::DirectConnection);
     if(!wait([&]{return presenter.client().snapshot().graph_revision>revision&&!presenter.graph_request_pending();})||QFile::exists(path)){qWarning()<<"Autosave probe: live edit or disabled persistence";return false;}
     autosave->setChecked(true);desktop::NumericProjectDocument saved;domain::NumericProcessingGraph disk;std::optional<domain::NumericProcessingGraph> applied;

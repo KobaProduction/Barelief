@@ -1,6 +1,7 @@
 #include "pipeline/audio_source.h"
 #include "pipeline/test_signal.h"
 #include "pipeline/capture_buffer.h"
+#include "pipeline/capture_wake.h"
 #include "core/performance.h"
 #include <miniaudio.h>
 #include <chrono>
@@ -85,6 +86,7 @@ PulseSource pulse_default_source(AudioSourceKind kind, const std::function<bool(
 class MiniaudioAudioSource final : public IAudioSource {
     AudioSourceKind _kind;
     QString _device_id;
+    uint32_t _admitted_rate=0, _admitted_channels=0;
     AudioHandler _audio;
     StatusHandler _status;
     LifecycleHandler _lifecycle;
@@ -92,18 +94,25 @@ class MiniaudioAudioSource final : public IAudioSource {
     std::atomic<bool> _cancel{true}, _running{false}, _reopen{false};
     std::mutex _wait_mutex;
     std::condition_variable _wake;
+    // One pending notification is enough: the consumer drains the SPSC ring.
+    // Unlike a timed condition-variable poll, callback arrival wakes it at once.
+    CaptureWake _data_ready;
+    void notify_data() noexcept { _data_ready.notify(); }
+    void wait_data() { _data_ready.wait_for(std::chrono::milliseconds(1)); }
     mutable std::mutex _diagnostic_mutex;
     AudioSourceDiagnostics _diagnostics;
     CaptureBuffer _buffer;
     std::atomic<uint64_t> _queued{0}, _dropped{0}, _discontinuities{0}, _latency{0};
     std::atomic<uint64_t> _callbacks{0}, _callback_frames{0}, _silence_frames{0};
-    std::atomic<uint32_t> _requested_rate{0};
+    uint64_t _incarnation = 0;
     uint64_t _base = 0, _sample_clock = 0;
     static void receive(ma_device *device, void *, const void *input, ma_uint32 frames) noexcept {
+        core::perf::Scope callback_trace(core::perf::Stage::CaptureCallback);
         auto &self = *static_cast<MiniaudioAudioSource *>(device->pUserData);
         if (self._cancel.load(std::memory_order_relaxed)) return;
         self._callbacks.fetch_add(1, std::memory_order_relaxed);
         self._callback_frames.fetch_add(frames, std::memory_order_relaxed);
+        if(!input)self._silence_frames.fetch_add(frames, std::memory_order_relaxed);
         auto timestamp = self._base + (self._sample_clock / device->sampleRate) * 1000000000ULL +
             (self._sample_clock % device->sampleRate) * 1000000000ULL / device->sampleRate;
         const auto now = clock_ns();
@@ -118,12 +127,14 @@ class MiniaudioAudioSource final : public IAudioSource {
             timestamp = now - block_ns;
             self._buffer.mark_gap();
         }
+        const auto sample_position = self._sample_clock;
         self._sample_clock += frames;
         self._queued.fetch_add(frames, std::memory_order_relaxed);
-        if (!self._buffer.push(static_cast<const float *>(input), frames, timestamp)) {
+        if (!self._buffer.push(static_cast<const float *>(input), frames, timestamp, sample_position)) {
             self._queued.fetch_sub(frames, std::memory_order_relaxed);
             self._dropped.fetch_add(frames, std::memory_order_relaxed);
         }
+        self.notify_data();
     }
     static void notification(const ma_device_notification *event) noexcept {
         auto &self = *static_cast<MiniaudioAudioSource *>(event->pDevice->pUserData);
@@ -175,7 +186,8 @@ class MiniaudioAudioSource final : public IAudioSource {
                 if (result != MA_SUCCESS) throw std::runtime_error(std::string("Audio backend initialization: ")+ma_result_description(result));
                 context_ready = true;
                 QString name;
-                uint32_t native_rate = 0;
+                uint32_t native_rate = 0, native_channels = 0;
+                ma_format native_format = ma_format_unknown;
                 ma_device_id id{};
 #if defined(__linux__)
                 default_device(id, name, native_rate);
@@ -191,14 +203,28 @@ class MiniaudioAudioSource final : public IAudioSource {
                 if (_kind == AudioSourceKind::SystemOutput) type = ma_device_type_loopback;
 #endif
                 auto config = ma_device_config_init(type);
+                ma_device_info endpoint_format{};
+                const auto endpoint_type=_kind==AudioSourceKind::SystemOutput?ma_device_type_playback:ma_device_type_capture;
+                if(ma_context_get_device_info(&context,endpoint_type,&id,&endpoint_format)==MA_SUCCESS)
+                    for(ma_uint32 i=0;i<endpoint_format.nativeDataFormatCount;++i) {
+                        const auto& format=endpoint_format.nativeDataFormats[i];
+                        if(!(format.flags & MA_DATA_FORMAT_FLAG_EXCLUSIVE_MODE) && format.channels && format.sampleRate) {
+                            native_rate=format.sampleRate;native_channels=format.channels;native_format=format.format;break;
+                        }
+                    }
+                if(_admitted_channels && native_channels && native_rate &&
+                    (native_channels!=_admitted_channels || native_rate!=_admitted_rate))
+                    throw std::runtime_error("Native audio format changed; prepare the source again");
                 config.capture.pDeviceID = &id;
 #if defined(_WIN32)
                 config.wasapi.noAutoStreamRouting = MA_TRUE;
+                config.wasapi.noAutoConvertSRC = MA_TRUE;
 #endif
                 config.capture.format = ma_format_f32;
-                config.capture.channels = 2; config.sampleRate = _requested_rate.load()?_requested_rate.load():native_rate;
+                // Native topology and native Fs. Only the declared Float32 boundary
+                // conversion is allowed; numeric Resampler owns all rate changes.
+                config.capture.channels = 0; config.sampleRate = 0;
                 config.periodSizeInMilliseconds = 10; config.periods = 2;
-                config.capture.channelMixMode = ma_channel_mix_mode_default;
                 config.dataCallback = receive; config.notificationCallback = notification; config.pUserData = this;
                 result = ma_device_init(&context, &config, &device);
                 if (result != MA_SUCCESS) throw std::runtime_error(std::string("Audio endpoint initialization: ")+ma_result_description(result));
@@ -206,15 +232,30 @@ class MiniaudioAudioSource final : public IAudioSource {
 #if defined(_WIN32)
                 name = QString::fromUtf8(device.capture.name);
 #endif
-                if (!device.sampleRate) throw std::runtime_error("Audio device returned zero sample rate");
-                _buffer.reset(device.sampleRate); _queued = 0;
+                if (!device.sampleRate || !device.capture.channels || device.capture.channels > 32 ||
+                    device.sampleRate > 192000 || device.capture.channels != device.capture.internalChannels ||
+                    device.sampleRate != device.capture.internalSampleRate ||
+                    (native_rate && native_rate!=device.sampleRate) || (native_channels && native_channels!=device.capture.channels))
+                    throw std::runtime_error("Audio backend did not deliver an admitted native channel count/sample rate");
+                // Reopening an endpoint cannot escape the pool reservation made
+                // before Apply. Format changes require a new prepared contract.
+                if(_admitted_channels && (device.sampleRate!=_admitted_rate || device.capture.channels!=_admitted_channels))
+                    throw std::runtime_error("Native audio format changed; prepare the source again");
+                _buffer.reset(device.sampleRate, device.capture.channels); _queued = 0;
+                ++_incarnation;
                 const auto capture_start = clock_ns();
                 _base = capture_start; _sample_clock = 0;
                 { std::lock_guard lock(_diagnostic_mutex);
                     _diagnostics.backend = QString::fromUtf8(ma_get_backend_name(backend));
                     _diagnostics.device = name; _diagnostics.sample_rate = device.sampleRate;
-                    _diagnostics.native_sample_rate = device.capture.internalSampleRate;
-                    _diagnostics.native_channels = device.capture.internalChannels;
+                    _diagnostics.delivered_channels = device.capture.channels;
+                    _diagnostics.native_sample_rate = native_rate?native_rate:device.capture.internalSampleRate;
+                    _diagnostics.native_channels = native_channels?native_channels:device.capture.internalChannels;
+                    _diagnostics.backend_sample_rate = device.capture.internalSampleRate;
+                    _diagnostics.backend_channels = device.capture.internalChannels;
+                    _diagnostics.native_format = QString::fromUtf8(ma_get_format_name(native_format));
+                    _diagnostics.backend_format = QString::fromUtf8(ma_get_format_name(device.capture.internalFormat));
+                    _diagnostics.delivered_format = QStringLiteral("f32");
 #if defined(_WIN32)
                     _diagnostics.endpoint_id = QString::fromWCharArray(id.wasapi);
 #elif defined(__linux__)
@@ -238,10 +279,12 @@ class MiniaudioAudioSource final : public IAudioSource {
                     });
 #endif
                 bool first = true, synthesized = false;
+                uint64_t delivered_position = 0;
+                AudioFrame frame;
+                frame.samples.reserve(size_t(device.capture.channels) * std::max(1u, device.sampleRate / 4));
                 while (!_cancel && !_reopen) {
-                    AudioFrame frame;
                     while (!_cancel && _buffer.pop(frame)) {
-                        _queued.fetch_sub(frame.left.size(), std::memory_order_relaxed);
+                        _queued.fetch_sub(frame.frame_count, std::memory_order_relaxed);
                         if (synthesized || frame.discontinuity) {
                             timestamp_shift = audio_end > uint64_t(frame.timestamp_ns) ? audio_end - frame.timestamp_ns : 0;
                             frame.discontinuity = true;
@@ -250,13 +293,16 @@ class MiniaudioAudioSource final : public IAudioSource {
                         frame.discontinuity = frame.discontinuity || first;
                         first = false;
                         frame.timestamp_ns = std::max(audio_end, uint64_t(frame.timestamp_ns) + timestamp_shift);
-                        audio_end = uint64_t(frame.timestamp_ns) + frame.left.size() * 1000000000ULL / frame.sample_rate;
+                        frame.generation = _incarnation;
+                        frame.sample_position = std::max(delivered_position, frame.sample_position);
+                        delivered_position = frame.sample_position + frame.frame_count;
+                        audio_end = uint64_t(frame.timestamp_ns) + frame.frame_count * 1000000000ULL / frame.sample_rate;
                         last_delivery = clock_ns();
                         _latency = last_delivery > uint64_t(frame.timestamp_ns) ? last_delivery - frame.timestamp_ns : 0;
                         if (frame.discontinuity) ++_discontinuities;
                         if (_audio) {
                             core::perf::Scope trace(core::perf::Stage::CaptureDispatch);
-                            _audio(std::move(frame));
+                            _audio(frame);
                         }
                     }
                     const auto now = clock_ns();
@@ -264,7 +310,7 @@ class MiniaudioAudioSource final : public IAudioSource {
                         now - last_delivery >= 20000000ULL) {
                         const auto frames = static_cast<uint32_t>(std::min<uint64_t>(device.sampleRate / 4,
                             (now > (audio_end ? audio_end : capture_start) ? now - (audio_end ? audio_end : capture_start) : 0) * device.sampleRate / 1000000000ULL));
-                        if (!frames) { pause(std::chrono::milliseconds(1)); continue; }
+                        if (!frames) { wait_data(); continue; }
                         if (!audio_end) audio_end = capture_start;
                         synthesized = true;
                         _silence_frames.fetch_add(frames, std::memory_order_relaxed);
@@ -273,14 +319,17 @@ class MiniaudioAudioSource final : public IAudioSource {
                         first = false;
                         if (frame.discontinuity) ++_discontinuities;
                         _latency = now > uint64_t(frame.timestamp_ns) ? now - frame.timestamp_ns : 0;
-                        frame.left.assign(frames, 0); frame.right.assign(frames, 0);
+                        frame.channel_count = device.capture.channels; frame.frame_count = frames;
+                        frame.generation = _incarnation; frame.sample_position = delivered_position;
+                        delivered_position += frames;
+                        frame.samples.assign(size_t(frames) * frame.channel_count, 0);
                         audio_end += frames * 1000000000ULL / device.sampleRate; last_delivery = now;
                         if (_audio && !_cancel) {
                             core::perf::Scope trace(core::perf::Stage::CaptureDispatch);
-                            _audio(std::move(frame));
+                            _audio(frame);
                         }
                     }
-                    pause(std::chrono::milliseconds(1));
+                    wait_data();
                 }
                 if (!_cancel && _status) _status(false, "Audio device changed; reopening capture");
             } catch (const std::exception &error) { report_error(QString::fromUtf8(error.what())); }
@@ -310,9 +359,9 @@ class MiniaudioAudioSource final : public IAudioSource {
     explicit MiniaudioAudioSource(AudioSourceKind kind) : _kind(kind) {}
     ~MiniaudioAudioSource() override { stop(); }
     void configure(const QJsonObject& settings) override {
-        const auto rate=settings.value("sample_rate").toInt();
-        if(rate>=1000 && rate<=192000)_requested_rate=uint32_t(rate);
         _device_id=settings.value("device_id").toString();
+        _admitted_channels=settings.value("channel_count").toInt();
+        _admitted_rate=settings.value("sample_rate").toInt();
     }
     void start() override {
         stop(); _dropped = 0; _discontinuities = 0; _latency = 0;
@@ -321,7 +370,7 @@ class MiniaudioAudioSource final : public IAudioSource {
         _cancel = false; _worker = std::thread([this] { run(); });
     }
     void stop() override {
-        _cancel = true; _wake.notify_all(); if (_worker.joinable()) _worker.join(); _running = false;
+        _cancel = true; _wake.notify_all(); notify_data(); if (_worker.joinable()) _worker.join(); _running = false;
     }
     bool is_running() const override { return _running.load(); }
     AudioSourceKind source() const override { return _kind; }
@@ -357,7 +406,19 @@ std::vector<AudioCaptureDevice> enumerate_audio_capture_devices(AudioSourceKind 
         const auto* entries=kind==AudioSourceKind::SystemOutput?playback:capture;
         const auto count=kind==AudioSourceKind::SystemOutput?playback_count:capture_count;
         devices.reserve(count);
-        for(ma_uint32 i=0;i<count;++i)devices.push_back({QString::fromWCharArray(entries[i].id.wasapi),QString::fromUtf8(entries[i].name),bool(entries[i].isDefault)});
+        for(ma_uint32 i=0;i<count;++i) {
+            AudioCaptureDevice endpoint{QString::fromWCharArray(entries[i].id.wasapi),QString::fromUtf8(entries[i].name),bool(entries[i].isDefault)};
+            ma_device_info info{};
+            const auto type=kind==AudioSourceKind::SystemOutput?ma_device_type_playback:ma_device_type_capture;
+            if(ma_context_get_device_info(&context,type,&entries[i].id,&info)==MA_SUCCESS)
+                for(ma_uint32 format=0;format<info.nativeDataFormatCount;++format) {
+                    const auto& native=info.nativeDataFormats[format];
+                    if(!(native.flags & MA_DATA_FORMAT_FLAG_EXCLUSIVE_MODE) && native.channels && native.sampleRate) {
+                        endpoint.native_channels=native.channels;endpoint.native_sample_rate=native.sampleRate;break;
+                    }
+                }
+            devices.push_back(std::move(endpoint));
+        }
     }else if(error)*error=QStringLiteral("Audio endpoint enumeration: ")+QString::fromUtf8(ma_result_description(result));
     ma_context_uninit(&context);return devices;
 #else

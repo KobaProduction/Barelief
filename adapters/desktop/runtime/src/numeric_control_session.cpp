@@ -127,7 +127,7 @@ bool configuration_valid(const SessionConfig& c,bool server) {
      advertised.scratch!=maximum.maximum.scratch_bytes||advertised.stack!=maximum.maximum.stack_bytes||
      advertised.peak!=maximum.max_peak_bytes)return false;
   for(const auto& row:c.advertised_capabilities->rows) {
-   nc::Graph graph{"capability",{},std::span(&row.combination,1),{}};
+   nc::Graph graph;graph.graph_id="capability";graph.nodes=std::span(&row.combination,1);
    domain::NumericProcessingGraph owner;
    if(!own_graph(graph,l,owner))return false;
    domain::ResolvedProcessingNode resolved;

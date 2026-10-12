@@ -56,6 +56,8 @@ enum class Schema {
     Dyadic,
     Parameter,
     Parameters,
+    Oscillator,
+    MixerWeight,
     Port,
     Node,
     Edge,

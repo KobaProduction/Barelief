@@ -11,9 +11,9 @@ Admission admit(const Profile &p, std::size_t id, application::MemoryRequirement
     Admission a;
     if(!id || id>64 || p.sample_rate<1000 || p.sample_rate>192000 || !p.block_samples ||
        p.block_samples>4096 || p.fft_size<512 || p.fft_size>4096 || (p.fft_size&(p.fft_size-1)) ||
-       !p.mel_bands || p.mel_bands>p.fft_size/2 || !p.queue_frames || p.queue_frames>8 || !p.channels || p.channels>2 ||
+       !p.mel_bands || p.mel_bands>p.fft_size/2 || !p.queue_frames || p.queue_frames>8 || p.channels!=1 ||
        p.packet_payload_capacity<=8 || p.packet_payload_capacity>65535 ||
-       (p.spectral && p.channels!=2) || !domain::valid_execution_interval(p.execution_interval) ||
+       !domain::valid_execution_interval(p.execution_interval) ||
        !p.utilization_percent || p.utilization_percent>100 ||
        (p.spectral && p.fft_size>dsp_kernels::max_fft_samples)) return a;
     // Measure the canonical reference DATA4 frame through the existing
@@ -160,13 +160,13 @@ Admission graph_link_admission(const Profile& configured,const domain::NumericPr
     };
     std::size_t sources=0;
     for(const auto& node:graph.nodes) {
-        if(node.kind=="NetworkInput" || node.kind=="TestSignal") {admission.status=Status::incompatible_contract;return admission;}
-        if(node.kind=="AudioSource") {
+        if(node.kind=="TestSignal") {admission.status=Status::incompatible_contract;return admission;}
+        if(node.kind=="AudioSource" || node.kind=="SignalGenerator" || node.kind=="NetworkInput") {
             ++sources;
-            if(node.id!=0 || node.outputs.size()!=1) {admission.status=Status::incompatible_contract;return admission;}
+            if(node.outputs.empty() || (node.kind!="NetworkInput" && node.outputs.size()!=1)) {admission.status=Status::incompatible_contract;return admission;}
             const auto contract=node.outputs.front().contract.view();const auto* c=std::get_if<signal_contracts::NumericContract>(&contract);
             if(!c || c->clock.sample_rate!=p.sample_rate ||
-               c->shape.rank!=signal_contracts::Rank::Vector || c->shape.extents[0].maximum!=p.block_samples) {
+               c->shape.rank!=signal_contracts::Rank::Vector || c->shape.extents[0].maximum>p.block_samples) {
                 admission.status=Status::incompatible_contract;return admission;
             }
         }
@@ -189,7 +189,7 @@ Admission graph_link_admission(const Profile& configured,const domain::NumericPr
             admission.frame_bytes+=bytes;admission.wire_bytes+=wire;admission.required_bytes_per_second+=required;
         }
     }
-    if(sources!=1){admission.status=Status::incompatible_contract;return admission;}
+    if(!sources){admission.status=Status::incompatible_contract;return admission;}
     admission.status=admission.required_bytes_per_second<=admission.allowed_bytes_per_second?Status::ok:Status::exhausted;
     return admission;
 }

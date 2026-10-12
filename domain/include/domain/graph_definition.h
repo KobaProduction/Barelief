@@ -14,12 +14,12 @@ enum class NodeKind {
     AudioSource, StereoFFT, SpectrumMerge, SpectrumGain, Mel, Spectrogram,
     FFTView, MelView, SpectrogramView, AudioView, WLED, TestSignal, Window,
     WindowFunction, BarkWeighting, WindowView, WindowedView, NetworkInput, NetworkOutput,
-    Splitter, Switch, Gate, ScalarReduce, ScalarView, WLEDEncode, WLEDOutput, InputSelector, PcmResampler, IndexExtract
+    Splitter, Switch, Gate, ScalarReduce, ScalarView, WLEDEncode, WLEDOutput, InputSelector, PcmResampler, IndexExtract, SignalGenerator, SampleClock, Mixer, ChannelComparison
 };
 enum class NodeRole { Source, Processor, Sink, Unknown };
 NodeRole node_role(NodeKind) noexcept;
 bool is_view(NodeKind) noexcept;
-constexpr std::size_t node_kind_count=29;
+constexpr std::size_t node_kind_count=33;
 std::string_view kind_id(NodeKind kind) noexcept;
 std::optional<NodeKind> node_kind(std::string_view canonical_id) noexcept;
 enum class AudioSource { SystemOutput = 0, Microphone = 1 };

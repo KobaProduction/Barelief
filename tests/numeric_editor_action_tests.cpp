@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <functional>
+#include <algorithm>
 static void require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
 static bool wait_until(const std::function<bool()>& predicate){QElapsedTimer clock;clock.start();while(clock.elapsed()<2500){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(5);}return predicate();}
 static void trigger(QWidget* root,const char* name){
@@ -48,7 +49,7 @@ int main(int argc,char** argv){
         require(wait_until([&]{return editor->isVisible() && app.presenter().client().snapshot().graph_revision>0 && !app.presenter().graph_request_pending();}),"Initial graph not applied");
         const auto initialRevision=app.presenter().client().snapshot().graph_revision;QSignalSpy applied(&app.presenter(),&GuiPresenter::graph_apply_finished);
         auto create=[&](const QString& kind){const auto before=graph->allNodeIds();QTreeWidgetItem* entry=nullptr;for(QTreeWidgetItemIterator it(library);*it;++it)if((*it)->data(0,Qt::UserRole).toString()==kind)entry=*it;require(entry,"Library kind missing");emit library->itemDoubleClicked(entry,0);QCoreApplication::processEvents();for(auto id:graph->allNodeIds())if(!before.contains(id))return id;throw std::runtime_error("Library action did not create node");};
-        const auto input=create("NetworkInput"),route=create("Splitter"),output=create("NetworkOutput"),converter=create("Converter");
+        const auto input=create("NetworkInput"),route=create("Switch"),output=create("NetworkOutput"),converter=create("Converter");
         auto* inputModel=graph->delegateModel<AudioNodeModel>(input);std::unique_ptr<QWidget> inputForm(inputModel->parameter_widget());auto* stream=inputForm->findChild<QLineEdit*>("adapterStreamId");require(stream,"Registered network source control missing");
         const auto dspBeforeAdapter=graph->numeric_graph();stream->setText("stream-main");stream->setModified(true);QMetaObject::invokeMethod(stream,"editingFinished",Qt::DirectConnection);require(inputModel->adapter().value("stream_id")=="stream-main","Actual source metadata edit missing");
         trigger(window,"undoDataFlow");require(inputModel->adapter().isEmpty(),"Source metadata Undo failed");trigger(window,"redoDataFlow");require(stream->text()=="stream-main","Source metadata Redo does not sync form");
@@ -71,11 +72,21 @@ int main(int argc,char** argv){
         require(graph->delegateModel<AudioNodeModel>(input)->adapter().value("stream_id")=="stream-main","Preset loses network source metadata");
         const auto savedPosition=graph->nodeData(converter,QtNodes::NodeRole::Position).toPointF();editor->hide();editor->show();QCoreApplication::processEvents();require(graph->nodeData(converter,QtNodes::NodeRole::Position).toPointF()==savedPosition,"Preset explicit layout repeated on show");
         auto malformed=saved;malformed["id"]="invalid-presentation";malformed["presentation"]=QJsonObject{{"version",2}};app._ctx.file_configs.ui.pipeline_presets.append(malformed);const auto beforeInvalid=editor->document();require(!editor->load_preset("invalid-presentation") && editor->document()==beforeInvalid,"Future presentation mutates draft");
-        domain::NumericProcessingGraph typed;require(editor->numeric_draft(typed),"Typed export failed");QByteArray canonical;require(bool(desktop::encode_numeric_graph(typed,canonical)),"Canonical encoding failed");
+        domain::NumericProcessingGraph typed;QString exportError;const bool exported=editor->numeric_draft(typed,&exportError);
+        if(!exported)std::fprintf(stderr,"Typed export diagnostic: %s\n",qPrintable(exportError));
+        require(exported,"Typed export failed");QByteArray canonical;require(bool(desktop::encode_numeric_graph(typed,canonical)),"Canonical encoding failed");
         app._ctx.file_configs.ui.pipeline_presets.append(QJsonObject{{"version",1},{"id","no-layout"},{"name","No coordinates"},{"graph",QJsonDocument::fromJson(canonical).object()}});
         editor->hide();require(editor->load_preset("no-layout"),"Coordinate-free preset rejected");require(graph->nodeData(converter,QtNodes::NodeRole::Position).toPointF()!=savedPosition,"Coordinate-free preset inherited preceding positions");editor->show();require(wait_until([&]{return graph->nodeData(converter,QtNodes::NodeRole::Position).toPointF()!=QPointF{};}),"Deferred preset layout missing");
         graph->setNodeData(converter,QtNodes::NodeRole::Position,QPointF(300,400));editor->hide();editor->show();QCoreApplication::processEvents();require(graph->nodeData(converter,QtNodes::NodeRole::Position).toPointF()==QPointF(300,400),"Preset arrange repeats after user move");
-        trigger(window,"defaultPipeline");require(wait_until([&]{return graph->allNodeIds().size()>=10 && graph->nodeData(2,QtNodes::NodeRole::Position).toPointF()!=QPointF{};}),"Actual Default action did not arrange graph");const auto defaultPosition=graph->nodeData(2,QtNodes::NodeRole::Position).toPointF();editor->hide();editor->show();QCoreApplication::processEvents();require(graph->nodeData(2,QtNodes::NodeRole::Position).toPointF()==defaultPosition,"Default layout repeated on show");
+        trigger(window,"example-stereo-sources");require(wait_until([&]{return graph->allNodeIds().size()>=10 && graph->nodeData(2,QtNodes::NodeRole::Position).toPointF()!=QPointF{};}),"Actual stereo example action did not arrange graph");
+        const auto stereo=graph->numeric_graph();
+        const auto selector=std::find_if(stereo.nodes.begin(),stereo.nodes.end(),[](const auto& node){return node.kind=="InputSelector";});
+        require(selector!=stereo.nodes.end() && selector->outputs.size()==2 && selector->inputs.size()==6,"Stereo example lost its three grouped stereo inputs");
+        std::size_t generators=0;for(const auto& node:stereo.nodes)if(node.kind=="SignalGenerator"){
+            ++generators;require(node.outputs.size()==1 && domain::has_configuration_binding(stereo,node.id,domain::ConfigurationRole::SampleClock),"Stereo example generator lacks explicit mono stream or SampleClock binding");
+        }
+        require(generators==2,"Stereo example requires two independent mono generators");
+        const auto defaultPosition=graph->nodeData(2,QtNodes::NodeRole::Position).toPointF();editor->hide();editor->show();QCoreApplication::processEvents();require(graph->nodeData(2,QtNodes::NodeRole::Position).toPointF()==defaultPosition,"Default layout repeated on show");
         require(wait_until([&]{return app.presenter().client().snapshot().graph_revision>initialRevision && !app.presenter().graph_request_pending();}) && !applied.isEmpty() && applied.last()[1].toBool() && app.presenter().client().snapshot().statuses.value("analyzer").state==pipeline::State::Running,"Default action did not apply continuous processing");
         std::puts("canonical editor actions: create/edit/copy/paste/undo/redo/delete/routes, exact presets, deferred layout/default and manual Apply isolation PASS");return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"FAIL %s\n",error.what());return 1;}

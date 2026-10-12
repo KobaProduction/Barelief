@@ -11,6 +11,7 @@ class NodeParameterForm final : public QWidget {
     QPointer<NodeParameterModel> _model;
     bool _inline_form;
     bool _rebuild_pending = false;
+    bool _placement_expanded = false;
     std::vector<QMetaObject::Connection> _bindings;
     void rebuild();
 };

@@ -6,12 +6,21 @@
 namespace dataflow_runtime {
 using signal_contracts::Status;
 struct DeliveryStamp {std::uint64_t graph_revision=0,epoch=0;};
+struct NodeStats {
+    domain::NodeId node=-1;
+    std::uint64_t calls=0,produced=0,errors=0,self_nanoseconds=0,max_self_nanoseconds=0,deadline_misses=0;
+    std::array<std::uint64_t,16> self_histogram{};
+};
+struct MixerInputStats {domain::PortId port=0;std::size_t depth=0,capacity=0;std::uint64_t dropped_samples=0,underrun_samples=0;};
 struct NumericRuntimeProfile {
     domain::ProcessingAdmissionLimits admission;
     domain::ProcessingResourceProfile resources;
     dsp_kernels::KernelLimits kernels;
     dsp_kernels::KernelCapabilities capabilities;
     bool history_enabled=true;
+    // Platform supplies a monotonic measurement clock. No OS/chrono in DSP.
+    std::uint64_t (*monotonic_nanoseconds)(void*) noexcept=nullptr;
+    void* measurement_clock=nullptr;
     std::size_t max_windows_per_ingress=1024,max_callback_deliveries_per_ingress=65536;
 };
 struct NumericPortFrameView {
@@ -64,12 +73,15 @@ public:
         const PreparedGraph* previous=nullptr,const RuntimeContext* previous_context=nullptr);
     Status process_numeric_ports(domain::NodeId,const signal_contracts::DataFrameView&,RuntimeContext&,
         DeliveryStamp,NumericRuntimeCallbacks={}) const noexcept;
+    Status process_numeric_ports(domain::NodeId,domain::PortId,const signal_contracts::DataFrameView&,RuntimeContext&,DeliveryStamp,NumericRuntimeCallbacks={}) const noexcept;
     // External History requires the DATA row ordinal and an owner pinning its
     // pools/storage. Ordinal deltas declare append/batch updates, including full
     // ring laps. A changed producer/discontinuity declares snapshot replacement.
     // Borrowed History is rejected by process_numeric_ports before mutation.
     Status process_numeric_owned_ports(domain::NodeId,const signal_contracts::OwnedDataFrame&,RuntimeContext&,
         DeliveryStamp,NumericRuntimeCallbacks={},std::optional<std::uint64_t> history_ordinal={},std::shared_ptr<const void> retention_owner={},std::optional<std::uint64_t> history_filled_count={}) const noexcept;
+    Status process_clock(domain::NodeId,const signal_contracts::FrameStamp&,RuntimeContext&,DeliveryStamp,NumericRuntimeCallbacks={}) const noexcept;
+    Status advance_unavailable_source(domain::NodeId,const signal_contracts::FrameStamp&,RuntimeContext&,DeliveryStamp,NumericRuntimeCallbacks={},domain::PortId=0) const noexcept;
     std::optional<signal_contracts::DataContract> port_contract(domain::NodeId,domain::PortDirection,std::uint16_t) const noexcept;
     // Serialized full snapshot: local History always exposes capacity rows, with
     // typed-zero older padding. Occupancy and accepted ordinal are separate.
@@ -83,11 +95,13 @@ public:
     bool marker_current(domain::NodeId,const signal_contracts::FrameStamp&,const RuntimeContext&) const noexcept;
     void rebase_local_producers(RuntimeContext&,std::uint64_t previous_epoch,std::uint64_t next_epoch,std::uint64_t generation) const noexcept;
     std::vector<domain::NodeId> reset_nodes() const;
+    std::optional<NodeStats> node_stats(domain::NodeId,const RuntimeContext&) const noexcept;
+    std::optional<MixerInputStats> mixer_input_stats(domain::NodeId,domain::PortId,const RuntimeContext&) const noexcept;
 private:
     struct Impl;PreparedGraph();std::unique_ptr<Impl> impl_;
     void refresh_state(RuntimeContext&,const PreparedGraph&,const RuntimeContext&) const noexcept;
     Status process_numeric_impl(domain::NodeId,const signal_contracts::DataFrameView&,RuntimeContext&,DeliveryStamp,
-        NumericRuntimeCallbacks,const signal_contracts::OwnedDataFrame*,std::optional<std::uint64_t>,std::shared_ptr<const void>,std::optional<std::uint64_t>) const noexcept;
+        NumericRuntimeCallbacks,const signal_contracts::OwnedDataFrame*,std::optional<std::uint64_t>,std::shared_ptr<const void>,std::optional<std::uint64_t>,domain::PortId=0) const noexcept;
     friend class GraphExecutor;
 };
 // One executor. All control and processing calls require serialized owner access.
@@ -114,8 +128,13 @@ public:
     Status apply(application::PreparedExecution&&) override;
     Status shutdown() override;
     Status process_numeric_ports(domain::NodeId,const signal_contracts::DataFrameView&,DeliveryStamp,NumericRuntimeCallbacks={}) noexcept;
+    Status process_numeric_ports(domain::NodeId,domain::PortId,const signal_contracts::DataFrameView&,DeliveryStamp,NumericRuntimeCallbacks={}) noexcept;
     Status process_numeric_owned_ports(domain::NodeId,const signal_contracts::OwnedDataFrame&,DeliveryStamp,NumericRuntimeCallbacks={},
         std::optional<std::uint64_t> history_ordinal={},std::shared_ptr<const void> retention_owner={},std::optional<std::uint64_t> history_filled_count={}) noexcept;
+    Status process_clock(domain::NodeId,const signal_contracts::FrameStamp&,DeliveryStamp,NumericRuntimeCallbacks={}) noexcept;
+    Status advance_unavailable_source(domain::NodeId,const signal_contracts::FrameStamp&,DeliveryStamp,NumericRuntimeCallbacks={},domain::PortId=0) noexcept;
+    std::optional<NodeStats> node_stats(domain::NodeId) const noexcept;
+    std::optional<MixerInputStats> mixer_input_stats(domain::NodeId,domain::PortId) const noexcept;
     bool running() const noexcept {return running_;}
     const PreparedGraph* plan() const noexcept {return plan_.get();}
     const RuntimeContext* context() const noexcept {return context_.get();}

@@ -41,8 +41,8 @@ void positive_latest(const Snapshot& snapshot){
 struct Fixture {
  NumericRuntimeProfile p=profile();GraphExecutor executor{p};application::GraphLifecycle lifecycle{executor,executor,PreparedGraph::numeric_capabilities(p),{p.admission,p.resources}};
  NumericProcessingGraph graph=numeric_test_graph();std::uint64_t sequence=0,ordinal=0,filled=0,history_sequence=0;std::size_t events=0;
- NumericContract source;std::array<float,512> samples{};std::array<PlaneLayout,2> planes{{{0,{4,0}},{1024,{4,0}}}};
- Fixture(){source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
+ NumericContract source;std::array<float,256> samples{};std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
+ Fixture(){graph.execution_interval={1,60};source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
  ConfiguredProcessingNode& node(NodeId id){auto it=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});CHECK(it!=graph.nodes.end());return *it;}
  bool apply(){auto prepared=lifecycle.prepare_transactional(graph);CHECK(bool(prepared));if(!prepared)return false;auto applied=lifecycle.apply_transactional();CHECK(bool(applied));return bool(applied);}
  Snapshot snapshot(){DataFrameView view;std::uint64_t real_filled=0,accepted=0;auto status=executor.plan()->history(7,0,*executor.context(),view,&real_filled,&accepted);
@@ -54,7 +54,7 @@ struct Fixture {
  void preserved(const Snapshot& before){auto after=snapshot();CHECK(after.rows==before.rows&&after.capacity==before.capacity&&after.ordinal==before.ordinal&&after.bands==before.bands&&after.bits==before.bits);}
  void feed(std::size_t blocks){for(std::size_t block=0;block<blocks;++block){for(std::size_t i=0;i<256;++i){double value=0;
    for(std::size_t tone=0;tone<8;++tone)value+=.025*std::sin(6.283185307179586*double(sequence*256+i)*(400+tone*701+sequence*.03)/48000.);
-   samples[i]=float(value);samples[256+i]=float(value*.75);}
+   samples[i]=float(value);}
   FrameStamp stamp;stamp.sequence=++sequence;stamp.source_sequence=sequence;stamp.producer_epoch=17;stamp.generation=4;stamp.timestamp_ticks=std::int64_t((sequence-1)*256);stamp.stream_id="edit.source";
   auto collect=[](void* user,const NumericHistoryRowView& row){if(row.event!=NumericHistoryEventKind::Row || row.endpoint.direction!=PortDirection::Output || row.endpoint.identity.node!=7)return;
    auto& f=*static_cast<Fixture*>(user);++f.events;
@@ -74,13 +74,13 @@ void compatible_edits(){Fixture f;CHECK(f.apply());f.feed(32);CHECK(f.filled>=10
  std::get<TransformProcessingParameters>(f.node(3).parameters).values.push_back({"function",std::string("hamming")});f.edit_preserves("Hann to Hamming");
  const auto contract=f.node(6).inputs[0].contract;
  ConfiguredProcessingNode gate;gate.id=20;gate.kind="Gate";gate.parameters=RouteProcessingParameters{1,0,true};gate.inputs={{0,PortDirection::Input,contract}};gate.outputs={{0,PortDirection::Output,contract}};
- f.graph.nodes.push_back(gate);std::erase_if(f.graph.edges,[](const auto& e){return e.to==6;});f.graph.edges.push_back({5,20,0,0});f.graph.edges.push_back({20,6,0,0});
+ f.graph.nodes.push_back(gate);std::erase_if(f.graph.edges,[](const auto& e){return e.to==6;});f.graph.edges.push_back({15,20,0,0});f.graph.edges.push_back({20,6,0,0});
  f.edit_preserves("insert compatible Gate");
  f.node(20).parameters=RouteProcessingParameters{1,0,false};f.edit_preserves("close Gate");auto zero=f.snapshot();
  CHECK(std::all_of(zero.bits.end()-zero.bands,zero.bits.end(),[](auto value){return value==0;}));
  f.node(20).parameters=RouteProcessingParameters{1,0,true};f.edit_preserves("open Gate");
  positive_latest(f.snapshot());
- std::erase_if(f.graph.edges,[](const auto& e){return e.from==20 || e.to==20;});f.graph.edges.push_back({5,6,0,0});std::erase_if(f.graph.nodes,[](const auto& n){return n.id==20;});
+ std::erase_if(f.graph.edges,[](const auto& e){return e.from==20 || e.to==20;});f.graph.edges.push_back({15,6,0,0});std::erase_if(f.graph.nodes,[](const auto& n){return n.id==20;});
  f.edit_preserves("bypass/remove Gate");
  // The window geometry changes, but the final Mel50/History contract and clock do not.
  for(auto& n:f.graph.nodes)for(auto* ports:{&n.inputs,&n.outputs})for(auto& port:*ports){auto value=std::get<NumericContract>(port.contract.view());
@@ -93,12 +93,12 @@ void compatible_edits(){Fixture f;CHECK(f.apply());f.feed(32);CHECK(f.filled>=10
  const auto before=f.snapshot();CHECK(f.lifecycle.disconnect(6));f.graph=*f.lifecycle.working_numeric_graph();f.preserved(before);f.feed(8);zero=f.snapshot();
  appended_preserves(before,zero);
  CHECK(std::all_of(zero.bits.end()-zero.bands,zero.bits.end(),[](auto value){return value==0;}));
- CHECK(f.lifecycle.connect({5,6,0,0}));f.graph=*f.lifecycle.working_numeric_graph();f.preserved(zero);f.feed(8);auto resumed=f.snapshot();appended_preserves(zero,resumed);positive_latest(resumed);
+ CHECK(f.lifecycle.connect({15,6,0,0}));f.graph=*f.lifecycle.working_numeric_graph();f.preserved(zero);f.feed(8);auto resumed=f.snapshot();appended_preserves(zero,resumed);positive_latest(resumed);
  const auto newest=std::vector<std::uint64_t>(resumed.bits.end()-resumed.bands,resumed.bits.end());
  f.feed(8);resumed=f.snapshot();positive_latest(resumed);CHECK(!std::equal(newest.begin(),newest.end(),resumed.bits.end()-resumed.bands));
  std::reverse(f.graph.nodes.begin(),f.graph.nodes.end());std::reverse(f.graph.edges.begin(),f.graph.edges.end());f.edit_preserves("topology serialization reorder");
  f.feed(1280);CHECK(f.snapshot().rows==f.snapshot().capacity);f.edit_preserves("full ring continuation");
- auto bad=f.graph;bad.edges.push_back({6,5,0,0});const auto* working=f.executor.plan();CHECK(!f.lifecycle.prepare_transactional(bad));CHECK(f.executor.plan()==working);f.feed(4);
+ auto bad=f.graph;bad.edges.push_back({6,15,0,0});const auto* working=f.executor.plan();CHECK(!f.lifecycle.prepare_transactional(bad));CHECK(f.executor.plan()==working);f.feed(4);
  CHECK(f.lifecycle.shutdown_transactional()==Status::ok);CHECK(!f.executor.running());CHECK(f.apply()&&f.executor.running());f.feed(4);CHECK(f.filled==1&&f.ordinal==1);
 }
 }

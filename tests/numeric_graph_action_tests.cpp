@@ -40,7 +40,7 @@ int main(int argc,char** argv){
     if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen"){std::fprintf(stderr,"This fixture requires explicit QT_QPA_PLATFORM=offscreen\n");return 2;}
     try {
         QTemporaryDir directory;require(directory.isValid(),"Isolated directory unavailable");const auto path=directory.filePath("project.json");
-        auto graph=numeric_test_graph();int next=20;
+        auto graph=numeric_default_graph();int next=20;
         for(const auto& kind:numeric_editor::catalog()){
             auto configured=numeric_editor::default_node(kind);domain::ResolvedProcessingNode resolved;
             if(!domain::resolve_processing_node(configured,numeric_editor::limits(),resolved) || resolved.role!=domain::NodeRole::Sink)continue;

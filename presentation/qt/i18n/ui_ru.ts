@@ -2,6 +2,31 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Channel comparison</source><translation>Сравнение каналов</translation></message>
+    <message><source>Saved outputs: %1</source><translation>Сохранённые выходы: %1</translation></message>
+<message><source>Input timing policy</source><translation>Временная политика входов</translation></message>
+<message><source>Clocked FIFO</source><translation>Очередь по локальным часам</translation></message>
+<message><source>Source aligned</source><translation>Согласование интервалов источника</translation></message>
+<message><source>Saved source format</source><translation>Сохранённый формат источника</translation></message>
+<message><source>Frequency grid</source><translation>Частотная сетка</translation></message>
+<message><source>Enabled</source><translation>Включён</translation></message>
+<message><source>Sum with gain</source><translation>Сумма с усилением</translation></message>
+<message><source>Normalized proportions</source><translation>Нормализованные пропорции</translation></message>
+<message><source>Signed bar</source><translation>Столбец относительно нуля</translation></message>
+<message><source>Single sine</source><translation>Одна синусоида</translation></message>
+<message><source>Multitone bank 1</source><translation>Многотональный набор 1</translation></message>
+<message><source>Multitone bank 2</source><translation>Многотональный набор 2</translation></message>
+<message><source>Filled frames</source><translation>Заполнено кадров</translation></message>
+<message><source>Active output stream</source><translation>Активный выходной поток</translation></message>
+<message><source>Selected stream: %1</source><translation>Выбранный поток: %1</translation></message>
+<message><source>Channels: %1</source><translation>Каналов: %1</translation></message>
+<message><source>Outputs: %1</source><translation>Выходов: %1</translation></message>
+<message><source>Inputs: %1</source><translation>Входов: %1</translation></message>
+<message><source>Oscillators: %1</source><translation>Осцилляторов: %1</translation></message>
+<message><source>Loopback</source><translation>Loopback</translation></message>
+<message><source>Hann</source><translation>Ханна</translation></message>
+<message><source>Input %1 weight</source><translation>Вес входа %1</translation></message>
+<message><source>Input %1 share</source><translation>Доля входа %1</translation></message>
     <message>
       <source>%1 values · peak %2</source>
       <translation>%1 значений · пик %2</translation>
@@ -1287,6 +1312,41 @@ Escape — отмена. Поддерживаются все раскладки.
     <message><source>All values are zero</source><translation>Все значения равны нулю</translation></message>
     <message><source>Value %1</source><translation>Значение %1</translation></message>
     <message><source>Other</source><translation>Прочие</translation></message>
+
+<message><source>Input switch</source><translation>Переключатель входов</translation></message>
+<message><source>Output switch</source><translation>Переключатель выходов</translation></message>
+<message><source>FFT</source><translation>FFT</translation></message>
+<message><source>Test signal</source><translation>Тестовый сигнал</translation></message>
+<message><source>Sample clock</source><translation>Часы отсчётов</translation></message>
+<message><source>Mixer</source><translation>Микшер</translation></message>
+<message><source>Sample clock node (-1: inherited)</source><translation>Узел часов отсчётов (-1: наследовать)</translation></message>
+<message><source>Sample clock node (-1: not assigned)</source><translation>Узел часов отсчётов (-1: не назначен)</translation></message>
+<message><source>Node %1 (%2): select an explicit SampleClock in block settings</source><translation>Узел %1 (%2): выберите явный SampleClock в настройках блока</translation></message>
+<message><source>Audio input: not used by this graph</source><translation>Аудиовход: не используется этой схемой</translation></message>
+<message><source>Clock domain</source><translation>Домен часов</translation></message>
+<message><source>Oscillator count</source><translation>Количество осцилляторов</translation></message>
+<message><source>Oscillator enabled</source><translation>Осциллятор включён</translation></message>
+<message><source>Frequency, Hz</source><translation>Частота, Гц</translation></message>
+<message><source>Phase, radians</source><translation>Фаза, радианы</translation></message>
+<message><source>Attack, seconds</source><translation>Нарастание, секунды</translation></message>
+<message><source>Release, seconds</source><translation>Спад, секунды</translation></message>
+<message><source>Mixing operation</source><translation>Операция смешивания</translation></message>
+<message><source>Weighted sum</source><translation>Взвешенная сумма</translation></message>
+<message><source>Weighted mean</source><translation>Взвешенное среднее</translation></message>
+<message><source>Weighted RMS</source><translation>Взвешенное RMS</translation></message>
+<message><source>Input FIFO, ms</source><translation>Входной FIFO, мс</translation></message>
+<message><source>Input weight</source><translation>Вес входа</translation></message>
+<message><source>Analysis rate, Hz</source><translation>Частота анализа, Гц</translation></message>
+<message><source>Analysis rate, Hz (integer or numerator/denominator)</source><translation>Частота анализа, Гц (целое число или числитель/знаменатель)</translation></message>
+<message><source>Generator and capture source</source><translation>Генератор и источник захвата</translation></message>
+<message><source>Calls: %1 · errors: %2</source><translation>Вызовы: %1 · ошибки: %2</translation></message>
+<message><source>Self time, average/max: %1 / %2 ms</source><translation>Собственное время, среднее/макс.: %1 / %2 мс</translation></message>
+<message><source>Deadline misses: %1</source><translation>Нарушения срока: %1</translation></message>
+
+<message><source>Add oscillator</source><translation>Добавить осциллятор</translation></message>
+<message><source>Remove oscillator</source><translation>Удалить осциллятор</translation></message>
+<message><source>Oscillator ID</source><translation>ID осциллятора</translation></message>
+<message><source>Edit source settings</source><translation>Изменить настройки источника</translation></message>
 </context>
     <context><name>Ui</name>
     <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
@@ -1563,7 +1623,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Remote port direction</source><translation>Направление удалённого порта</translation></message>
 <message><source>Input port</source><translation>Входной порт</translation></message>
 <message><source>Output port</source><translation>Выходной порт</translation></message>
-<message><source>Unspecified</source><translation>Не задано</translation></message>
+
 <message><source>Run</source><translation>Запустить</translation></message>
 <message><source>Stop</source><translation>Остановить</translation></message>
 <message><source>Reset node settings</source><translation>Сбросить настройки узла</translation></message>
@@ -1725,5 +1785,71 @@ Escape — отмена. Поддерживаются все раскладки.
 </context>
 <context><name>Ui</name>
 <message><source>Channels</source><translation>Каналы</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Rename block</source><translation>Переименовать блок</translation></message>
+<message><source>Fields on block</source><translation>Поля на блоке</translation></message>
+<message><source>Block name (empty restores default)</source><translation>Название блока (пустое — восстановить исходное)</translation></message>
+<message><source>Line width</source><translation>Толщина линии</translation></message>
+<message><source>Point size</source><translation>Размер точки</translation></message>
+<message><source>Bar width (%)</source><translation>Ширина столбца (%)</translation></message>
+<message><source>Show slice labels</source><translation>Показывать подписи секторов</translation></message>
+<message><source>Unsaved configuration</source><translation>Конфигурация не сохранена</translation></message>
+<message><source>Saving configuration…</source><translation>Сохранение конфигурации…</translation></message>
+<message><source>Configuration saved to disk</source><translation>Конфигурация сохранена на диск</translation></message>
+<message><source>Configuration save error</source><translation>Ошибка сохранения конфигурации</translation></message>
+<message><source>Configuration has not been saved to disk</source><translation>Конфигурация ещё не сохранена на диск</translation></message>
+</context>
+
+<context><name>Ui</name>
+<message><source>Processing: %1 Hz</source><translation>Обработка: %1 Гц</translation></message>
+<message><source>Measured processing output rate; independent of the analysis target and display FPS.</source><translation>Измеренная частота обработки; не зависит от заданной частоты анализа и FPS интерфейса.</translation></message>
+<message><source>Node %1 · %2 · interval %3 s</source><translation>Блок %1 · %2 · интервал %3 с</translation></message>
+<message><source>Audio capture: receiving</source><translation>Захват звука: приём</translation></message>
+<message><source>Audio capture: inactive</source><translation>Захват звука: неактивен</translation></message>
+<message><source>Audio input status. Processing continues independently; this indicator is not a start/stop control.</source><translation>Состояние аудиовхода. Обработка работает независимо; это индикатор, а не управление запуском и остановкой.</translation></message>
+<message><source>Activity: awaiting measurement</source><translation>Активность: ожидается измерение</translation></message>
+<message><source>Activity: processing</source><translation>Активность: обработка</translation></message>
+<message><source>Activity: no processing in interval</source><translation>Активность: нет обработки за интервал</translation></message>
+<message><source>Measured node executions: %1 Hz</source><translation>Измеренная частота выполнения блока: %1 Гц</translation></message>
+<message><source>Configuration could not be opened</source><translation>Не удалось открыть конфигурацию</translation></message>
+<message><source>This project could not be opened. Select a current preset and use Save As to create a new project.</source><translation>Не удалось открыть проект. Выберите актуальный пресет и используйте «Сохранить как», чтобы создать новый проект.</translation></message>
+<message><source>The unreadable source is preserved. Choose a different file for the new project.</source><translation>Исходный файл сохранён. Выберите другой файл для нового проекта.</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Window outputs</source><translation>Выходы буфера окна</translation></message>
+<message><source>Mixer outputs</source><translation>Выходы микшера</translation></message>
+<message><source>Transform outputs</source><translation>Выходы преобразователя</translation></message>
+<message><source>Source outputs</source><translation>Выходы источника</translation></message>
+<message><source>Awaiting measurement</source><translation>Ожидается измерение</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Examples</source><translation>Примеры</translation></message>
+<message><source>Single generator</source><translation>Один генератор</translation></message>
+<message><source>Two generators: PCM mix</source><translation>Два генератора: смешивание PCM</translation></message>
+<message><source>Two generators: input selector</source><translation>Два генератора: выбор входа</translation></message>
+<message><source>Generator: output switch</source><translation>Генератор: переключение выхода</translation></message>
+<message><source>Two independent streams</source><translation>Два независимых потока</translation></message>
+<message><source>Two generators: spectral mix</source><translation>Два генератора: смешивание спектров</translation></message>
+<message><source>Native capture: separate outputs</source><translation>Захват устройства: отдельные выходы</translation></message>
+</context>
+<context><name>Ui</name><message><source>Display refresh rate is independent of the processing rate.</source><translation>Частота обновления экрана не зависит от частоты обработки.</translation></message></context>
+<context><name>Ui</name><message><source>Display refresh rate is independent of the analysis rate.</source><translation>Частота обновления экрана не зависит от частоты анализа.</translation></message></context>
+<context><name>Ui</name>
+<message><source>Two channels: independent analysis</source><translation>Два канала: независимый анализ</translation></message>
+<message><source>Two channels: PCM mixer</source><translation>Два канала: микшер PCM</translation></message>
+<message><source>Two channels: input selector</source><translation>Два канала: выбор входа</translation></message>
+<message><source>Two channels: spectrum mixer</source><translation>Два канала: микшер спектров</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Startup: generator, loopback, microphone</source><translation>Стартовый: генератор, loopback, микрофон</translation></message>
+<message><source>Stereo: generator, loopback, microphone</source><translation>Стерео: генератор, loopback, микрофон</translation></message>
+<message><source>Stream count</source><translation>Количество потоков</translation></message>
+<message><source>Channels per stream</source><translation>Каналов в потоке</translation></message>
+<message><source>Stream %1</source><translation>Поток %1</translation></message>
+
+<message><source>Stream %1 · Channel %2</source><translation>Поток %1 · Канал %2</translation></message>
+<message><source>Add stream</source><translation>Добавить поток</translation></message>
+<message><source>Remove last stream</source><translation>Удалить последний поток</translation></message>
 </context>
 </TS>

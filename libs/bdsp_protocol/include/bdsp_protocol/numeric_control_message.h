@@ -4,7 +4,7 @@
 #include <domain/processing_contracts.h>
 #include <optional>
 namespace bdsp_protocol::numeric_control {
-inline constexpr std::uint32_t SchemaVersion = 2;
+inline constexpr std::uint32_t SchemaVersion = 4;
 // CONTROL describes processing storage, not payload bytes. Zero is the Native
 // descriptor symbol; fixed encodings1..4 retain the shared DATA symbol IDs.
 inline constexpr std::uint8_t NativeDescriptorEncoding = 0;
@@ -32,9 +32,12 @@ struct ReductionParameters {
     signal_contracts::PrecisionLoss precision_loss = signal_contracts::PrecisionLoss::RejectInexact;
     signal_contracts::Rounding rounding = signal_contracts::Rounding::NearestTiesEven;
 };
+struct GeneratorParameters { std::span<const signal_contracts::OscillatorParameters> oscillators; };
+struct ClockParameters { std::uint32_t sample_rate=48000; std::string_view domain="local"; };
+struct MixerParameters { domain::MixerMode mode=domain::MixerMode::WeightedSum; std::span<const domain::MixerInputWeight> weights; std::uint32_t fifo_milliseconds=100; domain::MixerConsumption consumption=domain::MixerConsumption::ClockedFifo; };
 using Parameters =
     std::variant<EndpointParameters, TransformParameters, domain::ConverterProcessingParameters,
-                 domain::RouteProcessingParameters, ReductionParameters, domain::HistoryProcessingParameters>;
+                 domain::RouteProcessingParameters, ReductionParameters, domain::HistoryProcessingParameters, GeneratorParameters, ClockParameters, MixerParameters>;
 struct Port {
     domain::PortId id = 0;
     domain::PortDirection direction = domain::PortDirection::Input;
@@ -52,7 +55,8 @@ struct Graph {
     domain::ProcessingVersions versions;
     std::span<const Node> nodes;
     std::span<const domain::Edge> edges;
-    signal_contracts::Ratio execution_interval{1,60};
+    signal_contracts::Ratio execution_interval{1,120};
+    std::span<const domain::ConfigurationBinding> configuration_bindings;
 };
 enum class CommandId { Capabilities, State, Prepare, Apply, SetParameters, Start, Stop, Persist, Release };
 struct Command {
@@ -75,7 +79,7 @@ struct CapabilityRow {
     Resources resources;
 };
 struct Capabilities {
-    std::uint32_t control_version = 2, data_version = 4, codec_mask = 3;
+    std::uint32_t control_version = 4, data_version = 5, codec_mask = 3;
     std::span<const CapabilityRow> rows;
     Resources maximum;
 };

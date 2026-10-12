@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cmath>
 #include <array>
+#include <atomic>
 #include <stdexcept>
 static void require(bool b,const char* text){if(!b)throw std::runtime_error(text);}
 static bool wait(std::function<bool()> f){QElapsedTimer t;t.start();while(!f()&&t.elapsed()<2000){QCoreApplication::processEvents();QThread::msleep(1);}return f();}
@@ -20,6 +21,29 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
         require(pipeline::test_signal_sample_time_ns(samples+rate,rate,17,next) && next-timestamp==1000000000LL,"long-run sample clock is not monotonic");
     }
     std::int64_t refused=71;require(!pipeline::test_signal_sample_time_ns(UINT64_MAX,48000,0,refused)&&refused==71,"exhausted clock published partial timestamp");
+    // Stress early cancellation and cancellation after delivery; each restart
+    // owns fresh timer/stop resources. OS scheduling determines the exact phase.
+    {
+        auto source=pipeline::make_test_signal_source();
+        std::atomic<unsigned> frames=0;std::atomic<bool> invalid=false;
+        std::uint64_t position=0,sequence=0;std::int64_t timestamp=0;
+        source->set_audio_handler([&](const pipeline::AudioFrame& frame){
+            if(frame.channel_count!=1||frame.frame_count!=240||frame.sample_rate!=48000)invalid=true;
+            if(!sequence&&(frame.sequence!=1||frame.sample_position!=0||!frame.discontinuity||frame.timestamp_ns<=0))invalid=true;
+            if(sequence&&(frame.sequence!=sequence+1||frame.sample_position!=position+240||frame.timestamp_ns-timestamp!=5000000))invalid=true;
+            position=frame.sample_position;sequence=frame.sequence;timestamp=frame.timestamp_ns;
+            ++frames;
+        });
+        for(unsigned run=0;run<12;++run) {
+            frames=0;position=sequence=0;timestamp=0;
+            source->start();
+            if(run%2)require(wait([&]{return frames.load()>=2;}),"restarted producer failed to deliver");
+            QElapsedTimer stopping;stopping.start();source->stop();
+            require(stopping.elapsed()<500&&!source->is_running(),"producer cancellation stalled");
+            const auto stopped=frames.load();QThread::msleep(6);
+            require(frames.load()==stopped&&!invalid.load(),"producer delivered after Stop or changed sample clock");
+        }
+    }
     pipeline::TestSignalSettings settings;QString error;
     for(const auto& invalid:{QJsonObject{{"tones",4}},QJsonObject{{"tones",8.5}},QJsonObject{{"amplitude",1.1}},QJsonObject{{"maximum_hz",30000}},QJsonObject{{"period_seconds",0}}})require(!pipeline::TestSignalSettings::parse(invalid,settings,error),"invalid source settings accepted");
     auto graph=numeric_default_graph();graph.nodes[0].kind="TestSignal";
@@ -27,15 +51,16 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
     pipeline::NumericEngine engine([](auto){return pipeline::make_test_signal_source();});bool accepted=false,rejected=false;
     engine.set_reply_handler([&](const auto& reply){accepted=reply.accepted;rejected=!reply.accepted;});
     const pipeline::EndpointIdentity pcm{"main",9,domain::PortDirection::Input,0},history{"main",7,domain::PortDirection::Output,0};
-    require(engine.subscribe_numeric_frames({pcm}),"subscribe PCM");std::size_t received=0;bool bad=false,nonzero=false,stereo=false;
+    require(engine.subscribe_numeric_frames({pcm}),"subscribe PCM");std::size_t received=0;bool bad=false,nonzero=false,mono=false;
     engine.set_numeric_frame_handler([&](auto owned){if(!owned.frame)return;const auto frame=owned.frame.view();if(!frame.stamp.available)return;const auto* numeric=std::get_if<signal_contracts::NumericView>(&frame.payload);if(!numeric)return;
-        bad|=numeric->actual[0]!=256 || numeric->planes.size()!=2 || numeric->contract->clock.sample_rate!=48000;
-        for(std::size_t i=0;i<numeric->actual[0];++i){float left=0,right=0;
-            if(signal_contracts::load_element(*numeric,{0,i,0},left)!=signal_contracts::Status::ok || signal_contracts::load_element(*numeric,{1,i,0},right)!=signal_contracts::Status::ok){bad=true;continue;}
-            const auto l=left,r=right;bad|=!std::isfinite(l)||!std::isfinite(r)||std::abs(l)>.12501||std::abs(r)>.12501;nonzero|=std::abs(l)>1e-6;stereo|=std::abs(l-r)>1e-6;
+        bad|=numeric->actual[0]!=256 || numeric->planes.size()!=1 || numeric->contract->clock.sample_rate!=48000;
+        mono|=numeric->planes.size()==1;
+        for(std::size_t i=0;i<numeric->actual[0];++i){float value=0;
+            if(signal_contracts::load_element(*numeric,{0,i,0},value)!=signal_contracts::Status::ok){bad=true;continue;}
+            bad|=!std::isfinite(value)||std::abs(value)>.12501;nonzero|=std::abs(value)>1e-6;
         }++received;});
     auto apply=[&]{QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"encode canonical graph");pipeline::EngineCommand command;command.kind=pipeline::EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();accepted=rejected=false;engine.submit(command);require(wait([&]{return accepted||rejected;})&&accepted,"same application Apply rejected");};
-    apply();require(wait([&]{return received>=10;}),"silent source delivery");require(!bad&&nonzero&&stereo,"actual configured stereo signal/clock/amplitude");
+    apply();require(wait([&]{return received>=10;}),"silent source delivery");require(!bad&&nonzero&&mono,"actual configured mono signal/clock/amplitude");
     // Producer and executor advance while the GUI event loop is not serviced.
     pipeline::DeliveredNumericFrame before,after;std::uint64_t filled=0,after_filled=0;require(engine.query_numeric(history,before,nullptr,&filled)==signal_contracts::Status::ok,"cold history before");require(std::get<signal_contracts::NumericView>(before.frame.view().payload).actual[0]==400,"cold History capacity");
     QThread::msleep(400);require(engine.query_numeric(history,after,nullptr,&after_filled)==signal_contracts::Status::ok,"cold history after");require(std::get<signal_contracts::NumericView>(after.frame.view().payload).actual[0]==400 && after_filled>filled+10,"processing depends on GUI event delivery");

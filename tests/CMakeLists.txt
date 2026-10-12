@@ -1,6 +1,34 @@
 # Canonical numeric integration, plus independent retained capture, transport,
 # DSP and workspace oracles. Old executor/schema/migration fixtures are retired
 # by registration; their source/evidence is retained for the final owner review.
+
+# Opt-in native graph capture; deliberately not registered as an offscreen CTest.
+# The same harness can be injected into the pre-QML checkout for A/B evidence.
+if(BUILD_GUI AND NOT BUILD_DSP_ONLY AND NOT BUILD_PORTABLE_SDK)
+add_executable(graph_visual_compare graph_visual_compare.cpp)
+target_link_libraries(graph_visual_compare PRIVATE desktop_gui_composition Qt6::Test)
+target_compile_definitions(graph_visual_compare PRIVATE NUMERIC_QML)
+# Opt-in native throughput/trace benchmark; never run as an offscreen CTest.
+add_executable(graph_performance_compare graph_performance_compare.cpp)
+target_link_libraries(graph_performance_compare PRIVATE desktop_gui_composition)
+if(WIN32)
+    target_link_libraries(graph_performance_compare PRIVATE ole32)
+endif()
+target_compile_definitions(graph_performance_compare PRIVATE NUMERIC_QML)
+deploy_desktop_runtime(graph_performance_compare)
+# Separate-process native Quick host A/B; opt-in, no offscreen performance claim.
+add_executable(render_topology_probe render_topology_probe.cpp)
+target_link_libraries(render_topology_probe PRIVATE visualization dsp_kernels)
+deploy_desktop_runtime(render_topology_probe)
+# Opt-in native preview clock evidence; functional CTest does not claim120Hz.
+add_executable(numeric_preview_cadence_probe numeric_preview_cadence_probe.cpp)
+target_link_libraries(numeric_preview_cadence_probe PRIVATE desktop_numeric_routing desktop_numeric_defaults Qt6::Widgets)
+deploy_desktop_runtime(numeric_preview_cadence_probe)
+# Opt-in bounded full-application startup/delivery/render tracing.
+add_executable(application_startup_trace application_startup_trace.cpp)
+target_link_libraries(application_startup_trace PRIVATE desktop_gui_composition)
+deploy_desktop_runtime(application_startup_trace)
+endif()
 if(MSVC)
     add_compile_options(/UNDEBUG)
 else()
@@ -56,6 +84,7 @@ add_desktop_check(numeric_desktop_host_tests "desktop_numeric_routing;desktop_nu
 # the generic quick-test budget; keep the complete scenario bounded.
 set_tests_properties(numeric_desktop_host_tests PROPERTIES TIMEOUT 60 LABELS "numeric;integration")
 add_desktop_check(numeric_preview_subscription_tests "desktop_numeric_routing;desktop_numeric_defaults")
+add_desktop_check(numeric_preview_burst_tests desktop_numeric_routing)
 foreach(test IN ITEMS engine_transport_tests stream_transport_tests network_runtime_tests distributed_transport_tests desktop_serial_stream_tests)
     add_desktop_check(${test} desktop_numeric_routing)
     target_link_libraries(${test} PRIVATE desktop_numeric_defaults)
@@ -111,6 +140,9 @@ if(BUILD_GUI)
     add_test(NAME numeric_application_rejected COMMAND numeric_application_tests --rejected)
     add_test(NAME numeric_application_first_run COMMAND numeric_application_tests --first-run)
     add_test(NAME numeric_application_shipped_examples COMMAND numeric_application_tests --shipped-examples)
+    add_test(NAME numeric_application_current_examples COMMAND numeric_application_tests --current-examples)
+    set_tests_properties(numeric_application_current_examples PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 60
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     add_test(NAME numeric_application_shipped_examples_ui COMMAND numeric_application_tests --shipped-examples-ui)
     add_test(NAME numeric_application_startup_selector COMMAND numeric_application_tests --startup-selector)
     add_test(NAME numeric_application_startup_selector_unavailable COMMAND numeric_application_tests --startup-selector-unavailable)
@@ -152,6 +184,15 @@ endif()
 # Qt Quick software rendering gives deterministic offscreen 2D pixels. These
 # checks do not claim acceptance of the native OpenGL/FBO surface pipeline.
 if(BUILD_GUI)
+    add_executable(ui_transition_audit ui_transition_audit.cpp ui_audit_workspace.cpp ui_audit_graphs.cpp ui_audit_application.cpp)
+    target_link_libraries(ui_transition_audit PRIVATE desktop_gui_composition Qt6::Test)
+    deploy_desktop_runtime(ui_transition_audit)
+    # These checks verify that evidence collection executes, not UX acceptance.
+    foreach(group IN ITEMS workspace graphs application)
+        add_test(NAME ui_audit_${group} COMMAND ui_transition_audit "${CMAKE_BINARY_DIR}/ui-audit-ctest" ${group})
+        set_tests_properties(ui_audit_${group} PROPERTIES TIMEOUT 100 LABELS "ui;audit;integration"
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
+    endforeach()
     get_property(desktop_checks DIRECTORY PROPERTY TESTS)
     foreach(desktop_check IN LISTS desktop_checks)
         get_test_property(${desktop_check} ENVIRONMENT desktop_check_environment)
@@ -159,4 +200,31 @@ if(BUILD_GUI)
             set_property(TEST ${desktop_check} APPEND PROPERTY ENVIRONMENT "QT_QUICK_BACKEND=software")
         endif()
     endforeach()
+endif()
+
+if(BUILD_GUI)
+    add_executable(frame_schedule_tests frame_schedule_tests.cpp)
+    target_include_directories(frame_schedule_tests PRIVATE ${CMAKE_SOURCE_DIR}/presentation/qt/include)
+    add_test(NAME frame_schedule_tests COMMAND frame_schedule_tests)
+endif()
+
+if(BUILD_GUI)
+    add_executable(qt_frame_pump_tests qt_frame_pump_tests.cpp)
+    target_include_directories(qt_frame_pump_tests PRIVATE ${CMAKE_SOURCE_DIR}/presentation/qt/include)
+    target_link_libraries(qt_frame_pump_tests PRIVATE Qt6::Core)
+    deploy_desktop_runtime(qt_frame_pump_tests)
+    add_test(NAME qt_frame_pump_tests COMMAND qt_frame_pump_tests)
+    add_executable(latest_preparation_tests latest_preparation_tests.cpp)
+    target_include_directories(latest_preparation_tests PRIVATE ${CMAKE_SOURCE_DIR}/presentation/qt/include)
+    target_link_libraries(latest_preparation_tests PRIVATE Qt6::Core)
+    deploy_desktop_runtime(latest_preparation_tests)
+    add_test(NAME latest_preparation_tests COMMAND latest_preparation_tests)
+endif()
+
+# Explicit native artifact collection, never part of offscreen CTest or ALL.
+# Run with an owned artifact directory and the native Qt platform plugin.
+if(BUILD_GUI)
+    add_executable(block_ui_native_probe EXCLUDE_FROM_ALL block_ui_native_probe.cpp)
+    target_link_libraries(block_ui_native_probe PRIVATE desktop_gui_composition)
+    deploy_desktop_runtime(block_ui_native_probe)
 endif()

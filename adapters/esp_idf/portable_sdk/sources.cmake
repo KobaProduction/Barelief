@@ -27,6 +27,18 @@ set(PORTABLE_SDK_SOURCES
     adapters/control/src/numeric_processing_message_mapper.cpp
     adapters/desktop/runtime/src/numeric_control_session.cpp
     libs/dataflow_runtime/src/runtime.cpp
+    libs/dataflow_runtime/src/runtime_context.cpp
+    libs/dataflow_runtime/src/runtime_queries.cpp
+    libs/dataflow_runtime/src/graph_preparation.cpp
+    libs/dataflow_runtime/src/capability_admission.cpp
+    libs/dataflow_runtime/src/buffer_preparation.cpp
+    libs/dataflow_runtime/src/node_state.cpp
+    libs/dataflow_runtime/src/signal_time.cpp
+    libs/dataflow_runtime/src/frame_access.cpp
+    libs/dataflow_runtime/src/numeric_execution.cpp
+    libs/dataflow_runtime/src/transform_execution.cpp
+    libs/dataflow_runtime/src/mixer_execution.cpp
+    libs/dataflow_runtime/src/clock_execution.cpp
     libs/dsp_kernels/src/dsp.cpp libs/dsp_kernels/src/backend_tables.cpp libs/dsp_kernels/src/scalar_reduce.cpp
     libs/dsp_kernels/src/kernel_support.cpp libs/dsp_kernels/src/numeric_convert.cpp
     libs/dsp_kernels/src/numeric_reduce.cpp

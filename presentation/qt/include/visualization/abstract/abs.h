@@ -1,7 +1,7 @@
 #pragma once
 #include <visualization/quick2d/plot_model.h>
 #include <visualization/amplitude_range.h>
-#include <QTimer>
+#include <visualization/rendering/qt_frame_pump.h>
 #include <vector>
 
 class AbstractChartView : public QuickPlotWidget {
@@ -15,6 +15,7 @@ public:
     bool scalar_readout_enabled() const noexcept {return _scalar_mode;}
     QString scalar_readout_text() const {return _scalar_text;}
     void set_plot_style(const QString& style);
+    void set_series_style(double lineWidth,double pointSize,double barWidth);
     QString plot_style() const {return _plot_style;}
     void set_auto_gain(bool value,float min_max=.001f,float min_min=-.001f,size_t speed=10);
     void set_auto_range_interval(double seconds) {_auto_range_interval=AmplitudeRange::interval(seconds);}
@@ -54,14 +55,20 @@ protected:
     double _auto_range_interval=10;
     bool _scalar_mode=false,_scalar_available=false,_reverse_x=false,_reverse_y=false;
     QString _scalar_text,_plot_style="line",_title,_x_title,_y_title;
-    QTimer _data_update_timer;
+    visualization::rendering::QtFramePump _frame_pump;
+    void publish_presentation();
+    void frame_completed(quint64 token) override {_frame_pump.complete(token);}
     void refresh_presentation() override;
     void paintEvent(QPaintEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void _refresh_x_range();
+    void _schedule_dirty_presentation();
     virtual qreal _x_step() const {return 1;}
+    QVariantList _axis_signature,_cached_x_ticks,_cached_y_ticks;
+    double _cached_plot_left=82;
     int _axis_precision=0;
+    double _line_width=1.25,_point_size=12,_bar_width=80;
     virtual void _update_chart_data();
     virtual void _on_chart_updated() {}
     virtual void _on_updated_data_size(size_t) {}

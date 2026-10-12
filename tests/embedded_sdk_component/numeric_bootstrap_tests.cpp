@@ -59,7 +59,7 @@ static int control_state_both(Device& device) {
         struct Reply {unsigned* count;bool* valid;} capture{&replies,&valid};
         client.set_reply_handler([](const nc::Message& message,void* user) {
             auto& c=*static_cast<Reply*>(user);const auto& reply=std::get<nc::Reply>(message.body);
-            ++*c.count;*c.valid=reply.error==nc::Error::None && reply.state.applied && reply.state.applied->nodes.size()==(Spectral?8:3);
+            ++*c.count;*c.valid=reply.error==nc::Error::None && reply.state.applied && reply.state.applied->nodes.size()==(Spectral?7:3);
         },&capture);
         auto drain=[&] {
             for(unsigned i=0;i<10000 && (client.pending_bytes() || device.control->pending_bytes() || !a.input.empty() || !b.input.empty());++i) {

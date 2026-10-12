@@ -32,7 +32,11 @@ constexpr NodeDescriptor nodes[]{
     {NodeKind::WLEDOutput,"WLEDOutput",NodeRole::Sink},
     {NodeKind::InputSelector,"InputSelector",NodeRole::Processor},
     {NodeKind::PcmResampler,"PcmResampler",NodeRole::Processor},
-    {NodeKind::IndexExtract,"IndexExtract",NodeRole::Processor}
+    {NodeKind::IndexExtract,"IndexExtract",NodeRole::Processor},
+    {NodeKind::SignalGenerator,"SignalGenerator",NodeRole::Source},
+    {NodeKind::SampleClock,"SampleClock",NodeRole::Source},
+    {NodeKind::Mixer,"Mixer",NodeRole::Processor},
+    {NodeKind::ChannelComparison,"ChannelComparison",NodeRole::Processor}
 };
 static_assert(std::size(nodes)==node_kind_count);
 bool ports_defined(const NodeDefinition& n) noexcept {
@@ -84,10 +88,10 @@ bool is_view(NodeKind k) noexcept {
 NodeRole node_role(NodeKind k) noexcept {
     const auto* d=node_descriptor(k);return d?d->role:NodeRole::Unknown;
 }
-std::uint16_t input_ports(const NodeDefinition& n) noexcept { return !ports_defined(n) || node_role(n.kind)==NodeRole::Source?0:n.kind==NodeKind::InputSelector?2:1; }
+std::uint16_t input_ports(const NodeDefinition& n) noexcept { return !ports_defined(n) || node_role(n.kind)==NodeRole::Source?0:(n.kind==NodeKind::InputSelector || n.kind==NodeKind::Mixer || n.kind==NodeKind::ChannelComparison)?2:1; }
 std::uint16_t output_ports(const NodeDefinition& n) noexcept {
     if(!ports_defined(n))return 0;
-    if(node_role(n.kind)==NodeRole::Sink)return 0;
+    if(node_role(n.kind)==NodeRole::Sink || n.kind==NodeKind::SampleClock)return 0;
     if(n.kind==NodeKind::Spectrogram)return 2;
     if(n.kind==NodeKind::Splitter || n.kind==NodeKind::Switch) {
         const auto *p=std::get_if<RoutingParameters>(&n.parameters);return p?p->outputs:0;
@@ -97,7 +101,7 @@ std::uint16_t output_ports(const NodeDefinition& n) noexcept {
 std::optional<FrameType> input_type(const NodeDefinition& n, std::uint16_t port) noexcept {
     if(port>=input_ports(n))return {};
     switch(n.kind) {
-    case NodeKind::PcmResampler: case NodeKind::InputSelector: case NodeKind::Window: case NodeKind::AudioView: return FrameType::PCM;
+    case NodeKind::ChannelComparison: case NodeKind::Mixer: case NodeKind::PcmResampler: case NodeKind::InputSelector: case NodeKind::Window: case NodeKind::AudioView: return FrameType::PCM;
     case NodeKind::WindowFunction: case NodeKind::WindowView: return FrameType::Window;
     case NodeKind::StereoFFT: case NodeKind::WindowedView: return FrameType::Windowed;
     case NodeKind::BarkWeighting: case NodeKind::SpectrumMerge: case NodeKind::FFTView: return FrameType::StereoSpectrum;
@@ -122,14 +126,14 @@ std::optional<FrameType> input_type(const NodeDefinition& n, std::uint16_t port)
 std::optional<FrameType> output_type(const NodeDefinition& n, std::uint16_t port) noexcept {
     if(port>=output_ports(n))return {};
     switch(n.kind) {
-    case NodeKind::PcmResampler: case NodeKind::InputSelector: case NodeKind::AudioSource: case NodeKind::TestSignal: return FrameType::PCM;
+    case NodeKind::SignalGenerator: case NodeKind::Mixer: case NodeKind::PcmResampler: case NodeKind::InputSelector: case NodeKind::AudioSource: case NodeKind::TestSignal: return FrameType::PCM;
     case NodeKind::Window: return FrameType::Window;
     case NodeKind::WindowFunction: return FrameType::Windowed;
     case NodeKind::StereoFFT: case NodeKind::BarkWeighting: return FrameType::StereoSpectrum;
     case NodeKind::SpectrumMerge: case NodeKind::SpectrumGain: return FrameType::Spectrum;
     case NodeKind::Mel: return FrameType::Mel;
     case NodeKind::Spectrogram: return port==0?FrameType::History:FrameType::Scalar;
-    case NodeKind::ScalarReduce: return FrameType::Scalar;
+    case NodeKind::ChannelComparison: case NodeKind::ScalarReduce: return FrameType::Scalar;
     case NodeKind::WLEDEncode: return FrameType::WledPacket;
     case NodeKind::Splitter: case NodeKind::Switch: case NodeKind::Gate:
         if(const auto *p=std::get_if<RoutingParameters>(&n.parameters))return p->data_type;
@@ -177,7 +181,12 @@ std::span<const ParameterDescriptor> parameter_descriptors(NodeKind k) noexcept 
     using C=ParameterClassification;using V=ParameterValueKind;
     static constexpr ParameterDescriptor source[]{{"source",C::Processing,V::Integer,0,1,0,{}},{"sample_rate",C::Processing,V::Integer,1000,192000,48000,{}}};
     static constexpr ParameterDescriptor resampler[]{{"output_rate",C::Processing,V::Integer,8000,192000,48000,{}}};
-    static constexpr ParameterDescriptor selector[]{{"selected_input",C::Processing,V::Integer,0,65535,0,{}}};
+    static constexpr ParameterDescriptor comparison[]{
+        {"window_samples",C::Processing,V::Integer,1,65536,512,{}},
+        {"silence_threshold",C::Processing,V::Number,0,1,1e-12,{}}};
+    static constexpr ParameterDescriptor selector[]{
+        {"selected_input",C::Processing,V::Integer,0,65535,0,{}},
+        {"channels_per_stream",C::Processing,V::Integer,1,32,1,{}}};
     static constexpr ParameterDescriptor extract[]{
         {"channel_index",C::Processing,V::Integer,0,65535,0,{}},
         {"index",C::Processing,V::Integer,0,2147483647,0,{}},
@@ -215,6 +224,7 @@ std::span<const ParameterDescriptor> parameter_descriptors(NodeKind k) noexcept 
     case NodeKind::AudioSource:return source;
     case NodeKind::PcmResampler:return resampler;
     case NodeKind::InputSelector:return selector;
+    case NodeKind::ChannelComparison:return comparison;
     case NodeKind::IndexExtract:return extract;
     case NodeKind::SpectrumMerge:return merge;
     case NodeKind::SpectrumGain:case NodeKind::WLED:case NodeKind::WLEDEncode:return gain;

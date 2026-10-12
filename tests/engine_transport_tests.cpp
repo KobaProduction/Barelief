@@ -21,7 +21,7 @@ static void ratio_json_regression() {
     require(bool(desktop::encode_numeric_graph(g,encoded)),"exact rational encoding");domain::NumericProcessingGraph restored;
     require(bool(desktop::decode_numeric_graph(encoded,restored))&&restored.execution_interval.numerator==g.execution_interval.numerator&&restored.execution_interval.denominator==g.execution_interval.denominator,"exact rational JSON changed");
     auto document=QJsonDocument::fromJson(encoded).object();document.remove("execution_interval");
-    require(bool(desktop::decode_numeric_graph(QJsonDocument(document).toJson(),restored))&&restored.execution_interval.numerator==1&&restored.execution_interval.denominator==60,"missing policy default");
+    require(bool(desktop::decode_numeric_graph(QJsonDocument(document).toJson(),restored))&&restored.execution_interval.numerator==1&&restored.execution_interval.denominator==120,"missing policy default");
     for(const Ratio bad:std::array{Ratio{0,1},Ratio{1,0},Ratio{2,120},Ratio{61,1}}){g.execution_interval=bad;require(!desktop::encode_numeric_graph(g,encoded),"invalid JSON policy accepted");}
 }
 static void queue_endpoint_loss_regression() {
@@ -60,7 +60,7 @@ static void pcm_transport_window_continuity() {
     auto receive_graph=defaults;receive_graph.graph_id="receiver";receive_graph.nodes.front().kind="NetworkInput";receive_graph.nodes.front().parameters=domain::EndpointProcessingParameters{};
     NumericEngine sender,receiver;Replies sr(sender),rr(receiver);sr.accepted(apply(send_graph));rr.accepted(apply(receive_graph));NumericControlServer server(sender);require(server.listen(QHostAddress::LocalHost,0),"PCM server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote);require(remote.subscribe_numeric_frames({sink(send_graph)}),"PCM sink subscription");
     std::uint64_t received=0;bool gap=false;remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available){++received;if(received>1)gap|=frame.frame.view().stamp.discontinuity;require(receiver.feed_numeric(1,frame.frame.view())==Status::ok,"received PCM processing");}});
-    settle(100);const auto data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(data);std::array<float,512> pcm{};pcm.fill(.125f);std::array<PlaneLayout,2> planes{{{0,{4,0}},{1024,{4,0}}}};
+    settle(100);const auto data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(data);std::array<float,256> pcm{};pcm.fill(.125f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
     std::uint64_t sequence=0;auto send_pcm=[&]{FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.generation=stamp.producer_epoch=1;stamp.timestamp_ticks=std::int64_t((sequence-1)*256);stamp.stream_id="pcm";require(sender.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(pcm)),planes,{256,1}}})==Status::ok,"sender PCM burst");};
     // CONTROL readiness precedes ACKed DATA demand; establish a real delivery first.
     require(wait([&]{send_pcm();return received>0;}),"PCM DATA binding readiness");settle(200);const auto baseline=received;gap=false;

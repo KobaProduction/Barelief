@@ -36,6 +36,8 @@ struct NumericMetricsPort {
     std::function<void(quint16)> set_unavailable;
     std::function<void(quint16,const QString&)> set_value;
 };
+// Physical units require explicit configuration links at the composition boundary.
+struct NumericAxisPermissions { bool frequency=false; bool time=false; };
 struct NumericRenderTarget {
     NumericChartPort* chart=nullptr;
     NumericSurfacePort* spectrogram=nullptr;
@@ -44,6 +46,7 @@ struct NumericRenderTarget {
     NumericImagePort* image=nullptr;
     NumericPiePort* pie=nullptr;
     NumericMetricsPort* metrics=nullptr;
+    NumericAxisPermissions axes;
 };
 }
 

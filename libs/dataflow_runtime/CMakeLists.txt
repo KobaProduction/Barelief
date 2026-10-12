@@ -1,4 +1,17 @@
-add_library(dataflow_runtime STATIC src/runtime.cpp)
+add_library(dataflow_runtime STATIC
+    src/runtime.cpp
+    src/runtime_context.cpp
+    src/runtime_queries.cpp
+    src/graph_preparation.cpp
+    src/capability_admission.cpp
+    src/buffer_preparation.cpp
+    src/node_state.cpp
+    src/signal_time.cpp
+    src/frame_access.cpp
+    src/numeric_execution.cpp
+    src/transform_execution.cpp
+    src/mixer_execution.cpp
+    src/clock_execution.cpp)
 target_include_directories(dataflow_runtime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "numeric_transport_fixture.h"
 #include <core_app/numeric_default_graph.h>
 #include <bit>
@@ -13,7 +14,7 @@ void* operator new[](std::size_t size){return ::operator new(size);}
 void operator delete(void*p)noexcept{std::free(p);}void operator delete[](void*p)noexcept{std::free(p);}
 void operator delete(void*p,std::size_t)noexcept{std::free(p);}void operator delete[](void*p,std::size_t)noexcept{std::free(p);}
 static void measure(std::uint64_t capacity,bool subscribe){
- auto defaults=numeric_default_graph();auto history=defaults.nodes[6],sink=defaults.nodes[7];
+ auto defaults=numeric_default_graph();auto history=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==7;}),sink=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==8;});
  auto c=std::get<NumericContract>(history.inputs[0].contract.view());
  auto hc=std::get<NumericContract>(history.outputs[0].contract.view());hc.shape.extents[0].maximum=capacity;
  domain::OwnedProcessingContract owner;require(domain::own_processing_contract(hc,bdsp_protocol::numeric_control::desktop_limits().frame,16384,owner)==Status::ok,"own History geometry");

@@ -12,6 +12,8 @@ using namespace domain;using namespace signal_contracts;using namespace dataflow
 inline std::size_t allocations=0;
 inline void check(bool value,const char* why){if(!value){std::fprintf(stderr,"FAIL %s\n",why);std::exit(1);}}
 inline constexpr FrameLimits limits{8,32768,262144,16384,256,8192};
+// Retained numerical oracles below explicitly use 60 Hz; the product default remains 120 Hz.
+inline NumericProcessingGraph oracle_graph(){auto g=numeric_test_graph();g.execution_interval={1,60};return g;}
 inline NumericRuntimeProfile profile(){return {{32,64,8,16,256,65536,limits},{{1048576,1048576,1048576,65536},0,8388608},{32768,8,262144,262144,262144},{true,true,true}};}
 inline ConfiguredProcessingNode& node(NumericProcessingGraph& g,NodeId id){auto it=std::find_if(g.nodes.begin(),g.nodes.end(),[&](const auto& n){return n.id==id;});check(it!=g.nodes.end(),"missing node");return *it;}
 inline void geometry(NumericProcessingGraph& g,std::size_t rate,std::size_t window,std::size_t block){
@@ -26,12 +28,12 @@ inline void geometry(NumericProcessingGraph& g,std::size_t rate,std::size_t wind
  if(!has_rate)source.push_back({"sample_rate",NumericLiteral{std::uint64_t(rate)}});
 }
 struct Feed {
- NumericContract contract;std::array<float,634> samples{};std::array<PlaneLayout,2> planes{{{0,{4,0}},{1268,{4,0}}}};std::uint64_t sent=0,sequence=0,epoch=17;
+ NumericContract contract;std::array<float,317> samples{};std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sent=0,sequence=0,epoch=17;
  explicit Feed(const NumericProcessingGraph& g):contract(std::get<NumericContract>(g.nodes[0].outputs[0].contract.view())){}
  DataFrameView frame(std::size_t count){
-  for(std::size_t i=0;i<count;++i){double left=.15*std::sin(6.283185307179586*(sent+i)*512/contract.clock.sample_rate),right=.10*std::sin(6.283185307179586*(sent+i)*1024/contract.clock.sample_rate);
-   for(std::size_t tone=0;tone<6;++tone){const auto hz=64*(tone+1);const auto phase=6.283185307179586*(sent+i)*hz/contract.clock.sample_rate;const auto amp=.003+.001*std::sin(double(sequence)*.07+tone);left+=amp*std::sin(phase);right+=amp*std::cos(phase);}
-   samples[i]=float(left);samples[317+i]=float(right);}
+  for(std::size_t i=0;i<count;++i){double left=.15*std::sin(6.283185307179586*(sent+i)*512/contract.clock.sample_rate);
+   for(std::size_t tone=0;tone<6;++tone){const auto hz=64*(tone+1);const auto phase=6.283185307179586*(sent+i)*hz/contract.clock.sample_rate;const auto amp=.003+.001*std::sin(double(sequence)*.07+tone);left+=amp*std::sin(phase);}
+   samples[i]=float(left);}
   FrameStamp stamp;stamp.sequence=++sequence;stamp.source_sequence=sequence;stamp.producer_epoch=epoch;stamp.generation=4;stamp.timestamp_ticks=std::int64_t(sent);stamp.stream_id="canonical.audit";sent+=count;
   return {stamp,NumericView{&contract,std::as_bytes(std::span(samples)),planes,{count,1},{},{}}};
  }

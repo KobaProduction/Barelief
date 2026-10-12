@@ -24,5 +24,7 @@ bool set_contract(domain::ConfiguredProcessingNode &, domain::PortDirection, dom
 bool add_input(domain::ConfiguredProcessingNode &);
 bool remove_input(domain::ConfiguredProcessingNode &, domain::PortId);
 bool set_input_count(domain::ConfiguredProcessingNode &, std::uint16_t);
+bool set_route_channels(domain::ConfiguredProcessingNode&,std::uint16_t);
+bool set_selector_channels(domain::ConfiguredProcessingNode &, std::uint16_t);
 bool set_output_count(domain::ConfiguredProcessingNode &, std::uint16_t);
 } // namespace numeric_editor

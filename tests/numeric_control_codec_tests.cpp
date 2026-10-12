@@ -64,9 +64,9 @@ void basic(const Codec &c) {
     Message plain;
     e = encode(c, plain);
     CHECK(e);
-    const std::uint8_t cb[]{0xa8, 1, 2, 2,    0, 3, 0, 4, 0, 5,    0, 6,    0, 7,   0xa6,
+    const std::uint8_t cb[]{0xa8, 1, 4, 2,    0, 3, 0, 4, 0, 5,    0, 6,    0, 7,   0xa6,
                             1,    2, 4, 0x60, 5, 0, 6, 0, 7, 0x20, 8, 0xf5, 9, 0x80};
-    const std::uint8_t pb[]{8, 2, 16, 0, 24, 0, 32, 0, 40, 0, 48, 0, 58, 12, 8, 2, 34, 0, 40, 0, 48, 0, 56, 1, 64, 1};
+    const std::uint8_t pb[]{8, 4, 16, 0, 24, 0, 32, 0, 40, 0, 48, 0, 58, 12, 8, 2, 34, 0, 40, 0, 48, 0, 56, 1, 64, 1};
     auto golden = c.id() == CodecId::Cbor ? std::span<const std::uint8_t>{cb} : std::span<const std::uint8_t>{pb};
     CHECK(e.produced == golden.size());
     CHECK(std::memcmp(wire.data(), golden.data(), golden.size()) == 0);
@@ -149,7 +149,7 @@ void preflight_regression(const Codec &c) {
         if (mask & 1)
             reply.state.applied = graph;
         if (mask & 2)
-            reply.capabilities = Capabilities{2, 4, 3, {&row, 1}, {31, 32, 33, 34, 35}};
+            reply.capabilities = Capabilities{4, 5, 3, {&row, 1}, {31, 32, 33, 34, 35}};
         Message message;
         message.client = UINT64_MAX;
         message.session = 9007199254740993ULL;
@@ -201,7 +201,7 @@ void preflight_regression(const Codec &c) {
             }
         };
         auto check_reply = [&](const Message &m, bool has_extension) {
-            CHECK(m.schema_version == 2 && m.client == UINT64_MAX && m.session == 9007199254740993ULL);
+            CHECK(m.schema_version == 4 && m.client == UINT64_MAX && m.session == 9007199254740993ULL);
             CHECK(m.epoch == 88 && m.request == UINT64_MAX && m.expected_revision == 0);
             CHECK(std::holds_alternative<Reply>(m.body));
             const auto *r = std::get_if<Reply>(&m.body);
@@ -230,7 +230,7 @@ void preflight_regression(const Codec &c) {
             CHECK(r->capabilities.has_value() == bool(mask & 2));
             if (r->capabilities) {
                 const auto &caps = *r->capabilities;
-                CHECK(caps.control_version == 2 && caps.data_version == 4 && caps.codec_mask == 3 &&
+                CHECK(caps.control_version == 4 && caps.data_version == 5 && caps.codec_mask == 3 &&
                       caps.rows.size() == 1);
                 CHECK(caps.maximum.plan == 31 && caps.maximum.payload == 32 && caps.maximum.scratch == 33 &&
                       caps.maximum.stack == 34 && caps.maximum.peak == 35);
@@ -291,7 +291,7 @@ void preflight_regression(const Codec &c) {
             } else {
                 CHECK(result.consumed == 0 && result.produced == 0);
                 CHECK(prefix.client == 66 && prefix.request == 77 && std::holds_alternative<Command>(prefix.body));
-                CHECK(prefix.schema_version == 2 && prefix.session == 98 && prefix.epoch == 99 &&
+                CHECK(prefix.schema_version == 4 && prefix.session == 98 && prefix.epoch == 99 &&
                       prefix.expected_revision == 97 && prefix.extensions.empty());
                 if (const auto *command = std::get_if<Command>(&prefix.body)) {
                     CHECK(command->id == CommandId::Stop && !command->graph && !command->parameters &&
@@ -435,7 +435,7 @@ void contracts_and_literals(const Codec &c) {
         auto e = encode(c, m);
         CHECK(e);
         Message out;
-        CHECK(decode(c, e.produced, out));
+        const auto decoded=decode(c,e.produced,out);CHECK(decoded);if(!decoded)continue;
         CHECK(same_contract(std::get<Command>(out.body).graph->nodes[0].outputs[0].contract, n));
     }
     StructuredContract sc{"custom/schema", 7, "opaque-v7", {8, 256}};
@@ -481,12 +481,44 @@ void contracts_and_literals(const Codec &c) {
     CHECK(!encode(c, m));
     params[1].key = params[0].key;
     n.parameters = EndpointParameters{params};
-    g.versions.graph = 3;
+    g.versions.graph = 5;
     g.nodes = {&n, 1};
     cmd.graph = g;
     m = {};
     m.body = cmd;
     CHECK(!encode(c, m));
+}
+void single_stream_parameters(const Codec& codec) {
+    std::array<signal_contracts::OscillatorParameters,2> tones{};
+    tones[0]={9007199254740993ULL,true,440.25,0.75,-0.25,0.125,0.5};
+    tones[1]={UINT64_MAX,false,220.5,-0.125,1.25,0.0,2.0};
+    std::array<domain::MixerInputWeight,2> weights{{{3,0.25},{9,0.75}}};
+    std::array<Parameters,3> values{GeneratorParameters{tones},ClockParameters{44100,"exact-clock"},MixerParameters{domain::MixerMode::WeightedRMS,weights,125}};
+    for(const auto& parameters:values) {
+        Node node{17,"typed",parameters,{},{},true};Graph graph;graph.nodes={&node,1};
+        Command command;command.id=CommandId::Prepare;command.graph=graph;Message message;message.body=command;
+        auto encoded=encode(codec,message);CHECK(encoded);Message restored;CHECK(decode(codec,encoded.produced,restored));
+        const auto& result=std::get<Command>(restored.body).graph->nodes[0];CHECK(result.parameters.index()==parameters.index());
+        if(const auto* generator=std::get_if<GeneratorParameters>(&result.parameters)) {
+            CHECK(generator->oscillators.size()==2);
+            for(std::size_t i=0;i<2;++i){const auto& a=generator->oscillators[i];const auto& b=tones[i];CHECK(a.id==b.id&&a.enabled==b.enabled&&a.frequency_hz==b.frequency_hz&&a.amplitude==b.amplitude&&a.phase_radians==b.phase_radians&&a.attack_seconds==b.attack_seconds&&a.release_seconds==b.release_seconds);}
+        }
+        if(const auto* clock=std::get_if<ClockParameters>(&result.parameters))CHECK(clock->sample_rate==44100&&clock->domain=="exact-clock");
+        if(const auto* mixer=std::get_if<MixerParameters>(&result.parameters)){CHECK(mixer->mode==domain::MixerMode::WeightedRMS&&mixer->fifo_milliseconds==125&&mixer->weights.size()==2);for(std::size_t i=0;i<2;++i)CHECK(mixer->weights[i].port==weights[i].port&&mixer->weights[i].weight==weights[i].weight);}
+    }
+}
+void binding_regression(const Codec& codec) {
+    const std::array<domain::ConfigurationBinding,2> bindings{{{1,2},{3,4,domain::ConfigurationRole::FrequencyGrid,domain::ConfigurationRole::FrequencyGrid}}};
+    Graph graph;graph.graph_id="bindings";graph.configuration_bindings=bindings;
+    Command command;command.id=CommandId::Prepare;command.graph=graph;Message message;message.body=command;
+    const auto encoded=encode(codec,message);CHECK(encoded);Message restored;CHECK(decode(codec,encoded.produced,restored));
+    const auto& copy=std::get<Command>(restored.body).graph->configuration_bindings;CHECK(copy.size()==2);for(std::size_t i=0;i<copy.size();++i)CHECK(copy[i]==bindings[i]);
+    domain::RouteProcessingParameters route;route.outputs=3;route.channels_per_stream=2;route.selected=2;
+    command.graph.reset();command.id=CommandId::SetParameters;command.node=1;command.parameters=route;message.body=command;
+    const auto routed=encode(codec,message);CHECK(routed);CHECK(decode(codec,routed.produced,restored));const auto& result=std::get<domain::RouteProcessingParameters>(*std::get<Command>(restored.body).parameters);CHECK(result.outputs==3 && result.channels_per_stream==2 && result.selected==2);
+    const std::array<domain::MixerInputWeight,1> weights{{{0,1.0}}};MixerParameters mixer;mixer.mode=domain::MixerMode::WeightedMean;mixer.weights=weights;mixer.consumption=domain::MixerConsumption::SourceAligned;
+    command.parameters=mixer;message.body=command;const auto mixer_bytes=encode(codec,message);CHECK(mixer_bytes);CHECK(decode(codec,mixer_bytes.produced,restored));CHECK(std::get<MixerParameters>(*std::get<Command>(restored.body).parameters).consumption==domain::MixerConsumption::SourceAligned);
+
 }
 void interval_regression(const Codec& codec) {
     Graph graph;graph.graph_id="interval";graph.execution_interval={1,125};Command command;command.id=CommandId::Prepare;command.graph=graph;Message message;message.body=command;
@@ -531,7 +563,7 @@ void messages(const Codec &c) {
     r.diagnostic.node = 0;
     r.diagnostic.port = 0;
     r.diagnostic.edge = 0;
-    r.capabilities = Capabilities{2, 4, 3, {&row, 1}, {1, 2, 3, 4, 5}};
+    r.capabilities = Capabilities{4, 5, 3, {&row, 1}, {1, 2, 3, 4, 5}};
     Message m;
     m.request = 123;
     m.body = r;
@@ -709,7 +741,7 @@ void codec_mask_regression(const Codec &c) {
         const bool valid = mask >= 1 && mask <= 3;
         Reply reply;
         reply.command = CommandId::Capabilities;
-        reply.capabilities = Capabilities{2, 4, mask, {&row, 1}, {}};
+        reply.capabilities = Capabilities{4, 5, mask, {&row, 1}, {}};
         Message message;
         message.body = reply;
         auto validated = validate(message, limits);
@@ -735,8 +767,8 @@ void codec_mask_regression(const Codec &c) {
         message.body = reply;
         auto fixture = encode(c, message);
         CHECK(fixture);
-        const std::uint8_t cb[]{0xa5, 1, 2, 2, 4, 3, 1};
-        const std::uint8_t pb[]{8, 2, 16, 4, 24, 1};
+        const std::uint8_t cb[]{0xa5, 1, 4, 2, 5, 3, 1};
+        const std::uint8_t pb[]{8, 4, 16, 5, 24, 1};
         auto needle = c.id() == CodecId::Cbor ? std::span<const std::uint8_t>{cb} : std::span<const std::uint8_t>{pb};
         auto end = wire.begin() + fixture.produced;
         auto match = std::search(wire.begin(), end, needle.begin(), needle.end());
@@ -769,7 +801,7 @@ void codec_mask_regression(const Codec &c) {
 }
 void native_descriptor_regression(const Codec &c) {
     namespace sc = signal_contracts;
-    std::array<std::uint32_t, 2> channels{7, 42};
+    std::array<std::uint32_t, 1> channels{7};
     // Same Native contracts as R's actual dsp_graph() scenario, without DSP execution.
     sc::NumericContract pcm;
     pcm.dtype = sc::DType::Float32;
@@ -922,7 +954,7 @@ void native_descriptor_regression(const Codec &c) {
                                                     {}}};
     Reply advertised;
     advertised.command = CommandId::Capabilities;
-    advertised.capabilities = Capabilities{2, 4, 3, rows, {}};
+    advertised.capabilities = Capabilities{4, 5, 3, rows, {}};
     Message advertisement;
     advertisement.body = advertised;
     auto adv = encode(c, advertisement);
@@ -1076,15 +1108,15 @@ int main(int argc, char **argv) {
                     c_allocations);
         return failures ? 1 : 0;
     }
-    CHECK(negotiate(2, 2, 3, 3) == CodecId::Cbor);
-    CHECK(negotiate(2, 2, 2, 3) == CodecId::Protobuf);
-    CHECK(!negotiate(2, 1, 3, 3));
-    CHECK(!negotiate(2, 2, 1, 2));
+    CHECK(negotiate(4, 4, 3, 3) == CodecId::Cbor);
+    CHECK(negotiate(4, 4, 2, 3) == CodecId::Protobuf);
+    CHECK(!negotiate(4, 3, 3, 3));
+    CHECK(!negotiate(4, 4, 1, 2));
     for (const Codec *codec : std::array<const Codec *, 2>{&c, &p}) {
         basic(*codec);
         preflight_regression(*codec);
         contracts_and_literals(*codec);
-        messages(*codec);interval_regression(*codec);
+        messages(*codec);binding_regression(*codec);interval_regression(*codec);single_stream_parameters(*codec);
         alternatives_and_limits(*codec);
         literal_goldens(*codec);
         codec_mask_regression(*codec);

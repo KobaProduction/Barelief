@@ -24,6 +24,13 @@ set(QT_PRESENTATION_HEADERS
     "${CMAKE_CURRENT_LIST_DIR}/include/core_app/types.h"
 )
 set(QT_PRESENTATION_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/numeric_node_catalog.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/numeric_node_operations.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/numeric_contract_presentation.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/numeric_graph_draft.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/numeric_editor_document.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/oscillator_bank_widget.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/editor/literal_edit_binding.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/editor/audio_node_model.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/editor/editor_widget.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/editor/numeric_editor_model.cpp"
@@ -45,11 +52,16 @@ set(QT_PRESENTATION_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/node_views.cpp"
 )
 set(QT_RENDERER_HEADERS
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/rendering/frame_schedule.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/rendering/qt_frame_pump.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick/quick_ui.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick/scene_host.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick/numeric_render_ports.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick2d/plot_model.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick2d/vector_plot_item.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick2d/plot_ticks.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick3d/surface_quick_item.h"
+    "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick3d/surface_overlay_item.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/quick3d/surface_overlay_commands.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/spectrogram_axis_metadata.h"
     "${CMAKE_CURRENT_LIST_DIR}/include/visualization/numeric_image_view.h"
@@ -68,7 +80,10 @@ set(QT_RENDERER_HEADERS
 )
 set(QT_RENDERER_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/quick/quick_ui.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/quick/scene_host.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/quick2d/plot_model.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/quick2d/vector_plot_item.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/renderer/spectrograms/surface_overlay_item.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/abs.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/fps.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/src/renderer/abstract/mixins.cpp"

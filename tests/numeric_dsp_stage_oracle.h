@@ -18,8 +18,8 @@ struct StageTrace {
     std::array<std::vector<float>,9> stages;
     std::array<bool,9> seen{};
     StageTrace() {
-        stages[2].resize(trace_n*2);stages[3].resize(trace_n*2);
-        stages[4].resize(trace_bins*2);stages[5].resize(trace_bins*2);
+        stages[2].resize(trace_n);stages[3].resize(trace_n);
+        stages[4].resize(trace_bins);stages[5].resize(trace_bins);
         stages[6].resize(trace_bins);stages[7].resize(trace_bins);
         stages[8].resize(trace_bands);
     }
@@ -69,11 +69,11 @@ void numeric_full_chain_oracle(bool retag=false) {
     constexpr std::array<PlaneLayout,2> planes{{{0,{4,0}},{256*sizeof(float),{4,0}}}};
     const auto pcm=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());
     for(std::size_t block=0;block<19;++block) {
-        for(std::size_t channel=0;channel<2;++channel)for(std::size_t sample=0;sample<256;++sample)
+        for(std::size_t channel=0;channel<1;++channel)for(std::size_t sample=0;sample<256;++sample)
             samples[channel*256+sample]=trace_sample(block*256+sample,channel);
         FrameStamp stamp;stamp.sequence=block+1;stamp.source_sequence=stamp.sequence;
         stamp.producer_epoch=5;stamp.timestamp_ticks=std::int64_t(block*256);
-        NumericView view{&pcm,std::as_bytes(std::span(samples)),planes,{256,1},{},{}};
+        NumericView view{&pcm,std::as_bytes(std::span(samples)),std::span(planes).first(1),{256,1},{},{}};
         const auto before=allocations;
         const auto status=executor.process_numeric_ports(1,{stamp,view},{},{stage_trace_output,nullptr,nullptr,&trace});
         CHECK(status==Status::ok);
@@ -88,8 +88,8 @@ void numeric_full_chain_oracle(bool retag=false) {
     const auto close=[](float actual,double expected) {
         CHECK(std::isfinite(actual));CHECK(std::abs(double(actual)-expected)<=5e-6*(1+std::abs(expected)));
     };
-    std::array<std::array<double,trace_n>,2> windowed{};
-    for(std::size_t channel=0;channel<2;++channel)for(std::size_t sample=0;sample<trace_n;++sample) {
+    std::array<std::array<double,trace_n>,1> windowed{};
+    for(std::size_t channel=0;channel<1;++channel)for(std::size_t sample=0;sample<trace_n;++sample) {
         const auto input=trace_sample(4800-trace_n+sample,channel);
         const auto value=double(input)*(.5*(1-std::cos(2*trace_pi*sample/(trace_n-1))));
         close(trace.stages[2][channel*trace_n+sample],input);
@@ -97,8 +97,8 @@ void numeric_full_chain_oracle(bool retag=false) {
     }
     std::array<double,trace_bins> merged{};
     for(std::size_t bin=0;bin<trace_bins;++bin) {
-        std::array<double,2> weighted{};
-        for(std::size_t channel=0;channel<2;++channel) {
+        std::array<double,1> weighted{};
+        for(std::size_t channel=0;channel<1;++channel) {
             double real=0,imaginary=0;
             const auto angle=-2*trace_pi*bin/trace_n;
             const auto step_real=std::cos(angle),step_imaginary=std::sin(angle);
@@ -114,7 +114,7 @@ void numeric_full_chain_oracle(bool retag=false) {
             close(trace.stages[4][channel*trace_bins+bin],magnitude);
             close(trace.stages[5][channel*trace_bins+bin],weighted[channel]);
         }
-        merged[bin]=std::hypot(weighted[0],weighted[1])/std::sqrt(2.);
+        merged[bin]=weighted[0];
         close(trace.stages[6][bin],merged[bin]);close(trace.stages[7][bin],merged[bin]);
     }
     DataFrameView history;std::uint64_t filled=0;
@@ -134,6 +134,6 @@ void numeric_full_chain_oracle(bool retag=false) {
         close(trace.stages[8][band],value);float last=0;
         CHECK(load_element(history_view,{0,history_view.actual[0]-1,band},last)==Status::ok);close(last,value);
     }
-    std::printf("DSP full-chain oracle: eight changing tones, N4096/Hann/FFT/Bark/RMS/Mel50/History, no hot C++ allocations\n");
+    std::printf("DSP full-chain oracle: eight changing tones, N4096/Hann/FFT/Bark/explicit gain/Mel50/History, no hot C++ allocations\n");
 }
 }

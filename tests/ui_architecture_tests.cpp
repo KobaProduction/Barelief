@@ -76,11 +76,12 @@ void commands() {
     UiCommandRegistry registry(&host); registry.set_editor(editor);
     bool belongs = true, available = true; int undos = 0;
     registry.set_workspace_guard([&] { return belongs; });
-    auto *action = registry.register_command({"schemaUndo", "Undo", QKeySequence("Alt+Z"),
+    auto *action = registry.register_command({"schemaUndo", "Undo", QKeySequence("Ctrl+Z"),
         UiCommandContext::SchemaEditor, [&] { ++undos; }, [&] { return available; }});
     check(registry.register_command({"schemaUndo", "Redo", {}, UiCommandContext::Workspace, {}}) == action,
           "command registration reuses canonical action");
-    host.show(); host.activateWindow(); editor->setFocus(); settle(); registry.refresh();
+    host.show(); QApplication::setActiveWindow(&host); editor->setFocus(); settle(); registry.refresh();
+    check(QApplication::focusWidget()==editor,"command fixture has actual editor focus");
     check(registry.can_execute("schemaUndo") && action->isEnabled(), "schema history available in editor");
     action->trigger(); check(undos == 1, "canonical action dispatches command");
     QMenu menu(&host); menu.addAction(action);
@@ -89,20 +90,22 @@ void commands() {
     menu.hide(); action->trigger();
     check(undos == 2, "menu dismissal retains editor origin during action dispatch");
     settle();
-    text->setFocus(); settle(); registry.refresh();
+    QApplication::setActiveWindow(&host); text->setFocus(); settle(); registry.refresh();
+    check(QApplication::focusWidget()==text,"command fixture has actual text focus after menu dismissal");
     check(!action->isEnabled() && !registry.execute("schemaUndo") && undos == 2, "text editing excludes schema undo");
     menu.popup(text->mapToGlobal(QPoint(0, 0))); settle(); registry.refresh();
     check(!action->isEnabled(), "menu opened from text retains text editing context");
     menu.hide(); action->trigger(); settle();
     check(undos == 2, "text-origin menu cannot dispatch schema history");
-    editor->setFocus(); settle(); available = false; registry.refresh();
+    QApplication::setActiveWindow(&host); editor->setFocus(); settle(); available = false; registry.refresh();
     check(!action->isEnabled() && !registry.execute("schemaUndo"), "history availability shared with action");
     available = true; belongs = false; registry.refresh();
     check(!registry.execute("schemaUndo"), "other workspace context cannot execute schema history");
     belongs = true;
     QDialog dialog(&host); auto *dialogLayout = new QVBoxLayout(&dialog);
     auto *dialogText = new QLineEdit(&dialog); dialogLayout->addWidget(dialogText);
-    dialog.show(); dialogText->setFocus(); settle(); registry.refresh();
+    dialog.show(); QApplication::setActiveWindow(&dialog); dialogText->setFocus(); settle(); registry.refresh();
+    check(QApplication::focusWidget()==dialogText,"command fixture has actual modeless dialog text focus");
     check(!registry.execute("schemaUndo") && undos == 2, "modeless settings dialog excludes schema history");
     dialog.close(); host.close();
 }
@@ -134,7 +137,7 @@ void parameters() {
     }, {}, {});
     model.setNode(node, true);
     const auto *dtype = model.field("output0Dtype");
-    check(dtype && dtype->section == Model::Section::Contract, "contract editors classified by explicit metadata");
+    check(dtype && dtype->section == Model::Section::Additional && model.field("output0Caption") && model.field("output0Caption")->section==Model::Section::Contract, "read-only contracts and advanced contract editors classified by explicit metadata");
     const auto *gain = model.field("numericGain"); check(gain && gain->editor == Model::Editor::Literal, "typed gain descriptor");
     check(model.editLiteral("numericGain", "18446744073709551615", 1), "exact UInt64 max accepted");
     check(std::get<std::uint64_t>(std::get<signal_contracts::NumericLiteral>(model.field("numericGain")->read())) == UINT64_MAX,

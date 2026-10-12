@@ -52,7 +52,16 @@ static QByteArray initial_session(){
         check(wait([&]{return first->dockAreaWidget()->currentDockWidget()==inactive && area_rect(app.window,first).bottom()<area_rect(app.window,neighbor).top();}),"distinct B topology precondition");
         const auto bGeometry=external->floatingDockContainer()->frameGeometry();check(!close_rect(aTopology.floating,bGeometry),"B floating geometry is not distinct");
         const auto otherLayout=save_preset(app,"vertical split with other active tab");
-        check(app.editor->load_preset(several),"A to B to A topology restore");
+        const bool loadedA=app.editor->load_preset(several);
+        if(!loadedA){
+            QJsonObject validated;const auto result=desktop::decode_numeric_preset_presentation(QJsonDocument(severalPresentation).toJson(QJsonDocument::Compact),validated);
+            domain::NumericProcessingGraph restoredGraph;desktop::NumericDocumentResult graphResult;
+            for(const auto& preset:ui.pipeline_presets)if(preset.toObject()["id"].toString()==several)
+                graphResult=desktop::decode_numeric_editor_graph(QJsonDocument(preset.toObject()["graph"].toObject()).toJson(QJsonDocument::Compact),restoredGraph);
+            std::fprintf(stderr,"Workspace preset refusal: pending=%d presentationValid=%d presentationError=%s graphValid=%d graphError=%s status=%s\n",app.presenter().graph_request_pending(),bool(result),qPrintable(result.error),bool(graphResult),qPrintable(graphResult.error),qPrintable(app.window->statusBar()->currentMessage()));
+            if(!result)std::fprintf(stderr,"Workspace rejected presentation: %s\n",QJsonDocument(severalPresentation).toJson(QJsonDocument::Compact).constData());
+        }
+        check(loadedA,"A to B to A topology restore");
         first=app.window->workspaceDock(firstName);neighbor=app.window->workspaceDock(neighborName);inactive=app.window->workspaceDock(inactiveName);external=app.window->workspaceDock(externalName);
         const bool restoredA=wait([&]{return first && neighbor && inactive && external && first->dockAreaWidget()==inactive->dockAreaWidget() && first->dockAreaWidget()->currentDockWidget()==first && area_rect(app.window,first).right()<area_rect(app.window,neighbor).left();});
         if(!restoredA && first && neighbor && inactive)qWarning()<<"A restore diagnostic"<<first->objectName()<<"tabs"<<open_tabs(first)<<"active"<<first->dockAreaWidget()->currentDockWidget()->objectName()<<"same group"<<(first->dockAreaWidget()==inactive->dockAreaWidget())<<"left"<<area_rect(app.window,first)<<"right"<<area_rect(app.window,neighbor);
@@ -118,7 +127,7 @@ int main(int argc,char** argv){
             return 0;
         }
         QFile file(QString::fromLocal8Bit(argv[2]));gui_fixture::check(file.open(QIODevice::ReadOnly),"read restart handoff");const auto stored=file.readAll();file.close();
-        gui_fixture::App restarted(numeric_test_graph(),{},stored);restarted.apply();
+        gui_fixture::App restarted(numeric_default_graph(),{},stored);restarted.apply();
         int external=0;for(auto* dock:dynamic_docks(restarted.window))if(!dock->isClosed()&&dock->isFloating())++external;
         gui_fixture::check(external==1,"process restart lost floating representation");
         const auto& presets=restarted.application->_ctx.file_configs.ui.pipeline_presets;

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <dsp_kernels/dsp.h>
 using namespace signal_contracts;
 using namespace domain;
@@ -59,6 +60,14 @@ void persistence(const nc::Codec& codec) {
     es::ProcessingPersistence saved(storage,buffers.view(),codec,es::numeric_control_limits(profile),runtime.admission,es::numeric_capabilities(device));
     auto out=graph("unchanged");CHECK(saved.restore(out)==Status::unavailable);CHECK(out.graph_id=="unchanged" && storage.writes==0);
     auto g=graph("last-good");auto first_save=saved.save(g);if(first_save!=Status::ok)std::printf("first save status %d\n",int(first_save));CHECK(first_save==Status::ok);CHECK(storage.writes==1);
+    if(first_save==Status::ok) {
+        // The record envelope and its CONTROL payload must name the same canonical editions.
+        const auto& record=storage.slots[0];
+        for(auto [offset,edition]:{std::pair{12u,4u},{16u,5u},{20u,4u},{24u,5u},{44u,4u}}) {
+            CHECK(record.size()>=es::ProcessingPersistence::record_header_bytes);
+            CHECK(record[offset]==edition && record[offset+1]==0 && record[offset+2]==0 && record[offset+3]==0);
+        }
+    }
     // Fresh instance simulates reboot: no process-local active-slot state.
     es::ProcessingPersistence reboot(storage,buffers.view(),codec,es::numeric_control_limits(profile),runtime.admission,es::numeric_capabilities(device));
     CHECK(reboot.restore(out)==Status::ok);CHECK(out.graph_id=="last-good");
@@ -70,8 +79,15 @@ void persistence(const nc::Codec& codec) {
     CHECK(reboot.restore(out)==Status::ok && out.graph_id=="new-good");
     if(storage.slots[1].empty()){CHECK(false);return;}
     storage.slots[1].back()^=1;CHECK(reboot.restore(out)==Status::ok && out.graph_id=="last-good");
-    auto writes=storage.writes;auto invalid=graph("future");invalid.versions.processing=3;
+    auto writes=storage.writes;auto invalid=graph("future");invalid.versions.processing=99;
     CHECK(saved.save(invalid)!=Status::ok && storage.writes==writes);
+    for(auto boundary:{0,1,2}) {
+        auto future=graph("future-boundary");
+        if(boundary==0)future.versions.document=99;
+        if(boundary==1)future.versions.control=99;
+        if(boundary==2)future.versions.data=6;
+        CHECK(saved.save(future)==Status::unsupported_version && storage.writes==writes);
+    }
     CHECK(saved.save(graph("future-record"))==Status::ok);
     storage.slots[1][4]=2;fix_crc(storage.slots[1]);writes=storage.writes;
     CHECK(reboot.restore(out)==Status::ok && out.graph_id=="last-good");
@@ -81,9 +97,9 @@ void persistence(const nc::Codec& codec) {
     storage.read_failure=Status::disconnected;CHECK(saved.save(g)==Status::disconnected && storage.writes==writes);
 }
 void profile_tests() {
-    es::Profile p;CHECK(p.fft_size==2048 && p.channels==2 && !es::numeric_runtime_profile(p).history_enabled);
+    es::Profile p;CHECK(p.fft_size==2048 && p.channels==1 && !es::numeric_runtime_profile(p).history_enabled);
     auto a=es::admit(p,3);CHECK(a.status==Status::ok);
-    p.channels=1;CHECK(es::admit(p,3).frame_bytes<a.frame_bytes);p.spectral=true;CHECK(es::admit(p,3).status==Status::invalid_argument);
+    p.channels=2;CHECK(es::admit(p,3).status==Status::invalid_argument);p=es::Profile{};p.spectral=true;CHECK(es::admit(p,3).status==Status::ok);
     p=es::Profile{};p.fft_size=4096;CHECK(es::admit(p,3).status==Status::ok);CHECK(p.fft_size==4096);
     p.control_bytes=p.memory_bytes;CHECK(es::admit(p,3).status==Status::exhausted);CHECK(es::numeric_runtime_profile(p).resources.max_peak_bytes==0);
     p.control_bytes=SIZE_MAX;CHECK(es::admit(p,3).status==Status::exhausted);
@@ -115,7 +131,7 @@ void profile_tests() {
         if(accepted) {
             std::shared_ptr<const dataflow_runtime::PreparedGraph> prepared;std::unique_ptr<dataflow_runtime::RuntimeContext> context;
             CHECK(dataflow_runtime::PreparedGraph::prepare_numeric(dsp,actual,prepared,context)==Status::ok);
-            CHECK(prepared && prepared->numeric_definition()->nodes.size()==8);
+            CHECK(prepared && prepared->numeric_definition()->nodes.size()==7);
         }
     }
     auto history=graph("history-off");auto c=std::get<NumericContract>(history.nodes[0].outputs[0].contract.view());auto h=c;
@@ -158,18 +174,19 @@ void graph_bandwidth() {
 
     auto spectral=fft_graph(512);
     CHECK(es::graph_link_admission(p,spectral,4096).status==Status::ok);
-    // Same raw source/profile, but an admitted FFT512 stereo spectrum produces
-    // the same 2048-byte payload at 60 Hz rather than raw block cadence31.25 Hz.
+    // Same raw source/profile, but an admitted FFT512 mono spectrum produces
+    // the same 1024-byte payload at 120 Hz rather than raw block cadence31.25 Hz.
     const auto native=spectral.nodes[3].outputs[0].contract;
     auto wire=std::get<NumericContract>(native.view());wire.representation.encoding=StorageEncoding::FixedLittleEndian;
     const auto device=es::device_profile(p);OwnedProcessingContract owned;
     CHECK(own_processing_contract(wire,device.runtime.admission.frame,device.runtime.admission.max_owned_metadata_bytes,owned)==Status::ok);
-    auto converter=spectral.nodes[6];converter.id=4;converter.inputs[0].contract=native;converter.outputs[0].contract=owned;
-    auto sink=spectral.nodes[7];sink.id=5;sink.inputs[0].contract=owned;
+    auto converter=spectral.nodes[5];converter.id=4;converter.inputs[0].contract=native;converter.outputs[0].contract=owned;
+    auto sink=spectral.nodes[6];sink.id=5;sink.inputs[0].contract=owned;
     spectral.nodes.resize(4);spectral.nodes.push_back(std::move(converter));spectral.nodes.push_back(std::move(sink));
     spectral.edges={{0,1,0,0},{1,2,0,0},{2,3,0,0},{3,4,0,0},{4,5,0,0}};
     std::array<std::size_t,16> workspace{};ProcessingGraphAdmission result;
     CHECK(admit_processing_graph(spectral,device.runtime.admission,es::numeric_capabilities(device),workspace,result));
+    p.tcp_bytes_per_second=es::graph_link_admission(p,spectral,4096).required_bytes_per_second/2;
     const auto rejected=es::graph_link_admission(p,spectral,4096);
     CHECK(rejected.status==Status::exhausted && rejected.required_bytes_per_second>rejected.allowed_bytes_per_second);
     p.tcp_bytes_per_second=1000000;
@@ -177,7 +194,7 @@ void graph_bandwidth() {
     const auto fragmented=es::graph_link_admission(p,spectral,64);
     CHECK(fragmented.status==Status::ok && fragmented.required_bytes_per_second>accepted.required_bytes_per_second);
     auto multi=raw;auto second=multi.nodes.back();second.id=3;second.enabled=false;multi.nodes.push_back(second);multi.edges.push_back({1,3,0,0});
-    p.tcp_bytes_per_second=200000;
+    p.tcp_bytes_per_second=raw_budget.required_bytes_per_second*100/p.utilization_percent+1;
     CHECK(es::graph_link_admission(p,multi,4096).status==Status::exhausted); // disabled sink still receives typed silence
     CHECK(es::graph_link_admission(p,raw,8).status==Status::invalid_argument);
     CHECK(es::graph_link_admission(p,graph(),4096).status==Status::incompatible_contract);
@@ -197,7 +214,7 @@ void control_persistence() {
     application::ProcessingDTO dto;dto.numeric=graph("working");
     auto prepared=service.submit(session.identity,{1,0},application::PrepareProcessing{&dto});CHECK(prepared.accepted && prepared.prepared_token && storage.writes==0);
     if(!prepared.accepted)return;
-    auto bad=dto;bad.numeric->versions.processing=3;
+    auto bad=dto;bad.numeric->versions.processing=99;
     auto rejected=service.submit(session.identity,{2,0},application::PrepareProcessing{&bad});
     CHECK(!rejected.accepted && rejected.state.own_prepared_token==prepared.prepared_token && storage.writes==0);
     auto wrong=service.submit(session.identity,{3,0},application::ApplyProcessing{prepared.prepared_token+1,"working"});

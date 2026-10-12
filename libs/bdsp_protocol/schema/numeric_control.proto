@@ -1,5 +1,5 @@
 syntax = "proto2";
-package bdsp.numeric_control.v2;
+package bdsp.numeric_control.v4;
 // Explicit typed canonical schema; presence/alternatives validated by shared traversal.
 message Literal {
   optional uint32 kind = 1;
@@ -83,6 +83,10 @@ message Parameter {
   optional bool boolean = 4;
   optional string text = 5;
 }
+message Oscillator {
+ optional uint64 id=1; optional bool enabled=2; optional fixed64 frequency=3; optional fixed64 amplitude=4; optional fixed64 phase=5; optional fixed64 attack=6; optional fixed64 release=7;
+}
+message MixerWeight { optional uint32 port=1; optional fixed64 weight=2; }
 message Parameters {
   optional uint32 kind = 1;
   repeated Parameter values = 2;
@@ -97,6 +101,14 @@ message Parameters {
   optional uint32 precision_loss = 11;
   optional uint32 rounding = 12;
   optional uint64 capacity = 13;
+  repeated Oscillator oscillators=14;
+  optional uint32 sample_rate=15;
+  optional string clock_domain=16;
+  optional uint32 mixer_mode=17;
+  repeated MixerWeight weights=18;
+  optional uint32 fifo_milliseconds=19;
+  optional uint32 mixer_consumption=20;
+  optional uint32 channels_per_stream=21;
 }
 message Port {
   optional uint32 id = 1;
@@ -110,6 +122,7 @@ message Node {
   repeated Port inputs = 4;
   repeated Port outputs = 5;
   optional bool enabled = 6;
+  reserved 7;
 }
 message Edge {
   optional sint64 from = 1;
@@ -131,6 +144,7 @@ message Graph {
   repeated Node nodes = 3;
   repeated Edge edges = 4;
   optional Ratio execution_interval = 5;
+  repeated Edge configuration_bindings = 6;
 }
 message Command {
   optional uint32 id = 1;

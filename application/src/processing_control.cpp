@@ -16,6 +16,12 @@ bool numeric_parameters_bounded(const domain::ProcessingParameters& params,const
             if(p.values.size()>limits.max_parameters_per_node)return false;
             for(const auto& field:p.values){if(field.key.size()>text)return false;
                 if(const auto* value=std::get_if<std::string>(&field.value);value && value->size()>text)return false;}
+        } else if constexpr(std::is_same_v<T,domain::SignalGeneratorProcessingParameters>) {
+            if(p.oscillators.empty() || p.oscillators.size()>128)return false;
+        } else if constexpr(std::is_same_v<T,domain::SampleClockProcessingParameters>) {
+            if(p.domain.empty() || p.domain.size()>text)return false;
+        } else if constexpr(std::is_same_v<T,domain::MixerProcessingParameters>) {
+            if(p.weights.size()<2 || p.weights.size()>128 || p.weights.size()>limits.max_ports_per_node)return false;
         } else if constexpr(std::is_same_v<T,domain::ReduceProcessingParameters>) {
             if(p.selected_channels.size()>limits.frame.max_planes)return false;
         }

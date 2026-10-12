@@ -39,9 +39,10 @@ class SchemeEditorWidget final : public QWidget {
     QJsonObject graph_adapter_metadata() const;
     bool restore_graph_adapters(const QJsonObject &node_adapters,QString *error=nullptr);
     bool numeric_draft(domain::NumericProcessingGraph&,QString* error=nullptr) const;
-    bool load_numeric_draft(const domain::NumericProcessingGraph&,QString* error=nullptr);
+    bool load_numeric_draft(const domain::NumericProcessingGraph&,QString* error=nullptr,const QJsonObject& node_adapters={});
     void sync_preferences();
     void set_navigation_speed(float speed);
+    QWidget* execution_settings_widget(QWidget* parent=nullptr);
     QAction *arrange_action() const { return _arrange_action; }
     QAction *center_action() const { return _center_action; }
     QToolButton *presets_button() const { return _presets_button; }
@@ -54,6 +55,7 @@ signals:
     void default_graph_requested();
     void generator_loopback_graph_requested();
     void numeric_draft_changed();
+    void execution_settings_changed();
     void status_message(const QString &text);
     void graph_view_requested(int node_id);
     void graph_rename_requested(int node_id);
@@ -73,6 +75,8 @@ protected:
     void wire_source_model(QtNodes::NodeId id);
     QLabel *_status = nullptr;
     QLabel *_capture_status = nullptr;
+    QLabel *_processing_rate = nullptr;
+    void refresh_processing_telemetry();
     int _capture_state = 0;
     QString _capture_error;
     void refresh_capture_status();

@@ -19,6 +19,8 @@ struct Target {
     presentation::NumericMetricsPort metricsPort;
     presentation::NumericCaptionPort captionPort;
     bool visible=false;
+    // Most projection fixtures explicitly model connected coordinate controls.
+    presentation::NumericAxisPermissions axes{true,true};
     bool chartEnabled=false,surfaceEnabled=false,imageEnabled=false,pieEnabled=false,metricsEnabled=false,captionEnabled=false;
     static QString text(const char* source,const QStringList& args,bool loss,bool unavailable) {
         auto result=*source?ui::text(source):QString{};
@@ -75,8 +77,15 @@ struct Target {
     }
     operator presentation::NumericRenderTarget() {
         return {chartEnabled?&chartPort:nullptr,surfaceEnabled?&surfacePort:nullptr,captionEnabled?&captionPort:nullptr,visible,
-            imageEnabled?&imagePort:nullptr,pieEnabled?&piePort:nullptr,metricsEnabled?&metricsPort:nullptr};
+            imageEnabled?&imagePort:nullptr,pieEnabled?&piePort:nullptr,metricsEnabled?&metricsPort:nullptr,axes};
     }
 };
-inline QVariantList points(const AbstractChartView& chart){return chart.presentation_model()->state().value("points").toList();}
+inline QVariantList points(const AbstractChartView& chart){
+    const auto* model=chart.presentation_model();
+    if(!model->hasTypedVector())return model->state().value("points").toList();
+    QVariantList result;
+    const auto& geometry=model->vectorPoints();result.reserve(geometry.size());
+    for(const auto& point:geometry)result.append(QVariantMap{{"x",point.x()},{"y",point.y()}});
+    return result;
+}
 }

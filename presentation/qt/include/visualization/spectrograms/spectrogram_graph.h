@@ -30,6 +30,7 @@ class SpectrogramGraph : public QWidget {
     Q_OBJECT
     Q_PROPERTY(QVariantMap quickState READ quick_state NOTIFY quick_state_changed)
     Q_PROPERTY(QVariantMap overlay READ overlay NOTIFY overlay_changed)
+    Q_PROPERTY(bool controlsEmbedded READ controls_embedded NOTIFY quick_state_changed)
 
   public:
     explicit SpectrogramGraph(QWidget *parent = nullptr);
@@ -38,6 +39,8 @@ class SpectrogramGraph : public QWidget {
 
     QVariantMap quick_state() const;
     QVariantMap overlay() const {return _overlay;}
+    bool controls_embedded() const noexcept {return _controls_embedded;}
+    void set_controls_embedded(bool embedded);
     Q_INVOKABLE void quick_action(const QString &action, const QVariant &value = {});
     Q_INVOKABLE void quick_range(int axis,double low,double high,bool automatic);
     Q_INVOKABLE void quick_pointer(int type,double x,double y,int button,int buttons,int modifiers);
@@ -121,6 +124,7 @@ class SpectrogramGraph : public QWidget {
     SurfaceQuickItem *_quick_item = nullptr;
     QVariantMap _overlay;
     float _side_panel_ratio = 0.25f;
+    bool _controls_embedded = false;
     QJsonObject _camera_state, _presentation_state;
     QJsonObject _surface_settings;
     size_t _history_capacity=0, _history_bands=0;

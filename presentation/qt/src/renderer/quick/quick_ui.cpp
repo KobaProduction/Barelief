@@ -1,4 +1,6 @@
 #include <visualization/quick/quick_ui.h>
+#include <visualization/quick2d/vector_plot_item.h>
+#include <qqml.h>
 #include <visualization/ui_text.h>
 #include <QQuickWindow>
 #include <QQuickStyle>
@@ -8,6 +10,7 @@
 #include <QDebug>
 #include <QResource>
 #include <QEvent>
+#include <QSurfaceFormat>
 static void initialize_visualization_resources(){Q_INIT_RESOURCE(visualization_qml);}
 namespace ui::quick {
 namespace {
@@ -52,7 +55,23 @@ bool UiBridge::eventFilter(QObject* watched,QEvent* event){
 }
 QString UiBridge::text(const QString& source) const {return ui::text(source.toUtf8().constData());}
 void configure(){
-    static const bool configured=[](){initialize_visualization_resources();QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);QQuickStyle::setStyle("Basic");return true;}();
+    static const bool configured=[](){
+        initialize_visualization_resources();
+        qmlRegisterType<VectorPlotItem>("Numeric.Graphs",1,0,"VectorPlot");
+        qmlRegisterType<VectorGeometryItem>("Numeric.Graphs",1,0,"VectorGeometry");
+        // Qt's painted FBO enables multisampling only when the shared context
+        // requests samples. Set this before QApplication/Quick contexts exist.
+        auto format=QSurfaceFormat::defaultFormat();
+        if(format.samples()<4)format.setSamples(4);
+        // Application deadlines pace graph updates. Avoid an additional
+        // refresh-dependent wait in the Widgets/Quick composition path.
+        // This is a platform request; the driver may still impose pacing.
+        format.setSwapInterval(0);
+        QSurfaceFormat::setDefaultFormat(format);
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+        QQuickStyle::setStyle("Fusion");
+        return true;
+    }();
     Q_UNUSED(configured);
 }
 UiBridge* install(QQuickWidget* widget){

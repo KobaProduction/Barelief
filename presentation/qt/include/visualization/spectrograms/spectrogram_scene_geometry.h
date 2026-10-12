@@ -119,6 +119,35 @@ struct SpectrogramSceneGeometry {
 };
 
 
+// Reuse exactly the same projected sample positions for neighbouring normal
+// calculations. The bounded cache changes neither sampling nor arithmetic.
+class SpectrogramPointCache {
+public:
+    template<class Sample>
+    void prepare(const SpectrogramSceneGeometry& scene,size_t bandBegin,size_t bandEnd,
+                 size_t ageBegin,size_t ageEnd,size_t bands,size_t history,Sample sample) {
+        band_begin_=bandBegin?bandBegin-1:0;age_begin_=ageBegin?ageBegin-1:0;
+        band_end_=bandEnd<bands?bandEnd+1:bands;age_end_=ageEnd<history?ageEnd+1:history;
+        const size_t rows=band_end_>band_begin_?band_end_-band_begin_:0;
+        columns_=age_end_>age_begin_?age_end_-age_begin_:0;
+        enabled_=rows && columns_ && rows<=262144/columns_;
+        if(!enabled_){points_.clear();return;}
+        points_.resize(rows*columns_);
+        for(size_t band=band_begin_;band<band_end_;++band)for(size_t age=age_begin_;age<age_end_;++age)
+            points_[(band-band_begin_)*columns_+age-age_begin_]=scene.point(age,band,sample(band,age));
+    }
+    QVector3D point(const SpectrogramSceneGeometry& scene,size_t age,size_t band,float value) const {
+        if(enabled_ && band>=band_begin_ && band<band_end_ && age>=age_begin_ && age<age_end_)
+            return points_[(band-band_begin_)*columns_+age-age_begin_];
+        return scene.point(age,band,value);
+    }
+    bool enabled() const {return enabled_;}
+private:
+    std::vector<QVector3D> points_;
+    size_t band_begin_=0,band_end_=0,age_begin_=0,age_end_=0,columns_=0;
+    bool enabled_=false;
+};
+
 // Shared renderer/telemetry projection policy. Options have presentation
 // semantics only; physical metadata, samples and camera are not modified.
 inline SpectrogramSceneGeometry spectrogramSceneGeometry(size_t history,size_t bands,const int* ranges,

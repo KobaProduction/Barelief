@@ -26,6 +26,7 @@ class SettingsWidget : public QWidget {
     void select_section(int index);
     explicit SettingsWidget(GuiState &context, QWidget *parent = nullptr);
     void set_display_screen(QScreen *screen);
+    void set_execution_settings(QWidget *settings);
     void set_graph_actions(const QList<QAction *> &actions);
     void refresh_graph_preferences();
     void edit_color_scale(const QString &identity);
@@ -47,6 +48,7 @@ class SettingsWidget : public QWidget {
     GuiState &_context;
 
     QVBoxLayout *_main_layout = nullptr;
+    QVBoxLayout *_processing_layout = nullptr;
     QGroupBox *_ui_group = nullptr;
     QVBoxLayout *_ui_layout = nullptr;
     QGroupBox *_network_group = nullptr;

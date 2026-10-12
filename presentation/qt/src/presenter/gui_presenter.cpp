@@ -4,6 +4,8 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <visualization/ui_text.h>
+#include <algorithm>
+#include "core/performance.h"
 
 GuiPresenter::GuiPresenter(GuiState& state,std::shared_ptr<pipeline::EngineProvider> provider,
     const QString& host,quint16 port,QObject* parent):QObject(parent),_remote(!host.isEmpty()),
@@ -13,8 +15,16 @@ GuiPresenter::GuiPresenter(GuiState& state,std::shared_ptr<pipeline::EngineProvi
     _client=_provider->create(host,port);bind_client();
 }
 GuiPresenter::~GuiPresenter()=default;
+void GuiPresenter::set_numeric_preview_cadence_hz(int hz) {
+    const int normalized=std::clamp(hz,1,240);
+    if(_numeric_preview_cadence_hz==normalized)return;
+    _numeric_preview_cadence_hz=normalized;
+    _client->set_numeric_preview_cadence_hz(_numeric_preview_cadence_hz);
+}
 void GuiPresenter::bind_client() {
+    _client->set_numeric_preview_cadence_hz(_numeric_preview_cadence_hz);
     _accepted_service_epoch.reset();
+    _published_component_statuses.clear();
     const auto selected=_device_id;
     const auto generation=++_binding_generation;
     _client->set_snapshot_handler([this,selected,generation](const auto& snapshot){if(selected==_device_id && generation==_binding_generation)accept_snapshot(snapshot);});
@@ -59,6 +69,11 @@ void GuiPresenter::bind_client() {
 }
 void GuiPresenter::set_apply_status(QString status){_apply_status=std::move(status);emit apply_status_changed(_apply_status);}
 QString GuiPresenter::visible_saved_warning() const{return _file_protection_warning.isEmpty()?_saved_graph_warning:_file_protection_warning;}
+void GuiPresenter::clear_file_protection_warning() {
+    if(_file_protection_warning.isEmpty())return;
+    _file_protection_warning.clear();_saved_graph_warning.clear();
+    emit saved_graph_warning_changed({});
+}
 void GuiPresenter::initialize(){initialize(_state.file_configs.raw_document);}
 void GuiPresenter::initialize(QJsonObject config,const QString& error) {
     if(!error.isEmpty()) {_file_protection_warning=error;_saved_graph_warning=error;
@@ -72,11 +87,10 @@ void GuiPresenter::initialize(QJsonObject config,const QString& error) {
     pipeline::EngineCommand command;command.kind=pipeline::EngineCommand::Snapshot;_client->submit(command);
 }
 void GuiPresenter::accept_snapshot(const pipeline::EngineSnapshot& snapshot) {
+    core::perf::Scope profile(core::perf::Stage::PresenterSnapshot);
     const bool incarnation_changed=!_accepted_service_epoch || *_accepted_service_epoch!=snapshot.epoch;
     _accepted_service_epoch=snapshot.epoch;
     if(incarnation_changed)emit views_cleared();
-    for(auto it=snapshot.statuses.begin();it!=snapshot.statuses.end();++it)
-        emit component_status_changed(it.key(),int(it.value().state),it.value().error);
     if(incarnation_changed || snapshot.graph!=_active_graph) {
         _active_graph=snapshot.graph;
         domain::NumericProcessingGraph graph;
@@ -86,6 +100,16 @@ void GuiPresenter::accept_snapshot(const pipeline::EngineSnapshot& snapshot) {
             _applied_numeric.reset();_graph_id="main";
         }
         emit active_graph_changed(snapshot.graph);update_subscription();
+    }
+    // Status is control-plane state, not a notification for each data delivery.
+    // Refresh diagnostics below independently; a new service incarnation must
+    // still publish its initial state even when its values match the old one.
+    const auto previous=std::move(_published_component_statuses);
+    _published_component_statuses=snapshot.statuses;
+    for(auto it=snapshot.statuses.begin();it!=snapshot.statuses.end();++it) {
+        const auto prior=previous.constFind(it.key());
+        if(incarnation_changed || prior==previous.cend() || prior->state!=it->state || prior->error!=it->error)
+            emit component_status_changed(it.key(),int(it->state),it->error);
     }
     emit processing_state_changed();
 }

@@ -19,7 +19,7 @@ namespace {
 #define CHECK(x) do{if(!(x)){++failures;std::printf("FAIL %d: %s\n",__LINE__,#x);}}while(false)
 struct Capture {
     sc::Semantic semantic=sc::Semantic::PCM;
-    std::size_t channels=2,elements=256,frames=0;
+    std::size_t channels=1,elements=256,frames=0;
     std::uint64_t sequence=0;
     bool positive=false,changed=false;float previous=0;
 };
@@ -51,7 +51,7 @@ void run(bool spectral,std::uint32_t fft) {
     CHECK(es::admit(profile,10,pipeline.memory_requirements()).status==Status::ok);
     CHECK(pipeline.output_binding().stream=="sdk-helper");
     Capture capture;capture.semantic=spectral?sc::Semantic::MelEnergy:sc::Semantic::PCM;
-    capture.channels=spectral?1:2;capture.elements=spectral?8:256;
+    capture.channels=1;capture.elements=spectral?8:256;
     allocations=0;tracking=true;
     for(unsigned tick=0;tick<64;++tick)CHECK(pipeline.tick(receive,&capture)==Status::ok);
     tracking=false;CHECK(allocations==0 && capture.frames>0 && capture.positive && capture.changed);

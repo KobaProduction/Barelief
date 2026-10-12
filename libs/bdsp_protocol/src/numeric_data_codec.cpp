@@ -312,6 +312,12 @@ struct Archive {
         signed64(m.stamp.timestamp_ticks);
         boolean(m.stamp.available);
         boolean(m.stamp.discontinuity);
+        boolean(m.stamp.has_sample_interval);
+        signed64(m.stamp.sample_begin);
+        u(m.stamp.sample_count);
+        u(m.stamp.latency_samples);
+        signed64(m.stamp.latency_seconds.numerator);
+        u(m.stamp.latency_seconds.denominator);
         if (m.kind != Kind::Frame) {
             u(m.history.filled);
             u(m.history.capacity);
@@ -405,6 +411,12 @@ struct Archive {
         text(m.stamp.stream_id);
         boolean(m.stamp.available);
         boolean(m.stamp.discontinuity);
+        boolean(m.stamp.has_sample_interval);
+        signed64(m.stamp.sample_begin);
+        u(m.stamp.sample_count);
+        u(m.stamp.latency_samples);
+        signed64(m.stamp.latency_seconds.numerator);
+        u(m.stamp.latency_seconds.denominator);
         contract(m.contract);
         u(m.history.filled);
         u(m.history.capacity);

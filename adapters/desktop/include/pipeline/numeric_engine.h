@@ -5,8 +5,13 @@
 #include <QObject>
 #include <memory>
 #include <optional>
+#include <map>
 
 namespace pipeline {
+// Cold platform adaptation before Apply. Changes a candidate atomically, using
+// actual native endpoint formats and the common downstream contract resolver.
+bool resolve_native_capture_graph(domain::NumericProcessingGraph&,
+    const std::map<domain::NodeId,QString>& devices={},QString* error=nullptr);
 // Desktop resources surround the same portable executor and application service.
 // Capture callbacks process synchronously; GUI delivery contains bounded owners.
 class NumericEngine final : public QObject, public EnginePort {
@@ -26,6 +31,9 @@ public:
     bool subscribe_numeric_frames(std::vector<EndpointIdentity>,QString* error=nullptr) override;
     void set_numeric_frame_handler(std::function<void(DeliveredNumericFrame)>) override;
     void set_numeric_history_handler(std::function<void(DeliveredNumericHistoryRow)>) override;
+    void set_numeric_preview_cadence_hz(int) override;
+    // Cold owner-thread diagnostics for the effective Qt timer policy.
+    int numeric_preview_interval_ms() const;
     quint64 submit(EngineCommand) override;
     void set_snapshot_handler(std::function<void(EngineSnapshot)>) override;
     void set_reply_handler(std::function<void(EngineReply)>) override;

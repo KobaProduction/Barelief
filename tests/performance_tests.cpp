@@ -14,7 +14,16 @@ int main() {
     for(auto &worker:workers) worker.join();enabled=false;
     const auto &counter=counters[static_cast<size_t>(Stage::FFT)];
     if(counter.count!=40000 || counter.total!=40000000 || counter.maximum!=1000 || event_count!=40000) return 2;
-    for(const auto &event:events) if(!event.ready || event.duration!=1000 || event.stage!=Stage::FFT) return 3;
+    // Capacity can exceed the number of emitted events. Only the published
+    // prefix must be ready; the untouched tail must remain unused.
+    const auto written=event_count.load();
+    for(size_t i=0;i<written;++i)if(!events[i].ready || events[i].duration!=1000 || events[i].stage!=Stage::FFT)return 3;
+    for(size_t i=written;i<event_capacity;++i)if(events[i].ready)return 6;
+    enabled=true;
+    for(size_t i=written;i<event_capacity+7;++i)record(Stage::FFT,1,2000);
+    enabled=false;
+    if(event_count!=event_capacity+7 || counter.count!=event_capacity+7)return 7;
+    if(!events.back().ready || events.back().duration!=2000 || events.front().duration!=1000)return 8;
     Counter distribution;
     if (percentile_upper_ns(distribution, 95) != 0) return 4;
     distribution.count = 100; distribution.maximum = 1000000000;

@@ -17,14 +17,14 @@ target_sources(visualization PRIVATE ${HEADERS} ${SOURCES})
 
 target_include_directories(visualization PUBLIC ${CMAKE_SOURCE_DIR}/presentation/qt/include)
 
-find_package(Qt6 REQUIRED COMPONENTS Qml Quick QuickWidgets QuickControls2 OpenGL)
+find_package(Qt6 REQUIRED COMPONENTS Qml Quick QuickWidgets QuickControls2 OpenGL )
 find_package(Qt6 REQUIRED COMPONENTS LinguistTools)
 qt_add_lrelease(visualization TS_FILES ${QT_PRESENTATION_RESOURCE_DIR}/i18n/ui_ru.ts
     QM_FILES_OUTPUT_VARIABLE ui_qm_files)
 qt_add_resources(visualization ui_translations PREFIX "/i18n"
     BASE "${CMAKE_CURRENT_BINARY_DIR}" FILES ${ui_qm_files})
 
-target_link_libraries(visualization PUBLIC Qt6::Qml Qt6::Quick Qt6::QuickWidgets Qt6::QuickControls2 Qt::OpenGL runtime_performance qt_touchpad_input)
+target_link_libraries(visualization PUBLIC Qt6::Qml Qt6::Quick Qt6::QuickWidgets Qt6::QuickControls2 Qt::OpenGL  runtime_performance qt_touchpad_input)
 
 qt_add_resources(visualization ui_theme_icons PREFIX "/ui-theme"
     BASE "${QT_PRESENTATION_RESOURCE_DIR}/ui_theme" FILES ${QT_PRESENTATION_RESOURCE_DIR}/ui_theme/checkmark.svg ${QT_PRESENTATION_RESOURCE_DIR}/ui_theme/minus.svg)
@@ -34,4 +34,12 @@ qt_add_resources(visualization visualization_qml PREFIX "/"
     FILES
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/common/GraphPanel.qml"
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/plots2d/Plot2D.qml"
-        "${QT_PRESENTATION_RESOURCE_DIR}/qml/surface3d/SurfaceView.qml")
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/surface3d/SurfaceView.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/surface3d/SurfaceControls.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactButton.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactCheckBox.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactComboBox.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactDelegate.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactField.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactGroupBox.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactRadioButton.qml")

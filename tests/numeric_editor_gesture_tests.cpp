@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <algorithm>
 #include <stdexcept>
 
 static void require(bool value,const char* text) { if(!value)throw std::runtime_error(text); }
@@ -130,9 +131,9 @@ int main(int argc,char** argv) {
         // Reproduce the reported matching Int64 Scalar labels as an imported
         // draft. Matching individual port shapes do not make these nodes valid.
         domain::NumericProcessingGraph screenshot;screenshot.graph_id="main";
-        auto invalidSource=numeric_editor::default_node("TestSignal");invalidSource.id=1;
+        auto invalidSource=numeric_editor::default_node("SignalGenerator");invalidSource.id=1;
         auto scalarContract=std::get<signal_contracts::NumericContract>(invalidSource.outputs[0].contract.view());
-        scalarContract.clock.sample_rate=44100; // Deliberately conflicts with TestSignal sample_rate=48000.
+        scalarContract.clock.sample_rate=44100; // Deliberately inconsistent with supported generator geometry.
         scalarContract.dtype=signal_contracts::DType::Int64;scalarContract.semantic=signal_contracts::Semantic::Scalar;scalarContract.shape={};scalarContract.coordinates={};scalarContract.channel_order=scalarContract.channel_order.first(1);
         require(numeric_editor::set_contract(invalidSource,domain::PortDirection::Output,0,scalarContract),"Reported source contract fixture invalid");
         auto invalidConverter=numeric_editor::default_node("Converter");invalidConverter.id=14;
@@ -154,17 +155,20 @@ int main(int argc,char** argv) {
         gestures.drag(1,0,14,0);require(model->connectionExists({1,0,14,0}),"Repaired source/converter cannot connect via actual ports");
 
 
-        // This is the real shipped stereo Window, not a hand-adjusted test node.
+        // This is the real shipped mono Window, not a hand-adjusted test node.
         require(editor->load_numeric_draft(numeric_default_graph()),"Shipped graph fixture refused");
         model->deleteNode(1);
-        const auto signal=gestures.create("TestSignal");
+        const auto signal=gestures.create("SignalGenerator");
+        const auto clock=gestures.create("SampleClock");
+        auto bound=*model->delegateModel<AudioNodeModel>(signal)->numeric_node();bound.clock_node=domain::NodeId(clock);
+        require(model->edit_node(signal,bound),"Explicit generator clock binding failed");
         gestures.drag(signal,0,2,0);
         const auto* source=model->delegateModel<AudioNodeModel>(signal)->numeric_node();
         const auto sourceContract=std::get<signal_contracts::NumericContract>(source->outputs[0].contract.view());
-        std::fprintf(stderr,"fresh TestSignal channels=%zu; shipped Window channels=%zu; actual edge=%d\n",sourceContract.channel_order.size(),std::get<signal_contracts::NumericContract>(model->delegateModel<AudioNodeModel>(2)->numeric_node()->inputs[0].contract.view()).channel_order.size(),model->connectionExists({signal,0,2,0}));
-        require(model->connectionExists({signal,0,2,0}),"Fresh generator cannot drag-connect shipped stereo Window");
+        std::fprintf(stderr,"fresh SignalGenerator channels=%zu; shipped Window channels=%zu; actual edge=%d\n",sourceContract.channel_order.size(),std::get<signal_contracts::NumericContract>(model->delegateModel<AudioNodeModel>(2)->numeric_node()->inputs[0].contract.view()).channel_order.size(),model->connectionExists({signal,0,2,0}));
+        require(model->connectionExists({signal,0,2,0}),"Fresh generator cannot drag-connect shipped mono Window");
         gestures.drag(signal,0,9,0);require(model->connectionExists({signal,0,9,0}),"Fresh generator cannot drag-connect shipped AudioView");
-        const auto route=gestures.create("Splitter");gestures.drag(signal,0,route,0);
+        const auto route=gestures.create("Switch");gestures.drag(signal,0,route,0);
         require(model->connectionExists({signal,0,route,0}),"Fresh generator cannot drag-connect fresh route");
         const auto sink=gestures.create("AudioView");gestures.drag(route,1,sink,0);
         require(model->connectionExists({route,1,sink,0}),"Actual drag lost stable second output identity");
@@ -199,21 +203,33 @@ int main(int argc,char** argv) {
         form->hide();
         // Model API must reject too: disabling options alone is insufficient.
         auto impossible=*sourceModel->numeric_node();require(numeric_editor::set_dtype(impossible,domain::PortDirection::Output,0,signal_contracts::DType::Int64),"Direct source rejection fixture contract is not valid");
-        require(bool(domain::resolve_processing_node(impossible,numeric_editor::limits(),resolved)),"Physical source rejection fixture is not domain-admissible");
+        require(!domain::resolve_processing_node(impossible,numeric_editor::limits(),resolved),"Generator must reject unsupported primitive at its operation boundary");
         require(!model->edit_node(signal,impossible) && sourceModel->save()==beforeEdit && model->allConnectionIds(signal)==edgesBeforeEdit,"Direct inadmissible source edit bypasses GUI guard");
 
         QSignalSpy applied(&presenter,&GuiPresenter::graph_apply_finished);
+        domain::NumericProcessingGraph applyGraph;QString applyError;const bool exportable=editor->numeric_draft(applyGraph,&applyError);
+        if(!exportable)std::fprintf(stderr,"Actual Apply export diagnostic: %s\n",qPrintable(applyError));
+        require(exportable,"Actual Apply draft is not exportable");
         auto* apply=window->findChild<QPushButton*>("applyPipeline");require(apply,"Actual Apply control missing");apply->click();
-        require(wait_for([&]{return !applied.isEmpty();}) && applied.last()[1].toBool(),"Actual Apply rejects newly created connected generator");
+        const bool replied=wait_for([&]{return !applied.isEmpty();});
+        if(!replied || !applied.last()[1].toBool())std::fprintf(stderr,"Actual Apply diagnostic: reply=%d error=%s status=%s\n",replied,replied?qPrintable(applied.last()[2].toString()):"<no reply>",qPrintable(presenter.apply_status()));
+        require(replied && applied.last()[1].toBool(),"Actual Apply rejects newly created connected generator");
         require(!window->findChild<QPushButton*>("pipelineRun") && !window->findChild<QPushButton*>("pipelineStop"),"Obsolete Run/Stop controls returned");
-        int delivered=0;float previous=0;bool nonzero=false,changing=false;
+        int delivered=0;std::uint64_t firstSequence=0,lastSequence=0;float peak=0;bool nonzero=false,progressing=false;
         QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,editor,[&](const pipeline::DeliveredNumericFrame& frame) {
             if(!frame.context || frame.context->endpoint.node!=9 || !frame.frame || frame.status!=signal_contracts::Status::ok || !frame.frame.view().stamp.available)return;
             const auto data=frame.frame.view();const auto* numeric=std::get_if<signal_contracts::NumericView>(&data.payload);if(!numeric)return;
-            float value=0;if(signal_contracts::load_element(*numeric,{0,0,0},value)!=signal_contracts::Status::ok || !std::isfinite(value))return;
-            nonzero|=std::abs(value)>.0001f;changing|=delivered>0 && value!=previous;previous=value;++delivered;
+            for(std::size_t i=0;i<numeric->actual[0];++i){float value=0;require(signal_contracts::load_element(*numeric,{0,i,0},value)==signal_contracts::Status::ok && std::isfinite(value),"Continuous source delivered invalid PCM");peak=std::max(peak,std::abs(value));}
+            nonzero|=peak>.0001f;const auto sequence=data.stamp.sequence;
+            if(!delivered)firstSequence=sequence;else progressing|=sequence>lastSequence;
+            lastSequence=sequence;++delivered;
         });
-        require(wait_for([&]{return delivered>=3 && nonzero && changing;}),"Continuous Apply has no changing nonzero synthetic sink frames");
-        std::puts("fresh stereo generator/Window/route actual gestures, rejected edits/diagnostics, Apply and continuous synthetic execution PASS");return 0;
+        // GUI taps follow exposed graph instances; an editor-only fixture has
+        // no implicit subscription. Observe the real raw PCM graph explicitly.
+        auto* raw=window->workspaceDock("rawSamplesDock");require(raw,"Continuous source graph dock missing");raw->toggleView(true);raw->setAsCurrentTab();
+        const bool continuous=wait_for([&]{return delivered>=3 && nonzero && progressing;});
+        if(!continuous)std::fprintf(stderr,"Continuous source diagnostic: delivered=%d peak=%.9g firstSequence=%llu lastSequence=%llu exposed=%d closed=%d\n",delivered,double(peak),(unsigned long long)firstSequence,(unsigned long long)lastSequence,raw->property("renderExposed").toBool(),raw->isClosed());
+        require(continuous,"Continuous Apply has no progressing nonzero PCM sink frames");
+        std::puts("fresh mono generator/Window/route actual gestures, rejected edits/diagnostics, Apply and continuous synthetic execution PASS");return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }

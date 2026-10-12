@@ -43,7 +43,7 @@ ProcessingPersistence::Record ProcessingPersistence::read(unsigned slot,std::spa
     if(std::memcmp(bytes.data(),"BPS1",4) || get(bytes,8,4)!=1 || get(bytes,36,4)!=n-record_header_bytes ||
        get(bytes,40,4)!=checksum(bytes) || !get(bytes,28,8))return {Status::malformed,0,{}};
     if(get(bytes,4,2)!=1 || get(bytes,6,2)!=(codec_.id()==nc::CodecId::Cbor?1u:2u) ||
-       get(bytes,12,4)!=2 || get(bytes,16,4)!=3 || get(bytes,20,4)!=2 || get(bytes,24,4)!=4 || get(bytes,44,4)!=2)
+       get(bytes,12,4)!=domain::ProcessingVersions{}.document || get(bytes,16,4)!=domain::ProcessingVersions{}.graph || get(bytes,20,4)!=domain::ProcessingVersions{}.processing || get(bytes,24,4)!=domain::ProcessingVersions{}.data || get(bytes,44,4)!=domain::ProcessingVersions{}.control)
         return {Status::unsupported_version,get(bytes,28,8),{}};
     return {Status::ok,get(bytes,28,8),bytes.subspan(record_header_bytes)};
 }
@@ -60,7 +60,10 @@ Status ProcessingPersistence::decode(const Record& r,domain::NumericProcessingGr
        command->graph_revision || !command->graph_id.empty() || command->parameters || command->node!=-1)
         return Status::malformed;
     const auto& versions=command->graph->versions;
-    if(versions.document!=2 || versions.graph!=3 || versions.processing!=2 || versions.control!=2 || versions.data!=4)
+    if(domain::processing_versions_supported(versions)!=Status::ok ||
+       domain::processing_boundary_version_supported(domain::ProcessingBoundary::Document,versions.document)!=Status::ok ||
+       domain::processing_boundary_version_supported(domain::ProcessingBoundary::Control,versions.control)!=Status::ok ||
+       domain::processing_boundary_version_supported(domain::ProcessingBoundary::Data,versions.data)!=Status::ok)
         return Status::unsupported_version;
     domain::NumericProcessingGraph graph;
     result=control::numeric::own_graph(*command->graph,codec_limits_,graph);
@@ -83,7 +86,10 @@ Status ProcessingPersistence::restore(domain::NumericProcessingGraph& out) {
 }
 Status ProcessingPersistence::save(const domain::NumericProcessingGraph& graph) {
     const auto& versions=graph.versions;
-    if(versions.document!=2 || versions.graph!=3 || versions.processing!=2 || versions.control!=2 || versions.data!=4)
+    if(domain::processing_versions_supported(versions)!=Status::ok ||
+       domain::processing_boundary_version_supported(domain::ProcessingBoundary::Document,versions.document)!=Status::ok ||
+       domain::processing_boundary_version_supported(domain::ProcessingBoundary::Control,versions.control)!=Status::ok ||
+       domain::processing_boundary_version_supported(domain::ProcessingBoundary::Data,versions.data)!=Status::ok)
         return Status::unsupported_version;
     auto a=read(0,buffers_.first),b=read(1,buffers_.second);
     // Never overwrite a committed future edition or unreadable oversized record.
@@ -108,8 +114,8 @@ Status ProcessingPersistence::save(const domain::NumericProcessingGraph& graph) 
     if(result.produced>std::numeric_limits<std::uint32_t>::max())return Status::exhausted;
     std::fill_n(bytes.begin(),record_header_bytes,0);std::memcpy(bytes.data(),"BPS1",4);
     put(bytes,4,1,2);put(bytes,6,codec_.id()==nc::CodecId::Cbor?1:2,2);put(bytes,8,1,4);
-    put(bytes,12,2,4);put(bytes,16,3,4);put(bytes,20,2,4);put(bytes,24,4,4);put(bytes,28,sequence+1,8);
-    put(bytes,36,result.produced,4);put(bytes,44,2,4);
+    put(bytes,12,versions.document,4);put(bytes,16,versions.graph,4);put(bytes,20,versions.processing,4);put(bytes,24,versions.data,4);put(bytes,28,sequence+1,8);
+    put(bytes,36,result.produced,4);put(bytes,44,versions.control,4);
     auto record=bytes.first(record_header_bytes+result.produced);put(bytes,40,checksum(record),4);
     return storage_.commit(target,record);
 }

@@ -97,6 +97,9 @@ bool parameter_fields_valid(NodeKind k,const std::vector<ProcessingParameter>& v
     }return true;
 }
 ProcessingOperation operation(NodeKind k,NodeRole role) noexcept {
+    if(k==NodeKind::SampleClock)return ProcessingOperation::Clock;
+    if(k==NodeKind::Mixer)return ProcessingOperation::Mixer;
+    if(k==NodeKind::ChannelComparison)return ProcessingOperation::ChannelComparison;
     if(role==NodeRole::Source)return ProcessingOperation::Source;
     if(role==NodeRole::Sink)return ProcessingOperation::Sink;
     switch(k) {
@@ -144,6 +147,12 @@ bool node_footprint(const ConfiguredProcessingNode& n,const ProcessingAdmissionL
             if(const auto* s=std::get_if<std::string>(&p.value);s && (s->size()>limits.max_text_bytes || !charge(s->capacity(),1) || !charge(1,1)))return false;
         }
     }
+    if(const auto* p=std::get_if<SignalGeneratorProcessingParameters>(&n.parameters))
+        if(!charge(p->oscillators.capacity(),sizeof(signal_contracts::OscillatorParameters)))return false;
+    if(const auto* p=std::get_if<MixerProcessingParameters>(&n.parameters))
+        if(!charge(p->weights.capacity(),sizeof(MixerInputWeight)))return false;
+    if(const auto* p=std::get_if<SampleClockProcessingParameters>(&n.parameters))
+        if(p->domain.size()>limits.max_text_bytes || !charge(p->domain.capacity()+1,1))return false;
     if(const auto* p=std::get_if<ReduceProcessingParameters>(&n.parameters))
         if(p->selected_channels.size()>limits.frame.max_planes || !charge(p->selected_channels.capacity(),sizeof(std::uint32_t)))return false;
     return true;
@@ -207,13 +216,13 @@ Status own_processing_contract(const DataContract& source,const FrameLimits& lim
     OwnedProcessingContract candidate;candidate.storage_=storage.release();out=std::move(candidate);return Status::ok;
 }
 Status processing_versions_supported(const ProcessingVersions& v) noexcept {
-    return v.graph==3 && v.processing==2?Status::ok:Status::unsupported_version;
+    return v.graph==5 && v.processing==4?Status::ok:Status::unsupported_version;
 }
 Status processing_boundary_version_supported(ProcessingBoundary boundary,std::uint32_t edition) noexcept {
     switch(boundary){
-    case ProcessingBoundary::Document:return edition==2?Status::ok:Status::unsupported_version;
-    case ProcessingBoundary::Control:return edition==2?Status::ok:Status::unsupported_version;
-    case ProcessingBoundary::Data:return edition==4?Status::ok:Status::unsupported_version;
+    case ProcessingBoundary::Document:return edition==4?Status::ok:Status::unsupported_version;
+    case ProcessingBoundary::Control:return edition==4?Status::ok:Status::unsupported_version;
+    case ProcessingBoundary::Data:return edition==5?Status::ok:Status::unsupported_version;
     }
     return Status::invalid_argument;
 }
@@ -222,8 +231,9 @@ bool same_processing_parameters(const ProcessingParameters& a,const ProcessingPa
     return std::visit([&](const auto& x){using T=std::decay_t<decltype(x)>;const auto& y=std::get<T>(b);
         if constexpr(std::is_same_v<T,EndpointProcessingParameters> || std::is_same_v<T,TransformProcessingParameters>)return parameters_equal(x.values,y.values);
         else if constexpr(std::is_same_v<T,ConverterProcessingParameters>)return policy_equal(x.policy,y.policy);
-        else if constexpr(std::is_same_v<T,RouteProcessingParameters>)return x.outputs==y.outputs && x.selected==y.selected && x.open==y.open;
+        else if constexpr(std::is_same_v<T,RouteProcessingParameters>)return x.outputs==y.outputs && x.selected==y.selected && x.open==y.open && x.channels_per_stream==y.channels_per_stream;
         else if constexpr(std::is_same_v<T,HistoryProcessingParameters>)return x.capacity==y.capacity;
+        else if constexpr(std::is_same_v<T,SignalGeneratorProcessingParameters> || std::is_same_v<T,SampleClockProcessingParameters> || std::is_same_v<T,MixerProcessingParameters>)return x==y;
         else return x.operation==y.operation && x.channels==y.channels && x.rows==y.rows && x.selected_channels==y.selected_channels && x.precision_loss==y.precision_loss && x.rounding==y.rounding;
     },a);
 }
@@ -256,7 +266,7 @@ bool dtype_conversion_is_exact(DType from,DType to) noexcept {
 ProcessingDiagnostic lower_dtype_edges(const NumericProcessingGraph& source,const ProcessingAdmissionLimits& limits,NumericProcessingGraph& out) {
     if(source.nodes.size()>limits.max_nodes || source.edges.size()>limits.max_edges)return {ProcessingError::Limit};
     std::size_t footprint=0;if(processing_graph_owned_bytes(source,limits,footprint)!=Status::ok)return {ProcessingError::Limit};
-    NumericProcessingGraph candidate=source;candidate.edges.clear();
+    NumericProcessingGraph candidate;const auto bindings=resolve_configuration_bindings(source,limits,candidate);if(!bindings)return bindings;candidate.edges.clear();
     std::vector<std::size_t> order(source.edges.size());std::iota(order.begin(),order.end(),0);
     std::sort(order.begin(),order.end(),[&](auto x,auto y){const auto& a=source.edges[x];const auto& b=source.edges[y];
         return std::tie(a.to,a.input_port,a.from,a.output_port)<std::tie(b.to,b.input_port,b.from,b.output_port);});
@@ -278,7 +288,67 @@ ProcessingDiagnostic lower_dtype_edges(const NumericProcessingGraph& source,cons
         candidate.nodes.push_back(std::move(converter));
         candidate.edges.push_back({edge.from,id,edge.output_port,0});candidate.edges.push_back({id,edge.to,0,edge.input_port});
     }
-    if(candidate.nodes.size()==source.nodes.size())candidate=source;
+    if(candidate.nodes.size()==source.nodes.size()){candidate.edges=source.edges;}
+    out=std::move(candidate);return {};
+}
+bool configuration_output_supported(const ConfiguredProcessingNode& n,ConfigurationRole role) noexcept {
+    if(role==ConfigurationRole::SampleClock){
+        if(n.kind=="SampleClock")return true;
+        if(n.outputs.empty() || !n.outputs.front().contract)return false;
+        const auto output=n.outputs.front().contract.view();const auto* numeric=std::get_if<NumericContract>(&output);return numeric && numeric->clock.sample_rate && !numeric->clock.domain.empty();
+    }
+    return role==ConfigurationRole::FrequencyGrid && (n.kind=="StereoFFT" || n.kind=="Mel" || n.kind=="Spectrogram" || n.kind=="BarkWeighting");
+}
+bool configuration_input_supported(const ConfiguredProcessingNode& n,ConfigurationRole role) noexcept {
+    const auto kind=node_kind(n.kind);const bool view=kind && is_view(*kind);
+    if(role==ConfigurationRole::SampleClock)return n.kind=="SignalGenerator" || n.kind=="PcmResampler" || n.kind=="Mixer" || view;
+    return role==ConfigurationRole::FrequencyGrid && view && n.kind!="ScalarView";
+}
+bool has_configuration_binding(const NumericProcessingGraph& g,NodeId node,ConfigurationRole role) noexcept {
+    return std::any_of(g.configuration_bindings.begin(),g.configuration_bindings.end(),[&](const auto& b){return b.to==node && b.input==role;});
+}
+namespace {
+ProcessingDiagnostic validate_bindings(const NumericProcessingGraph& g,const ProcessingAdmissionLimits& limits) noexcept {
+    if(g.edges.size()>limits.max_edges || g.configuration_bindings.size()>limits.max_edges-g.edges.size())return {ProcessingError::Limit};
+    for(std::size_t i=0;i<g.configuration_bindings.size();++i){const auto& b=g.configuration_bindings[i];
+        const auto from=node_index(g,b.from),to=node_index(g,b.to);
+        if(from==g.nodes.size() || to==g.nodes.size())return {ProcessingError::MissingEndpoint,b.to};
+        const auto& source=g.nodes[from];const auto& target=g.nodes[to];
+        if(b.output!=b.input || !configuration_output_supported(source,b.output) || !configuration_input_supported(target,b.input) || b.from==b.to)return {ProcessingError::InvalidPort,b.to};
+        for(std::size_t j=0;j<i;++j)if(g.configuration_bindings[j].to==b.to && g.configuration_bindings[j].input==b.input)return {ProcessingError::MultipleInputs,b.to};
+        if(b.input==ConfigurationRole::SampleClock && (target.kind=="SignalGenerator" || target.kind=="Mixer" || target.kind=="PcmResampler")){
+            const auto* clock=std::get_if<SampleClockProcessingParameters>(&source.parameters);
+            if(source.kind!="SampleClock" || !clock)return {ProcessingError::InvalidParameters,b.to};
+            for(const auto& port:target.outputs){const auto data=port.contract.view();const auto* v=std::get_if<NumericContract>(&data);
+                if(v && (v->clock.sample_rate!=clock->sample_rate || v->clock.domain!=clock->domain || v->clock.tick_seconds!=Ratio{1,clock->sample_rate}))return {ProcessingError::IncompatiblePorts,b.to,port.id};}
+        }
+        const auto target_kind=node_kind(target.kind);
+        if(b.input==ConfigurationRole::SampleClock && target_kind && is_view(*target_kind) && !target.inputs.empty()){
+            const auto input=target.inputs.front().contract.view();const auto* value=std::get_if<NumericContract>(&input);
+            ClockContract expected{};
+            if(const auto* clock=std::get_if<SampleClockProcessingParameters>(&source.parameters))expected={clock->domain,Ratio{1,clock->sample_rate},clock->sample_rate};
+            else if(!source.outputs.empty()){const auto output=source.outputs.front().contract.view();if(const auto* numeric=std::get_if<NumericContract>(&output))expected=numeric->clock;}
+            if(!value || !expected.sample_rate || value->clock.sample_rate!=expected.sample_rate || value->clock.domain!=expected.domain || value->clock.tick_seconds!=expected.tick_seconds)return {ProcessingError::IncompatiblePorts,b.to};
+        }
+        if(b.input==ConfigurationRole::FrequencyGrid){
+            if(source.outputs.empty() || target.inputs.empty())return {ProcessingError::InvalidContract,b.to};
+            const auto a=source.outputs.front().contract.view(),z=target.inputs.front().contract.view();const auto* x=std::get_if<NumericContract>(&a);const auto* y=std::get_if<NumericContract>(&z);
+            if(!x || !y)return {ProcessingError::InvalidContract,b.to};
+            const auto xa=x->shape.rank==Rank::Matrix?1:0,ya=y->shape.rank==Rank::Matrix?1:0;
+            if(x->coordinates[xa].unit!=NumericUnit::Hertz || x->coordinates[xa].mode==CoordinateMode::None || x->coordinates[xa]!=y->coordinates[ya] || x->shape.extents[xa]!=y->shape.extents[ya])return {ProcessingError::IncompatiblePorts,b.to};
+        }
+    }
+    return {};
+}
+}
+ProcessingDiagnostic resolve_configuration_bindings(const NumericProcessingGraph& source,const ProcessingAdmissionLimits& limits,NumericProcessingGraph& out) {
+    if(source.edges.size()>limits.max_edges)return {ProcessingError::Limit};
+    const auto valid=validate_bindings(source,limits);if(!valid)return valid;
+    auto candidate=source;for(auto& node:candidate.nodes)node.clock_node=-1;
+    for(const auto& b:candidate.configuration_bindings)if(b.input==ConfigurationRole::SampleClock){
+        auto& target=candidate.nodes[node_index(candidate,b.to)];
+        if(target.kind=="SignalGenerator" || target.kind=="Mixer" || target.kind=="PcmResampler")target.clock_node=b.from;
+    }
     out=std::move(candidate);return {};
 }
 Status resolve_processing_parameter(const ResolvedProcessingNode& n,std::string_view key,ProcessingParameterView& out) noexcept {
@@ -340,32 +410,77 @@ ProcessingDiagnostic resolve_processing_node(const ConfiguredProcessingNode& n,c
             if(p.direction!=direction || !p.contract)return error(ProcessingError::InvalidPort,p.id);
             for(std::size_t j=0;j<i;++j)if(p.id==ports[j].id)return error(ProcessingError::InvalidPort,p.id);
             if(validate_contract(p.contract.view(),limits.frame)!=Status::ok)return error(ProcessingError::InvalidContract,p.id);
+            const auto contract=p.contract.view();if(const auto* value=std::get_if<NumericContract>(&contract);value && value->channel_order.size()!=1)return error(ProcessingError::InvalidContract,p.id);
             if(!add(metadata,p.contract.owned_bytes()) || metadata>limits.max_owned_metadata_bytes)return error(ProcessingError::Limit,p.id);
         }
     }
     std::size_t input_count=role==NodeRole::Source?0:1,output_count=role==NodeRole::Sink?0:1;
-    if(op==ProcessingOperation::Splitter || op==ProcessingOperation::Switch || op==ProcessingOperation::Gate) {
+    if(op==ProcessingOperation::Clock){input_count=output_count=0;}
+    else if(op==ProcessingOperation::Mixer){input_count=n.inputs.size();if(input_count<1 || input_count>128)return error(ProcessingError::InvalidPort);}
+    else if(op==ProcessingOperation::ChannelComparison){input_count=2;}
+    else if(k==NodeKind::AudioSource){output_count=n.outputs.size();if(!output_count)return error(ProcessingError::InvalidPort);}
+    else if(op==ProcessingOperation::Splitter || op==ProcessingOperation::Switch || op==ProcessingOperation::Gate) {
         const auto* p=std::get_if<RouteProcessingParameters>(&n.parameters);
         if(!p || (op==ProcessingOperation::Gate?p->outputs!=1:(p->outputs<2 || p->outputs>8)) || p->selected>=p->outputs)return error(ProcessingError::InvalidParameters);
-        output_count=p->outputs;
+        if(p->channels_per_stream<1 || p->channels_per_stream>32 || (op!=ProcessingOperation::Switch && p->channels_per_stream!=1))return error(ProcessingError::InvalidParameters);
+        input_count=p->channels_per_stream;output_count=std::size_t(p->outputs)*p->channels_per_stream;
     }else if(op==ProcessingOperation::History)output_count=2;
     else if(op==ProcessingOperation::InputSelector || k==NodeKind::ScalarView) {
         input_count=n.inputs.size();
         if(!input_count || input_count>(k==NodeKind::ScalarView?8:65536))return error(ProcessingError::InvalidPort);
+        if(op==ProcessingOperation::InputSelector)output_count=n.outputs.size();
     }
     if(n.inputs.size()!=input_count || n.outputs.size()!=output_count)return error(ProcessingError::InvalidPort);
-    for(std::size_t i=0;op!=ProcessingOperation::InputSelector && k!=NodeKind::ScalarView && i<input_count;++i)if(!find_port(n.inputs,PortId(i)))return error(ProcessingError::InvalidPort,PortId(i));
+    for(std::size_t i=0;op!=ProcessingOperation::InputSelector && op!=ProcessingOperation::Mixer && k!=NodeKind::ScalarView && i<input_count;++i)if(!find_port(n.inputs,PortId(i)))return error(ProcessingError::InvalidPort,PortId(i));
     for(std::size_t i=0;i<output_count;++i)if(!find_port(n.outputs,PortId(i)))return error(ProcessingError::InvalidPort,PortId(i));
     DataContract in=NumericContract{},result=NumericContract{};
-    if(input_count)in=(op==ProcessingOperation::InputSelector || k==NodeKind::ScalarView?&n.inputs.front():find_port(n.inputs,0))->contract.view();
+    if(input_count)in=(op==ProcessingOperation::InputSelector || op==ProcessingOperation::Mixer || k==NodeKind::ScalarView?&n.inputs.front():find_port(n.inputs,0))->contract.view();
     if(output_count)result=find_port(n.outputs,0)->contract.view();
     const auto* input=std::get_if<NumericContract>(&in);const auto* output=std::get_if<NumericContract>(&result);
     switch(op) {
+    case ProcessingOperation::Clock: {
+        const auto* p=std::get_if<SampleClockProcessingParameters>(&n.parameters);
+        if(!p || p->sample_rate<8000 || p->sample_rate>192000 || p->domain.empty() || p->domain.find('\0')!=std::string::npos || n.clock_node!=-1)return error(ProcessingError::InvalidParameters);
+        break;
+    }
+    case ProcessingOperation::Mixer: {
+        const auto* p=std::get_if<MixerProcessingParameters>(&n.parameters);
+        if(!p || (p->consumption!=MixerConsumption::ClockedFifo && p->consumption!=MixerConsumption::SourceAligned) || p->weights.size()!=input_count || !p->fifo_milliseconds || p->fifo_milliseconds>1000 ||
+           (p->mode!=MixerMode::WeightedSum && p->mode!=MixerMode::WeightedMean && p->mode!=MixerMode::WeightedRMS && p->mode!=MixerMode::MaxAbsolute))return error(ProcessingError::InvalidParameters);
+        if(!input || !output || input->dtype!=DType::Float32 || input->shape.rank!=Rank::Vector || input->channel_order.size()!=1 || output->channel_order.size()!=1 || input->representation.encoding!=StorageEncoding::Native || output->representation.encoding!=StorageEncoding::Native)return error(ProcessingError::InvalidContract);
+        const bool spectral=input->shape.axes[0]==Axis::Bin || input->shape.axes[0]==Axis::Band || input->coordinates[0].unit==NumericUnit::Hertz;
+        if(p->consumption==MixerConsumption::SourceAligned && (spectral || input->shape.axes[0]!=Axis::Sample || !input->clock.sample_rate || input->clock.domain.empty()))return error(ProcessingError::InvalidContract);
+        if(spectral && input->shape.extents[0].minimum!=input->shape.extents[0].maximum)return error(ProcessingError::InvalidContract);
+        for(const auto& port:n.inputs){auto c=port.contract.view();auto* v=std::get_if<NumericContract>(&c);
+            if(!v || v->dtype!=input->dtype || v->shape.rank!=Rank::Vector || v->shape.axes!=input->shape.axes || v->channel_order.size()!=1 || v->representation!=input->representation || !clock_equal(v->clock,input->clock) || v->coordinates!=input->coordinates)return error(ProcessingError::IncompatiblePorts,port.id);
+            if((input->shape.axes[0]==Axis::Bin || input->shape.axes[0]==Axis::Band || input->coordinates[0].unit==NumericUnit::Hertz) && v->shape!=input->shape)return error(ProcessingError::IncompatiblePorts,port.id);
+            std::size_t found=0;for(const auto& w:p->weights)if(w.port==port.id){++found;if(!std::isfinite(w.weight) || ((p->mode==MixerMode::WeightedMean || p->mode==MixerMode::WeightedRMS) && w.weight<0))return error(ProcessingError::InvalidParameters,port.id);}if(found!=1)return error(ProcessingError::InvalidParameters,port.id);
+        }
+        if(output->dtype!=input->dtype || output->shape.rank!=Rank::Vector || output->shape.axes!=input->shape.axes || !clock_equal(output->clock,input->clock) || output->coordinates!=input->coordinates || output->representation!=input->representation)return error(ProcessingError::IncompatiblePorts);
+        if((input->shape.axes[0]==Axis::Bin || input->shape.axes[0]==Axis::Band || input->coordinates[0].unit==NumericUnit::Hertz) && output->shape!=input->shape)return error(ProcessingError::IncompatiblePorts);
+        break;
+    }
+    case ProcessingOperation::ChannelComparison: {
+        const auto* p=std::get_if<TransformProcessingParameters>(&n.parameters);
+        if(!p || !parameter_fields_valid(*k,p->values,limits))return error(ProcessingError::InvalidParameters);
+        if(!input || !output || !input->clock.sample_rate || input->clock.domain.empty() || input->dtype!=DType::Float32 || input->shape.rank!=Rank::Vector || input->shape.axes[0]!=Axis::Sample || input->representation.encoding!=StorageEncoding::Native || output->dtype!=DType::Float32 || output->shape.rank!=Rank::Scalar || output->representation.encoding!=StorageEncoding::Native || !clock_equal(input->clock,output->clock))return error(ProcessingError::InvalidContract);
+        auto second=n.inputs[1].contract.view();const auto* lane=std::get_if<NumericContract>(&second);
+        if(!lane || lane->dtype!=input->dtype || lane->shape.rank!=Rank::Vector || lane->shape.axes!=input->shape.axes || lane->representation!=input->representation || !clock_equal(lane->clock,input->clock))return error(ProcessingError::IncompatiblePorts,1);
+        break;
+    }
     case ProcessingOperation::Source:
     case ProcessingOperation::Sink: {
+        if(k==NodeKind::SignalGenerator){
+            const auto* p=std::get_if<SignalGeneratorProcessingParameters>(&n.parameters);
+            if(!p || !output || output->dtype!=DType::Float32 || output->shape.rank!=Rank::Vector || output->channel_order.size()!=1 || output->representation.encoding!=StorageEncoding::Native || !output->clock.sample_rate || p->oscillators.empty() || p->oscillators.size()>128)return error(ProcessingError::InvalidParameters);
+            if(output->shape.axes[0]!=Axis::Sample || output->coordinates[0].mode!=CoordinateMode::None)return error(ProcessingError::InvalidContract);
+            for(std::size_t i=0;i<p->oscillators.size();++i){const auto& v=p->oscillators[i];if(!v.id || !std::isfinite(v.frequency_hz) || v.frequency_hz<=0 || v.frequency_hz>=double(output->clock.sample_rate)/2 || !std::isfinite(v.amplitude) || !std::isfinite(v.phase_radians) || !std::isfinite(v.attack_seconds) || !std::isfinite(v.release_seconds) || v.attack_seconds<0 || v.release_seconds<0)return error(ProcessingError::InvalidParameters);for(std::size_t j=0;j<i;++j)if(v.id==p->oscillators[j].id)return error(ProcessingError::InvalidParameters);}
+            break;
+        }
         const auto* p=std::get_if<EndpointProcessingParameters>(&n.parameters);
         if(!p || !k || !parameter_fields_valid(*k,p->values,limits))return error(ProcessingError::InvalidParameters);
         if(*k==NodeKind::TestSignal && !test_signal_rules(n))return error(ProcessingError::InvalidParameters);
+        if(*k==NodeKind::AudioSource){for(const auto& port:n.outputs){const auto contract=port.contract.view();const auto* lane=std::get_if<NumericContract>(&contract);if(!lane || lane->shape.rank!=Rank::Vector || !output || !clock_equal(lane->clock,output->clock))return error(ProcessingError::InvalidContract,port.id);}}
         if(*k==NodeKind::WLEDOutput && !wled_contract(in))return error(ProcessingError::InvalidContract);
         // View kind selects presentation defaults, never a numeric data type.
         const bool numeric_endpoint=*k==NodeKind::AudioSource || *k==NodeKind::TestSignal ||
@@ -376,7 +491,7 @@ ProcessingDiagnostic resolve_processing_node(const ConfiguredProcessingNode& n,c
         if(is_view(*k))for(const auto& port:n.inputs){const auto contract=port.contract.view();const auto* numeric=std::get_if<NumericContract>(&contract);
             const auto rank=*k==NodeKind::ScalarView?Rank::Scalar:*k==NodeKind::SpectrogramView?Rank::Matrix:Rank::Vector;
             if(!numeric || numeric->shape.rank!=rank || (*k==NodeKind::ScalarView && numeric->channel_order.size()!=1))return error(ProcessingError::InvalidContract,port.id);}
-        if(*k==NodeKind::AudioSource || (*k==NodeKind::TestSignal && output && output->clock.sample_rate)){
+        if(*k==NodeKind::TestSignal && output && output->clock.sample_rate){
             const ResolvedProcessingNode configured{n.id,n.kind,role,op,n.inputs,n.outputs,&n.parameters,n.enabled};
             ProcessingParameterView rate;
             if(!output || resolve_processing_parameter(configured,"sample_rate",rate)!=Status::ok ||
@@ -391,18 +506,39 @@ ProcessingDiagnostic resolve_processing_node(const ConfiguredProcessingNode& n,c
         const auto* p=std::get_if<TransformProcessingParameters>(&n.parameters);
         if(!p || !parameter_fields_valid(*k,p->values,limits))return error(ProcessingError::InvalidParameters);
         if(!input || !output)return error(ProcessingError::InvalidContract);
-        std::uint64_t selected=0;
-        for(const auto& field:p->values)if(field.key=="selected_input")
-            selected=std::visit([](auto v){return std::uint64_t(v);},std::get<NumericLiteral>(field.value));
-        if(selected>65535 || !find_port(n.inputs,PortId(selected)))return error(ProcessingError::InvalidParameters);
-        for(const auto& port:n.inputs)if(!same_physical_contract(in,port.contract.view()))
-            return error(ProcessingError::IncompatiblePorts,port.id);
-        if(!same_physical_contract(in,result))return error(ProcessingError::IncompatiblePorts);
+        std::uint64_t selected=0,channels=1;
+        for(const auto& field:p->values) {
+            if(field.key=="selected_input")selected=std::visit([](auto v){return std::uint64_t(v);},std::get<NumericLiteral>(field.value));
+            if(field.key=="channels_per_stream")channels=std::visit([](auto v){return std::uint64_t(v);},std::get<NumericLiteral>(field.value));
+        }
+        if(channels!=output_count || !output_count)return error(ProcessingError::InvalidParameters);
+        if(channels==1) {
+            if(selected>65535 || !find_port(n.inputs,PortId(selected)))return error(ProcessingError::InvalidParameters);
+        } else {
+            if(input_count%channels || selected>=input_count/channels || input->shape.rank!=Rank::Vector)
+                return error(ProcessingError::InvalidParameters);
+            for(std::size_t port=0;port<input_count;++port)if(!find_port(n.inputs,PortId(port)))return error(ProcessingError::InvalidPort);
+        }
+        // Physical sample vectors can differ in chunk length after resampling.
+        // Labels do not choose admission rules; other geometries must match the
+        // actual output, rather than merely agreeing with the first input.
+        auto fits=[&](const DataContract& value){
+            const auto* lane=std::get_if<NumericContract>(&value);if(!lane)return false;
+            const bool sample_envelope=output->shape.rank==Rank::Vector &&
+                output->shape.axes[0]==Axis::Sample && output->clock.sample_rate;
+            if(!sample_envelope)return same_physical_contract(value,result);
+            auto normalized=*lane;normalized.shape.extents=output->shape.extents;
+            return lane->shape.extents[0].minimum>=output->shape.extents[0].minimum&&
+                lane->shape.extents[0].maximum<=output->shape.extents[0].maximum&&same_physical_contract(normalized,result);
+        };
+        for(const auto& port:n.inputs)if(!fits(port.contract.view()))return error(ProcessingError::IncompatiblePorts,port.id);
+        for(const auto& port:n.outputs)if(!same_physical_contract(result,port.contract.view()))return error(ProcessingError::IncompatiblePorts,port.id);
         break;
     }
     case ProcessingOperation::Splitter:
     case ProcessingOperation::Switch:
     case ProcessingOperation::Gate:
+        for(const auto& p:n.inputs)if(!same_physical_contract(in,p.contract.view()))return error(ProcessingError::IncompatiblePorts,p.id);
         for(const auto& p:n.outputs)if(!same_physical_contract(in,p.contract.view()))return error(ProcessingError::IncompatiblePorts,p.id);
         break;
     case ProcessingOperation::Converter: {
@@ -473,6 +609,7 @@ ProcessingDiagnostic resolve_processing_node(const ConfiguredProcessingNode& n,c
         break;
     }
     case ProcessingOperation::Transform: {
+        if(!input || !output || input->channel_order.size()!=1 || output->channel_order.size()!=1)return error(ProcessingError::InvalidContract);
         const auto* p=std::get_if<TransformProcessingParameters>(&n.parameters);
         if(!p || !k || !parameter_fields_valid(*k,p->values,limits))return error(ProcessingError::InvalidParameters);
         if(!input || !output)return error(ProcessingError::InvalidContract);
@@ -514,7 +651,7 @@ Status processing_graph_owned_bytes(const NumericProcessingGraph& g,const Proces
     if(g.nodes.size()>limits.max_nodes || g.edges.size()>limits.max_edges)return Status::exhausted;
     std::size_t bytes=sizeof(NumericProcessingGraph),reserved=0;
     if(!mul(g.nodes.capacity()-g.nodes.size(),sizeof(ConfiguredProcessingNode),reserved) || !add(bytes,reserved) ||
-       !mul(g.edges.capacity(),sizeof(Edge),reserved) || !add(bytes,reserved) || !add(bytes,g.graph_id.capacity()) || !add(bytes,1))return Status::overflow;
+       !mul(g.configuration_bindings.capacity(),sizeof(ConfigurationBinding),reserved) || !add(bytes,reserved) || !mul(g.edges.capacity(),sizeof(Edge),reserved) || !add(bytes,reserved) || !add(bytes,g.graph_id.capacity()) || !add(bytes,1))return Status::overflow;
     for(const auto& node:g.nodes){std::size_t footprint=0;if(!node_footprint(node,limits,footprint) || !add(bytes,footprint))return Status::exhausted;}
     if(bytes>limits.max_owned_metadata_bytes)return Status::exhausted;
     out=bytes;return Status::ok;
@@ -522,13 +659,14 @@ Status processing_graph_owned_bytes(const NumericProcessingGraph& g,const Proces
 ProcessingDiagnostic admit_processing_graph(const NumericProcessingGraph& g,const ProcessingAdmissionLimits& limits,
     const NumericDeviceCapabilities& capabilities,std::span<std::size_t> workspace,ProcessingGraphAdmission& out) noexcept {
     if(processing_versions_supported(g.versions)!=Status::ok)return {ProcessingError::UnsupportedVersion};
+    if(!validate_bindings(g,limits))return validate_bindings(g,limits);
     if(!valid_execution_interval(g.execution_interval))return {ProcessingError::InvalidParameters};
     if(g.graph_id.empty() || g.graph_id.size()>limits.max_text_bytes || g.nodes.size()>limits.max_nodes || g.edges.size()>limits.max_edges)return {ProcessingError::Limit};
     std::size_t workspace_count=0;if(!mul(g.nodes.size(),2,workspace_count))return {ProcessingError::Limit};
     if(workspace.size()<workspace_count)return {ProcessingError::InsufficientWorkspace};
     std::size_t metadata=sizeof(NumericProcessingGraph),reserved=0;
     if(!mul(g.nodes.capacity()-g.nodes.size(),sizeof(ConfiguredProcessingNode),reserved) || !add(metadata,reserved) ||
-        !mul(g.edges.capacity(),sizeof(Edge),reserved) || !add(metadata,reserved) || !add(metadata,g.graph_id.capacity()) || !add(metadata,1) ||
+        !mul(g.configuration_bindings.capacity(),sizeof(ConfigurationBinding),reserved) || !add(metadata,reserved) || !mul(g.edges.capacity(),sizeof(Edge),reserved) || !add(metadata,reserved) || !add(metadata,g.graph_id.capacity()) || !add(metadata,1) ||
         metadata>limits.max_owned_metadata_bytes)return {ProcessingError::Limit};
     for(std::size_t i=0;i<g.nodes.size();++i){const auto& n=g.nodes[i];
         for(std::size_t j=0;j<i;++j)if(g.nodes[j].id==n.id)return {ProcessingError::InvalidNode,n.id};
@@ -540,6 +678,43 @@ ProcessingDiagnostic admit_processing_graph(const NumericProcessingGraph& g,cons
             // acceptance check itself cannot overflow a rate*duration product.
             const auto minimum_rate=denominator/numerator+std::uint64_t(denominator%numerator!=0);
             if(clock.sample_rate<minimum_rate)return {ProcessingError::InvalidParameters,n.id};
+        }
+        if((n.kind=="SignalGenerator" || (n.kind=="Mixer" && std::get<MixerProcessingParameters>(n.parameters).consumption==MixerConsumption::ClockedFifo)) && !has_configuration_binding(g,n.id,ConfigurationRole::SampleClock))return {ProcessingError::InvalidParameters,n.id};
+        const bool aligned=n.kind=="ChannelComparison" || (n.kind=="Mixer" && std::get<MixerProcessingParameters>(n.parameters).consumption==MixerConsumption::SourceAligned);
+        if(aligned){
+            // Follow the actual output lane. A selector is a shared origin only
+            // after every selectable group has independently coherent channels.
+            const auto root=[&](auto&& self,NodeId id,PortId output,std::size_t depth)->NodeId {
+                if(depth>=g.nodes.size())return -1;
+                const auto at=node_index(g,id);if(at==g.nodes.size())return -1;const auto& value=g.nodes[at];
+                if(!find_port(value.outputs,output))return -1;
+                if(value.kind=="AudioSource" || value.kind=="NetworkInput")return id;
+                if(value.kind=="SignalGenerator"){for(const auto& b:g.configuration_bindings)if(b.to==id && b.input==ConfigurationRole::SampleClock)return b.from;return -1;}
+                const auto parent=[&](PortId input)->const Edge*{const auto edge=std::find_if(g.edges.begin(),g.edges.end(),[&](const auto& e){return e.to==id && e.input_port==input;});return edge==g.edges.end()?nullptr:&*edge;};
+                if(value.kind=="InputSelector"){
+                    const auto channels=value.outputs.size();if(!channels || value.inputs.size()%channels)return -1;
+                    for(std::size_t group=0;group<value.inputs.size()/channels;++group){NodeId group_root=-1;
+                        for(std::size_t lane=0;lane<channels;++lane){const auto* edge=parent(PortId(group*channels+lane));if(!edge)continue;
+                            const auto origin=self(self,edge->from,edge->output_port,depth+1);if(origin==-2)continue;if(origin<0 || (group_root>=0 && group_root!=origin))return -1;group_root=origin;
+                        }
+                    }
+                    return id;
+                }
+                PortId input=0;
+                if(value.kind=="Switch"){
+                    const auto* route=std::get_if<RouteProcessingParameters>(&value.parameters);if(!route || !route->channels_per_stream)return -1;
+                    input=PortId(output%route->channels_per_stream);
+                }else if(value.inputs.size()!=1)return -1;
+                const auto* edge=parent(input);if(edge)return self(self,edge->from,edge->output_port,depth+1);
+                // A known disconnected transform produces typed silence; it
+                // does not introduce an independent clock origin.
+                const auto contract=find_port(value.outputs,output)->contract.view();const auto* numeric=std::get_if<NumericContract>(&contract);
+                return numeric && numeric->clock.sample_rate && !numeric->clock.domain.empty()?NodeId(-2):NodeId(-1);
+            };
+            NodeId common=-1;
+            for(const auto& input:n.inputs){const auto edge=std::find_if(g.edges.begin(),g.edges.end(),[&](const auto& e){return e.to==n.id && e.input_port==input.id;});if(edge==g.edges.end())continue;
+                const auto origin=root(root,edge->from,edge->output_port,0);if(origin==-2)continue;if(origin<0 || (common>=0 && origin!=common))return {ProcessingError::IncompatiblePorts,n.id,input.id};common=origin;
+            }
         }
         std::size_t footprint=0;if(!node_footprint(n,limits,footprint) || !add(metadata,footprint))return {ProcessingError::Limit,n.id};
         if(metadata>limits.max_owned_metadata_bytes)return {ProcessingError::Limit,n.id};

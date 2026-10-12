@@ -17,6 +17,7 @@
 #include <QAction>
 #include <QLabel>
 #include <QFile>
+#include <QStatusBar>
 #include <array>
 #include <stdexcept>
 #include <functional>
@@ -61,7 +62,12 @@ struct App {
         }
     };
     MainWindow* window=nullptr;SchemeEditorWidget* editor=nullptr;
-    explicit App(domain::NumericProcessingGraph configured=numeric_test_graph(),QJsonObject ui={},QByteArray stored={},bool deliver_audio=false) :graph(std::move(configured)) {
+    explicit App(domain::NumericProcessingGraph configured=numeric_default_graph(),QJsonObject ui={},QByteArray stored={},bool deliver_audio=false) :graph(std::move(configured)) {
+        // Synthetic samples enter through the injected capture adapter. The
+        // product editor exposes AudioSource, not the TestSignal fixture kind.
+        for(auto& node:graph.nodes)if(node.kind=="TestSignal"){
+            node.kind="AudioSource";node.parameters=domain::EndpointProcessingParameters{};
+        }
         check(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen","only isolated offscreen fixture is supported");
         check(directory.isValid(),"temporary fixture directory");path=directory.filePath("project.json").toLocal8Bit();
         if(stored.isEmpty())save(QString::fromLocal8Bit(path),graph,ui);
@@ -71,10 +77,23 @@ struct App {
             return std::make_unique<test_fixture::SyntheticCapture>(kind,false);
         };
         argv={name,option,path.data(),nullptr};application=std::make_unique<CoreApplication>(argc,argv.data(),std::move(capture));
+        // Discovery and capture belong to the same injected test device. Do not
+        // allow real host Fs/output count to alter persisted renderer fixtures.
+        auto* numeric=dynamic_cast<NumericEditorGraphModel*>(application->_ctx.data_flow_graph.get());check(numeric,"numeric fixture model");
+        numeric->set_capture_device_provider([](int,QString*) {
+            return QJsonArray{QJsonObject{{"id","synthetic-capture"},{"name","Synthetic capture"},{"is_default",true},
+                {"native_sample_rate",48000},{"native_channels",1}}};
+        });
         application->_ctx.file_configs.ui.autosave_enabled=false;
         for(auto* widget:QApplication::topLevelWidgets())if(auto* found=qobject_cast<MainWindow*>(widget))window=found;
         check(window,"MainWindow fixture");editor=window->findChild<SchemeEditorWidget*>();check(editor,"editor fixture");window->show();
-        check(wait([&]{return presenter().client().snapshot().graph_revision>0 && !presenter().graph_request_pending();}),"initial continuous graph");
+        const bool started=wait([&]{return presenter().client().snapshot().graph_revision>0 && !presenter().graph_request_pending();});
+        if(!started){const auto snapshot=presenter().client().snapshot();
+            qWarning()<<"GUI fixture startup diagnostic"<<"restart"<<!stored.isEmpty()<<"revision"<<snapshot.graph_revision
+                <<"pending"<<presenter().graph_request_pending()<<"apply"<<presenter().apply_status()
+                <<"saved"<<presenter().saved_graph_warning()<<"file"<<presenter().file_protection_warning()
+                <<"status"<<window->statusBar()->currentMessage();}
+        check(started,"initial continuous graph");
     }
     GuiPresenter& presenter(){return application->presenter();}
     void apply(){const auto before=presenter().client().snapshot().graph_revision;presenter().apply_pipeline_graph(editor->document());check(wait([&]{return presenter().client().snapshot().graph_revision>before && presenter().applied_numeric_graph().has_value();}),"explicit Apply");}

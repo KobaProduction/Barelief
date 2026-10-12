@@ -1,6 +1,7 @@
 #include "visualization/spectrograms/spectrogram_graph.h"
 #include "visualization/camera_geometry.h"
 #include "visualization/spectrograms/spectrogram_scene_geometry.h"
+#include "visualization/spectrograms/spectrogram_mesh_topology.h"
 #include "visualization/ui_text.h"
 #include "visualization/surface_settings.h"
 #include "visualization/axis_tick_labels.h"
@@ -8,7 +9,10 @@
 #include "core/performance.h"
 #include "visualization/quick3d/surface_quick_item.h"
 #include "visualization/quick3d/surface_overlay_commands.h"
+#include "visualization/quick3d/surface_overlay_item.h"
 #include "visualization/quick/quick_ui.h"
+#include <visualization/rendering/qt_frame_pump.h>
+#include <visualization/rendering/latest_preparation.h>
 #include <QQuickWidget>
 #include <QQmlContext>
 #include <QQuickWindow>
@@ -45,23 +49,183 @@
 #include <memory>
 #include <limits>
 #include <cstring>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <tuple>
+#include <visualization/render_preparation_policy.h>
+
+
+namespace {
+struct CpuMeshInput {
+    static constexpr int empty_ranges[4]{0,100,0,100};
+    NumericMatrixSnapshot data;
+    SpectrogramSceneGeometry scene{0,0,empty_ranges};
+    size_t bands=0,history=0;
+    quint64 generation=0;
+    SpectrogramAxisMetadata axes;
+    QString projection_status;
+};
+bool sameMeshScene(const SpectrogramSceneGeometry& a,const SpectrogramSceneGeometry& b) {
+    return std::tie(a.xMin,a.xMax,a.zMin,a.zMax,a.scaleX,a.scaleZ,a.yMin,a.yMax,a.clipY,a.reverseTime,a.reverseBands,a.reverseAmplitude)==
+           std::tie(b.xMin,b.xMax,b.zMin,b.zMax,b.scaleX,b.scaleZ,b.yMin,b.yMax,b.clipY,b.reverseTime,b.reverseBands,b.reverseAmplitude);
+}
+struct CpuMeshResult {
+    CpuMeshInput input;
+    std::vector<float> vertices;
+    std::vector<std::uint32_t> surface_indices,edge_indices;
+    std::vector<QVector3D> face_normals;
+    QVariantMap properties;
+    SpectrogramPointCache point_cache;
+    size_t rows=0,columns=0;
+    GLenum primitive=GL_TRIANGLES;
+    bool valid=false;
+};
+void prepareCpuMesh(CpuMeshResult& result,const CpuMeshInput& input) {
+    result.input=input;result.valid=false;
+    auto& vertices=result.vertices;auto& surface_indices=result.surface_indices;
+    auto& edge_indices=result.edge_indices;auto& face_normals=result.face_normals;
+    const auto& data=input.data;
+    auto bandSize=[&]{return input.bands;};auto historySize=[&]{return input.history;};
+    auto geometry=[&]{return input.scene;};
+    auto sample=[&](size_t band,size_t age){return spectrogramHistorySample(data,band,age,input.history);};
+    auto setProperty=[&](const char* key,const QVariant& value){result.properties.insert(QString::fromLatin1(key),value);};
+    auto& point_cache=result.point_cache;
+    const bool topology_uploaded=!surface_indices.empty();const size_t topology_rows=result.rows,topology_columns=result.columns;
+    GLenum surface_primitive=GL_TRIANGLES;int count=0;
+    const auto meshStart=core::perf::now();
+            vertices.clear();
+            const size_t bands=bandSize(),history=historySize();
+            const auto scene = geometry();
+            const size_t b0=size_t(std::ceil(scene.zMin)),b1=std::min(bands,size_t(std::floor(scene.zMax))+1);
+            const size_t t0=size_t(std::ceil(scene.xMin)),t1=std::min(history,size_t(std::floor(scene.xMax))+1);
+            setProperty("historyCapacity",qulonglong(history));setProperty("historyBands",qulonglong(bands));
+            setProperty("validHistoryColumns",qulonglong(data.empty() ? 0 : std::min(history,data.front().size())));
+            setProperty("sceneScaleX", scene.scaleX); setProperty("sceneScaleZ", scene.scaleZ);
+            const size_t bs=std::max(size_t(1),(b1-b0)/256), ts=std::max(size_t(1),(t1-t0)/256);
+            const size_t rows=data.empty() || b1<=b0 ? 0 : (b1-b0+bs-1)/bs;
+            const size_t columns=t1<=t0 ? 0 : (t1-t0+ts-1)/ts;
+            vertices.resize(rows*columns*6);
+            const bool topologyChanged=!topology_uploaded || topology_rows!=rows || topology_columns!=columns;
+            if(topologyChanged) {
+                // Renderer decimation bounds this grid below the helper limit.
+                if(!spectrogramMeshTopology(rows,columns,surface_indices)) {
+                    setProperty("geometryUploadVerified",false);return;
+                }
+            }
+            point_cache.prepare(scene,b0,b1,t0,t1,bands,history,[&](size_t band,size_t age){return sample(band,age);});
+            float peakValue=-std::numeric_limits<float>::infinity();size_t peakFrame=0,peakBand=0;
+            for(size_t row=0;row<rows;++row) for(size_t column=0;column<columns;++column) {
+                const size_t startBand=std::min(b0+row*bs,b1-1),startAge=std::min(t0+column*ts,t1-1);
+                const auto peak=spectrogramPeakSample(data,startBand,std::min(startBand+bs,b1),
+                    startAge,std::min(startAge+ts,t1),history);
+                const size_t b=peak.band,t=peak.age;
+                const float value=peak.value;const auto p=point_cache.point(scene,t,b,value);
+                if(value>peakValue) {peakValue=value;peakFrame=t;peakBand=b;}
+                const auto left=t ? t-1 : t, right=std::min(t+1,history-1);
+                const auto lower=b ? b-1 : b, upper=std::min(b+1,bands-1);
+                const auto dx=point_cache.point(scene,right,b,sample(b,right))-point_cache.point(scene,left,b,sample(b,left));
+                const auto dz=point_cache.point(scene,t,upper,sample(upper,t))-point_cache.point(scene,t,lower,sample(lower,t));
+                auto n=QVector3D::crossProduct(dx,dz).normalized();
+                if(scene.reverseTime!=scene.reverseBands) n=-n;
+                const std::array<float,6> vertex{p.x(),p.y(),p.z(),n.x(),n.y(),n.z()};
+                std::copy(vertex.begin(),vertex.end(),vertices.begin()+(row*columns+column)*6);
+            }
+            setProperty("surfacePeakAge",qulonglong(peakFrame));
+            setProperty("surfacePeakFrame",qulonglong(history ? history-1-peakFrame : 0));setProperty("surfacePeakBand",qulonglong(peakBand));
+            setProperty("firstDisplayedValue",history ? sample(0,history-1) : 0.f);
+            setProperty("latestDisplayedValue",sample(0,0));
+            surface_primitive=rows>1 && columns>1 ? GL_TRIANGLES :
+                rows*columns>1 ? GL_LINES : GL_POINTS;
+            setProperty("surfacePrimitive",surface_primitive==GL_TRIANGLES ? "triangles" :
+                surface_primitive==GL_LINES ? "lines" : "points");
+            core::perf::record(core::perf::Stage::SpectrogramMesh,meshStart,core::perf::now()-meshStart);
+            float maximum_height = !vertices.empty() ? -std::numeric_limits<float>::infinity() : 0;
+            for (size_t i = 1; i < vertices.size(); i += 6)
+                maximum_height = std::max(maximum_height, vertices[i]);
+            setProperty("surfaceMaximumHeight", maximum_height);
+            count = int(surface_indices.size());
+            setProperty("uniqueVertexCount",qulonglong(vertices.size()/6));
+            setProperty("surfaceIndexCount",count);
+            setProperty("vertexCount", count);
+            const auto creaseStart=core::perf::now();
+            // Draw creases rather than a blanket wire grid. Coplanar faces,
+            // including sloping planes, must have no internal triangle lines.
+            // The two triangles of each regular cell have known neighbors.
+            // Retain their normals, rather than allocating a coordinate-keyed
+            // tree for every edge on every spectrum frame. Emit exactly the
+            // same endpoints, order and 5-degree criterion as the old search.
+            edge_indices.clear();
+            face_normals.resize(count/3);
+            const size_t cellColumns=columns ? columns-1 : 0;
+            auto vector = [&](GLuint index) {
+                const auto point=surface_indices[index];
+                return QVector3D(vertices[point*6],vertices[point*6+1],vertices[point*6+2]);
+            };
+            auto normal = [&](GLuint triangle) {
+                return QVector3D::crossProduct(vector(triangle+1)-vector(triangle),
+                                              vector(triangle+2)-vector(triangle)).normalized();
+            };
+            auto edge = [&](const QVector3D &a,const QVector3D &b,GLuint first,GLuint second) {
+                if(QVector3D::dotProduct(a,b)<0.9961947f) edge_indices.insert(edge_indices.end(),{surface_indices[first],surface_indices[second]});
+            };
+            for(GLuint cell=0;surface_primitive==GL_TRIANGLES && cell<GLuint(count/6);++cell) {
+                const GLuint vertex=cell*6;
+                const auto a=normal(vertex), b=normal(vertex+3);
+                face_normals[cell*2]=a;face_normals[cell*2+1]=b;
+                if(cellColumns && cell%cellColumns) edge(face_normals[(cell-1)*2+1],a,vertex,vertex+1);
+                if(cellColumns && cell>=cellColumns) edge(face_normals[(cell-cellColumns)*2+1],a,vertex+2,vertex);
+                edge(a,b,vertex+3,vertex+4);
+            }
+            core::perf::record(core::perf::Stage::SpectrogramCreases,creaseStart,core::perf::now()-creaseStart);
+
+    result.rows=rows;result.columns=columns;result.primitive=surface_primitive;result.valid=true;
+}
+// One owned job and one reusable completion slot. No Qt object or GL access in
+// this thread; shutdown joins before renderer-owned resources are destroyed.
+class CpuMeshWorker {
+public:
+    explicit CpuMeshWorker(bool pooled=false){
+        if(pooled)pool_=std::make_unique<Pool>([](auto& result,const auto& input){
+            try{prepareCpuMesh(result,input);}catch(...){result.valid=false;}
+        });
+        else thread_=std::thread([this]{run();});
+    }
+    ~CpuMeshWorker(){if(pool_)return;{std::lock_guard lock(mutex_);stop_=true;}condition_.notify_one();thread_.join();}
+    bool submit(CpuMeshInput input,std::function<void()> wake){
+        if(pool_)return pool_->submit(std::move(input),std::move(wake));
+        std::lock_guard lock(mutex_);if(busy_||ready_)return false;
+        input_=std::move(input);wake_=std::move(wake);busy_=true;condition_.notify_one();return true;
+    }
+    bool take(CpuMeshResult& result){if(pool_)return pool_->take(result);std::lock_guard lock(mutex_);if(!ready_)return false;std::swap(result,result_);ready_=false;return true;}
+private:
+    using Pool=visualization::rendering::LatestPreparation<CpuMeshInput,CpuMeshResult>;
+    std::unique_ptr<Pool> pool_;
+    void run(){for(;;){CpuMeshInput input;std::function<void()> wake;
+        {std::unique_lock lock(mutex_);condition_.wait(lock,[&]{return stop_||busy_;});if(stop_)return;input=input_;wake=wake_;}
+        try{prepareCpuMesh(result_,input);}catch(...){result_.valid=false;}
+        {std::lock_guard lock(mutex_);input_={};wake_={};busy_=false;ready_=true;if(stop_)return;}
+        if(wake)wake();
+    }}
+    std::mutex mutex_;std::condition_variable condition_;bool stop_=false,busy_=false,ready_=false;
+    CpuMeshInput input_;CpuMeshResult result_;std::function<void()> wake_;std::thread thread_;
+};
+}
 
 // GUI-owned presentation state and a separately instantiated render-thread core.
 // The two instances only exchange values during synchronize(); GL resources never
 // cross that boundary, and NumericMatrixSnapshot shares immutable storage.
 class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
   public:
-    explicit SpectrogramRenderer(QObject *parent=nullptr) : QObject(parent), buffer(QOpenGLBuffer::VertexBuffer) {
-        timer.setSingleShot(true);timer.setTimerType(Qt::PreciseTimer);
-        connect(&timer,&QTimer::timeout,this,[this]{
-            if(dirty && render_visible && visible && !frame_pending && canvas){
-                dirty=false;frame_pending=true;
-                core::perf::duration(core::perf::Stage::SpectrogramSchedule,core::perf::now()-request_time);
-                canvas->update();
-            }
-        });
-    }
-    ~SpectrogramRenderer() override {timer.stop();if(initialized)cleanup();}
+    explicit SpectrogramRenderer(QObject *parent=nullptr) : QObject(parent),
+        frame_pump([this](auto token){
+            submission_token=token;
+            core::perf::duration(core::perf::Stage::SpectrogramSchedule,core::perf::now()-request_time);
+            request_time=0;
+            setProperty("renderSubmissions",property("renderSubmissions").toULongLong()+1);
+            if(canvas)canvas->update();
+        }), buffer(QOpenGLBuffer::VertexBuffer) {frame_pump.setVisible(false);}
+    ~SpectrogramRenderer() override {frame_pump.setVisible(false);mesh_worker.reset();if(initialized)cleanup();}
     QPointer<SurfaceQuickItem> canvas;
     QSize viewport{640,480};
     QPalette colors;
@@ -82,24 +246,50 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     QOpenGLContext* context() const{return QOpenGLContext::currentContext();}
     GLuint defaultFramebufferObject() const{return targetFramebuffer;}
     QVariantMap feedback() const {
+        core::perf::Scope trace(core::perf::Stage::QuickSurfaceFeedbackBuild);
         QVariantMap result;
         for(const auto& key:dynamicPropertyNames())
             if(key!="verifyGeometryUpload")result.insert(QString::fromUtf8(key),property(key.constData()));
-        result["displayFps"]=fps();return result;
+        result["displayFps"]=fps();
+        result["submissionToken"]=qulonglong(submission_token);
+        result["renderFrameStartNs"]=qulonglong(last_frame);
+        return result;
     }
     void frameConsumed(const QVariantMap& values){
-        frame_pending=false;last_frame=core::perf::now();
+        const auto received=core::perf::now();
+        bool validStart=false;
+        const auto frameStart=values.value("renderFrameStartNs").toULongLong(&validStart);
+        // Retain the actual paint start for diagnostics across the render/GUI
+        // boundary; invalid or stale feedback falls back to receipt time.
+        last_frame=validStart && frameStart && frameStart<=received && frameStart>=last_frame ? frameStart : received;
         for(auto it=values.begin();it!=values.end();++it)setProperty(it.key().toUtf8().constData(),it.value());
-        if(dirty)requestUpdate();
+        frame_pump.complete(values.value("submissionToken").toULongLong());
     }
     void synchronizeFrom(SpectrogramRenderer& source) {
+        core::perf::Scope trace(core::perf::Stage::QuickSurfaceSync);
+        const auto priorScene=geometry();
+        const bool newSamples=data.storage_identity()!=source.data.storage_identity();
+        if(newSamples)setProperty("snapshotRevision",property("snapshotRevision").toULongLong()+1);
+        const bool incompatible=history_capacity!=source.history_capacity || configured_bands!=source.configured_bands ||
+            bandSize()!=source.bandSize() || historySize()!=source.historySize() ||
+            seen_clear_generation!=source.clear_generation ||
+            axes.time_coordinates!=source.axes.time_coordinates || axes.column_coordinates!=source.axes.column_coordinates ||
+            axes.age_axis!=source.axes.age_axis || axes.columns!=source.axes.columns ||
+            axes.time_title_key!=source.axes.time_title_key || axes.column_title_key!=source.axes.column_title_key ||
+            axes.value_title_key!=source.axes.value_title_key;
+        submission_token=source.submission_token;
         position=source.position;orientation=source.orientation;
+        // Immutable snapshot handoff shares storage; this never copies matrix samples.
         data=source.data;history_capacity=source.history_capacity;configured_bands=source.configured_bands;
         axes=source.axes;projection_status=source.projection_status;options=source.options;
         selected=source.selected;selection=source.selection;gradient=source.gradient;model3d=source.model3d;
         sliceOverlay=source.sliceOverlay;automatic_range=source.automatic_range;
         std::copy(std::begin(source.ranges),std::end(source.ranges),ranges);
-        upload|=source.upload;source.upload=false;
+        const bool changedScene=incompatible || !sameMeshScene(priorScene,geometry());
+        if(changedScene)++mesh_generation;
+        seen_clear_generation=source.clear_generation;
+        upload|=source.upload || newSamples || changedScene;source.upload=false;
+        mesh_wake_target=&source;
         // Diagnostic input belongs to the GUI state; carry it across the same
         // synchronization boundary as geometry. Enabling requests a fresh VBO
         // upload/readback even when samples and geometry are unchanged.
@@ -128,7 +318,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     std::function<void()> prepare;
     std::function<void(const QString &)> shadow_error;
     NumericMatrixSnapshot data;
-    bool upload = true, dirty = false;
+    bool upload = true;
     bool render_visible=true;
     int gradient = 1, selection = 1;
     bool model3d = true;
@@ -155,34 +345,23 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     float sample(size_t band,size_t age) const {return spectrogramHistorySample(data,band,age,historySize());}
     QGradientStops gradientStops() const {return SurfaceSettings::gradientStops(options);}
     void requestUpdate() {
-        if(!dirty) request_time=core::perf::now();
-        dirty = true;
-        if(!render_visible || !isVisible()) return;
-        if (!timer.isActive() && !frame_pending) {
-            // Pace against the last actual frame, not a fresh 17-ms delay
-            // every time the latest-only mailbox becomes dirty again.
-            const auto now=core::perf::now();
-            const auto deadline=last_frame+frame_interval;
-            timer.start(now>=deadline ? 0 : int((deadline-now+999999)/1000000));
-        }
+        if(!request_time)request_time=core::perf::now();
+        frame_pump.setVisible(render_visible && visible && !canvas.isNull());
+        frame_pump.request();
     }
-    void setRenderFps(int fps) {
-        const auto interval=quint64((1000000000LL+fps-1)/fps);
-        if(frame_interval==interval) return;
-        frame_interval=interval;timer.stop();
-        if(dirty) requestUpdate();
-    }
-    void setRenderVisible(bool visible) {
-        if(render_visible==visible) return;
-        render_visible=visible;timer.stop();
-        if(!visible){endPointDrag();sliceOverlay.end();}
-        dirty|=frame_pending;frame_pending=false;
+    void setRenderFps(int fps) {frame_pump.setRate(fps);}
+    void setRenderVisible(bool value) {
+        if(render_visible==value)return;
+        render_visible=value;
+        frame_pump.setVisible(value && visible && !canvas.isNull());
+        if(!value){endPointDrag();sliceOverlay.end();}
         rate=0;frames=0;last_frame=0;
-        if(clock.isValid()) start=last=clock.elapsed();
-        if(visible) {request_time=core::perf::now();requestUpdate();}
+        if(clock.isValid())start=last=clock.elapsed();
+        if(value)requestUpdate();
     }
     void setData(const NumericMatrixSnapshot &value,bool changed=true) {
         core::perf::Scope handoff(core::perf::Stage::SpectrogramHandoff);
+        if(value.empty())++clear_generation;
         data = value;
         if(data.empty()){endPointDrag();selected={-1,-1};setProperty("selectedValue",QVariant{});setProperty("selectionMarkerVisible",false);setProperty("sliceSampleCount",0);}
         if(changed){upload = true;requestUpdate();}
@@ -237,16 +416,14 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     }
 
   private:
-    QTimer timer;
-    quint64 request_time=0;
-    quint64 last_frame=0;
-    quint64 frame_interval=16666667;
-    bool frame_pending=false;
+    visualization::rendering::QtFramePump frame_pump;
+    quint64 request_time=0,last_frame=0,submission_token=0;
     GLfloat line_range[2]{1,1};
     std::unique_ptr<QOpenGLTimerQuery> gpu_query;
     bool gpu_pending=false, gpu_attempted=false;
     QOpenGLBuffer buffer;
     QOpenGLBuffer edge_buffer{QOpenGLBuffer::IndexBuffer};
+    QOpenGLBuffer surface_buffer{QOpenGLBuffer::IndexBuffer};
     QOpenGLBuffer floor_buffer{QOpenGLBuffer::VertexBuffer};
     QString grid_signature;
     QString axis_policy_signature;
@@ -256,12 +433,40 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     std::unique_ptr<QOpenGLTexture> label_texture;
     QOpenGLBuffer label_buffer{QOpenGLBuffer::VertexBuffer};
     QString label_signature;
+    bool axis_text_valid=false;
+    SpectrogramAxisMetadata axis_text_metadata;
+    std::array<float,9> axis_text_scene{};
+    QSize axis_text_viewport;
+    QFont axis_text_font;
+    QString axis_text_language;
+    int axis_text_precision=0;
+    size_t axis_text_known_ages=0;
+    std::array<int,3> cached_sections{};
+    std::array<std::vector<double>,3> cached_tick_values;
+    std::array<QStringList,3> cached_tick_labels;
+    std::vector<double> cached_time_indices;
+    QStringList cached_label_texts;
+    std::array<int,3> cached_label_offsets{};
+    int cached_title_offset=0;
+    QVector<QSizeF> cached_label_sizes;
+    QSize atlas_cell{256,32};
+    qreal label_dpr=0;
+    int label_ascent=0;
+    std::array<QStringList,3> diagnostic_tick_labels;
     std::vector<float> vertices;
-    int count = 0, capacity = 0, edge_capacity = 0;
+    int count = 0, capacity = 0, edge_capacity = 0, surface_capacity = 0;
+    std::vector<std::uint32_t> surface_indices;
+    size_t topology_rows = 0, topology_columns = 0;
+    bool topology_uploaded = false;
     GLenum surface_primitive=GL_TRIANGLES;
     std::vector<GLuint> edge_indices;
     std::vector<QVector3D> face_normals;
-    std::vector<std::array<float,6>> sample_vertices;
+    std::unique_ptr<CpuMeshWorker> mesh_worker;
+    quint64 mesh_submitted_revision=std::numeric_limits<quint64>::max();
+    quint64 mesh_submitted_generation=std::numeric_limits<quint64>::max();
+    CpuMeshResult mesh_result;
+    QPointer<SpectrogramRenderer> mesh_wake_target;
+    quint64 mesh_generation=0,clear_generation=0,seen_clear_generation=0;
     QElapsedTimer clock;
     qint64 start = 0, last = 0;
     int frames = 0;
@@ -281,6 +486,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         shadow_program.reset();
         buffer.destroy();
         edge_buffer.destroy();
+        surface_buffer.destroy();
         floor_buffer.destroy();
         program.reset();
         label_texture.reset();
@@ -289,7 +495,8 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         label_signature.clear();
         grid_signature.clear();
         axis_policy_signature.clear();
-        capacity = edge_capacity = 0;
+        capacity = edge_capacity = surface_capacity = 0;
+        topology_uploaded = false;
         upload = true;
     }
     bool ensureShadowMap() {
@@ -330,7 +537,9 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         shadow_program->bind();shadow_program->setUniformValue("lightMvp",lightMvp);
         buffer.bind();const auto point=shadow_program->attributeLocation("vertex");
         shadow_program->enableAttributeArray(point);shadow_program->setAttributeBuffer(point,GL_FLOAT,0,3,6*sizeof(float));
-        glDrawArrays(surface_primitive,0,count);
+        surface_buffer.bind();
+        glDrawElements(surface_primitive,count,GL_UNSIGNED_INT,nullptr);
+        surface_buffer.release();
         shadow_program->disableAttributeArray(point);buffer.release();shadow_program->release();
         glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glBindFramebuffer(GL_FRAMEBUFFER,defaultFramebufferObject());
         glViewport(0,0,targetPixelSize.width(),targetPixelSize.height());
@@ -366,8 +575,8 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         label_program->addShaderFromSourceCode(
             QOpenGLShader::Vertex,
             "attribute vec2 point; uniform mat4 mvp; uniform vec3 anchor; uniform vec2 offset; "
-            "uniform vec2 viewport; uniform float angle; uniform vec4 region; varying vec2 uv; void main(){vec4 p=mvp*vec4(anchor,1.0); "
-            "vec2 text=point*vec2(256.0,32.0); text=mat2(cos(angle),-sin(angle),sin(angle),cos(angle))*text; p.xy+=vec2(2.0/viewport.x,-2.0/viewport.y)*(offset+text)*p.w; "
+            "uniform vec2 viewport; uniform vec2 cellSize; uniform float angle; uniform vec4 region; varying vec2 uv; void main(){vec4 p=mvp*vec4(anchor,1.0); "
+            "vec2 text=point*cellSize; text=mat2(cos(angle),-sin(angle),sin(angle),cos(angle))*text; p.xy+=vec2(2.0/viewport.x,-2.0/viewport.y)*(offset+text)*p.w; "
             "p.z-=0.000001*p.w;gl_Position=p;uv=region.xy+vec2(point.x,1.0-point.y)*region.zw;}");
         label_program->addShaderFromSourceCode(
             QOpenGLShader::Fragment,
@@ -381,6 +590,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         label_buffer.release();
         buffer.create();
         edge_buffer.create();
+        surface_buffer.create();
         floor_buffer.create();
         upload = true;
         start = last = 0;
@@ -388,13 +598,12 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         clock.start();
     }
     void paintGL() {
-        if(!render_visible) {dirty=true;frame_pending=false;timer.stop();return;}
+        if(!render_visible)return;
         core::perf::Scope trace(core::perf::Stage::SpectrogramRender);
         const auto frameStart=core::perf::now();
         if(last_frame) core::perf::duration(core::perf::Stage::SpectrogramFrameGap,frameStart-last_frame);
         last_frame=frameStart;
-        // This paint consumes every data/camera change already handed off.
-        frame_pending=false;dirty=false;timer.stop();
+        // Submission completion is acknowledged by GUI feedback, never here.
         if (prepare)
             prepare();
         if (!program || !program->isLinked())
@@ -403,79 +612,66 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
             palette().color(QPalette::Window);
         const auto ink=spectrogramTextColor(background);
         setProperty("sceneBackgroundColor",background);setProperty("sceneWallColor",background);
-        glClearColor(background.redF(), background.greenF(), background.blueF(), 1);
-        // QPainter changes GL state; restore the state required by our next pass.
-        glDisable(GL_SCISSOR_TEST);
-        glDisable(GL_BLEND);
-        glDepthMask(GL_TRUE);
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        glDepthFunc(GL_LESS);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_DEPTH_TEST);
-        glDisable(GL_CULL_FACE);
+        struct RestoreNewest {
+            SpectrogramRenderer& owner;
+            NumericMatrixSnapshot data;
+            SpectrogramAxisMetadata axes;
+            QString status;
+            bool active=false;
+            explicit RestoreNewest(SpectrogramRenderer& value):owner(value){}
+            ~RestoreNewest(){if(active){owner.data=std::move(data);owner.axes=std::move(axes);owner.projection_status=std::move(status);}}
+            void retain(){data=owner.data;axes=owner.axes;status=owner.projection_status;active=true;}
+        } newest(*this);
         if (upload) {
             core::perf::Scope geometryTrace(core::perf::Stage::SpectrogramGeometry);
-            const auto meshStart=core::perf::now();
-            vertices.clear();
-            const size_t bands=bandSize(),history=historySize();
-            const auto scene = geometry();
-            const size_t b0=size_t(std::ceil(scene.zMin)),b1=std::min(bands,size_t(std::floor(scene.zMax))+1);
-            const size_t t0=size_t(std::ceil(scene.xMin)),t1=std::min(history,size_t(std::floor(scene.xMax))+1);
-            setProperty("historyCapacity",qulonglong(history));setProperty("historyBands",qulonglong(bands));
-            setProperty("validHistoryColumns",qulonglong(data.empty() ? 0 : std::min(history,data.front().size())));
-            setProperty("sceneScaleX", scene.scaleX); setProperty("sceneScaleZ", scene.scaleZ);
-            const size_t bs=std::max(size_t(1),(b1-b0)/256), ts=std::max(size_t(1),(t1-t0)/256);
-            const size_t rows=data.empty() || b1<=b0 ? 0 : (b1-b0+bs-1)/bs;
-            const size_t columns=t1<=t0 ? 0 : (t1-t0+ts-1)/ts;
-            sample_vertices.resize(rows*columns);
-            float peakValue=-std::numeric_limits<float>::infinity();size_t peakFrame=0,peakBand=0;
-            for(size_t row=0;row<rows;++row) for(size_t column=0;column<columns;++column) {
-                const size_t startBand=std::min(b0+row*bs,b1-1),startAge=std::min(t0+column*ts,t1-1);
-                const auto peak=spectrogramPeakSample(data,startBand,std::min(startBand+bs,b1),
-                    startAge,std::min(startAge+ts,t1),history);
-                const size_t b=peak.band,t=peak.age;
-                const float value=peak.value;const auto p=scene.point(t,b,value);
-                if(value>peakValue) {peakValue=value;peakFrame=t;peakBand=b;}
-                const auto left=t ? t-1 : t, right=std::min(t+1,history-1);
-                const auto lower=b ? b-1 : b, upper=std::min(b+1,bands-1);
-                const auto dx=scene.point(right,b,sample(b,right))-scene.point(left,b,sample(b,left));
-                const auto dz=scene.point(t,upper,sample(upper,t))-scene.point(t,lower,sample(lower,t));
-                auto n=QVector3D::crossProduct(dx,dz).normalized();
-                if(scene.reverseTime!=scene.reverseBands) n=-n;
-                sample_vertices[row*columns+column]={p.x(),p.y(),p.z(),n.x(),n.y(),n.z()};
-            }
-            setProperty("surfacePeakAge",qulonglong(peakFrame));
-            setProperty("surfacePeakFrame",qulonglong(history ? history-1-peakFrame : 0));setProperty("surfacePeakBand",qulonglong(peakBand));
-            auto vertex=[&](size_t row,size_t column) {
-                const auto &v=sample_vertices[row*columns+column];vertices.insert(vertices.end(),v.begin(),v.end());
-            };
-            setProperty("firstDisplayedValue",history ? sample(0,history-1) : 0.f);
-            setProperty("latestDisplayedValue",sample(0,0));
-            surface_primitive=rows>1 && columns>1 ? GL_TRIANGLES :
-                rows*columns>1 ? GL_LINES : GL_POINTS;
-            if(surface_primitive==GL_TRIANGLES) {
-                for(size_t row=0;row+1<rows;++row) for(size_t column=0;column+1<columns;++column) {
-                    vertex(row,column);vertex(row+1,column);vertex(row,column+1);
-                    vertex(row,column+1);vertex(row+1,column);vertex(row+1,column+1);
+            bool meshReady=true;
+            const auto scene=geometry();
+            if(presentation::RenderPreparationPolicy::mesh!=presentation::MeshPreparation::Inline){
+                const bool pooled=presentation::RenderPreparationPolicy::mesh==presentation::MeshPreparation::Pooled;
+                if(!mesh_worker)mesh_worker=std::make_unique<CpuMeshWorker>(pooled);
+                meshReady=false;
+                if(mesh_worker->take(mesh_result)){
+                    if(mesh_result.valid && mesh_result.input.generation==mesh_generation)meshReady=true;
+                    else setProperty("meshWorkerStale",property("meshWorkerStale").toULongLong()+1);
                 }
-            } else if(rows && columns) {
-                if(rows==1 && columns==1)vertex(0,0);
-                else if(rows==1)for(size_t column=0;column+1<columns;++column){vertex(0,column);vertex(0,column+1);}
-                else for(size_t row=0;row+1<rows;++row){vertex(row,0);vertex(row+1,0);}
+                const auto revision=property("snapshotRevision").toULongLong();
+                if((!pooled&&!meshReady)||(pooled&&(revision!=mesh_submitted_revision||mesh_generation!=mesh_submitted_generation))){
+                    const auto target=mesh_wake_target;
+                    // QApplication outlives views and their joined workers. The
+                    // guarded GUI source is inspected only on the GUI thread.
+                    QObject* dispatcher=QCoreApplication::instance();
+                    if(mesh_worker->submit({data,scene,bandSize(),historySize(),mesh_generation,axes,projection_status},[dispatcher,target]{
+                        QMetaObject::invokeMethod(dispatcher,[target]{if(target)target->requestUpdate();},Qt::QueuedConnection);
+                    })){mesh_submitted_revision=revision;mesh_submitted_generation=mesh_generation;
+                        setProperty("meshWorkerJobs",property("meshWorkerJobs").toULongLong()+1);}
+                }
+            }else prepareCpuMesh(mesh_result,{data,scene,bandSize(),historySize(),mesh_generation,axes,projection_status});
+            // Preserve the preceding complete framebuffer/overlays while work
+            // is pending. Never draw old VBOs against newly synchronized axes,
+            // selection or samples. A resized FBO may remain blank until ready.
+            if(!meshReady || !mesh_result.valid)return;
+            if(meshReady && mesh_result.valid){
+            const bool olderPacket=mesh_result.input.data.storage_identity()!=data.storage_identity();
+            if(mesh_worker){
+                newest.retain();data=mesh_result.input.data;axes=mesh_result.input.axes;
+                projection_status=mesh_result.input.projection_status;
             }
-            setProperty("surfacePrimitive",surface_primitive==GL_TRIANGLES ? "triangles" :
-                surface_primitive==GL_LINES ? "lines" : "points");
-            core::perf::record(core::perf::Stage::SpectrogramMesh,meshStart,core::perf::now()-meshStart);
-            float maximum_height = !vertices.empty() ? -std::numeric_limits<float>::infinity() : 0;
-            for (size_t i = 1; i < vertices.size(); i += 6)
-                maximum_height = std::max(maximum_height, vertices[i]);
-            setProperty("surfaceMaximumHeight", maximum_height);
-            count = int(vertices.size() / 6);
-            setProperty("vertexCount", count);
+            const auto recycledRows=topology_rows,recycledColumns=topology_columns;
+            vertices.swap(mesh_result.vertices);surface_indices.swap(mesh_result.surface_indices);
+            edge_indices.swap(mesh_result.edge_indices);
+            const size_t rows=mesh_result.rows,columns=mesh_result.columns;
+            const bool topologyChanged=!topology_uploaded || topology_rows!=rows || topology_columns!=columns;
+            topology_rows=rows;topology_columns=columns;surface_primitive=mesh_result.primitive;
+            count=int(surface_indices.size());
+            mesh_result.rows=recycledRows;mesh_result.columns=recycledColumns;
+            setProperty("meshWorkerAccepted",property("meshWorkerAccepted").toULongLong()+(mesh_worker?1:0));
+            for(auto it=mesh_result.properties.cbegin();it!=mesh_result.properties.cend();++it)setProperty(it.key().toUtf8().constData(),it.value());
             setProperty("geometryUploads", property("geometryUploads").toULongLong() + 1);
             const auto uploadStart=core::perf::now();
+            bool uploadVerified=true;
             buffer.bind();
             const int bytes = int(vertices.size() * sizeof(float));
+            setProperty("geometryVertexBytes",bytes);
             if (bytes > capacity) {
                 capacity = bytes;
                 buffer.allocate(nullptr, capacity);
@@ -485,39 +681,29 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
             if(property("verifyGeometryUpload").toBool()) {
                 std::vector<float> readback(vertices.size());
                 const bool matched=!bytes || (buffer.read(0,readback.data(),bytes) && std::memcmp(vertices.data(),readback.data(),std::size_t(bytes))==0);
-                setProperty("geometryUploadVerified",matched);
+                uploadVerified=matched;
             }
             buffer.release();
-            core::perf::record(core::perf::Stage::SpectrogramUpload,uploadStart,core::perf::now()-uploadStart);
-            const auto creaseStart=core::perf::now();
-            // Draw creases rather than a blanket wire grid. Coplanar faces,
-            // including sloping planes, must have no internal triangle lines.
-            // The two triangles of each regular cell have known neighbors.
-            // Retain their normals, rather than allocating a coordinate-keyed
-            // tree for every edge on every spectrum frame. Emit exactly the
-            // same endpoints, order and 5-degree criterion as the old search.
-            edge_indices.clear();
-            face_normals.resize(count/3);
-            const size_t cellColumns=columns ? columns-1 : 0;
-            auto vector = [&](GLuint index) {
-                return QVector3D(vertices[index*6],vertices[index*6+1],vertices[index*6+2]);
-            };
-            auto normal = [&](GLuint triangle) {
-                return QVector3D::crossProduct(vector(triangle+1)-vector(triangle),
-                                              vector(triangle+2)-vector(triangle)).normalized();
-            };
-            auto edge = [&](const QVector3D &a,const QVector3D &b,GLuint first,GLuint second) {
-                if(QVector3D::dotProduct(a,b)<0.9961947f) edge_indices.insert(edge_indices.end(),{first,second});
-            };
-            for(GLuint cell=0;surface_primitive==GL_TRIANGLES && cell<GLuint(count/6);++cell) {
-                const GLuint vertex=cell*6;
-                const auto a=normal(vertex), b=normal(vertex+3);
-                face_normals[cell*2]=a;face_normals[cell*2+1]=b;
-                if(cellColumns && cell%cellColumns) edge(face_normals[(cell-1)*2+1],a,vertex,vertex+1);
-                if(cellColumns && cell>=cellColumns) edge(face_normals[(cell-cellColumns)*2+1],a,vertex+2,vertex);
-                edge(a,b,vertex+3,vertex+4);
+            const int indexBytes=int(surface_indices.size()*sizeof(std::uint32_t));
+            surface_buffer.bind();
+            if(topologyChanged) {
+                if(indexBytes>surface_capacity) {
+                    surface_capacity=indexBytes;surface_buffer.allocate(nullptr,surface_capacity);
+                }
+                if(indexBytes) surface_buffer.write(0,surface_indices.data(),indexBytes);
+                topology_uploaded=true;
+                setProperty("topologyUploads",property("topologyUploads").toULongLong()+1);
             }
-            core::perf::record(core::perf::Stage::SpectrogramCreases,creaseStart,core::perf::now()-creaseStart);
+            if(property("verifyGeometryUpload").toBool()) {
+                std::vector<std::uint32_t> readback(surface_indices.size());
+                uploadVerified=uploadVerified && (!indexBytes || (surface_buffer.read(0,readback.data(),indexBytes) &&
+                    std::memcmp(surface_indices.data(),readback.data(),std::size_t(indexBytes))==0));
+                setProperty("geometryUploadVerified",uploadVerified);
+            }
+            surface_buffer.release();
+            setProperty("geometryIndexBytes",indexBytes);
+            setProperty("geometryUploadedBytes",bytes+(topologyChanged ? indexBytes : 0));
+            core::perf::record(core::perf::Stage::SpectrogramUpload,uploadStart,core::perf::now()-uploadStart);
             const auto edgeUploadStart=core::perf::now();
             edge_buffer.bind();
             const int edge_bytes = int(edge_indices.size() * sizeof(GLuint));
@@ -529,9 +715,27 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
                 edge_buffer.write(0, edge_indices.data(), edge_bytes);
             edge_buffer.release();
             core::perf::record(core::perf::Stage::SpectrogramUpload,edgeUploadStart,core::perf::now()-edgeUploadStart);
+            setProperty("geometryUploadedBytes",property("geometryUploadedBytes").toLongLong()+edge_bytes);
             setProperty("wireframeEdgeCount", int(edge_indices.size() / 2));
-            upload = false;
+            upload = olderPacket;
+            if(olderPacket){
+                // A last ingress frame must not remain stranded behind this
+                // completed packet when no further source update will wake us.
+                const auto target=mesh_wake_target;
+                QMetaObject::invokeMethod(QCoreApplication::instance(),[target]{if(target)target->requestUpdate();},Qt::QueuedConnection);
+            }
+            }
         }
+        glClearColor(background.redF(), background.greenF(), background.blueF(), 1);
+        // QPainter changes GL state; restore the state required by our next pass.
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
         bool gpuActive=false;
         if(core::perf::enabled) {
             if(!gpu_attempted) {
@@ -610,7 +814,9 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         // with depth testing preventing back-side edges bleeding through peaks.
         glEnable(GL_POLYGON_OFFSET_FILL);
         glPolygonOffset(1.f, 1.f);
-        glDrawArrays(surface_primitive, 0, count);
+        surface_buffer.bind();
+        glDrawElements(surface_primitive,count,GL_UNSIGNED_INT,nullptr);
+        surface_buffer.release();
         glDisable(GL_POLYGON_OFFSET_FILL);
         program->setUniformValue("gridPass", true);
         const auto meshSetting=options["mesh_color"].toString("auto");
@@ -638,11 +844,15 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         const size_t filled=data.empty()?0:std::min(historySize(),data.front().size());
         const size_t knownAges=axes.time_coordinates?std::min(filled,axes.ages.size()):filled;
         setProperty("validAgeCount",qulonglong(knownAges));
+        auto& sections=cached_sections;
+        auto& tickValues=cached_tick_values;
+        auto& tickLabels=cached_tick_labels;
+        auto& timeIndices=cached_time_indices;
+        const std::array<float,9> axisScene{scene.xMin,scene.xMax,scene.zMin,scene.zMax,scene.yMin,scene.yMax,
+            float(scene.reverseTime),float(scene.reverseBands),float(scene.reverseAmplitude)};
+        if(!axis_text_valid || axis_text_scene!=axisScene || axis_text_viewport!=size() || axis_text_font!=font() ||
+           axis_text_language!=language || axis_text_precision!=precision || axis_text_known_ages!=knownAges || axis_text_metadata!=axes){
         const auto metrics=QFontMetrics(font());
-        std::array<int,3> sections{};
-        std::array<std::vector<double>,3> tickValues;
-        std::array<QStringList,3> tickLabels;
-        std::vector<double> timeIndices;
         for(int axis=0;axis<3;++axis) {
             int candidate=spectrogramAxisSections(size(),{double(metrics.horizontalAdvance("000")),double(metrics.height())},axis);
             if(axis<2) {
@@ -682,6 +892,14 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         if(axis_policy_signature!=policySignature) {
             axis_policy_signature=policySignature;
             setProperty("axisPolicyRevision",property("axisPolicyRevision").toULongLong()+1);
+        }
+        cached_label_texts.clear();
+        for(int axis=0;axis<3;++axis){cached_label_offsets[axis]=int(cached_label_texts.size());cached_label_texts.append(tickLabels[axis]);}
+        cached_title_offset=int(cached_label_texts.size());
+        cached_label_texts << ui::text(axes.time_title_key.toUtf8().constData()) << ui::text(axes.column_title_key.toUtf8().constData()) << ui::text(axes.value_title_key.toUtf8().constData());
+        axis_text_scene=axisScene;axis_text_viewport=size();axis_text_font=font();axis_text_language=language;
+        axis_text_precision=precision;axis_text_known_ages=knownAges;axis_text_metadata=axes;axis_text_valid=true;
+        setProperty("axisTextLayoutBuilds",property("axisTextLayoutBuilds").toULongLong()+1);
         }
         setProperty("horizontalGridLines",options["axis_grid"].toBool(true)?sections[2]+1:0);
         setProperty("horizontalGridLinesTotal",options["axis_grid"].toBool(true)?2*(sections[2]+1):0);
@@ -760,40 +978,66 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         const auto labelsStart=core::perf::now();
         // Glyph atlas and quad geometry are retained. Depth-tested billboards
         // avoid both overlay bleed-through and synchronous depth readbacks.
-        QStringList texts;
-        std::array<int,3> labelOffsets{};
-        for(int axis=0;axis<3;++axis) {labelOffsets[axis]=int(texts.size());texts.append(tickLabels[axis]);}
-        const int titleOffset=int(texts.size());
-        texts << ui::text(axes.time_title_key.toUtf8().constData()) << ui::text(axes.column_title_key.toUtf8().constData()) << ui::text(axes.value_title_key.toUtf8().constData());
+        const auto& texts=cached_label_texts;
+        const auto& labelOffsets=cached_label_offsets;
+        const int titleOffset=cached_title_offset;
         const int atlasRows=(texts.size()+2)/3;
-        const auto signature = texts.join('|') + font().toString() + ink.name();
-        if (signature != label_signature) {
+        const auto signature = texts.join('|') + font().toString() + ink.name() + background.name();
+        if(core::perf::enabled.load(std::memory_order_relaxed)) {
+            for(int axis=0;axis<3;++axis)if(diagnostic_tick_labels[axis]!=tickLabels[axis]) {
+                diagnostic_tick_labels[axis]=tickLabels[axis];
+                const char* changes=axis==0?"labelTimeTextChanges":axis==1?"labelBandTextChanges":"labelValueTextChanges";
+                const char* labels=axis==0?"labelTimeTexts":axis==1?"labelBandTexts":"labelValueTexts";
+                setProperty(changes,property(changes).toULongLong()+1);setProperty(labels,tickLabels[axis]);
+            }
+        }
+        if (signature != label_signature || label_dpr!=devicePixelRatioF()) {
             core::perf::Scope atlasTrace(core::perf::Stage::SpectrogramAtlas);
+            setProperty("axisGlyphBuilds",property("axisGlyphBuilds").toULongLong()+1);
+            setProperty("axisTitleStorage",QStringLiteral("gpu-atlas"));
+            setProperty("axisTitleTexts",texts.mid(titleOffset,3));
+            if(core::perf::enabled.load(std::memory_order_relaxed))
+                setProperty("labelAtlasRebuilds",property("labelAtlasRebuilds").toULongLong()+1);
             const auto dpr = devicePixelRatioF();
-            QImage atlas(qRound(768 * dpr), qRound(atlasRows * 32 * dpr), QImage::Format_RGBA8888);
+            const QFontMetrics metrics(font());label_ascent=metrics.ascent();cached_label_sizes.clear();
+            atlas_cell={256,std::max(32,metrics.height()+8)};
+            for(int index=0;index<texts.size();++index){
+                const QSizeF extent(metrics.horizontalAdvance(texts[index])+(index>=titleOffset?16:0),metrics.height()+(index>=titleOffset?8:0));
+                cached_label_sizes.append(extent);atlas_cell.setWidth(std::max(atlas_cell.width(),int(std::ceil(extent.width()))+2));
+            }
+            QImage atlas(qRound(3*atlas_cell.width() * dpr), qRound(atlasRows * atlas_cell.height() * dpr), QImage::Format_RGBA8888);
             atlas.setDevicePixelRatio(dpr);
             atlas.fill(Qt::transparent);
             QPainter glyphs(&atlas);
             glyphs.setFont(font());
             glyphs.setPen(ink);
-            for (int index = 0; index < texts.size(); ++index)
-                glyphs.drawText((index % 3) * 256, (index / 3) * 32 + QFontMetrics(font()).ascent() + 1, texts[index]);
+            for (int index = 0; index < texts.size(); ++index){
+                const QPointF origin((index%3)*atlas_cell.width(),(index/3)*atlas_cell.height());
+                if(index>=titleOffset){
+                    glyphs.setRenderHint(QPainter::Antialiasing);glyphs.setBrush(background);glyphs.setPen(QPen(ink,1));
+                    glyphs.drawRoundedRect(QRectF(origin+QPointF(.5,.5),cached_label_sizes[index]-QSizeF(1,1)),3,3);
+                    glyphs.drawText(origin+QPointF(8,label_ascent+4),texts[index]);
+                }else glyphs.drawText(origin+QPointF(0,label_ascent+1),texts[index]);
+            }
             glyphs.end();
             label_texture = std::make_unique<QOpenGLTexture>(atlas.flipped(Qt::Vertical));
             label_texture->setMinificationFilter(QOpenGLTexture::Linear);
             label_texture->setMagnificationFilter(QOpenGLTexture::Linear);
             label_texture->setWrapMode(QOpenGLTexture::ClampToEdge);
             label_signature = signature;
+            label_dpr=dpr;
         }
         QVector<QRectF> numericBounds{QRectF(width()-76,46,76,140)};
         if(data.empty() || (selection && selected.x()>=0))
             numericBounds.append(QRectF(12,8,std::max(1,width()-24),data.empty() ? 64 : 36));
+        int axisTitlesDrawn=0;
         if (label_program->isLinked() && label_texture) {
             label_program->bind();
             label_texture->bind(0);
             label_buffer.bind();
             label_program->setUniformValue("mvp", projection * view);
             label_program->setUniformValue("viewport", QVector2D(width(), height()));
+            label_program->setUniformValue("cellSize",QVector2D(atlas_cell.width(),atlas_cell.height()));
             label_program->setUniformValue("atlas", 0);
             const auto point = label_program->attributeLocation("point");
             label_program->enableAttributeArray(point);
@@ -807,20 +1051,29 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
                 if (projected.w() <= 0)
                     return;
                 QTransform rotation;rotation.rotate(-angle*180/3.141592653589793);
-                auto bounds=rotation.mapRect(QRectF(0,0,QFontMetrics(font()).horizontalAdvance(texts[index]),QFontMetrics(font()).height()));
+                auto bounds=rotation.mapRect(QRectF(QPointF{},cached_label_sizes[index]));
                 bounds.translate((projected.x()/projected.w()+1)*width()/2+offset.x(),
-                    (1-projected.y()/projected.w())*height()/2+offset.y()-QFontMetrics(font()).ascent()-1);
-                const auto placed=spectrogramTickLabelRect(bounds,QRectF(rect()).adjusted(4,4,-4,-4),numericBounds);
-                if(placed.isEmpty()) return;
-                offset+=QVector2D(placed.left()-bounds.left(),placed.top()-bounds.top());
-                numericBounds.append(placed.adjusted(-3,-3,3,3));
+                    (1-projected.y()/projected.w())*height()/2+offset.y()-label_ascent-1);
+                // Anchors never get repacked/clamped when the camera moves.
+                // Visibility may change, but each label follows its own axis.
+                if(!QRectF(rect()).adjusted(4,4,-4,-4).contains(bounds))return;
+                for(const auto& occupied:numericBounds)if(bounds.adjusted(-3,-3,3,3).intersects(occupied))return;
+                numericBounds.append(bounds.adjusted(-3,-3,3,3));
+                if(index>=titleOffset)++axisTitlesDrawn;
                 label_program->setUniformValue("anchor", anchor);
                 label_program->setUniformValue("angle", angle);
-                label_program->setUniformValue("offset", offset - QVector2D(0, QFontMetrics(font()).ascent() + 1));
+                label_program->setUniformValue("offset", offset - QVector2D(0, label_ascent + 1));
                 label_program->setUniformValue(
                     "region", QVector4D((index % 3) / 3.f, 1 - float(index / 3 + 1) / atlasRows, 1 / 3.f, 1.f / atlasRows));
                 glDrawArrays(GL_TRIANGLES, 0, 6);
             };
+            // Title badges share the retained atlas with numeric glyphs. Camera
+            // motion changes only their world anchors/uniforms, never rasterizes
+            // the title overlay or searches for another screen-space location.
+            const std::array<QVector3D,3> titleAnchors{{{0,-1.f,wallZ*(scene.scaleZ+.4f)},
+                {wallX*(scene.scaleX+.4f),-1.f,0},{-wallX*(scene.scaleX+.15f),1.f,wallZ*(scene.scaleZ+.15f)}}};
+            for(int axis=0;axis<3;++axis){const int index=titleOffset+axis;
+                label(index,titleAnchors[axis],{-float(cached_label_sizes[index].width())/2,float(axis==2?-8:label_ascent+24)});}
             // Reserve endpoints first, then interior ticks. Collision checks remain
             // the final guard for different axes and partially offscreen labels.
             for(int axis=0;axis<3;++axis) {
@@ -847,35 +1100,13 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
             label_texture->release();
             label_program->release();
         }
+        setProperty("axisTitlesDrawn",axisTitlesDrawn);
         core::perf::record(core::perf::Stage::SpectrogramLabels,labelsStart,core::perf::now()-labelsStart);
         const auto overlayStart=core::perf::now();
         glDisable(GL_DEPTH_TEST);glDepthMask(GL_FALSE);
         if(selection<2) setProperty("sliceSampleCount",0);
         SurfaceOverlayCommands painter(font());
         painter.setPen(ink);
-        // Titles follow their physical axes; screen-space offsets avoid tick labels.
-        const auto centerProjection=projection*view*QVector4D(0,-1.f,0,1);
-        const QPointF sceneCenter=centerProjection.w()>0 ?
-            QPointF((centerProjection.x()/centerProjection.w()+1)*width()/2,(1-centerProjection.y()/centerProjection.w())*height()/2) :
-            QPointF(width()/2.,height()/2.);
-        const std::array<QVector3D,3> axisAnchors{{{0,-1.f,wallZ*(scene.scaleZ+.1f)},
-            {wallX*(scene.scaleX+.1f),-1.f,0},
-            {-wallX*(scene.scaleX+.1f),1.f,wallZ*(scene.scaleZ+.1f)}}};
-        for(int axis=0;axis<3;++axis) {
-            const auto projected=projection*view*QVector4D(axisAnchors[axis],1);if(projected.w()<=0) continue;
-            const QPointF anchor((projected.x()/projected.w()+1)*width()/2,(1-projected.y()/projected.w())*height()/2);
-            if(!QRectF(rect()).adjusted(-24,-24,24,24).contains(anchor)) continue;
-            const QString title=texts[titleOffset+axis];const auto metrics=QFontMetrics(font());
-            const auto bounds=spectrogramAxisTitleRect(anchor,anchor-sceneCenter,
-                QSizeF(metrics.horizontalAdvance(title)+16,metrics.height()+8),QRectF(rect()).adjusted(4,4,-4,-4),numericBounds);
-            if(bounds.isEmpty()) continue;
-            painter.save();painter.setRenderHint(QPainter::Antialiasing);
-            painter.setPen(QPen(ink,1));painter.drawLine(anchor,bounds.center());
-            painter.setBrush(background);painter.drawRoundedRect(bounds,3,3);
-            painter.drawText(bounds.adjusted(6,2,-6,-2),Qt::AlignCenter,
-                metrics.elidedText(title,Qt::ElideRight,std::max(1,int(bounds.width()-12))));painter.restore();
-            numericBounds.append(bounds.adjusted(-4,-4,4,4));
-        }
         if (data.empty())
             painter.drawText(QRect(12, 12, std::max(1, width() - 24), 60), Qt::AlignLeft | Qt::TextWordWrap,
                              ui::text("Waiting for data. Check the source and connections in Data Flow."));
@@ -1091,6 +1322,8 @@ bool SpectrogramGraph::initialize(const QSize &minimum,const QSize &maximum) {
     m_spectrogram_graph->language=ui::Language::instance().code();
     m_spectrogram_graph->setRenderVisible(_render_visible);m_spectrogram_graph->setRenderFps(_render_fps);
     static const int registered=qmlRegisterType<SurfaceQuickItem>("Visualization.Surface",1,0,"SurfaceCanvas");
+    static const int overlayRegistered=qmlRegisterType<SurfaceOverlayItem>("Visualization.Surface",1,0,"SurfaceOverlay");
+    Q_UNUSED(overlayRegistered);
     Q_UNUSED(registered);
     _quick_view=new QQuickWidget(this);_quick_view->setObjectName("spectrogramQuickView");
     _quick_view->setMinimumSize(minimum);_quick_view->setMaximumSize(maximum);
@@ -1340,6 +1573,7 @@ void SpectrogramGraph::set_camera_state(const QJsonObject &state) {
     _camera_state = camera_state();
 }
 void SpectrogramGraph::_camera_changed() {
+    core::perf::Scope profile(core::perf::Stage::CameraMove);
     if (m_spectrogram_graph) {
         m_spectrogram_graph->position = _position;
         m_spectrogram_graph->orientation = _orientation;
@@ -1357,6 +1591,7 @@ void SpectrogramGraph::_move_camera() {
     QVector3D move(_camera_keys.contains("right") - _camera_keys.contains("left"),
                    _camera_keys.contains("up") - _camera_keys.contains("down"),
                    _camera_keys.contains("backward") - _camera_keys.contains("forward"));
+    if(move.isNull())return;
     if (move.lengthSquared() > 1)
         move.normalize();
     _position = CameraGeometry::translatedPosition(_position,CameraGeometry::horizontalMovement(_orientation,move) *
@@ -1391,6 +1626,11 @@ void SpectrogramGraph::reset_camera() {
 }
 void SpectrogramGraph::set_side_panel_ratio(float ratio) {
     _side_panel_ratio = std::isfinite(ratio) ? std::clamp(ratio, .01f, .99f) : .25f;
+    emit quick_state_changed();
+}
+void SpectrogramGraph::set_controls_embedded(bool embedded) {
+    if(_controls_embedded==embedded)return;
+    _controls_embedded=embedded;
     emit quick_state_changed();
 }
 QVector3D SpectrogramGraph::camera_translation(float yaw, float side, float up, float horizontal_ratio, float aspect) {
@@ -1454,6 +1694,7 @@ bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
         if (mouse->buttons() & (Qt::RightButton | Qt::MiddleButton)) {
             auto delta = mouse->position().toPoint() - _mouse_position;
             _mouse_position = mouse->position().toPoint();
+            if(delta.isNull())return true;
             if(mouse->buttons() & Qt::MiddleButton)
                 _position+=_orientation.rotatedVector(QVector3D(-delta.x(),delta.y(),0))*.005f;
             else _orientation = CameraGeometry::uprightLook(_orientation,-delta.x()*.3f,-delta.y()*.3f);
@@ -1491,6 +1732,7 @@ bool SpectrogramGraph::eventFilter(QObject *watched, QEvent *event) {
     }
     if (watched==_quick_item && event->type() == QEvent::Wheel) {
         const auto *wheel = static_cast<QWheelEvent *>(event);
+        if(wheel->pixelDelta().isNull() && wheel->angleDelta().isNull())return true;
         if(!wheel->pixelDelta().isNull()) {
             orbit(wheel->pixelDelta().x());zoom(wheel->pixelDelta().y()/150.0);
         } else {
@@ -1651,8 +1893,10 @@ void SpectrogramGraph::quick_range(int axis,double low,double high,bool automati
 void SpectrogramGraph::quick_viewport(double width,double height) {
     if(!m_spectrogram_graph||!std::isfinite(width)||!std::isfinite(height))return;
     const QSize viewport(std::max(1,qRound(width)),std::max(1,qRound(height)));
+    const auto dpr=_quick_view?_quick_view->devicePixelRatioF():devicePixelRatioF();
+    if(m_spectrogram_graph->viewport==viewport && m_spectrogram_graph->dpr==dpr)return;
     m_spectrogram_graph->viewport=viewport;
-    m_spectrogram_graph->dpr=_quick_view?_quick_view->devicePixelRatioF():devicePixelRatioF();
+    m_spectrogram_graph->dpr=dpr;
     m_spectrogram_graph->requestUpdate();
 }
 void SpectrogramGraph::quick_pointer(int type,double x,double y,int button,int buttons,int modifiers){
@@ -1675,10 +1919,14 @@ void SpectrogramGraph::quick_cancel_input(){
     _stop_camera();if(m_spectrogram_graph){m_spectrogram_graph->endPointDrag();m_spectrogram_graph->sliceOverlay.end();}
 }
 void SpectrogramGraph::accept_render_feedback(const QVariantMap& feedback){
+    core::perf::Scope trace(core::perf::Stage::QuickSurfaceFeedback);
     if(!m_spectrogram_graph)return;
     const auto previousError=m_spectrogram_graph->property("shadowError").toString();
     m_spectrogram_graph->frameConsumed(feedback);
-    _overlay={{"commands",feedback.value("overlayCommands")}};
-    emit overlay_changed();
+    const QVariantMap nextOverlay{{"commands",feedback.value("overlayCommands")}};
+    if(_overlay!=nextOverlay){
+        _overlay=nextOverlay;
+        emit overlay_changed();
+    }
     const auto error=feedback.value("shadowError").toString();if(!error.isEmpty()&&error!=previousError)emit surface_settings_error(error);
 }

@@ -23,6 +23,7 @@ target_sources(${LIB_NAME} PRIVATE
         ${CMAKE_SOURCE_DIR}/adapters/desktop/include/core/latest_delivery.h
         ${CMAKE_SOURCE_DIR}/adapters/desktop/include/desktop/qt_byte_transport.h
         ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/core/src/qt_byte_transport.cpp
+        ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/core/src/processing_timer_policy.cpp
         ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/core/src/abstract/abs_task.cpp
         ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/core/src/network/tcp_packet_socket.cpp
         ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/core/src/network/tcp_packet_server.cpp

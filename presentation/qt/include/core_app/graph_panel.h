@@ -20,12 +20,13 @@ class GraphPanel final : public QWidget {
     Q_PROPERTY(int selectedPlane READ selected_plane NOTIFY state_changed)
     Q_PROPERTY(bool physicalFrequency READ physical_frequency NOTIFY state_changed)
     Q_PROPERTY(bool physicalTime READ physical_time NOTIFY state_changed)
-    Q_PROPERTY(QString diagnostic READ diagnostic NOTIFY state_changed)
-    Q_PROPERTY(QString information READ information NOTIFY state_changed)
+    Q_PROPERTY(QString diagnostic READ diagnostic NOTIFY diagnosticChanged)
+    Q_PROPERTY(QString information READ information NOTIFY informationChanged)
     Q_PROPERTY(int renderFps READ render_fps NOTIFY state_changed)
     Q_PROPERTY(int axisPrecision READ axis_precision NOTIFY state_changed)
     Q_PROPERTY(QVariantList scalarInputs READ scalar_inputs NOTIFY state_changed)
     Q_PROPERTY(bool canAddScalarInput READ can_add_scalar_input NOTIFY state_changed)
+    Q_PROPERTY(QObject* surfaceModel READ surface_model NOTIFY state_changed)
 public:
     GraphPanel(const QString&,AbstractChartView*,QJsonObject,QWidget*,SpectrogramGraph* supplied_surface=nullptr);
     ~GraphPanel() override;
@@ -35,9 +36,11 @@ public:
     AbstractChartView* active_chart() const;
     SpectrogramGraph* active_spectrogram() const;
     SpectrogramGraph* owned_surface() const {return _surface;}
+    QObject* surface_model() const;
     NumericImageView* image_view() const;
     NumericPieView* pie_view() const;
     NumericMetricsView* metrics_view() const {return _metrics;}
+    void set_axis_permissions(presentation::NumericAxisPermissions);
     presentation::NumericRenderTarget render_target(bool visible);
     presentation::NumericRenderTarget all_render_targets();
     QString display_mode() const {return _display_mode;}
@@ -53,6 +56,7 @@ public:
     QString diagnostic() const {return _diagnostic;}
     QString information() const {return _information;}
     int render_fps() const {return _render_fps;}
+    qreal display_fps() const;
     int axis_precision() const {return _axis_precision;}
     QVariantList scalar_inputs() const {return _scalar_inputs;}
     bool can_add_scalar_input() const {return _can_add_scalar_input;}
@@ -78,13 +82,19 @@ signals:
     void scalar_input_name_requested(int port,const QString& name);
     void scalar_input_enabled_requested(int port,bool enabled);
     void state_changed();
+    void diagnosticChanged();
+    void informationChanged();
 private:
     void apply_preferences();
     void initialize_surface();
     void restore_surface_preferences();
     void initialize_ports();
     void refresh_captions();
-    void refresh_axis_display_controls(){emit state_changed();}
+    void set_diagnostic(QString text);
+    void refresh_information();
+    void refresh_axis_display_controls();
+    presentation::NumericAxisPermissions _axis_permissions;
+    bool _physical_frequency_available=false,_physical_time_available=false;
     QString caption(QObject*,const char*,QStringList,bool,bool);
     AbstractChartView* _chart=nullptr;
     SpectrogramGraph* _surface=nullptr;

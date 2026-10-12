@@ -1,4 +1,9 @@
 #include "visualization/spectrograms/spectrogram_scene_geometry.h"
+#include "visualization/spectrograms/spectrogram_mesh_topology.h"
+#include "visualization/axis_tick_labels.h"
+#include <array>
+#include <limits>
+#include <utility>
 #include "visualization/surface_settings.h"
 #include "visualization/slice_overlay.h"
 #include <QMatrix4x4>
@@ -11,7 +16,116 @@ int main() {
         if(!condition) std::fprintf(stderr,"FAIL: %s\n",message);
         return condition;
     };
+    // Actual regression: a fixed 399/120-second span acquired +/-ULP noise
+    // from absolute timestamp subtraction. Half-decimal interior ticks changed
+    // strings every frame and forced complete 3D label-atlas uploads.
+    for(const auto locale:{QLocale(QLocale::English),QLocale(QLocale::Russian)}) {
+        std::vector<double> ticks;
+        for(int i=0;i<=14;++i)ticks.push_back(3.325*i/14);
+        const auto original=ticks;const auto expected=axisTickLabels(ticks,locale);
+        for(double origin:{4.,7.,12.,16.}) {
+            std::vector<double> fromTimestamp;
+            for(double tick:ticks)fromTimestamp.push_back(origin-(origin-tick));
+            if(!check(axisTickLabels(fromTimestamp,locale)==expected,
+                      "Physical seconds keep stable labels after timestamp cancellation"))return 1;
+        }
+        if(!check(ticks==original,"Formatting never mutates physical coordinates"))return 1;
+        for(double sign:{-1.,1.}) {
+            const auto tied=axisTickLabels({0,sign*.2375,sign*.475},locale,3);
+            if(!check(tied[1]==locale.toString(sign*.238,'f',3),"Half ties use deterministic symmetric rounding"))return 1;
+            for(double noise:{-1e-15,1e-15})
+                if(!check(axisTickLabels({0,sign*(.2375+noise),sign*.475},locale,3)==tied,
+                          "Positive and negative decimal ties ignore cancellation noise"))return 1;
+            const auto scientific=axisTickLabels({0,sign*2.375e-7,sign*4.75e-7},locale,2);
+            for(double noise:{-1e-22,1e-22})
+                if(!check(axisTickLabels({0,sign*(2.375e-7+noise),sign*4.75e-7},locale,2)==scientific,
+                          "Scientific half ties retain stable labels for tiny coordinates"))return 1;
+        }
+        if(!check(axisTickLabels({0,.2375-1e-9,.475},locale,3)[1]!=
+                  axisTickLabels({0,.2375+1e-9,.475},locale,3)[1],
+                  "Actual movement across a decimal boundary remains visible"))return 1;
+        if(!check(axisTickLabels({0,.2375,.475},locale,6)[1]==locale.toString(.2375,'f',6),
+                  "Requested decimal precision is retained"))return 1;
+        const auto close=axisTickLabels({1.,1.+1e-12,1.+2e-12},locale,15);
+        if(!check(close[0]!=close[1] && close[1]!=close[2],
+                  "Fine adjacent physical coordinates are not collapsed by tie stabilization"))return 1;
+        if(!check(locale.toDouble(axisReadoutLabel(1e-12,locale))!=0,
+                  "Small nonzero values do not become zero"))return 1;
+    }
+    // Independent expanded-mesh oracle: indexed draws must submit the exact
+    // same positions AND normals, with the same winding and cell diagonal.
+    // This also preserves interpolated lighting, picking and shadow coverage.
+    for(const auto dimensions : {std::pair<size_t,size_t>{0,0}, {0,7}, {7,0},
+                                 {1,1}, {1,5}, {5,1}, {2,2}, {4,7}, {50,400}}) {
+        const auto [meshRows,meshColumns]=dimensions;
+        std::vector<std::uint32_t> indices;
+        if(!check(spectrogramMeshTopology(meshRows,meshColumns,indices),"Valid topology admitted"))return 1;
+        std::vector<std::array<float,6>> points(meshRows*meshColumns),expanded;
+        for(size_t row=0;row<meshRows;++row)for(size_t column=0;column<meshColumns;++column) {
+            const float x=float(column),z=float(row),y=float(std::sin(x*.3)*std::cos(z*.2));
+            const auto normal=QVector3D(-.3f*std::cos(x*.3f)*std::cos(z*.2f),1,
+                                       .2f*std::sin(x*.3f)*std::sin(z*.2f)).normalized();
+            points[row*meshColumns+column]={x,y,z,normal.x(),normal.y(),normal.z()};
+        }
+        auto appendPoint=[&](size_t row,size_t column){expanded.push_back(points[row*meshColumns+column]);};
+        if(meshRows>1 && meshColumns>1) {
+            for(size_t row=0;row+1<meshRows;++row)for(size_t column=0;column+1<meshColumns;++column) {
+                appendPoint(row,column);appendPoint(row+1,column);appendPoint(row,column+1);
+                appendPoint(row,column+1);appendPoint(row+1,column);appendPoint(row+1,column+1);
+            }
+        } else if(meshRows && meshColumns) {
+            if(meshRows*meshColumns==1)appendPoint(0,0);
+            else if(meshRows==1)for(size_t c=0;c+1<meshColumns;++c){appendPoint(0,c);appendPoint(0,c+1);}
+            else for(size_t r=0;r+1<meshRows;++r){appendPoint(r,0);appendPoint(r+1,0);}
+        }
+        if(!check(indices.size()==expanded.size(),"Indexed draw preserves submitted element count"))return 1;
+        for(size_t i=0;i<indices.size();++i)
+            if(!check(indices[i]<points.size() && points[indices[i]]==expanded[i],
+                      "Indexed triangles/lines/points preserve exact attributes and winding"))return 1;
+        // Crease construction consumes triangle positions in draw order. Its
+        // emitted endpoints must still address exactly those physical points.
+        auto position=[](const std::array<float,6>& p){return QVector3D(p[0],p[1],p[2]);};
+        for(size_t cell=0;meshRows>1 && meshColumns>1 && cell<indices.size()/6;++cell) {
+            const auto v=cell*6;
+            const auto a=QVector3D::crossProduct(position(expanded[v+1])-position(expanded[v]),
+                                                position(expanded[v+2])-position(expanded[v])).normalized();
+            const auto b=QVector3D::crossProduct(position(points[indices[v+1]])-position(points[indices[v]]),
+                                                position(points[indices[v+2]])-position(points[indices[v]])).normalized();
+            if(!check(a==b && position(points[indices[v+3]])==position(expanded[v+3]) &&
+                      position(points[indices[v+4]])==position(expanded[v+4]),
+                      "Crease face normals and diagonal endpoints remain exact"))return 1;
+        }
+        if(meshRows==50 && meshColumns==400 && !check(points.size()*6*sizeof(float)==480000 &&
+            expanded.size()*6*sizeof(float)==2815344 && indices.size()*sizeof(std::uint32_t)==469224,
+            "400x50 keeps exact mesh with smaller dynamic vertex payload"))return 1;
+    }
+    std::vector<std::uint32_t> rejected{17,23};
+    if(!check(!spectrogramMeshTopology(std::numeric_limits<size_t>::max(),2,rejected) &&
+              rejected==std::vector<std::uint32_t>{17,23},"Overflow rejected before mutating topology"))return 1;
     const int full[4]={0,100,0,100},crop[4]={25,75,0,100};
+    // Cached and direct positions/normals remain bit-identical, including crop
+    // neighbours, reversed axes and clipped signed amplitudes.
+    const auto valueAt=[](size_t band,size_t age){return float(std::sin(double(age)*.17)+std::cos(double(band)*.21));};
+    SpectrogramPointCache pointCache;
+    for(bool reverseTime:{false,true})for(bool reverseBands:{false,true})for(bool reverseAmplitude:{false,true}){
+        SpectrogramSceneGeometry scene(23,17,crop,reverseTime,reverseBands,-.5f,1.3f,true,reverseAmplitude);
+        pointCache.prepare(scene,3,14,5,20,17,23,valueAt);
+        if(!check(pointCache.enabled(),"Small projection cache enabled"))return 1;
+        for(size_t band=3;band<14;++band)for(size_t age=5;age<20;++age){
+            const auto direct=scene.point(age,band,valueAt(band,age));
+            const auto cached=pointCache.point(scene,age,band,valueAt(band,age));
+            const auto dx=scene.point(age+1,band,valueAt(band,age+1))-scene.point(age-1,band,valueAt(band,age-1));
+            const auto dz=scene.point(age,band+1,valueAt(band+1,age))-scene.point(age,band-1,valueAt(band-1,age));
+            const auto cachedDx=pointCache.point(scene,age+1,band,valueAt(band,age+1))-pointCache.point(scene,age-1,band,valueAt(band,age-1));
+            const auto cachedDz=pointCache.point(scene,age,band+1,valueAt(band+1,age))-pointCache.point(scene,age,band-1,valueAt(band-1,age));
+            if(!check(direct==cached && QVector3D::crossProduct(dx,dz).normalized()==QVector3D::crossProduct(cachedDx,cachedDz).normalized(),
+                      "Projection cache preserves exact positions and normals"))return 1;
+        }
+    }
+    SpectrogramSceneGeometry hugeScene(16384,4096,full);
+    pointCache.prepare(hugeScene,0,4096,0,16384,4096,16384,valueAt);
+    if(!check(!pointCache.enabled() && pointCache.point(hugeScene,5,3,valueAt(3,5))==hugeScene.point(5,3,valueAt(3,5)),
+              "Oversized projection cache falls back without changing geometry"))return 1;
     const QSizeF tickViewport(1200,800),labelSize(40,18);
     const int compactTicks=spectrogramAxisSections({320,200},labelSize,0);
     const int largeTicks=spectrogramAxisSections(tickViewport,labelSize,0);

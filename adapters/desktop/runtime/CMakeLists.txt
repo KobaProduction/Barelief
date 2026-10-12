@@ -1,6 +1,9 @@
 set(desktop_pipeline_sources ${CMAKE_SOURCE_DIR}/adapters/desktop/platform/pipeline/src)
 set(desktop_runtime_sources ${CMAKE_SOURCE_DIR}/adapters/desktop/runtime/src)
 add_library(audio_pipeline STATIC ${desktop_runtime_sources}/numeric_engine.cpp ${desktop_pipeline_sources}/audio_source.cpp
+    ${desktop_runtime_sources}/numeric_engine_delivery.cpp
+    ${desktop_runtime_sources}/numeric_engine_ingress.cpp
+    ${desktop_runtime_sources}/numeric_engine_staging.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/audio_source.h
     ${CMAKE_SOURCE_DIR}/adapters/desktop/include/pipeline/numeric_engine.h)
 add_library(desktop_numeric_defaults STATIC ${CMAKE_SOURCE_DIR}/apps/desktop_gui/src/numeric_default_graph.cpp)

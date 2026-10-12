@@ -10,7 +10,7 @@ class FPSChartView : public AbstractChartView, public FPSMixin {
     Q_OBJECT
 public:
     explicit FPSChartView();
-    qreal display_fps() const { return _fps; }
+    qreal display_fps() const { return rendered_fps(); }
 signals:
     void fps_changed(qreal fps);
 

@@ -25,7 +25,7 @@ int main() {
                 const auto* value=std::get_if<signal_contracts::NumericView>(&output.frame.payload);
                 d.delivered=value && value->contract && value->contract->semantic==signal_contracts::Semantic::PCM &&
                     value->contract->dtype==signal_contracts::DType::Float32 && value->contract->representation.encoding==signal_contracts::StorageEncoding::FixedLittleEndian &&
-                    value->actual[0]==256 && value->planes.size()==2;
+                    value->actual[0]==256 && value->planes.size()==1;
             },nullptr,&d});
     },&delivery);
     if(delivery.status!=signal_contracts::Status::ok || !delivery.delivered)return 4;

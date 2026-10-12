@@ -25,6 +25,7 @@
 #include <QToolButton>
 #include "core_app/scheme_editor/editor_widget.h"
 #include <QStyleHints>
+#include <QScreen>
 #include <QMenu>
 #include <QLabel>
 #include <QLineEdit>
@@ -93,7 +94,7 @@ int main() {
         }
         check(namedGraph->contextMenuPolicy()!=Qt::ActionsContextMenu && !namedGraph->findChild<QAction*>("graphRename"),"Canvas still exposes rename context action");
         QTest::qWait(400);
-        const auto processingBeforeRename=fixture.editor->document();
+        domain::NumericProcessingGraph processingBeforeRename;check(fixture.editor->numeric_draft(processingBeforeRename),"Read processing before presentation rename");QByteArray processingBytesBeforeRename;check(bool(desktop::encode_numeric_graph(processingBeforeRename,processingBytesBeforeRename)),"Encode processing before presentation rename");
         const auto revisionBeforeRename=app.presenter().client().snapshot().graph_revision;
         const auto undoBeforeRename=fixture.editor->history().count();
         const auto renameTo=[&](const QString& name,bool accept=true,QPushButton* origin=nullptr) {
@@ -131,7 +132,9 @@ int main() {
         ui::Language::instance().set("ru");
         check(namedGraph->windowTitle()==defaultGraphTitle,"Default graph name no longer localized");
         QTest::qWait(400);
-        check(fixture.editor->document()==processingBeforeRename && fixture.editor->history().count()==undoBeforeRename+3 &&
+        domain::NumericProcessingGraph processingAfterRename;QByteArray processingBytesAfterRename;check(fixture.editor->numeric_draft(processingAfterRename) && bool(desktop::encode_numeric_graph(processingAfterRename,processingBytesAfterRename)),"Read processing after presentation rename");
+        if(processingBytesAfterRename!=processingBytesBeforeRename || fixture.editor->history().count()!=undoBeforeRename+3 || app.presenter().client().snapshot().graph_revision!=revisionBeforeRename)std::fprintf(stderr,"Rename diagnostic processing_equal=%d undo=%d expected=%d revision=%llu expected=%llu pending=%d\n",int(processingBytesAfterRename==processingBytesBeforeRename),fixture.editor->history().count(),undoBeforeRename+3,(unsigned long long)app.presenter().client().snapshot().graph_revision,(unsigned long long)revisionBeforeRename,int(app.presenter().graph_request_pending()));
+        check(processingBytesAfterRename==processingBytesBeforeRename && fixture.editor->history().count()==undoBeforeRename+3 &&
               app.presenter().client().snapshot().graph_revision==revisionBeforeRename,"Three accepted renames must be presentation-only undo commands without changing the applied graph revision");
         fixture.editor->history().undo();
         check(namedGraph->windowTitle()=="Pipeline title" && namedNode && namedNode->caption()=="Pipeline title","Graph rename undo must synchronize block caption and graph title");
@@ -141,6 +144,22 @@ int main() {
         window->activateWindow();window->setFocus();QTest::qWait(20);
         auto *settings = window->findChild<SettingsWidget *>();
         check(settings, "Settings missing");
+        auto* renderTimer=window->findChild<QTimer*>("numericRenderTimer");
+        auto* guiMode=settings->findChild<QComboBox*>("guiFpsMode");auto* guiRate=settings->findChild<QSpinBox*>("guiTargetFps");
+        check(renderTimer && renderTimer->isActive() && renderTimer->timerType()==Qt::PreciseTimer && guiMode && guiRate,"Numeric rendering must use the global cadence and a precise timer");
+        const auto rateGraph=fixture.editor->document();const auto rateRevision=app.presenter().client().snapshot().graph_revision;
+        const auto rateUndo=fixture.editor->history().index();const int previousMode=guiMode->currentIndex(),previousRate=guiRate->value();
+        for(const int hz:{30,100,120}){
+            guiMode->setCurrentIndex(guiMode->findData(hz));
+            check(renderTimer->interval()==qMax(1,1000/hz),"Fixed global cadence did not reach the numeric projection scheduler");
+        }
+        guiMode->setCurrentIndex(6);guiRate->setValue(137);
+        check(renderTimer->interval()==qMax(1,1000/137),"Custom global cadence did not reach the numeric projection scheduler");
+        guiMode->setCurrentIndex(0);
+        const int screenRate=SurfaceSettings::renderFps(app.presenter().state().file_configs.ui.graph_rendering,window->screen()?window->screen()->refreshRate():60.);
+        check(renderTimer->interval()==qMax(1,1000/screenRate),"Screen cadence did not reach numeric rendering");
+        guiRate->setValue(previousRate);guiMode->setCurrentIndex(previousMode);
+        check(fixture.editor->document()==rateGraph && app.presenter().client().snapshot().graph_revision==rateRevision && fixture.editor->history().index()==rateUndo,"GUI render cadence changed analysis graph/revision/Undo");
         settings->select_section(SettingsWidget::Graphs);
         auto *tabs = settings->findChild<QTabWidget *>("settingsSections");
         check(tabs && tabs->count() == 6 && tabs->currentIndex() == 2, "Graphs section order");
@@ -528,6 +547,8 @@ int main() {
                           (action->objectName() == "openSettingsFile" && shortcut == QKeySequence(QKeySequence::Open)) ||
                           (action->objectName() == "workspaceToggleTools" && shortcut == QKeySequence("Ctrl+Shift+F12")) ||
                           (action->objectName() == "workspaceSwitcher" && shortcut == QKeySequence("Ctrl+Tab")) ||
+                          (action->objectName() == "undoDataFlow" && shortcut == QKeySequence("Ctrl+Z")) ||
+                          (action->objectName() == "redoDataFlow" && shortcut == QKeySequence("Ctrl+Shift+Z")) ||
                           (action->shortcutContext()==Qt::WidgetWithChildrenShortcut &&
                            qobject_cast<QtNodes::GraphicsView*>(action->parent()) && shortcut==QKeySequence("Ctrl+D")) ||
                           ((action->shortcutContext() == Qt::WidgetShortcut || action->shortcutContext() == Qt::WidgetWithChildrenShortcut) &&
@@ -725,7 +746,7 @@ int main() {
             check(endpoint.listen(QHostAddress::LocalHost, 0), "External processor fixture listen");
             const auto uuid = QUuid::createUuid();
             AggregatorClient processor({uuid, ComponentType::core, endpoint.port()});
-            processor.set_capabilities({{"control_version",2},{"data_version",4},{"stream_port",endpoint.port()},
+            processor.set_capabilities({{"control_version",4},{"data_version",5},{"stream_port",endpoint.port()},
                 {"publisher_incarnation",QString::number(external.snapshot().epoch)},
                 {"graph_revision",QString::number(external.snapshot().graph_revision)},{"streams",QJsonArray{}}});
             processor.connect_to_aggregator_server(QHostAddress::LocalHost, directory.serverPort(), 1000);

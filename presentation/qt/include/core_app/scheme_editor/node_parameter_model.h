@@ -28,6 +28,7 @@ class NodeParameterModel final : public QObject {
         Editor editor = Editor::Text;
         int order = 0, minimum = 0, maximum = 0;
         std::optional<double> numeric_minimum, numeric_maximum;
+        std::optional<int> literal_type; // Fixed representation for sizes and operation parameters.
         bool pinnable = true, primary = false, hide_inline = false, translate_value = false;
         std::vector<Option> options;
         std::function<Value()> read;

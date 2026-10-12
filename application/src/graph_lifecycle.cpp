@@ -7,7 +7,7 @@ namespace application {
 bool same_numeric_processing_graph(const domain::NumericProcessingGraph& a,const domain::NumericProcessingGraph& b) noexcept {
     const auto& x=a.versions;const auto& y=b.versions;
     if(a.graph_id!=b.graph_id || a.execution_interval!=b.execution_interval || x.document!=y.document || x.graph!=y.graph || x.processing!=y.processing ||
-       x.control!=y.control || x.data!=y.data || a.edges!=b.edges || a.nodes.size()!=b.nodes.size())return false;
+       x.control!=y.control || x.data!=y.data || a.edges!=b.edges || a.configuration_bindings!=b.configuration_bindings || a.nodes.size()!=b.nodes.size())return false;
     auto ports=[](const auto& left,const auto& right){
         if(left.size()!=right.size())return false;
         for(std::size_t i=0;i<left.size();++i)
@@ -15,6 +15,8 @@ bool same_numeric_processing_graph(const domain::NumericProcessingGraph& a,const
                !signal_contracts::same_contract(left[i].contract.view(),right[i].contract.view()))return false;
         return true;
     };
+    // clock_node is derived during preparation from explicit configuration
+    // associations. It is absent on the wire and cannot define graph identity.
     for(std::size_t i=0;i<a.nodes.size();++i){const auto& left=a.nodes[i];const auto& right=b.nodes[i];
         if(left.id!=right.id || left.kind!=right.kind || left.enabled!=right.enabled ||
            !domain::same_processing_parameters(left.parameters,right.parameters) ||

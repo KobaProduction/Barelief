@@ -128,8 +128,8 @@ struct NumericRemoteEndpoint::Impl {
         if(previous!=state.graph_revision) {fence();rebind=true;}
         emit_snapshot();
         if(phase==nc::CommandId::Capabilities) {
-            capabilities=r->error==nc::Error::None&&r->capabilities&&r->capabilities->control_version==2&&
-                r->capabilities->data_version==4&&(r->capabilities->codec_mask&3);
+            capabilities=r->error==nc::Error::None&&r->capabilities&&r->capabilities->control_version==nc::SchemaVersion&&
+                r->capabilities->data_version==nd::PayloadVersion&&(r->capabilities->codec_mask&3);
             if(!capabilities)warning=QStringLiteral("Remote numeric CONTROL2/DATA4 unsupported");
             bootstrapped=true;rebind=true;return;
         }

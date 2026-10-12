@@ -15,8 +15,37 @@ void NodeParameterModel::setEditHandlers(std::function<bool(const domain::Config
 }
 void NodeParameterModel::setNode(const domain::ConfiguredProcessingNode &n, bool rebuild) {
     const bool first = _fields.empty();
+    const auto* oldTones=std::get_if<domain::SignalGeneratorProcessingParameters>(&_node.parameters);
+    const auto* newTones=std::get_if<domain::SignalGeneratorProcessingParameters>(&n.parameters);
+    rebuild=rebuild || n.inputs.size()!=_node.inputs.size() || n.outputs.size()!=_node.outputs.size();
+    rebuild=rebuild || (oldTones && newTones && oldTones->oscillators.size()!=newTones->oscillators.size());
     if (_node.id != n.id)
         _edits.clear();
+    else if (oldTones && newTones) {
+        // Fields have stable public index keys; drafts follow oscillator identity
+        // when a structural edit removes or reorders rows.
+        auto remapped=_edits;
+        for(auto it=remapped.begin();it!=remapped.end();)
+            if(it.key().startsWith("oscillator") && it.key()!="oscillatorCount")it=remapped.erase(it);else ++it;
+        for(std::size_t i=0;i<oldTones->oscillators.size();++i){
+            const auto found=std::find_if(newTones->oscillators.begin(),newTones->oscillators.end(),
+                [&](const auto& tone){return tone.id==oldTones->oscillators[i].id;});
+            if(found==newTones->oscillators.end())continue;
+            const auto next=std::size_t(found-newTones->oscillators.begin());
+            if(i!=next)rebuild=true;
+            const auto prefix=QString("oscillator%1").arg(i);
+            for(auto it=_edits.begin();it!=_edits.end();++it){
+                if(!it.key().startsWith(prefix))continue;
+                const auto suffix=it.key().mid(prefix.size());
+                if(suffix.isEmpty() || suffix.front().isDigit())continue;
+                remapped[QString("oscillator%1").arg(next)+suffix]=it.value();
+            }
+        }
+        if(oldTones->oscillators.size()==newTones->oscillators.size())
+            for(std::size_t i=0;i<oldTones->oscillators.size();++i)
+                rebuild=rebuild || oldTones->oscillators[i].id!=newTones->oscillators[i].id;
+        _edits=std::move(remapped);
+    }
     _node = n;
     buildFields();
     if (rebuild || first)
@@ -109,7 +138,7 @@ bool NodeParameterModel::edit(const QString &key, const Value &value) {
 }
 bool NodeParameterModel::editLiteral(const QString &key, const QString &text, int type) {
     const auto *f = field(key);
-    if (!f || f->editor != Editor::Literal)
+    if (!f || f->editor != Editor::Literal || (f->literal_type && type!=*f->literal_type))
         return false;
     _edits[key] = EditState{text, {}, type, {}, true};
     signal_contracts::NumericLiteral v;
@@ -203,13 +232,14 @@ void NodeParameterModel::buildFields() {
         f.editor = editor;
         f.section = section;
         f.order = int(_fields.size());
-        f.primary = (f.key == "numericSelected" && (_kind == "InputSelector" || _kind == "Switch")) ||
+        f.primary = (f.key == "source" && _kind=="AudioSource") || (f.key == "function" && _kind=="WindowFunction") || (f.key == "numericSelected" && (_kind == "InputSelector" || _kind == "Switch")) ||
                     (f.key == "numericGate" && _kind == "Gate") || (f.key == "numericOutputs" && _kind == "Splitter");
         f.hide_inline = _kind == "InputSelector" && (f.key == "numericSelected" || f.key == "numericInputs");
         return f;
     };
-    auto literal = [&](QString label, QString key, auto read, auto write) {
+    auto literal = [&](QString label, QString key, auto read, auto write, std::optional<int> fixed_type=std::nullopt) {
         auto f = makeField(label, key, Editor::Literal);
+        f.literal_type=fixed_type;
         f.read = [this, read]() -> Value { return read(_node); };
         f.write = [this, write](const Value &v) {
             auto n = _node;
@@ -222,8 +252,10 @@ void NodeParameterModel::buildFields() {
         auto f = makeField(label, key, Editor::Choice);
         const bool selector = _kind == "InputSelector" && key == "numericSelected";
         if (selector) {
-            for (const auto &p : _node.inputs)
-                f.options.push_back({"Input %1", int(p.id), true});
+            if(_node.outputs.size()>1) {
+                for(std::size_t stream=0;stream<_node.inputs.size()/_node.outputs.size();++stream)
+                    f.options.push_back({"Stream %1",int(stream),true});
+            } else for (const auto &p : _node.inputs)f.options.push_back({"Input %1", int(p.id), true});
         } else
             for (int i = 0; i < names.size(); ++i)
                 f.options.push_back({names[i], i, true});
@@ -267,29 +299,32 @@ void NodeParameterModel::buildFields() {
         };
         _fields.push_back(std::move(f));
     };
-    if (_kind == "InputSelector")
+    if (_kind == "InputSelector") {
         integer(
-            "Input count", "numericInputs", 1, int(numeric_editor::limits().max_ports_per_node),
-            [](const auto &n) { return int(n.inputs.size()); },
+            "Stream count", "numericInputs", 1, int(numeric_editor::limits().max_ports_per_node/std::max(std::size_t{1},_node.outputs.size())),
+            [](const auto &n) { return n.outputs.empty()?0:int(n.inputs.size()/n.outputs.size()); },
             [](auto &n, int v) {
                 if (!numeric_editor::set_input_count(n, std::uint16_t(v)))
                     throw std::invalid_argument("count");
             });
+        integer("Channels per stream","numericSelectorChannels",1,32,
+            [](const auto& n){return int(n.outputs.size());},
+            [](auto& n,int v){if(!numeric_editor::set_selector_channels(n,std::uint16_t(v)))throw std::invalid_argument("channels");});
+    }
     if (std::holds_alternative<RouteProcessingParameters>(_node.parameters)) {
         if (_kind == "Splitter" || _kind == "Switch")
             integer(
-                "Output count", "numericOutputs", 2, 8,
-                [](const auto &n) { return int(std::get<RouteProcessingParameters>(n.parameters).outputs); },
+                _kind=="Switch"?"Stream count":"Output count", "numericOutputs", 1, 64,
+                [](const auto &n) { const auto& p=std::get<RouteProcessingParameters>(n.parameters);return int(p.outputs); },
                 [](auto &n, int v) {
                     if (!numeric_editor::set_output_count(n, std::uint16_t(v)))
                         throw std::invalid_argument("count");
                 });
-        if (_kind == "Switch")
-            integer(
-                "Active output (zero based)", "numericSelected", 0,
-                std::get<RouteProcessingParameters>(_node.parameters).outputs - 1,
-                [](const auto &n) { return int(std::get<RouteProcessingParameters>(n.parameters).selected); },
-                [](auto &n, int v) { std::get<RouteProcessingParameters>(n.parameters).selected = std::uint16_t(v); });
+        if (_kind == "Switch") {
+            integer("Channels per stream","numericRouteChannels",1,32,[](const auto& n){return std::get<RouteProcessingParameters>(n.parameters).channels_per_stream;},[](auto& n,int v){if(!numeric_editor::set_route_channels(n,std::uint16_t(v)))throw std::invalid_argument("channels");});
+            QStringList groups;const auto& route=std::get<RouteProcessingParameters>(_node.parameters);for(unsigned i=0;i<route.outputs;++i)groups.push_back(QString::number(i+1));
+            choice("Active output stream","numericSelected",groups,[](const auto& n){return std::get<RouteProcessingParameters>(n.parameters).selected;},[](auto& n,int v){std::get<RouteProcessingParameters>(n.parameters).selected=std::uint16_t(v);});
+        }
         if (_kind == "Gate")
             choice(
                 "Gate", "numericGate", {"Closed", "Open"},
@@ -297,6 +332,67 @@ void NodeParameterModel::buildFields() {
                 [](auto &n, int v) { std::get<RouteProcessingParameters>(n.parameters).open = v == 1; });
     }
     section = Section::Processing;
+    if(_kind=="SignalGenerator" || _kind=="Mixer" || _kind=="PcmResampler")
+        integer(_kind=="PcmResampler"?"Sample clock node (-1: inherited)":"Sample clock node (-1: not assigned)","sampleClockNode",-1,std::numeric_limits<int>::max(),
+            [](const auto& n){return n.clock_node;},[](auto& n,int id){n.clock_node=id;});
+    if(std::holds_alternative<SampleClockProcessingParameters>(_node.parameters)) {
+        integer("Sample rate, Hz","clockSampleRate",8000,192000,[](const auto& n){return std::get<SampleClockProcessingParameters>(n.parameters).sample_rate;},
+            [](auto& n,int v){std::get<SampleClockProcessingParameters>(n.parameters).sample_rate=std::uint32_t(v);});
+        text("Clock domain","clockDomain",[](const auto& n){return QString::fromStdString(std::get<SampleClockProcessingParameters>(n.parameters).domain);},
+            [](auto& n,const QString& v){std::get<SampleClockProcessingParameters>(n.parameters).domain=v.toStdString();});
+    }
+    if(std::holds_alternative<SignalGeneratorProcessingParameters>(_node.parameters)) {
+        for(int bank=0;bank<3;++bank){
+            auto preset=makeField(bank==0?"Single sine":bank==1?"Multitone bank 1":"Multitone bank 2",QString("generatorBank%1").arg(bank),Editor::Action);
+            preset.pinnable=false;preset.write=[this,bank](const Value&){auto n=_node;auto& tones=std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators;tones.clear();const int count=bank==0?1:8;for(int i=0;i<count;++i){OscillatorParameters t;t.id=i+1;t.frequency_hz=bank==0?440.:(bank==1?73.25+i*i*233.7:110.3+i*i*197.2);t.amplitude=bank==0?.5:.045;t.phase_radians=i*.27;tones.push_back(t);}return commit(std::move(n));};_fields.push_back(std::move(preset));
+        }
+        integer("Oscillator count","oscillatorCount",1,128,[](const auto& n){return std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators.size();},
+            [](auto& n,int count){auto& tones=std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators;
+                std::uint64_t next=1;for(const auto& t:tones){if(t.id==UINT64_MAX)throw std::invalid_argument("oscillator ID limit");next=std::max(next,t.id+1);}
+                if(std::size_t(count)>tones.size() && std::uint64_t(std::size_t(count)-tones.size()-1)>UINT64_MAX-next)throw std::invalid_argument("oscillator ID limit");
+                while(tones.size()<std::size_t(count)){signal_contracts::OscillatorParameters t;t.id=next;tones.push_back(t);if(tones.size()<std::size_t(count))++next;}tones.resize(std::size_t(count));});
+        auto addOscillator=makeField("Add oscillator","addOscillator",Editor::Action);
+        addOscillator.available=[this]{return std::get<SignalGeneratorProcessingParameters>(_node.parameters).oscillators.size()<128;};
+        addOscillator.write=[this](const Value&){auto n=_node;auto& tones=std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators;signal_contracts::OscillatorParameters added;
+            for(const auto& t:tones){if(t.id==UINT64_MAX)return false;added.id=std::max(added.id,t.id+1);}tones.push_back(added);return commit(std::move(n));};
+        _fields.push_back(std::move(addOscillator));
+        const auto count=std::get<SignalGeneratorProcessingParameters>(_node.parameters).oscillators.size();
+        for(std::size_t i=0;i<count;++i) {
+            const auto prefix=QString("oscillator%1").arg(i);
+            auto caption=makeField("Oscillator ID",prefix+"Id",Editor::Caption);caption.pinnable=false;
+            caption.read=[this,i]()->Value{return QString::number(std::get<SignalGeneratorProcessingParameters>(_node.parameters).oscillators.at(i).id);};_fields.push_back(std::move(caption));
+            auto remove=makeField("Remove oscillator",prefix+"Remove",Editor::Action);remove.available=[this]{return std::get<SignalGeneratorProcessingParameters>(_node.parameters).oscillators.size()>1;};
+            remove.write=[this,i](const Value&){auto n=_node;auto& tones=std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators;if(tones.size()<2||i>=tones.size())return false;tones.erase(tones.begin()+std::ptrdiff_t(i));return commit(std::move(n));};_fields.push_back(std::move(remove));
+            boolean("Oscillator enabled",prefix+"Enabled",[i](const auto& n){return std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators.at(i).enabled;},
+                [i](auto& n,bool v){std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators.at(i).enabled=v;});
+            for(const auto property:{"frequency_hz","amplitude","phase_radians","attack_seconds","release_seconds"}) {
+                const std::string key=property;
+                auto read=[i,key](const auto& n){const auto& t=std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators.at(i);
+                    return NumericLiteral{key=="frequency_hz"?t.frequency_hz:key=="amplitude"?t.amplitude:key=="phase_radians"?t.phase_radians:key=="attack_seconds"?t.attack_seconds:t.release_seconds};};
+                literal(key=="frequency_hz"?"Frequency, Hz":key=="amplitude"?"Amplitude":key=="phase_radians"?"Phase, radians":key=="attack_seconds"?"Attack, seconds":"Release, seconds",prefix+QString::fromStdString(key),read,
+                    [i,key](auto& n,const NumericLiteral& value){const double v=std::visit([](auto x){return double(x);},value);auto& t=std::get<SignalGeneratorProcessingParameters>(n.parameters).oscillators.at(i);
+                        if(!std::isfinite(v))throw std::invalid_argument("finite oscillator parameter");
+                        if(key=="frequency_hz")t.frequency_hz=v;else if(key=="amplitude")t.amplitude=v;else if(key=="phase_radians")t.phase_radians=v;else if(key=="attack_seconds")t.attack_seconds=v;else t.release_seconds=v;});
+            }
+        }
+    }
+    if(std::holds_alternative<MixerProcessingParameters>(_node.parameters)) {
+        choice("Mixing operation","mixerMode",{"Sum with gain","Normalized proportions","Weighted RMS","Maximum absolute"},
+            [](const auto& n){return int(std::get<MixerProcessingParameters>(n.parameters).mode);},[](auto& n,int v){std::get<MixerProcessingParameters>(n.parameters).mode=MixerMode(v);});
+        integer("Input count","mixerInputCount",1,64,[](const auto& n){return n.inputs.size();},[](auto& n,int count){
+            auto& weights=std::get<MixerProcessingParameters>(n.parameters).weights;
+            while(n.inputs.size()<std::size_t(count)){auto p=n.inputs.front();p.id=0;for(const auto& item:n.inputs)p.id=std::max<PortId>(p.id,item.id+1);n.inputs.push_back(p);weights.push_back({p.id,1.});}
+            n.inputs.resize(std::size_t(count));weights.erase(std::remove_if(weights.begin(),weights.end(),[&](const auto& w){return std::none_of(n.inputs.begin(),n.inputs.end(),[&](const auto& p){return p.id==w.port;});}),weights.end());});
+        choice("Input timing policy","mixerConsumption",{"Clocked FIFO","Source aligned"},[](const auto& n){return int(std::get<MixerProcessingParameters>(n.parameters).consumption);},[](auto& n,int v){std::get<MixerProcessingParameters>(n.parameters).consumption=MixerConsumption(v);});
+        integer("Input FIFO, ms","mixerFifo",1,10000,[](const auto& n){return std::get<MixerProcessingParameters>(n.parameters).fifo_milliseconds;},
+            [](auto& n,int v){std::get<MixerProcessingParameters>(n.parameters).fifo_milliseconds=std::uint32_t(v);});
+        for(const auto& weight:std::get<MixerProcessingParameters>(_node.parameters).weights) {
+            const auto id=weight.port;literal(QString("Input %1 weight").arg(unsigned(id)+1),QString("mixerWeight%1").arg(id),[id](const auto& n){for(const auto& w:std::get<MixerProcessingParameters>(n.parameters).weights)if(w.port==id)return NumericLiteral{w.weight};return NumericLiteral{0.};},
+                [id](auto& n,const NumericLiteral& v){for(auto& w:std::get<MixerProcessingParameters>(n.parameters).weights)if(w.port==id){const auto x=std::visit([](auto x){return double(x);},v); if(!std::isfinite(x) || (std::get<MixerProcessingParameters>(n.parameters).mode==MixerMode::WeightedMean && x<0))throw std::invalid_argument("weight");w.weight=x;}});
+            auto share=makeField(QString("Input %1 share").arg(unsigned(id)+1),QString("mixerShare%1").arg(id),Editor::Caption);share.pinnable=false;
+            share.read=[this,id]()->Value {const auto& p=std::get<MixerProcessingParameters>(_node.parameters);if(p.mode!=MixerMode::WeightedMean)return QString{};double total=0,own=0;for(const auto& w:p.weights){total+=w.weight;if(w.port==id)own=w.weight;}return QString::number(total>0?100*own/total:0,'f',2)+" %";};_fields.push_back(std::move(share));
+        }
+    }
     if (std::holds_alternative<HistoryProcessingParameters>(_node.parameters))
         literal(
             "History capacity, frames", "numericCapacity",
@@ -311,7 +407,7 @@ void NodeParameterModel::buildFields() {
                         throw std::invalid_argument("capacity");
                 } else
                     throw std::invalid_argument("capacity type");
-            });
+            },1);
     if (std::holds_alternative<ReduceProcessingParameters>(_node.parameters))
         choice(
             "Operation", "numericReduction", {"Maximum absolute", "Mean", "RMS"},
@@ -326,6 +422,13 @@ void NodeParameterModel::buildFields() {
                     descriptor.value_kind == ParameterValueKind::FrameType)
                     continue;
                 const auto key = std::string(descriptor.key);
+                // Capture Fs is discovered by the adapter; it is not an editable
+                // operation parameter. Register supported controls explicitly.
+                if (_kind=="AudioSource" && key=="sample_rate") continue;
+                if(_kind=="IndexExtract" && key=="channel_index")continue;
+                if(_kind=="IndexExtract" && key=="column" && !_node.inputs.empty()){
+                    const auto c=_node.inputs.front().contract.view();const auto* numeric=std::get_if<NumericContract>(&c);if(!numeric || numeric->shape.rank!=Rank::Matrix)continue;
+                }
                 const auto field = QString::fromStdString(key);
                 const QMap<QString, const char *> titles{{"source", "Capture source"},
                                                          {"merge", "Merge mode"},
@@ -390,11 +493,14 @@ void NodeParameterModel::buildFields() {
                             return std::visit([](auto value) { return int(value); }, std::get<NumericLiteral>(get(n)));
                         },
                         [put](auto &n, int value) { put(n, NumericLiteral{std::int64_t(value)}); });
+                else if (_kind=="InputSelector"&&key=="channels_per_stream")continue;
                 else if (_kind == "AudioSource" && key == "source")
                     choice(
                         "Capture source", "source", {"System audio (loopback)", "Microphone"},
                         [](const auto &n) { return numeric_editor::capture_source_kind(n); },
                         [put](auto &n, int value) { put(n, NumericLiteral{std::int64_t(value)}); });
+                else if (_kind=="WindowFunction" && key=="function")
+                    choice("Window function",field,{"Hann","Hamming","Blackman","Rectangular"},[get](const auto& n){const auto value=std::get<std::string>(get(n));return value=="hamming"?1:value=="blackman"?2:value=="rectangular"?3:0;},[put](auto& n,int v){static constexpr const char* names[]{"hann","hamming","blackman","rectangular"};put(n,std::string(names[v]));});
                 else if (key=="sample_rate" || key=="output_rate")
                     literal(title,field,[](const auto& n){
                         const auto contract=n.outputs[0].contract.view();return NumericLiteral{std::uint64_t(std::get<NumericContract>(contract).clock.sample_rate)};
@@ -423,6 +529,7 @@ void NodeParameterModel::buildFields() {
                                                        {"maximum_hz", "Hz"},  {"period_seconds", "s"},
                                                        {"cadence_ms", "ms"},  {"size", "samples"}};
                     f.units = units.value(field);
+                    if(f.editor==Editor::Literal && descriptor.value_kind==ParameterValueKind::Integer)f.literal_type=0;
                     if (key == "source" || key == "selected_input")
                         f.section = Section::Route;
                     if (descriptor.value_kind == ParameterValueKind::Integer ||
@@ -441,7 +548,7 @@ void NodeParameterModel::buildFields() {
             auto captionField = makeField(
                 "", QString(direction == PortDirection::Input ? "input%1Caption" : "output%1Caption").arg(port.id),
                 Editor::Caption);
-            captionField.pinnable = false;
+            captionField.pinnable = false;captionField.section=Section::Contract;
             captionField.read = [this, direction, id = port.id, _kind]() -> Value {
                 const auto &ps = direction == PortDirection::Input ? _node.inputs : _node.outputs;
                 for (const auto &p : ps)
@@ -453,6 +560,7 @@ void NodeParameterModel::buildFields() {
             auto data = port.contract.view();
             if (numeric_editor::is_graph_view(_kind) || !std::holds_alternative<NumericContract>(data))
                 continue;
+            section=Section::Additional;
             const auto id = port.id;
             QStringList names;
             for (const auto &d : dtype_descriptors())
@@ -523,22 +631,13 @@ void NodeParameterModel::buildFields() {
                             });
                         else
                             throw std::invalid_argument("extent type");
-                    });
+                    },1);
             for (std::size_t axis = 0; axis < 2; ++axis) {
                 const auto extentKey = prefix + QString("Extent%1").arg(axis);
                 for (auto &f : _fields)
                     if (f.key == extentKey)
                         f.available = [this, read, axis] { return std::size_t(read(_node).shape.rank) > axis; };
             }
-            choice(
-                "Unit", prefix + "Unit",
-                {"Unspecified", "Normalized amplitude", "Raw amplitude", "Frames", "Hz", "s", "Values"},
-                [read](const auto &n) { return int(read(n).unit); },
-                [modify](auto &n, int v) { modify(n, [v](auto &c) { c.unit = NumericUnit(v); }); });
-            choice(
-                "Layout", prefix + "Layout", {"Planar", "Interleaved"},
-                [read](const auto &n) { return int(read(n).representation.layout); },
-                [modify](auto &n, int v) { modify(n, [v](auto &c) { c.representation.layout = ChannelLayout(v); }); });
             choice(
                 "Encoding", prefix + "Encoding",
                 {"Native", "Little endian", "Big endian", "Packed PCM24 LE", "Packed PCM24 BE"},
@@ -559,22 +658,6 @@ void NodeParameterModel::buildFields() {
                 [read](const auto &n) { return int(read(n).representation.normalization); },
                 [modify](auto &n, int v) {
                     modify(n, [v](auto &c) { c.representation.normalization = Normalization(v); });
-                });
-            integer(
-                "Channels", prefix + "Channels", 1, int(numeric_editor::limits().frame.max_planes),
-                [read](const auto &n) { return int(read(n).channel_order.size()); },
-                [read, modify](auto &n, int count) {
-                    const auto c = read(n);
-                    std::vector<std::uint32_t> ids(c.channel_order.begin(), c.channel_order.end());
-                    ids.resize(std::size_t(count));
-                    for (std::size_t i = c.channel_order.size(); i < ids.size(); ++i) {
-                        std::uint32_t candidate = 0;
-                        while (std::find(ids.begin(), ids.begin() + std::ptrdiff_t(i), candidate) !=
-                               ids.begin() + std::ptrdiff_t(i))
-                            ++candidate;
-                        ids[i] = candidate;
-                    }
-                    modify(n, [&ids](auto &value) { value.channel_order = ids; });
                 });
         }
     }
@@ -647,6 +730,7 @@ void NodeParameterModel::buildFields() {
         if (_kind == "InputSelector") {
             n.inputs = _node.inputs;
             n.outputs = _node.outputs;
+            std::get<TransformProcessingParameters>(n.parameters).values.push_back({"channels_per_stream",NumericLiteral{std::uint64_t(n.outputs.size())}});
             for (auto &p : std::get<TransformProcessingParameters>(n.parameters).values)
                 if (p.key == "selected_input")
                     p.value = NumericLiteral{std::int64_t(n.inputs.front().id)};
@@ -654,6 +738,7 @@ void NodeParameterModel::buildFields() {
         return commit(std::move(n));
     };
     _fields.push_back(std::move(reset));
+    section=Section::Route;
     auto readAdapter = [this](QString key, bool endpoint) {
         return endpoint ? _adapter.value("remote_endpoint").toObject().value(key) : _adapter.value(key);
     };
@@ -724,6 +809,8 @@ void NodeParameterModel::buildFields() {
         _fields.push_back(std::move(f));
     }
     if (_kind == "AudioSource") {
+        auto format=makeField("Saved source format","captureSavedFormat",Editor::Caption);format.pinnable=false;
+        format.read=[this]()->Value{QString rate="?";if(!_node.outputs.empty()){const auto c=_node.outputs[0].contract.view();if(const auto* n=std::get_if<NumericContract>(&c))rate=QString::number(n->clock.sample_rate);}return QString::number(_node.outputs.size())+" × mono · "+rate+" Hz";};_fields.push_back(std::move(format));
         auto f = makeField("Capture device", "captureDevice", Editor::Choice);
         f.options.push_back({"Follow system default", QString{}, true});
         QString error;
@@ -759,9 +846,11 @@ void NodeParameterModel::buildFields() {
         auto refresh = makeField("Refresh devices", "refreshCaptureDevices", Editor::Action);
         refresh.write = [this](const Value &) {
             buildFields();
-            emit valuesChanged();
+            emit structureChanged();
             return true;
         };
         _fields.push_back(std::move(refresh));
     }
+    std::stable_sort(_fields.begin(),_fields.end(),[](const Field& a,const Field& b){return int(a.section)<int(b.section);});
+
 }

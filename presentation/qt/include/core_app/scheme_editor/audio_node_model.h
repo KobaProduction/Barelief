@@ -15,6 +15,11 @@ public:
     explicit AudioNodeModel(QString kind);
     QString name() const override { return _kind; }
     QString caption() const override;
+    QString operation_summary() const;
+    QString stream_name(unsigned) const;
+    unsigned grouped_channels(QtNodes::PortType) const;
+    std::optional<domain::ConfigurationRole> configuration_role(QtNodes::PortType,QtNodes::PortIndex) const;
+    QtNodes::PortIndex configuration_port(QtNodes::PortType,domain::ConfigurationRole) const;
     unsigned int nPorts(QtNodes::PortType type) const override;
     QtNodes::NodeDataType dataType(QtNodes::PortType type, QtNodes::PortIndex) const override;
     bool portCaptionVisible(QtNodes::PortType, QtNodes::PortIndex) const override { return true; }
@@ -39,6 +44,9 @@ public:
     void clear_preview();
     QString diagnostic_failure(domain::PortDirection,domain::PortId) const;
     void set_preview_activity(const QString& status_key);
+    void set_processing_activity(bool measured,bool active,double calls_hz);
+    bool processing_measured() const {return _activity_measured;}
+    bool processing_active() const {return _activity_active;}
     QWidget *parameter_widget(QWidget *parent = nullptr);
     NodeParameterModel* parameter_model() const { return _parameters; }
     QWidget *preview_widget(QWidget *parent = nullptr,bool compact=false);
@@ -51,7 +59,7 @@ public:
     static bool valid_presentation(const QJsonObject&);
     void set_presentation(const QJsonObject&);
     bool edit_display_name(const QString&);
-    QWidget* scalar_inputs_widget(QWidget* parent=nullptr);
+    QWidget* scalar_inputs_widget(QWidget* parent=nullptr,bool inline_form=false);
     bool add_scalar_input();
     bool remove_scalar_input(domain::PortId);
     bool edit_scalar_input_name(domain::PortId,const QString&);
@@ -86,6 +94,9 @@ private:
     NodeParameterModel* _parameters=nullptr;
     QString _kind;
     QPointer<QWidget> _widget;
+    QPointer<QLabel> _processing_activity;
+    bool _activity_measured=false,_activity_active=false;
+    double _activity_hz=0;
     QList<QPointer<NodePreviewCard>> _previews;
     std::vector<DiagnosticPreview> _diagnostics;
     QString _preview_activity;

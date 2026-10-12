@@ -36,7 +36,7 @@ constexpr std::array<std::uint32_t,2> channels{7,42};
 NumericContract vector_contract(DType type=DType::UInt64) {
     NumericContract c;c.dtype=type;c.semantic=Semantic::MelEnergy;c.quantity=Quantity::MelEnergy;
     c.shape.rank=Rank::Vector;c.shape.axes={Axis::Band,Axis::None};c.shape.extents={ExtentBounds{4,4},ExtentBounds{1,1}};
-    c.channel_order=channels;c.clock.domain="sensor.clock";c.clock.tick_seconds={1,48000};
+    c.channel_order=std::span(channels).first(1);c.clock.domain="sensor.clock";c.clock.tick_seconds={1,48000};
     c.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{11,1},{37,2}};return c;
 }
 OwnedProcessingContract owned(const DataContract& c) {
@@ -95,15 +95,15 @@ void owner_tests() {
 }
 void resolver_tests() {
     {
-        auto input=vector_contract(),scalar=input;scalar.shape={};scalar.coordinates={};scalar.channel_order=input.channel_order.subspan(1,1);
+        auto input=vector_contract(),scalar=input;scalar.shape={};scalar.coordinates={};scalar.channel_order=input.channel_order.first(1);
         ConfiguredProcessingNode extract;extract.id=8;extract.kind="IndexExtract";extract.inputs={{0,PortDirection::Input,owned(input)}};extract.outputs={{0,PortDirection::Output,owned(scalar)}};
-        extract.parameters=TransformProcessingParameters{{{"channel_index",NumericLiteral{std::uint64_t{1}}},{"index",NumericLiteral{std::uint64_t{3}}}}};
+        extract.parameters=TransformProcessingParameters{{{"channel_index",NumericLiteral{std::uint64_t{0}}},{"index",NumericLiteral{std::uint64_t{3}}}}};
         ResolvedProcessingNode resolved;CHECK(resolve_processing_node(extract,limits,resolved));CHECK(resolved.operation==ProcessingOperation::Extract);
         auto invalid=extract;std::get<TransformProcessingParameters>(invalid.parameters).values.back().value=NumericLiteral{std::uint64_t{4}};CHECK(!resolve_processing_node(invalid,limits,resolved));
         invalid=extract;auto wrong=scalar;wrong.dtype=DType::Float64;invalid.outputs[0].contract=owned(wrong);CHECK(!resolve_processing_node(invalid,limits,resolved));
         invalid=extract;std::get<TransformProcessingParameters>(invalid.parameters).values.push_back({"column",NumericLiteral{std::uint64_t{1}}});CHECK(!resolve_processing_node(invalid,limits,resolved));
         ConfiguredProcessingNode display;display.id=9;display.kind="ScalarView";display.inputs={{3,PortDirection::Input,owned(scalar)},{7,PortDirection::Input,owned(wrong)}};CHECK(resolve_processing_node(display,limits,resolved));
-        auto multi=scalar;multi.channel_order=input.channel_order;auto retained=display.inputs[1].contract;
+        auto multi=scalar;multi.channel_order=channels;auto retained=display.inputs[1].contract;
         CHECK(own_processing_contract(multi,frame_limits,8192,retained)==Status::incompatible_contract);
         CHECK(same_contract(retained.view(),display.inputs[1].contract.view()) && resolve_processing_node(display,limits,resolved));
         display.inputs[1].contract=owned(input);CHECK(!resolve_processing_node(display,limits,resolved));
@@ -139,9 +139,9 @@ void reduction_history_tests() {
     scalar.quantity=c.quantity;scalar.unit=c.unit;scalar.clock=c.clock;
     ConfiguredProcessingNode n;n.id=5;n.kind="ScalarReduce";n.parameters=ReduceProcessingParameters{};
     n.inputs.push_back(port(0,PortDirection::Input,c));n.outputs.push_back(port(0,PortDirection::Output,scalar));CHECK(resolve(n));
-    auto& p=std::get<ReduceProcessingParameters>(n.parameters);p.channels=ReductionChannels::BothChannels;CHECK(resolve(n));
-    p.channels=ReductionChannels::SelectedChannels;p.selected_channels={42};CHECK(resolve(n));p.selected_channels={999};CHECK(resolve(n).error==ProcessingError::InvalidParameters);
-    p.selected_channels={42,42};CHECK(resolve(n).error==ProcessingError::InvalidParameters);p.selected_channels={7};
+    auto& p=std::get<ReduceProcessingParameters>(n.parameters);p.channels=ReductionChannels::BothChannels;CHECK(resolve(n).error==ProcessingError::InvalidParameters);
+    p.channels=ReductionChannels::SelectedChannels;p.selected_channels={7};CHECK(resolve(n));p.selected_channels={999};CHECK(resolve(n).error==ProcessingError::InvalidParameters);
+    p.selected_channels={7,7};CHECK(resolve(n).error==ProcessingError::InvalidParameters);p.selected_channels={7};
     auto h=c;h.semantic=Semantic::History;h.history_element=c.semantic;h.shape.rank=Rank::Matrix;
     h.shape.axes={Axis::Time,Axis::Band};h.shape.extents={ExtentBounds{0,8},c.shape.extents[0]};h.coordinates={AxisCoordinates{},c.coordinates[0]};
     n.inputs[0].contract=owned(h);CHECK(resolve(n)); // WholeValue Matrix reduction is explicit and structurally supported.
@@ -194,7 +194,7 @@ void graph_tests() {
     caps.profile.max_peak_bytes=1;CHECK(admit_processing_graph(g,limits,caps,work,out).error==ProcessingError::ResourceLimit);caps.profile.max_peak_bytes=65536;
     CHECK(admit_processing_graph(g,limits,caps,std::span(work).first(5),out).error==ProcessingError::InsufficientWorkspace);
     auto tiny=limits;tiny.max_nodes=2;CHECK(admit_processing_graph(g,tiny,caps,work,out).error==ProcessingError::Limit);
-    g.versions.processing=1;CHECK(admit_processing_graph(g,limits,caps,work,out).error==ProcessingError::UnsupportedVersion);g.versions.processing=2;
+    g.versions.processing=1;CHECK(admit_processing_graph(g,limits,caps,work,out).error==ProcessingError::UnsupportedVersion);g.versions.processing=ProcessingVersions{}.processing;
     auto old=g.versions;old.data=3;CHECK(processing_versions_supported(old)==Status::ok);CHECK(processing_versions_supported(g.versions)==Status::ok);
     g.nodes[2]=route(3,c);g.edges.push_back({3,2,0,0});g.edges.erase(g.edges.begin());CHECK(admit_processing_graph(g,limits,caps,work,out).error==ProcessingError::Cycle);
     g.nodes[2].id=2;CHECK(admit_processing_graph(g,limits,caps,work,out).error==ProcessingError::InvalidNode);
@@ -255,12 +255,15 @@ void independent_findings_repairs() {
         if(axis==1)g.versions.control=edition;
         if(axis==2)g.versions.data=edition;
         CHECK(admit_processing_graph(g,limits,device,work,admission));}
-    for(int axis=0;axis<2;++axis){g.versions={};if(axis==0)g.versions.processing=1;else g.versions.graph=2;
+    for(const auto edition:{0u,1u,2u,3u,99u}){g.versions={};g.versions.processing=edition;
+        CHECK(admit_processing_graph(g,limits,device,work,admission).error==ProcessingError::UnsupportedVersion);}
+    for(const auto edition:{0u,1u,2u,3u,4u,99u}){g.versions={};g.versions.graph=edition;
         CHECK(admit_processing_graph(g,limits,device,work,admission).error==ProcessingError::UnsupportedVersion);}
     for(auto boundary:{ProcessingBoundary::Document,ProcessingBoundary::Control,ProcessingBoundary::Data}){
-        const auto current=boundary==ProcessingBoundary::Data?4u:2u;
+        const auto current=boundary==ProcessingBoundary::Data?5u:4u;
         CHECK(processing_boundary_version_supported(boundary,current)==Status::ok);
-        for(auto edition:{0u,1u,99u})CHECK(processing_boundary_version_supported(boundary,edition)==Status::unsupported_version);
+        for(auto edition:{0u,1u,2u,99u})CHECK(processing_boundary_version_supported(boundary,edition)==Status::unsupported_version);
+        if(boundary==ProcessingBoundary::Data)for(const auto edition:{3u,4u,6u})CHECK(processing_boundary_version_supported(boundary,edition)==Status::unsupported_version);
     }
     CHECK(processing_boundary_version_supported(static_cast<ProcessingBoundary>(99),2)==Status::invalid_argument);
     g.versions={};
@@ -295,6 +298,47 @@ void independent_findings_repairs() {
     }
 }
 }
+static void aligned_ancestry_regressions(){
+    auto pcm=vector_contract(DType::Float32);pcm.shape.axes={Axis::Sample,Axis::None};pcm.coordinates={};pcm.clock={"local",{1,48000},48000};
+    auto capture=[&](NodeId id){auto node=source(id,pcm);node.kind="AudioSource";node.parameters=EndpointProcessingParameters{};node.outputs.push_back(port(1,PortDirection::Output,pcm));return node;};
+    ConfiguredProcessingNode mixer;mixer.id=4;mixer.kind="Mixer";mixer.parameters=MixerProcessingParameters{MixerMode::WeightedMean,{{0,1},{1,1}},100,MixerConsumption::SourceAligned};mixer.inputs={port(0,PortDirection::Input,pcm),port(1,PortDirection::Input,pcm)};mixer.outputs={port(0,PortDirection::Output,pcm)};
+    auto grouped=route(3,pcm,"Switch");std::get<RouteProcessingParameters>(grouped.parameters).channels_per_stream=2;grouped.inputs.push_back(port(1,PortDirection::Input,pcm));grouped.outputs.push_back(port(2,PortDirection::Output,pcm));grouped.outputs.push_back(port(3,PortDirection::Output,pcm));
+    NumericProcessingGraph graph;graph.graph_id="aligned.lanes";graph.nodes={capture(1),capture(2),grouped,mixer};graph.edges={{1,3,0,0},{2,3,0,1},{3,4,0,0},{3,4,1,1}};
+    NumericDeviceCapabilities device{nullptr,[](const void*,const ResolvedProcessingNode&,const ProcessingResourceProfile&)noexcept{return ProcessingSupport{true,{}};},{{65536,65536,65536,65536},65536,1048576}};
+    std::array<std::size_t,32> workspace{};ProcessingGraphAdmission result;
+    CHECK(admit_processing_graph(graph,limits,device,workspace,result).error==ProcessingError::IncompatiblePorts);
+    graph.edges[1]={1,3,1,1};CHECK(admit_processing_graph(graph,limits,device,workspace,result));
+    // Nonzero output groups still map modulo C to their actual source lanes.
+    graph.edges[2].output_port=2;graph.edges[3].output_port=3;CHECK(admit_processing_graph(graph,limits,device,workspace,result));
+    auto selector=grouped;selector.kind="InputSelector";selector.parameters=TransformProcessingParameters{{{"selected_input",NumericLiteral{std::uint64_t{0}}},{"channels_per_stream",NumericLiteral{std::uint64_t{2}}}}};selector.inputs={port(0,PortDirection::Input,pcm),port(1,PortDirection::Input,pcm),port(2,PortDirection::Input,pcm),port(3,PortDirection::Input,pcm)};selector.outputs.resize(2);graph.nodes[2]=selector;
+    graph.edges={{1,3,0,0},{1,3,1,1},{2,3,0,2},{1,3,1,3},{3,4,0,0},{3,4,1,1}};
+    CHECK(admit_processing_graph(graph,limits,device,workspace,result).error==ProcessingError::IncompatiblePorts);
+    graph.edges[3]={2,3,1,3};CHECK(admit_processing_graph(graph,limits,device,workspace,result));
+    // Mono device discovery disconnects the absent lane before its explicit
+    // resampler. Known zero-producing lane transforms retain safe admission.
+    auto silent=route(6,pcm,"Gate");silent.parameters=RouteProcessingParameters{1,0,true};silent.outputs.resize(1);graph.nodes.push_back(silent);graph.edges[3]={6,3,0,3};CHECK(admit_processing_graph(graph,limits,device,workspace,result));graph.nodes.pop_back();graph.edges[3]={2,3,1,3};
+
+    // Equal clock values are insufficient for independent generators; explicit
+    // references to one SampleClock establish their shared origin.
+    ConfiguredProcessingNode clock;clock.id=5;clock.kind="SampleClock";clock.parameters=SampleClockProcessingParameters{};
+    for(std::size_t i=0;i<2;++i){graph.nodes[i].kind="SignalGenerator";graph.nodes[i].parameters=SignalGeneratorProcessingParameters{};graph.nodes[i].outputs.resize(1);}
+    graph.nodes={graph.nodes[0],graph.nodes[1],mixer,clock};graph.edges={{1,4,0,0},{2,4,0,1}};graph.configuration_bindings={{5,1},{5,2}};CHECK(admit_processing_graph(graph,limits,device,workspace,result));
+    auto other=clock;other.id=6;graph.nodes.push_back(other);graph.configuration_bindings[1].from=6;CHECK(admit_processing_graph(graph,limits,device,workspace,result).error==ProcessingError::IncompatiblePorts);
+}
+static void configuration_binding_regressions(){
+    auto pcm=vector_contract(DType::Float32);pcm.shape.axes={Axis::Sample,Axis::None};pcm.coordinates={};pcm.clock={"local",{1,48000},48000};
+    NumericProcessingGraph g;g.graph_id="config";
+    ConfiguredProcessingNode clock;clock.id=1;clock.kind="SampleClock";clock.parameters=SampleClockProcessingParameters{};
+    ConfiguredProcessingNode generator;generator.id=2;generator.kind="SignalGenerator";generator.parameters=SignalGeneratorProcessingParameters{};generator.outputs={port(0,PortDirection::Output,pcm)};generator.clock_node=999;
+    g.nodes={clock,generator};g.configuration_bindings={{1,2}};
+    NumericProcessingGraph resolved;CHECK(resolve_configuration_bindings(g,limits,resolved));CHECK(resolved.nodes[1].clock_node==1);CHECK(g.nodes[1].clock_node==999);
+    g.configuration_bindings.push_back({1,2});auto unchanged=resolved;CHECK(!resolve_configuration_bindings(g,limits,resolved));CHECK(resolved.nodes[1].clock_node==unchanged.nodes[1].clock_node);
+    g.configuration_bindings={{2,1}};CHECK(!resolve_configuration_bindings(g,limits,resolved));
+    g.configuration_bindings.clear();CHECK(resolve_configuration_bindings(g,limits,resolved));CHECK(resolved.nodes[1].clock_node==-1);
+    auto grouped=route(5,pcm,"Switch");std::get<RouteProcessingParameters>(grouped.parameters).channels_per_stream=2;
+    grouped.inputs.push_back(port(1,PortDirection::Input,pcm));grouped.outputs.push_back(port(2,PortDirection::Output,pcm));grouped.outputs.push_back(port(3,PortDirection::Output,pcm));CHECK(resolve(grouped));
+    grouped.outputs.pop_back();CHECK(!resolve(grouped));
+}
 static void lowering_interval_regressions(){
  auto input=vector_contract();input.dtype=DType::Float64;auto output=input;output.dtype=DType::Int16;
  NumericProcessingGraph g;g.graph_id="original.edge.index";g.nodes={source(1,input),sink(2,output),sink(3,output)};
@@ -306,4 +350,79 @@ static void lowering_interval_regressions(){
  auto oversized=g;oversized.nodes.front().kind.assign(limits.max_owned_metadata_bytes,'x');const auto allocations_before=allocation_probe::allocations;
  CHECK(!lower_dtype_edges(oversized,limits,untouched)&&allocation_probe::allocations==allocations_before&&untouched.graph_id=="unchanged");
 }
-int main(){lowering_interval_regressions();owner_tests();resolver_tests();reduction_history_tests();graph_tests();admission_boundary_tests();independent_findings_repairs();std::printf("numeric processing contract failures=%d\n",failures);return failures?1:0;}
+static void physical_configuration_matrix(){
+ for(const std::uint32_t rate:{44100u,48000u,96000u})for(const std::uint64_t size:{512u,4096u}){
+    auto window=vector_contract(DType::Float32);window.semantic=Semantic::Windowed;window.quantity=Quantity::Amplitude;
+    window.shape.axes={Axis::Sample,Axis::None};window.shape.extents[0]={size,size};window.coordinates={};window.clock={"matrix.clock",{1,rate},rate};
+    auto spectrum=window;spectrum.semantic=Semantic::SpectrumMagnitude;spectrum.shape.axes[0]=Axis::Bin;spectrum.shape.extents[0]={size/2,size/2};spectrum.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{std::int64_t(rate),size}};
+    ConfiguredProcessingNode fft;fft.id=2;fft.kind="StereoFFT";fft.parameters=TransformProcessingParameters{};fft.inputs={port(0,PortDirection::Input,window)};fft.outputs={port(0,PortDirection::Output,spectrum)};
+    auto display=sink(3,spectrum,"FFTView");NumericProcessingGraph graph;graph.graph_id="physical.matrix";graph.nodes={source(1,window),fft,display};graph.edges={{1,2,0,0},{2,3,0,0}};
+    graph.configuration_bindings={{2,3,ConfigurationRole::SampleClock,ConfigurationRole::SampleClock},{2,3,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};
+    NumericProcessingGraph resolved;CHECK(resolve_configuration_bindings(graph,limits,resolved));for(const auto& n:resolved.nodes)CHECK(resolve(n));
+    const auto actual=std::get<NumericContract>(resolved.nodes[2].inputs[0].contract.view());
+    CHECK(actual.clock.sample_rate==rate && actual.shape.extents[0].maximum==size/2 && actual.coordinates[0].step==Ratio(std::int64_t(rate),size));
+    CHECK(has_configuration_binding(resolved,3,ConfigurationRole::SampleClock) && has_configuration_binding(resolved,3,ConfigurationRole::FrequencyGrid));
+    const auto retained=resolved;auto conflict=graph;auto changed=spectrum;changed.coordinates[0].step={1,1};conflict.nodes[2].inputs[0].contract=owned(changed);
+    CHECK(resolve_configuration_bindings(conflict,limits,resolved).error==ProcessingError::IncompatiblePorts);
+    CHECK(resolved.graph_id==retained.graph_id && resolved.configuration_bindings==retained.configuration_bindings && same_contract(resolved.nodes[2].inputs[0].contract.view(),retained.nodes[2].inputs[0].contract.view()));
+    auto missing=graph;missing.configuration_bindings.pop_back();CHECK(resolve_configuration_bindings(missing,limits,resolved));CHECK(!has_configuration_binding(resolved,3,ConfigurationRole::FrequencyGrid));CHECK(same_contract(resolved.nodes[2].inputs[0].contract.view(),spectrum));
+    // A dependency cycle cannot turn numeric producers into clock sources.
+    auto cyclic=graph;cyclic.configuration_bindings={{2,3,ConfigurationRole::SampleClock,ConfigurationRole::SampleClock},{3,2,ConfigurationRole::SampleClock,ConfigurationRole::SampleClock}};
+    const auto before=resolved;CHECK(!resolve_configuration_bindings(cyclic,limits,resolved));CHECK(resolved.configuration_bindings==before.configuration_bindings && same_contract(resolved.nodes[2].inputs[0].contract.view(),before.nodes[2].inputs[0].contract.view()));
+    cyclic.configuration_bindings={{2,2,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};CHECK(!resolve_configuration_bindings(cyclic,limits,resolved));CHECK(resolved.configuration_bindings==before.configuration_bindings);
+ }
+}
+static void input_selector_output_regressions() {
+    auto bands=vector_contract(DType::Float32);
+    const auto selector=[&](const NumericContract& input,const NumericContract& output) {
+        ConfiguredProcessingNode n;n.id=12;n.kind="InputSelector";
+        n.parameters=TransformProcessingParameters{{{"selected_input",NumericLiteral{std::uint64_t{42}}}}};
+        n.inputs={port(7,PortDirection::Input,input),port(42,PortDirection::Input,input)};
+        // Output IDs are canonical 0..N-1; input IDs stay stable and sparse.
+        n.outputs={port(0,PortDirection::Output,output)};return n;
+    };
+    // Agreeing inputs must not conceal an incompatible declared output.
+    CHECK(resolve(selector(bands,bands)));
+    for(int mismatch=0;mismatch<4;++mismatch) {
+        auto output=bands;
+        if(mismatch==0)output.shape.extents[0]={8,8};
+        if(mismatch==1)output.clock.domain="other.clock";
+        if(mismatch==2)output.dtype=DType::Float64;
+        if(mismatch==3)output.representation.encoding=StorageEncoding::FixedLittleEndian;
+        CHECK(resolve(selector(bands,output)).error==ProcessingError::IncompatiblePorts);
+    }
+    auto samples=bands;samples.shape.axes={Axis::Sample,Axis::None};samples.coordinates={};
+    samples.clock={"samples",{1,48000},48000};
+    auto envelope=samples;envelope.shape.extents[0]={1,16};
+    // A sample axis alone does not provide a physical sample-clock envelope.
+    auto unclocked=samples;unclocked.clock.sample_rate=0;
+    auto unclocked_envelope=envelope;unclocked_envelope.clock.sample_rate=0;
+    CHECK(resolve(selector(unclocked,unclocked)));
+    CHECK(resolve(selector(unclocked,unclocked_envelope)).error==ProcessingError::IncompatiblePorts);
+    for(auto label:{Semantic::PCM,Semantic::Numeric}) {
+        samples.semantic=label;envelope.semantic=label;
+        auto n=selector(samples,envelope);CHECK(resolve(n));
+        // The semantic label on one endpoint is passive metadata as well.
+        auto relabelled=envelope;relabelled.semantic=label==Semantic::PCM?Semantic::Numeric:Semantic::PCM;
+        n.outputs[0].contract=owned(relabelled);CHECK(resolve(n));
+        auto too_small=envelope;too_small.shape.extents[0]={1,3};
+        CHECK(resolve(selector(samples,too_small)).error==ProcessingError::IncompatiblePorts);
+        auto wrong_clock=envelope;wrong_clock.clock={"samples",{1,44100},44100};
+        CHECK(resolve(selector(samples,wrong_clock)).error==ProcessingError::IncompatiblePorts);
+        auto wrong_dtype=envelope;wrong_dtype.dtype=DType::Float64;
+        CHECK(resolve(selector(samples,wrong_dtype)).error==ProcessingError::IncompatiblePorts);
+        auto wrong_representation=envelope;wrong_representation.representation.encoding=StorageEncoding::FixedLittleEndian;
+        CHECK(resolve(selector(samples,wrong_representation)).error==ProcessingError::IncompatiblePorts);
+    }
+    // A group uses canonical lane IDs; storage order cannot change port identity.
+    auto grouped=selector(samples,envelope);
+    grouped.parameters=TransformProcessingParameters{{{"selected_input",NumericLiteral{std::uint64_t{1}}},
+        {"channels_per_stream",NumericLiteral{std::uint64_t{2}}}}};
+    grouped.inputs={port(3,PortDirection::Input,samples),port(1,PortDirection::Input,samples),
+        port(0,PortDirection::Input,samples),port(2,PortDirection::Input,samples)};
+    grouped.outputs={port(1,PortDirection::Output,envelope),port(0,PortDirection::Output,envelope)};
+    CHECK(resolve(grouped));
+    auto invalid=envelope;invalid.dtype=DType::Float64;grouped.outputs[1].contract=owned(invalid);
+    CHECK(resolve(grouped).error==ProcessingError::IncompatiblePorts);
+}
+int main(){input_selector_output_regressions();physical_configuration_matrix();aligned_ancestry_regressions();configuration_binding_regressions();lowering_interval_regressions();owner_tests();resolver_tests();reduction_history_tests();graph_tests();admission_boundary_tests();independent_findings_repairs();std::printf("numeric processing contract failures=%d\n",failures);return failures?1:0;}

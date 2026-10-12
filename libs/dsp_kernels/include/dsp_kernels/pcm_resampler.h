@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace dsp_kernels {
@@ -57,7 +58,8 @@ public:
     }
     bool input_contiguous(std::int64_t ticks) const noexcept {return !input_expected_ || ticks==next_input_;}
     bool advance_input(std::int64_t ticks,std::size_t count) noexcept {
-        if(count>std::uint64_t(INT64_MAX) || ticks>INT64_MAX-std::int64_t(count))return false;
+        if(!std::in_range<std::int64_t>(count))return false;
+        if(ticks>INT64_MAX-std::int64_t(count))return false;
         next_input_=ticks+std::int64_t(count);input_expected_=true;return true;
     }
     bool anchored() const noexcept {return anchored_;}

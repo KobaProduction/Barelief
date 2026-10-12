@@ -15,12 +15,15 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <numeric>
 using signal_contracts::Status;
 extern "C" bool __attribute__((weak)) streamer_host_setup(){return true;}
 extern "C" int __attribute__((weak)) streamer_host_acquire_socket(){return -1;}
 extern "C" void __attribute__((weak)) streamer_host_release_socket(int){}
 extern "C" Status __attribute__((weak)) streamer_host_read_pcm(signal_contracts::DataFrameView*){return Status::would_block;}
 extern "C" void __attribute__((weak)) streamer_host_report_processing(std::uint64_t,std::uint64_t,std::uint64_t,std::uint64_t){}
+extern "C" void __attribute__((weak)) streamer_host_report_processing_errors(std::uint64_t,Status){}
+extern "C" void __attribute__((weak)) streamer_host_report_node_stats(const dataflow_runtime::NodeStats*,std::size_t){}
 extern "C" application::ProcessingPersistencePort* __attribute__((weak)) streamer_host_persistence(){return nullptr;}
 extern "C" Status __attribute__((weak)) streamer_host_restore_processing(domain::NumericProcessingGraph*){return Status::unavailable;}
 extern "C" std::size_t __attribute__((weak)) streamer_host_memory_budget(){return heap_caps_get_free_size(MALLOC_CAP_8BIT);}
@@ -62,6 +65,17 @@ constexpr std::size_t MemoryBytes=320*1024;
 constexpr const char* StreamId=Spectral?"esp32-mel":"esp32-raw";
 embedded_support::Profile example_profile(std::size_t available_memory) {
     embedded_support::Profile p;p.spectral=Spectral;p.fft_size=FftSize;p.memory_bytes=std::min(MemoryBytes,available_memory);p.block_samples=BlockSamples;
+    p.channels=1;
+#ifdef CONFIG_STREAMER_SAMPLE_RATE
+    p.sample_rate=CONFIG_STREAMER_SAMPLE_RATE;
+#endif
+#if defined(CONFIG_STREAMER_ANALYSIS_RATE_NUMERATOR) && defined(CONFIG_STREAMER_ANALYSIS_RATE_DENOMINATOR)
+    constexpr auto divisor=std::gcd(CONFIG_STREAMER_ANALYSIS_RATE_NUMERATOR,CONFIG_STREAMER_ANALYSIS_RATE_DENOMINATOR);
+    p.execution_interval={CONFIG_STREAMER_ANALYSIS_RATE_DENOMINATOR/divisor,
+        std::uint64_t(CONFIG_STREAMER_ANALYSIS_RATE_NUMERATOR/divisor)};
+#else
+    p.execution_interval={1,120};
+#endif
     // prepare derives the codec/replay/cold-workspace reservations from their
     // actual compiled ABI before allocating them or opening NVS.
     p.control_bytes=0;
@@ -142,6 +156,9 @@ struct Device final:application::NumericGraphPreparationPort {
         :profile(example_profile(available_memory)),effective(embedded_support::device_profile(profile)){}
     Clock clock;Buffers buffers;OutputQueue output_queue;
     std::atomic_uint64_t processed_frames{0},processing_us{0},maximum_processing_us{0};
+    std::atomic_uint64_t processing_errors{0};
+    std::atomic<Status> last_processing_error{Status::ok};
+    std::uint64_t clock_samples=0,clock_sequence=0; // acquisition owner only
     std::unique_ptr<dataflow_runtime::GraphExecutor> executor;
     std::mutex processing_mutex;
     std::unique_lock<std::mutex> pending_commit;
@@ -211,8 +228,10 @@ struct Device final:application::NumericGraphPreparationPort {
     }
     void configure_runtime() {
         auto& r=effective.runtime;r.admission.max_text_bytes=64;r.admission.max_owned_metadata_bytes=8192;
+        r.monotonic_nanoseconds=[](void*) noexcept {return std::uint64_t(esp_timer_get_time())*1000;};
         r.admission.max_ports_per_node=2;r.admission.max_parameters_per_node=4;
-        r.admission.frame.max_payload_bytes=std::min<std::size_t>(r.admission.frame.max_payload_bytes,FftSize*2*sizeof(float));
+        r.admission.frame.max_payload_bytes=std::min<std::size_t>(r.admission.frame.max_payload_bytes,
+            std::max<std::size_t>(FftSize,BlockSamples)*sizeof(float));
         r.resources.maximum.plan_bytes=std::min<std::size_t>(32768,r.resources.maximum.plan_bytes);
         const auto m=r.resources;advertised.maximum={m.maximum.plan_bytes,m.maximum.payload_bytes,m.maximum.scratch_bytes,m.maximum.stack_bytes,m.max_peak_bytes};
         caps.numeric=application::NumericProcessingCapabilities{capabilities(),{r.admission,r.resources}};
@@ -221,7 +240,16 @@ struct Device final:application::NumericGraphPreparationPort {
         return {this,[](const void* c,const domain::ResolvedProcessingNode& node,const domain::ProcessingResourceProfile& resources) noexcept {
             const auto& d=*static_cast<const Device*>(c);
             if(node.kind=="NetworkInput")return domain::ProcessingSupport{};
-            if(node.role==domain::NodeRole::Source && (node.kind!="AudioSource" || node.id!=0 || node.outputs.size()!=1 ||
+            if(node.kind=="SampleClock") {
+                const auto* clock=std::get_if<domain::SampleClockProcessingParameters>(node.parameters);
+                if(!clock || clock->sample_rate!=d.profile.sample_rate)return domain::ProcessingSupport{};
+            } else if(node.kind=="SignalGenerator") {
+                if(node.outputs.size()!=1)return domain::ProcessingSupport{};
+                const auto contract=node.outputs.front().contract.view();
+                const auto* numeric=std::get_if<signal_contracts::NumericContract>(&contract);
+                if(!numeric || numeric->clock.sample_rate!=d.profile.sample_rate ||
+                    numeric->shape.extents[0].minimum>BlockSamples || numeric->shape.extents[0].maximum<BlockSamples)return domain::ProcessingSupport{};
+            } else if(node.role==domain::NodeRole::Source && (node.kind!="AudioSource" || node.id!=0 || node.outputs.size()!=1 ||
                !signal_contracts::same_contract(node.outputs.front().contract.view(),d.source.input_contract())))return domain::ProcessingSupport{};
             const auto actual=embedded_support::numeric_capabilities(d.effective);
             auto support=actual.query(actual.context,node,resources);
@@ -295,7 +323,7 @@ struct Device final:application::NumericGraphPreparationPort {
         const auto cold_bytes=std::max(sizeof(PersistenceBuffers),session_bytes->external_staging_bytes);
         // DTO replay slots include their own objects. DATA tx/scratch are exactly
         // the two max_frame_bytes owners already charged by Profile::admit.
-        profile.adapter_bytes=sizeof(Device)-sizeof(slots_)-2*FrameBytes+BlockSamples*2*sizeof(float)+8*1024+4096+TaskStackBytes+2*sizeof(StaticTask_t);
+        profile.adapter_bytes=sizeof(Device)-sizeof(slots_)-2*FrameBytes+BlockSamples*profile.channels*sizeof(float)+8*1024+4096+TaskStackBytes+2*sizeof(StaticTask_t);
         profile.control_bytes=session_bytes->persistent_bytes+cold_bytes+(slots_.size()+1) * *snapshot_bytes+
             sizeof(application::ProcessingControlService)+sizeof(application::GraphLifecycle)+
             sizeof(application::GraphLifecycleControlPort)+sizeof(dataflow_runtime::GraphExecutor)+
@@ -365,16 +393,49 @@ struct Device final:application::NumericGraphPreparationPort {
     void process(const signal_contracts::DataFrameView& input) noexcept {
         std::lock_guard lock(processing_mutex);
         if(!executor->running())return;
+        const auto* graph=executor->plan()->numeric_definition();
+        if(!graph || std::none_of(graph->nodes.begin(),graph->nodes.end(),[](const auto& node){return node.id==0 && node.kind=="AudioSource";}))return;
         const auto began=esp_timer_get_time();
-        executor->process_numeric_ports(0,input,{delivery_revision.load(std::memory_order_relaxed),delivery_epoch.load(std::memory_order_relaxed)},
+        const auto status=executor->process_numeric_ports(0,input,{delivery_revision.load(std::memory_order_relaxed),delivery_epoch.load(std::memory_order_relaxed)},
             {nullptr,[](void* c,const dataflow_runtime::NumericPortFrameView& out) {
                 auto& owner=*static_cast<Device*>(c);
                 if(owner.selected_endpoint.load(std::memory_order_acquire)!=((std::uint64_t(std::uint32_t(out.identity.node))<<16)|out.identity.port))return;
                 owner.output_queue.push(out.frame,owner.effective.data.frame,out.identity.node,out.identity.port,out.delivery);
             },nullptr,this});
-        const auto elapsed=std::uint64_t(esp_timer_get_time()-began);processed_frames.fetch_add(1,std::memory_order_relaxed);processing_us.fetch_add(elapsed,std::memory_order_relaxed);
+        if(status==Status::ok)processed_frames.fetch_add(1,std::memory_order_relaxed);
+        else {
+            processing_errors.fetch_add(1,std::memory_order_relaxed);
+            last_processing_error.store(status,std::memory_order_relaxed);
+        }
+        const auto elapsed=std::uint64_t(esp_timer_get_time()-began);processing_us.fetch_add(elapsed,std::memory_order_relaxed);
         auto prior=maximum_processing_us.load(std::memory_order_relaxed);
         while(prior<elapsed&&!maximum_processing_us.compare_exchange_weak(prior,elapsed,std::memory_order_relaxed)){}
+    }
+    void tick_clocks(bool missing_input) noexcept {
+        std::lock_guard lock(processing_mutex);
+        if(!executor->running() || clock_sequence==UINT64_MAX || clock_samples>std::uint64_t(INT64_MAX)-BlockSamples)return;
+        signal_contracts::FrameStamp event;
+        event.sequence=event.source_sequence=++clock_sequence;
+        event.epoch=event.producer_epoch=delivery_epoch.load(std::memory_order_relaxed);
+        event.generation=event.epoch;event.graph_revision=delivery_revision.load(std::memory_order_relaxed);
+        event.timestamp_ticks=event.sample_begin=std::int64_t(clock_samples);
+        event.sample_count=BlockSamples;event.has_sample_interval=true;event.stream_id="esp32-clock";
+        const dataflow_runtime::DeliveryStamp delivery{event.graph_revision,event.epoch};
+        const dataflow_runtime::NumericRuntimeCallbacks callbacks{nullptr,[](void* c,const dataflow_runtime::NumericPortFrameView& out) {
+            auto& owner=*static_cast<Device*>(c);
+            if(owner.selected_endpoint.load(std::memory_order_acquire)==((std::uint64_t(std::uint32_t(out.identity.node))<<16)|out.identity.port))
+                owner.output_queue.push(out.frame,owner.effective.data.frame,out.identity.node,out.identity.port,out.delivery);
+        },nullptr,this};
+        const auto* graph=executor->plan()->numeric_definition();
+        auto observe=[&](Status status) {
+            if(status!=Status::ok){processing_errors.fetch_add(1,std::memory_order_relaxed);last_processing_error.store(status,std::memory_order_relaxed);}
+        };
+        if(graph) {
+            if(missing_input)for(const auto& node:graph->nodes)if(node.kind=="AudioSource" && node.id==0)
+                observe(executor->advance_unavailable_source(node.id,event,delivery,callbacks));
+            for(const auto& node:graph->nodes)if(node.kind=="SampleClock")observe(executor->process_clock(node.id,event,delivery,callbacks));
+        }
+        clock_samples+=BlockSamples;
     }
     void transmit_outputs() {
         for(std::size_t i=0;i<OutputQueue::Capacity;++i) {
@@ -394,6 +455,23 @@ struct Device final:application::NumericGraphPreparationPort {
         }
     }
 
+    void report_nodes() {
+        // Bounded telemetry snapshot. Host callback runs after serialized access,
+        // so diagnostics never call arbitrary firmware code while holding DSP.
+        std::array<dataflow_runtime::NodeStats,8> stats{};
+        std::size_t count=0;
+        {
+            std::lock_guard lock(processing_mutex);
+            const auto* plan=executor?executor->plan():nullptr;
+            const auto* graph=plan?plan->numeric_definition():nullptr;
+            if(graph)for(const auto& node:graph->nodes) {
+                if(count==stats.size())break;
+                if(const auto value=executor->node_stats(node.id))stats[count++]=*value;
+            }
+        }
+        streamer_host_report_node_stats(stats.data(),count);
+    }
+
 };
 std::unique_ptr<Device> device;
 StaticTask_t acquisition_control;
@@ -405,9 +483,11 @@ void acquire(void*) {
         const auto now=esp_timer_get_time();if(now>=next) {
 #ifdef CONFIG_STREAMER_EXTERNAL_PCM
             signal_contracts::DataFrameView input;const auto received=streamer_host_read_pcm(&input);
-            if(received==Status::ok || received==Status::unavailable)d.process(input);
+            if(received==Status::ok)d.process(input);
+            d.tick_clocks(received!=Status::ok);
 #else
             d.source.tick_source([](void* c,const nd::Message& source){static_cast<Device*>(c)->process(source.frame_view());},&d);
+            d.tick_clocks(false);
 #endif
             // Absolute sample deadlines preserve fractional periods and cannot
             // accumulate transport/task wake-up drift.
@@ -438,6 +518,8 @@ void worker(void*) {
             report_at=d.clock.now_ms()+1000;
             streamer_host_report_processing(d.processed_frames.load(std::memory_order_relaxed),d.processing_us.load(std::memory_order_relaxed),
                 d.maximum_processing_us.load(std::memory_order_relaxed),d.output_queue.dropped.load(std::memory_order_relaxed));
+            streamer_host_report_processing_errors(d.processing_errors.load(std::memory_order_relaxed),d.last_processing_error.load(std::memory_order_relaxed));
+            d.report_nodes();
         }
         d.transmit_outputs();
         if(d.discard_data) {

@@ -13,13 +13,16 @@ struct NumericDocumentResult {
     QString error, path;
     explicit operator bool() const { return error.isEmpty(); }
 };
+// Cold native-format reconciliation shared by GUI/headless capture adapters.
+// Atomically rebuilds mono source outputs and dependent contracts; no backend I/O.
+bool resolve_numeric_source_format(domain::NumericProcessingGraph&,domain::NodeId,std::uint32_t sample_rate,std::uint32_t outputs,QString* error=nullptr);
 // Known typed snapshots for editor clipboard/undo. Never a whole-project writer.
 NumericDocumentResult encode_numeric_node(const domain::ConfiguredProcessingNode&, QByteArray&);
 NumericDocumentResult decode_numeric_node(QByteArrayView, domain::ConfiguredProcessingNode&);
 NumericDocumentResult encode_numeric_graph(const domain::NumericProcessingGraph&, QByteArray&);
 NumericDocumentResult decode_numeric_graph(QByteArrayView, domain::NumericProcessingGraph&);
-// New editor/preset snapshot boundary: canonical3 or typed QtNodes visual3.
-// On failure out is unchanged. Whole-project scene_graph remains canonical3.
+// New editor/preset snapshot boundary: canonical4 or typed QtNodes visual4.
+// On failure out is unchanged. Whole-project scene_graph remains canonical4.
 NumericDocumentResult decode_numeric_editor_graph(QByteArrayView, domain::NumericProcessingGraph&);
 // Version1 preset display/workspace snapshot, excluding global preferences and
 // processing. Unknown source fields are not projected; failure keeps out intact.

@@ -74,10 +74,10 @@ WorkspaceDock *MainWindow::add_panel(const QString &id, const QString &title, QW
             for (auto it = prefs.constBegin(); it != prefs.constEnd(); ++it)
                 saved[it.key()] = it.value();
             _application.state().file_configs.ui.graph_views[id] = saved;
-            _numeric_render_dirty=true;
+            if(prefs.size()!=1 || !prefs.contains("camera"))_numeric_render_dirty=true;
             _workspace_save_timer.start();
         });
-        connect(panel,&GraphPanel::renderer_changed,this,[this]{_numeric_render_dirty=true;render_numeric_views();});
+        connect(panel,&GraphPanel::renderer_changed,this,[this]{refresh_vector_delivery_queues();_numeric_render_dirty=true;render_numeric_views();});
         dock->setWidget(panel);
     } else
         dock->setWidget(view);
@@ -212,10 +212,20 @@ void MainWindow::restore_preset_presentation(const QJsonObject& supplied) {
     _workspace_save_timer.stop();_camera_save_timer.stop();_last_graph_slot.clear();
     // Dock identities and saved ADS groups belong to the selected preset.
     // Endpoint states survive until the new binding set removes incompatible ones.
-    for(auto& view:_node_views) {
-        disconnect(view.dock,nullptr,this,nullptr);removeDockWidget(view.dock);delete view.dock;
+    // ADS removal emits visibility notifications for neighbouring docks. Detach
+    // the complete old registry before any removal so those callbacks cannot
+    // discover a dock deleted earlier in the same restoration.
+    const auto previousViews=std::move(_node_views);
+    _node_views.clear();_active_node_views.clear();
+    for(const auto& view:previousViews)disconnect(view.dock,nullptr,this,nullptr);
+    for(auto it=previousViews.cbegin();it!=previousViews.cend();++it) {
+        _numeric_bindings.remove(it.key());_metric_bindings.remove(it.key());
+        _render_visible.remove(it.key());_surface_errors.remove(it.key());
     }
-    _node_views.clear();_active_node_views.clear();_view_draft=std::move(draft);_view_draft_device=_application.device_id();
+    for(const auto& view:previousViews) {
+        removeDockWidget(view.dock);delete view.dock;
+    }
+    _view_draft=std::move(draft);_view_draft_device=_application.device_id();
     auto& ui=_application.state().file_configs.ui;
     ui.graph_views=presentation.value("graph_views").toObject();ui.graph_rendering=presentation.value("graph_rendering").toObject();
     const auto session_geometry=ui.workspace.value("geometry");
@@ -266,13 +276,22 @@ void MainWindow::restore_preset_presentation(const QJsonObject& supplied) {
     save_workspace();refresh_subscriptions();_workspace_save_timer.start();
 }
 void MainWindow::refresh_subscriptions() {
+    // A restoration publishes one complete binding set after ADS has settled.
+    if(_restoring_preset)return;
+    refresh_vector_delivery_queues();
     std::vector<pipeline::EndpointIdentity> endpoints;
-    for(const auto& binding:_numeric_bindings) {
+    const auto exposed=[this](const QString& key){
+        auto* dock=_node_views.contains(key)?_node_views[key].dock:_panels.value(key);
+        return dock && !dock->isHidden() && dock->property("renderExposed").toBool();
+    };
+    for(auto it=_numeric_bindings.cbegin();it!=_numeric_bindings.cend();++it) {
+        if(!exposed(it.key()))continue;
+        const auto& binding=it.value();
         if(binding.device!=_application.device_id())continue;
         if(std::find(endpoints.begin(),endpoints.end(),binding.endpoint)==endpoints.end())
             endpoints.push_back(binding.endpoint);
     }
-    for(const auto& ports:_metric_bindings)for(const auto& binding:ports) {
+    for(auto it=_metric_bindings.cbegin();it!=_metric_bindings.cend();++it)if(exposed(it.key()))for(const auto& binding:it.value()) {
         if(binding.device==_application.device_id() && std::find(endpoints.begin(),endpoints.end(),binding.endpoint)==endpoints.end())
             endpoints.push_back(binding.endpoint);
     }
@@ -493,11 +512,16 @@ void MainWindow::add_graph_node(int node,int placement) {
     if(in_editor_window(dock)) _last_graph_slot=dock;
 }
 void MainWindow::set_graph_exposed(const QString &key, WorkspaceDock *dock, bool exposed) {
+    const bool changed=dock->property("renderExposed").toBool()!=exposed;
     _render_visible[key] = exposed;
     dock->setProperty("renderExposed", exposed);
     if (auto *surface = qobject_cast<SpectrogramGraph *>(dock->widget())) surface->set_render_visible(exposed);
     if (auto *panel = qobject_cast<GraphPanel *>(dock->widget())) panel->set_render_visible(exposed);
-    if(exposed)render_numeric_views();
+    // Hidden tabs do not need transport previews or owning history snapshots.
+    // DSP continues in the executor; subscription admission restores current
+    // data when a tab returns, including without any new source ingress.
+    if(changed)refresh_subscriptions();
+    else if(exposed)render_numeric_views();
     // ADS emits Show while the returning tab can still have its offscreen
     // geometry. Resolve exposure after the tab selection/layout has settled.
     QTimer::singleShot(0,dock,[this,key,dock] {

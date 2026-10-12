@@ -12,7 +12,7 @@ struct SessionConfig {
     bool endpoint_authorized=false, allow_mutations=true;
     std::string device_identity;
     std::uint64_t client_identity=0;
-    std::uint32_t codec_mask=3, schema_version=2;
+    std::uint32_t codec_mask=3, schema_version=bdsp_protocol::numeric_control::SchemaVersion;
     const application::ProcessingCapabilities* application_capabilities=nullptr;
     // Trusted immutable composition snapshot of implemented combinations. Its
     // backing metadata outlives session; admission remains the service's query.

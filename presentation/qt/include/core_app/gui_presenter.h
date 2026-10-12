@@ -53,6 +53,7 @@ class GuiPresenter final : public QObject {
     void set_numeric_endpoints(std::vector<pipeline::EndpointIdentity>);
     void set_editor_numeric_endpoints(std::vector<pipeline::EndpointIdentity>);
     void set_visible_views(quint32 mask);
+    void set_numeric_preview_cadence_hz(int hz);
     QString local_device_id() const {
         return _local_device_id;
     }
@@ -69,6 +70,7 @@ class GuiPresenter final : public QObject {
         return _saved_graph_warning;
     }
     QString file_protection_warning() const { return _file_protection_warning; }
+    void clear_file_protection_warning();
     const std::optional<domain::NumericProcessingGraph>& applied_numeric_graph() const { return _applied_numeric; }
 
   public Q_SLOTS:
@@ -102,6 +104,7 @@ class GuiPresenter final : public QObject {
 
   private:
     quint64 _subscription_epoch = 0;
+    int _numeric_preview_cadence_hz = 60;
     std::optional<quint32> _visible_views;
     quint32 _subscription = std::numeric_limits<quint32>::max();
     bool _remote = false;
@@ -133,6 +136,7 @@ class GuiPresenter final : public QObject {
     quint64 dispatch_graph(PendingGraph request);
     void set_apply_status(QString status);
     QJsonObject _active_graph;
+    QMap<QString, pipeline::ComponentStatus> _published_component_statuses;
     std::optional<domain::NumericProcessingGraph> _applied_numeric;
     QString _saved_graph_warning;
     bool _saved_draft_unsupported = false;

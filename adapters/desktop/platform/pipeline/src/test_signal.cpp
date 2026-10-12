@@ -1,5 +1,6 @@
 #include "pipeline/test_signal.h"
 #include <array>
+#include <dsp_kernels/oscillator_bank.h>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -9,6 +10,15 @@
 #include <stdexcept>
 #include <limits>
 #include <thread>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace pipeline {
 bool test_signal_sample_time_ns(std::uint64_t samples,std::uint32_t rate,std::int64_t origin_ns,std::int64_t& timestamp_ns) noexcept {
@@ -55,6 +65,59 @@ bool TestSignalSettings::parse(const QJsonObject &json, TestSignalSettings &sett
     settings = result; error.clear(); return true;
 }
 namespace {
+// Platform pacing belongs to the source adapter, not the sample clock/DSP.
+// Standard timed condition-variable waits can quantize short deadlines on
+// Windows. A private high-resolution timer avoids changing global resolution.
+class ProducerDeadlineWait {
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    bool cancelled_=false;
+#ifdef _WIN32
+    HANDLE timer_=nullptr,stop_=nullptr;
+#endif
+public:
+    ProducerDeadlineWait() {
+#ifdef _WIN32
+        timer_=CreateWaitableTimerExW(nullptr,nullptr,0x00000002,TIMER_MODIFY_STATE|SYNCHRONIZE);
+        stop_=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+        if(!timer_||!stop_) {
+            if(timer_)CloseHandle(timer_);
+            if(stop_)CloseHandle(stop_);
+            timer_=stop_=nullptr;
+        }
+#endif
+    }
+    ProducerDeadlineWait(const ProducerDeadlineWait&)=delete;
+    ~ProducerDeadlineWait() {
+#ifdef _WIN32
+        if(timer_)CloseHandle(timer_);
+        if(stop_)CloseHandle(stop_);
+#endif
+    }
+    void cancel() noexcept {
+        {std::lock_guard lock(mutex_);cancelled_=true;}
+#ifdef _WIN32
+        if(stop_)SetEvent(stop_);
+#endif
+        wake_.notify_all();
+    }
+    void until(std::chrono::steady_clock::time_point deadline) {
+#ifdef _WIN32
+        if(timer_) {
+            const auto remaining=std::chrono::duration_cast<std::chrono::nanoseconds>(deadline-std::chrono::steady_clock::now()).count();
+            if(remaining<=0)return;
+            LARGE_INTEGER due{};due.QuadPart=-((remaining-1)/100+1);
+            if(SetWaitableTimer(timer_,&due,0,nullptr,nullptr,FALSE)) {
+                const HANDLE handles[]{stop_,timer_};
+                const auto result=WaitForMultipleObjects(2,handles,FALSE,INFINITE);
+                if(result==WAIT_OBJECT_0||result==WAIT_OBJECT_0+1)return;
+            }
+        }
+#endif
+        std::unique_lock lock(mutex_);
+        wake_.wait_until(lock,deadline,[this]{return cancelled_;});
+    }
+};
 // An in-memory producer, not a playback device. Never creates a miniaudio
 // context/device or routes generated PCM to the operating system's output.
 class TestSignalSource final : public IAudioSource {
@@ -65,8 +128,6 @@ class TestSignalSource final : public IAudioSource {
     LifecycleHandler _lifecycle;
     std::atomic<bool> _running{false};
     std::jthread _worker;
-    std::mutex _wait_mutex;
-    std::condition_variable _wake;
 public:
     ~TestSignalSource() override { stop(); }
     void configure(const QJsonObject &json) override {
@@ -86,7 +147,11 @@ public:
         stop();
         _worker = std::jthread([this](std::stop_token stop) {
             try {
-                std::array<double,10> carriers{}, phase{};
+                ProducerDeadlineWait wait;
+                // Destroy the callback before its referenced wait handles.
+                std::stop_callback cancellation(stop,[&wait]{wait.cancel();});
+                std::array<dsp_kernels::OscillatorParameters,10> tones{};
+                dsp_kernels::OscillatorBank bank;
                 TestSignalSettings settings;
                 {std::lock_guard lock(_settings_mutex);settings=_settings;}
                 const auto origin = std::chrono::steady_clock::now();
@@ -99,40 +164,33 @@ public:
                 };
                 const auto block = size_t(std::max(1, settings.sample_rate / 200));
                 uint64_t offset = 0, sequence = 0;
+                AudioFrame frame;frame.channel_count=1;frame.frame_count=block;frame.samples.resize(block);
+                bool prepared=false;
                 _running = true;
                 if (_lifecycle) _lifecycle(true, 0, {});
                 if (_status) _status(true, {});
                 while (!stop.stop_requested()) {
                     {std::lock_guard lock(_settings_mutex);settings=_settings;}
-                    for(int tone=0;tone<settings.tones;++tone)
-                        carriers[tone]=settings.minimum_hz*std::pow(settings.maximum_hz/settings.minimum_hz,double(tone)/(settings.tones-1));
-                    AudioFrame frame;
-                    frame.sample_rate = settings.sample_rate; frame.sequence = ++sequence;
-                    frame.timestamp_ns = origin_ns + elapsed(offset,settings.sample_rate).count();
-                    frame.discontinuity = offset == 0;
-                    frame.left.resize(block); frame.right.resize(block);
-                    for (size_t sample = 0; sample < block; ++sample) {
-                        const double time = double(offset + sample) / settings.sample_rate;
-                        double left = 0, right = 0;
-                        for (int tone = 0; tone < settings.tones; ++tone) {
-                            const double cycle = 2 * std::numbers::pi * (tone + 1) / settings.period_seconds;
-                            const double hz = carriers[tone] * (1 + settings.sweep_depth * std::sin(cycle * time));
-                            const double gain = settings.amplitude / settings.tones *
-                                (0.65 + 0.35 * std::sin(cycle * time + tone));
-                            left += gain * std::sin(phase[tone]);
-                            right += gain * std::sin(phase[tone] + (tone + 1) * 0.31);
-                            phase[tone] = std::remainder(phase[tone] + 2 * std::numbers::pi * hz / settings.sample_rate,
-                                2 * std::numbers::pi);
-                        }
-                        frame.left[sample] = float(left); frame.right[sample] = float(right);
+                    for(int tone=0;tone<settings.tones;++tone) {
+                        const auto carrier=settings.minimum_hz*std::pow(settings.maximum_hz/settings.minimum_hz,double(tone)/(settings.tones-1));
+                        const auto cycle=2*std::numbers::pi*(tone+1)/settings.period_seconds;
+                        const auto time=double(offset)/settings.sample_rate;
+                        tones[tone]={std::uint64_t(tone+1),true,carrier*(1+settings.sweep_depth*std::sin(cycle*time)),
+                            settings.amplitude/settings.tones*(0.65+0.35*std::sin(cycle*time+tone)),0,0,0};
                     }
+                    const auto parameters=std::span(tones).first(settings.tones);
+                    if(!(prepared?bank.update(parameters):bank.prepare(parameters,settings.sample_rate)))
+                        throw std::runtime_error("TestSignal oscillator admission failed");
+                    prepared=true;
+                    frame.sample_rate=settings.sample_rate;frame.sequence=++sequence;frame.sample_position=offset;
+                    frame.timestamp_ns=origin_ns+elapsed(offset,settings.sample_rate).count();frame.discontinuity=offset==0;
+                    if(!bank.render(frame.samples))throw std::runtime_error("TestSignal produced nonfinite data");
                     if(offset>std::numeric_limits<std::uint64_t>::max()-block)throw std::overflow_error("TestSignal sample counter exhausted");
                     offset += block;
                     if (stop.stop_requested()) break;
-                    if (_audio) _audio(std::move(frame));
+                    if (_audio) _audio(frame);
                     deadline = origin + elapsed(offset,settings.sample_rate);
-                    std::unique_lock lock(_wait_mutex);
-                    _wake.wait_until(lock, deadline, [&] { return stop.stop_requested(); });
+                    wait.until(deadline);
                 }
             } catch (const std::exception &error) {
                 if (_status) _status(false, QString::fromUtf8(error.what()));
@@ -142,7 +200,7 @@ public:
         });
     }
     void stop() override {
-        _worker.request_stop(); _wake.notify_all();
+        _worker.request_stop();
         if (_worker.joinable()) _worker.join();
         _running = false;
     }
@@ -151,7 +209,7 @@ public:
     AudioSourceDiagnostics diagnostics() const override {
         std::lock_guard lock(_settings_mutex);
         AudioSourceDiagnostics result; result.backend = "In-memory test generator";
-        result.device = "TestSignal (no audio output)"; result.sample_rate = _settings.sample_rate; return result;
+        result.device = "TestSignal (no audio output)"; result.sample_rate = result.native_sample_rate = _settings.sample_rate; result.native_channels = result.delivered_channels = 1; return result;
     }
     void set_audio_handler(AudioHandler handler) override { _audio = std::move(handler); }
     void set_status_handler(StatusHandler handler) override { _status = std::move(handler); }

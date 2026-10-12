@@ -37,6 +37,7 @@ private:
         signal_contracts::Status status=signal_contracts::Status::unavailable;
         bool history_mode=false;
         NumericMatrixSnapshot matrix_snapshot;
+        NumericMatrixSnapshotPool matrix_pool;
         bool matrix_projected=false;
         std::size_t matrix_inexact_elements=0;
         pipeline::DeliveryStamp delivery_fence;

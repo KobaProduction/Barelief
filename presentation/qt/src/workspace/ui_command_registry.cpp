@@ -10,11 +10,36 @@
 #include <QTimer>
 #include <QEvent>
 #include <QMenu>
+#include <QGraphicsView>
+#include <QGraphicsScene>
+#include <QGraphicsProxyWidget>
 namespace presentation {
 namespace {
 bool in_menu(QWidget *widget) {
     for (auto *parent=widget; parent; parent=parent->parentWidget())
         if (qobject_cast<QMenu *>(parent)) return true;
+    return false;
+}
+bool owned_by(const QObject *object, const QObject *owner) {
+    for (auto *parent=object; parent; parent=parent->parent())
+        if (parent==owner) return true;
+    return false;
+}
+bool owns_local_history(QWidget *widget) {
+    for (auto *parent=widget; parent; parent=parent->parentWidget())
+        if (qobject_cast<QLineEdit *>(parent) || qobject_cast<QTextEdit *>(parent)
+            || qobject_cast<QPlainTextEdit *>(parent) || qobject_cast<QAbstractSpinBox *>(parent)
+            || qobject_cast<QDialog *>(parent)) return true;
+    return false;
+}
+bool embedded_local_history(QWidget *focus) {
+    for (auto *widget=focus; widget; widget=widget->parentWidget()) {
+        auto *view=qobject_cast<QGraphicsView *>(widget);
+        if (!view || !view->scene()) continue;
+        for (auto *item=view->scene()->focusItem(); item; item=item->parentItem())
+            if (auto *proxy=qgraphicsitem_cast<QGraphicsProxyWidget *>(item))
+                return proxy->widget() && owns_local_history(proxy->widget()->focusWidget());
+    }
     return false;
 }
 }
@@ -27,7 +52,7 @@ UiCommandRegistry::UiCommandRegistry(QWidget *window) : QObject(window), _window
             else if (!_popup_origin) _popup_origin=_last_focus;
         } else if (after) {
             _last_focus=after;
-            _popup_origin.clear();
+            if (!_context_menu) _popup_origin.clear();
         }
         refresh();
     });
@@ -52,19 +77,19 @@ void UiCommandRegistry::set_editor(QWidget *editor) { _editor=editor; refresh();
 void UiCommandRegistry::set_workspace_guard(std::function<bool()> guard) { _workspace_guard=std::move(guard); refresh(); }
 bool UiCommandRegistry::context_available(UiCommandContext context) const {
     if (!_window || QApplication::activeModalWidget()) return false;
-    auto *popup=qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    auto *active_popup=QApplication::activePopupWidget();
+    auto *popup=qobject_cast<QMenu *>(active_popup);
+    if (active_popup && (!popup || !owned_by(popup,_window))) return false;
     if (!popup) popup=qobject_cast<QMenu *>(_context_menu.data());
-    const bool owned_popup=popup && _window->isAncestorOf(popup);
+    const bool owned_popup=popup && owned_by(popup,_window);
     if (_workspace_guard && !_workspace_guard() && !owned_popup) return false;
     if (context == UiCommandContext::Workspace) return true;
+    // A menu may contain its own editor (the node catalog filter, for example).
+    // Its live text focus takes precedence over the canvas that opened it.
+    if (owns_local_history(QApplication::focusWidget()) || embedded_local_history(QApplication::focusWidget())) return false;
     auto *focus=owned_popup && _popup_origin ? _popup_origin.data() : QApplication::focusWidget();
     if (!_editor || !focus || !(focus==_editor || _editor->isAncestorOf(focus))) return false;
-    for (auto *widget=focus; widget; widget=widget->parentWidget()) {
-        if (qobject_cast<QLineEdit *>(widget) || qobject_cast<QTextEdit *>(widget) || qobject_cast<QPlainTextEdit *>(widget)
-            || qobject_cast<QAbstractSpinBox *>(widget) || qobject_cast<QDialog *>(widget)) return false;
-        if (widget==_editor) break;
-    }
-    return true;
+    return !owns_local_history(focus) && !embedded_local_history(focus);
 }
 bool UiCommandRegistry::can_execute(const QString &id) const {
     const auto it=_commands.constFind(id);
@@ -78,9 +103,16 @@ bool UiCommandRegistry::execute(const QString &id) {
 }
 void UiCommandRegistry::refresh() { for (auto it=_commands.begin(); it!=_commands.end(); ++it) if (it->action) it->action->setEnabled(can_execute(it.key())); }
 bool UiCommandRegistry::eventFilter(QObject *object, QEvent *event) {
+    // Proxy-widget focus can change while QApplication still reports the same
+    // graphics view. Refresh before Qt resolves the next shortcut against actions.
+    if (event->type()==QEvent::ShortcutOverride) refresh();
+    if (event->type()==QEvent::FocusIn || event->type()==QEvent::FocusOut)
+        QTimer::singleShot(0,this,[this] { refresh(); });
     if (event->type()==QEvent::Show && qobject_cast<QMenu *>(object)) {
         auto *menu=qobject_cast<QWidget *>(object);
-        if (_window && _window->isAncestorOf(menu)) _context_menu=menu;
+        // Menus are top-level windows even when QObject-parented to the host.
+        // QWidget::isAncestorOf stops at window boundaries, so use ownership.
+        if (_window && owned_by(menu,_window)) _context_menu=menu;
         auto *focus=QApplication::focusWidget();
         if (focus && !in_menu(focus)) _popup_origin=focus;
         else if (!_popup_origin) _popup_origin=_last_focus;

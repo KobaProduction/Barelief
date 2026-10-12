@@ -8,8 +8,20 @@ config STREAMER_TCP
     bool "TCP (firmware supplies accepted socket and WiFi setup)"
 endchoice
 config STREAMER_SPECTRAL
-    bool "Window -> Hann -> stereo FFT -> RMS -> Mel 8"
+    bool "Mono Window -> Hann -> FFT -> Mel 8"
     default n
+config STREAMER_SAMPLE_RATE
+    int "Source sample rate (samples per second)"
+    range 8000 192000
+    default 8000
+config STREAMER_ANALYSIS_RATE_NUMERATOR
+    int "Analysis rate numerator (results per second)"
+    range 1 1000
+    default 120
+config STREAMER_ANALYSIS_RATE_DENOMINATOR
+    int "Analysis rate denominator"
+    range 1 60000
+    default 1
 choice STREAMER_FFT_WINDOW
     prompt "Active FFT window samples per channel"
     default STREAMER_FFT_2048

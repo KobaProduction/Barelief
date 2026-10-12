@@ -62,12 +62,16 @@ class CoreApplication final : public QApplication {
     std::unique_ptr<desktop::NumericProjectDocument> _numeric_document;
     bool _numeric_draft_loaded = false;
     bool _saving_configuration = false;
+    bool _configuration_project_dirty = false;
+    bool _configuration_preferences_dirty = false;
+    QString _configuration_save_error;
     QString _configuration_load_error;
     bool _opening_configuration = false;
 
     void _parse_command_line();
     bool _save_ui_preferences(bool force);
     bool _save_configuration(bool force, const QString &saveAsPath = {});
+    void _update_configuration_save_status();
 };
 
 #endif // CORE_APP_CORE_APPLICATION_H

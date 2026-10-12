@@ -7,6 +7,7 @@
 #include <visualization/numeric_pie_view.h>
 #include <visualization/numeric_metrics_view.h>
 #include <visualization/spectrograms/spectrogram_graph.h>
+#include <visualization/render_preparation_policy.h>
 #include <QApplication>
 #include <QLabel>
 #include <QJsonArray>
@@ -147,7 +148,7 @@ void scalar_timed_readout() {
     }
     CHECK(!metrics.value_available(0));target.visible=true;
     CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="9007199254741132");
-    CHECK(metrics.input_count()==1 && metrics.presentation_model()->state().value("metrics").toList().size()==1); // exact current value, no graph-owned history
+    CHECK(metrics.input_count()==1 && metrics.metrics_model()->rowCount()==1); // exact current value, no graph-owned history
     LineChartView chart;SpectrogramGraph surface;NumericImageView image;NumericPieView pie;
     CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,nullptr,true})==Status::incompatible_contract);
     CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::incompatible_contract);
@@ -234,6 +235,15 @@ void vector_coordinate_axes() {
         CHECK(adapter.accept(event)==Status::ok);
         CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&frequency,nullptr,nullptr,true})==Status::ok);
         CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&line,nullptr,nullptr,true})==Status::ok);
+        if(c.coordinates[0].unit==NumericUnit::Hertz){
+            render_fixture::Target unbound{&line,nullptr,nullptr,true};unbound.axes={};
+            CHECK(adapter.render(ctx->endpoint,0,unbound)==Status::ok);
+            CHECK(line.x_title()==(c.shape.axes[0]==Axis::Band?"Band (X)":"Frequency bin (X)"));
+            CHECK(line.projected_x_coordinate(0)==0 && line.projected_x_coordinate(2)==2);
+            // Binding changes are presentation-only: the same owning frame is
+            // immediately reusable, with no data or coordinate mutation.
+            CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&line,nullptr,nullptr,true})==Status::ok);
+        }
     };
 
     deliver(contract,10);
@@ -472,6 +482,10 @@ void cold_history_resynchronization() {
     pipeline::HistoryPresentation trail({3,2,56,{true,2}});
     CHECK(trail.accept_snapshot(snapshot,80,3)==Status::ok);
     const auto rows=trail.render_snapshot();CHECK(rows.size()==3 && rows[0][0]==1 && rows[2][1]==4);
+    NumericMatrixSnapshot::Matrix reusable(8,std::vector<float>(9,99));
+    trail.render_snapshot_into(reusable);CHECK(reusable==rows);
+    const auto* reused_storage=reusable[0].data();trail.render_snapshot_into(reusable);
+    CHECK(reusable==rows && reusable[0].data()==reused_storage);
     const auto axes=trail.render_axes();CHECK(axes.seconds && axes.ages==std::vector<double>({0,.25,.5}));
     CHECK(axes.column_axis==pipeline::HistoryColumnAxis::Hertz && axes.columns==std::vector<double>({70,95}));
     presentation::NumericViewAdapter adapter({1,{3,2,56,{true,2}},{true,128}});adapter.bind(ctx->endpoint);
@@ -483,6 +497,15 @@ void cold_history_resynchronization() {
     CHECK(surface.projected_axis_metadata().time_title_key=="Time delay, seconds (X)");
     CHECK(surface.projected_axis_metadata().column_title_key=="Frequency, Hz (Z)");
     CHECK(surface.projected_axis_metadata().ages==std::vector<double>({0,.25,.5}));
+    CHECK(surface.projected_axis_metadata().columns==std::vector<double>({70,95}));
+    target.axes={};CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+    CHECK(!surface.projected_axis_metadata().time_coordinates && !surface.projected_axis_metadata().column_coordinates);
+    CHECK(surface.projected_axis_metadata().time_title_key=="Temporal frame (X)");
+    CHECK(surface.projected_axis_metadata().column_title_key=="Frequency bin (Z)");
+    CHECK(surface.projected_axis_metadata().ages==std::vector<double>({0,1,2}));
+    CHECK(surface.projected_axis_metadata().columns==std::vector<double>({0,1}));
+    CHECK(surface.projected_history_sample(0,0,sample) && sample==1);
+    target.axes={true,true};CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
     CHECK(surface.projected_axis_metadata().columns==std::vector<double>({70,95}));
     auto row=history;row.semantic=Semantic::Numeric;row.history_element=Semantic::Numeric;
     row.shape={Rank::Vector,{Axis::Bin,Axis::None},{ExtentBounds{2,2},ExtentBounds{}}};row.coordinates={history.coordinates[1],AxisCoordinates{}};
@@ -522,8 +545,28 @@ void cold_history_resynchronization() {
     CHECK(refused.accept_snapshot(snapshot,80,3)==Status::buffer_too_small && refused.size()==0);
 }
 }
+void recycled_snapshot_leases() {
+    NumericMatrixSnapshotPool pool;
+    const auto make=[&](float value){return pool.fill([&](auto& rows){rows.resize(2);for(auto& row:rows)row.assign(3,value);});};
+    auto first=make(1),second=make(2),third=make(3);
+    const auto identity=first.storage_identity();auto transposed=first.transposed();
+    const auto fallbacks=NumericMatrixSnapshotPool::fallbacks;
+    auto fourth=make(4);
+    CHECK(NumericMatrixSnapshotPool::fallbacks==fallbacks+1);
+    CHECK(first[0][0]==1 && transposed[2][1]==1 && second[1][2]==2 && third[0][1]==3);
+    first.clear();transposed.clear();auto reused=make(5);
+    CHECK(reused.storage_identity()==identity && reused[1][2]==5 && fourth[0][0]==4);
+    pool.clear();CHECK(reused[1][2]==5 && second[0][0]==2);
+    CHECK(pool.fill([](auto& rows){rows={{1,2},{3}};}).empty());
+    CHECK(pool.fill([](auto& rows){rows={{std::numeric_limits<float>::infinity()}};}).empty());
+    CHECK(pool.fill([](auto& rows){rows.clear();}).empty());
+}
 int main(int argc,char** argv) {
+    recycled_snapshot_leases();
     QApplication app(argc,argv);ui::Language::instance().set("en");
-    universal_numeric_ranks();hidden_scalar_and_contract_transition();hidden_history_and_markers();cold_history_resynchronization();shared_matrix_ownership();atomic_pause_snapshot();vector_coordinate_axes();actual_scene_aspect_projection();scalar_timed_readout();fixed_capacity_history_and_resize();
+    for(bool pooled:{false,true}) {
+        presentation::RenderPreparationPolicy::snapshot_pool=pooled;
+        universal_numeric_ranks();hidden_scalar_and_contract_transition();hidden_history_and_markers();cold_history_resynchronization();shared_matrix_ownership();atomic_pause_snapshot();vector_coordinate_axes();actual_scene_aspect_projection();scalar_timed_readout();fixed_capacity_history_and_resize();
+    }
     std::printf("numeric view adapter regressions: %d failures\n",failures);return failures?1:0;
 }

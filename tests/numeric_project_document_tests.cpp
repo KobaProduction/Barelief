@@ -48,7 +48,7 @@ static bool exact_clipboard_and_file() {
     CHECK(same_processing_parameters(g.nodes[0].parameters,pasted.parameters));
     // Independent opaque source oracle is inserted manually, not by the writer.
     bytes.replace("\"parameters\":{","\"parameters\":{\"unknown\":123456789012345678901234567890,");
-    QByteArray project="{\"schema_version\":2,\"scene_graph\":"+bytes+",\"ui\":{\"n\":9007199254740993},\"presets\":[{\"version\":1,\"id\":\"saved\",\"unknown\":1e9999}],\"pipeline_graph\":"+bytes+",\"app\":-0}";
+    QByteArray project="{\"schema_version\":4,\"scene_graph\":"+bytes+",\"ui\":{\"n\":9007199254740993},\"presets\":[{\"version\":1,\"id\":\"saved\",\"unknown\":1e9999}],\"pipeline_graph\":"+bytes+",\"app\":-0}";
     NumericProjectDocument baseline,edited; CHECK(read_numeric_project(project,baseline));
     CHECK(read_numeric_draft(baseline,copy)); std::get<ConverterProcessingParameters>(copy.nodes[0].parameters).policy.scaling.offset.exponent2=-123;
     CHECK(stage_numeric_draft(baseline,copy,edited));
@@ -61,10 +61,17 @@ static bool exact_clipboard_and_file() {
     CHECK(!save_numeric_project(edited)); CHECK(disk.open(QIODevice::ReadOnly)); CHECK(disk.readAll()=="{\"schema_version\":999}");
     return true;
 }
+static bool explicit_binding_storage() {
+    auto graph=sample();graph.configuration_bindings={{7,8,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};
+    QByteArray bytes;CHECK(encode_numeric_graph(graph,bytes));CHECK(bytes.contains("configuration_bindings"));CHECK(!bytes.contains("clock_node"));
+    NumericProcessingGraph restored;CHECK(decode_numeric_graph(bytes,restored));CHECK(restored.configuration_bindings==graph.configuration_bindings);
+    auto malformed=bytes;malformed.replace("frequency_grid","future_role");CHECK(!decode_numeric_graph(malformed,restored));CHECK(restored.configuration_bindings==graph.configuration_bindings);
+    return true;
+}
 static bool refusal_and_output_rollback() {
-    NumericProjectDocument p,out; CHECK(read_numeric_project("{\"schema_version\":2,\"unknown\":18446744073709551615}",out));
+    NumericProjectDocument p,out; CHECK(read_numeric_project("{\"schema_version\":4,\"unknown\":18446744073709551615}",out));
     const auto before=std::string(out.source.bytes());
-    for(auto bad:{"{\"schema_version\":1}","{\"schema_version\":2,\"schema_version\":2}","{\"schema_version\":3}","{\"nodes\":[],\"connections\":[]}","{\"schema_version\":2,\"ui\":{\"pipeline_presets\":[{\"version\":1,\"id\":\"future\",\"graph\":{\"version\":4,\"processing_version\":2}}]}}"}){
+    for(auto bad:{"{\"schema_version\":1}","{\"schema_version\":2}","{\"schema_version\":4,\"schema_version\":4}","{\"schema_version\":3}","{\"nodes\":[],\"connections\":[]}","{\"schema_version\":4,\"ui\":{\"pipeline_presets\":[{\"version\":1,\"id\":\"future\",\"graph\":{\"version\":5,\"processing_version\":4}}]}}"}){
         CHECK(!read_numeric_project(bad,out)); CHECK(out.source.bytes()==before);
     }
     auto graph=sample(); CHECK(stage_numeric_draft(out,graph,p));
@@ -80,9 +87,13 @@ static bool alternatives_and_commit_failure() {
     ConfiguredProcessingNode reduce;reduce.id=10;reduce.kind="ScalarReduce";ReduceProcessingParameters reduction;reduction.selected_channels={0,4294967295u};reduction.channels=ReductionChannels::SelectedChannels;reduce.parameters=reduction;g.nodes.push_back(reduce);
     ConfiguredProcessingNode endpoint;endpoint.id=11;endpoint.kind="TestSignal";endpoint.parameters=EndpointProcessingParameters{{{"amplitude",NumericLiteral{18446744073709551615ULL}}}};g.nodes.push_back(endpoint);
     ConfiguredProcessingNode transform;transform.id=12;transform.kind="SpectrumGain";transform.parameters=TransformProcessingParameters{{{"gain",NumericLiteral{std::numeric_limits<std::int64_t>::min()}}}};g.nodes.push_back(transform);
+    ConfiguredProcessingNode generator;generator.id=13;generator.kind="SignalGenerator";generator.clock_node=14;
+    SignalGeneratorProcessingParameters tones;tones.oscillators={{9007199254740993ULL,true,440.25,0.125,-0.5,0.25,0.75},{UINT64_MAX,false,220.5,0.25,1.5,0,1}};generator.parameters=tones;g.nodes.push_back(generator);
+    ConfiguredProcessingNode clock;clock.id=14;clock.kind="SampleClock";clock.parameters=SampleClockProcessingParameters{44100,"local-exact"};g.nodes.push_back(clock);
+    ConfiguredProcessingNode mixer;mixer.id=15;mixer.kind="Mixer";mixer.clock_node=14;mixer.parameters=MixerProcessingParameters{MixerMode::WeightedRMS,{{3,0.25},{9,0.75}},125};g.nodes.push_back(mixer);
     QByteArray graph;CHECK(encode_numeric_graph(g,graph));NumericProcessingGraph read;CHECK(decode_numeric_graph(graph,read));
-    for(std::size_t i=0;i<g.nodes.size();++i)CHECK(same_processing_parameters(g.nodes[i].parameters,read.nodes[i].parameters));
-    NumericProjectDocument source,staged;CHECK(read_numeric_project("{\"schema_version\":2,\"ui\":{\"unknown\":9007199254740993}}",source));CHECK(stage_numeric_draft(source,g,staged));
+    for(std::size_t i=0;i<g.nodes.size();++i){CHECK(same_processing_parameters(g.nodes[i].parameters,read.nodes[i].parameters));CHECK(read.nodes[i].clock_node==-1);}
+    NumericProjectDocument source,staged;CHECK(read_numeric_project("{\"schema_version\":4,\"ui\":{\"unknown\":9007199254740993}}",source));CHECK(stage_numeric_draft(source,g,staged));
     QTemporaryDir dir;auto path=dir.filePath("config.json");CHECK(save_numeric_project(staged,path));auto baseline=staged.disk_baseline;
 #ifdef _WIN32
     const auto wide=path.toStdWString();auto lock=CreateFileW(wide.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);CHECK(lock!=INVALID_HANDLE_VALUE);
@@ -92,7 +103,7 @@ static bool alternatives_and_commit_failure() {
     return true;
 }
 static bool draft_applied_and_atomic_publication() {
-    NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":2}",document));
+    NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":4}",document));
     auto draft=sample();CHECK(stage_numeric_draft(document,draft,document));
     std::optional<NumericProcessingGraph> applied=sample();CHECK(read_numeric_applied(document,applied));CHECK(!applied);
     NumericDraftPresentation change;change.applied_graph=draft;
@@ -113,7 +124,7 @@ static bool draft_applied_and_atomic_publication() {
     CHECK(disk.disk_baseline==baseline && disk.active_path==active_path);
     change.positions={};change.applied_graph->versions.processing=3;
     CHECK(!stage_numeric_presentation(disk,change,disk));CHECK(disk.source.bytes()==source_before);
-    NumericProjectDocument malformed;CHECK(project_storage::parse_project_source("{\"schema_version\":2,\"pipeline_graph\":{\"version\":4}}",malformed.source));
+    NumericProjectDocument malformed;CHECK(project_storage::parse_project_source("{\"schema_version\":4,\"pipeline_graph\":{\"version\":4}}",malformed.source));
     CHECK(!read_numeric_applied(malformed,applied));CHECK(applied && applied->nodes[0].enabled);
     CHECK(QFile::remove(path));CHECK(!save_numeric_project(disk));CHECK(!QFile::exists(path));
     CHECK(disk.disk_baseline==baseline && disk.active_path==active_path && disk.source.bytes()==source_before);
@@ -125,7 +136,7 @@ static bool editor_snapshot_boundary() {
     CHECK(decode_numeric_editor_graph(canonical,decoded));CHECK(decoded.edges==graph.edges);
     QByteArray first_node,second_node;CHECK(encode_numeric_node(graph.nodes[0],first_node));CHECK(encode_numeric_node(second,second_node));
     const auto visual_node=[](int id,const QByteArray& typed){return QJsonObject{{"id",id},{"internal-data",QJsonObject{{"model-name","Converter"},{"numeric_processing",QString::fromUtf8(typed)}}}};};
-    QJsonObject visual{{"version",3},{"processing_version",2},{"graph_id","main"},{"nodes",QJsonArray{visual_node(7,first_node),visual_node(19,second_node)}},{"connections",QJsonArray{QJsonObject{{"outNodeId",7},{"outPortIndex",9},{"inNodeId",19},{"inPortIndex",0},{"conversion",3}}}}};
+    QJsonObject visual{{"version",5},{"processing_version",4},{"graph_id","main"},{"nodes",QJsonArray{visual_node(7,first_node),visual_node(19,second_node)}},{"connections",QJsonArray{QJsonObject{{"outNodeId",7},{"outPortIndex",9},{"inNodeId",19},{"inPortIndex",0},{"conversion",3}}}}};
     const auto encoded=QJsonDocument(visual).toJson(QJsonDocument::Compact);
     CHECK(decode_numeric_editor_graph(encoded,decoded));CHECK(decoded.graph_id=="main" && decoded.nodes.size()==2 && decoded.edges==graph.edges);
     const auto& policy=std::get<ConverterProcessingParameters>(decoded.nodes[0].parameters).policy;
@@ -140,8 +151,8 @@ static bool editor_snapshot_boundary() {
     nodes=visual["nodes"].toArray();nodes[1]=nodes[0];bad["nodes"]=nodes;CHECK(!decode_numeric_editor_graph(QJsonDocument(bad).toJson(),decoded));CHECK(unchanged());
     nodes=visual["nodes"].toArray();nodes[1]=QJsonDocument::fromJson(canonical)["nodes"].toArray()[1];bad["nodes"]=nodes;CHECK(!decode_numeric_editor_graph(QJsonDocument(bad).toJson(),decoded));CHECK(unchanged());
     bad=visual;auto edges=bad["connections"].toArray();edges.append(edges[0]);bad["connections"]=edges;CHECK(!decode_numeric_editor_graph(QJsonDocument(bad).toJson(),decoded));CHECK(unchanged());
-    NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":2}",document));
-    CHECK(!read_numeric_project("{\"schema_version\":2,\"scene_graph\":"+encoded+"}",document));CHECK(document.source.bytes()=="{\"schema_version\":2}");
+    NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":4}",document));
+    CHECK(!read_numeric_project("{\"schema_version\":4,\"scene_graph\":"+encoded+"}",document));CHECK(document.source.bytes()=="{\"schema_version\":4}");
     return true;
 }
 static bool retained_layout_identity_oracles() {
@@ -150,7 +161,7 @@ static bool retained_layout_identity_oracles() {
     snapshot.replace("\"kind\":\"Converter\"","\"kind\":\"Converter\",\"position\":{\"x\":12,\"y\":34},\"local_node_extension\":1e9999");
     snapshot.replace("\"out_id\":7","\"local_edge_extension\":9007199254740993,\"out_id\":7");
     CHECK(snapshot.contains("local_edge_extension"));NumericProjectDocument document;
-    CHECK(read_numeric_project("{\"schema_version\":2,\"scene_graph\":"+snapshot+"}",document));
+    CHECK(read_numeric_project("{\"schema_version\":4,\"scene_graph\":"+snapshot+"}",document));
     NumericDraftPresentation restored;CHECK(read_numeric_presentation(document,restored));CHECK(restored.positions.size()==2);
     const auto unchanged=std::string(document.source.bytes());auto foreign=graph;foreign.graph_id="foreign";
     CHECK(!stage_numeric_draft(document,foreign,document));CHECK(document.source.bytes()==unchanged);
@@ -166,7 +177,7 @@ static bool retained_layout_identity_oracles() {
     return true;
 }
 static bool settings_arrays_and_opaque_refusal() {
-    NumericProjectDocument document;CHECK(read_numeric_project(R"({"schema_version":2,"ui":{"camera":{"position":[1.2300E+000,2,-0.000E+000],"opaque":1e9999},"graph_rendering":{"items":[{"id":"a","value":1.2300E+000,"opaque":7},{"id":"b","value":2,"opaque":9}]},"unsafe":[9007199254740993,2]}})",document));
+    NumericProjectDocument document;CHECK(read_numeric_project(R"({"schema_version":4,"ui":{"camera":{"position":[1.2300E+000,2,-0.000E+000],"opaque":1e9999},"graph_rendering":{"items":[{"id":"a","value":1.2300E+000,"opaque":7},{"id":"b","value":2,"opaque":9}]},"unsafe":[9007199254740993,2]}})",document));
     auto graph=sample();CHECK(stage_numeric_draft(document,graph,document));NumericDraftPresentation change;
     change.application_settings=QJsonObject{{"ui",QJsonObject{{"camera",QJsonObject{{"position",QJsonArray{1.23,3,0}}}},{"graph_rendering",QJsonObject{{"items",QJsonArray{QJsonObject{{"id","b"},{"value",4}},QJsonObject{{"id","a"},{"value",1.23}}}}}}}}};
     CHECK(stage_numeric_presentation(document,change,document));const auto raw=document.source.bytes();
@@ -189,7 +200,7 @@ static bool settings_arrays_and_opaque_refusal() {
 static bool fresh_project_and_node_presentation() {
     const auto graph=sample();NumericProjectDocument document;
     NumericDraftPresentation presentation;presentation.positions["7"]=QJsonObject{{"x",31},{"y",47}};
-    const auto flags=QJsonObject{{"inline_parameters",QJsonArray{"enabled","converter.overflow"}}};presentation.node_presentations["7"]=flags;
+    const auto flags=QJsonObject{{"inline_parameters",QJsonArray{"enabled","converter.overflow"}},{"stream_names",QJsonArray{"Generators","Loopback","Microphone"}}};presentation.node_presentations["7"]=flags;
     CHECK(create_numeric_project(graph,presentation,document));CHECK(document.active_path.isEmpty() && document.disk_baseline.isEmpty());
     std::optional<NumericProcessingGraph> applied=graph;CHECK(read_numeric_applied(document,applied));CHECK(!applied);
     NumericDraftPresentation restored;CHECK(read_numeric_presentation(document,restored));CHECK(restored.positions==presentation.positions && restored.node_presentations==presentation.node_presentations);
@@ -198,13 +209,13 @@ static bool fresh_project_and_node_presentation() {
     // Unknown raw presentation metadata is owned independently of the UI flags.
     auto raw=QByteArray(document.source.bytes().data(),static_cast<qsizetype>(document.source.bytes().size()));
     raw.replace("\"presentation\":{","\"presentation\":{\"future\":18446744073709551616,");CHECK(read_numeric_project(raw,document));
-    presentation.positions={};presentation.node_presentations["7"]=QJsonObject{{"inline_parameters",QJsonArray{"enabled"}}};
+    presentation.positions={};presentation.node_presentations["7"]=QJsonObject{{"inline_parameters",QJsonArray{"enabled"}},{"stream_names",flags["stream_names"]}};
     CHECK(stage_numeric_presentation(document,presentation,document));CHECK(document.source.bytes().find("18446744073709551616")!=std::string_view::npos);
     CHECK(stage_numeric_draft(document,graph,document));CHECK(read_numeric_presentation(document,restored));CHECK(restored.node_presentations==presentation.node_presentations);
     const auto unchanged=std::string(document.source.bytes());
     for(auto invalid:{QJsonArray{"enabled","enabled"},QJsonArray{42},QJsonArray{""}}){presentation.node_presentations["7"]=QJsonObject{{"inline_parameters",invalid}};CHECK(!stage_numeric_presentation(document,presentation,document));CHECK(document.source.bytes()==unchanged);}
     presentation.node_presentations={};presentation.node_presentations["999"]=flags;CHECK(!stage_numeric_presentation(document,presentation,document));CHECK(document.source.bytes()==unchanged);
-    presentation.node_presentations={};presentation.node_presentations["7"]=QJsonObject{{"inline_parameters",QJsonArray{}}};
+    presentation.node_presentations={};presentation.node_presentations["7"]=QJsonObject{{"inline_parameters",QJsonArray{}},{"stream_names",flags["stream_names"]}};
 #ifdef NUMERIC_CONFIG_MANAGER_TESTS
     QTemporaryDir dir;CHECK(dir.isValid());ConfigManager manager(dir.filePath("flags.json"));
     CHECK(manager.saveNumeric(document,graph,presentation));CHECK(manager.loadNumeric(document,decoded));
@@ -269,7 +280,7 @@ static bool preset_display_snapshot_roundtrip() {
     QJsonObject projected;CHECK(decode_numeric_preset_presentation(display,projected));CHECK(projected["show_raw_samples"]==true && projected["show_amplitudes"]==false);
     CHECK(!projected.contains("opaque"));CHECK(!projected["graph_views"].toObject()["fft"].toObject().contains("opaque"));
     CHECK(projected["workspace"].toObject()["ads_state"]=="saved-tabs");
-    NumericProjectDocument source;const auto raw="{\"schema_version\":2,\"scene_graph\":"+snapshot+",\"pipeline_graph\":"+snapshot+",\"ui\":{\"pipeline_presets\":[{\"version\":1,\"id\":\"scene\",\"name\":\"Scene\",\"graph\":"+snapshot+",\"presentation\":"+display+"}]}}";
+    NumericProjectDocument source;const auto raw="{\"schema_version\":4,\"scene_graph\":"+snapshot+",\"pipeline_graph\":"+snapshot+",\"ui\":{\"pipeline_presets\":[{\"version\":1,\"id\":\"scene\",\"name\":\"Scene\",\"graph\":"+snapshot+",\"presentation\":"+display+"}]}}";
     CHECK(read_numeric_project(raw,source));QJsonObject settings;CHECK(read_numeric_application_settings(source,settings));
     auto presets=settings["ui"].toObject()["pipeline_presets"].toArray();CHECK(presets.size()==1);
     auto preset=presets[0].toObject();auto saved=preset["presentation"].toObject();saved["show_raw_samples"]=false;
@@ -320,9 +331,9 @@ static bool node_adapter_storage_and_projection() {
 }
 static bool presentation_vertical() {
     NumericProjectDocument settings_only;std::uint32_t edition=99;
-    CHECK(read_numeric_project("{\"schema_version\":2,\"ui\":{\"theme\":\"dark\"}}",settings_only));CHECK(!read_project_graph_edition(settings_only,edition));CHECK(edition==99);
+    CHECK(read_numeric_project("{\"schema_version\":4,\"ui\":{\"theme\":\"dark\"}}",settings_only));CHECK(!read_project_graph_edition(settings_only,edition));CHECK(edition==99);
     auto g=sample();NumericProjectDocument base,typed,layout;
-    CHECK(read_numeric_project(R"({"schema_version":2,"ui":{"unknown":9007199254740993,"editor_view":{"version":1,"scale":1.2300E+000,"opaque":1e9999}}})",base));
+    CHECK(read_numeric_project(R"({"schema_version":4,"ui":{"unknown":9007199254740993,"editor_view":{"version":1,"scale":1.2300E+000,"opaque":1e9999}}})",base));
     CHECK(stage_numeric_draft(base,g,typed));NumericDraftPresentation change;
     change.positions["7"]=QJsonObject{{"x",17.5},{"y",-28.25}};change.editor_view=QJsonObject{{"version",1},{"scale",1.5},{"center_x",11.0},{"center_y",12.0}};
     CHECK(stage_numeric_presentation(typed,change,layout));NumericDraftPresentation read;CHECK(read_numeric_presentation(layout,read));CHECK(read.positions==change.positions);CHECK(read.editor_view==change.editor_view);
@@ -337,17 +348,17 @@ static bool presentation_vertical() {
     FileSaveApplicationConfig config;CHECK(manager.readNumericSettings(disk,config));CHECK(config.ui.theme=="dark");QJsonObject delta;CHECK(manager.numericSettingsDelta(disk,config,delta));CHECK(delta.isEmpty());config.ui.theme="light";CHECK(manager.numericSettingsDelta(disk,config,delta));change.application_settings=delta;CHECK(manager.saveNumeric(disk,graph,change));CHECK(manager.readNumericSettings(disk,config));CHECK(config.ui.theme=="light");
     config.ui.pipeline_presets=QJsonArray{QJsonObject{{"version",1},{"id","stable"},{"name","explicit"}}};CHECK(manager.numericSettingsDelta(disk,config,delta));change.application_settings=delta;CHECK(manager.saveNumeric(disk,graph,change));
     config.ui.pipeline_presets=QJsonArray{QJsonObject{{"version",1},{"id","stable"},{"name","changed"}}};CHECK(manager.numericSettingsDelta(disk,config,delta));change.application_settings=delta;CHECK(manager.saveNumeric(disk,graph,change));CHECK(manager.readNumericSettings(disk,config));CHECK(config.ui.pipeline_presets[0].toObject()["name"]=="changed");change.application_settings={};
-    auto other=dir.filePath("existing.json");QFile target(other);CHECK(target.open(QIODevice::WriteOnly));target.write("{\"schema_version\":2,\"old\":1}");target.close();CHECK(manager.saveNumericAs(disk,graph,change,other));CHECK(manager.getConfigPath()==other);
+    auto other=dir.filePath("existing.json");QFile target(other);CHECK(target.open(QIODevice::WriteOnly));target.write("{\"schema_version\":4,\"old\":1}");target.close();CHECK(manager.saveNumericAs(disk,graph,change,other));CHECK(manager.getConfigPath()==other);
 #endif
     return true;
 }
 #ifdef NUMERIC_CONFIG_MANAGER_TESTS
 static bool preset_vertical() {
     QTemporaryDir dir;CHECK(dir.isValid());const auto path=dir.filePath("presets.json");ConfigManager manager(path);QString error;
-    auto graph=sample();NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":2,\"ui\":{\"opaque\":1e9999}}",document));CHECK(manager.saveNumeric(document,graph,&error));
+    auto graph=sample();NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":4,\"ui\":{\"opaque\":1e9999}}",document));CHECK(manager.saveNumeric(document,graph,&error));
     QByteArray typed;CHECK(encode_numeric_node(graph.nodes[0],typed));
     const auto preset_flags=QJsonObject{{"inline_parameters",QJsonArray{"enabled"}}};
-    QJsonObject saved_graph{{"version",3},{"processing_version",2},{"graph_id","main"},{"nodes",QJsonArray{QJsonObject{{"id",7},{"internal-data",QJsonObject{{"model-name","Converter"},{"numeric_processing",QString::fromUtf8(typed)},{"presentation",preset_flags}}},{"position",QJsonObject{{"x",11.0},{"y",12.0}}}}}},{"connections",QJsonArray{}}};
+    QJsonObject saved_graph{{"version",5},{"processing_version",4},{"graph_id","main"},{"nodes",QJsonArray{QJsonObject{{"id",7},{"internal-data",QJsonObject{{"model-name","Converter"},{"numeric_processing",QString::fromUtf8(typed)},{"presentation",preset_flags}}},{"position",QJsonObject{{"x",11.0},{"y",12.0}}}}}},{"connections",QJsonArray{}}};
     auto preset=[&](QString id,QString name){return QJsonObject{{"version",1},{"id",id},{"name",name},{"graph",saved_graph},{"view",QJsonObject{{"version",1},{"scale",1.0}}}};};
     FileSaveApplicationConfig settings;CHECK(manager.readNumericSettings(document,settings,&error));settings.ui.pipeline_presets=QJsonArray{preset("first","First")};NumericDraftPresentation change;
     CHECK(manager.numericSettingsDelta(document,settings,change.application_settings,&error));CHECK(manager.saveNumeric(document,graph,change,&error));const auto first_bytes=std::string(document.source.bytes());
@@ -358,7 +369,7 @@ static bool preset_vertical() {
     QByteArray opaque_graph;CHECK(encode_numeric_graph(graph,opaque_graph));opaque_graph.insert(1,"\"graph_opaque\":1e9999,");opaque_graph.replace("\"kind\":\"Converter\"","\"kind\":\"Converter\",\"node_opaque\":9007199254740993");
     auto opaque_typed=typed;opaque_typed.insert(1,"\"inner_opaque\":18446744073709551616,");auto qt_graph=saved_graph;auto nodes=qt_graph["nodes"].toArray();auto node=nodes[0].toObject();auto internal=node["internal-data"].toObject();internal["numeric_processing"]=QString::fromUtf8(opaque_typed);node["internal-data"]=internal;nodes[0]=node;qt_graph["nodes"]=nodes;
     auto qt_bytes=QJsonDocument(qt_graph).toJson(QJsonDocument::Compact);qt_bytes.insert(1,"\"qt_opaque\":-0.000E+000,");qt_bytes.replace("\"position\":{","\"position\":{\"position_opaque\":1e9999,");
-    QByteArray source="{\"schema_version\":2,\"scene_graph\":";QByteArray scene;CHECK(encode_numeric_graph(graph,scene));auto applied=scene;applied.insert(1,"\"applied_opaque\":1e9999,");source+=scene+",\"pipeline_graph\":"+applied+",\"ui\":{\"opaque\":1e9999,\"camera\":{\"x\":1.2300E+000},\"pipeline_presets\":[{\"version\":1,\"id\":\"first\",\"name\":\"First\",\"preset_opaque\":9007199254740993,\"graph\":"+qt_bytes+",\"view\":{\"version\":1,\"scale\":1.2300E+000,\"view_opaque\":1e9999}},{\"version\":1,\"id\":\"typed\",\"name\":\"Typed\",\"graph\":"+opaque_graph+"}]}}";
+    QByteArray source="{\"schema_version\":4,\"scene_graph\":";QByteArray scene;CHECK(encode_numeric_graph(graph,scene));auto applied=scene;applied.insert(1,"\"applied_opaque\":1e9999,");source+=scene+",\"pipeline_graph\":"+applied+",\"ui\":{\"opaque\":1e9999,\"camera\":{\"x\":1.2300E+000},\"pipeline_presets\":[{\"version\":1,\"id\":\"first\",\"name\":\"First\",\"preset_opaque\":9007199254740993,\"graph\":"+qt_bytes+",\"view\":{\"version\":1,\"scale\":1.2300E+000,\"view_opaque\":1e9999}},{\"version\":1,\"id\":\"typed\",\"name\":\"Typed\",\"graph\":"+opaque_graph+"}]}}";
     QFile fixture(path);CHECK(fixture.open(QIODevice::WriteOnly));CHECK(fixture.write(source)==source.size());fixture.close();CHECK(manager.loadNumeric(document,graph,&error));CHECK(manager.readNumericSettings(document,settings,&error));CHECK(settings.ui.pipeline_presets.size()==2);
     auto first=settings.ui.pipeline_presets[0].toObject();first["name"]="Renamed";auto edited=first["graph"].toObject();nodes=edited["nodes"].toArray();node=nodes[0].toObject();node["position"]=QJsonObject{{"x",99.0},{"y",88.0}};internal=node["internal-data"].toObject();auto edited_node=graph.nodes[0];edited_node.enabled=false;QByteArray edited_snapshot;CHECK(encode_numeric_node(edited_node,edited_snapshot));internal["numeric_processing"]=QString::fromUtf8(edited_snapshot);node["internal-data"]=internal;nodes[0]=node;edited["nodes"]=nodes;first["graph"]=edited;
     settings.ui.pipeline_presets=QJsonArray{settings.ui.pipeline_presets[1],first,preset("third","Third")};CHECK(manager.numericSettingsDelta(document,settings,change.application_settings,&error));CHECK(manager.saveNumeric(document,graph,change,&error));
@@ -372,14 +383,14 @@ static bool preset_vertical() {
     const auto unchanged=std::string(document.source.bytes());const auto disk_before=document.disk_baseline;auto bad=settings.ui.pipeline_presets;bad.append(bad[0]);change.application_settings=QJsonObject{{"ui",QJsonObject{{"pipeline_presets",bad}}}};CHECK(!manager.saveNumeric(document,graph,change,&error));CHECK(document.source.bytes()==unchanged);CHECK(document.disk_baseline==disk_before);
     bad=settings.ui.pipeline_presets;auto future=bad[0].toObject();future["version"]=2;bad[0]=future;change.application_settings=QJsonObject{{"ui",QJsonObject{{"pipeline_presets",bad}}}};CHECK(!manager.saveNumeric(document,graph,change,&error));CHECK(document.source.bytes()==unchanged);
     auto malformed=retained;edited=malformed["graph"].toObject();nodes=edited["nodes"].toArray();node=nodes[0].toObject();internal=node["internal-data"].toObject();internal["numeric_processing"]="{}";node["internal-data"]=internal;nodes[0]=node;edited["nodes"]=nodes;malformed["graph"]=edited;change.application_settings=QJsonObject{{"ui",QJsonObject{{"pipeline_presets",QJsonArray{malformed}}}}};CHECK(!manager.saveNumeric(document,graph,change,&error));CHECK(document.source.bytes()==unchanged);
-    settings.ui.pipeline_presets.append(preset("fourth","Fourth"));CHECK(manager.numericSettingsDelta(document,settings,change.application_settings,&error));QFile external(target);CHECK(external.open(QIODevice::WriteOnly));const auto changed="{\"schema_version\":2,\"external\":1}";external.write(changed);external.close();CHECK(!manager.saveNumeric(document,graph,change,&error));CHECK(document.source.bytes()==unchanged);CHECK(document.disk_baseline==disk_before);
+    settings.ui.pipeline_presets.append(preset("fourth","Fourth"));CHECK(manager.numericSettingsDelta(document,settings,change.application_settings,&error));QFile external(target);CHECK(external.open(QIODevice::WriteOnly));const auto changed="{\"schema_version\":4,\"external\":1}";external.write(changed);external.close();CHECK(!manager.saveNumeric(document,graph,change,&error));CHECK(document.source.bytes()==unchanged);CHECK(document.disk_baseline==disk_before);
     std::printf("preset vertical PASS\n");return true;
 }
 static bool manager_save_as_protected_targets() {
     QTemporaryDir dir;CHECK(dir.isValid());const auto active=dir.filePath("active.json");ConfigManager manager(active);QString error;
-    auto graph=sample();NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":2,\"opaque\":1e9999}",document));CHECK(manager.saveNumeric(document,graph,&error));
+    auto graph=sample();NumericProjectDocument document;CHECK(read_numeric_project("{\"schema_version\":4,\"opaque\":1e9999}",document));CHECK(manager.saveNumeric(document,graph,&error));
     const auto target=dir.filePath("protected.json");auto edit=graph;edit.nodes[0].enabled=false;NumericDraftPresentation layout;layout.positions["7"]=QJsonObject{{"x",123},{"y",456}};
-    for(const auto& protected_bytes:{QByteArray("{invalid"),QByteArray("{\"schema_version\":99,\"sentinel\":true}"),QByteArray("{\"schema_version\":2,\"scene_graph\":false}")}){
+    for(const auto& protected_bytes:{QByteArray("{invalid"),QByteArray("{\"schema_version\":99,\"sentinel\":true}"),QByteArray("{\"schema_version\":4,\"scene_graph\":false}")}){
         QFile file(target);CHECK(file.open(QIODevice::WriteOnly|QIODevice::Truncate));CHECK(file.write(protected_bytes)==protected_bytes.size());file.close();
         const auto source_before=std::string(document.source.bytes());const auto baseline_before=document.disk_baseline;const auto path_before=document.active_path;const auto manager_before=manager.getConfigPath();
         CHECK(!manager.saveNumericAs(document,edit,layout,target,&error));CHECK(!error.isEmpty());
@@ -387,7 +398,7 @@ static bool manager_save_as_protected_targets() {
         CHECK(file.open(QIODevice::ReadOnly));CHECK(file.readAll()==protected_bytes);file.close();
         // An explicit supported replacement destination permits retry; rejected
         // candidate edits must not be published until this successful commit.
-        CHECK(file.open(QIODevice::WriteOnly|QIODevice::Truncate));file.write("{\"schema_version\":2,\"replaceable\":true}");file.close();
+        CHECK(file.open(QIODevice::WriteOnly|QIODevice::Truncate));file.write("{\"schema_version\":4,\"replaceable\":true}");file.close();
         CHECK(manager.saveNumericAs(document,edit,layout,target,&error));CHECK(error.isEmpty());CHECK(document.active_path==target && manager.getConfigPath()==target);
         NumericProjectDocument loaded;NumericProcessingGraph restored;CHECK(manager.loadNumeric(loaded,restored,&error));CHECK(!restored.nodes[0].enabled);
         NumericDraftPresentation restored_layout;CHECK(read_numeric_presentation(loaded,restored_layout));CHECK(restored_layout.positions==layout.positions);
@@ -403,7 +414,7 @@ static bool preferences_only_source_atomicity() {
     const auto path=dir.filePath("preferences.json"); ConfigManager manager(path);
     QByteArray applied; CHECK(encode_numeric_graph(sample(),applied));
     // A valid source without any draft must allow an unrelated preferences edit.
-    const QByteArray original="{\"schema_version\":2,\"pipeline_graph\":"+applied+
+    const QByteArray original="{\"schema_version\":4,\"pipeline_graph\":"+applied+
         ",\"ui\":{\"theme\":\"light\",\"language\":\"en\",\"opaque\":1e9999},\"opaque\":9007199254740993}";
     NumericProjectDocument document; CHECK(read_numeric_project(original,document));
     CHECK(save_numeric_project(document,path));
@@ -431,7 +442,7 @@ static bool preferences_only_source_atomicity() {
 
 static bool manager_path_and_rollback() {
     QTemporaryDir dir;CHECK(dir.isValid());auto path=dir.filePath("numeric.json");ConfigManager manager(path);
-    NumericProjectDocument project;CHECK(read_numeric_project("{\"schema_version\":2,\"ui\":{\"unknown\":1e9999}}",project));auto g=sample();QString error;
+    NumericProjectDocument project;CHECK(read_numeric_project("{\"schema_version\":4,\"ui\":{\"unknown\":1e9999}}",project));auto g=sample();QString error;
     CHECK(manager.saveNumeric(project,g,&error));CHECK(error.isEmpty());NumericProjectDocument loaded;NumericProcessingGraph read;CHECK(manager.loadNumeric(loaded,read,&error));CHECK(same_processing_parameters(g.nodes[0].parameters,read.nodes[0].parameters));
     auto old=manager.getConfigPath();auto raw=std::string(project.source.bytes());CHECK(!manager.saveNumericAs(project,g,QString{},&error));CHECK(manager.getConfigPath()==old);CHECK(project.source.bytes()==raw);
     auto next=dir.filePath("nested/next.json");CHECK(manager.saveNumericAs(project,g,next,&error));CHECK(manager.getConfigPath()==next);CHECK(project.active_path==next);
@@ -443,7 +454,7 @@ int main(int argc,char** argv) { QCoreApplication app(argc,argv);
 #ifdef NUMERIC_CONFIG_MANAGER_TESTS
     if(app.arguments().contains("--presets-only"))return preset_vertical()?0:1;
 #endif
-    int failures=0;for(auto test:{exact_clipboard_and_file,refusal_and_output_rollback,alternatives_and_commit_failure,draft_applied_and_atomic_publication,editor_snapshot_boundary,retained_layout_identity_oracles,settings_arrays_and_opaque_refusal,fresh_project_and_node_presentation,node_display_name_persistence,preset_display_snapshot_roundtrip,node_adapter_storage_and_projection,presentation_vertical})failures+=!test();
+    int failures=0;for(auto test:{explicit_binding_storage,exact_clipboard_and_file,refusal_and_output_rollback,alternatives_and_commit_failure,draft_applied_and_atomic_publication,editor_snapshot_boundary,retained_layout_identity_oracles,settings_arrays_and_opaque_refusal,fresh_project_and_node_presentation,node_display_name_persistence,preset_display_snapshot_roundtrip,node_adapter_storage_and_projection,presentation_vertical})failures+=!test();
 #ifdef NUMERIC_CONFIG_MANAGER_TESTS
     failures+=!manager_path_and_rollback();
     failures+=!preferences_only_source_atomicity();

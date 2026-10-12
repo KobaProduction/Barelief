@@ -3,12 +3,16 @@
 #include <QJsonArray>
 #include <core_app/numeric_default_graph.h>
 #include <cmath>
+#include <bit>
 #include <cstdio>
 using namespace transport_fixture;
 static void pcm_delivery_gap(){
     auto recipient=numeric_default_graph();recipient.graph_id="pcm-gap-target";
     std::erase_if(recipient.nodes,[](const auto& n){return n.id>=8 && n.id!=15;});
     std::erase_if(recipient.edges,[](const auto& e){return (e.from>=8 && e.from!=15)||(e.to>=8 && e.to!=15);});
+    // Configuration wires are graph topology too: remove the view bindings
+    // together with the views, while retaining the processing-chain bindings.
+    std::erase_if(recipient.configuration_bindings,[](const auto& binding){return (binding.from>=8 && binding.from!=15)||(binding.to>=8 && binding.to!=15);});
     recipient.nodes.front().kind="NetworkInput";
     recipient.nodes.front().parameters=domain::EndpointProcessingParameters{};
     const auto pcm_owner=recipient.nodes.front().outputs[0].contract;
@@ -49,13 +53,13 @@ static void pcm_delivery_gap(){
     require(routing.configure({{"network",QJsonObject{{"routes",QJsonArray{QJsonObject{{"node_id",1},{"host","127.0.0.1"},{"port",int(server.port())},
         {"remote_endpoint",QJsonObject{{"graph_id",producer.graph_id.c_str()},{"node_id",1},{"direction","input"},{"port_index",0}}}}}}}}}),"PCM gap route");
     FrameProbe incoming(target,{recipient.graph_id,1,domain::PortDirection::Output,0});
-    auto pcm=std::get<NumericContract>(pcm_owner.view());std::array<float,512> samples{};
-    std::array<PlaneLayout,2> planes{{{0,{4,0}},{1024,{4,0}}}};std::uint64_t sequence=0,sent=0;
+    auto pcm=std::get<NumericContract>(pcm_owner.view());std::array<float,256> samples{};
+    std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sequence=0,sent=0;
     auto feed_pcm=[&]{for(std::size_t i=0;i<256;++i){
-        double left=.15*std::sin(6.283185307179586*(sent+i)*512/48000),right=.10*std::sin(6.283185307179586*(sent+i)*1024/48000);
+        double left=.15*std::sin(6.283185307179586*(sent+i)*512/48000);
         for(std::size_t tone=0;tone<6;++tone){const auto phase=6.283185307179586*(sent+i)*(64*(tone+1))/48000;
-            const auto amplitude=.003+.001*std::sin(double(sequence)*.07+tone);left+=amplitude*std::sin(phase);right+=amplitude*std::cos(phase);}
-        samples[i]=float(left);samples[256+i]=float(right);
+            const auto amplitude=.003+.001*std::sin(double(sequence)*.07+tone);left+=amplitude*std::sin(phase);}
+        samples[i]=float(left);
     }
         FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=17;stamp.generation=4;
         stamp.timestamp_ticks=std::int64_t(sent);stamp.stream_id="canonical.audit";sent+=256;
@@ -71,6 +75,8 @@ static void pcm_delivery_gap(){
         require(view.actual[0]==400 && filled<=400 && filled<=ordinal,"recipient fixed capacity/real occupancy metadata");
         return filled;};
     require(history_rows()>0,"PCM recipient warm History");
+    DeliveredNumericFrame warm_history;std::uint64_t warm_ordinal=0,warm_filled=0;
+    require(target.query_numeric(history_endpoint,warm_history,&warm_ordinal,&warm_filled)==Status::ok,"retain pre-gap History oracle");
     // No event pumping: real bounded FIFO overflow rejects the tail.
     for(int i=0;i<200;++i)feed_pcm();
     settle(1500);feed_pcm();require(wait(arrives),"FIFO recovery PCM did not cross actual wire/route");
@@ -78,7 +84,25 @@ static void pcm_delivery_gap(){
     require(gap.discontinuity&&gap.producer_epoch==17&&gap.generation==4&&gap.source_sequence==sequence,"wire/route lost producer identity or delivery gap");
     require(independent_retained(),"PCM gap reset unrelated History branch");
     for(int i=0;i<3;++i){feed_pcm();require(wait(arrives),"fresh PCM after delivery gap");}
-    require(history_rows()==1,"recipient Window/FFT/Mel History spanned lost PCM");
+    // A delivery gap resets partial DSP windows, while compatible completed
+    // History rows remain. Compare retained rows by absolute accepted ordinal.
+    DeliveredNumericFrame resumed;std::uint64_t resumed_ordinal=0,resumed_filled=0;
+    require(target.query_numeric(history_endpoint,resumed,&resumed_ordinal,&resumed_filled)==Status::ok,"resumed History query");
+    require(resumed_ordinal>warm_ordinal && resumed_filled>=warm_filled,"delivery gap reset compatible completed History");
+    const auto warm_view=std::get<NumericView>(warm_history.frame.view().payload);
+    const auto resumed_view=std::get<NumericView>(resumed.frame.view().payload);
+    std::size_t compared=0;
+    for(std::uint64_t index=warm_ordinal-warm_filled;index<warm_ordinal;++index){
+        if(resumed_ordinal-index>400)continue;
+        const auto before_row=400-std::size_t(warm_ordinal-index);
+        const auto after_row=400-std::size_t(resumed_ordinal-index);
+        for(std::size_t band=0;band<50;++band){float before=0,after=0;
+            require(load_element(warm_view,{0,before_row,band},before)==Status::ok &&
+                load_element(resumed_view,{0,after_row,band},after)==Status::ok &&
+                std::bit_cast<std::uint32_t>(before)==std::bit_cast<std::uint32_t>(after),"delivery gap changed retained completed History row");}
+        ++compared;
+    }
+    require(compared>0,"delivery-gap oracle retained no comparable rows");
     require(independent_retained(),"resumed PCM reset unrelated History branch");
 }
 static void history_route(){

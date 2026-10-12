@@ -1,3 +1,4 @@
+#include <cstdint>
 #include "visualization/spectrograms/spectrogram_graph.h"
 #include "visualization/spectrograms/spectrogram_graph_modifier.h"
 #include "visualization/spectrograms/spectrogram_scene_geometry.h"
@@ -477,11 +478,31 @@ int main(int argc, char **argv) {
                 std::abs(cropScene.scaleZ-4.f/3)>1e-5f) {
                 qCritical("Qt baseline reversed axes/range/center/aspect numeric mapping failed");return 1;
             }
+            native->setProperty("verifyGeometryUpload",true);
             graph->update({{1.6f,1.6f},{1.6f,1.6f}}); QTest::qWait(50);
             if(native->property("vertexCount").toInt()!=6 || native->property("wireframeEdgeCount").toInt()!=0) {
                 qCritical("Plane geometry or user-requested crease-only edges failed");return 1;
             }
-            qInfo("Qt-derived geometry mapping and crease-only flat plane passed");
+            if(native->property("uniqueVertexCount").toInt()!=4 ||
+               native->property("surfaceIndexCount").toInt()!=6 ||
+               native->property("geometryVertexBytes").toInt()!=4*6*int(sizeof(float)) ||
+               native->property("geometryIndexBytes").toInt()!=6*int(sizeof(std::uint32_t)) ||
+               !native->property("geometryUploadVerified").toBool()) {
+                qCritical("Indexed geometry attributes/index GPU readback failed");return 1;
+            }
+            const auto topologyUploads=native->property("topologyUploads").toULongLong();
+            const auto geometryUploads=native->property("geometryUploads").toULongLong();
+            graph->update({{1.5f,1.5f},{1.5f,1.5f}});
+            for(int wait=0;wait<40 && native->property("geometryUploads").toULongLong()==geometryUploads;++wait)
+                QTest::qWait(5);
+            if(native->property("geometryUploads").toULongLong()<=geometryUploads ||
+               native->property("topologyUploads").toULongLong()!=topologyUploads ||
+               native->property("geometryUploadedBytes").toInt()!=4*6*int(sizeof(float)) ||
+               !native->property("geometryUploadVerified").toBool()) {
+                qCritical("Same-size signal update reuploaded topology or corrupted indexed geometry");return 1;
+            }
+            native->setProperty("verifyGeometryUpload",false);
+            qInfo("Qt-derived geometry mapping, indexed GPU readback and crease-only flat plane passed");
         }
         if (iteration == 0)
             graph->reset_camera();
@@ -563,6 +584,7 @@ int main(int argc, char **argv) {
         }
         QTest::qWait(40);
         const auto uploads = native->property("geometryUploads").toULongLong();
+        const auto topologyUploads = native->property("topologyUploads").toULongLong();
         native->setFocus();
         QTest::keyPress(native, Qt::Key_W);
         for (int wait = 0; wait < 40 && graph->camera_state()["position"].toArray()[2].toDouble() >= 0; ++wait)
@@ -572,7 +594,8 @@ int main(int argc, char **argv) {
             qCritical("Native check failed at source line %d", __LINE__);
             return 1;
         }
-        if (native->property("geometryUploads").toULongLong() != uploads) {
+        if (native->property("geometryUploads").toULongLong() != uploads ||
+            native->property("topologyUploads").toULongLong() != topologyUploads) {
             qCritical("Camera rebuilt data geometry");
             {
                 qCritical("Native check failed at source line %d", __LINE__);

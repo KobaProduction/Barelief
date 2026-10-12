@@ -18,57 +18,61 @@ using namespace detail;
 const pb_msgdesc_t *descriptor(Schema s) noexcept {
     switch (s) {
     case Schema::Literal:
-        return &bdsp_numeric_control_v2_Literal_msg;
+        return &bdsp_numeric_control_v4_Literal_msg;
     case Schema::Ratio:
-        return &bdsp_numeric_control_v2_Ratio_msg;
+        return &bdsp_numeric_control_v4_Ratio_msg;
     case Schema::Extent:
-        return &bdsp_numeric_control_v2_Extent_msg;
+        return &bdsp_numeric_control_v4_Extent_msg;
     case Schema::Coordinates:
-        return &bdsp_numeric_control_v2_Coordinates_msg;
+        return &bdsp_numeric_control_v4_Coordinates_msg;
     case Schema::Representation:
-        return &bdsp_numeric_control_v2_Representation_msg;
+        return &bdsp_numeric_control_v4_Representation_msg;
     case Schema::Numeric:
-        return &bdsp_numeric_control_v2_Numeric_msg;
+        return &bdsp_numeric_control_v4_Numeric_msg;
     case Schema::Structured:
-        return &bdsp_numeric_control_v2_Structured_msg;
+        return &bdsp_numeric_control_v4_Structured_msg;
     case Schema::Contract:
-        return &bdsp_numeric_control_v2_Contract_msg;
+        return &bdsp_numeric_control_v4_Contract_msg;
     case Schema::Policy:
-        return &bdsp_numeric_control_v2_Policy_msg;
+        return &bdsp_numeric_control_v4_Policy_msg;
     case Schema::Dyadic:
-        return &bdsp_numeric_control_v2_Dyadic_msg;
+        return &bdsp_numeric_control_v4_Dyadic_msg;
     case Schema::Parameter:
-        return &bdsp_numeric_control_v2_Parameter_msg;
+        return &bdsp_numeric_control_v4_Parameter_msg;
+    case Schema::Oscillator:
+        return &bdsp_numeric_control_v4_Oscillator_msg;
+    case Schema::MixerWeight:
+        return &bdsp_numeric_control_v4_MixerWeight_msg;
     case Schema::Parameters:
-        return &bdsp_numeric_control_v2_Parameters_msg;
+        return &bdsp_numeric_control_v4_Parameters_msg;
     case Schema::Port:
-        return &bdsp_numeric_control_v2_Port_msg;
+        return &bdsp_numeric_control_v4_Port_msg;
     case Schema::Node:
-        return &bdsp_numeric_control_v2_Node_msg;
+        return &bdsp_numeric_control_v4_Node_msg;
     case Schema::Edge:
-        return &bdsp_numeric_control_v2_Edge_msg;
+        return &bdsp_numeric_control_v4_Edge_msg;
     case Schema::Versions:
-        return &bdsp_numeric_control_v2_Versions_msg;
+        return &bdsp_numeric_control_v4_Versions_msg;
     case Schema::Graph:
-        return &bdsp_numeric_control_v2_Graph_msg;
+        return &bdsp_numeric_control_v4_Graph_msg;
     case Schema::Command:
-        return &bdsp_numeric_control_v2_Command_msg;
+        return &bdsp_numeric_control_v4_Command_msg;
     case Schema::Resources:
-        return &bdsp_numeric_control_v2_Resources_msg;
+        return &bdsp_numeric_control_v4_Resources_msg;
     case Schema::CapabilityRow:
-        return &bdsp_numeric_control_v2_CapabilityRow_msg;
+        return &bdsp_numeric_control_v4_CapabilityRow_msg;
     case Schema::Capabilities:
-        return &bdsp_numeric_control_v2_Capabilities_msg;
+        return &bdsp_numeric_control_v4_Capabilities_msg;
     case Schema::Diagnostic:
-        return &bdsp_numeric_control_v2_Diagnostic_msg;
+        return &bdsp_numeric_control_v4_Diagnostic_msg;
     case Schema::State:
-        return &bdsp_numeric_control_v2_State_msg;
+        return &bdsp_numeric_control_v4_State_msg;
     case Schema::Reply:
-        return &bdsp_numeric_control_v2_Reply_msg;
+        return &bdsp_numeric_control_v4_Reply_msg;
     case Schema::Extension:
-        return &bdsp_numeric_control_v2_Extension_msg;
+        return &bdsp_numeric_control_v4_Extension_msg;
     case Schema::Message:
-        return &bdsp_numeric_control_v2_Message_msg;
+        return &bdsp_numeric_control_v4_Message_msg;
     default:
         return nullptr;
     }
@@ -316,8 +320,8 @@ class Reader final : public Archive {
     CodecId codec_;
     Schema schema_;
     std::size_t depth_;
-    std::array<CborValue, 18> cbor_{};
-    std::array<std::span<const std::uint8_t>, 18> pb_{};
+    std::array<CborValue, 22> cbor_{};
+    std::array<std::span<const std::uint8_t>, 22> pb_{};
     std::span<const std::uint8_t> source_;
     std::uint32_t present_ = 0, used_ = 0;
     bool take(unsigned tag) noexcept {
@@ -370,7 +374,7 @@ class Reader final : public Archive {
                     state.fail();
                     return;
                 }
-                if (!tag || tag > max_tag(schema)) {
+                if (!tag || tag > max_tag(schema) || tag >= cbor_.size()) {
                     state.fail(Status::UnsupportedField);
                     return;
                 }
@@ -396,7 +400,7 @@ class Reader final : public Archive {
                 std::uint32_t tag = 0;
                 pb_wire_type_t wt;
                 bool eof = false;
-                if (!pb_decode_tag(&stream, &wt, &tag, &eof) || !tag || tag > max_tag(schema)) {
+                if (!pb_decode_tag(&stream, &wt, &tag, &eof) || !tag || tag > max_tag(schema) || tag >= pb_.size()) {
                     state.fail(Status::UnsupportedField);
                     return;
                 }

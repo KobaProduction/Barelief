@@ -3,6 +3,8 @@
 #include <cmath>
 #include <memory>
 #include <vector>
+#include <array>
+#include <cstdint>
 
 // GUI-owned immutable projection, never a borrowed processing buffer. A
 // transposed view shares storage; only indexing changes, not sample order.
@@ -23,14 +25,17 @@ public:
     };
     NumericMatrixSnapshot()=default;
     static NumericMatrixSnapshot take(Matrix rows) {
-        const auto columns=rows.empty()?0:rows.front().size();
-        if(rows.size()>16384 || columns>16384 || (columns && rows.size()>1048576/columns))return {};
-        for(const auto& row:rows) {
-            if(row.size()!=columns)return {};
-            for(float value:row)if(!std::isfinite(value))return {};
-        }
-        if(rows.empty() || !columns)return {};
+        if(!valid(rows))return {};
         NumericMatrixSnapshot result;result.storage_=std::make_shared<const Matrix>(std::move(rows));return result;
+    }
+    static bool valid(const Matrix& rows) noexcept {
+        const auto columns=rows.empty()?0:rows.front().size();
+        if(rows.size()>16384 || columns>16384 || (columns && rows.size()>1048576/columns))return false;
+        for(const auto& row:rows) {
+            if(row.size()!=columns)return false;
+            for(float value:row)if(!std::isfinite(value))return false;
+        }
+        return !rows.empty() && columns;
     }
     NumericMatrixSnapshot transposed() const noexcept {auto result=*this;result.transposed_=!result.transposed_;return result;}
     bool empty() const noexcept {return !storage_;}
@@ -48,6 +53,34 @@ public:
         return true;
     }
 private:
+    friend class NumericMatrixSnapshotPool;
     std::shared_ptr<const Matrix> storage_;
     bool transposed_=false;
+};
+
+// GUI-owned, fixed-slot recycling pool. Readers hold immutable shared leases;
+// only a slot with no readers can be filled again. No GUI/worker waiting.
+class NumericMatrixSnapshotPool {
+public:
+    template<class Fill> NumericMatrixSnapshot fill(Fill&& fill) {
+        for(auto& slot:slots_) {
+            if(slot && slot.use_count()!=1)continue;
+            if(!slot){slot=std::make_shared<NumericMatrixSnapshot::Matrix>();++allocations;}
+            else ++reuses;
+            fill(*slot);
+            NumericMatrixSnapshot result;
+            if(NumericMatrixSnapshot::valid(*slot))result.storage_=slot;
+            return result;
+        }
+        // Paused/retained readers may lease every slot. Preserve existing
+        // delivery semantics with a standalone immutable snapshot, never reuse
+        // a live slot or block the processing/GUI threads.
+        ++fallbacks;
+        NumericMatrixSnapshot::Matrix rows;fill(rows);
+        return NumericMatrixSnapshot::take(std::move(rows));
+    }
+    static inline std::uint64_t allocations=0,reuses=0,fallbacks=0;
+    void clear() noexcept {for(auto& slot:slots_)slot.reset();}
+private:
+    std::array<std::shared_ptr<NumericMatrixSnapshot::Matrix>,3> slots_;
 };

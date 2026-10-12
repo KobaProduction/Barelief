@@ -65,7 +65,8 @@ void AudioNodeModel::update_node_style() {
 }
 bool AudioNodeModel::eventFilter(QObject *object, QEvent *event) {
     if(event->type()==QEvent::PaletteChange) update_node_style();
-    if(object==_widget && event->type()==QEvent::LayoutRequest && !_widget->property("nodeSizePending").toBool()){
+    if(_widget && (object==_widget || (qobject_cast<QWidget*>(object) && _widget->isAncestorOf(qobject_cast<QWidget*>(object)))) &&
+       event->type()==QEvent::LayoutRequest && !_widget->property("nodeSizePending").toBool()){
         _widget->setProperty("nodeSizePending",true);
         QTimer::singleShot(0,this,[this]{if(!_widget)return;_widget->setProperty("nodeSizePending",false);
             auto* layout=_widget->layout();if(!layout)return;
@@ -78,18 +79,31 @@ bool AudioNodeModel::eventFilter(QObject *object, QEvent *event) {
 }
 unsigned int AudioNodeModel::nPorts(QtNodes::PortType type) const {
     if(!_numeric_load_error.isEmpty())return 0;
-    if(_numeric)return unsigned((type==QtNodes::PortType::In?_numeric->inputs:_numeric->outputs).size());
+    if(_numeric){unsigned count=unsigned((type==QtNodes::PortType::In?_numeric->inputs:_numeric->outputs).size());for(auto role:{domain::ConfigurationRole::SampleClock,domain::ConfigurationRole::FrequencyGrid})if(type==QtNodes::PortType::In?domain::configuration_input_supported(*_numeric,role):domain::configuration_output_supported(*_numeric,role))++count;return count;}
     return 0;
+}
+std::optional<domain::ConfigurationRole> AudioNodeModel::configuration_role(QtNodes::PortType side,QtNodes::PortIndex port) const {
+    if(!_numeric)return {};unsigned index=unsigned((side==QtNodes::PortType::In?_numeric->inputs:_numeric->outputs).size());
+    for(auto role:{domain::ConfigurationRole::SampleClock,domain::ConfigurationRole::FrequencyGrid})if(side==QtNodes::PortType::In?domain::configuration_input_supported(*_numeric,role):domain::configuration_output_supported(*_numeric,role)){if(index==port)return role;++index;}return {};
+}
+QtNodes::PortIndex AudioNodeModel::configuration_port(QtNodes::PortType side,domain::ConfigurationRole role) const {
+    for(unsigned i=0;i<nPorts(side);++i)if(configuration_role(side,i)==role)return i;return QtNodes::InvalidPortIndex;
 }
 QtNodes::NodeDataType AudioNodeModel::dataType(QtNodes::PortType type, QtNodes::PortIndex port) const {
     if(port>=nPorts(type))return {};
+    if(const auto role=configuration_role(type,port))return {*role==domain::ConfigurationRole::SampleClock?"configuration-clock":"configuration-frequency",ui::text(*role==domain::ConfigurationRole::SampleClock?"Sample clock":"Frequency grid")};
     if(_numeric){const auto& ports=type==QtNodes::PortType::In?_numeric->inputs:_numeric->outputs;return {"numeric-contract",numeric_editor::port_caption(ports[port],!numeric_editor::is_graph_view(_kind))};}
     return {};
 }
 QString AudioNodeModel::portCaption(QtNodes::PortType type, QtNodes::PortIndex port) const {
-    if(_kind=="InputSelector" && type==QtNodes::PortType::In)return ui::text("Input %1").arg(unsigned(port_id(type,port))+1);
+    if(configuration_role(type,port))return dataType(type,port).name;
+    if(const auto channels=grouped_channels(type);channels>0) {
+        const auto id=unsigned(port_id(type,port));return stream_name(id/channels)+" · "+ui::text("Channel %1").arg(id%channels+1);
+    }
+    if((_kind=="InputSelector" && type==QtNodes::PortType::Out) || (_kind=="Switch" && type==QtNodes::PortType::In))return ui::text("Channel %1").arg(unsigned(port_id(type,port))+1);
+    if(_numeric && _kind=="Spectrogram" && type==QtNodes::PortType::Out)return ui::text(port==0?"History":"Filled frames")+"\n"+dataType(type,port).name;
     auto label=dataType(type,port).name;
-    return nPorts(type)>1?QStringLiteral("%1 · %2").arg(port).arg(label):label;
+    return nPorts(type)>1?QStringLiteral("%1 · %2").arg(unsigned(port_id(type,port))+1).arg(label):label;
 }
 QJsonObject AudioNodeModel::save() const {
     if(!_numeric_load_error.isEmpty())return {{"model-name",_kind},{"numeric_processing",_rejected_numeric_snapshot}};
@@ -161,6 +175,7 @@ bool AudioNodeModel::valid_presentation(const QJsonObject& value) {
         const auto name=value.value("display_name").toString();
         if(name.size()>256 || std::any_of(name.begin(),name.end(),[](QChar c){return c.category()==QChar::Other_Control;}))return false;
     }
+    if(value.contains("stream_names")){if(!value.value("stream_names").isArray() || value.value("stream_names").toArray().size()>64)return false;for(const auto name:value.value("stream_names").toArray())if(!name.isString() || !valid_presentation(QJsonObject{{"display_name",name}}))return false;}
     if(value.contains("scalar_inputs")){
         if(!value.value("scalar_inputs").isObject())return false;
         const auto inputs=value.value("scalar_inputs").toObject();if(inputs.size()>8)return false;
@@ -190,7 +205,7 @@ void AudioNodeModel::set_presentation(const QJsonObject& value) {
     if(!valid_presentation(value))return;
     if(_presentation==value)return;
     _presentation=value;emit presentation_changed();
-    if(_widget){_widget->layout()->activate();_widget->adjustSize();}
+    if(_widget){_widget->layout()->invalidate();_widget->layout()->activate();}
     emit embeddedWidgetSizeUpdated();emit requestNodeUpdate();
 }
 bool AudioNodeModel::parameter_on_block(const QString& key) const {
@@ -217,7 +232,7 @@ domain::PortId AudioNodeModel::selected_input() const {
     return 0;
 }
 bool AudioNodeModel::select_input(domain::PortId id) {
-    if(!_numeric || _kind!="InputSelector" || port_index(QtNodes::PortType::In,id)==QtNodes::InvalidPortIndex)return false;
+    if(!_numeric || _kind!="InputSelector" || (_numeric->outputs.size()>1?id>=_numeric->inputs.size()/_numeric->outputs.size():port_index(QtNodes::PortType::In,id)==QtNodes::InvalidPortIndex))return false;
     auto n=*_numeric;for(auto& p:std::get<domain::TransformProcessingParameters>(n.parameters).values)
         if(p.key=="selected_input")p.value=signal_contracts::NumericLiteral{std::int64_t(id)};
     return edit_numeric(std::move(n));
@@ -225,6 +240,13 @@ bool AudioNodeModel::select_input(domain::PortId id) {
 void AudioNodeModel::populate_selector_menu(QMenu* menu) {
     if(!_numeric || _kind!="InputSelector")return;
     const QPointer<AudioNodeModel> guard(this);
+    if(_numeric->outputs.size()>1) {
+        auto* add=menu->addAction(ui::text("Add stream"));add->setEnabled(_numeric->inputs.size()+_numeric->outputs.size()<=numeric_editor::limits().max_ports_per_node);
+        connect(add,&QAction::triggered,menu,[guard]{if(guard&&guard->_numeric){auto n=*guard->_numeric;if(numeric_editor::add_input(n))guard->edit_numeric(std::move(n));}});
+        auto* remove=menu->addAction(ui::text("Remove last stream"));remove->setEnabled(_numeric->inputs.size()>_numeric->outputs.size());
+        connect(remove,&QAction::triggered,menu,[guard]{if(guard&&guard->_numeric){auto n=*guard->_numeric;if(numeric_editor::remove_input(n,n.inputs.back().id))guard->edit_numeric(std::move(n));}});
+        return;
+    }
     auto* add=menu->addAction(ui::text("Add input"));add->setEnabled(_numeric->inputs.size()<numeric_editor::limits().max_ports_per_node && _numeric->inputs.back().id<65535);
     connect(add,&QAction::triggered,menu,[guard]{if(guard && guard->_numeric){auto n=*guard->_numeric;if(numeric_editor::add_input(n))guard->edit_numeric(std::move(n));}});
     auto* remove=menu->addMenu(ui::text("Remove input"));remove->setEnabled(_numeric->inputs.size()>1);
@@ -233,6 +255,7 @@ void AudioNodeModel::populate_selector_menu(QMenu* menu) {
 }
 std::vector<QtNodes::PortIndex> AudioNodeModel::visual_port_order(QtNodes::PortType side) const {
     std::vector<QtNodes::PortIndex> order;
+    if(grouped_channels(side)){for(unsigned i=0;i<nPorts(side);++i)order.push_back(i);return order;}
     for(const auto value:_presentation.value(side==QtNodes::PortType::In?"input_port_order":"output_port_order").toArray()){
         const int id=value.toInt(-1);const auto index=id>=0 && id<=65535?port_index(side,domain::PortId(id)):QtNodes::InvalidPortIndex;if(index!=QtNodes::InvalidPortIndex && std::find(order.begin(),order.end(),index)==order.end())order.push_back(index);
     }
@@ -276,17 +299,31 @@ bool AudioNodeModel::set_scalar_input_enabled(domain::PortId id,bool enabled){
 QWidget* AudioNodeModel::numeric_parameter_widget(QWidget* parent,bool inline_form) {
     auto* form=new NodeParameterForm(_parameters,inline_form,parent);update_widget_style(form);
     connect(_parameters,&NodeParameterModel::structureChanged,form,[this]{
-        QTimer::singleShot(0,this,[this]{if(_widget){_widget->layout()->activate();_widget->adjustSize();}emit embeddedWidgetSizeUpdated();});
+        QTimer::singleShot(0,this,[this]{if(_widget){_widget->layout()->invalidate();_widget->layout()->activate();}emit embeddedWidgetSizeUpdated();});
     });
-    if(_kind!="ScalarView")return form;
+    if(!inline_form && (_kind=="InputSelector" || _kind=="Switch")) {
+        auto* container=new QWidget(parent);container->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);auto* layout=new QVBoxLayout(container);layout->setContentsMargins(0,0,0,0);
+        auto* groups=new QWidget(container);groups->setObjectName("streamNamesEditor");layout->addWidget(groups);layout->addWidget(form);const QPointer<AudioNodeModel> guard(this);
+        auto rebuild=[guard,groups]{if(!guard || !guard->_numeric)return;for(auto* child:groups->findChildren<QWidget*>(QString{},Qt::FindDirectChildrenOnly))delete child;delete groups->layout();auto* rows=new QVBoxLayout(groups);rows->setContentsMargins(0,0,0,0);
+            std::vector<unsigned> streamIds;
+            if(guard->_kind=="InputSelector"){const auto channels=guard->_numeric->outputs.size();if(channels)for(const auto& port:guard->_numeric->inputs){const auto id=unsigned(port.id)/unsigned(channels);if(std::find(streamIds.begin(),streamIds.end(),id)==streamIds.end())streamIds.push_back(id);}}
+            else for(unsigned i=0;i<std::get<domain::RouteProcessingParameters>(guard->_numeric->parameters).outputs;++i)streamIds.push_back(i);
+            for(const auto i:streamIds){auto* edit=new QLineEdit(groups);edit->setMaxLength(256);edit->setObjectName(QString("streamName%1").arg(i));edit->setPlaceholderText(ui::text("Stream %1").arg(i+1));const auto names=guard->_presentation.value("stream_names").toArray();if(i<unsigned(names.size()))edit->setText(names[int(i)].toString());rows->addWidget(edit);
+                connect(edit,&QLineEdit::editingFinished,groups,[guard,edit,i]{if(!guard)return;auto value=guard->_presentation;auto names=value.value("stream_names").toArray();while(names.size()<=int(i))names.append(QString{});names[int(i)]=edit->text().trimmed();value["stream_names"]=names;if(guard->_presentation_edit)guard->_presentation_edit(value);else guard->set_presentation(value);});}
+        };rebuild();
+        auto schedule=[groups,rebuild]{if(groups->property("rebuildPending").toBool())return;groups->setProperty("rebuildPending",true);QTimer::singleShot(0,groups,[groups,rebuild]{groups->setProperty("rebuildPending",false);rebuild();});};connect(this,&AudioNodeModel::parameter_structure_changed,groups,schedule);connect(this,&AudioNodeModel::presentation_changed,groups,schedule);connect(&ui::Language::instance(),&ui::Language::changed,groups,schedule);return container;
+    }
+    if(_kind!="ScalarView" || inline_form)return form;
     auto* container=new QWidget(parent);auto* layout=new QVBoxLayout(container);layout->setContentsMargins(0,0,0,0);layout->addWidget(form);
-    layout->addWidget(scalar_inputs_widget(container));return container;
+    container->setSizePolicy(inline_form?QSizePolicy::Preferred:QSizePolicy::Ignored,QSizePolicy::Preferred);
+    layout->addWidget(scalar_inputs_widget(container,inline_form));return container;
 }
-QWidget* AudioNodeModel::scalar_inputs_widget(QWidget* parent){
+QWidget* AudioNodeModel::scalar_inputs_widget(QWidget* parent,bool inline_form){
     auto* inputs=new QWidget(parent);inputs->setObjectName("scalarInputsEditor");
+    inputs->setSizePolicy(inline_form?QSizePolicy::Preferred:QSizePolicy::Ignored,QSizePolicy::Preferred);
     const QPointer<AudioNodeModel> guard(this);
     connect(this,&QObject::destroyed,inputs,[inputs]{inputs->setEnabled(false);});
-    auto rebuild=[this,guard,inputs]{
+    auto rebuild=[this,guard,inputs,inline_form]{
         if(!guard)return;
         for(auto* child:inputs->findChildren<QWidget*>(QString{},Qt::FindDirectChildrenOnly))delete child;delete inputs->layout();
         auto* rows=new QVBoxLayout(inputs);rows->setContentsMargins(0,0,0,0);
@@ -297,11 +334,16 @@ QWidget* AudioNodeModel::scalar_inputs_widget(QWidget* parent){
             auto* enabled=new QCheckBox(row);enabled->setObjectName(QString("scalarInput%1Enabled").arg(port.id));ui::bind(enabled,"toolTip","Show value");enabled->setChecked(metadata.value(QString::number(port.id)).toObject().value("enabled").toBool(true));fields->addWidget(enabled);
             auto* name=new QLineEdit(metadata.value(QString::number(port.id)).toObject().value("display_name").toString(),row);name->setObjectName(QString("scalarInput%1Name").arg(port.id));name->setMaxLength(256);name->setPlaceholderText(ui::text("Value %1").arg(unsigned(port.id)+1));rowLayout->insertWidget(0,name);
             auto* remove=new QPushButton(ui::text("Remove input"),row);remove->setObjectName(QString("scalarInput%1Remove").arg(port.id));remove->setEnabled(_numeric->inputs.size()>1);fields->addWidget(remove);rows->addWidget(row);
+            if(!inline_form){
+                row->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);
+                remove->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
+            }
             connect(enabled,&QCheckBox::toggled,row,[guard,id=port.id](bool value){if(guard)guard->set_scalar_input_enabled(id,value);});
             connect(name,&QLineEdit::editingFinished,row,[guard,name,id=port.id]{if(guard)guard->edit_scalar_input_name(id,name->text());});
             connect(remove,&QPushButton::clicked,row,[guard,id=port.id]{if(guard)guard->remove_scalar_input(id);});
         }
         auto* add=new QPushButton(ui::text("Add input"),inputs);add->setObjectName("addScalarInput");add->setEnabled(_numeric->inputs.size()<numeric_editor::limits().max_ports_per_node);rows->addWidget(add);connect(add,&QPushButton::clicked,inputs,[guard]{if(guard)guard->add_scalar_input();});
+        if(!inline_form)add->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
     };
     rebuild();
     auto schedule=[inputs,rebuild]{if(inputs->property("scalarRebuildPending").toBool())return;inputs->setProperty("scalarRebuildPending",true);QTimer::singleShot(0,inputs,[inputs,rebuild]{inputs->setProperty("scalarRebuildPending",false);rebuild();});};
@@ -331,6 +373,13 @@ QWidget *AudioNodeModel::embeddedWidget() {
     auto *layout = new QVBoxLayout(_widget);
     layout->setContentsMargins(8,8,8,8);
     layout->setSpacing(6);
+    _processing_activity=new QLabel(_widget);_processing_activity->setObjectName("pipelineNodeActivity");
+    _processing_activity->setTextFormat(Qt::PlainText);_processing_activity->hide();
+    auto* summary=new QLabel(_widget);summary->setObjectName("pipelineOperationSummary");summary->setWordWrap(true);summary->setText(operation_summary());layout->addWidget(summary);
+    auto refreshSummary=[this,summary]{const auto text=operation_summary();if(summary->text()!=text)summary->setText(text);};
+    connect(this,&AudioNodeModel::parameter_values_changed,summary,refreshSummary);connect(this,&AudioNodeModel::parameter_structure_changed,summary,refreshSummary);connect(this,&AudioNodeModel::presentation_changed,summary,refreshSummary);connect(&ui::Language::instance(),&ui::Language::changed,summary,refreshSummary);
+    set_processing_activity(_activity_measured,_activity_active,_activity_hz);
+    connect(&ui::Language::instance(),&ui::Language::changed,_processing_activity,[this]{set_processing_activity(_activity_measured,_activity_active,_activity_hz);});
     layout->addWidget(_numeric?numeric_parameter_widget(_widget,true):parameter_widget(_widget));
 
     return _widget;
@@ -442,6 +491,18 @@ bool AudioNodeModel::preview_history_snapshot(const pipeline::DeliveredNumericFr
     return publish_preview(std::move(result));
 }
 void AudioNodeModel::set_preview_activity(const QString& status_key) {if(_preview_activity==status_key)return;_preview_activity=status_key;if(!status_key.isEmpty())_diagnostics.clear();update_previews();}
+void AudioNodeModel::set_processing_activity(bool measured,bool active,double calls_hz) {
+    const bool changed=_activity_measured!=measured || _activity_active!=active;
+    _activity_measured=measured;_activity_active=active;_activity_hz=std::isfinite(calls_hz)?std::max(0.,calls_hz):0.;
+    if(changed)emit requestNodeUpdate();
+    if(!_processing_activity)return;
+    const auto text=ui::text(!measured?"Activity: awaiting measurement":active?"Activity: processing":"Activity: no processing in interval");
+    // A fixed status changes only when activity changes, never for every frame.
+    if(_processing_activity->text()!=text)_processing_activity->setText(text);
+    const auto tip=ui::text("Measured node executions: %1 Hz").arg(measured?QString::number(_activity_hz,'f',1):QStringLiteral("—"));
+    if(_processing_activity->toolTip()!=tip)_processing_activity->setToolTip(tip);
+    if(_widget)_widget->setToolTip(text+QStringLiteral("\n")+tip);
+}
 void AudioNodeModel::clear_preview() { _diagnostics.clear();update_previews(); }
 QWidget *AudioNodeModel::preview_widget(QWidget *parent,bool compact) {
     auto *card=new NodePreviewCard(parent);
@@ -470,13 +531,42 @@ QString AudioNodeModel::diagnostic_failure(domain::PortDirection direction,domai
     for(const auto& p:_diagnostics)if(p.direction==direction && p.port==port)return p.failure.isEmpty()?QString{}:ui::text(p.failure.toUtf8().constData());
     return {};
 }
+unsigned AudioNodeModel::grouped_channels(QtNodes::PortType side) const {
+    if(!_numeric)return 0;
+    if(_kind=="InputSelector" && side==QtNodes::PortType::In)return unsigned(_numeric->outputs.size());
+    if(_kind=="Switch" && side==QtNodes::PortType::Out)return std::get<domain::RouteProcessingParameters>(_numeric->parameters).channels_per_stream;
+    return 0;
+}
+QString AudioNodeModel::stream_name(unsigned group) const {
+    const auto names=_presentation.value("stream_names").toArray();const auto name=group<unsigned(names.size())?names[int(group)].toString().trimmed():QString{};
+    return name.isEmpty()?ui::text("Stream %1").arg(group+1):name;
+}
+QString AudioNodeModel::operation_summary() const {
+    if(!_numeric)return {};
+    using namespace domain;
+    if(_kind=="AudioSource")return ui::text(numeric_editor::capture_source_kind(*_numeric)==0?"Loopback":"Microphone")+QStringLiteral(" · ")+ui::text("Saved outputs: %1").arg(_numeric->outputs.size());
+    if(_kind=="InputSelector")return ui::text("Selected stream: %1").arg(stream_name(unsigned(selected_input())))+QStringLiteral(" · ")+ui::text("Channels: %1").arg(_numeric->outputs.size());
+    if(_kind=="Switch")return ui::text("Selected stream: %1").arg(stream_name(std::get<RouteProcessingParameters>(_numeric->parameters).selected))+QStringLiteral(" · ")+ui::text("Channels: %1").arg(_numeric->inputs.size());
+    if(_kind=="SignalGenerator")return ui::text("Oscillators: %1").arg(std::get<SignalGeneratorProcessingParameters>(_numeric->parameters).oscillators.size());
+    if(_kind=="Mixer")return ui::text("Inputs: %1").arg(_numeric->inputs.size())+QStringLiteral(" · ")+ui::text(std::get<MixerProcessingParameters>(_numeric->parameters).mode==MixerMode::WeightedMean?"Normalized proportions":"Mixing operation");
+    if(_kind=="PcmResampler"){
+        auto rate=[](const auto& ports)->QString{if(ports.empty()||!ports[0].contract)return QStringLiteral("?");const auto c=ports[0].contract.view();const auto* n=std::get_if<signal_contracts::NumericContract>(&c);return n&&n->clock.sample_rate?QString::number(n->clock.sample_rate):QStringLiteral("?");};
+        return ui::text("Sample rate, Hz")+QStringLiteral(": ")+rate(_numeric->inputs)+QStringLiteral(" → ")+rate(_numeric->outputs);
+    }
+    if(_kind=="WindowFunction")if(const auto* field=_parameters->field("function")){const auto selected=std::get<int>(field->read());if(selected>=0 && selected<int(field->options.size()))return ui::text(field->options[selected].label.toUtf8().constData());}
+    if(_kind=="Spectrogram")return ui::text("History capacity, frames")+QStringLiteral(": ")+QString::number(std::get<HistoryProcessingParameters>(_numeric->parameters).capacity);
+    return {};
+}
 QString AudioNodeModel::caption() const {
-    const auto custom=_presentation.value("display_name").toString().trimmed();if(!custom.isEmpty())return custom;
+    const auto custom=_presentation.value("display_name").toString().trimmed();
+    if(_kind=="AudioSource" && _numeric)return (custom.isEmpty()?ui::text("Audio source"):custom)+QStringLiteral(" · ")+ui::text(numeric_editor::capture_source_kind(*_numeric)==0?"Loopback":"Microphone");
+    if(!custom.isEmpty())return custom;
+    if(_kind=="ChannelComparison")return ui::text("Channel comparison");
     if(_kind=="IndexExtract")return ui::text("Index extractor");
     if(_kind=="PcmResampler")return ui::text("PCM resampler");
     if(_kind=="NetworkInput")return ui::text("BDSP input (TCP)");
     if(_kind=="NetworkOutput")return ui::text("BDSP socket output");
-    if(_kind=="InputSelector")return ui::text("Input selector");
+    if(_kind=="InputSelector")return ui::text("Input switch");
     if(_kind=="Converter")return ui::text("Converter");
     if(_kind=="Spectrogram")return ui::text("Spectrogram accumulator");
     if(_kind=="SpectrogramView")return ui::text("Spectrogram graph");
@@ -486,8 +576,8 @@ QString AudioNodeModel::caption() const {
                                             {"WindowView", "Audio window graph"},
                                             {"WindowedView", "Windowed audio graph"},
                                             {"WindowFunctionView", "Window function graph"},
-                                            {"TestSignal", "Signal generator"},
-                                            {"StereoFFT", "Stereo FFT"},
+                                            {"TestSignal", "Test signal"}, {"SignalGenerator", "Signal generator"}, {"SampleClock", "Sample clock"}, {"Mixer", "Mixer"},
+                                            {"StereoFFT", "FFT"},
                                             {"SpectrumMerge", "Spectrum merge"},
                                             {"SpectrumGain", "Spectrum gain"},
                                             {"Mel", "Mel"},
@@ -497,7 +587,7 @@ QString AudioNodeModel::caption() const {
                                             {"AudioView", "Waveform"},
                                             {"SpectrogramView", "Spectrogram view"},
                                             {"WLED", "WLED"}};
-    const QMap<QString,const char *> additions{{"Splitter","Splitter"},{"Switch","Route switch"},{"Gate","Gate"},
+    const QMap<QString,const char *> additions{{"Splitter","Splitter"},{"Switch","Output switch"},{"Gate","Gate"},
         {"ScalarReduce","Signal measurement"},{"ScalarView","Value graph"},{"WLEDEncode","WLED packet encoder"},{"WLEDOutput","WLED network output"}};
     return names.contains(_kind) ? ui::text(names.value(_kind)) : additions.contains(_kind)?ui::text(additions.value(_kind)):_kind;
 }

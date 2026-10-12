@@ -24,6 +24,8 @@ struct EngineSnapshot {
     quint64 epoch = 0, revision = 0, graph_revision = 0;
     QJsonObject graph;
     QMap<QString, ComponentStatus> statuses;
+    // Cold adapter/runtime telemetry; never part of graph parameters.
+    QJsonObject diagnostics;
     // Explicit control-plane query owners. Full History here is a cold snapshot;
     // realtime History is delivered exclusively through compact row callbacks.
     std::vector<DeliveredNumericFrame> numeric_frames;
@@ -54,6 +56,9 @@ public:
     virtual void set_numeric_history_snapshot_handler(std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)>) {}
     // Presentation requests complete current values; processing owns all history.
     virtual void request_numeric_snapshots() {}
+    // Cold presentation policy. Processing and loss-sensitive taps keep their
+    // own cadence; implementations may coalesce preview delivery between ticks.
+    virtual void set_numeric_preview_cadence_hz(int) {}
     virtual ~EnginePort() = default;
     virtual quint64 submit(EngineCommand command) = 0;
     virtual void set_snapshot_handler(std::function<void(EngineSnapshot)> handler) = 0;

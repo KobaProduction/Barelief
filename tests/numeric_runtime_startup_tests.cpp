@@ -53,7 +53,7 @@ void observe(void* user,const NumericPortFrameView& frame) {
             float value=0;CHECK(load_element(*view,{plane,i,0},value)==Status::ok);CHECK(std::isfinite(value));energy+=double(value)*value;
         }
         m.energy[id]=energy;
-        if(id==4 || id==5)for(std::size_t i=0;i<bins.size();++i){float value=0;
+        if(id==4 || id==15)for(std::size_t i=0;i<bins.size();++i){float value=0;
             CHECK(load_element(*view,{0,bins[i]+m.bin_shift,0},value)==Status::ok);
             (id==4?m.fft:m.mono)[i]=value;
         }
@@ -92,10 +92,10 @@ struct Fixture {
     NumericProcessingGraph graph=numeric_default_graph();
     NumericContract source;
     std::array<float,512> samples{};
-    std::array<PlaneLayout,2> planes{{{0,{4,0}},{256*sizeof(float),{4,0}}}};
+    std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
     std::uint64_t sequence=0;
     Metrics metrics;
-    Fixture(){graph.nodes[0].kind="TestSignal";source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
+    Fixture(){CHECK((graph.execution_interval==Ratio{1,120}));graph.execution_interval={1,60};graph.nodes[0].kind="TestSignal";source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
     ConfiguredProcessingNode& node(NodeId id){const auto found=std::find_if(graph.nodes.begin(),graph.nodes.end(),[id](const auto& n){return n.id==id;});CHECK(found!=graph.nodes.end());return *found;}
     bool apply() {
         auto prepared=lifecycle.prepare_transactional(graph);CHECK(bool(prepared));if(!prepared){
@@ -133,12 +133,12 @@ void startup_and_lifecycle() {
     CHECK(f.metrics.rows==25 && f.metrics.view_rows==25 && f.metrics.filled==25 && f.metrics.scalar==25);
     CHECK(f.metrics.energy[9]>0 && f.metrics.energy[10]>0 && f.metrics.energy[11]>0);
     const float expected=float(.025*(4096.-1)/(4.*4096.));
-    const float stereo_rms=std::sqrt((1.f+.75f*.75f)/2.f);
+    const float channel_gain=1.f;
     for(std::size_t i=0;i<bins.size();++i){CHECK(std::abs(f.metrics.fft[i]-expected)<.000002);
         // Independent closed-form DFT above, followed by the declared Bark
-        // coefficient and stereo RMS of the current default graph.
+        // coefficient for one stream of the current default graph.
         const double bark=7*std::asinh((double(bins[i])*48000/4096)/650.);
-        CHECK(std::abs(f.metrics.mono[i]-expected*stereo_rms*bark)<.000002*std::max(1.,bark));}
+        CHECK(std::abs(f.metrics.mono[i]-expected*channel_gain*bark)<.000002*std::max(1.,bark));}
     std::printf("STARTUP PCM=%zu windows=%zu history=%zu count=%llu fft_bin17=%.9g expected=%.9g mel_energy=%.9g\n",
         f.metrics.deliveries[9],f.metrics.deliveries[4],f.metrics.rows,(unsigned long long)f.metrics.scalar,
         f.metrics.fft[0],expected,f.metrics.energy[11]);
@@ -157,7 +157,7 @@ void startup_and_lifecycle() {
 }
 void switches_and_disconnect() {
     Fixture f;CHECK(f.apply());f.feed(24);
-    for(NodeId id:{1,2,3,4,5,6,7}){
+    for(NodeId id:{1,2,3,4,15,6,7}){
         f.node(id).enabled=false;const auto count=f.metrics.filled;CHECK(f.apply());f.feed(24);
         CHECK(f.metrics.filled>count);
         if(id==3){
@@ -166,8 +166,9 @@ void switches_and_disconnect() {
             CHECK(f.metrics.energy[2]>0 && f.metrics.energy[3]==f.metrics.energy[2]);
             CHECK(f.metrics.energy[6]>0 && f.metrics.energy[11]>0);
             for(const auto magnitude:f.metrics.fft)CHECK(std::abs(magnitude-.025f/2)<.000002);
-        }else if(id!=7)f.zero_mel();
-        f.history_row(id!=3);
+        }else if(id==15){CHECK(f.metrics.energy[6]>0 && f.metrics.energy[11]>0);}
+        else if(id!=7)f.zero_mel();
+        f.history_row(id!=3 && id!=15);
         f.node(id).enabled=true;CHECK(f.apply());f.feed(24);CHECK(f.metrics.energy[11]>0);
         std::printf("BYPASS node%d %s; history retained; reenable positive Mel\n",int(id),id==3?"identity":"typed silence");
     }

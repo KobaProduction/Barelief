@@ -5,6 +5,8 @@
 #include <QMap>
 #include <QPointer>
 #include <memory>
+#include <array>
+#include <vector>
 
 #include "core_app/gui_presenter.h"
 #include "core_app/ui/settings_change_request.h"
@@ -22,6 +24,9 @@ class MainWindow final : public WorkspaceWindow {
     explicit MainWindow(GuiPresenter &application, std::shared_ptr<presentation::ProcessorDiscoveryPort> discovery = {});
     ~MainWindow() override;
 
+    enum class ConfigurationSaveState { Unsaved, Saving, Saved, Error, LoadError };
+    void set_configuration_save_state(ConfigurationSaveState state, const QString &path = {}, const QString &error = {});
+
   signals:
     void start_wled_server_requested();
     void stop_wled_server_requested();
@@ -36,9 +41,13 @@ class MainWindow final : public WorkspaceWindow {
     void on_update_chart_visibility();
 
   private:
+    QLabel *_configuration_save_status = nullptr;
+    ConfigurationSaveState _configuration_save_state = ConfigurationSaveState::Unsaved;
+    QString _configuration_save_path, _configuration_save_error;
     QTimer _camera_save_timer, _workspace_save_timer;
     QTimer _numeric_render_timer;
     bool _numeric_render_dirty=false;
+    bool _numeric_render_queued=false;
     bool _numeric_snapshot_dirty=false;
     QMap<QString, WorkspaceDock *> _panels;
     QMap<QString, bool> _render_visible;
@@ -87,11 +96,28 @@ class MainWindow final : public WorkspaceWindow {
     void consume_numeric_frame(const pipeline::DeliveredNumericFrame&);
     void consume_numeric_history(const pipeline::DeliveredNumericHistoryRow&);
     void consume_numeric_history_snapshot(const pipeline::DeliveredNumericFrame&,quint64 ordinal,quint64 filled_count);
-    void render_numeric_views();
+    void render_numeric_views(bool consumeQueuedFrames=false,bool changedOnly=false);
+    void request_numeric_render(const pipeline::EndpointIdentity&);
+    std::vector<pipeline::EndpointIdentity> _numeric_changed_endpoints;
+    void refresh_vector_delivery_queues();
     void select_numeric_plane(const QString&,std::size_t);
     struct NumericBinding {pipeline::EndpointIdentity endpoint;std::size_t plane=0;QString device;};
     QMap<QString,NumericBinding> _numeric_bindings;
     QMap<QString,QList<NumericBinding>> _metric_bindings;
+    // A bounded transport jitter queue, shared by every view/plane of an
+    // endpoint. Slots retain existing owning frames; they contain no history.
+    struct VectorDeliveryQueue {
+        pipeline::EndpointIdentity endpoint;
+        std::array<pipeline::DeliveredNumericFrame,3> frames;
+        std::size_t head=0,count=0,capacity=3;
+        pipeline::DeliveryStamp fence;
+        std::shared_ptr<const pipeline::NumericDeliveryContext> context;
+        std::uint64_t producer=0,generation=0,sequence=0;
+        bool seen=false;
+        void clear(){for(auto& slot:frames)slot={};head=count=0;}
+    };
+    std::vector<VectorDeliveryQueue> _vector_delivery_queues;
+    QString _vector_delivery_device;
     presentation::NumericViewAdapter _numeric_views{{64,{2000,4096,8*1024*1024,{true,32768}},{true,32768}}};
     void clear_node_views();
     QString ensure_node_view(int node, const QString &kind, const QString &device, const QString &graph,

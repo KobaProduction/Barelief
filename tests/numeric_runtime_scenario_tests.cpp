@@ -21,12 +21,12 @@ void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 namespace {
 #define CHECK(x) do{if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);++failures;}}while(false)
-constexpr std::array<std::uint32_t,2> channels{7,42};
+constexpr std::array<std::uint32_t,1> channels{42};
 const FrameLimits limits{8,32768,65536,8192,256,8192};
 NumericRuntimeProfile profile(){return {{32,64,8,16,256,65536,limits},{{1048576,1048576,1048576,65536},0,4194304},{4096,8,65536,65536,65536},{true,true,true}};}
 NumericContract vector(DType dt){NumericContract c;c.dtype=dt;c.semantic=Semantic::MelEnergy;c.quantity=Quantity::MelEnergy;
  c.shape.rank=Rank::Vector;c.shape.axes={Axis::Band,Axis::None};c.shape.extents={ExtentBounds{2,2},ExtentBounds{1,1}};
- c.channel_order=channels;c.clock.domain="numeric.source";return c;}
+ c.channel_order=channels;c.clock={"numeric.source",{1,1},48000};return c;}
 OwnedProcessingContract own(const NumericContract& c){OwnedProcessingContract o;CHECK(own_processing_contract(c,limits,65536,o)==Status::ok);return o;}
 ProcessingPort port(PortId id,PortDirection d,const NumericContract& c){return {id,d,own(c)};}
 ConfiguredProcessingNode node(NodeId id,const char* kind,const NumericContract* in,const NumericContract* out){ConfiguredProcessingNode n;n.id=id;n.kind=kind;
@@ -54,27 +54,27 @@ void sink(void* p,const NumericPortFrameView& f){auto& c=*static_cast<Capture*>(
  CHECK(f.status==Status::ok);const auto& n=std::get<NumericView>(f.frame.payload);
  if(f.identity.node==7){CHECK(load_element(n,{0,0,0},c.maximum)==Status::ok);c.stamp=f.frame.stamp;}
  if(f.identity.node==8)CHECK(load_element(n,{0,0,0},c.count)==Status::ok);
- if(f.identity.node==9)CHECK(load_element(n,{1,1,0},c.raw)==Status::ok);}
+ if(f.identity.node==9)CHECK(load_element(n,{0,1,0},c.raw)==Status::ok);}
 void history(void* p,const NumericHistoryRowView& f){auto& c=*static_cast<Capture*>(p);if(f.event!=NumericHistoryEventKind::Row)return;
  if(f.endpoint.direction==PortDirection::Input){CHECK(f.endpoint.identity.node==10&&f.endpoint.identity.port==0);++c.input_rows;
  CHECK(f.accepted_row_ordinal==c.ordinal&&f.filled_count==std::min(c.ordinal,std::uint64_t{3}));return;}
  ++c.rows;c.ordinal=f.accepted_row_ordinal;c.history_bytes=f.compact.payload_bytes;CHECK(f.compact.frame.stamp.sequence==f.endpoint.frame.stamp.sequence);
  CHECK(std::get<NumericView>(f.compact.frame.payload).contract->semantic==Semantic::MelEnergy);}
 DataFrameView frame(const NumericContract& c,std::array<std::byte,32>& b,std::uint64_t sequence){static constexpr std::array<PlaneLayout,2> pl{{{0,{8,0}},{16,{8,0}}}};
- MutableNumericView m{&c,b,pl,{2,1},{},{}};const auto base=(std::uint64_t{1}<<54)+sequence*10;
+ MutableNumericView m{&c,b,std::span(pl).first(1),{2,1},{},{}};const auto base=(std::uint64_t{1}<<54)+sequence*10;
  CHECK(store_element(m,{0,0,0},base)==Status::ok);CHECK(store_element(m,{0,1,0},base+1)==Status::ok);
- CHECK(store_element(m,{1,0,0},base+2)==Status::ok);CHECK(store_element(m,{1,1,0},base+3)==Status::ok);
+
  FrameStamp s;s.sequence=sequence;s.source_sequence=sequence;s.producer_epoch=17;s.generation=4;s.timestamp_ticks=-123;s.stream_id="original";return {s,m.view()};}
 void scenario(){auto p=profile();GraphExecutor executor(p);application::PreparedExecution pending;auto g=graph();
  CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);if(!pending)return;
  CHECK(executor.apply(std::move(pending))==Status::ok);CHECK(executor.plan()->numeric_definition()!=nullptr);
  auto u=vector(DType::UInt64);std::array<std::byte,32>b{};Capture c;NumericRuntimeCallbacks cb{nullptr,sink,history,&c};
  for(std::uint64_t seq=1;seq<=5;++seq){auto f=frame(u,b,seq);auto before=allocations;CHECK(executor.process_numeric_ports(1,f,{11,12},cb)==Status::ok);CHECK(allocations==before);
- CHECK(c.maximum==std::int64_t((std::uint64_t{1}<<54)+seq*10+3));CHECK(c.raw==c.maximum);CHECK(c.count==std::min(seq,std::uint64_t{3}));CHECK(c.ordinal==seq);CHECK(c.history_bytes==32);CHECK(c.input_rows==seq);}
+ CHECK(c.maximum==std::int64_t((std::uint64_t{1}<<54)+seq*10+1));CHECK(c.raw==c.maximum);CHECK(c.count==std::min(seq,std::uint64_t{3}));CHECK(c.ordinal==seq);CHECK(c.history_bytes==16);CHECK(c.input_rows==seq);}
  CHECK(c.stamp.timestamp_ticks==-123&&c.stamp.producer_epoch==17&&c.stamp.stream_id=="original");
  auto duplicate=frame(u,b,5);auto rows=c.rows;CHECK(executor.process_numeric_ports(1,duplicate,{},cb)==Status::would_block);CHECK(c.rows==rows);
  auto closed=graph(false);CHECK(executor.prepare_numeric(closed,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
- auto f=frame(u,b,6);CHECK(executor.process_numeric_ports(1,f,{},cb)==Status::ok);CHECK(c.maximum==0);CHECK(c.raw==std::int64_t((std::uint64_t{1}<<54)+63));CHECK(c.count==3);CHECK(c.ordinal==6);
+ auto f=frame(u,b,6);CHECK(executor.process_numeric_ports(1,f,{},cb)==Status::ok);CHECK(c.maximum==0);CHECK(c.raw==std::int64_t((std::uint64_t{1}<<54)+61));CHECK(c.count==3);CHECK(c.ordinal==6);
  // Disconnect a known clocked Gate input: typed silence, preserved compatible History.
  closed.edges.erase(closed.edges.begin()+2);CHECK(executor.prepare_numeric(closed,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
  f=frame(u,b,7);CHECK(executor.process_numeric_ports(1,f,{},cb)==Status::ok);CHECK(c.maximum==0&&c.count==3&&c.ordinal==7);
@@ -99,7 +99,7 @@ void scenario(){auto p=profile();GraphExecutor executor(p);application::Prepared
  auto reconnected=graph(false);reconnected.nodes.push_back(node(11,"NetworkOutput",&s,nullptr));
  CHECK(executor.prepare_numeric(reconnected,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
  auto too_large=frame(u,b,13);auto view=std::get<NumericView>(too_large.payload);MutableNumericView m{view.contract,b,view.planes,view.actual,{},{}};
- CHECK(store_element(m,{1,1,0},UINT64_MAX)==Status::ok);rows=c.rows;
+ CHECK(store_element(m,{0,1,0},UINT64_MAX)==Status::ok);rows=c.rows;
  CHECK(executor.process_numeric_ports(1,too_large,{},cb)!=Status::ok);CHECK(c.rows==rows);
 }
 struct BitsCapture{DType type;std::uint64_t expected;bool seen=false;};
@@ -110,8 +110,8 @@ void dtype_routes(){for(const auto& dt:dtype_descriptors()){
  auto g=graph(true,dt.type,dt.type);auto p=profile();GraphExecutor executor(p);application::PreparedExecution pending;
  CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);if(!pending)continue;CHECK(executor.apply(std::move(pending))==Status::ok);
  auto contract=vector(dt.type);std::array<std::byte,32> bytes{};constexpr std::array<PlaneLayout,2> pl{{{0,{8,0}},{16,{8,0}}}};
- MutableNumericView v{&contract,bytes,pl,{2,1},{},{}};std::uint64_t expected=0;
- for(std::size_t channel=0;channel<2;++channel)for(std::size_t element=0;element<2;++element){const auto value=1+channel*2+element;
+ MutableNumericView v{&contract,bytes,std::span(pl).first(1),{2,1},{},{}};std::uint64_t expected=0;
+ for(std::size_t channel=0;channel<1;++channel)for(std::size_t element=0;element<2;++element){const auto value=1+channel*2+element;
  std::uint64_t bits=value;if(dt.type==DType::Float32)bits=std::bit_cast<std::uint32_t>(float(value));
  if(dt.type==DType::Float64)bits=std::bit_cast<std::uint64_t>(double(value));
  CHECK(store_bits(v,{channel,element,0},dt.type,bits)==Status::ok);expected=bits;}
@@ -129,11 +129,11 @@ NumericProcessingGraph dsp_graph(){NumericContract pcm;pcm.dtype=DType::Float32;
  auto mel=mono;mel.semantic=Semantic::MelEnergy;mel.quantity=Quantity::MelEnergy;mel.shape.axes[0]=Axis::Band;mel.shape.extents[0]={8,8};mel.coordinates[0]={};
  auto hist=mel;hist.semantic=Semantic::History;hist.history_element=Semantic::MelEnergy;hist.shape.rank=Rank::Matrix;hist.shape.axes={Axis::Time,Axis::Band};hist.shape.extents={ExtentBounds{0,3},mel.shape.extents[0]};hist.coordinates={AxisCoordinates{},mel.coordinates[0]};
  NumericContract count;count.dtype=DType::UInt64;count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;count.channel_order=mono.channel_order;count.clock=pcm.clock;
- NumericProcessingGraph g;g.graph_id="typed.dsp";g.nodes.push_back(node(1,"TestSignal",nullptr,&pcm));
+ NumericProcessingGraph g;g.graph_id="typed.dsp";g.execution_interval={1,60};g.nodes.push_back(node(1,"TestSignal",nullptr,&pcm));
  auto transform=[&](NodeId id,const char* kind,const NumericContract& from,const NumericContract& to){auto n=node(id,kind,&from,&to);n.parameters=TransformProcessingParameters{};return n;};
  auto window=transform(2,"Window",pcm,win);std::get<TransformProcessingParameters>(window.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{512}}});g.nodes.push_back(std::move(window));
  g.nodes.push_back(transform(3,"WindowFunction",win,windowed));g.nodes.push_back(transform(4,"StereoFFT",windowed,spectrum));g.nodes.push_back(transform(5,"BarkWeighting",spectrum,spectrum));
- g.nodes.push_back(transform(6,"SpectrumMerge",spectrum,mono));g.nodes.push_back(transform(7,"SpectrumGain",mono,mono));
+ g.nodes.push_back(transform(6,"SpectrumGain",spectrum,mono));g.nodes.push_back(transform(7,"SpectrumGain",mono,mono));
  auto bands=transform(8,"Mel",mono,mel);std::get<TransformProcessingParameters>(bands.parameters).values.push_back({"bands",NumericLiteral{std::uint64_t{8}}});g.nodes.push_back(std::move(bands));
  auto acc=node(9,"Spectrogram",&mel,&hist);acc.parameters=HistoryProcessingParameters{3};acc.outputs.push_back(port(1,PortDirection::Output,count));g.nodes.push_back(std::move(acc));
  g.nodes.push_back(node(10,"SpectrogramView",&hist,nullptr));g.nodes.push_back(node(11,"NetworkOutput",&count,nullptr));
@@ -158,13 +158,13 @@ void float_dsp_scenario(bool retag=false){auto g=dsp_graph();
  for(std::size_t tone=0;tone<6;++tone)value+=.05f*std::sin(float(6.283185307179586*(double(index+block*4096)/48000)*(400+tone*701+block*31)));
  samples[index]=value;samples[4096+index]=value*.75f;}
  FrameStamp stamp;stamp.sequence=block+1;stamp.source_sequence=block+1;stamp.producer_epoch=5;stamp.timestamp_ticks=std::int64_t(block*4096);
- NumericView view{&contract,std::as_bytes(std::span(samples)),layout,{4096,1},{},{},false};auto before=allocations;
+ NumericView view{&contract,std::as_bytes(std::span(samples)),std::span(layout).first(1),{4096,1},{},{},false};auto before=allocations;
  CHECK(executor.process_numeric_ports(1,{stamp,view},{},{dsp_output,nullptr,dsp_history,&capture})==Status::ok);CHECK(allocations==before);}
  CHECK(capture.windows==10&&capture.rows==10&&capture.ordinal==10&&capture.count==3&&capture.timestamp==8000&&capture.changed);
  auto disconnected=g;disconnected.edges.erase(disconnected.edges.begin()+6);
  CHECK(executor.prepare_numeric(disconnected,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
  FrameStamp silence_stamp;silence_stamp.sequence=3;silence_stamp.producer_epoch=5;silence_stamp.timestamp_ticks=8192;
- NumericView silence_view{&contract,std::as_bytes(std::span(samples)),layout,{4096,1},{},{},false};
+ NumericView silence_view{&contract,std::as_bytes(std::span(samples)),std::span(layout).first(1),{4096,1},{},{},false};
  auto before=allocations;CHECK(executor.process_numeric_ports(1,{silence_stamp,silence_view},{},{dsp_output,nullptr,dsp_history,&capture})==Status::ok);CHECK(allocations==before);
  CHECK(capture.windows==15&&capture.rows==15&&capture.ordinal==15&&capture.count==3&&capture.timestamp==12000);
  // Unsupported native DSP dtype is refused at Prepare, even though routing accepts it.
@@ -221,27 +221,11 @@ void control_scenario(){using namespace application;auto p=profile();GraphExecut
  CHECK(service.close_session(b.identity)==ControlError::none);CHECK(runtime.pending_memory_requirements().fits(0));
  auto state=service.submit(a.identity,{9,2},GetState{});CHECK(state.accepted&&state.state.revision==2&&state.state.graph_revision==2&&executor.running());
 }
-void merge_scenario(){auto p=profile();auto stereo=vector(DType::Float32);stereo.semantic=Semantic::SpectrumMagnitude;
- stereo.quantity=Quantity::SpectrumMagnitude;stereo.shape.axes[0]=Axis::Bin;stereo.clock.sample_rate=48000;stereo.representation.alignment=4;
- auto mono=stereo;mono.channel_order=std::span(channels).first(1);
- for(std::int64_t mode=0;mode<3;++mode){NumericProcessingGraph g;g.graph_id="merge.oracle";
-  g.nodes.push_back(node(1,"NetworkInput",nullptr,&stereo));auto merge=node(2,"SpectrumMerge",&stereo,&mono);
-  merge.parameters=TransformProcessingParameters{{{"merge",NumericLiteral{mode}}}};g.nodes.push_back(std::move(merge));
-  g.nodes.push_back(node(3,"NetworkOutput",&mono,nullptr));g.edges={{1,2,0,0},{2,3,0,0}};
-  GraphExecutor executor(p);application::PreparedExecution pending;CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);
-  if(!pending)continue;
-  CHECK(executor.apply(std::move(pending))==Status::ok);
-  std::array<float,4> samples{3,-2,4,5};std::array<PlaneLayout,2> planes{{{0,{4,0}},{8,{4,0}}}};
-  FrameStamp stamp;stamp.sequence=1;std::array<float,2> actual{};
-  auto collect=[](void* user,const NumericPortFrameView& f){auto& out=*static_cast<std::array<float,2>*>(user);
-   CHECK(load_element(std::get<NumericView>(f.frame.payload),{0,0,0},out[0])==Status::ok);
-   CHECK(load_element(std::get<NumericView>(f.frame.payload),{0,1,0},out[1])==Status::ok);};
-  auto before=allocations;CHECK(executor.process_numeric_ports(1,{stamp,NumericView{&stereo,std::as_bytes(std::span(samples)),planes,{2,1},{},{}}},
-       {},{nullptr,collect,nullptr,&actual})==Status::ok);CHECK(allocations==before);
-  const float a=mode==0?3.5f:mode==1?4.f:std::hypot(3.f,4.f)/std::sqrt(2.f);
-  const float b=mode==0?1.5f:mode==1?5.f:std::hypot(-2.f,5.f)/std::sqrt(2.f);
-  CHECK(std::abs(actual[0]-a)<1e-6f&&std::abs(actual[1]-b)<1e-6f);
- }
+void merge_scenario(){
+ // Canonical DSP admits one stream per port; implicit two-plane merging is refused.
+ auto p=profile();auto c=vector(DType::Float32);const std::array<std::uint32_t,2> lanes{7,42};c.channel_order=lanes;
+ NumericProcessingGraph g;g.graph_id="legacy.multi-plane.refusal";g.nodes={node(1,"NetworkInput",nullptr,&c)};
+ GraphExecutor executor(p);application::PreparedExecution pending;CHECK(executor.prepare_numeric(g,{p.admission,p.resources},pending)!=Status::ok);CHECK(!pending);
 }
 void local_history_conversion(){auto p=profile();auto g=graph(true,DType::UInt64,DType::UInt64);
  auto h=std::get<NumericContract>(g.nodes[4].outputs[0].contract.view());
@@ -256,19 +240,19 @@ void local_history_conversion(){auto p=profile();auto g=graph(true,DType::UInt64
   const auto& view=std::get<NumericView>(snapshot.payload);CHECK(validate_view(snapshot,limits)==Status::ok);
   CHECK(view.actual[0]==3);
   const auto filled=std::min(seq,std::uint64_t{3});
-  for(std::size_t row=0;row<view.actual[0]-filled;++row){std::uint64_t zero=1;CHECK(load_element(view,{1,row,1},zero)==Status::ok&&zero==0);}
-  for(std::size_t row=view.actual[0]-filled;row<view.actual[0];++row){std::uint64_t actual=0;CHECK(load_element(view,{1,row,1},actual)==Status::ok);
-   CHECK(actual==(std::uint64_t{1}<<54)+(seq-view.actual[0]+row+1)*10+3);}}
+  for(std::size_t row=0;row<view.actual[0]-filled;++row){std::uint64_t zero=1;CHECK(load_element(view,{0,row,1},zero)==Status::ok&&zero==0);}
+  for(std::size_t row=view.actual[0]-filled;row<view.actual[0];++row){std::uint64_t actual=0;CHECK(load_element(view,{0,row,1},actual)==Status::ok);
+   CHECK(actual==(std::uint64_t{1}<<54)+(seq-view.actual[0]+row+1)*10+1);}}
  g.nodes.back().enabled=false;CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);
  CHECK(executor.apply(std::move(pending))==Status::ok);auto f=frame(contract,bytes,7);CHECK(executor.process_numeric_ports(1,f,{})==Status::ok);
  DataFrameView snapshot;CHECK(executor.plan()->history(11,0,*executor.context(),snapshot)==Status::ok);const auto& view=std::get<NumericView>(snapshot.payload);
- std::uint64_t value=1;CHECK(load_element(view,{1,2,1},value)==Status::ok&&value==(std::uint64_t{1}<<54)+73);
- CHECK(load_element(view,{1,1,1},value)==Status::ok&&value==(std::uint64_t{1}<<54)+63);
+ std::uint64_t value=1;CHECK(load_element(view,{0,2,1},value)==Status::ok&&value==(std::uint64_t{1}<<54)+71);
+ CHECK(load_element(view,{0,1,1},value)==Status::ok&&value==(std::uint64_t{1}<<54)+61);
  // The converter's retained ordinal must rebase when its upstream history is reset.
  g.nodes.back().enabled=true;CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
  executor.plan()->reset_history(5,*executor.context());f=frame(contract,bytes,8);CHECK(executor.process_numeric_ports(1,f,{})==Status::ok);
  CHECK(executor.plan()->history(11,0,*executor.context(),snapshot)==Status::ok);const auto& rebased=std::get<NumericView>(snapshot.payload);
- CHECK(rebased.actual[0]==3&&load_element(rebased,{1,2,1},value)==Status::ok&&value==(std::uint64_t{1}<<54)+83);
+ CHECK(rebased.actual[0]==3&&load_element(rebased,{0,2,1},value)==Status::ok&&value==(std::uint64_t{1}<<54)+81);
 }
 struct IngressArena {
  alignas(std::max_align_t) std::array<std::byte,1024> payload{};
@@ -289,8 +273,8 @@ void external_history_ownership(){auto p=profile();auto row=vector(DType::UInt64
  std::array<double,4> times{1,2,3,4};std::array<double,2> bands{10,20};
  const auto time_bytes=std::as_bytes(std::span(times));const auto band_bytes=std::as_bytes(std::span(bands));
  // Explicit LE encoding; this fixture runs on the project's little-endian Windows target.
- MutableNumericView src{&h,bytes,planes,{2,2},{4,3,{}},{{time_bytes.first(16),band_bytes}}};
- for(std::size_t plane=0;plane<2;++plane)for(std::size_t logical=0;logical<2;++logical)for(std::size_t col=0;col<2;++col)
+ MutableNumericView src{&h,bytes,std::span(planes).first(1),{2,2},{4,3,{}},{{time_bytes.first(16),band_bytes}}};
+ for(std::size_t plane=0;plane<1;++plane)for(std::size_t logical=0;logical<2;++logical)for(std::size_t col=0;col<2;++col)
   CHECK(store_element(src,{plane,logical,col},std::uint64_t{100+plane*10+logical*2+col})==Status::ok);
  FrameStamp stamp;stamp.sequence=1;stamp.producer_epoch=88;DataFrameView input{stamp,src.view()};
  CHECK(executor.process_numeric_ports(1,input,{})==Status::invalid_argument);
@@ -299,15 +283,15 @@ void external_history_ownership(){auto p=profile();auto row=vector(DType::UInt64
  owned={};arena.reset();CHECK(!weak.expired());DataFrameView snapshot;
  CHECK(executor.plan()->history(1,0,*executor.context(),snapshot)==Status::ok);CHECK(validate_view(snapshot,limits)==Status::ok);
  CHECK(executor.plan()->history(2,0,*executor.context(),snapshot)==Status::ok);CHECK(validate_view(snapshot,limits)==Status::ok);
- std::int64_t value=0;CHECK(load_element(std::get<NumericView>(snapshot.payload),{1,1,1},value)==Status::ok&&value==113);
+ std::int64_t value=0;CHECK(load_element(std::get<NumericView>(snapshot.payload),{0,1,1},value)==Status::ok&&value==103);
  CHECK(std::equal(std::get<NumericView>(snapshot.payload).coordinates.axes[0].begin(),std::get<NumericView>(snapshot.payload).coordinates.axes[0].end(),time_bytes.begin()));
  arena=weak.lock();src.actual={4,2};src.coordinates.axes[0]=time_bytes;src.ring.oldest=3;
- for(std::size_t plane=0;plane<2;++plane)for(std::size_t logical=0;logical<4;++logical)for(std::size_t col=0;col<2;++col)
+ for(std::size_t plane=0;plane<1;++plane)for(std::size_t logical=0;logical<4;++logical)for(std::size_t col=0;col<2;++col)
   CHECK(store_element(src,{plane,logical,col},std::uint64_t{200+plane*10+logical*2+col})==Status::ok);
  stamp.sequence=2;input={stamp,src.view()};CHECK(retain_frame(input,limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);
  before=allocations;CHECK(executor.process_numeric_owned_ports(1,owned,{}, {},106,arena)==Status::ok);CHECK(allocations==before);
  CHECK(executor.plan()->history(2,0,*executor.context(),snapshot)==Status::ok);CHECK(validate_view(snapshot,limits)==Status::ok);
- CHECK(load_element(std::get<NumericView>(snapshot.payload),{1,3,1},value)==Status::ok&&value==217);
+ CHECK(load_element(std::get<NumericView>(snapshot.payload),{0,3,1},value)==Status::ok&&value==207);
  owned={};arena.reset();CHECK(executor.shutdown()==Status::ok);CHECK(weak.expired());
  // A disabled source mutes every newly accepted row of a history snapshot,
  // including a full-ring batch; masking just the newest row exposes stale data.
@@ -317,21 +301,21 @@ void external_history_ownership(){auto p=profile();auto row=vector(DType::UInt64
  before=allocations;CHECK(executor.process_numeric_owned_ports(1,owned,{}, {},107,arena)==Status::ok);CHECK(allocations==before);
  CHECK(executor.plan()->history(2,0,*executor.context(),snapshot)==Status::ok);const auto& muted=std::get<NumericView>(snapshot.payload);
  CHECK(muted.actual[0]==4&&validate_view(snapshot,limits)==Status::ok);
- for(std::size_t plane=0;plane<2;++plane)for(std::size_t row=0;row<4;++row)for(std::size_t col=0;col<2;++col)
+ for(std::size_t plane=0;plane<1;++plane)for(std::size_t row=0;row<4;++row)for(std::size_t col=0;col<2;++col)
   CHECK(load_element(muted,{plane,row,col},value)==Status::ok&&value==0);
  owned={};src.actual={1,2};src.ring.oldest=0;src.coordinates.axes[0]=time_bytes.first(8);stamp.sequence=1;stamp.producer_epoch=89;stamp.discontinuity=true;input={stamp,src.view()};
  CHECK(retain_frame(input,limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);CHECK(executor.process_numeric_owned_ports(1,owned,{}, {},1,arena)==Status::ok);
  owned={};src.actual={3,2};src.coordinates.axes[0]=time_bytes.first(24);stamp.sequence=2;stamp.discontinuity=false;input={stamp,src.view()};
  CHECK(retain_frame(input,limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);CHECK(executor.process_numeric_owned_ports(1,owned,{}, {},3,arena)==Status::ok);
  CHECK(executor.plan()->history(2,0,*executor.context(),snapshot)==Status::ok);const auto& batch=std::get<NumericView>(snapshot.payload);CHECK(batch.actual[0]==3);
- for(std::size_t plane=0;plane<2;++plane)for(std::size_t row=0;row<3;++row)for(std::size_t col=0;col<2;++col)CHECK(load_element(batch,{plane,row,col},value)==Status::ok&&value==0);
+ for(std::size_t plane=0;plane<1;++plane)for(std::size_t row=0;row<3;++row)for(std::size_t col=0;col<2;++col)CHECK(load_element(batch,{plane,row,col},value)==Status::ok&&value==0);
  // Producer restart may reduce the upstream ordinal without freezing conversion.
  g.nodes.front().enabled=true;CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);
  CHECK(executor.apply(std::move(pending))==Status::ok);owned={};src.actual={2,2};src.ring.oldest=0;src.coordinates.axes[0]=time_bytes.first(16);stamp.sequence=1;stamp.producer_epoch=90;stamp.discontinuity=true;
  input={stamp,src.view()};CHECK(retain_frame(input,limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);
  CHECK(executor.process_numeric_owned_ports(1,owned,{}, {},2,arena)==Status::ok);
  CHECK(executor.plan()->history(2,0,*executor.context(),snapshot)==Status::ok);CHECK(std::get<NumericView>(snapshot.payload).actual[0]==2);
- CHECK(load_element(std::get<NumericView>(snapshot.payload),{1,1,1},value)==Status::ok&&value!=0);
+ CHECK(load_element(std::get<NumericView>(snapshot.payload),{0,1,1},value)==Status::ok&&value!=0);
  // Explicit ring marker identity survives missing numeric storage/ring descriptor.
  owned={};stamp.sequence=2;stamp.discontinuity=false;stamp.available=false;
  CHECK(retain_frame({stamp,NumericView{&h}},limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);
@@ -351,15 +335,15 @@ void whole_history_kernel(){for(const auto& dt:dtype_descriptors()){
  auto h=vector(dt.type);h.semantic=Semantic::History;h.history_element=Semantic::MelEnergy;h.shape.rank=Rank::Matrix;h.shape.axes={Axis::Time,Axis::Band};h.shape.extents={ExtentBounds{0,3},ExtentBounds{2,2}};
  std::array<std::byte,96> source{},output{},scratch{};std::array<PlaneLayout,2> planes{{{0,{16,8}},{48,{16,8}}}};
  std::array<std::byte,3> mask{std::byte{0},std::byte{1},std::byte{0}};
- MutableNumericView src{&h,source,planes,{2,2},{3,2,{}},{}};
+ MutableNumericView src{&h,source,std::span(planes).first(1),{2,2},{3,2,{}},{}};
  std::uint64_t expected=dt.type==DType::UInt64?(std::uint64_t{1}<<54)+7:7;
  if(dt.type==DType::Float32)expected=std::bit_cast<std::uint32_t>(7.f);
  if(dt.type==DType::Float64)expected=std::bit_cast<std::uint64_t>(7.);
- for(std::size_t plane=0;plane<2;++plane)for(std::size_t row=0;row<2;++row)for(std::size_t col=0;col<2;++col)CHECK(store_bits(src,{plane,row,col},dt.type,expected)==Status::ok);
- auto input=src.view();input.ring.silence_mask=mask;MutableNumericView dst{&h,output,planes,{2,2},{3,1,{}},{}};
+ for(std::size_t plane=0;plane<1;++plane)for(std::size_t row=0;row<2;++row)for(std::size_t col=0;col<2;++col)CHECK(store_bits(src,{plane,row,col},dt.type,expected)==Status::ok);
+ auto input=src.view();input.ring.silence_mask=mask;MutableNumericView dst{&h,output,std::span(planes).first(1),{2,2},{3,1,{}},{}};
  dsp_kernels::PreparedConversion plan;CHECK(dsp_kernels::prepare_conversion({h,h,{},profile().kernels,limits},{true,true,true},plan)==dsp_kernels::NumericStatus::Ok);
  const auto before=allocations;CHECK(dsp_kernels::convert(plan,input,dst,scratch).status==dsp_kernels::NumericStatus::Ok);CHECK(allocations==before);
- for(std::size_t plane=0;plane<2;++plane)for(std::size_t col=0;col<2;++col){std::uint64_t actual=0;
+ for(std::size_t plane=0;plane<1;++plane)for(std::size_t col=0;col<2;++col){std::uint64_t actual=0;
   CHECK(load_bits(dst.view(),{plane,0,col},dt.type,actual)==Status::ok&&actual==expected);
   CHECK(load_bits(dst.view(),{plane,1,col},dt.type,actual)==Status::ok&&actual==0);}
 }}
@@ -386,8 +370,8 @@ void local_history_coordinates(){auto p=profile();auto g=graph();
  auto f=frame(contract,bytes,5);f.stamp.timestamp_ticks=-95;std::get<NumericView>(f.payload).coordinates.axes[0]=expected_features;
  CHECK(executor.process_numeric_ports(1,f,{})==Status::ok);CHECK(executor.plan()->history(5,0,*executor.context(),snapshot)==Status::ok);
  CHECK(validate_view(snapshot,limits)==Status::ok);view=std::get<NumericView>(snapshot.payload);std::int64_t value=1;
- CHECK(load_element(view,{1,2,1},value)==Status::ok&&value==0);
- CHECK(load_element(view,{1,1,1},value)==Status::ok&&value==std::int64_t((std::uint64_t{1}<<54)+43));
+ CHECK(load_element(view,{0,2,1},value)==Status::ok&&value==0);
+ CHECK(load_element(view,{0,1,1},value)==Status::ok&&value==std::int64_t((std::uint64_t{1}<<54)+41));
 }
 void fixed_pcm_history_resize(){
  auto p=profile();auto pcm=vector(DType::UInt8);pcm.semantic=Semantic::PCM;pcm.quantity=Quantity::Amplitude;pcm.shape.axes[0]=Axis::Sample;pcm.representation.normalization=Normalization::UnsignedUnit;
@@ -402,11 +386,11 @@ void fixed_pcm_history_resize(){
  auto empty=[&](std::size_t capacity){DataFrameView snapshot;std::uint64_t filled=99,ordinal=99;const auto before=allocations;
   CHECK(executor.plan()->history(10,0,*executor.context(),snapshot,&filled,&ordinal)==Status::ok);CHECK(allocations==before);
   const auto& view=std::get<NumericView>(snapshot.payload);CHECK(validate_view(snapshot,limits)==Status::ok && view.actual[0]==capacity && view.ring.capacity==capacity && filled==0 && ordinal==0 && snapshot.stamp.discontinuity);
-  for(std::size_t ch=0;ch<2;++ch)for(std::size_t row=0;row<capacity;++row)for(std::size_t col=0;col<2;++col){std::uint8_t value=0;CHECK(load_element(view,{ch,row,col},value)==Status::ok && value==128);}
+  for(std::size_t ch=0;ch<1;++ch)for(std::size_t row=0;row<capacity;++row)for(std::size_t col=0;col<2;++col){std::uint8_t value=0;CHECK(load_element(view,{ch,row,col},value)==Status::ok && value==128);}
  };empty(4);
  std::array<std::byte,4> bytes{};const std::array<PlaneLayout,2> planes{{{0,{1,0}},{2,{1,0}}}};
- MutableNumericView input{&pcm,bytes,planes,{2,1},{},{}};
- for(std::size_t ch=0;ch<2;++ch)for(std::size_t col=0;col<2;++col)CHECK(store_element(input,{ch,col,0},std::uint8_t(17+ch*10+col))==Status::ok);
+ MutableNumericView input{&pcm,bytes,std::span(planes).first(1),{2,1},{},{}};
+ for(std::size_t ch=0;ch<1;++ch)for(std::size_t col=0;col<2;++col)CHECK(store_element(input,{ch,col,0},std::uint8_t(17+ch*10+col))==Status::ok);
  FrameStamp stamp;stamp.producer_epoch=71;stamp.generation=9;stamp.sequence=1;
  auto send=[&](){const auto before=allocations;CHECK(executor.process_numeric_ports(1,{stamp,input.view()},{})==Status::ok);CHECK(allocations==before);};send();
  auto inspect=[&](std::size_t capacity){DataFrameView snapshot;std::uint64_t filled=0,ordinal=0;
@@ -414,7 +398,7 @@ void fixed_pcm_history_resize(){
   const auto& view=std::get<NumericView>(snapshot.payload);CHECK(view.actual[0]==capacity&&filled==1&&ordinal==1);
   CHECK(snapshot.stamp.producer_epoch==71&&snapshot.stamp.generation==9);
   CHECK(validate_view(snapshot,limits)==Status::ok);
-  for(std::size_t ch=0;ch<2;++ch)for(std::size_t row=0;row<capacity;++row)for(std::size_t col=0;col<2;++col){std::uint8_t value=0;
+  for(std::size_t ch=0;ch<1;++ch)for(std::size_t row=0;row<capacity;++row)for(std::size_t col=0;col<2;++col){std::uint8_t value=0;
    CHECK(load_element(view,{ch,row,col},value)==Status::ok);CHECK(value==(row+1==capacity?17+ch*10+col:128));}
  };inspect(4);
  auto resize=[&](std::size_t capacity){std::get<HistoryProcessingParameters>(g.nodes[1].parameters).capacity=capacity;
@@ -448,7 +432,7 @@ void route_fanout_identity(){auto p=profile();const auto contract=vector(DType::
  auto collect=[](void* user,const NumericPortFrameView& f){auto& out=*static_cast<Observations*>(user);CHECK(f.status==Status::ok&&f.frame.stamp.available);
   const auto branch=std::size_t(f.identity.node-10);CHECK(branch<8);if(branch>=8 || f.status!=Status::ok)return;
   ++out.deliveries[branch];const auto& view=std::get<NumericView>(f.frame.payload);std::uint64_t value=0;
-  CHECK(load_element(view,{1,1,0},value)==Status::ok);const bool active=(out.active&(1u<<branch))!=0;
+  CHECK(load_element(view,{0,1,0},value)==Status::ok);const bool active=(out.active&(1u<<branch))!=0;
   CHECK(value==(active?out.expected:0));if(active)CHECK(view.storage.data()==out.payload);
   CHECK(view.actual==(std::array<std::size_t,2>{2,1}));CHECK(f.delivery.graph_revision==101&&f.delivery.epoch==202);
   CHECK(f.frame.stamp.sequence==out.sequence&&f.frame.stamp.source_sequence==out.sequence&&f.frame.stamp.producer_epoch==17&&
@@ -456,7 +440,7 @@ void route_fanout_identity(){auto p=profile();const auto contract=vector(DType::
  auto apply=[&]{CHECK(executor.prepare_numeric(g,{p.admission,p.resources},pending)==Status::ok);CHECK(bool(pending));
   if(pending)CHECK(executor.apply(std::move(pending))==Status::ok);};
  auto feed=[&](std::uint32_t active){observed.active=active;observed.deliveries={};std::array<std::byte,32> storage{};
-  const auto incoming=frame(contract,storage,++observed.sequence);observed.expected=(std::uint64_t{1}<<54)+observed.sequence*10+3;
+  const auto incoming=frame(contract,storage,++observed.sequence);observed.expected=(std::uint64_t{1}<<54)+observed.sequence*10+1;
   observed.payload=std::get<NumericView>(incoming.payload).storage.data();const auto before=allocations;
   CHECK(executor.process_numeric_ports(1,incoming,{101,202},{nullptr,collect,nullptr,&observed})==Status::ok);CHECK(allocations==before);
   for(auto count:observed.deliveries)CHECK(count==1);};
@@ -472,17 +456,17 @@ void dtype_edge_policy_scenario(){
  NumericProcessingGraph g;g.graph_id="dtype.edge";g.nodes={node(1,"NetworkInput",nullptr,&input),node(2,"NetworkOutput",&output,nullptr)};g.edges={{1,2,0,0}};
  struct Seen{std::array<std::int16_t,4> values{};bool available=false;unsigned deliveries=0;} seen;
  auto collect=[](void* user,const NumericPortFrameView& f){auto& seen=*static_cast<Seen*>(user);CHECK(f.identity.node==2);++seen.deliveries;seen.available=f.frame.stamp.available;
-  if(!seen.available)return;const auto& view=std::get<NumericView>(f.frame.payload);for(std::size_t plane=0;plane<2;++plane)for(std::size_t col=0;col<2;++col)CHECK(load_element(view,{plane,col,0},seen.values[plane*2+col])==Status::ok);
+  if(!seen.available)return;const auto& view=std::get<NumericView>(f.frame.payload);for(std::size_t plane=0;plane<1;++plane)for(std::size_t col=0;col<2;++col)CHECK(load_element(view,{plane,col,0},seen.values[plane*2+col])==Status::ok);
  };
  auto run=[&](std::uint8_t mode,std::array<double,4> values,bool available,std::array<std::int16_t,4> expected){
   g.edges[0].conversion=mode;GraphExecutor executor(p);application::PreparedExecution prepared;
   CHECK(executor.prepare_numeric(g,{p.admission,p.resources},prepared)==Status::ok);if(!prepared)return;
   CHECK(executor.apply(std::move(prepared))==Status::ok);CHECK(executor.plan()->numeric_definition()->nodes.size()==2);CHECK(executor.plan()->numeric_definition()->edges[0].conversion==mode);
   std::array<std::byte,32> payload{};std::array<PlaneLayout,2> planes{{{0,{8,0}},{16,{8,0}}}};
-  MutableNumericView source{&input,payload,planes,{2,1},{},{}};for(std::size_t plane=0;plane<2;++plane)for(std::size_t col=0;col<2;++col)CHECK(store_element(source,{plane,col,0},values[plane*2+col])==Status::ok);
+  MutableNumericView source{&input,payload,std::span(planes).first(1),{2,1},{},{}};for(std::size_t plane=0;plane<1;++plane)for(std::size_t col=0;col<2;++col)CHECK(store_element(source,{plane,col,0},values[plane*2+col])==Status::ok);
   FrameStamp stamp;stamp.sequence=1;stamp.stream_id="edge";seen={};const auto before=allocations;
   const auto status=executor.process_numeric_ports(1,{stamp,source.view()},{},{nullptr,collect,nullptr,&seen});CHECK(allocations==before);
-  CHECK((status==Status::ok)==available);CHECK(seen.deliveries==1);CHECK(seen.available==available);if(available)CHECK(seen.values==expected);
+  CHECK((status==Status::ok)==available);CHECK(seen.deliveries==1);CHECK(seen.available==available);if(available)CHECK(std::equal(seen.values.begin(),seen.values.begin()+2,expected.begin()));
  };
  run(0,{10,-20,32767,-32768},true,{10,-20,32767,-32768});
  run(0,{1.5,2.5,-1.5,-2.5},false,{});
@@ -512,7 +496,7 @@ void dtype_edge_geometries(){
  GraphExecutor executor(p);application::PreparedExecution prepared;CHECK(executor.prepare_numeric(g,{p.admission,p.resources},prepared)==Status::ok);if(!prepared)return;CHECK(executor.apply(std::move(prepared))==Status::ok);
  struct Seen{unsigned outputs=0,rows=0;std::uint64_t sequence=0;} seen;
  auto outputs=[](void* user,const NumericPortFrameView& f){++static_cast<Seen*>(user)->outputs;CHECK(f.identity.node<=10);};
- auto sink=[](void* user,const NumericPortFrameView& f){if(f.identity.node!=10)return;auto& seen=*static_cast<Seen*>(user);++seen.rows;CHECK(f.status==Status::ok);const auto& view=std::get<NumericView>(f.frame.payload);CHECK(view.actual[0]==3);std::int64_t value=0;CHECK(load_element(view,{1,view.actual[0]-1,1},value)==Status::ok);CHECK(value==std::int64_t((std::uint64_t{1}<<54)+seen.sequence*10+3));};
+ auto sink=[](void* user,const NumericPortFrameView& f){if(f.identity.node!=10)return;auto& seen=*static_cast<Seen*>(user);++seen.rows;CHECK(f.status==Status::ok);const auto& view=std::get<NumericView>(f.frame.payload);CHECK(view.actual[0]==3);std::int64_t value=0;CHECK(load_element(view,{0,view.actual[0]-1,1},value)==Status::ok);CHECK(value==std::int64_t((std::uint64_t{1}<<54)+seen.sequence*10+1));};
  auto contract=vector(DType::UInt64);std::array<std::byte,32> payload{};
  for(seen.sequence=1;seen.sequence<=6;++seen.sequence){auto incoming=frame(contract,payload,seen.sequence);auto before=allocations;CHECK(executor.process_numeric_ports(1,incoming,{},{outputs,sink,nullptr,&seen})==Status::ok);CHECK(allocations==before);}
  CHECK(seen.rows==6);std::printf("DTYPE GEOMETRY scalar/matrix/History ring conversion preserves exact data and public IDs, noalloc\n");
@@ -538,10 +522,14 @@ void pcm_resampler_full_chain(){
  for(std::size_t block=0;block<2;++block){
    for(std::size_t i=0;i<4096;++i){float x=0;for(unsigned tone=0;tone<6;++tone)x+=float(.05*std::sin(6.283185307179586*(400+tone*701+block*31)*double(block*4096+i)/48000.));samples[i]=x;samples[4096+i]=x*.75f;}
    FrameStamp stamp;stamp.sequence=block+1;stamp.source_sequence=block+1;stamp.producer_epoch=77;stamp.timestamp_ticks=std::int64_t(block*4096);
-   NumericView view{&input,std::as_bytes(std::span(samples)),planes,{4096,1},{},{}};
+   NumericView view{&input,std::as_bytes(std::span(samples)),std::span(planes).first(1),{4096,1},{},{}};
    auto before=allocations;CHECK(executor.process_numeric_ports(1,{stamp,view},{},{dsp_output,nullptr,dsp_history,&capture})==Status::ok);CHECK(before==allocations);
  }
- CHECK(capture.windows==10 && capture.rows==10 && capture.ordinal==10 && capture.timestamp==2666 && capture.changed);
+ // 8192 samples at48k produce2731 samples on the16k grid. At60Hz,
+ // ten analysis apertures end at floor(10*16000/60)=2666 exclusive.
+ // Resampler supplies an explicit interval, so timestamp is its last sample.
+ if(capture.windows!=10 || capture.rows!=10 || capture.ordinal!=10 || capture.timestamp!=2665 || !capture.changed)std::fprintf(stderr,"resampled chain windows=%zu rows=%zu ordinal=%llu timestamp=%lld changed=%d\n",capture.windows,capture.rows,(unsigned long long)capture.ordinal,(long long)capture.timestamp,int(capture.changed));
+ CHECK(capture.windows==10 && capture.rows==10 && capture.ordinal==10 && capture.timestamp==std::int64_t(10*16000/60-1) && capture.changed);
 }
 void pcm_resampler_scenario(){
  auto in=vector(DType::Float32);in.semantic=Semantic::PCM;in.quantity=Quantity::Amplitude;in.unit=NumericUnit::Values;
@@ -568,7 +556,7 @@ void pcm_resampler_scenario(){
  std::array<float,32> values{};values.fill(.25f);constexpr std::array<PlaneLayout,2> planes{{{0,{4,0}},{64,{4,0}}}};
  FrameStamp stamp;stamp.producer_epoch=1;stamp.generation=1;stamp.source_sequence=1;stamp.sequence=1;stamp.timestamp_ticks=0;
  // Keep plane metadata owned by the closure; the published view borrows it synchronously.
- auto send=[&,input_planes=planes](std::size_t count,bool available=true,Status expected=Status::ok){NumericView view{&in,std::as_bytes(std::span(values)),input_planes,{count,1},{},{}};
+ auto send=[&,input_planes=planes](std::size_t count,bool available=true,Status expected=Status::ok){NumericView view{&in,std::as_bytes(std::span(values)),std::span(input_planes).first(1),{count,1},{},{}};
    auto current=stamp;current.available=available;if(!available)view.storage={};
    const auto before=allocations;const auto status=executor.process_numeric_ports(1,{current,view},{},{nullptr,observe,nullptr,&seen});
    CHECK(status==expected);CHECK(before==allocations);
@@ -581,7 +569,7 @@ void pcm_resampler_scenario(){
  // operation advances. Shared mutable optional-kernel storage would emit early.
  for(std::uint64_t sequence=2;sequence<=4;++sequence){
    auto snapshot_stamp=stamp;snapshot_stamp.sequence=snapshot_stamp.source_sequence=sequence;snapshot_stamp.timestamp_ticks=std::int64_t(sequence-1);
-   NumericView snapshot_view{&in,std::as_bytes(std::span(values)),planes,{1,1},{},{}};
+   NumericView snapshot_view{&in,std::as_bytes(std::span(values)),std::span(planes).first(1),{1,1},{},{}};
    const auto before=allocations;CHECK(snapshot.plan->process_numeric_ports(1,{snapshot_stamp,snapshot_view},*snapshot.context,{},{nullptr,observe,nullptr,&copied})==Status::ok);CHECK(before==allocations);
    CHECK(copied.frames==(sequence<4?1u:2u));
  }
@@ -643,19 +631,19 @@ void index_extractors() {
  for(const auto rank:{Rank::Vector,Rank::Matrix})for(const auto& type:dtype_descriptors()){
   auto input=vector(type.type);if(rank==Rank::Matrix)input.shape={rank,{Axis::None,Axis::None},{ExtentBounds{1,2},ExtentBounds{3,3}}};
   else input.shape.extents[0]={1,2};
-  auto scalar=input;scalar.shape={};scalar.coordinates={};scalar.channel_order=input.channel_order.subspan(1,1);
+  auto scalar=input;scalar.shape={};scalar.coordinates={};scalar.channel_order=input.channel_order.first(1);
   auto first=scalar;first.channel_order=input.channel_order.first(1);auto unknown=scalar;unknown.clock={};
   auto extract=node(2,"IndexExtract",&input,&scalar);extract.parameters=TransformProcessingParameters{{
-   {"channel_index",NumericLiteral{std::uint64_t{1}}},{"index",NumericLiteral{std::uint64_t{1}}},{"column",NumericLiteral{std::uint64_t(rank==Rank::Matrix?2:0)}}}};
+   {"channel_index",NumericLiteral{std::uint64_t{0}}},{"index",NumericLiteral{std::uint64_t{1}}},{"column",NumericLiteral{std::uint64_t(rank==Rank::Matrix?2:0)}}}};
   auto firstExtract=node(3,"IndexExtract",&input,&first);firstExtract.parameters=TransformProcessingParameters{};
   auto view=node(4,"ScalarView",nullptr,nullptr);view.inputs={port(3,PortDirection::Input,scalar),port(7,PortDirection::Input,first),port(9,PortDirection::Input,scalar),port(11,PortDirection::Input,unknown)};
   NumericProcessingGraph graph;graph.graph_id="exact.extract";graph.nodes={node(1,"NetworkInput",nullptr,&input),extract,firstExtract,view};graph.edges={{1,2,0,0},{1,3,0,0},{2,4,0,3},{3,4,0,7}};
   auto p=profile();GraphExecutor executor(p);application::PreparedExecution prepared;CHECK(executor.prepare_numeric(graph,{p.admission,p.resources},prepared)==Status::ok);if(!prepared)continue;CHECK(executor.apply(std::move(prepared))==Status::ok);
   std::size_t width=0;CHECK(storage_width(input,width)==Status::ok);const std::size_t columns=rank==Rank::Matrix?3:1;
   std::array<PlaneLayout,2> planes{{{0,{columns*width,rank==Rank::Matrix?width:0}},{2*columns*width,{columns*width,rank==Rank::Matrix?width:0}}}};
-  alignas(16) std::array<std::byte,96> bytes{};MutableNumericView data{&input,std::span(bytes).first(4*columns*width),planes,{2,columns},{},{}};
+  alignas(16) std::array<std::byte,96> bytes{};MutableNumericView data{&input,std::span(bytes).first(4*columns*width),std::span(planes).first(1),{2,columns},{},{}};
   const std::uint64_t bits=type.type==DType::Float32?std::bit_cast<std::uint32_t>(7.25f):type.type==DType::Float64?std::bit_cast<std::uint64_t>(7.25):type.type==DType::UInt64?UINT64_MAX:71;
-  CHECK(store_bits(data,{1,1,columns-1},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
+  CHECK(store_bits(data,{0,1,columns-1},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
   struct Seen{std::uint64_t bits;std::array<unsigned,12> counts{};} seen{bits};NumericRuntimeCallbacks callbacks;callbacks.user=&seen;
   callbacks.sink_input=[](void* opaque,const NumericPortFrameView& frame){auto& seen=*static_cast<Seen*>(opaque);const auto id=frame.identity.port;CHECK(frame.identity.node==4 && id<seen.counts.size());if(id>=seen.counts.size())return;++seen.counts[id];
    if(id==11){CHECK(frame.status==Status::unavailable&&!frame.frame.stamp.available);return;}
@@ -665,7 +653,7 @@ void index_extractors() {
   if(rank==Rank::Matrix){
    // Rotate the backing storage. Configured indices remain logical, including
    // through an externally retained full ring rather than a dense matrix.
-   data.ring={2,1,{}};CHECK(store_bits(data,{1,1,2},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
+   data.ring={2,1,{}};CHECK(store_bits(data,{0,1,2},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
    auto arena=std::make_shared<IngressArena>();OwnedDataFrame owned;stamp.sequence=2;
    CHECK(retain_frame({stamp,data.view()},limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);
    const auto beforeRing=allocations;CHECK(executor.process_numeric_owned_ports(1,owned,{},callbacks,2,arena,2)==Status::ok);CHECK(allocations==beforeRing);
@@ -675,7 +663,7 @@ void index_extractors() {
    stamp.sequence=3;CHECK(retain_frame({stamp,data.view()},limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);
    CHECK(executor.process_numeric_owned_ports(1,owned,{},callbacks,3,arena,2)==Status::incompatible_contract);
    CHECK(seen.counts[3]==2&&seen.counts[7]==2);
-   data.ring.oldest=0;CHECK(store_bits(data,{1,1,2},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
+   data.ring.oldest=0;CHECK(store_bits(data,{0,1,2},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
    CHECK(retain_frame({stamp,data.view()},limits,arena->payload_pool,arena->metadata_pool,owned)==Status::ok);
    const auto beforeAdvance=allocations;CHECK(executor.process_numeric_owned_ports(1,owned,{},callbacks,3,arena,2)==Status::ok);CHECK(allocations==beforeAdvance);
    CHECK(seen.counts[3]==3&&seen.counts[7]==3);data.ring={};

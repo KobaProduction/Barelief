@@ -119,6 +119,8 @@ bool text_valid(std::string_view s, std::size_t limit, bool empty = false) noexc
 } // namespace
 signal_contracts::Status validate(const Message &m, const Limits &l) noexcept {
     using namespace signal_contracts;
+    if (!m.stamp.latency_seconds.denominator || m.stamp.latency_seconds.numerator<0)
+        return Status::invalid_argument;
     if (bool(m.reference.binding) != bool(m.reference.contract))
         return Status::invalid_argument;
     if (l.frame.max_elements > 800000 || l.frame.max_payload_bytes > 800000 ||

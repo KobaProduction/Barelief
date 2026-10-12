@@ -53,6 +53,7 @@ int main() {
     m.stamp.sequence = UINT64_MAX;
     m.stamp.source_sequence = 9007199254740993ULL;
     m.stamp.stream_id = "exact";
+    m.stamp.has_sample_interval=true;m.stamp.sample_begin=9007199254740993LL;m.stamp.sample_count=256;m.stamp.latency_samples=63;m.stamp.latency_seconds={1,700};
     m.numeric.storage = source;
     m.numeric.planes = planes;
     std::array<std::byte, 8192> wire{}, scratch{}, bytes{};
@@ -71,9 +72,10 @@ int main() {
                       value == UINT64_MAX,
                   "exact UInt64 max");
             check(out.stamp.source_sequence == 9007199254740993ULL, "exact lineage >2^53");
+            check(out.stamp.has_sample_interval&&out.stamp.sample_begin==9007199254740993LL&&out.stamp.sample_count==256&&out.stamp.latency_samples==63&&out.stamp.latency_seconds.numerator==1&&out.stamp.latency_seconds.denominator==700,"full DATA5 exact sample interval and latency ratio");
         }
     }
-    check(negotiate(4, 3, 15, 15).payload == 0, "no legacy negotiation fallback");
+    check(negotiate(5, 4, 15, 15).payload == 0, "no legacy negotiation fallback");
     observe_allocations = true;
     matrix_cases();
     boundary_cases();
@@ -307,28 +309,29 @@ void boundary_cases() {
     if (!e)
         return;
     const std::array<std::byte, 12> prefix{std::byte{0x4e}, std::byte{0x44}, std::byte{0x41}, std::byte{0x54},
-                                           std::byte{4},    std::byte{0},    std::byte{1},    std::byte{0},
+                                           std::byte{5},    std::byte{0},    std::byte{1},    std::byte{0},
                                            std::byte{1},    std::byte{0},    std::byte{1},    std::byte{0}};
     check(std::equal(prefix.begin(), prefix.end(), b.wire.begin()), "literal fixed header golden");
-    // Independent complete 408-byte scalar fixture, written from the field table.
-    std::array<std::byte, 408> golden{};
+    // Independent DATA5 field table: interval flag + five uint64 fields add 41 bytes
+    // before the contract; canonical zero latency is 0/1. Complete 449-byte fixture.
+    std::array<std::byte, 449> golden{};
     std::copy(prefix.begin(), prefix.end(), golden.begin());
     for (auto [at, value] :
          {std::pair{12, 1}, {20, 2},  {28, 3},    {36, 4},  {44, 5},  {52, 6},   {72, 1},  {75, 4},
-          {81, 7},          {137, 1}, {139, 'x'}, {140, 1}, {142, 1}, {143, 10}, {145, 1}, {146, 8},
-          {150, 1},         {158, 1}, {167, 1},   {175, 1}, {183, 1}, {185, 1},  {186, 1}, {188, 1},
-          {206, 1},         {222, 1}, {240, 1},   {256, 1}, {264, 5}, {271, 1},  {279, 1}, {291, 1},
-          {293, 7},         {321, 1}, {329, 1},   {354, 1}, {380, 8}})
+          {81, 7},          {137, 1}, {139, 'x'}, {140, 1}, {175, 1}, {183, 1}, {184, 10}, {186, 1}, {187, 8},
+          {191, 1},         {199, 1}, {208, 1},   {216, 1}, {224, 1}, {226, 1},  {227, 1}, {229, 1},
+          {247, 1},         {263, 1}, {281, 1},   {297, 1}, {305, 5}, {312, 1},  {320, 1}, {332, 1},
+          {334, 7},         {362, 1}, {370, 1},   {395, 1}, {421, 8}})
         golden[at] = std::byte(value);
     for (unsigned n = 0; n < 4; ++n)
         golden[77 + n] = std::byte("main"[n]);
     for (unsigned n = 0; n < 5; ++n)
-        golden[266 + n] = std::byte("event"[n]);
+        golden[307 + n] = std::byte("event"[n]);
     check(e.produced == golden.size() && std::equal(golden.begin(), golden.end(), b.wire.begin()),
           "complete literal scalar wire golden");
     check(bool(decode(golden, b.decoded, {b.bytes, b.text, b.channels, b.planes}, desktop_limits())),
           "literal golden decode independent of encode");
-    std::array<std::byte, 409> misaligned_wire{};
+    std::array<std::byte, 450> misaligned_wire{};
     std::copy(golden.begin(), golden.end(), misaligned_wire.begin() + 1);
     check(bool(decode(std::span(misaligned_wire).subspan(1), b.decoded,
                       {b.bytes, b.text, b.channels, b.planes}, desktop_limits())),
@@ -359,8 +362,8 @@ void boundary_cases() {
               "magic/version/grammar/kind/reserved/value refusal");
         b.wire[at] = old;
     }
-    for (auto at : {142U, 143U, 144U, 145U, 146U, 147U, 148U, 149U, 166U, 183U, 185U, 186U, 187U, 196U, 197U,
-                    230U, 231U, 353U}) {
+    for (auto at : {183U, 184U, 185U, 186U, 187U, 188U, 189U, 190U, 207U, 224U, 226U, 227U, 228U, 237U, 238U,
+                    271U, 272U, 394U}) {
         auto old = b.wire[at];
         b.wire[at] = std::byte{255};
         check(!inspect(std::span(b.wire).first(e.produced), desktop_limits()),
@@ -485,9 +488,9 @@ void boundary_cases() {
     std::get<StructuredContract>(structured.contract).version = 2;
     check(!measure(structured, desktop_limits()), "known WLED schema version mismatch");
     // Pure negotiation intersection does not create a session or promise support.
-    check(negotiate(4, 4, 15, 9).features == 1, "row/query pair required");
-    check(negotiate(4, 4, 15, 15).features == 15, "positive feature intersection");
-    check(!negotiate(4, 4, 16, 15).payload, "unknown feature bit refusal");
+    check(negotiate(5, 5, 15, 9).features == 1, "row/query pair required");
+    check(negotiate(5, 5, 15, 15).features == 15, "positive feature intersection");
+    check(!negotiate(5, 5, 16, 15).payload, "unknown feature bit refusal");
     std::uint8_t id = 44;
     DType dtype = DType::Int8;
     check(symbol_id(DType::UInt64, id) && id == 8 && symbol_value(8, dtype) && dtype == DType::UInt64,
@@ -623,12 +626,16 @@ void reference_cases() {
     auto long_identity=m;long_identity.endpoint.graph="012345678901234567890123456789012";
     check(validate(long_identity,device_block_limits())!=Status::ok,"device identity32 bound separate from schema64");
     auto e = encode(m, b.wire, b.scratch, device_block_limits(), context);
-    check(bool(e) && e.produced == 2235, "device stereo256 compact reference required");
+    check(bool(e) && e.produced == 2276, "device stereo256 compact reference required");
     if (!e)
         return;
-    std::array<std::byte, 2235> golden{};
+    auto exact_limit=device_block_limits();exact_limit.message_bytes=2276;
+    check(bool(measure(m,exact_limit,context)),"DATA5 compact reference exact envelope boundary");
+    exact_limit.message_bytes=2275;
+    check(!measure(m,exact_limit,context),"DATA5 compact reference one byte short rejects");
+    std::array<std::byte, 2276> golden{};
     const std::array<std::byte, 12> prefix{std::byte{0x4e}, std::byte{0x44}, std::byte{0x41}, std::byte{0x54},
-                                           std::byte{4},    std::byte{0},    std::byte{1},    std::byte{0},
+                                           std::byte{5},    std::byte{0},    std::byte{1},    std::byte{0},
                                            std::byte{1},    std::byte{1},    std::byte{1},    std::byte{0}};
     std::copy(prefix.begin(), prefix.end(), golden.begin());
     for (auto [at, value] : {std::pair{12, 1},
@@ -641,9 +648,10 @@ void reference_cases() {
                              {72, 11},
                              {76, 7},
                              {132, 1},
-                             {135, 1},
-                             {142, 1},
-                             {168, 8}})
+                             {167, 1},
+                             {176, 1},
+                             {183, 1},
+                             {209, 8}})
         golden[at] = std::byte(value);
     check(std::equal(golden.begin(), golden.end(), b.wire.begin()),
           "complete literal stereo256 reference golden");
@@ -699,6 +707,10 @@ void reference_cases() {
     d = decode(std::span(b.wire).first(e.produced), b.decoded, {b.bytes, b.text, b.channels, b.planes},
                device_block_limits(), context);
     check(bool(d), "reference donor lifetime seed");
+    m.stamp.has_sample_interval=true;m.stamp.sample_begin=9007199254740993LL;m.stamp.sample_count=256;m.stamp.latency_samples=63;m.stamp.latency_seconds={1,700};
+    e=encode(m,b.wire,b.scratch,device_block_limits(),context);check(bool(e),"DATA5 reference timing encode");
+    d=decode(std::span(b.wire).first(e.produced),b.decoded,{b.bytes,b.text,b.channels,b.planes},device_block_limits(),context);
+    check(d&&b.decoded.stamp.has_sample_interval&&b.decoded.stamp.sample_begin==9007199254740993LL&&b.decoded.stamp.sample_count==256&&b.decoded.stamp.latency_samples==63&&b.decoded.stamp.latency_seconds.numerator==1&&b.decoded.stamp.latency_seconds.denominator==700,"referenced DATA5 exact sample interval and latency ratio");
     binding.endpoint.graph = "gone";
     binding.stream = "gone";
     std::get<NumericContract>(binding.contract).clock.domain = "gone";

@@ -248,6 +248,8 @@ int main(int argc, char **argv) {
     if(matrixPanel.physical_frequency() || matrixPanel.physical_time())return failure(93,__LINE__);
     const auto beforeMetadata=matrixWrites;
     image->set_axis_metadata(physical);arbitrarySurface->set_axis_metadata(physical);
+    if(matrixPanel.physical_frequency() || matrixPanel.physical_time())return failure(96,__LINE__);
+    matrixPanel.set_axis_permissions({true,true});
     if(!matrixPanel.physical_frequency() || !matrixPanel.physical_time())return failure(94,__LINE__);
     if(matrixWrites!=beforeMetadata)return failure(95,__LINE__);
     if(matrixPanel.preferences().value("frequency_axis_mode").toString()!="coordinates")return failure(86,__LINE__);
@@ -265,6 +267,8 @@ int main(int argc, char **argv) {
     // are selected: capability is based on the source, not displayed axes.
     const auto beforeRemoval=matrixWrites;
     image->set_axis_metadata({});arbitrarySurface->set_axis_metadata({});
+    if(matrixPanel.physical_frequency() || matrixPanel.physical_time() || matrixPanel.preferences().value("frequency_axis_mode").toString()!="positions")
+        fprintf(stderr,"Axes removal diagnostic frequency=%d time=%d mode=%s imagePhysical=%d surfacePhysical=%d paused=%d\n",matrixPanel.physical_frequency(),matrixPanel.physical_time(),qPrintable(matrixPanel.preferences().value("frequency_axis_mode").toString()),image->source_axis_metadata().column_coordinates,arbitrarySurface->source_axis_metadata().column_coordinates,arbitrarySurface->paused());
     if(matrixPanel.physical_frequency() || matrixPanel.physical_time() || matrixPanel.preferences().value("frequency_axis_mode").toString()!="positions")return failure(96,__LINE__);
     if(matrixWrites!=beforeRemoval)return failure(97,__LINE__);
     image->set_axis_metadata(physical);arbitrarySurface->set_axis_metadata(physical);
@@ -288,15 +292,43 @@ int main(int argc, char **argv) {
     if(arbitrarySurface->projected_axis_metadata().age(0)!=2 || arbitrarySurface->projected_axis_metadata().age(2)!=0)return failure(90,__LINE__);
     // A bigger 2D viewport exposes more sections while values and owner stay fixed.
     NumericImageView adaptiveImage;
-    adaptiveImage.set_matrix(std::vector<std::vector<float>>(400,std::vector<float>(50,0)));
+    auto adaptiveData=std::vector<std::vector<float>>(400,std::vector<float>(50,0));
+    adaptiveData[0][0]=.25f;adaptiveData[123][17]=-.75f;adaptiveData[399][49]=1.f;
+    adaptiveImage.set_matrix(adaptiveData);
+    const auto adaptiveOwner=adaptiveImage.projection_storage_identity();
     adaptiveImage.resize(320,200);adaptiveImage.show();QCoreApplication::processEvents();
     const auto smallRaster=adaptiveImage.grabFramebuffer();
     if(smallRaster.isNull())return failure(91,__LINE__);
     const auto smallTime=adaptiveImage.property("timeAxisSections").toInt(),smallColumns=adaptiveImage.property("columnAxisSections").toInt();
     adaptiveImage.resize(1400,900);QCoreApplication::processEvents();const auto largeRaster=adaptiveImage.grabFramebuffer();
     if(largeRaster.isNull())return failure(91,__LINE__);
-    if(adaptiveImage.property("timeAxisSections").toInt()<=smallTime || adaptiveImage.property("timeAxisSections").toInt()<=5 ||
+    if(adaptiveImage.property("timeAxisSections").toInt()<=smallTime ||
        adaptiveImage.property("columnAxisSections").toInt()<=smallColumns || adaptiveImage.value_count()!=20000)return failure(91,__LINE__);
+    if(adaptiveImage.projection_storage_identity()!=adaptiveOwner)return failure(91,__LINE__);
+    for(const auto sample:{QPoint(0,0),QPoint(17,123),QPoint(49,399)}) {
+        float actual=0;
+        if(!adaptiveImage.matrix_sample(sample.y(),sample.x(),actual) || actual!=adaptiveData[sample.y()][sample.x()])return failure(91,__LINE__);
+    }
+    // Check readable, ordered ticks rather than the old dense-grid count.
+    const auto adaptiveState=adaptiveImage.presentation_model()->state();
+    const QFontMetrics adaptiveFont(adaptiveImage.font());
+    for(const bool horizontal:{false,true}) {
+        const auto ticks=adaptiveState.value(horizontal?"xTicks":"yTicks").toList();
+        const auto sections=adaptiveImage.property(horizontal?"columnAxisSections":"timeAxisSections").toInt();
+        if(ticks.size()!=sections+1 || ticks.size()<2)return failure(91,__LINE__);
+        const double extent=horizontal?adaptiveImage.width()-adaptiveState.value("plotLeft").toDouble()-22:adaptiveImage.height()-86;
+        double previous=-1;QString previousText;
+        for(int i=0;i<ticks.size();++i) {
+            const auto tick=ticks[i].toMap();const double position=tick.value("position").toDouble();const auto text=tick.value("text").toString();
+            if(!std::isfinite(position) || position<=previous || text.isEmpty() || text==previousText ||
+               (i==0 && position!=0) || (i==ticks.size()-1 && position!=1))return failure(91,__LINE__);
+            if(i>0) {
+                const double needed=horizontal?(adaptiveFont.horizontalAdvance(previousText)+adaptiveFont.horizontalAdvance(text))/2.+12:adaptiveFont.height()+12;
+                if((position-previous)*extent<needed)return failure(91,__LINE__);
+            }
+            previous=position;previousText=text;
+        }
+    }
     GraphPanel scalarPanel("metrics",new LineChartView,{{"kind","ScalarView"}},nullptr);
     if(!scalarPanel.metrics_view() || scalarPanel.active_chart() || scalarPanel.display_mode()!="metrics")return failure(83,__LINE__);
     scalarPanel.set_display_mode("surface3d");if(scalarPanel.display_mode()!="metrics")return failure(84,__LINE__);

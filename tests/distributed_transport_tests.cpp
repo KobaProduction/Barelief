@@ -7,9 +7,9 @@
 #include <cstdio>
 using namespace transport_fixture;
 static QJsonObject advertised(NumericEngine& e,quint16 port,const char* graphId){
-    return {{"control_version",2},{"data_version",4},{"stream_port",int(port)},
+    return {{"control_version",4},{"data_version",5},{"stream_port",int(port)},
         {"publisher_incarnation",QString::number(e.snapshot().epoch)},{"graph_revision",QString::number(e.snapshot().graph_revision)},
-        {"streams",QJsonArray{QJsonObject{{"id","relay"},{"graph_id",graphId},{"node_id",1},{"direction","input"},{"port_index",0},{"payload_version",4}}}}};
+        {"streams",QJsonArray{QJsonObject{{"id","relay"},{"graph_id",graphId},{"node_id",1},{"direction","input"},{"port_index",0},{"payload_version",5}}}}};
 }
 static QJsonObject binding(QUuid provider){return {{"network",QJsonObject{{"routes",QJsonArray{QJsonObject{{"node_id",0},{"provider_uuid",provider.toString(QUuid::WithoutBraces)},{"stream_id","relay"},
     // An offline UUID must never fall through to this otherwise valid direct route.

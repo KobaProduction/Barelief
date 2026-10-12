@@ -23,9 +23,11 @@ int main(int argc, char** argv) {
         QByteArray graph_bytes;
         require(bool(desktop::encode_numeric_graph(graph, graph_bytes)), "canonical graph");
         const auto snapshot = QJsonDocument::fromJson(graph_bytes).object();
-        // Structurally canonical but inadmissible: two producers occupy input 5/0.
+        // Structurally canonical but inadmissible: Window parameter/port mismatch.
         // Selecting this distinct graph is observably rejected by Apply (exit 3).
-        auto collision_graph=graph;collision_graph.edges.push_back({5,5,0,0});QByteArray collision_bytes;
+        auto collision_graph=graph;
+        std::get<domain::TransformProcessingParameters>(collision_graph.nodes[1].parameters).values.front().value=signal_contracts::NumericLiteral{std::uint64_t{2048}};
+        QByteArray collision_bytes;
         require(bool(desktop::encode_numeric_graph(collision_graph,collision_bytes)),"collision graph snapshot");
         const auto collision_snapshot=QJsonDocument::fromJson(collision_bytes).object();
         desktop::NumericDraftPresentation presentation;
@@ -72,6 +74,11 @@ int main(int argc, char** argv) {
         };
         run({"--config", path, "--duration", "200"}, 0);
         run({"--config", path, "--analysis-interval-ms", "25", "--duration", "200"}, 0);
+        run({"--config", path, "--analysis-rate", "90", "--duration", "200"}, 0);
+        run({"--config", path, "--analysis-rate", "120000/1001", "--duration", "200"}, 0);
+        for(const auto rate:{"0","-1","120/0","1/0","1001","invalid"})
+            run({"--config", path, "--analysis-rate", rate, "--duration", "200"}, 2);
+        run({"--config", path, "--analysis-rate", "120", "--analysis-interval-ms", "25"}, 2);
         run({"--config", path, "--analysis-interval-ms", "0", "--duration", "200"}, 2);
         run({"--config", path, "--analysis-interval-ms", "60001", "--duration", "200"}, 2);
         run({"--config", path, "--analysis-interval-ms", "invalid", "--duration", "200"}, 2);
@@ -97,8 +104,8 @@ int main(int argc, char** argv) {
         write(invalid, graph_bytes);
         run({"--config", invalid, "--duration", "200"}, 2);
         auto future = original;
-        require(future.contains("\"schema_version\":2"), "project edition marker");
-        future.replace("\"schema_version\":2", "\"schema_version\":99");
+        require(future.contains("\"schema_version\":4"), "project edition marker");
+        future.replace("\"schema_version\":4", "\"schema_version\":99");
         write(invalid, future);
         run({"--config", invalid, "--duration", "200"}, 2);
         write(invalid, QByteArray("{\"schema_version\":2,\"scene_graph\":null}"));

@@ -3,7 +3,9 @@
 #include "core_app/graph_panel.h"
 #include "visualization/abstract/fps.h"
 #include "core_app/main_window.h"
+#include <core/performance.h>
 #include <cmath>
+#include <utility>
 #include <QStyle>
 #include <QStatusBar>
 #include <QLabel>
@@ -17,8 +19,11 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QToolButton>
+#include <QPainter>
+#include <QStyleOption>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QScopedValueRollback>
 #include <QCloseEvent>
 #include <QScreen>
 #include <QWindow>
@@ -51,6 +56,126 @@
 
 Q_LOGGING_CATEGORY(core_app_window, "core_app.window")
 
+namespace {
+// The status occupies only unused menu-bar space; actions and corner controls
+// keep the sizing and input behavior provided by QMenuBar.
+class MenuRowStatus final : public QLabel {
+  public:
+    using QLabel::QLabel;
+  protected:
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        QStyleOption option;
+        option.initFrom(this);
+        style()->drawItemText(&painter, contentsRect(), alignment(), option.palette, isEnabled(),
+                             fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()), foregroundRole());
+    }
+};
+
+class NavigationMenuBar final : public QMenuBar {
+  public:
+    explicit NavigationMenuBar(QWidget *parent) : QMenuBar(parent) { setNativeMenuBar(false); }
+    void setCenterWidget(QWidget *widget) {
+        _center = widget;
+        widget->setParent(this);
+        widget->show();
+        updateCenter();
+    }
+    void watchCornerWidget(QWidget *widget) {
+        widget->installEventFilter(this);
+        for (auto corner : {Qt::TopLeftCorner, Qt::TopRightCorner})
+            if (cornerWidget(corner) == widget)
+                _corner_hints[corner == Qt::TopLeftCorner ? 0 : 1] = {widget, widget->sizeHint()};
+    }
+  protected:
+    bool event(QEvent *event) override {
+        const bool result = QMenuBar::event(event);
+        switch (event->type()) {
+        case QEvent::Show: case QEvent::FontChange: case QEvent::StyleChange:
+        case QEvent::LayoutDirectionChange:
+        case QEvent::ActionAdded: case QEvent::ActionChanged: case QEvent::ActionRemoved:
+            // The native action/corner cache also depends on menu metrics and
+            // first-show polish, even when a corner reports the same size hint.
+            _corner_metrics_dirty = true;
+            scheduleCornerUpdate();
+            updateCenter();
+            break;
+        case QEvent::Resize: case QEvent::LayoutRequest:
+            updateCenter();
+            break;
+        default: break;
+        }
+        return result;
+    }
+    bool eventFilter(QObject *object, QEvent *event) override {
+        const bool result = QMenuBar::eventFilter(object, event);
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Move ||
+            event->type() == QEvent::Show || event->type() == QEvent::Hide ||
+            event->type() == QEvent::ShowToParent || event->type() == QEvent::HideToParent ||
+            event->type() == QEvent::LayoutRequest) {
+            updateCenter();
+            // QMenuBar lays out corner widgets while updating its action cache.
+            // Recheck after that entire layout operation has completed.
+            scheduleCornerUpdate();
+        }
+        return result;
+    }
+  private:
+    QPointer<QWidget> _center;
+    struct CornerHint { QPointer<QWidget> widget; QSize size; };
+    CornerHint _corner_hints[2];
+    bool _corner_metrics_dirty = true;
+    bool _positioning = false;
+    bool _position_pending = false;
+    void scheduleCornerUpdate() {
+        if (!_position_pending) {
+            _position_pending = true;
+            QTimer::singleShot(0, this, [this] {
+                    _position_pending = false;
+                    const bool metricsChanged = std::exchange(_corner_metrics_dirty, false);
+                    // Corner layouts can change their size hint without a bar
+                    // resize (for example after loading a font or translating).
+                    // QMenuBar uses sizeHint() to reserve corner space. Its
+                    // setCornerWidget() repaints even for the same widget, so
+                    // refresh that cache only when its sizing input changed.
+                    for (auto corner : {Qt::TopLeftCorner, Qt::TopRightCorner}) {
+                        auto *widget = cornerWidget(corner);
+                        auto &cached = _corner_hints[corner == Qt::TopLeftCorner ? 0 : 1];
+                        const QSize hint = widget ? widget->sizeHint() : QSize{};
+                        if (!metricsChanged && cached.widget == widget && cached.size == hint) continue;
+                        cached = {widget, hint};
+                        if (widget) QMenuBar::setCornerWidget(widget, corner);
+                    }
+                    updateCenter();
+            });
+        }
+    }
+    void updateCenter() {
+        if (!_center || _positioning) return;
+        const QScopedValueRollback positioning(_positioning, true);
+        const int spacing = style()->pixelMetric(QStyle::PM_LayoutHorizontalSpacing, nullptr, this);
+        int left = contentsRect().left();
+        int right = contentsRect().right() + 1;
+        for (auto *action : actions()) {
+            if (!action->isVisible()) continue;
+            const auto geometry = actionGeometry(action);
+            if (layoutDirection() == Qt::RightToLeft) right = qMin(right, geometry.left());
+            else left = qMax(left, geometry.right() + 1);
+        }
+        for (auto corner : {Qt::TopLeftCorner, Qt::TopRightCorner}) {
+            auto *widget = cornerWidget(corner);
+            if (!widget || widget->isHidden()) continue;
+            if ((corner == Qt::TopLeftCorner) != (layoutDirection() == Qt::RightToLeft))
+                left = qMax(left, widget->geometry().right() + 1);
+            else right = qMin(right, widget->geometry().left());
+        }
+        const int gap = qMax(4, spacing);
+        const int start = qBound(contentsRect().left(), left + gap, contentsRect().right() + 1);
+        _center->setGeometry(start, contentsRect().top(), qMax(0, right - gap - start), contentsRect().height());
+    }
+};
+}
+
 MainWindow::MainWindow(GuiPresenter &application, std::shared_ptr<presentation::ProcessorDiscoveryPort> discovery) : _application(application) {
     _commands = new presentation::UiCommandRegistry(this);
     _commands->set_workspace_guard([this] {
@@ -65,18 +190,23 @@ MainWindow::MainWindow(GuiPresenter &application, std::shared_ptr<presentation::
     setMinimumSize(800, 600);
     resize(1000, 800);
 
+    _numeric_render_timer.setParent(this);
+    _numeric_render_timer.setObjectName("numericRenderTimer");
+    _numeric_render_timer.setTimerType(Qt::PreciseTimer);
     setup_ui();
     connect(&_numeric_render_timer,&QTimer::timeout,this,[this] {
+        core::perf::Scope profile(core::perf::Stage::NumericRenderTimer);
         if(!_numeric_render_dirty)return;
-        _numeric_render_dirty=false;render_numeric_views();
+        _numeric_render_dirty=false;render_numeric_views(true);
     });
-    _numeric_render_timer.start(qMax(1,1000/qMax(1,_render_fps)));
+    apply_render_rate();
+    _numeric_render_timer.start();
     if (auto *editor = data_flow_editor()) {
         _commands->set_editor(editor);
         auto *menu = findChild<QMenu *>("fileMenu"); menu->addSeparator();
-        menu->addAction(_commands->register_command({"undoDataFlow","Undo",QKeySequence("Alt+Z"),presentation::UiCommandContext::SchemaEditor,
+        menu->addAction(_commands->register_command({"undoDataFlow","Undo",QKeySequence("Ctrl+Z"),presentation::UiCommandContext::SchemaEditor,
             [editor] { editor->history().undo(); }, [editor] { return editor->history().canUndo(); }}));
-        menu->addAction(_commands->register_command({"redoDataFlow","Redo",QKeySequence("Alt+Shift+Z"),presentation::UiCommandContext::SchemaEditor,
+        menu->addAction(_commands->register_command({"redoDataFlow","Redo",QKeySequence("Ctrl+Shift+Z"),presentation::UiCommandContext::SchemaEditor,
             [editor] { editor->history().redo(); }, [editor] { return editor->history().canRedo(); }}));
         connect(&editor->history(),&QUndoStack::canUndoChanged,_commands,&presentation::UiCommandRegistry::refresh);
         connect(&editor->history(),&QUndoStack::canRedoChanged,_commands,&presentation::UiCommandRegistry::refresh);
@@ -131,6 +261,7 @@ MainWindow::MainWindow(GuiPresenter &application, std::shared_ptr<presentation::
     for (const auto *id : {"pipelinePresets","pipelineToggle"}) if (auto *button=findChild<QToolButton *>(id)) { deviceLayout->addWidget(button); button->show(); }
     auto *engineButton=new presentation::ProcessorSelector(*directory,manage,deviceCorner); deviceLayout->addWidget(engineButton);
     menuBar()->setCornerWidget(deviceCorner);
+    static_cast<NavigationMenuBar *>(menuBar())->watchCornerWidget(deviceCorner);
     auto *permissions=new QLabel(this); permissions->setObjectName("selectedEnginePermission"); statusBar()->addPermanentWidget(permissions);
     const auto refreshPermissions=[directory,permissions] {
         const auto *selected=directory->selected();
@@ -217,16 +348,26 @@ MainWindow::MainWindow(GuiPresenter &application, std::shared_ptr<presentation::
                                                                     {"windowFunction", _window_function_chart},
                                                                     {"fft", _amplitudes_chart},
                                                                     {"mel", _test_amplitudes_chart}};
-        for (auto [id, chart] : charts)
-            if (_render_visible.value(id) && chart->isVisible())
+        for (auto [id, chart] : charts) {
+            if (!_render_visible.value(id)) continue;
+            if (auto *panel = qobject_cast<GraphPanel *>(_panels[id]->widget()); panel && panel->isVisible())
+                _panels[id]->setRenderFPS(panel->display_fps(),true);
+            else if (chart->isVisible())
                 if (auto *view = dynamic_cast<FPSChartView *>(chart))
                     _panels[id]->setRenderFPS(view->display_fps(),true);
-        if (_render_visible.value("spectrogram") && _spectrogram_view->isVisible())
-            _panels["spectrogram"]->setRenderFPS(_spectrogram_view->display_fps(),true);
+        }
+        if (_render_visible.value("spectrogram")) {
+            if (auto *panel = qobject_cast<GraphPanel *>(_panels["spectrogram"]->widget()); panel && panel->isVisible())
+                _panels["spectrogram"]->setRenderFPS(panel->display_fps(),true);
+            else if (_spectrogram_view->isVisible())
+                _panels["spectrogram"]->setRenderFPS(_spectrogram_view->display_fps(),true);
+        }
         for (auto it = _node_views.cbegin(); it != _node_views.cend(); ++it) {
             const auto &view = it.value();
             if (!view.dock || !_render_visible.value(it.key())) continue;
-            if (view.spectrogram && view.spectrogram->isVisible())
+            if (auto *panel = qobject_cast<GraphPanel *>(view.dock->widget()); panel && panel->isVisible())
+                view.dock->setRenderFPS(panel->display_fps(),true);
+            else if (view.spectrogram && view.spectrogram->isVisible())
                 view.dock->setRenderFPS(view.spectrogram->display_fps(),true);
             else if (auto *chart = dynamic_cast<FPSChartView *>(view.chart); chart && chart->isVisible())
                 view.dock->setRenderFPS(chart->display_fps(),true);
@@ -291,7 +432,39 @@ MainWindow::~MainWindow() {
     }
 }
 
+void MainWindow::set_configuration_save_state(ConfigurationSaveState state, const QString &path, const QString &error) {
+    _configuration_save_state = state;
+    _configuration_save_path = path;
+    _configuration_save_error = error;
+    if (!_configuration_save_status) return;
+    const char *key = "Unsaved configuration";
+    switch (state) {
+    case ConfigurationSaveState::Unsaved: break;
+    case ConfigurationSaveState::Saving: key = "Saving configuration…"; break;
+    case ConfigurationSaveState::Saved: key = "Configuration saved to disk"; break;
+    case ConfigurationSaveState::Error: key = "Configuration save error"; break;
+    case ConfigurationSaveState::LoadError: key = "Configuration could not be opened"; break;
+    }
+    _configuration_save_status->setText(ui::text(key));
+    _configuration_save_status->setToolTip(error.isEmpty() ? path : path + "\n" + error);
+    _configuration_save_status->setProperty("saveState", int(state));
+    _configuration_save_status->setAccessibleName(ui::text(key));
+    // Persistence is synchronous: paint the pending state before entering disk I/O.
+    if (state == ConfigurationSaveState::Saving) _configuration_save_status->repaint();
+}
+
 void MainWindow::setup_ui() {
+    auto *navigation = new NavigationMenuBar(this);
+    setMenuBar(navigation);
+    _configuration_save_status = new MenuRowStatus(navigation);
+    _configuration_save_status->setObjectName("configurationSaveStatus");
+    _configuration_save_status->setAlignment(Qt::AlignCenter);
+    _configuration_save_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    navigation->setCenterWidget(_configuration_save_status);
+    connect(&ui::Language::instance(), &ui::Language::changed, this, [this] {
+        set_configuration_save_state(_configuration_save_state, _configuration_save_path, _configuration_save_error);
+    });
+    set_configuration_save_state(ConfigurationSaveState::Unsaved);
     auto *file_menu = menuBar()->addMenu(ui::text("File"));
     file_menu->setObjectName("fileMenu");
     ui::bind(file_menu, "title", "File");
@@ -401,8 +574,7 @@ void MainWindow::setup_ui() {
     _camera_save_timer.setSingleShot(true);
     _camera_save_timer.setInterval(500);
     connect(&_camera_save_timer, &QTimer::timeout, this, [this] {
-        if (_application.state().file_configs.ui.autosave_enabled)
-            emit settings_change_requested({ui::SettingsChangeScope::ProjectPresentation,false});
+        emit settings_change_requested({ui::SettingsChangeScope::ProjectPresentation,false});
     });
     connect(_spectrogram_view, &SpectrogramGraph::presentation_changed, this, [this](const QJsonObject &state) {
         auto prefs = _application.state().file_configs.ui.graph_views.value("spectrogram").toObject();
@@ -468,6 +640,7 @@ void MainWindow::setup_ui() {
         connect(panel,&GraphPanel::channel_requested,this,[this,key=it.key()](int plane){select_numeric_plane(key,std::size_t(std::max(0,plane)));});
     }
     auto *editor = new SchemeEditorWidget(_application, this);
+    settings_widget->set_execution_settings(editor->execution_settings_widget(settings_widget));
     connect(editor,&SchemeEditorWidget::default_graph_requested,this,&MainWindow::default_graph_requested);
     connect(editor, &SchemeEditorWidget::status_message, this, [this](const QString &text) {
         if (text != ui::text("Data Flow applied"))
@@ -549,8 +722,7 @@ void MainWindow::setup_ui() {
     _workspace_save_timer.setInterval(350);
     connect(&_workspace_save_timer, &QTimer::timeout, this, [this] {
         save_workspace();
-        if (_application.state().file_configs.ui.autosave_enabled)
-            emit settings_change_requested({ui::SettingsChangeScope::SessionWorkspace,false});
+        emit settings_change_requested({ui::SettingsChangeScope::SessionWorkspace,false});
     });
     const auto saved_ui = _application.state().file_configs.ui;
     const auto workspace = saved_ui.workspace;

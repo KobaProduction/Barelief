@@ -1,4 +1,5 @@
 #include "core_app/main_window.h"
+#include <core/performance.h>
 #include "core_app/graph_panel.h"
 #include "core_app/settings_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
@@ -71,7 +72,7 @@ QString MainWindow::ensure_node_view(int node, const QString &kind, const QStrin
             surface->set_surface_settings(SurfaceSettings::effective(_application.state().file_configs.ui.graph_rendering,
                 _application.state().file_configs.ui.graph_views.value(key).toObject()));
         }
-        _numeric_render_dirty=true;render_numeric_views();
+        refresh_vector_delivery_queues();_numeric_render_dirty=true;render_numeric_views();
     });
     dock->setWidget(panel);
     connect(panel, &GraphPanel::channel_requested, this,
@@ -81,7 +82,9 @@ QString MainWindow::ensure_node_view(int node, const QString &kind, const QStrin
         for (auto it = updates.begin(); it != updates.end(); ++it)
             p[it.key()] = it.value();
         _application.state().file_configs.ui.graph_views[id] = p;
-        _numeric_render_dirty=true;
+        // Pose already schedules its own surface render. It neither changes
+        // supplied numeric data nor needs to reproject other graph endpoints.
+        if(updates.size()!=1 || !updates.contains("camera"))_numeric_render_dirty=true;
         _workspace_save_timer.start();
     });
     if (view.chart) view.chart->set_render_fps(_render_fps);
@@ -291,6 +294,12 @@ void MainWindow::sync_node_views(const QJsonObject& document) {
             {"port",int(it->endpoint.port)}, {"plane",qulonglong(it->plane)}});
         auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
         if(!panel)continue;
+        // Only the applied graph grants physical units; an editing draft cannot
+        // authorize coordinates before its configuration links are admitted.
+        const bool applied=runtime_available && runtime_graph.graph_id==it->endpoint.graph_id;
+        panel->set_axis_permissions({
+            applied && domain::has_configuration_binding(runtime_graph,it->endpoint.node,domain::ConfigurationRole::FrequencyGrid),
+            applied && domain::has_configuration_binding(runtime_graph,it->endpoint.node,domain::ConfigurationRole::SampleClock)});
         const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==it->endpoint.node;});
         if(node==graph.nodes.end())continue;
         const auto& ports=it->endpoint.direction==domain::PortDirection::Input?node->inputs:node->outputs;
@@ -302,28 +311,131 @@ void MainWindow::sync_node_views(const QJsonObject& document) {
     refresh_graph_navigation(previous);apply_surface_settings();refresh_subscriptions();render_numeric_views();
 }
 void MainWindow::clear_node_views() {
+    _numeric_changed_endpoints.clear();
+    _vector_delivery_queues.clear();
     _numeric_views.clear();
-    for(auto* dock:graph_docks())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
+    for(auto* dock:graph_docks())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())){
+        panel->set_axis_permissions({});
         presentation::NumericViewAdapter::clear_render_target(panel->all_render_targets());
+    }
+}
+void MainWindow::refresh_vector_delivery_queues() {
+    std::vector<pipeline::EndpointIdentity> selected;
+    const auto collect=[&](const NumericBinding& binding){
+        if(binding.device==_application.device_id()&&std::find(selected.begin(),selected.end(),binding.endpoint)==selected.end())
+            selected.push_back(binding.endpoint);
+    };
+    for(const auto& binding:_numeric_bindings)collect(binding);
+    for(const auto& ports:_metric_bindings)for(const auto& binding:ports)collect(binding);
+    // The engine preview arena has 128 slots. Reserve three existing leases
+    // per subscribed endpoint plus eight scratch slots before adding jitter
+    // leases. Larger subscription sets retain the existing latest-only path.
+    const auto capacity=selected.empty()||selected.size()>40?std::size_t{0}:
+        std::min(std::size_t{3},(120-3*selected.size())/selected.size());
+    std::vector<VectorDeliveryQueue> prepared;
+    if(capacity>=2&&!_restoring_preset)for(auto it=_numeric_bindings.cbegin();it!=_numeric_bindings.cend();++it){
+        if(it->device!=_application.device_id())continue;
+        auto* dock=_node_views.contains(it.key())?_node_views[it.key()].dock:_panels.value(it.key());
+        auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
+        if(!panel||!panel->active_chart()||dock->isHidden()||!dock->property("renderExposed").toBool())continue;
+        if(std::any_of(prepared.begin(),prepared.end(),[&](const auto& q){return q.endpoint==it->endpoint;}))continue;
+        auto prior=std::find_if(_vector_delivery_queues.begin(),_vector_delivery_queues.end(),[&](const auto& q){return q.endpoint==it->endpoint;});
+        if(_vector_delivery_device==_application.device_id()&&prior!=_vector_delivery_queues.end()&&prior->capacity==capacity)
+            prepared.push_back(std::move(*prior));
+        else{VectorDeliveryQueue queue;queue.endpoint=it->endpoint;queue.capacity=capacity;prepared.push_back(std::move(queue));}
+    }
+    _vector_delivery_queues=std::move(prepared);_vector_delivery_device=_application.device_id();
+    for(const auto& queue:_vector_delivery_queues)if(queue.count)_numeric_render_dirty=true;
 }
 void MainWindow::consume_numeric_frame(const pipeline::DeliveredNumericFrame& frame) {
-    _numeric_views.accept(frame);_numeric_render_dirty=true;
+    core::perf::Scope profile(core::perf::Stage::NumericFrameReceive);
+    if(_restoring_preset)for(auto& queue:_vector_delivery_queues)queue.clear();
+    if(!_restoring_preset&&frame.context&&_vector_delivery_device==_application.device_id()){
+        auto found=std::find_if(_vector_delivery_queues.begin(),_vector_delivery_queues.end(),[&](const auto& q){return q.endpoint==frame.context->endpoint;});
+        if(found!=_vector_delivery_queues.end()){
+            auto& queue=*found;
+            if(queue.seen&&pipeline::delivery_precedes(frame.delivery,queue.fence))return;
+            bool vectorFrame=false;
+            if(frame.frame){const auto view=frame.frame.view();const auto* numeric=std::get_if<signal_contracts::NumericView>(&view.payload);
+                vectorFrame=numeric&&numeric->contract&&numeric->contract->shape.rank==signal_contracts::Rank::Vector;}
+            const bool available=frame.status==signal_contracts::Status::ok&&frame.frame&&frame.frame.view().stamp.available&&
+                vectorFrame;
+            if(!available){
+                queue.clear();queue.seen=true;queue.fence=frame.delivery;queue.context=frame.context;queue.sequence=0;
+                _numeric_views.accept(frame);request_numeric_render(frame.context->endpoint);return;
+            }
+            const auto& stamp=frame.frame.view().stamp;
+            const bool reset=!queue.seen||frame.delivery!=queue.fence||queue.context!=frame.context||
+                stamp.producer_epoch!=queue.producer||stamp.generation!=queue.generation||stamp.discontinuity;
+            if(!reset&&stamp.sequence<=queue.sequence)return;
+            if(reset)queue.clear();
+            queue.seen=true;queue.fence=frame.delivery;queue.context=frame.context;
+            queue.producer=stamp.producer_epoch;queue.generation=stamp.generation;queue.sequence=stamp.sequence;
+            if(queue.count==queue.capacity){queue.frames[queue.head]={};queue.head=(queue.head+1)%queue.capacity;--queue.count;}
+            queue.frames[(queue.head+queue.count)%queue.capacity]=frame;++queue.count;
+            request_numeric_render(frame.context->endpoint);return;
+        }
+    }
+    _numeric_views.accept(frame);if(frame.context)request_numeric_render(frame.context->endpoint);
+}
+void MainWindow::request_numeric_render(const pipeline::EndpointIdentity& endpoint) {
+    if(std::find(_numeric_changed_endpoints.begin(),_numeric_changed_endpoints.end(),endpoint)==_numeric_changed_endpoints.end())
+        _numeric_changed_endpoints.push_back(endpoint);
+    if(_numeric_render_queued)return;
+    _numeric_render_queued=true;
+    // Collapse this delivery burst, without waiting for another polling tick.
+    // Individual views retain their configured publication cadence.
+    QMetaObject::invokeMethod(this,[this]{
+        _numeric_render_queued=false;
+        if(_restoring_preset)return;
+        const bool all=_numeric_render_dirty;
+        _numeric_render_dirty=false;render_numeric_views(true,!all);
+    },Qt::QueuedConnection);
 }
 void MainWindow::consume_numeric_history(const pipeline::DeliveredNumericHistoryRow& row) {
+    core::perf::Scope profile(core::perf::Stage::NumericHistoryReceive);
     // A compact transport event invalidates the displayed snapshot. History
     // belongs to its processing node; the graph never appends rows itself.
-    _numeric_snapshot_dirty=true;_numeric_render_dirty=true;
+    if(_numeric_snapshot_dirty)return;
+    _numeric_snapshot_dirty=true;
+    // The transport already paces notifications. Request the owning snapshot
+    // after this delivery burst instead of waiting an entire GUI polling tick.
+    QMetaObject::invokeMethod(this,[this]{
+        if(!_numeric_snapshot_dirty)return;
+        _numeric_snapshot_dirty=false;
+        _application.client().request_numeric_snapshots();
+    },Qt::QueuedConnection);
 }
 void MainWindow::consume_numeric_history_snapshot(const pipeline::DeliveredNumericFrame& frame,quint64 ordinal,quint64 filled_count) {
-    _numeric_views.accept_history_snapshot(frame,ordinal,filled_count);_numeric_render_dirty=true;
+    core::perf::Scope profile(core::perf::Stage::NumericSnapshotReceive);
+    _numeric_views.accept_history_snapshot(frame,ordinal,filled_count);
+    // A completed snapshot is ready for projection now. The renderer owns its
+    // cadence; a second GUI timer wait only adds latency to this response.
+    if(frame.context)request_numeric_render(frame.context->endpoint);
 }
-void MainWindow::render_numeric_views() {
+void MainWindow::render_numeric_views(bool consumeQueuedFrames,bool changedOnly) {
+    core::perf::Scope profile(core::perf::Stage::NumericRenderViews);
     // Removing an ADS area can synchronously expose another old dock while
     // preset-owned docks are being replaced. Project only the completed set.
     if(_restoring_preset)return;
+    auto changed=std::move(_numeric_changed_endpoints);_numeric_changed_endpoints.clear();
+    const auto affected=[&](const pipeline::EndpointIdentity& endpoint){
+        return !changedOnly||std::find(changed.begin(),changed.end(),endpoint)!=changed.end();
+    };
+    if(consumeQueuedFrames)for(auto& queue:_vector_delivery_queues){
+        if(!queue.count)continue;
+        // A display consumes the newest owning preview. Walking an audio FIFO
+        // at the GUI rate creates growing visible latency when capture is faster.
+        const auto newest=(queue.head+queue.count-1)%queue.capacity;
+        auto frame=std::move(queue.frames[newest]);
+        if(std::find(changed.begin(),changed.end(),queue.endpoint)==changed.end())changed.push_back(queue.endpoint);
+        while(queue.count){queue.frames[queue.head]={};queue.head=(queue.head+1)%queue.capacity;--queue.count;}
+        _numeric_views.accept(frame);
+    }
+    for(const auto& queue:_vector_delivery_queues)if(queue.count)_numeric_render_dirty=true;
     if(_numeric_snapshot_dirty){_numeric_snapshot_dirty=false;_application.client().request_numeric_snapshots();}
     for(auto it=_numeric_bindings.cbegin();it!=_numeric_bindings.cend();++it) {
-        if(it->device!=_application.device_id())continue;
+        if(it->device!=_application.device_id()||!affected(it->endpoint))continue;
         auto* dock=_node_views.contains(it.key())?_node_views[it.key()].dock:_panels.value(it.key());
         auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
         if(!panel)continue;
@@ -335,7 +447,7 @@ void MainWindow::render_numeric_views() {
         auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
         if(!panel || !panel->metrics_view())continue;
         auto target=panel->render_target(!dock->isHidden() && dock->property("renderExposed").toBool());
-        for(const auto& b:it.value())if(b.device==_application.device_id())_numeric_views.render(b.endpoint,b.plane,target);
+        for(const auto& b:it.value())if(b.device==_application.device_id()&&affected(b.endpoint))_numeric_views.render(b.endpoint,b.plane,target);
     }
 }
 void MainWindow::select_numeric_plane(const QString& key,std::size_t plane) {
@@ -353,6 +465,9 @@ void MainWindow::apply_render_rate() {
     if (auto *settings = findChild<SettingsWidget *>()) settings->set_display_screen(screen());
     const auto prefs = _application.state().file_configs.ui.graph_rendering;
     _render_fps = SurfaceSettings::renderFps(prefs, screen() ? screen()->refreshRate() : 60.0);
+    // Delivery has headroom for source block jitter; each renderer still owns
+    // the configured paint cadence. This does not alter the processing clock.
+    _application.set_numeric_preview_cadence_hz(std::min(240,_render_fps*2));
     _numeric_render_timer.setInterval(qMax(1,1000/qMax(1,_render_fps)));
     const int precision = SurfaceSettings::effective(prefs)["axis_precision"].toInt();
     for (auto *chart : {_raw_signal_chart, _window_signal_chart, _windowed_signal_chart,

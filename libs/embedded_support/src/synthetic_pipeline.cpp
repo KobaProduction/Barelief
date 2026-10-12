@@ -47,7 +47,7 @@ Status default_processing_graph(const Profile& p,std::string_view id,domain::Num
         spectrum.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{p.sample_rate,p.fft_size}};
         status=node("StereoFFT",&windowed,&spectrum,domain::TransformProcessingParameters{});if(status!=Status::ok)return status;
         auto mono=spectrum;mono.channel_order=std::span(channels).first(1);
-        status=node("SpectrumMerge",&spectrum,&mono,domain::TransformProcessingParameters{});if(status!=Status::ok)return status;
+
         result=mono;result.semantic=Semantic::MelEnergy;result.quantity=Quantity::MelEnergy;
         result.shape.axes[0]=Axis::Band;result.shape.extents[0]={p.mel_bands,p.mel_bands};result.coordinates[0]={};
         status=node("Mel",&mono,&result,domain::TransformProcessingParameters{{{"bands",NumericLiteral{std::uint64_t{p.mel_bands}}}}});if(status!=Status::ok)return status;
@@ -143,7 +143,7 @@ Status SyntheticPipeline::tick_source(NumericFrameHandler handler,void* user) no
     }
     const auto contract=input_.view();
     FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence_;stamp.generation=stamp.producer_epoch=stamp.epoch=1;
-    stamp.graph_revision=1;stamp.timestamp_ticks=samples_;stamp.stream_id=id_;
+    stamp.graph_revision=1;stamp.timestamp_ticks=samples_;stamp.stream_id=id_;stamp.sample_begin=std::int64_t(samples_);stamp.sample_count=profile_.block_samples;stamp.has_sample_interval=true;
     nd::Message message;message.endpoint={"embedded-synthetic",0,nd::Direction::Output,0};
     message.contract=contract;message.stamp=stamp;message.kind=nd::Kind::Frame;
     message.numeric={std::as_bytes(std::span(pcm_)),std::span(planes_).first(profile_.channels),{profile_.block_samples,1},{},{},false};

@@ -1,10 +1,52 @@
+#include <algorithm>
 #include "numeric_transport_fixture.h"
+#include "numeric_preview_cadence_fixture.h"
 #include <control/numeric_desktop_host.h>
 #include <core_app/numeric_default_graph.h>
 #include <bit>
 #include <set>
 #include <cstdio>
+#include <condition_variable>
+#include <chrono>
+#include <atomic>
+#include <thread>
 using namespace transport_fixture;
+static void event_preview_pending_and_reentrancy(){
+ NumericEngine engine;auto g=graph("event.preview");{Replies replies(engine);replies.accepted(apply(g));}
+ require(engine.subscribe_numeric_frames({sink(g)}),"event preview subscription");
+ // A one-second deadline makes this a queued-wake test, rather than an
+ // assertion that a particular platform can sustain an 8ms timer.
+ engine.set_numeric_preview_cadence_hz(1);
+ std::size_t calls=0;std::uint64_t latest=0;
+ engine.set_numeric_frame_handler([&](const auto& f){++calls;latest=value(f);});
+ feed(engine,1,1,1);QCoreApplication::processEvents();
+ require(calls==1&&latest==1,"idle preview waited for a periodic timer instead of queued wake");
+ for(std::uint64_t i=2;i<=40;++i)feed(engine,1,i,i);
+ QCoreApplication::processEvents();
+ require(calls==1,"pending preview burst ignored its existing deadline");
+ // Updating cadence must re-evaluate already pending work; no new ingress is
+ // supplied after this call, so a lost wake cannot be hidden by another frame.
+ engine.set_numeric_preview_cadence_hz(240);
+ require(wait([&]{return latest==40;}),"pending latest preview lost after cadence change");
+ require(calls==2,"latest-only burst published intermediate scalar revisions");
+
+ settle(10);std::size_t depth=0,maxDepth=0,reentrantCalls=0;
+ engine.set_numeric_frame_handler([&](const auto& f){
+  ++depth;maxDepth=std::max(maxDepth,depth);++reentrantCalls;latest=value(f);
+  if(latest==41){
+   feed(engine,1,42,42);
+   engine.set_numeric_preview_cadence_hz(240);
+   QCoreApplication::processEvents();
+   // Retire the copied callback while a nested event loop has run. The
+   // generation/handler fence must also cover frames queued by this callback.
+   engine.subscribe_numeric_frames({});
+  }
+  --depth;
+ });
+ feed(engine,1,41,41);require(wait([&]{return reentrantCalls!=0;}),"reentrant preview initial delivery");
+ settle(20);
+ require(maxDepth==1&&reentrantCalls==1&&latest==41,"reentrant preview bypassed flush or subscription fence");
+}
 static void ordinary_matrix_query(bool remote,Semantic tag){
  std::fprintf(stderr,"ordinary Matrix case remote=%d tag=%d\n",int(remote),int(tag));
  auto c=contract(6);c.semantic=tag;c.history_element=Semantic::Numeric;
@@ -115,6 +157,69 @@ static void newest_and_rebind(){NumericDesktopHost host;auto g=graph();{Replies 
  feed(*host.local_engine(),1,34,34);feed(*host.local_engine(),1,35,35);QThread::msleep(40);require(wait([&]{return calls==1;}),"rebind first frame");settle();require(calls==1,"old handler continued after reentrant unset");
  std::size_t replacement=0;host.set_numeric_frame_handler([&](auto){++replacement;});feed(*host.local_engine(),1,36,36);require(wait([&]{return replacement==1;}),"replacement handler did not receive fresh frame");
 }
+static domain::NumericProcessingGraph matrix_query_graph(){
+ auto c=contract(6);c.shape={Rank::Matrix,{Axis::Declared,Axis::Declared},{ExtentBounds{2,2},ExtentBounds{3,3}}};
+ domain::OwnedProcessingContract owner;require(domain::own_processing_contract(c,bdsp_protocol::numeric_control::desktop_limits().frame,16384,owner)==Status::ok,"async Matrix contract");
+ auto g=graph("async.matrix",6);g.nodes[0].outputs[0].contract=owner;g.nodes[1].inputs[0].contract=owner;return g;
+}
+static void feed_query_matrix(NumericDesktopHost& host,const domain::NumericProcessingGraph& g){
+ const auto c=std::get<NumericContract>(g.nodes[0].outputs[0].contract.view());
+ std::array<std::uint64_t,6> values{41,42,43,44,45,46};PlaneLayout plane{0,{24,8}};FrameStamp stamp;
+ stamp.producer_epoch=host.snapshot().epoch;stamp.generation=1;stamp.sequence=stamp.source_sequence=1;
+ require(host.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,3}}})==Status::ok,"async Matrix feed");
+}
+static void asynchronous_snapshot_query(){
+ NumericDesktopHost host;auto g=matrix_query_graph();{Replies replies(host);replies.accepted(apply(g));}
+ require(host.subscribe_numeric_frames({sink(g)}),"async snapshot subscription");
+ feed_query_matrix(host,g);settle();
+ {DeliveredNumericFrame cached;require(host.query_numeric(sink(g),cached)==Status::ok&&value(cached)==41,"async fixture must support owning cold Matrix query");}
+ struct Gate {std::mutex mutex;std::condition_variable changed;bool entered=false,released=false;};
+ auto gate=std::make_shared<Gate>();
+ require(QMetaObject::invokeMethod(host.local_engine(),[gate]{std::unique_lock lock(gate->mutex);gate->entered=true;gate->changed.notify_all();gate->changed.wait_for(lock,std::chrono::seconds(2),[&]{return gate->released;});},Qt::QueuedConnection),"worker gate queued");
+ {std::unique_lock lock(gate->mutex);require(gate->changed.wait_for(lock,std::chrono::seconds(1),[&]{return gate->entered;}),"worker gate entered");}
+ std::size_t callbacks=0;host.set_numeric_frame_handler([&](const auto& f){if(f.frame&&value(f)==41)++callbacks;});
+ for(int i=0;i<1000;++i)host.request_numeric_snapshots();
+ QCoreApplication::processEvents();const bool bypassed_worker=callbacks!=0;
+ {std::lock_guard lock(gate->mutex);gate->released=true;}gate->changed.notify_all();
+ require(!bypassed_worker,"GUI queried local processing snapshot instead of worker");
+ require(wait([&]{return callbacks>0;}),"coalesced snapshot response missing");settle();
+ require(callbacks<=2,"request storm accumulated snapshot jobs");
+ // Retire a requested owning snapshot before GUI delivery. Same worker result
+ // cannot resurrect a removed subscription even if epoch/revision are unchanged.
+ callbacks=0;host.request_numeric_snapshots();QCoreApplication::processEvents();
+ require(host.subscribe_numeric_frames({}),"async snapshot unsubscribe");callbacks=0;settle();
+ require(callbacks==0,"retired async snapshot delivered after unsubscribe");
+}
+static void slow_history_preview_preserves_taps(){
+ auto g=graph("slow.history",2);auto h=contract(2);h.semantic=Semantic::History;h.history_element=Semantic::Numeric;
+ h.shape={Rank::Matrix,{Axis::Time,Axis::Declared},{ExtentBounds{0,16},ExtentBounds{2,2}}};
+ auto count=contract();count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;
+ const auto own=[](const NumericContract& c){domain::OwnedProcessingContract result;
+  require(domain::own_processing_contract(c,bdsp_protocol::numeric_control::desktop_limits().frame,16384,result)==Status::ok,"slow History contract");return result;};
+ domain::ConfiguredProcessingNode history;history.id=2;history.kind="Spectrogram";history.parameters=domain::HistoryProcessingParameters{16};
+ history.inputs=g.nodes[1].inputs;history.outputs={{0,domain::PortDirection::Output,own(h)},{1,domain::PortDirection::Output,own(count)}};
+ g.nodes[1].inputs[0].contract=history.outputs[0].contract;g.nodes.push_back(std::move(history));g.edges={{0,2,0,0},{2,1,0,0}};
+ NumericEngine engine;{Replies replies(engine);replies.accepted(apply(g));}
+ require(engine.subscribe_numeric_frames({sink(g)}),"slow History GUI subscription");engine.set_numeric_preview_cadence_hz(1);
+ std::uint64_t sequence=0,tap_rows=0;bool bad=false,preview_overflow=false;
+ engine.set_numeric_history_handler([&](const auto& row){preview_overflow|=row.compact.status==Status::exhausted;});
+ const auto tap=engine.subscribe_numeric_tap({sink(g)},{},[&](const auto& row){
+  bad|=row.compact.status!=Status::ok;
+  if(row.event==NumericHistoryEvent::Row){++tap_rows;bad|=!row.compact.frame||row.accepted_row_ordinal!=tap_rows;}
+ });require(tap!=0,"slow History tap subscription");
+ std::atomic_bool stop{false},bad_feed{false};const auto epoch=engine.snapshot().epoch;
+ std::thread producer([&]{auto c=contract(2);PlaneLayout plane{0,{8,0}};FrameStamp stamp;stamp.producer_epoch=epoch;stamp.generation=1;
+  auto deadline=std::chrono::steady_clock::now();
+  while(!stop.load()){++sequence;std::array<std::uint64_t,2> values{sequence,sequence+1};stamp.sequence=stamp.source_sequence=sequence;
+   if(engine.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,1}}})!=Status::ok)bad_feed=true;
+   deadline+=std::chrono::milliseconds(2);while(!stop.load()&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+  }});
+ settle(600);stop=true;producer.join();settle(40);
+ require(sequence>160,"slow History fixture did not exceed GUI arena capacity");
+ require(!bad_feed&&!bad&&tap_rows==sequence,"slow GUI History owners starved loss-sensitive tap arena");
+ engine.set_numeric_preview_cadence_hz(120);require(wait([&]{return preview_overflow;}),"slow GUI overflow lost resync marker");
+ engine.unsubscribe_numeric_tap(tap);
+}
 static std::pair<domain::NumericProcessingGraph,std::vector<EndpointIdentity>> fanout_graph(int count=24){auto g=graph();g.nodes.resize(1);g.edges.clear();std::vector<EndpointIdentity> selected;
  for(int i=0;i<count;++i){auto output=graph().nodes[1];output.id=100+i;g.nodes.push_back(output);g.edges.push_back({0,output.id,0,0});selected.push_back({g.graph_id,output.id,domain::PortDirection::Input,0});}
  return {std::move(g),std::move(selected)};
@@ -146,16 +251,26 @@ static void all_selected_ports(bool remote){std::fprintf(stderr,"phase selected 
  const auto allLatest=[&](std::uint64_t expected){return latest.size()==24&&std::all_of(latest.begin(),latest.end(),[&](const auto& entry){return entry.second==expected;});};
  if(remote){std::fprintf(stderr,"phase selected settling\n");settle(1000);require(latest.size()==24,"FIFO overload lost endpoint bindings");for(const auto& [node,last]:latest)require(last<=20,"FIFO overload fabricated future data");}
  else require(wait([&]{return allLatest(20);}),"local preview lost newest selected ports");
- std::fprintf(stderr,"phase selected fresh21 remote=%d\n",int(remote));feed(*producer.local_engine(),1,++sequence,21);require(wait([&]{return allLatest(21);}),"renderer owners exhausted receiver arena");if(remote)require(!overflow_gaps.empty(),"loss-sensitive FIFO overload omitted recovery gap");std::fprintf(stderr,"phase selected complete remote=%d\n",int(remote));
+ std::fprintf(stderr,"phase selected fresh21 remote=%d\n",int(remote));feed(*producer.local_engine(),1,++sequence,21);require(wait([&]{return allLatest(21);}),"renderer owners exhausted receiver arena");if(remote)require(!overflow_gaps.empty(),"loss-sensitive FIFO overload omitted recovery gap");
+ std::fprintf(stderr,"phase selected complete remote=%d\n",int(remote));
 }
-static void history_resume(bool remote){auto defaults=numeric_default_graph();auto history=defaults.nodes[6],output=defaults.nodes[7];
+static void all_selected_cold_matrices(){
+ auto g=matrix_query_graph();auto sink_node=g.nodes[1];g.nodes.resize(1);g.edges.clear();std::vector<EndpointIdentity> selected;
+ for(int i=0;i<24;++i){sink_node.id=100+i;g.nodes.push_back(sink_node);g.edges.push_back({0,sink_node.id,0,0});selected.push_back({g.graph_id,sink_node.id,domain::PortDirection::Input,0});}
+ NumericDesktopHost host;{Replies replies(host);replies.accepted(apply(g));}
+ require(host.subscribe_numeric_frames(selected),"cold Matrix fanout subscription");feed_query_matrix(host,g);settle();
+ for(const auto& endpoint:selected){DeliveredNumericFrame cached;require(host.query_numeric(endpoint,cached)==Status::ok&&value(cached)==41,"cold Matrix fanout query precondition");}
+ std::set<domain::NodeId> restored;host.set_numeric_frame_handler([&](const auto& f){if(f.context&&f.frame&&value(f)==41)restored.insert(f.context->endpoint.node);});
+ host.request_numeric_snapshots();require(wait([&]{return restored.size()==24;}),"bounded cold query batches evicted selected Matrix endpoints");
+}
+static void history_resume(bool remote){auto defaults=numeric_default_graph();auto history=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==7;}),output=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==8;});
  auto c=std::get<NumericContract>(history.inputs[0].contract.view());auto hc=std::get<NumericContract>(history.outputs[0].contract.view());hc.shape.extents[0].maximum=64;
  domain::OwnedProcessingContract owned;require(domain::own_processing_contract(hc,bdsp_protocol::numeric_control::desktop_limits().frame,16384,owned)==Status::ok,"resume History geometry");history.outputs[0].contract=owned;output.inputs[0].contract=owned;history.parameters=domain::HistoryProcessingParameters{64};
  domain::ConfiguredProcessingNode input;input.id=1;input.kind="NetworkInput";input.outputs.push_back({0,domain::PortDirection::Output,history.inputs[0].contract});domain::NumericProcessingGraph g;g.graph_id="main";g.nodes={input,history,output};g.edges={{1,7,0,0},{7,8,0,0}};
  NumericDesktopHost producer;{Replies replies(producer);replies.accepted(apply(g));}std::unique_ptr<NumericDesktopHost> receiver;
  if(remote){require(producer.listen(QHostAddress::LocalHost,0),"resume actual server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"resume remote connected");}
  auto& host=remote?*receiver:producer;const EndpointIdentity selected{"main",8,domain::PortDirection::Input,0};require(host.subscribe_numeric_frames({selected}),"resume subscription");
- DeliveredNumericFrame full;std::uint64_t row=0,fullOrdinal=0,fullFilled=0;host.set_numeric_history_snapshot_handler([&](auto f,std::uint64_t ordinal,std::uint64_t filled_count){if(f.context&&f.context->endpoint==selected){full=std::move(f);fullOrdinal=ordinal;fullFilled=filled_count;}});host.set_numeric_history_handler([&](auto r){if(r.compact.context&&r.compact.context->endpoint==selected)row=r.accepted_row_ordinal;});
+ DeliveredNumericFrame full;signal_contracts::FrameStamp compactStamp;std::uint64_t row=0,fullOrdinal=0,fullFilled=0;host.set_numeric_history_snapshot_handler([&](auto f,std::uint64_t ordinal,std::uint64_t filled_count){if(f.context&&f.context->endpoint==selected){full=std::move(f);fullOrdinal=ordinal;fullFilled=filled_count;}});host.set_numeric_history_handler([&](auto r){if(r.compact.context&&r.compact.context->endpoint==selected){row=r.accepted_row_ordinal;compactStamp=r.compact.frame.view().stamp;compactStamp.stream_id={};}});
  std::uint64_t producerEpoch=701,generation=9;bool discontinuity=false;
  std::uint64_t lastSequence=0;
  std::array<std::byte,50*8> frequencyBytes{};
@@ -188,15 +303,27 @@ static void history_resume(bool remote){auto defaults=numeric_default_graph();au
          load_element(view,{0,32,0},retainedFirst)==Status::ok && retainedFirst==18 &&
          load_element(view,{0,95,0},retainedLast)==Status::ok && retainedLast==81,"resize snapshot lost fresh suffix or zero padding");
  resize(64);require(fullFilled==64,"shrink snapshot occupancy");
+ // Provider incarnations change source sequence, not compatible History's
+ // accepted-row ordinal. Keep an independent reference of all accepted values.
+ std::vector<float> expected;for(int value=1;value<=81;++value)expected.push_back(float(value));
+ std::uint64_t expectedOrdinal=81;
  for(int boundary=0;boundary<3;++boundary){
-  if(boundary){full={};fullOrdinal=row=0;const auto additional=boundary==1?79:59;for(int i=0;i<additional;++i){process(lastSequence+1);QThread::msleep(3);}QThread::msleep(40);require(wait([&]{return fullOrdinal==80;}),"next boundary full baseline");}
-  row=0;full={};fullOrdinal=0;discontinuity=boundary==0;if(boundary==1)++generation;if(boundary==2)++producerEpoch;process(boundary?1:lastSequence+1);discontinuity=false;
-  if(!boundary)require(wait([&]{return row==1;}),"resync baseline suppressed discontinuity History row1");
-  else{for(std::uint64_t i=2;i<=20;++i){process(i);QThread::msleep(3);}QThread::msleep(40);require(wait([&]{return fullOrdinal==20;}),"resync baseline suppressed lower new-source full ordinal20");
-   require(fullFilled==20 && std::get<NumericView>(full.frame.view().payload).actual[0]==64,"partial snapshot must distinguish occupancy from capacity");
-   const auto stamp=full.frame.view().stamp;require(stamp.producer_epoch==producerEpoch&&stamp.generation==generation&&!stamp.discontinuity,"new-source full snapshot identity or discontinuity");
-   process(21);require(wait([&]{return row==21;}),"new-source compact21 after full20");}
+  row=0;if(boundary==1)++generation;if(boundary==2)++producerEpoch;
+  discontinuity=boundary==0;const auto sourceSequence=boundary?1:lastSequence+1;
+  process(sourceSequence);expected.push_back(float(sourceSequence));++expectedOrdinal;discontinuity=false;
+  require(wait([&]{return row==expectedOrdinal;}),"compatible boundary compact row lost after resync baseline");
+  require(compactStamp.discontinuity&&compactStamp.producer_epoch==producerEpoch&&compactStamp.generation==generation,"compact boundary provenance/discontinuity lost");
+  process(sourceSequence+1);expected.push_back(float(sourceSequence+1));++expectedOrdinal;
+  require(wait([&]{return row==expectedOrdinal;}),"post-boundary compact ordinal continuity lost");
+  require(!compactStamp.discontinuity,"boundary flag leaked into next compatible row");
+  full={};fullOrdinal=0;host.request_numeric_snapshots();
+  require(wait([&]{return full.frame&&fullOrdinal==expectedOrdinal;}),"compatible boundary authoritative snapshot missing");
+  require(fullFilled==64,"provider boundary reset compatible History occupancy");
+  const auto snapshot=std::get<NumericView>(full.frame.view().payload);require(snapshot.actual[0]==64,"provider boundary changed capacity");
+  for(std::size_t index=0;index<64;++index){float actual=0;require(load_element(snapshot,{0,index,0},actual)==Status::ok&&actual==expected[expected.size()-64+index],"provider boundary mutated retained History values/order");}
+  const auto stamp=full.frame.view().stamp;require(stamp.producer_epoch==producerEpoch&&stamp.generation==generation,"cold boundary snapshot provenance changed");
  }
+
 }
 static void active_remote_rebind(){NumericDesktopHost producer;auto g=graph();g.nodes.clear();g.edges.clear();std::vector<EndpointIdentity> selected;
  for(int i=0;i<60;++i){auto pair=graph();pair.nodes[0].id=i;pair.nodes[1].id=100+i;g.nodes.push_back(pair.nodes[0]);g.nodes.push_back(pair.nodes[1]);g.edges.push_back({domain::NodeId(i),domain::NodeId(100+i),0,0});selected.push_back({g.graph_id,domain::NodeId(100+i),domain::PortDirection::Input,0});}
@@ -205,4 +332,4 @@ static void active_remote_rebind(){NumericDesktopHost producer;auto g=graph();g.
  std::array<std::uint64_t,60> source_sequences{};auto deliver=[&](std::uint64_t sequence,std::uint64_t expected){for(int i=0;i<60;++i){require(wait([&]{feed(producer,1,++source_sequences[i],expected,i);auto found=retained.find(100+i);return found!=retained.end()&&value(found->second)==expected;}),"active rebind selected port delivery");}};
  deliver(1,20);require(retained.size()==60,"active rebind60 renderer owners");require(receiver.subscribe_numeric_frames(selected),"same60 active arena admission refused");deliver(2,21);for(const auto& [node,f]:retained)require(value(f)==21,"same60 rebind lost retained renderer or latest delivery");
 }
-int main(int argc,char**argv){std::setvbuf(stderr,nullptr,_IONBF,0);std::fprintf(stderr,"phase main before Qt\n");QCoreApplication app(argc,argv);std::fprintf(stderr,"phase Qt ready\n");try{for(bool remote:{false,true})for(auto tag:{Semantic::Numeric,Semantic::History})ordinary_matrix_query(remote,tag);if(argc>1&&QByteArray(argv[1])=="--eviction-gap"){evicted_endpoint_gap();return 0;}std::fprintf(stderr,"phase eviction\n");evicted_endpoint_gap();std::fprintf(stderr,"phase saturation\n");local_delivery_saturation();std::fprintf(stderr,"phase capacity\n");capacity();std::fprintf(stderr,"phase live\n");live_replies();std::fprintf(stderr,"phase reentrant\n");reentrant("stop");reentrant("apply");reentrant("subscribe");std::fprintf(stderr,"phase lifetime\n");lifetime();std::fprintf(stderr,"phase rebind\n");newest_and_rebind();all_selected_ports(false);all_selected_ports(true);std::fprintf(stderr,"phase active_remote_rebind\n");active_remote_rebind();std::fprintf(stderr,"phase owning History ingress\n");owning_history_ingress();std::fprintf(stderr,"phase history local\n");history_resume(false);std::fprintf(stderr,"phase history remote\n");history_resume(true);std::puts("worker admission/live completion/reentrant data fences/lifetime/newest/rebind/all selected ports/active60 rebind/local and remote History resume PASS");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
+int main(int argc,char**argv){std::setvbuf(stderr,nullptr,_IONBF,0);std::fprintf(stderr,"phase main before Qt\n");QCoreApplication app(argc,argv);std::fprintf(stderr,"phase Qt ready\n");try{event_preview_pending_and_reentrancy();cadence_fixture::preview_cadence();asynchronous_snapshot_query();slow_history_preview_preserves_taps();for(bool remote:{false,true})for(auto tag:{Semantic::Numeric,Semantic::History})ordinary_matrix_query(remote,tag);if(argc>1&&QByteArray(argv[1])=="--eviction-gap"){evicted_endpoint_gap();return 0;}std::fprintf(stderr,"phase eviction\n");evicted_endpoint_gap();std::fprintf(stderr,"phase saturation\n");local_delivery_saturation();std::fprintf(stderr,"phase capacity\n");capacity();std::fprintf(stderr,"phase live\n");live_replies();std::fprintf(stderr,"phase reentrant\n");reentrant("stop");reentrant("apply");reentrant("subscribe");std::fprintf(stderr,"phase lifetime\n");lifetime();std::fprintf(stderr,"phase rebind\n");newest_and_rebind();all_selected_ports(false);all_selected_ports(true);all_selected_cold_matrices();std::fprintf(stderr,"phase active_remote_rebind\n");active_remote_rebind();std::fprintf(stderr,"phase owning History ingress\n");owning_history_ingress();std::fprintf(stderr,"phase history local\n");history_resume(false);std::fprintf(stderr,"phase history remote\n");history_resume(true);std::puts("worker admission/live completion/reentrant data fences/lifetime/newest/rebind/all selected ports/active60 rebind/local and remote History resume PASS");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

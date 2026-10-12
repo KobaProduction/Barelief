@@ -32,7 +32,7 @@ int main(int argc,char**argv){try{
  for(const auto&mode:QStringList{"enabled","disabled","protected"}) {
   const bool autosave=mode!="disabled",protectedFile=mode=="protected";
   desktop::NumericDraftPresentation presentation;presentation.application_settings={{"ui",QJsonObject{{"language","ru"},{"autosave_enabled",autosave},{"pipeline_auto_apply",false}}}};
-  desktop::NumericProjectDocument source;require(bool(desktop::create_numeric_project(numeric_test_graph(),presentation,source)),"shutdown project");
+  desktop::NumericProjectDocument source;require(bool(desktop::create_numeric_project(numeric_default_graph(),presentation,source)),"shutdown project");
   const auto path=directory.filePath(mode+".json");require(bool(desktop::save_numeric_project(source,path)),"save shutdown fixture");
   if(protectedFile){auto object=QJsonDocument::fromJson(read(path)).object();object["schema_version"]=99;const auto bytes=QJsonDocument(object).toJson(QJsonDocument::Compact);QFile f(path);require(f.open(QIODevice::WriteOnly),"future fixture");require(f.write(bytes)==bytes.size(),"write future fixture");}
   const auto original=read(path);QProcess child;child.start(parent.applicationFilePath(),{"--child",path,mode});

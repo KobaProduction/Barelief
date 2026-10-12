@@ -3,6 +3,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <cmath>
 namespace bdsp_protocol::numeric_control {
 std::optional<CodecId> negotiate(std::uint32_t a, std::uint32_t b, std::uint32_t x, std::uint32_t y) noexcept {
     if (a != SchemaVersion || b != SchemaVersion || ((x | y) & ~3U))
@@ -126,7 +127,11 @@ unsigned max_tag(Schema s) noexcept {
     case Schema::Parameter:
         return 5;
     case Schema::Parameters:
-        return 13;
+        return 21;
+    case Schema::Oscillator:
+        return 7;
+    case Schema::MixerWeight:
+        return 2;
     case Schema::Port:
         return 3;
     case Schema::Node:
@@ -136,7 +141,7 @@ unsigned max_tag(Schema s) noexcept {
     case Schema::Versions:
         return 5;
     case Schema::Graph:
-        return 5;
+        return 6;
     case Schema::Command:
         return 8;
     case Schema::Resources:
@@ -409,6 +414,21 @@ bool parameter(Archive &a, void *p) noexcept {
         return a.state.fail();
     return !v.key.empty() || a.state.fail();
 }
+bool binary64(Archive& a,unsigned tag,double& value) noexcept {
+    auto bits=std::bit_cast<std::uint64_t>(value);
+    if(!a.uint_field(tag,bits))return false;
+    value=std::bit_cast<double>(bits);return std::isfinite(value)||a.state.fail();
+}
+bool oscillator(Archive& a,void* p) noexcept {
+    auto& v=*static_cast<signal_contracts::OscillatorParameters*>(p);
+    return a.uint_field(1,v.id)&&a.bool_field(2,v.enabled)&&binary64(a,3,v.frequency_hz)&&binary64(a,4,v.amplitude)&&
+        binary64(a,5,v.phase_radians)&&binary64(a,6,v.attack_seconds)&&binary64(a,7,v.release_seconds)&&
+        ((v.id && v.frequency_hz>0 && v.attack_seconds>=0 && v.release_seconds>=0) || a.state.fail());
+}
+bool mixer_weight(Archive& a,void* p) noexcept {
+    auto& v=*static_cast<domain::MixerInputWeight*>(p);
+    return u(a,1,v.port)&&binary64(a,2,v.weight);
+}
 bool parameters(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Parameters *>(p);
     std::uint64_t kind = 0;
@@ -423,8 +443,10 @@ bool parameters(Archive &a, void *p) noexcept {
             kind = 4;
         else if (std::holds_alternative<ReductionParameters>(v))
             kind = 5;
-        else
-            kind = 6;
+        else if (std::holds_alternative<domain::HistoryProcessingParameters>(v)) kind=6;
+        else if (std::holds_alternative<GeneratorParameters>(v)) kind=7;
+        else if (std::holds_alternative<ClockParameters>(v)) kind=8;
+        else if (std::holds_alternative<MixerParameters>(v)) kind=9;
     }
     if (!a.uint_field(1, kind))
         return false;
@@ -454,7 +476,7 @@ bool parameters(Archive &a, void *p) noexcept {
         domain::RouteProcessingParameters r;
         if (!a.state.reading)
             r = std::get<domain::RouteProcessingParameters>(v);
-        if (!u(a, 4, r.outputs) || !u(a, 5, r.selected) || !a.bool_field(6, r.open))
+        if (!u(a, 4, r.outputs) || !u(a, 5, r.selected) || !a.bool_field(6, r.open) || !u(a,21,r.channels_per_stream))
             return false;
         v = r;
     } else if (kind == 5) {
@@ -482,6 +504,25 @@ bool parameters(Archive &a, void *p) noexcept {
         if (!a.uint_field(13, h.capacity))
             return false;
         v = h;
+    } else if(kind==7) {
+        GeneratorParameters g;if(!a.state.reading)g=std::get<GeneratorParameters>(v);
+        if(!seq(a,14,Schema::Oscillator,g.oscillators,std::min<std::size_t>(128,a.state.limits.parameters),oscillator)||((!a.state.reading||a.state.materializing)&&g.oscillators.empty()))return a.state.fail();
+        if(!a.state.reading||a.state.materializing)for(std::size_t i=0;i<g.oscillators.size();++i)for(std::size_t j=0;j<i;++j)
+            if(g.oscillators[i].id==g.oscillators[j].id)return a.state.fail();
+        v=g;
+    } else if(kind==8) {
+        ClockParameters c;if(!a.state.reading)c=std::get<ClockParameters>(v);
+        if(!u(a,15,c.sample_rate)||!a.text_field(16,c.domain)||c.sample_rate<8000||c.sample_rate>192000||c.domain.empty())return a.state.fail();
+        v=c;
+    } else if(kind==9) {
+        MixerParameters m;if(!a.state.reading)m=std::get<MixerParameters>(v);
+        constexpr domain::MixerMode modes[]{domain::MixerMode::WeightedSum,domain::MixerMode::WeightedMean,domain::MixerMode::WeightedRMS,domain::MixerMode::MaxAbsolute};
+        constexpr domain::MixerConsumption consumption[]{domain::MixerConsumption::ClockedFifo,domain::MixerConsumption::SourceAligned};
+        if(!choice(a,17,m.mode,modes)||!seq(a,18,Schema::MixerWeight,m.weights,a.state.limits.ports,mixer_weight)||!u(a,19,m.fifo_milliseconds)||!choice(a,20,m.consumption,consumption)||((!a.state.reading||a.state.materializing)&&m.weights.size()<1)||!m.fifo_milliseconds||m.fifo_milliseconds>10000)return a.state.fail();
+        if(!a.state.reading||a.state.materializing)for(std::size_t i=0;i<m.weights.size();++i){
+            if((m.mode==domain::MixerMode::WeightedMean||m.mode==domain::MixerMode::WeightedRMS)&&m.weights[i].weight<0)return a.state.fail();
+            for(std::size_t j=0;j<i;++j)if(m.weights[i].port==m.weights[j].port)return a.state.fail();}
+        v=m;
     } else
         return a.state.fail();
     return true;
@@ -507,6 +548,12 @@ bool edge(Archive &a, void *p) noexcept {
     auto &v = *static_cast<domain::Edge *>(p);
     return si(a, 1, v.from) && si(a, 2, v.to) && u(a, 3, v.output_port) && u(a, 4, v.input_port) && u(a,5,v.conversion) && (v.conversion<=3 || a.state.fail());
 }
+bool binding(Archive& a,void* p) noexcept {
+    auto& v=*static_cast<domain::ConfigurationBinding*>(p);
+    constexpr domain::ConfigurationRole roles[]{domain::ConfigurationRole::SampleClock,domain::ConfigurationRole::FrequencyGrid};
+    std::uint8_t reserved=0;
+    return si(a,1,v.from) && si(a,2,v.to) && choice(a,3,v.output,roles) && choice(a,4,v.input,roles) && u(a,5,reserved) && (reserved==0 || a.state.fail());
+}
 bool versions(Archive &a, void *p) noexcept {
     auto &v = *static_cast<domain::ProcessingVersions *>(p);
     return u(a, 1, v.document) && u(a, 2, v.graph) && u(a, 3, v.processing) && u(a, 4, v.control) && u(a, 5, v.data) &&
@@ -520,6 +567,7 @@ bool graph(Archive &a, void *p) noexcept {
            seq(a, 3, Schema::Node, v.nodes, a.state.limits.nodes, node) &&
            seq(a, 4, Schema::Edge, v.edges, a.state.limits.edges, edge) &&
            a.object(5, Schema::Ratio, &v.execution_interval, ratio, &interval_present) &&
+           seq(a,6,Schema::Edge,v.configuration_bindings,a.state.limits.edges,binding) &&
            (domain::valid_execution_interval(v.execution_interval) || a.state.fail());
 }
 constexpr CommandId commands[]{CommandId::Capabilities, CommandId::State,         CommandId::Prepare,
@@ -556,7 +604,7 @@ bool caps(Archive &a, void *p) noexcept {
     return u(a, 1, v.control_version) && u(a, 2, v.data_version) && u(a, 3, v.codec_mask) &&
            seq(a, 4, Schema::CapabilityRow, v.rows, a.state.limits.capability_rows, row) &&
            a.object(5, Schema::Resources, &v.maximum, resources) &&
-           ((v.control_version == 2 && v.data_version == 4 && v.codec_mask != 0 && !(v.codec_mask & ~3U)) ||
+           ((v.control_version == SchemaVersion && v.data_version == numeric_data::PayloadVersion && v.codec_mask != 0 && !(v.codec_mask & ~3U)) ||
             a.state.fail(Status::UnsupportedVersion));
 }
 template <class T> bool optu(Archive &a, unsigned tag, std::optional<T> &v) noexcept {

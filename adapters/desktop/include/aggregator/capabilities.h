@@ -4,6 +4,8 @@
 #include <QJsonDocument>
 #include <QUuid>
 #include <QSet>
+#include <bdsp_protocol/numeric_control_message.h>
+#include <bdsp_protocol/numeric_data_message.h>
 namespace aggregator_capabilities {
 constexpr quint8 PacketId=16;
 inline bool text(const QString& value,int maximum=256){return !value.isEmpty() && value.toUtf8().size()<=maximum && !value.contains(QChar(0));}
@@ -13,7 +15,7 @@ inline bool decimal(const QJsonValue& value,bool positive){bool ok=false;const a
 // domain/kernel admission authorize a processing combination or DATA binding.
 inline bool valid(const QJsonObject& object) {
     if(!integer(object["version"],3,3) || QUuid(object["uuid"].toString()).isNull() ||
-       !integer(object["control_version"],2,2) || !integer(object["data_version"],4,4) ||
+       !integer(object["control_version"],bdsp_protocol::numeric_control::SchemaVersion,bdsp_protocol::numeric_control::SchemaVersion) || !integer(object["data_version"],bdsp_protocol::numeric_data::PayloadVersion,bdsp_protocol::numeric_data::PayloadVersion) ||
        !integer(object["stream_port"],0,65535) || !decimal(object["publisher_incarnation"],true) ||
        !decimal(object["graph_revision"],false) || !object["streams"].isArray())return false;
     const auto streams=object["streams"].toArray();if(streams.size()>128)return false;
@@ -23,7 +25,7 @@ inline bool valid(const QJsonObject& object) {
         const auto id=stream["id"].toString(),graph=stream["graph_id"].toString(),direction=stream["direction"].toString();
         if(!text(id) || !text(graph) || identifiers.contains(id) ||
            !integer(stream["node_id"],0,INT_MAX) || !integer(stream["port_index"],0,65535) ||
-           (direction!="input" && direction!="output") || !integer(stream["payload_version"],4,4))return false;
+           (direction!="input" && direction!="output") || !integer(stream["payload_version"],bdsp_protocol::numeric_data::PayloadVersion,bdsp_protocol::numeric_data::PayloadVersion))return false;
         const auto identity=QString::fromLatin1(QJsonDocument(QJsonArray{graph,stream["node_id"],direction,stream["port_index"]}).toJson(QJsonDocument::Compact).toHex());
         if(ports.contains(identity))return false;identifiers.insert(id);ports.insert(identity);
     }

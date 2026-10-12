@@ -13,15 +13,29 @@ enum class Stage { CaptureDecode, CaptureDispatch, Feed, FeedLock, WindowSnapsho
     WledQueue, WledSend, HistorySnapshot, GuiSpectrumQueue, GuiSpectrumConsume,
     GuiAudioQueue, GuiAudioConsume, ChartData, ChartGeometry, ChartPaint,
     NodePreview, EditorPaint, GuiHeartbeat, SpectrogramData, SpectrogramGeometry, SpectrogramRender, CameraMove, CaptureDiscovery,
-    CallbackSnapshot, WledPublish, WindowResize, GuiEvent, SpectrogramHandoff, SpectrogramMesh, SpectrogramCreases, SpectrogramUpload, SpectrogramSurface, SpectrogramWalls, SpectrogramLabels, SpectrogramAtlas, SpectrogramOverlay, SpectrogramGpu, SpectrogramSchedule, SpectrogramFrameGap, SpectrogramShadow, Count };
+    CallbackSnapshot, WledPublish, WindowResize, GuiEvent, SpectrogramHandoff, SpectrogramMesh, SpectrogramCreases, SpectrogramUpload, SpectrogramSurface, SpectrogramWalls, SpectrogramLabels, SpectrogramAtlas, SpectrogramOverlay, SpectrogramGpu, SpectrogramSchedule, SpectrogramFrameGap, SpectrogramShadow,
+    QuickSurfaceSync, QuickSurfaceFeedbackBuild, QuickSurfaceFeedback,
+    NumericQueryWait, NumericQueryHold, NumericQueryCopy,
+    NumericRenderViews, NumericRenderTimer, NumericFrameReceive, NumericHistoryReceive, NumericSnapshotReceive,
+    NumericClockTick, NumericPreviewTick, NumericPreviewProduce,
+    Quick2dSync, Quick2dRender, Quick2dFrame, Quick2dPublish,
+    Quick2dCompose, Quick2dPaint, QtBackingStoreSync, PresenterSnapshot, CaptureStatus, QuickSurfaceOverlayPaint, Quick2dGeometry, NumericPreviewWake, NumericPreviewTimerWait,
+    CaptureCallback, NumericCaptureLock, NumericCaptureWork, NumericInputProcess, NumericSelectedOutput, Count };
 inline constexpr std::array<const char *,static_cast<size_t>(Stage::Count)> names{
     "capture.decode","capture.dispatch","audio.feed","audio.feed_lock","dsp.window_snapshot",
     "dsp.stereo_fft","dsp.stereo_mel","pipeline.graph","history.push","gui.publish_spectrum",
     "dsp.work","dsp.frame_gap","wled.queue","wled.send","history.snapshot",
     "gui.spectrum_queue","gui.spectrum_consume","gui.audio_queue","gui.audio_consume",
     "chart.data","chart.geometry","chart.paint","editor.preview","editor.paint","gui.heartbeat","spectrogram.data","spectrogram.geometry","spectrogram.render","camera.move","capture.discovery",
-    "pipeline.callback_snapshot","wled.publish","window.resize","gui.event", "spectrogram.handoff", "spectrogram.mesh_normals", "spectrogram.creases", "spectrogram.upload", "spectrogram.surface_edges", "spectrogram.walls", "spectrogram.labels", "spectrogram.atlas", "spectrogram.overlay", "spectrogram.gpu", "spectrogram.schedule", "spectrogram.frame_gap", "spectrogram.shadow"};
-inline constexpr size_t histogram_bins=512, event_capacity=32768;
+    "pipeline.callback_snapshot","wled.publish","window.resize","gui.event", "spectrogram.handoff", "spectrogram.mesh_normals", "spectrogram.creases", "spectrogram.upload", "spectrogram.surface_edges", "spectrogram.walls", "spectrogram.labels", "spectrogram.atlas", "spectrogram.overlay", "spectrogram.gpu", "spectrogram.schedule", "spectrogram.frame_gap", "spectrogram.shadow",
+    "quick.surface_sync", "quick.surface_feedback_build", "quick.surface_feedback",
+    "numeric.query_wait", "numeric.query_hold", "numeric.query_copy",
+    "numeric.render_views", "numeric.render_timer", "numeric.frame_receive", "numeric.history_receive", "numeric.snapshot_receive",
+    "numeric.clock_tick", "numeric.preview_tick", "numeric.preview_produce",
+    "quick2d.sync", "quick2d.render", "quick2d.frame", "quick2d.publish_to_sync",
+    "quick2d.widget_paint", "quick2d.vector_paint", "qt.window_update", "gui.presenter_snapshot", "gui.capture_status", "quick.surface_overlay_paint", "quick2d.geometry", "numeric.preview_wake", "numeric.preview_timer_wait",
+    "capture.callback", "numeric.capture_lock", "numeric.capture_work", "numeric.input_process", "numeric.selected_output"};
+inline constexpr size_t histogram_bins=512, event_capacity=65536;
 inline constexpr uint64_t bin_ns=250000;
 struct Counter {
     std::atomic<uint64_t> count{0},total{0},maximum{0};

@@ -1,4 +1,5 @@
 #include <control/numeric_desktop_host.h>
+#include <desktop/processing_timer_policy.h>
 #include <control/numeric_routing_adapter.h>
 #include <control/numeric_remote_endpoint.h>
 #include <control/numeric_control_server.h>
@@ -12,6 +13,7 @@
 #include <atomic>
 namespace pipeline {
 struct NumericDesktopHost::Impl {
+ desktop::ProcessingTimerPolicy timer_policy;
  NumericDesktopHost& owner;QThread thread;QObject* worker=new QObject;
  std::unique_ptr<EnginePort> endpoint;NumericEngine* local=nullptr;
  NumericRoutingAdapter* routing=nullptr;std::unique_ptr<AggregatorClient> registry;
@@ -30,6 +32,8 @@ struct NumericDesktopHost::Impl {
  struct ResumeBaseline {EndpointIdentity endpoint;std::uint64_t ordinal,producer_epoch,generation;};
  std::vector<ResumeBaseline> resumed_ordinals;
  bool history_resync=false,resync_inflight=false;quint64 resync_request=0;
+ struct LocalSnapshotQuery {std::vector<EndpointIdentity> endpoints;std::uint64_t generation;std::size_t next=0;};
+ std::shared_ptr<LocalSnapshotQuery> local_query;bool local_query_ready=false;
  std::uint64_t resumed_generation=0;
  std::uint64_t snapshot_generation=0,reply_generation=0,frame_generation=0,history_generation=0;
  std::function<void(EngineSnapshot)> snapshot_handler;std::function<void(EngineReply)> reply_handler;
@@ -59,12 +63,33 @@ struct NumericDesktopHost::Impl {
   if(frames.size()==32)frames.pop();frames.push(std::move(value));schedule_locked();}
  void publish(DeliveredNumericHistoryRow value){std::lock_guard lock(mutex);if(histories.size()==8){histories.pop();history_resync=true;}histories.push(std::move(value));schedule_locked();}
  void publish_history_snapshot(DeliveredNumericFrame value,std::uint64_t ordinal,std::uint64_t filled_count){std::lock_guard lock(mutex);if(history_snapshots.size()==8)history_snapshots.pop();history_snapshots.push({std::move(value),ordinal,filled_count});schedule_locked();}
+ // One worker job and one coalesced pending resync, irrespective of GUI rate.
+ // Only owning frames cross back; borrowed processing views stay in query_numeric.
+ void query_local_snapshots(std::shared_ptr<LocalSnapshotQuery> query){
+  QMetaObject::invokeMethod(worker,[this,query=std::move(query)]{
+   bool cancelled=false;
+   for(std::size_t batch=0;batch<8&&query->next<query->endpoints.size();++batch){
+    {std::lock_guard lock(mutex);if(retired||query->generation!=data_generation){cancelled=true;break;}}
+    const auto& selectedEndpoint=query->endpoints[query->next++];
+    DeliveredNumericFrame full;std::uint64_t ordinal=0,filled_count=0;bool explicit_history=false;
+    const auto status=local->query_numeric(selectedEndpoint,full,&ordinal,&filled_count,&explicit_history);
+    if(status==signal_contracts::Status::ok||status==signal_contracts::Status::unavailable){
+     std::lock_guard lock(mutex);if(retired||query->generation!=data_generation){cancelled=true;break;}
+     history_snapshots.push({std::move(full),ordinal,filled_count,explicit_history});schedule_locked();
+    }
+   }
+   std::lock_guard lock(mutex);
+   if(cancelled)query->next=query->endpoints.size();
+   local_query=query;local_query_ready=true;
+   if(!retired)schedule_locked();
+  },Qt::QueuedConnection);
+ }
  void drain(){QPointer<NumericDesktopHost> guard(&owner);auto snapshotCallback=snapshot_handler;auto replyCallback=reply_handler;auto frameCallback=frame_handler;auto historyCallback=history_handler;
   auto historySnapshotCallback=history_snapshot_handler;const auto historySnapshotVersion=history_snapshot_generation;
   const auto snapshotVersion=snapshot_generation,replyVersion=reply_generation,frameVersion=frame_generation,historyVersion=history_generation;
   EngineSnapshot state;{std::lock_guard lock(mutex);pending=false;state=cache;}if(snapshotCallback&&snapshotVersion==snapshot_generation)snapshotCallback(state);if(!guard)return;
   std::uint64_t resumeGeneration;bool resume=false;std::vector<EndpointIdentity> endpoints;
-  {std::lock_guard lock(mutex);resumeGeneration=data_generation;if(history_resync&&!resync_inflight){resume=true;history_resync=false;histories.clear();if(local)endpoints=selected;else resync_inflight=true;}}
+  {std::lock_guard lock(mutex);resumeGeneration=data_generation;if(history_resync&&!resync_inflight){resume=true;history_resync=false;histories.clear();resync_inflight=true;if(local)endpoints=selected;}}
   if(resumed_generation!=resumeGeneration){resumed_generation=resumeGeneration;resumed_ordinals.clear();}
   auto restore=[&](HistorySnapshot snapshot){
    {std::lock_guard lock(mutex);if(resumeGeneration!=data_generation||snapshot.frame.delivery.epoch!=cache.epoch||snapshot.frame.delivery.graph_revision!=cache.graph_revision||cache.statuses.value("analyzer").state==State::Stopped)return;}
@@ -84,7 +109,7 @@ struct NumericDesktopHost::Impl {
    if(found==resumed_ordinals.end())resumed_ordinals.push_back(std::move(baseline));else *found=std::move(baseline);
    if(historySnapshotCallback&&historySnapshotVersion==history_snapshot_generation)historySnapshotCallback(std::move(snapshot.frame),snapshot.ordinal,snapshot.filled_count);
   };
-  if(resume&&local){for(const auto& selectedEndpoint:endpoints){DeliveredNumericFrame full;std::uint64_t ordinal=0,filled_count=0;bool explicit_history=false;const auto status=local->query_numeric(selectedEndpoint,full,&ordinal,&filled_count,&explicit_history);if(status==signal_contracts::Status::ok||status==signal_contracts::Status::unavailable)restore({std::move(full),ordinal,filled_count,explicit_history});if(!guard)return;}}
+  if(resume&&local)query_local_snapshots(std::make_shared<LocalSnapshotQuery>(LocalSnapshotQuery{std::move(endpoints),resumeGeneration}));
   else if(resume){call([this]{const auto id=endpoint->submit(EngineCommand{});std::lock_guard lock(mutex);resync_request=id;if(!id)resync_inflight=false;});}
   for(std::size_t i=0;i<8;++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}if(!full)break;restore(std::move(*full));if(!guard)return;}
   for(std::size_t i=0;i<128;++i){std::optional<EngineReply> reply;std::optional<DeliveredNumericFrame> frame;std::optional<DeliveredNumericHistoryRow> history;std::uint64_t generation;
@@ -99,6 +124,13 @@ struct NumericDesktopHost::Impl {
     if(changed&&prior!=resumed_ordinals.end()){resumed_ordinals.erase(prior);prior=resumed_ordinals.end();}
     if(history->event!=NumericHistoryEvent::Row||prior==resumed_ordinals.end()||history->accepted_row_ordinal>prior->ordinal)historyCallback(std::move(*history));
    }if(!guard)return;}
+  // A worker batch cannot overwrite other selected endpoints while the GUI is
+  // paused. Advance only after this bounded owning batch has been consumed.
+  std::shared_ptr<LocalSnapshotQuery> continuation;
+  {std::lock_guard lock(mutex);if(local_query_ready){local_query_ready=false;
+    if(local_query->next==local_query->endpoints.size()){local_query.reset();resync_inflight=false;if(history_resync)schedule_locked();}
+    else continuation=local_query;}}
+  if(continuation)query_local_snapshots(std::move(continuation));
  }
  ~Impl(){ {std::lock_guard lock(mutex);retired=true;}call([this]{server.reset();endpoint.reset();registry.reset();routing=nullptr;local=nullptr;});thread.quit();thread.wait();}
 };
@@ -135,6 +167,7 @@ void NumericDesktopHost::set_numeric_frame_handler(std::function<void(DeliveredN
 void NumericDesktopHost::set_numeric_history_handler(std::function<void(DeliveredNumericHistoryRow)> f){++impl_->history_generation;impl_->history_handler=std::move(f);}
 void NumericDesktopHost::set_numeric_history_snapshot_handler(std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)> f){++impl_->history_snapshot_generation;impl_->history_snapshot_handler=std::move(f);}
 void NumericDesktopHost::request_numeric_snapshots(){std::lock_guard lock(impl_->mutex);impl_->history_resync=true;impl_->schedule_locked();}
+void NumericDesktopHost::set_numeric_preview_cadence_hz(int hz){impl_->call([this,hz]{impl_->endpoint->set_numeric_preview_cadence_hz(hz);});}
 EngineSnapshot NumericDesktopHost::snapshot()const{std::lock_guard lock(impl_->mutex);return impl_->cache;}
 bool NumericDesktopHost::configure_network(QJsonObject config,QString* error){bool ok=false;QString e;impl_->call([&]{ok=impl_->endpoint->configure_network(std::move(config),&e);});if(error)*error=e;return ok;}
 QString NumericDesktopHost::network_warning()const{QString value;impl_->call([&]{value=impl_->endpoint->network_warning();});return value;}

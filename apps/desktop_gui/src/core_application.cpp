@@ -31,6 +31,33 @@
 #include <config/config_document.h>
 #include <aggregator/aggregator_client.h>
 #include <QPointer>
+#include <QMenu>
+#include <filesystem>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
+
+namespace {
+void configure_builtin_stream_names(NumericEditorGraphModel* model) {
+    if(!model)return;
+    if(auto* selector=model->delegateModel<AudioNodeModel>(200);selector && selector->name()=="InputSelector") {
+        const auto* node=selector->numeric_node();
+        if(node && node->outputs.size()==2 && node->inputs.size()==6) {
+            auto presentation=selector->presentation();
+            presentation["stream_names"]=QJsonArray{ui::text("Generators"),ui::text("Loopback"),ui::text("Microphone")};
+            selector->set_presentation(presentation);
+        }
+    }
+}
+uint64_t gui_thread_cycles() noexcept {
+#ifdef Q_OS_WIN
+    ULONG64 cycles = 0;
+    return QueryThreadCycleTime(GetCurrentThread(), &cycles) ? cycles : 0;
+#else
+    return 0;
+#endif
+}
+}
 
 Q_LOGGING_CATEGORY(core_app_main, "core_app.main")
 bool CoreApplication::notify(QObject *receiver, QEvent *event) {
@@ -44,6 +71,7 @@ bool CoreApplication::notify(QObject *receiver, QEvent *event) {
         std::strncpy(name.data(), receiver->metaObject()->className(), name.size() - 1);
     gui_event_profile::Frame frame{gui_event_profile::current};
     const bool detailed = gui_event_profile::enabled;
+    const auto start_cycles = detailed ? gui_thread_cycles() : 0;
     if (detailed)
         gui_event_profile::current = &frame;
     // Restore the stack even when a handler throws. No owning TLS or heap work.
@@ -58,11 +86,19 @@ bool CoreApplication::notify(QObject *receiver, QEvent *event) {
     const auto result = QApplication::notify(receiver, event);
     const auto duration = core::perf::now() - start;
     if (detailed) {
-        if (frame.parent)
+        const auto end_cycles = gui_thread_cycles();
+        const auto cycles = end_cycles >= start_cycles ? end_cycles - start_cycles : 0;
+        if (frame.parent) {
             frame.parent->children += duration;
-        gui_event_profile::record(name.data(), type, duration, frame.children);
+            frame.parent->children_cycles += cycles;
+        }
+        gui_event_profile::record(name.data(), type, duration, frame.children, cycles, frame.children_cycles);
     }
     core::perf::record(core::perf::Stage::GuiEvent, start, duration);
+    // This encloses Qt's top-level repaint/backing-store/composition work.
+    // It is not a measurement of an individual private platform flush call.
+    if (type == QEvent::UpdateRequest && std::strcmp(name.data(), "MainWindow") == 0)
+        core::perf::record(core::perf::Stage::QtBackingStoreSync, start, duration);
     if (duration >= 50000000 && core::perf::slow_gui_event_count < core::perf::slow_gui_events.size())
         core::perf::slow_gui_events[core::perf::slow_gui_event_count++] = {duration, type, name};
     return result;
@@ -99,12 +135,12 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
         }
         std::uint32_t edition=0;
         if (result) result=desktop::read_project_graph_edition(*source,edition);
-        if (result && edition==3) {
+        if (result && edition==domain::ProcessingVersions{}.graph) {
             loaded=_config_manager.loadNumeric(*source,numeric_draft,&load_error) &&
                    _config_manager.readNumericSettings(*source,_ctx.file_configs,&load_error);
             _numeric_draft_loaded=loaded;
         } else if (result)
-            load_error=QStringLiteral("Canonical numeric graph version 3 is required");
+            load_error=QStringLiteral("Canonical numeric graph version %1 is required").arg(domain::ProcessingVersions{}.graph);
         else
             load_error=result.path.isEmpty()?result.error:result.path+": "+result.error;
         if (loaded) _numeric_document=std::move(source);
@@ -156,7 +192,12 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
     }
     {
         auto* model=static_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get());
-        if (!model->set_numeric_graph(numeric_draft,&load_error))
+        desktop::NumericDraftPresentation initial_presentation;
+        if(_numeric_document) {
+            const auto result=desktop::read_numeric_presentation(*_numeric_document,initial_presentation);
+            if(!result)startup_error=result.error;
+        }
+        if (!model->set_numeric_graph(numeric_draft,&load_error,initial_presentation.node_adapters))
             startup_error=load_error;
         _ctx.file_configs.scene_graph=model->save();
     }
@@ -179,7 +220,8 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
             if(!host || !host->local_engine()){if(error)*error=QStringLiteral("Capture device discovery requires the local desktop device");return choices;}
             if(kind<0 || kind>1){if(error)*error=QStringLiteral("Invalid capture source kind");return choices;}
             for(const auto& device:pipeline::enumerate_audio_capture_devices(pipeline::AudioSourceKind(kind),error))
-                choices.append(QJsonObject{{"id",device.id},{"name",device.name},{"is_default",device.is_default}});
+                choices.append(QJsonObject{{"id",device.id},{"name",device.name},{"is_default",device.is_default},
+                    {"native_sample_rate",int(device.native_sample_rate)},{"native_channels",int(device.native_channels)}});
             return choices;
         });
         model->set_node_validator([this](const domain::ConfiguredProcessingNode& node) {
@@ -205,6 +247,30 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
         }
     });
     if (auto* editor=_main_window->findChild<SchemeEditorWidget*>()) {
+        if(auto* menu=_main_window->findChild<QMenu*>("pipelinePresetsMenu")) {
+            for(const auto* id:{"defaultPipeline","generatorLoopbackPreset","useTestSource"})
+                if(auto* old=menu->findChild<QAction*>(id))old->setVisible(false);
+            auto* anchor=menu->findChild<QAction*>("loadActivePipeline");
+            for(auto example:numeric_example_graphs()) {
+                auto* action=new QAction(ui::text(example.title_key),menu);menu->insertAction(anchor,action);
+                ui::bind(action,"text",example.title_key);
+                action->setObjectName(QStringLiteral("example-")+QString::fromLatin1(example.id));
+                connect(action,&QAction::triggered,this,[this,editor,graph=std::move(example.graph)] {
+                    if(_presenter->graph_request_pending())return;
+                    QString error;
+                    if(!editor->load_numeric_draft(graph,&error)) {
+                        _main_window->statusBar()->showMessage(error,10000);return;
+                    }
+                    configure_builtin_stream_names(dynamic_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get()));
+                    editor->initialize_default_layout();
+                    emit editor->preset_presentation_requested(QJsonObject{{"version",1},{"graph_views",QJsonObject{}},
+                        {"graph_rendering",QJsonObject{}},{"workspace",QJsonObject{}},
+                        {"show_raw_samples",true},{"show_amplitudes",true},{"show_test_amplitudes",true},
+                        {"show_spectrogram",true},{"show_data_flow",true}});
+                    _presenter->apply_pipeline_graph({});
+                });
+            }
+        }
         connect(editor,&SchemeEditorWidget::generator_loopback_graph_requested,this,[this,editor] {
             QString error;
             if(!editor->load_numeric_draft(numeric_startup_graph(),&error))
@@ -228,9 +294,9 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
                 ?desktop::read_numeric_presentation(*_numeric_document,presentation)
                 :desktop::NumericDocumentResult{};
             if (!result) startup_error=result.error;
-            else if (!editor->load_numeric_draft(numeric_draft,&load_error)) startup_error=load_error;
+            else if (!editor->load_numeric_draft(numeric_draft,&load_error,presentation.node_adapters)) startup_error=load_error;
             else {
-                if(!editor->restore_graph_adapters(presentation.node_adapters,&load_error))startup_error=load_error;
+                if(first_run_demo)configure_builtin_stream_names(dynamic_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get()));
                 for (auto it=presentation.positions.begin();it!=presentation.positions.end();++it) {
                     const auto position=it.value().toObject();
                     _ctx.data_flow_graph->setNodeData(it.key().toUInt(),QtNodes::NodeRole::Position,
@@ -249,6 +315,9 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
         });
     }
     _configuration_load_error=startup_error;
+    _configuration_project_dirty = !existing_config;
+    _configuration_save_error = startup_error;
+    _update_configuration_save_status();
     connect(_main_window, &MainWindow::on_config_updated, this, [this] { _save_configuration(true); });
     connect(_main_window, &MainWindow::settings_change_requested, this,
             [this](const ui::SettingsChangeRequest &request) {
@@ -287,15 +356,42 @@ CoreApplication::CoreApplication(int &argc, char *argv[], pipeline::AudioSourceF
     });
     heartbeat->start();
 }
+void CoreApplication::_update_configuration_save_status() {
+    if (!_main_window) return;
+    using State = MainWindow::ConfigurationSaveState;
+    const auto state = !_configuration_load_error.isEmpty() ? State::LoadError
+        : !_configuration_save_error.isEmpty() ? State::Error
+        : _saving_configuration ? State::Saving
+        : (_configuration_project_dirty || _configuration_preferences_dirty || _ctx.editor_draft_modified)
+            ? State::Unsaved : State::Saved;
+    const auto error=_configuration_load_error.isEmpty() ? _configuration_save_error
+        : _configuration_load_error+(_configuration_save_error.isEmpty() || _configuration_save_error==_configuration_load_error
+            ? QString{} : "\n"+_configuration_save_error);
+    _main_window->set_configuration_save_state(state, _config_manager.getConfigPath(), error);
+}
+
 bool CoreApplication::_save_ui_preferences(bool force) {
+    _configuration_preferences_dirty = true;
+    _update_configuration_save_status();
     if (!_main_window || _saving_configuration) return false;
     if (!force && !_ctx.file_configs.ui.autosave_enabled) return true;
-    const QScopedValueRollback saving(_saving_configuration, true);
+    _configuration_save_error.clear();
+    bool saved = false;
     QString error = _configuration_load_error;
     if (error.isEmpty() && !_numeric_document)
         error = QStringLiteral("Canonical project document is unavailable");
-    if (error.isEmpty() && _config_manager.saveNumericPreferences(*_numeric_document, _ctx.file_configs, &error))
+    {
+        const QScopedValueRollback saving(_saving_configuration, true);
+        _update_configuration_save_status();
+        saved = error.isEmpty() && _config_manager.saveNumericPreferences(*_numeric_document, _ctx.file_configs, &error);
+    }
+    if (saved) {
+        _configuration_preferences_dirty = false;
+        _update_configuration_save_status();
         return true;
+    }
+    _configuration_save_error = error;
+    _update_configuration_save_status();
     _main_window->statusBar()->showMessage(
         ui::text("Could not save settings: %1\n%2").arg(_config_manager.getConfigPath(), error), 10000);
     return false;
@@ -303,16 +399,41 @@ bool CoreApplication::_save_ui_preferences(bool force) {
 
 bool CoreApplication::_save_configuration(bool force, const QString &saveAsPath) {
     if(!_main_window)return false; // No widget-tree access after teardown starts.
+    _configuration_project_dirty = true;
+    _update_configuration_save_status();
     if (_saving_configuration) return true;
     if (!force && !_ctx.file_configs.ui.autosave_enabled)
         return true;
+    _configuration_save_error.clear();
     const QScopedValueRollback saving(_saving_configuration,true);
+    _update_configuration_save_status();
     const auto report_error=[&](const QString& error) {
+        _configuration_save_error = error.isEmpty() ? QStringLiteral("Configuration could not be saved") : error;
+        // Publish the completed operation while the reentrancy guard is still held.
+        _main_window->set_configuration_save_state(_configuration_load_error.isEmpty()
+            ? MainWindow::ConfigurationSaveState::Error : MainWindow::ConfigurationSaveState::LoadError,
+            saveAsPath.isEmpty() ? _config_manager.getConfigPath() : QFileInfo(saveAsPath).absoluteFilePath(), _configuration_save_error);
         const auto path=saveAsPath.isEmpty()?_config_manager.getConfigPath():QFileInfo(saveAsPath).absoluteFilePath();
         _main_window->statusBar()->showMessage(ui::text("Could not save settings: %1\n%2").arg(path,error),10000);
         return false;
     };
-    if (!_configuration_load_error.isEmpty()) return report_error(_configuration_load_error);
+    const bool recover_source = !_configuration_load_error.isEmpty();
+    if (recover_source && saveAsPath.isEmpty())
+        return report_error(ui::text("This project could not be opened. Select a current preset and use Save As to create a new project."));
+    const auto same_source=[&] {
+        const QFileInfo target(saveAsPath),source(_config_manager.getConfigPath());
+        const auto identity=[](const QFileInfo& file) {return file.exists()?file.canonicalFilePath():file.absoluteFilePath();};
+#ifdef Q_OS_WIN
+        if(identity(target).compare(identity(source),Qt::CaseInsensitive)==0)return true;
+#else
+        if(identity(target)==identity(source))return true;
+#endif
+        std::error_code error;
+        return std::filesystem::equivalent(std::filesystem::path(target.absoluteFilePath().toStdWString()),
+            std::filesystem::path(source.absoluteFilePath().toStdWString()),error) && !error;
+    };
+    if (recover_source && same_source())
+        return report_error(ui::text("The unreadable source is preserved. Choose a different file for the new project."));
     auto* model=dynamic_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get());
     if (_numeric_draft_loaded || (model && model->has_numeric_nodes())) {
         auto* editor=_main_window->findChild<SchemeEditorWidget*>();
@@ -321,12 +442,14 @@ bool CoreApplication::_save_configuration(bool force, const QString &saveAsPath)
         if (!editor || !editor->numeric_draft(draft,&error)) return report_error(error);
         editor->flush_presentation();
         std::unique_ptr<desktop::NumericProjectDocument> new_document;
-        if (!_numeric_document) {
+        if (!_numeric_document || recover_source) {
+            if(recover_source && draft.nodes.empty())
+                return report_error(ui::text("This project could not be opened. Select a current preset and use Save As to create a new project."));
             new_document=std::make_unique<desktop::NumericProjectDocument>();
-            const auto result=desktop::read_numeric_project("{\"schema_version\":2}",*new_document);
+            const auto result=desktop::create_numeric_project(draft,{},*new_document);
             if (!result) return report_error(result.error);
         }
-        auto& document=_numeric_document?*_numeric_document:*new_document;
+        auto& document=new_document?*new_document:*_numeric_document;
         desktop::NumericDraftPresentation before,delta;
         delta.applied_graph=_presenter->applied_numeric_graph();
         const auto read=desktop::read_numeric_presentation(document,before);
@@ -343,7 +466,8 @@ bool CoreApplication::_save_configuration(bool force, const QString &saveAsPath)
                 const auto presentation=node->presentation();
                 const QJsonObject edited{{"inline_parameters",presentation.value("inline_parameters").toArray()},
                                          {"display_name",presentation.value("display_name").toString()},
-                                         {"scalar_inputs",presentation.value("scalar_inputs").toObject()}};
+                                         {"scalar_inputs",presentation.value("scalar_inputs").toObject()},
+                                         {"stream_names",presentation.value("stream_names").toArray()}};
                 const auto changed_presentation=configuration::changed_fields(
                     before.node_presentations.value(QString::number(id)).toObject(),edited);
                 if(!changed_presentation.isEmpty())delta.node_presentations[QString::number(id)]=changed_presentation;
@@ -356,8 +480,15 @@ bool CoreApplication::_save_configuration(bool force, const QString &saveAsPath)
             :_config_manager.saveNumericAs(document,draft,delta,saveAsPath,&error);
         if (!saved) return report_error(error);
         if (new_document) _numeric_document=std::move(new_document);
+        if(recover_source) {
+            _configuration_load_error.clear();
+            _presenter->clear_file_protection_warning();
+        }
         _numeric_draft_loaded=true;
         _ctx.editor_draft_modified=false;
+        _configuration_project_dirty=false;
+        _configuration_preferences_dirty=false;
+        _main_window->set_configuration_save_state(MainWindow::ConfigurationSaveState::Saved, _config_manager.getConfigPath());
         return true;
     }
     return report_error(QStringLiteral("Canonical numeric editor is unavailable"));

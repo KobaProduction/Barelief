@@ -171,6 +171,8 @@ namespace signal_contracts {
     }
     Status validate_view(const DataFrameView& f,const FrameLimits& l) noexcept {
     if(f.stamp.stream_id.size()>l.max_string_bytes)return Status::exhausted;
+    if(f.stamp.latency_seconds.numerator<0 || !f.stamp.latency_seconds.denominator)return Status::invalid_argument;
+    if(f.stamp.has_sample_interval && (f.stamp.sample_count>std::uint64_t(INT64_MAX) || (f.stamp.sample_count && f.stamp.sample_begin>INT64_MAX-std::int64_t(f.stamp.sample_count-1))))return Status::overflow;
     Status status=Status::ok;
     if(const auto* n=std::get_if<NumericView>(&f.payload)) {
         if(!f.stamp.available) {

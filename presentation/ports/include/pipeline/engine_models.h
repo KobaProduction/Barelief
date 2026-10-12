@@ -20,7 +20,12 @@ struct AudioFrame {
     size_t sample_rate = 0;
     uint64_t generation = 0;
     bool discontinuity = false;
-    std::vector<float> left, right;
+    // Channel-major capture storage: samples[channel * frame_count + sample].
+    // Lanes have no semantic speaker roles. Numeric ingress emits each separately.
+    uint32_t channel_count = 0;
+    size_t frame_count = 0;
+    uint64_t sample_position = 0;
+    std::vector<float> samples;
 };
 
 struct NodePreview {

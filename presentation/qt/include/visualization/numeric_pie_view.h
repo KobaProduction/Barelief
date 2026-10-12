@@ -11,6 +11,7 @@ public:
         if(values.size()>1048576){values_.clear();valid_=false;error_="Renderer projection unavailable";slices_.clear();refresh_presentation();return false;}
         values_=values;rebuild();refresh_presentation();return valid_;
     }
+    void set_slice_labels_visible(bool visible){if(labels_visible_==visible)return;labels_visible_=visible;refresh_presentation();}
     bool projection_available() const {return valid_;}
     void set_projection_status(const QString& status){if(status_==status)return;status_=status;refresh_presentation();}
     size_t value_count() const {return values_.size();}
@@ -28,7 +29,7 @@ protected:
                 {"value",QString::number(slices_[i],'g',12)}});start+=fraction;
         }
         const QString detail=error_.isEmpty()?QString{}:ui::text(error_.toUtf8().constData());
-        publish({{"kind","pie"},{"slices",slices},{"title",!valid_?detail:status_.isEmpty()?detail:status_},{"available",!slices_.empty()}});
+        publish({{"showSliceLabels",labels_visible_},{"kind","pie"},{"slices",slices},{"title",!valid_?detail:status_.isEmpty()?detail:status_},{"available",!slices_.empty()}});
     }
 private:
     void rebuild(){
@@ -44,5 +45,5 @@ private:
     std::vector<double> slices_;
     double sum_=0;
     QString status_,error_;
-    bool valid_=true;
+    bool valid_=true,labels_visible_=true;
 };

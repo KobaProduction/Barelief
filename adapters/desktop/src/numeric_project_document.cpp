@@ -13,6 +13,8 @@
 #include <limits>
 #include <type_traits>
 #include <cmath>
+#include <numeric>
+#include <set>
 
 namespace desktop {
 namespace {
@@ -46,6 +48,9 @@ NAMES(CoordinateMode,"None","Regular","ExplicitFloat64LE");
 NAMES(Rounding,"TowardZero","NearestTiesEven"); NAMES(Overflow,"Reject","Saturate");
 NAMES(PrecisionLoss,"RejectInexact","AllowDeclared"); NAMES(NonFinite,"Reject","ReplaceFinite","ClampFinite");
 NAMES(ScaleMode,"Identity","IntegerAffine","DyadicAffine","PcmNormalize","PcmDenormalize","Binary64Affine");
+NAMES(ConfigurationRole,"sample_clock","frequency_grid");
+NAMES(MixerConsumption,"clocked_fifo","source_aligned");
+NAMES(MixerMode,"weighted_sum","weighted_mean","weighted_rms","max_absolute");
 NAMES(NumericReduction,"MaxAbs","SignedMean","RMS"); NAMES(ReductionChannels,"AllChannels","BothChannels","SelectedChannels");
 NAMES(ReductionRows,"WholeValue","LatestHistoryRow");
 #undef NAMES
@@ -79,7 +84,12 @@ template<class T> QJsonValue encode(Mapper& m,const T& value) {
         const auto i=static_cast<std::size_t>(value);
         if(i>=std::size(Names<T>::values)){m.fail("Invalid enum");return {};}
         return text(Names<T>::values[i]);
-    } else if constexpr(std::is_integral_v<T>) {
+    } else if constexpr(std::is_floating_point_v<T>) {
+        if(!std::isfinite(value)){m.fail("Nonfinite floating point parameter");return {};}
+        if constexpr(sizeof(T)==4)return QJsonObject{{"dtype","float32"},{"bits",QString::number(std::bit_cast<std::uint32_t>(value),16).rightJustified(8,'0')}};
+        else return QJsonObject{{"dtype","float64"},{"bits",QString::number(std::bit_cast<std::uint64_t>(value),16).rightJustified(16,'0')}};
+    }
+    else if constexpr(std::is_integral_v<T>) {
         if constexpr(sizeof(T)==8) {
             return QJsonObject{{"dtype",std::is_signed_v<T>?"int64":"uint64"},{"decimal",std::is_signed_v<T>?QString::number(static_cast<qlonglong>(value)):QString::number(static_cast<qulonglong>(value))}};
         } else return static_cast<int>(value); // uint32 handled below without narrowing.
@@ -136,7 +146,8 @@ template<class T> void decode(Mapper& m,Handle h,T& value) {
         std::string name;decode(m,h,name); if(!*m.result)return;
         for(std::size_t i=0;i<std::size(Names<T>::values);++i)if(name==Names<T>::values[i]){value=static_cast<T>(i);return;}
         m.fail("Unknown enum identifier");
-    } else if constexpr(std::is_integral_v<T>) {
+    } else if constexpr(std::is_floating_point_v<T>) { NumericLiteral n;literal(m,h,n);if(!*m.result)return;if(const auto* p=std::get_if<T>(&n);p && std::isfinite(*p))value=*p;else m.fail("Finite floating point width/tag mismatch"); }
+    else if constexpr(std::is_integral_v<T>) {
         if constexpr(sizeof(T)==8) {
             NumericLiteral n;literal(m,h,n);if(!*m.result)return;
             if(const auto* p=std::get_if<T>(&n))value=*p;else m.fail("Integer width/tag mismatch");
@@ -195,6 +206,8 @@ template<> void decode(Mapper& parent,Handle h,OwnedProcessingContract& owned) {
     else m.fail("Unknown contract category");
     if(*m.result && own_processing_contract(data,frame_limits,16777216,owned)!=Status::ok)m.fail("Invalid/bounded contract");
 }
+void map(Mapper& m,signal_contracts::OscillatorParameters& v) {FIELD(id);FIELD(enabled);FIELD(frequency_hz);FIELD(amplitude);FIELD(phase_radians);FIELD(attack_seconds);FIELD(release_seconds);}
+void map(Mapper& m,MixerInputWeight& v) {FIELD(port);FIELD(weight);}
 void map(Mapper& m,ProcessingPort& v) {FIELD(id);FIELD(contract);} // Direction comes from the containing field.
 template<> QJsonValue encode(Mapper& m,const ProcessingParameterValue& v) {return std::visit([&](const auto& x){return encode(m,x);},v);}
 template<> void decode(Mapper& m,Handle h,ProcessingParameterValue& v) {
@@ -224,15 +237,18 @@ void parameter_values(Mapper& m,std::vector<ProcessingParameter>& values) {
 }
 void parameters(Mapper& m,ProcessingParameters& value) {
     std::string type;
-    if(!m.reading())type=std::holds_alternative<EndpointProcessingParameters>(value)?"endpoint":std::holds_alternative<TransformProcessingParameters>(value)?"transform":std::holds_alternative<ConverterProcessingParameters>(value)?"converter":std::holds_alternative<RouteProcessingParameters>(value)?"route":std::holds_alternative<ReduceProcessingParameters>(value)?"reduce":"history";
+    if(!m.reading())type=std::holds_alternative<EndpointProcessingParameters>(value)?"endpoint":std::holds_alternative<TransformProcessingParameters>(value)?"transform":std::holds_alternative<ConverterProcessingParameters>(value)?"converter":std::holds_alternative<RouteProcessingParameters>(value)?"route":std::holds_alternative<ReduceProcessingParameters>(value)?"reduce":std::holds_alternative<HistoryProcessingParameters>(value)?"history":std::holds_alternative<SignalGeneratorProcessingParameters>(value)?"generator":std::holds_alternative<SampleClockProcessingParameters>(value)?"clock":"mixer";
     m.field("type",type);
     if(type=="endpoint"||type=="transform") {
         std::vector<ProcessingParameter> v;if(!m.reading())v=type=="endpoint"?std::get<EndpointProcessingParameters>(value).values:std::get<TransformProcessingParameters>(value).values;
         parameter_values(m,v);if(type=="endpoint")value=EndpointProcessingParameters{std::move(v)};else value=TransformProcessingParameters{std::move(v)};
     }else if(type=="converter"){auto v=m.reading()?ConverterProcessingParameters{}:std::get<ConverterProcessingParameters>(value);m.field("policy",v.policy);value=v;}
-    else if(type=="route"){auto v=m.reading()?RouteProcessingParameters{}:std::get<RouteProcessingParameters>(value);m.field("outputs",v.outputs);m.field("selected",v.selected);m.field("open",v.open);value=v;}
+    else if(type=="route"){auto v=m.reading()?RouteProcessingParameters{}:std::get<RouteProcessingParameters>(value);m.field("outputs",v.outputs);m.field("selected",v.selected);m.field("open",v.open);m.field("channels_per_stream",v.channels_per_stream);value=v;}
     else if(type=="reduce"){auto v=m.reading()?ReduceProcessingParameters{}:std::get<ReduceProcessingParameters>(value);m.field("operation",v.operation);m.field("channels",v.channels);m.field("rows",v.rows);m.field("selected_channels",v.selected_channels);m.field("precision_loss",v.precision_loss);m.field("rounding",v.rounding);value=std::move(v);}
     else if(type=="history"){auto v=m.reading()?HistoryProcessingParameters{}:std::get<HistoryProcessingParameters>(value);m.field("capacity",v.capacity);value=v;}
+    else if(type=="generator"){auto v=m.reading()?SignalGeneratorProcessingParameters{}:std::get<SignalGeneratorProcessingParameters>(value);m.field("oscillators",v.oscillators);if(v.oscillators.empty()||v.oscillators.size()>128)m.fail("Oscillator count");value=std::move(v);}
+    else if(type=="clock"){auto v=m.reading()?SampleClockProcessingParameters{}:std::get<SampleClockProcessingParameters>(value);m.field("sample_rate",v.sample_rate);m.field("domain",v.domain);value=std::move(v);}
+    else if(type=="mixer"){auto v=m.reading()?MixerProcessingParameters{}:std::get<MixerProcessingParameters>(value);m.field("mode",v.mode);m.field("weights",v.weights);m.field("fifo_milliseconds",v.fifo_milliseconds);m.field("consumption",v.consumption);value=std::move(v);}
     else m.fail("Unknown parameter category");
 }
 template<> QJsonValue encode(Mapper& parent,const ProcessingParameters& v) {auto copy=v;Mapper m{nullptr,{}, {},parent.result,parent.path,parent.kind};parameters(m,copy);return m.output;}
@@ -249,14 +265,15 @@ void map(Mapper& m,Edge& v) {m.field("out_id",v.from);m.field("out_index",v.outp
     if(!m.reading() || member(*m.source,m.handle,"conversion").source)m.field("conversion",v.conversion);
     if(v.conversion>3)m.fail("Invalid edge conversion policy");
 }
+void map(Mapper& m,ConfigurationBinding& v) {m.field("from",v.from);m.field("to",v.to);m.field("output",v.output);m.field("input",v.input);}
 void map(Mapper& m,NumericProcessingGraph& v) {
     if(!m.reading() && (v.nodes.size()>4096 || v.edges.size()>65536 || v.graph_id.size()>1024)){m.fail("Graph limits");return;}
     m.field("version",v.versions.graph);m.field("processing_version",v.versions.processing);
-    if(v.versions.graph!=3 || v.versions.processing!=2){m.fail("Unsupported graph/processing version");return;}
+    if(v.versions.graph!=5 || v.versions.processing!=4){m.fail("Unsupported graph/processing version");return;}
     FIELD(graph_id);
     if(!m.reading() || member(*m.source,m.handle,"execution_interval").source)FIELD(execution_interval);
     if(!domain::valid_execution_interval(v.execution_interval)){m.path+=".execution_interval";m.fail("Invalid execution interval");return;}
-    FIELD(nodes);m.field("connections",v.edges);
+    FIELD(nodes);m.field("connections",v.edges);FIELD(configuration_bindings);
     if(v.nodes.size()>4096 || v.edges.size()>65536 || v.graph_id.empty()){m.fail("Graph bounds/identity");return;}
     QSet<int> ids;for(const auto& n:v.nodes){if(ids.contains(n.id)){m.fail("Duplicate node ID");return;}ids.insert(n.id);}
     QSet<QString> edges;for(const auto& e:v.edges){auto key=QString::number(e.from)+":"+QString::number(e.output_port)+":"+QString::number(e.to)+":"+QString::number(e.input_port);if(edges.contains(key)){m.fail("Duplicate edge identity");return;}edges.insert(key);}
@@ -301,8 +318,18 @@ NumericDocumentResult check_node_adapter(const Source& s,Handle h) {
     return {};
 }
 NumericDocumentResult check_node_presentation(const Source& s,Handle h,QJsonObject* out=nullptr) {
-    auto result=object_keys(s,h,{"inline_parameters","input_port_order","output_port_order","display_name","scalar_inputs"},"node.presentation");if(!result)return result;
+    auto result=object_keys(s,h,{"inline_parameters","input_port_order","output_port_order","display_name","scalar_inputs","stream_names"},"node.presentation");if(!result)return result;
     const auto inline_parameters=member(s,h,"inline_parameters");QJsonObject candidate;
+    const auto stream_names=member(s,h,"stream_names");
+    if(stream_names.source){
+        if(node(s,stream_names).kind!=NodeKind::Array)return failure("Expected stream names array");
+        QJsonArray names;for(auto entry=node(s,stream_names).first_child;entry.source;entry=node(s,entry).next_sibling){
+            const auto value=node(s,entry);if(names.size()>=64 || value.kind!=NodeKind::String)return failure("Invalid stream name");
+            const auto name=text(value.decoded);if(name.size()>256)return failure("Stream name limit");
+            for(const auto character:name)if(character.category()==QChar::Other_Control)return failure("Invalid stream name");
+            names.append(name);
+        }candidate["stream_names"]=names;
+    }
     const auto scalar_inputs=member(s,h,"scalar_inputs");
     if(scalar_inputs.source){
         if(node(s,scalar_inputs).kind!=NodeKind::Object)return failure("Expected scalar input settings object");
@@ -339,15 +366,15 @@ NumericDocumentResult check_node_presentation(const Source& s,Handle h,QJsonObje
     }
     for(auto name:{"input_port_order","output_port_order"}){const auto array=member(s,h,name);if(!array.source)continue;
         if(node(s,array).kind!=NodeKind::Array)return failure("Expected port order array");QJsonArray ids;QSet<int> seen;
-        for(auto item=node(s,array).first_child;item.source;item=node(s,item).next_sibling){std::uint64_t id=0;if(ids.size()>=8 || !read_uint64(s,item,id) || id>65535 || seen.contains(int(id)))return failure("Invalid port order");seen.insert(int(id));ids.append(int(id));}candidate[name]=ids;
+        for(auto item=node(s,array).first_child;item.source;item=node(s,item).next_sibling){std::uint64_t id=0;if(ids.size()>=128 || !read_uint64(s,item,id) || id>65535 || seen.contains(int(id)))return failure("Invalid port order");seen.insert(int(id));ids.append(int(id));}candidate[name]=ids;
     }
     if(out)*out=std::move(candidate);return {};
 }
 NumericDocumentResult check_graph(const Source& s,Handle h,QString path,std::uint32_t schema,bool allow_visual=false) {
-    auto r=object_keys(s,h,{"version","processing_version","graph_id","execution_interval","nodes","connections"},path);if(!r)return r;
+    auto r=object_keys(s,h,{"version","processing_version","graph_id","execution_interval","nodes","connections","configuration_bindings"},path);if(!r)return r;
     std::uint32_t graph=0,processing=0;r=edition(s,h,"version",graph,path);if(!r)return r;
     r=edition(s,h,"processing_version",processing,path);if(!r)return r;
-    if(graph!=3 || processing!=2 || schema!=2)return failure("Unsupported graph/processing version combination",path);
+    if(graph!=5 || processing!=4 || schema!=4)return failure("Unsupported graph/processing version combination",path);
     if(allow_visual){bool canonical=false,visual=false;auto nodes=member(s,h,"nodes");
         for(auto n=node(s,nodes).first_child;n.source;n=node(s,n).next_sibling){if(member(s,n,"kind").source)canonical=true;else if(member(s,n,"internal-data").source)visual=true;else return failure("Unknown preset node representation",path);}
         if(canonical&&visual)return failure("Mixed preset graph representations",path);
@@ -407,7 +434,7 @@ NumericDocumentResult check_presets(const Source& s,Handle h,QString path,std::u
 NumericDocumentResult check_project(const Source& s,std::uint32_t& schema) {
     auto root=s.root();auto r=object_keys(s,root,{"schema_version","pipeline_graph","scene_graph","ui","presets","devices"},"project");if(!r)return r;
     schema=0;r=edition(s,root,"schema_version",schema,"project");if(!r)return r;
-    if(schema!=2)return failure("Unsupported document version","schema_version");
+    if(schema!=4)return failure("Unsupported document version","schema_version");
     auto scan=[&](Handle owner,QString path)->NumericDocumentResult {
         auto known=object_keys(s,owner,{"pipeline_graph","scene_graph","presets"},path);if(!known)return known;
         for(auto key:{"pipeline_graph","scene_graph"}){auto g=member(s,owner,key);if(g.source){auto e=check_graph(s,g,path+"."+key,schema);if(!e)return e;}}
@@ -438,6 +465,8 @@ QString identity(const Source& s,Handle h,std::string_view array) {
         return scalar("id")+"/"+kind;
     }
     if(array=="values")return scalar("key");
+    if(array=="oscillators"){const auto id=member(s,h,"id");const auto decimal=node(s,member(s,id,"decimal"));return text(decimal.decoded);}
+    if(array=="weights")return scalar("port");
     if(array=="inputs"||array=="outputs")return scalar("id");
     if(array=="settings_ids")return scalar("id");
     if(array=="pipeline_presets"||array=="presets"){
@@ -516,7 +545,7 @@ QByteArray merge(const Source& old,Handle old_h,const Source& fresh,Handle new_h
         out+='}';return out;
     }
     if(b.kind==NodeKind::Array) {
-        const bool identified=context=="nodes"||context=="values"||context=="inputs"||context=="outputs"||context=="connections"||context=="pipeline_presets"||context=="presets"||context=="settings_ids";
+        const bool identified=context=="nodes"||context=="values"||context=="inputs"||context=="outputs"||context=="connections"||context=="pipeline_presets"||context=="presets"||context=="settings_ids"||context=="oscillators"||context=="weights";
         QByteArray out="[";bool first=true;QSet<QString> retained;
         auto old_child=a.first_child;
         for(auto child=b.first_child;child.source && result;child=node(fresh,child).next_sibling){
@@ -532,6 +561,70 @@ QByteArray merge(const Source& old,Handle old_h,const Source& fresh,Handle new_h
     return a.raw==b.raw?bytes(a.raw):bytes(b.raw);
 }
 } // namespace
+bool resolve_numeric_source_format(domain::NumericProcessingGraph& graph,domain::NodeId source_id,std::uint32_t rate,std::uint32_t outputs,QString* error) {
+    using namespace domain;using namespace signal_contracts;
+    auto fail=[&](const char* message){if(error)*error=QString::fromUtf8(message);return false;};
+    if(rate<8000||rate>192000||!outputs||outputs>64)return fail("Native capture format exceeds supported bounds");
+    auto candidate=graph;
+    auto find=[&](NodeId id)->ConfiguredProcessingNode*{for(auto& n:candidate.nodes)if(n.id==id)return &n;return nullptr;};
+    auto* root=find(source_id);if(!root||root->kind!="AudioSource"||root->outputs.empty())return fail("Missing physical source contract");
+    const auto own=[&](const DataContract& c,OwnedProcessingContract& owner){return own_processing_contract(c,frame_limits,16777216,owner)==Status::ok;};
+    auto source=root->outputs.front().contract.view();auto* numeric=std::get_if<NumericContract>(&source);if(!numeric)return fail("Physical source is not numeric");
+    const std::string source_domain(numeric->clock.domain);const std::uint32_t plane=0;
+    numeric->channel_order=std::span(&plane,1);numeric->clock={source_domain,{1,rate},rate};
+    std::vector<ProcessingPort> next_ports;next_ports.reserve(outputs);
+    for(std::uint32_t i=0;i<outputs;++i){ProcessingPort p;p.id=PortId(i);p.direction=PortDirection::Output;if(!own(source,p.contract))return fail("Physical source contract cannot be owned");next_ports.push_back(std::move(p));}
+    root->outputs=std::move(next_ports);
+    // Device discovery may remove physical lanes. Leave their downstream ports
+    // disconnected so the prepared runtime supplies typed silence.
+    candidate.edges.erase(std::remove_if(candidate.edges.begin(),candidate.edges.end(),[&](const auto& e){return e.from==source_id&&e.output_port>=outputs;}),candidate.edges.end());
+    if(auto* values=std::get_if<EndpointProcessingParameters>(&root->parameters))for(auto& p:values->values)if(p.key=="sample_rate")p.value=NumericLiteral{std::uint64_t(rate)};
+    auto scale=[](Ratio& v,std::uint32_t before,std::uint32_t after){
+        if(!before||!v.denominator||v.numerator<0)return false;if(before==after)return true;
+        auto n=std::uint64_t(v.numerator),d=v.denominator,m=std::uint64_t(after),q=std::uint64_t(before);
+        auto g=std::gcd(n,q);n/=g;q/=g;g=std::gcd(m,d);m/=g;d/=g;
+        if(n>std::uint64_t(INT64_MAX)/m||d>UINT64_MAX/q)return false;v={std::int64_t(n*m),d*q};return true;
+    };
+    auto getport=[](auto& ports,PortId id)->ProcessingPort*{for(auto& p:ports)if(p.id==id)return &p;return nullptr;};
+    std::vector<NodeId> pending{source_id};std::set<NodeId> visited;
+    for(std::size_t at=0;at<pending.size();++at){const auto id=pending[at];if(!visited.insert(id).second)continue;auto* from=find(id);if(!from)return false;
+        for(const auto& e:candidate.edges)if(e.from==id){auto* to=find(e.to);auto* output=getport(from->outputs,e.output_port);if(!to||!output)return fail("Source topology removed a connected output");auto* input=getport(to->inputs,e.input_port);if(!input)return false;
+            const auto data=output->contract.view();const auto* upstream=std::get_if<NumericContract>(&data);if(!upstream)continue;
+            const std::string clock_domain(upstream->clock.domain);auto clock=upstream->clock;clock.domain=clock_domain;
+            if(to->kind=="InputSelector") {
+                // Explicit source switch is a format boundary. A native device
+                // must not rewrite the contracts of the other selectable streams.
+                input->contract=output->contract;visited.insert(to->id);continue;
+            }
+            const bool view=node_kind(to->kind)&&is_view(*node_kind(to->kind));
+            if(view){const auto old=input->contract.view();const auto* expected=std::get_if<NumericContract>(&old);if(!expected||expected->shape.rank!=upstream->shape.rank)return fail("View rank mismatch");input->contract=output->contract;}
+            else {
+                std::uint32_t output_rate=clock.sample_rate;
+                if(to->kind=="PcmResampler")if(const auto* parameters=std::get_if<TransformProcessingParameters>(&to->parameters))for(const auto& parameter:parameters->values)if(parameter.key=="output_rate")if(const auto* value=std::get_if<NumericLiteral>(&parameter.value))output_rate=std::visit([](auto v){return v>=8000&&v<=192000&&std::floor(double(v))==double(v)?std::uint32_t(v):0;},*value);
+                if(!output_rate)return fail("Invalid explicit resampler target");
+                for(auto* ports:{&to->inputs,&to->outputs})for(auto& p:*ports){auto owned=p.contract.view();auto* c=std::get_if<NumericContract>(&owned);if(!c)continue;
+                    const bool out=ports==&to->outputs;auto desired=clock;if(to->kind=="PcmResampler"&&out){desired.sample_rate=output_rate;desired.tick_seconds={1,output_rate};}
+                    for(std::size_t axis=0;axis<2;++axis){auto& coord=c->coordinates[axis];if(coord.mode==CoordinateMode::Regular&&coord.unit==NumericUnit::Hertz)
+                        if(!scale(coord.origin,c->clock.sample_rate,desired.sample_rate)||!scale(coord.step,c->clock.sample_rate,desired.sample_rate))return false;
+                        if(coord.mode==CoordinateMode::Regular&&coord.unit==NumericUnit::Seconds&&c->shape.axes[axis]==Axis::Sample)if(!scale(coord.step,desired.sample_rate,c->clock.sample_rate))return false;}
+                    c->clock=desired;
+                    if(upstream->shape.rank==Rank::Vector&&upstream->shape.axes[0]==Axis::Sample&&c->shape.rank==Rank::Vector&&c->shape.axes[0]==Axis::Sample&&
+                       (to->kind!="Window"||!out)&&to->kind!="WindowFunction"&&to->kind!="StereoFFT")c->shape.extents[0]=upstream->shape.extents[0];
+                    if(to->kind=="PcmResampler"&&out){const auto in=to->inputs.front().contract.view();const auto& v=std::get<NumericContract>(in);const auto size=v.shape.extents[0].maximum;
+                        if(!size||size>8192||std::uint64_t(output_rate)>std::uint64_t(clock.sample_rate)*8||std::uint64_t(clock.sample_rate)>std::uint64_t(output_rate)*8)return false;
+                        c->shape.extents[0]={1,(size*output_rate+clock.sample_rate-1)/clock.sample_rate+1};}
+                    if(!own(owned,p.contract))return false;
+                }
+            }
+            pending.push_back(to->id);
+        }
+    }
+    const ProcessingAdmissionLimits limits{4096,65536,64,128,4096,16777216,frame_limits};
+    for(auto id:visited){auto* n=find(id);ResolvedProcessingNode resolved;if(!n||!resolve_processing_node(*n,limits,resolved))return fail("Native format is unsupported by a dependent operation");}
+    for(const auto& e:candidate.edges){auto* from=find(e.from);auto* to=find(e.to);if(!from||!to)return false;auto* out=getport(from->outputs,e.output_port);auto* in=getport(to->inputs,e.input_port);
+        if(!out||!in||(!processing_ports_compatible(*out,*in)&&!processing_ports_dtype_convertible(*out,*in)))return fail("Independent input requires an explicit resampler or compatible geometry");}
+    graph=std::move(candidate);return true;
+}
 QString numeric_project_path(const QString& explicit_path) {
     return QFileInfo(explicit_path.isEmpty()?QDir(QCoreApplication::applicationDirPath()).filePath("config.json"):explicit_path).absoluteFilePath();
 }
@@ -541,7 +634,7 @@ NumericDocumentResult encode_numeric_graph(const NumericProcessingGraph& v,QByte
 NumericDocumentResult decode_numeric_graph(QByteArrayView bytes,NumericProcessingGraph& out) {return read_snapshot(bytes,out);}
 NumericDocumentResult decode_numeric_editor_graph(QByteArrayView input,NumericProcessingGraph& out) {
     Source source;auto diagnostic=parse_project_source(view(input),source);if(!diagnostic)return source_error(diagnostic);
-    const auto graph=source.root();auto result=check_graph(source,graph,"snapshot",2,true);if(!result)return result;
+    const auto graph=source.root();auto result=check_graph(source,graph,"snapshot",4,true);if(!result)return result;
     const auto first=node(source,member(source,graph,"nodes")).first_child;
     if(first.source && !member(source,first,"kind").source && member(source,first,"internal-data").source)return check_visual_graph(source,graph,&out);
     return read_snapshot(input,out);
@@ -566,7 +659,7 @@ NumericDocumentResult read_numeric_applied(const NumericProjectDocument& source,
 }
 namespace {
 NumericDocumentResult stage_project_graph(const NumericProjectDocument& source,const NumericProcessingGraph& graph,std::string_view section,NumericProjectDocument& out) {
-    if(graph.versions.document!=2)return failure("Unsupported document version","schema_version");
+    if(graph.versions.document!=4)return failure("Unsupported document version","schema_version");
     QByteArray snapshot;auto r=encode_numeric_graph(graph,snapshot);if(!r)return r;
     NumericProjectDocument staged_source;r=clone_numeric_project(source,staged_source);if(!r)return r;
     Source fresh;auto d=parse_project_source(view(snapshot),fresh);if(!d)return source_error(d);
@@ -589,7 +682,7 @@ NumericDocumentResult stage_numeric_draft(const NumericProjectDocument& source,c
     return stage_project_graph(source,graph,"scene_graph",out);
 }
 NumericDocumentResult create_numeric_project(const NumericProcessingGraph& graph,const NumericDraftPresentation& presentation,NumericProjectDocument& out) {
-    NumericProjectDocument candidate;auto result=read_numeric_project("{\"schema_version\":2}",candidate);if(!result)return result;
+    NumericProjectDocument candidate;auto result=read_numeric_project("{\"schema_version\":4}",candidate);if(!result)return result;
     result=stage_numeric_draft(candidate,graph,candidate);if(!result)return result;
     result=stage_numeric_presentation(candidate,presentation,candidate);if(result)out=std::move(candidate);return result;
 }
@@ -601,7 +694,7 @@ NumericDocumentResult create_numeric_startup_project(const NumericProcessingGrap
     NumericDraftPresentation presentation;
     presentation.application_settings=QJsonObject{{"ui",QJsonObject{{"show_raw_samples",true},{"show_amplitudes",true},
         {"show_test_amplitudes",true},{"show_spectrogram",true},{"pipeline_presets",QJsonArray{
-        QJsonObject{{"version",1},{"id","builtin-test-signal"},{"name","TestSignal"},
+        QJsonObject{{"version",1},{"id","builtin-test-signal"},{"name","Signal generator"},
             {"graph",QJsonDocument::fromJson(snapshot).object()},{"presentation",display}}
     }}}}};
     return create_numeric_project(graph,presentation,out);
@@ -664,7 +757,7 @@ NumericDocumentResult check_visual_graph(const Source& source,Handle graph,Numer
         if(out)candidate.nodes.push_back(std::move(decoded));
     }
     QSet<QString> edges;std::size_t edge_count=0;
-    for(auto e=node(source,connections).first_child;e.source;e=node(source,e).next_sibling){if(++edge_count>65536)return failure("Preset edge limit");result=object_keys(source,e,{"outNodeId","outPortIndex","inNodeId","inPortIndex","conversion"},"preset.edge");if(!result)return result;
+    for(auto e=node(source,connections).first_child;e.source;e=node(source,e).next_sibling){if(++edge_count>65536)return failure("Preset edge limit");result=object_keys(source,e,{"outNodeId","outPortIndex","inNodeId","inPortIndex","conversion","configuration"},"preset.edge");if(!result)return result;
         for(auto field:{"outNodeId","outPortIndex","inNodeId","inPortIndex"}){std::uint64_t number=0;auto d=read_uint64(source,member(source,e,field),number);const bool port=std::string_view(field)=="outPortIndex"||std::string_view(field)=="inPortIndex";if(!d||number>(port?65535u:static_cast<std::uint64_t>(std::numeric_limits<domain::NodeId>::max())))return failure("Invalid preset edge identity");}
         const auto key=identity(source,e,"connections");if(edges.contains(key))return failure("Duplicate preset edge identity");edges.insert(key);
         if(out){Edge edge;std::uint64_t value=0;
@@ -675,6 +768,7 @@ NumericDocumentResult check_visual_graph(const Source& source,Handle graph,Numer
             const auto policy=member(source,e,"conversion");if(policy.source){std::uint64_t mode=0;if(!read_uint64(source,policy,mode) || mode>3)return failure("Invalid edge conversion policy");edge.conversion=std::uint8_t(mode);}
             const auto from=std::find_if(candidate.nodes.begin(),candidate.nodes.end(),[&](const auto& n){return n.id==edge.from;});
             const auto to=std::find_if(candidate.nodes.begin(),candidate.nodes.end(),[&](const auto& n){return n.id==edge.to;});
+            const auto configuration=member(source,e,"configuration");if(configuration.source){std::uint64_t role=0;if(!read_uint64(source,configuration,role) || role>1 || from==candidate.nodes.end() || to==candidate.nodes.end())return failure("Invalid configuration connection");candidate.configuration_bindings.push_back({edge.from,edge.to,ConfigurationRole(role),ConfigurationRole(role)});continue;}
             if(from==candidate.nodes.end() || to==candidate.nodes.end() || edge.output_port>=from->outputs.size() || edge.input_port>=to->inputs.size())return failure("Invalid visual port index");
             edge.output_port=from->outputs[edge.output_port].id;edge.input_port=to->inputs[edge.input_port].id;
             candidate.edges.push_back(edge);
@@ -684,7 +778,7 @@ NumericDocumentResult check_visual_graph(const Source& source,Handle graph,Numer
     return {};
 }
 NumericDocumentResult validate_preset_replacement(const Source& source,Handle array) {
-    auto result=check_presets(source,array,"ui.pipeline_presets",2);if(!result)return result;
+    auto result=check_presets(source,array,"ui.pipeline_presets",4);if(!result)return result;
     std::size_t count=0;
     for(auto p=node(source,array).first_child;p.source;p=node(source,p).next_sibling){
         if(++count>4096)return failure("Preset count limit","ui.pipeline_presets");
@@ -785,7 +879,7 @@ NumericDocumentResult stage_numeric_presentation(const NumericProjectDocument& s
     for(auto it=presentation.node_presentations.begin();it!=presentation.node_presentations.end();++it){
         bool valid=false;const auto id=it.key().toLongLong(&valid);
         if(!valid||id<0||id>std::numeric_limits<NodeId>::max()||QString::number(id)!=it.key()||!it.value().isObject())return failure("Invalid presentation node ID");
-        const auto update=it.value().toObject();for(auto field=update.begin();field!=update.end();++field)if(field.key()!="inline_parameters" && field.key()!="display_name" && field.key()!="scalar_inputs")return failure("Unregistered node presentation field",field.key());
+        const auto update=it.value().toObject();for(auto field=update.begin();field!=update.end();++field)if(field.key()!="inline_parameters" && field.key()!="display_name" && field.key()!="scalar_inputs" && field.key()!="stream_names")return failure("Unregistered node presentation field",field.key());
         Source checked;const auto encoded=QJsonDocument(update).toJson(QJsonDocument::Compact);auto d=parse_project_source(view(encoded),checked);if(!d)return source_error(d);
         result=check_node_presentation(checked,checked.root());if(!result)return result;
         Handle matched;for(auto h=node(s,nodes).first_child;h.source;h=node(s,h).next_sibling){std::int64_t node_id=-1;d=read_int64(s,member(s,h,"id"),node_id);if(!d)return source_error(d);if(node_id==id){if(matched.source)return failure("Ambiguous presentation node ID");matched=h;}}
@@ -821,7 +915,7 @@ NumericDocumentResult load_numeric_project(const QString& path,NumericProjectDoc
 NumericDocumentResult save_numeric_project(NumericProjectDocument& source,const QString& path) {
     const auto resolved=numeric_project_path(path.isEmpty()?source.active_path:path);
     std::uint32_t schema=0;auto r=check_project(source.source,schema);if(!r)return r;
-    if(schema!=2)return failure("Unsupported document version","schema_version");
+    if(schema!=4)return failure("Unsupported document version","schema_version");
     QByteArray existing;const bool exists=QFileInfo::exists(resolved);
     if(exists){QFile file(resolved);if(!file.open(QIODevice::ReadOnly))return failure(file.errorString(),resolved);if(file.size()>16777216)return failure("Destination source limit",resolved);existing=file.readAll();
         NumericProjectDocument destination;r=read_numeric_project(existing,destination);if(!r)return r;

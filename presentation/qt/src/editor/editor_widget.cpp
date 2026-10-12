@@ -477,7 +477,8 @@ class ProfiledGraphicsView final : public GraphicsView {
         if(event->button()==Qt::LeftButton && event->modifiers()==Qt::NoModifier && _pressed_node!=QtNodes::InvalidNodeId){
             auto* node=nodeScene()->nodeGraphicsObject(_pressed_node);const auto point=node->mapFromScene(mapToScene(event->position().toPoint()));
             auto& geometry=static_cast<EditorNodeGeometry&>(nodeScene()->nodeGeometry());const auto port=geometry.selectorButtonHit(_pressed_node,point);
-            if(port!=QtNodes::InvalidPortIndex){auto* model=geometry.model(_pressed_node);model->select_input(model->port_id(QtNodes::PortType::In,port));event->accept();return;}
+            if(port!=QtNodes::InvalidPortIndex){auto* model=geometry.model(_pressed_node);const auto channels=model->numeric_node()->outputs.size();
+                const auto input=model->port_id(QtNodes::PortType::In,port);model->select_input(channels>1?domain::PortId(input/channels):input);event->accept();return;}
         }
         stop_keyboard_pan();
         if(event->button()==Qt::LeftButton && event->modifiers().testFlag(Qt::ControlModifier) && _pressed_node!=QtNodes::InvalidNodeId){
@@ -719,6 +720,9 @@ static QJsonObject processing_document(const QJsonObject& document) {
     if(!owned_processing_document(document,graph))return {{"invalid",true}};
     std::sort(graph.nodes.begin(),graph.nodes.end(),[](const auto& a,const auto& b){return a.id<b.id;});
     std::sort(graph.edges.begin(),graph.edges.end(),[](const auto& a,const auto& b){return std::tie(a.from,a.output_port,a.to,a.input_port)<std::tie(b.from,b.output_port,b.to,b.input_port);});
+    // Qt enumerates connections without ordering. Configuration wires belong to
+    // the same processing identity as data wires, independently of enumeration.
+    std::sort(graph.configuration_bindings.begin(),graph.configuration_bindings.end(),[](const auto& a,const auto& b){return std::tie(a.from,a.output,a.to,a.input)<std::tie(b.from,b.output,b.to,b.input);});
     QByteArray bytes;if(!desktop::encode_numeric_graph(graph,bytes))return {{"invalid",true}};
     return QJsonDocument::fromJson(bytes).object();
 }
@@ -734,7 +738,7 @@ void SchemeEditorWidget::changeEvent(QEvent *event) {
 static QJsonObject editable_document(const QJsonObject &document, bool &unsupported) {
     auto visible=document; QJsonArray nodes,connections; QSet<int> ids;
     const auto version=document.value("version").toInt();
-    unsupported=!document.isEmpty() && (version!=3 || document.value("processing_version").toInt()!=2);
+    unsupported=!document.isEmpty() && (version!=5 || document.value("processing_version").toInt()!=4);
     for(const auto &value:document.value("nodes").toArray()) {
         const auto node=value.toObject();
         if(!numeric_editor::catalog().contains(node.value("internal-data").toObject().value("model-name").toString())) {
@@ -763,35 +767,6 @@ class ArrangeCommand final : public QUndoCommand {
     }
     void redo() override { set(_after); }
     void undo() override { set(_before); }
-};
-class TestSourceCommand final : public QUndoCommand {
-    DataFlowGraphModel &_graph;
-    QJsonObject _before, _after;
-    std::vector<QtNodes::ConnectionId> _connections;
-    void replace(const QJsonObject &node) {
-        const auto id = node.value("id").toInt();
-        if (_graph.nodeExists(id)) _graph.deleteNode(id);
-        _graph.loadNode(node);
-        for (const auto &connection : _connections)
-            if (_graph.connectionPossible(connection)) _graph.addConnection(connection);
-    }
-public:
-    TestSourceCommand(DataFlowGraphModel &graph, QJsonObject node, const QJsonArray &connections)
-        : _graph(graph), _before(node), _after(std::move(node)) {
-        setText("Use silent test source");
-        auto* previous=graph.delegateModel<AudioNodeModel>(QtNodes::NodeId(_before.value("id").toInteger()));
-        auto replacement=numeric_editor::default_node("TestSignal");replacement.id=domain::NodeId(_before.value("id").toInteger());
-        if(previous && previous->numeric_node())replacement.outputs=previous->numeric_node()->outputs;
-        QByteArray bytes;desktop::encode_numeric_node(replacement,bytes);
-        _after["internal-data"] = QJsonObject{{"model-name","TestSignal"},{"numeric_processing",QString::fromUtf8(bytes)}};
-        const auto id = _before.value("id").toInt();
-        for (const auto &value : connections) {
-            const auto connection = QtNodes::fromJson(value.toObject());
-            if (connection.outNodeId == id || connection.inNodeId == id) _connections.push_back(connection);
-        }
-    }
-    void redo() override { replace(_after); }
-    void undo() override { replace(_before); }
 };
 
 SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *parent)
@@ -842,7 +817,7 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
         auto *item=preset_menu->addAction(ui::text(text)); item->setObjectName(id); ui::bind(item,"text",text); return item;
     };
     auto *reset=action("Default","defaultPipeline");
-    auto *generatorLoopback=action("Generator and loopback","generatorLoopbackPreset");
+    auto *generatorLoopback=action("Generator and capture source","generatorLoopbackPreset");
     connect(generatorLoopback,&QAction::triggered,this,[this] {
         if (_application.graph_request_pending()) {
             set_status(ui::text("Wait for the pending graph command to finish before loading the active Data Flow."));
@@ -877,22 +852,19 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     bar->addWidget(apply_button);
     connect(dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get()),&NumericEditorGraphModel::edit_rejected,this,[this](const QString& error){set_status(ui::text("Not applied: ")+error);});
     connect(test_source,&QAction::triggered,this,[this] {
-        auto &graph = *_application.state().data_flow_graph;
-        const auto document = graph.save();
-        for (const auto &value : document.value("nodes").toArray()) {
-            const auto node = value.toObject();
-            if (node.value("internal-data").toObject().value("model-name") == "AudioSource") {
-                _scene->undoStack().push(new TestSourceCommand(graph,node,document.value("connections").toArray()));
-                return;
-            }
+        if (_application.graph_request_pending()) {
+            set_status(ui::text("Wait for the pending graph command to finish before loading the active Data Flow."));
+            return;
         }
-        const auto nodes=document.value("nodes").toArray();
-        if (std::any_of(nodes.begin(),nodes.end(),[](const QJsonValue &value) {
-            return value.toObject().value("internal-data").toObject().value("model-name")=="TestSignal";
-        })) return;
-        set_status(ui::text("No audio source in this draft"));
+        emit generator_loopback_graph_requested();
     });
     auto *execution=bar;
+    _processing_rate=new QLabel(this);_processing_rate->setObjectName("pipelineProcessingRate");
+    _processing_rate->setTextFormat(Qt::PlainText);
+    execution->addWidget(_processing_rate);
+    connect(&_application,&GuiPresenter::processing_state_changed,this,&SchemeEditorWidget::refresh_processing_telemetry);
+    connect(&ui::Language::instance(),&ui::Language::changed,this,&SchemeEditorWidget::refresh_processing_telemetry);
+    refresh_processing_telemetry();
     auto *zoom=new QDoubleSpinBox(this); zoom->setObjectName("pipelineZoom");
     zoom->setMaximumWidth(72); zoom->setFixedHeight(24);
     zoom->setDecimals(0); zoom->setRange(20,300); zoom->setSuffix(" %"); zoom->setSingleStep(10); zoom->setValue(100);
@@ -979,7 +951,8 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     _status->hide();
     bar->addWidget(_status);
     _capture_status=new QLabel(_toolbar);_capture_status->setObjectName("pipelineCaptureStatus");
-    _capture_status->setMaximumWidth(170);_capture_status->setWordWrap(true);
+    _capture_status->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Preferred);
+    _capture_status->setTextInteractionFlags(Qt::NoTextInteraction);
     _capture_status->setTextFormat(Qt::PlainText);
     bar->addWidget(_capture_status);
     connect(&application,&GuiPresenter::component_status_changed,this,[this](const QString& component,int state,const QString& error){
@@ -987,6 +960,7 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
         _capture_state=state;_capture_error=error;refresh_capture_status();
     });
     connect(&ui::Language::instance(),&ui::Language::changed,this,&SchemeEditorWidget::refresh_capture_status);
+    connect(&application,&GuiPresenter::active_graph_changed,this,[this]{refresh_capture_status();});
     const auto capture=application.client().snapshot().statuses.value("capture");
     _capture_state=int(capture.state);_capture_error=capture.error;refresh_capture_status();
 
@@ -1177,6 +1151,7 @@ SchemeEditorWidget::SchemeEditorWidget(GuiPresenter &application, QWidget *paren
     });
     connect(&application, &GuiPresenter::graph_apply_finished, this,
             [this](quint64 request, bool accepted, const QString &error) {
+                if (accepted) refresh_capture_status();
                 if (request != _apply_request)
                     return;
                 _apply_request = 0;
@@ -1224,6 +1199,46 @@ void SchemeEditorWidget::set_status(const QString &text) {
 void SchemeEditorWidget::sync_preferences() {
     _auto_apply=true;
     _apply_button->setVisible(false);
+}
+QWidget* SchemeEditorWidget::execution_settings_widget(QWidget* parent) {
+    auto* settings=new QWidget(parent);settings->setObjectName("pipelineExecutionSettings");
+    auto* rate=new QLineEdit(settings);rate->setObjectName("pipelineAnalysisRate");rate->setMaximumWidth(96);
+    ui::bind(rate,"toolTip","Analysis rate, Hz (integer or numerator/denominator)");
+    auto* layout=new QVBoxLayout(settings);layout->setContentsMargins(0,0,0,0);
+    layout->addWidget(ui::make<QLabel>("Analysis rate, Hz",settings));layout->addWidget(rate);
+    auto* numericRate=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());
+    auto refreshRate=[numericRate,rate]{if(!numericRate)return;const auto r=numericRate->numeric_graph().execution_interval;
+        const QSignalBlocker blocker(rate);rate->setText(r.numerator==1?QString::number(r.denominator):QString::number(r.denominator)+"/"+QString::number(r.numerator));};
+    refreshRate();connect(numericRate,&NumericEditorGraphModel::atomic_edit_finished,rate,refreshRate);
+    connect(this,&SchemeEditorWidget::execution_settings_changed,rate,refreshRate);
+    connect(rate,&QLineEdit::editingFinished,this,[this,numericRate,rate,refreshRate]{
+        const auto parts=rate->text().trimmed().split('/');bool ok=false,ok2=true;
+        const auto numerator=parts.value(0).toULongLong(&ok);const auto denominator=parts.size()==2?parts[1].toULongLong(&ok2):1;
+        if(!numericRate || parts.size()>2 || !ok || !ok2 || !numerator || !denominator || denominator>std::uint64_t(INT64_MAX) ||
+            !numericRate->edit_execution_interval({std::int64_t(denominator),numerator}))set_status(ui::text("Invalid execution interval"));
+        refreshRate();
+    });
+    return settings;
+}
+void SchemeEditorWidget::refresh_processing_telemetry() {
+    const auto snapshot=_application.client().snapshot();
+    const auto telemetry=snapshot.diagnostics;
+    const double hz=telemetry.value("processing_hz").toDouble();
+    const bool measured=telemetry.value("processing_measured").toBool() && std::isfinite(hz) && hz>=0;
+    const auto text=ui::text("Processing: %1 Hz").arg(measured?QString::number(hz,'f',1):QStringLiteral("—"));
+    if(_processing_rate && _processing_rate->text()!=text)_processing_rate->setText(text);
+    const QMap<QString,const char*> bases{{"window_outputs","Window outputs"},{"mixer_outputs","Mixer outputs"},{"transform_outputs","Transform outputs"},{"source_outputs","Source outputs"}};
+    const auto basis=bases.value(telemetry.value("processing_rate_basis").toString(),"Awaiting measurement");
+    if(_processing_rate)_processing_rate->setToolTip(ui::text("Measured processing output rate; independent of the analysis target and display FPS.")+"\n"+
+        ui::text("Node %1 · %2 · interval %3 s").arg(measured?telemetry.value("processing_rate_node").toVariant().toString():QStringLiteral("—"),ui::text(basis),QString::number(telemetry.value("measurement_seconds").toDouble(),'f',2)));
+    if(!isVisible())return;
+    QMap<int,QJsonObject> rows;
+    for(const auto& value:telemetry.value("node_stats").toArray()){const auto row=value.toObject();rows.insert(row.value("node").toInt(-1),row);}
+    const bool current=_last_processing_document==_active_processing_document && snapshot.statuses.value("analyzer").state==pipeline::State::Running;
+    for(auto id:_application.state().data_flow_graph->allNodeIds())if(auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id)) {
+        const auto row=rows.value(int(id));
+        model->set_processing_activity(current && measured && !row.isEmpty(),current && row.value("active").toBool(),row.value("calls_hz").toDouble());
+    }
 }
 void SchemeEditorWidget::set_navigation_speed(float speed) {
     static_cast<ProfiledGraphicsView *>(_view)->set_navigation_speed(speed);
@@ -1302,7 +1317,7 @@ void SchemeEditorWidget::sync_preview_subscription() {
         }
     _application.set_editor_numeric_endpoints(std::move(endpoints));
 }
-void SchemeEditorWidget::showEvent(QShowEvent* event) { QWidget::showEvent(event);sync_preview_subscription();schedule_initial_layout(); }
+void SchemeEditorWidget::showEvent(QShowEvent* event) { QWidget::showEvent(event);sync_preview_subscription();refresh_processing_telemetry();schedule_initial_layout(); }
 void SchemeEditorWidget::hideEvent(QHideEvent* event) { QWidget::hideEvent(event);clear_previews();sync_preview_subscription(); }
 bool SchemeEditorWidget::eventFilter(QObject* object,QEvent* event) {
     if(_view && object==_view->viewport() && (event->type()==QEvent::Resize || event->type()==QEvent::Show))schedule_initial_layout();
@@ -1353,21 +1368,38 @@ bool SchemeEditorWidget::restore_graph_adapters(const QJsonObject& node_adapters
         const auto result=desktop::decode_numeric_node_adapter(QJsonDocument(it.value().toObject()).toJson(QJsonDocument::Compact),adapter);if(!result){if(error)*error=result.error;return false;}
         checked[id]=std::move(adapter);
     }
-    const auto prior=_loading;_loading=true;for(auto it=checked.begin();it!=checked.end();++it)graph.delegateModel<AudioNodeModel>(it.key())->set_adapter(it.value());_loading=prior;_last_adapter_metadata=graph_adapter_metadata();return true;
+    QMap<QtNodes::NodeId,QJsonObject> previous;
+    for(auto it=checked.begin();it!=checked.end();++it)previous[it.key()]=graph.delegateModel<AudioNodeModel>(it.key())->adapter();
+    const auto prior=_loading;_loading=true;
+    for(auto it=checked.begin();it!=checked.end();++it)graph.delegateModel<AudioNodeModel>(it.key())->set_adapter(it.value());
+    if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(&graph);numeric && !numeric->synchronize_native_sources(error)) {
+        for(auto it=previous.begin();it!=previous.end();++it)graph.delegateModel<AudioNodeModel>(it.key())->set_adapter(it.value());
+        _loading=prior;return false;
+    }
+    _last_processing_document=processing_document(graph.save());
+    _loading=prior;_last_adapter_metadata=graph_adapter_metadata();sync_preview_subscription();return true;
 }
-bool SchemeEditorWidget::load_numeric_draft(const domain::NumericProcessingGraph& graph,QString* error) {
+bool SchemeEditorWidget::load_numeric_draft(const domain::NumericProcessingGraph& graph,QString* error,const QJsonObject& node_adapters) {
     auto* numeric=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());if(!numeric){if(error)*error=ui::text("Numeric editor unavailable");return false;}
+    domain::NumericProcessingGraph prepared;
+    if(!numeric->prepare_numeric_import(graph,node_adapters,prepared,error))return false;
     NumericEditorGraphModel candidate(numeric->dataModelRegistry());
-    if(!candidate.set_numeric_graph(graph,error))return false;
-    ++_document_generation;_initial_layout_pending=false;_live_apply_pending=false;
-    _loading=true;_apply_timer.stop();_save_timer.stop();_preview_times.clear();inspect_node(QtNodes::InvalidNodeId);
-    {QSignalBlocker graph_blocker(numeric),scene_blocker(_scene);numeric->set_numeric_graph(graph);_scene->onModelReset();_scene->undoStack().clear();}
+    if(!candidate.set_numeric_graph(prepared,error,node_adapters))return false;
+    // Complete the model transaction before altering inspector, pending work or
+    // Undo. A native discovery failure must leave the entire editor untouched.
+    const auto prior_loading=_loading;_loading=true;
+    {QSignalBlocker graph_blocker(numeric),scene_blocker(_scene);
+        if(!numeric->set_numeric_graph(prepared,error,node_adapters)){_loading=prior_loading;return false;}
+        ++_document_generation;_initial_layout_pending=false;_live_apply_pending=false;
+        _apply_timer.stop();_save_timer.stop();_preview_times.clear();inspect_node(QtNodes::InvalidNodeId);
+        _scene->onModelReset();_scene->undoStack().clear();}
     _document_template=numeric->save();_unrendered_connections={};_unsupported_document=false;
     _view->setInteractive(true);if(auto* library=findChild<QTreeWidget*>("pipelineNodeLibrary"))library->setEnabled(true);
     for(auto id:numeric->allNodeIds())wire_source_model(id);
     _last_processing_document=processing_document(numeric->save());
     _last_adapter_metadata=graph_adapter_metadata();
     _loading=false;_application.state().editor_draft_modified=false;set_status({});
+    emit execution_settings_changed();
     sync_preview_subscription();
     return true;
 }
@@ -1396,13 +1428,25 @@ void SchemeEditorWidget::inspect_node(QtNodes::NodeId id) {
         title->setMinimumWidth(0);
         _inspector_layout->addWidget(title);
         connect(model,&AudioNodeModel::presentation_changed,title,[model,title]{title->setText(model->caption());});
+        auto* inputs=new QLabel(this);inputs->setObjectName("pipelineInputSummary");inputs->setTextFormat(Qt::PlainText);inputs->setWordWrap(true);
+        auto refreshInputs=[model,inputs]{QStringList descriptions;
+            if(const auto* node=model->numeric_node())for(const auto& port:node->inputs)
+                descriptions.append(ui::text("Input port %1").arg(port.id)+" · "+numeric_editor::port_caption(port));
+            inputs->setText(descriptions.join('\n'));inputs->setVisible(!descriptions.isEmpty());};
+        refreshInputs();connect(&ui::Language::instance(),&ui::Language::changed,inputs,refreshInputs);
+        connect(model,&AudioNodeModel::parameter_structure_changed,inputs,refreshInputs);
+        _inspector_layout->addWidget(inputs);
+        _inspector_layout->addWidget(model->preview_widget(this));
+        _inspector_layout->addWidget(model->parameter_widget(this));
         if(numeric_editor::is_graph_view(model->name())) {
             auto* rename=ui::make<QPushButton>("Rename graph",this);
+            rename->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
             rename->setObjectName("pipelineRenameGraph");
             _inspector_layout->addWidget(rename);
             connect(rename,&QPushButton::clicked,this,[this,id]{emit graph_rename_requested(int(id));});
         }else{
             auto* rename=ui::make<QPushButton>("Rename block",this);rename->setObjectName("pipelineRenameNode");
+            rename->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
             _inspector_layout->addWidget(rename);
             connect(rename,&QPushButton::clicked,this,[this,id]{
                 auto* current=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id);if(!current)return;
@@ -1410,10 +1454,18 @@ void SchemeEditorWidget::inspect_node(QtNodes::NodeId id) {
                 if(accepted)current->edit_display_name(name);
             });
         }
-        _inspector_layout->addWidget(model->parameter_widget(this));
         auto* diagnostics=new QWidget(this);diagnostics->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);auto* diagnosticLayout=new QVBoxLayout(diagnostics);diagnosticLayout->setContentsMargins(0,0,0,0);
-        auto* toggle=new QToolButton(diagnostics);ui::bind(toggle,"text","Diagnostics / display");ui::bind(toggle,"toolTip","Diagnostics / display");toggle->setMinimumWidth(0);toggle->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);toggle->setArrowType(Qt::RightArrow);toggle->setCheckable(true);diagnosticLayout->addWidget(toggle);
-        auto* preview=model->preview_widget(diagnostics);preview->hide();diagnosticLayout->addWidget(preview);connect(toggle,&QToolButton::toggled,preview,[toggle,preview](bool open){toggle->setArrowType(open?Qt::DownArrow:Qt::RightArrow);preview->setVisible(open);});_inspector_layout->addWidget(diagnostics);
+        auto* heading=ui::make<QLabel>("Diagnostics / display",diagnostics);heading->setWordWrap(true);diagnosticLayout->addWidget(heading);
+        auto* timing=new QLabel(diagnostics);timing->setObjectName("pipelineNodeTiming");timing->setWordWrap(true);timing->setTextFormat(Qt::PlainText);diagnosticLayout->addWidget(timing);
+        auto refreshTiming=[this,id,timing]{const auto telemetry=_application.client().snapshot().diagnostics;QJsonObject row;
+            for(const auto& value:telemetry.value("node_stats").toArray())if(value.toObject().value("node").toInt(-1)==int(id)){row=value.toObject();break;}
+            timing->setVisible(!row.isEmpty());if(row.isEmpty())return;
+            const auto calls=row.value("calls").toString().toULongLong();const auto total=row.value("self_nanoseconds").toString().toULongLong();
+            timing->setText(ui::text("Calls: %1 · errors: %2").arg(QString::number(calls),row.value("errors").toString())+"\n"+
+                ui::text("Self time, average/max: %1 / %2 ms").arg(QString::number(calls?double(total)/double(calls)/1e6:0,'f',3),QString::number(row.value("max_self_nanoseconds").toString().toDouble()/1e6,'f',3))+"\n"+
+                ui::text("Deadline misses: %1").arg(row.value("deadline_misses").toString()));};
+        refreshTiming();connect(&_application,&GuiPresenter::processing_state_changed,timing,refreshTiming);
+        _inspector_layout->addWidget(diagnostics);
     } else {
         auto *placeholder=ui::make<QLabel>("Select a node to see parameters",_inspector->widget());
         placeholder->setObjectName("pipelineInspectorPlaceholder"); placeholder->setWordWrap(true);
@@ -1516,12 +1568,25 @@ bool SchemeEditorWidget::remove_preset(const QString &id) {
 bool SchemeEditorWidget::load_document(const QJsonObject &document, const QJsonObject &view, bool active, bool switch_device) {
     domain::NumericProcessingGraph incoming;QString error;
     if(!owned_processing_document(document,incoming,&error)){set_status(ui::text("Not applied: ")+error);return false;}
-    NumericEditorGraphModel candidate(_application.state().data_flow_graph->dataModelRegistry());
-    if(!candidate.set_numeric_graph(incoming,&error)){set_status(ui::text("Not applied: ")+error);return false;}
     auto visual=document;
-    const auto nodes=document.value("nodes").toArray();
+    const auto nodes=document.value("nodes").toArray();QJsonObject nodeAdapters;
     for(const auto value:nodes){const auto node=value.toObject();const auto adapter=node.contains("kind")?node.value("adapter"):node.value("internal-data").toObject().value("adapter");QJsonObject checked;
         if(!adapter.isUndefined() && (!adapter.isObject() || !desktop::decode_numeric_node_adapter(QJsonDocument(adapter.toObject()).toJson(QJsonDocument::Compact),checked))){set_status(ui::text("Invalid network source settings"));return false;}
+        if(!adapter.isUndefined())nodeAdapters[QString::number(node.value("id").toInteger())]=checked;
+    }
+    auto* numeric=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());
+    domain::NumericProcessingGraph prepared;
+    if(!numeric || !numeric->prepare_numeric_import(incoming,nodeAdapters,prepared,&error)){set_status(ui::text("Not applied: ")+error);return false;}
+    NumericEditorGraphModel candidate(numeric->dataModelRegistry());
+    if(!candidate.set_numeric_graph(prepared,&error,nodeAdapters)){set_status(ui::text("Not applied: ")+error);return false;}
+    // Preserve visual/unknown fields while replacing only the prepared typed
+    // snapshots. Saved adapter bindings and native geometry form one import.
+    if(!nodes.isEmpty() && !nodes.first().toObject().contains("kind")) {
+        auto preparedNodes=nodes;
+        for(int i=0;i<preparedNodes.size();++i){auto node=preparedNodes[i].toObject();auto data=node.value("internal-data").toObject();
+            const auto typed=candidate.saveNode(QtNodes::NodeId(node.value("id").toInteger())).value("internal-data").toObject();
+            data["numeric_processing"]=typed.value("numeric_processing");node["internal-data"]=data;preparedNodes[i]=node;}
+        visual["nodes"]=preparedNodes;
     }
     if(!nodes.isEmpty() && nodes.first().toObject().contains("kind")){
         visual=candidate.save();auto visualNodes=visual.value("nodes").toArray();
@@ -1546,11 +1611,9 @@ bool SchemeEditorWidget::load_document(const QJsonObject &document, const QJsonO
         const QSignalBlocker graph_blocker(&graph),scene_blocker(_scene);
         const auto ids=graph.allNodeIds(); for (auto id : ids) graph.deleteNode(id);
         auto visible=editable_document(_document_template,_unsupported_document);
-        visible["connections"]=QJsonArray{}; graph.load(visible);
-        for(const auto &value:_document_template.value("connections").toArray()) {
-            const auto connection=QtNodes::fromJson(value.toObject());
-            if(graph.connectionPossible(connection)) graph.addConnection(connection);
-        }
+        // NumericEditorGraphModel restores the preflighted graph in strict
+        // import mode; interactive adaptation is only for newly drawn wires.
+        graph.load(visible);
         retain_unrendered_connections();
         _scene->onModelReset(); _scene->undoStack().clear();
     }
@@ -1585,6 +1648,7 @@ bool SchemeEditorWidget::load_document(const QJsonObject &document, const QJsonO
     sync_preview_subscription();
     if(_unsupported_document) set_status(ui::text("Draft contains unsupported nodes. Original nodes and connections are preserved; automatic apply is disabled."));
     schedule_initial_layout();
+    emit execution_settings_changed();
     return true;
 }
 bool SchemeEditorWidget::load_preset(const QString &id) {
@@ -1611,25 +1675,35 @@ bool SchemeEditorWidget::load_preset(const QString &id) {
     return false;
 }
 void SchemeEditorWidget::refresh_capture_status() {
+    core::perf::Scope profile(core::perf::Stage::CaptureStatus);
     if(!_capture_status)return;
     const char* label=nullptr;
     switch(pipeline::State(_capture_state)) {
     case pipeline::State::Starting:label="Capture starting";break;
-    case pipeline::State::Running:label="Capture running";break;
+    case pipeline::State::Running:label="Audio capture: receiving";break;
     case pipeline::State::Recovering:label="Capture recovering";break;
     case pipeline::State::Failed:label="Capture failed";break;
-    case pipeline::State::Stopped:break;
+    case pipeline::State::Stopped:{
+        label="Audio capture: inactive";
+        const auto& active=_application.applied_numeric_graph();
+        if(active){
+            const bool usesCapture=std::any_of(active->nodes.begin(),active->nodes.end(),[&](const auto& n){
+                return n.kind=="AudioSource" && std::any_of(active->edges.begin(),active->edges.end(),[&](const auto& edge){return edge.from==n.id;});});
+            if(!usesCapture)label="Audio input: not used by this graph";
+        }
+        break;
+    }
     }
     const auto text=label?ui::text(label):QString{};
     _capture_status->setText(text);
-    _capture_status->setToolTip(text.isEmpty()?QString{}:text+(_capture_error.isEmpty()?QString{}:QStringLiteral("\n")+_capture_error));
+    _capture_status->setToolTip(ui::text("Audio input status. Processing continues independently; this indicator is not a start/stop control.")+(_capture_error.isEmpty()?QString{}:QStringLiteral("\n")+_capture_error));
     _capture_status->setVisible(!text.isEmpty());
 }
 void SchemeEditorWidget::apply() {
     _apply_timer.stop();
     if(_application.graph_request_pending()){_apply_timer.start();return;}
     domain::NumericProcessingGraph graph;QString error;
-    if(!numeric_draft(graph,&error)){_apply_request=_application.apply_pipeline_graph({});return;}
+    if(!numeric_draft(graph,&error)){set_status(ui::text("Not applied: ")+error);return;}
     _application.state().editor_draft_modified=true;
     emit numeric_draft_changed();
     set_status({});

@@ -6,7 +6,14 @@
 #include <functional>
 inline QVariantList quickPlotTicks(double extent,const QFont& font,int precision,const std::function<double(double)>& coordinate,bool horizontal,int maximum=32,const std::function<double(double)>& placement={}) {
     const QFontMetrics metrics(font);
-    int divisions=std::clamp(int(std::max(1.,extent)/(horizontal?60.:metrics.height()+10.)),1,std::max(1,maximum));
+    // Keep the sparse major-grid rhythm of the Widgets charts. A font-sized
+    // budget adapts to small/large viewports without filling every available
+    // line with fractional labels. Powers of two also keep zero/half divisions
+    // legible for the usual signed amplitude range.
+    const double spacing=horizontal?std::max(80,metrics.horizontalAdvance(QStringLiteral("00000000"))+24):metrics.height()*7+12;
+    const int capacity=std::clamp(int(std::max(1.,extent)/spacing),1,std::max(1,maximum));
+    int divisions=1;
+    while(divisions<=capacity/2)divisions*=2;
     QStringList labels;
     const QLocale locale(ui::Language::instance().code()=="ru"?"ru_RU":"en_US");
     const auto position=[&](int i){const double f=double(i)/divisions;return placement?placement(f):f;};

@@ -23,6 +23,10 @@ struct FrameStamp {
     std::uint64_t sequence=0,generation=0,epoch=0,graph_revision=0,source_sequence=0,producer_epoch=0;
     std::int64_t timestamp_ticks=0; std::string_view stream_id;
     bool available=true,discontinuity=false;
+    std::int64_t sample_begin=0;
+    std::uint64_t sample_count=0,latency_samples=0;
+    bool has_sample_interval=false;
+    Ratio latency_seconds{0,1}; // Canonical exact content delay; samples is diagnostic.
 };
 struct DataFrameView { FrameStamp stamp; std::variant<NumericView,StructuredView> payload; };
 struct ElementIndex { std::size_t plane=0,row=0,column=0; };

@@ -15,9 +15,9 @@ struct Profile {
     std::uint32_t sample_rate = 8000, block_samples = 256, fft_size = 2048, mel_bands = 8;
     std::uint32_t uart_baud = 2000000, tcp_bytes_per_second = 200000;
     std::uint32_t utilization_percent = 80;
-    signal_contracts::Ratio execution_interval{1,60};
+    signal_contracts::Ratio execution_interval{1,120};
     bool spectral = false; // raw PCM first; history is always OFF in this profile.
-    std::uint32_t channels = 2;
+    std::uint32_t channels = 1;
     // Explicit reservation ceilings, not chip measurements. Existing kernel
     // reference stack reservation requires a host-selected task stack budget.
     std::size_t task_stack_bytes = 32768;

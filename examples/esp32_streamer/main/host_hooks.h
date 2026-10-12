@@ -1,6 +1,7 @@
 #pragma once
 #include <signal_contracts/data_frame.h>
 #include <application/processing_control.h>
+#include <dataflow_runtime/runtime.h>
 // Firmware extension points; transport/DSP task access as documented below.
 extern "C" {
 // app_main control plane: initialize WiFi/I2S/Bluetooth outside this SDK.
@@ -23,6 +24,10 @@ signal_contracts::Status streamer_host_read_pcm(signal_contracts::DataFrameView 
 // Transport task telemetry hook, at most once per second. Measured cumulative
 // processing elapsed microseconds and maximum invocation duration; no inferred CPU %.
 void streamer_host_report_processing(std::uint64_t frames,std::uint64_t elapsed_us,std::uint64_t maximum_us,std::uint64_t dropped_output_frames);
+// Failed invocations are counted separately, never presented as processed frames.
+void streamer_host_report_processing_errors(std::uint64_t errors,signal_contracts::Status last_error);
+// Bounded borrowed snapshot, transport task only. Copy if retaining after callback.
+void streamer_host_report_node_stats(const dataflow_runtime::NodeStats* nodes,std::size_t count);
 // Optional host-owned persistence override. Stock entrypoint otherwise opens
 // NVS without erasing, restores an admitted last-known-good graph and applies it
 // through the sole application service. Only explicit Persist writes flash.

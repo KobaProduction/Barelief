@@ -73,6 +73,7 @@ SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent) : QWidget(par
     };
     auto *processing = new QGroupBox(this);
     auto *processing_layout = new QVBoxLayout(processing);
+    _processing_layout = processing_layout;
     auto* running=ui::make<QLabel>("Data Flow runs continuously; valid changes apply automatically.",processing);
     running->setWordWrap(true);processing_layout->addWidget(running);
     add_section(processing, title_for(Processing));
@@ -94,6 +95,10 @@ SettingsWidget::SettingsWidget(GuiState &context, QWidget *parent) : QWidget(par
     _main_layout->addStretch();
     _load_current_config();
     _connect_signals();
+}
+
+void SettingsWidget::set_execution_settings(QWidget *settings) {
+    if (settings && _processing_layout) _processing_layout->addWidget(settings);
 }
 
 void SettingsWidget::_setup_ui() {
@@ -873,7 +878,7 @@ QWidget *SettingsWidget::_setup_graphs() {
     fpsValue->setSuffix(" FPS");
     auto *screenRate = new QLabel(cadence);
     screenRate->setObjectName("guiScreenRefreshRate");
-    ui::bind(cadence, "toolTip", "Display refresh rate is independent of the 60 FPS audio processing rate.");
+    ui::bind(cadence, "toolTip", "Display refresh rate is independent of the analysis rate.");
     cadenceForm->addRow(fpsMode, fpsValue);
     cadenceForm->addRow(screenRate);
     if (auto *showFPS = findChild<QCheckBox *>("showFPS")) {

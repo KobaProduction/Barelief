@@ -11,7 +11,7 @@
 #include <QVariantList>
 #include <QPainter>
 
-// A logical presentation display list. QML Canvas owns the actual overlay;
+// A logical presentation display list. SurfaceOverlayItem paints it natively;
 // the render adapter only projects anchors and computes collision-free layout.
 class SurfaceOverlayCommands {
 public:

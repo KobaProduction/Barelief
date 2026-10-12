@@ -1,4 +1,5 @@
 #include "numeric_gui_fixture.h"
+#include <core/performance.h>
 #include <core_app/numeric_view_adapter.h>
 #include <core_app/graph_panel.h>
 #include <visualization/charts/line.h>
@@ -20,6 +21,15 @@ int main(){
         const auto deliver=[&](std::uint64_t sequence,float value){emit app.presenter().numeric_frame_ready(floats(ctx,{snapshot.graph_revision,snapshot.epoch},sequence,value));};
         deliver(1,.25f);emit app.presenter().numeric_frame_ready(floats(other,{snapshot.graph_revision,snapshot.epoch},1,3.f));
         check(wait([&]{return chart(internal)->peak_value()==.25f && chart(external)->peak_value()==.25f && chart(mel)->peak_value()==3.f;}),"endpoint fanout and independent nodes");
+        // Delivery to one endpoint must not reproject every visible graph.
+        check(mel->property("renderExposed").toBool(),"isolation oracle requires exposed Mel");
+        QElapsedTimer settled;settled.start();while(settled.elapsed()<80){QCoreApplication::processEvents();QThread::msleep(1);}
+        auto& dataCounter=core::perf::counters[std::size_t(core::perf::Stage::ChartData)];
+        const auto priorUpdates=dataCounter.count.load();core::perf::enabled=true;
+        emit app.presenter().numeric_frame_ready(floats(other,{snapshot.graph_revision,snapshot.epoch},2,3.5f));
+        const bool changedEndpoint=wait([&]{return chart(mel)->peak_value()==3.5f;});core::perf::enabled=false;
+        check(changedEndpoint,"isolated endpoint was not projected");
+        check(dataCounter.count.load()-priorUpdates==1,"unrelated endpoint triggered chart reprojection");
         auto* savedRenderer=internal->widget();internal->toggleView(false);QCoreApplication::processEvents();deliver(2,.5f);
         check(wait([&]{return chart(external)->peak_value()==.5f;}),"external delivery while internal hidden");
         check(chart(internal)->peak_value()==.25f,"hidden renderer performed projection");internal->toggleView(true);internal->raise();
@@ -30,9 +40,15 @@ int main(){
         check(wait([&]{return chart(internal)->peak_value()==.75f && chart(external)->peak_value()==.75f;}),"compatible Apply fanout");
         pipeline::DeliveredNumericFrame marker;marker.context=ctx;marker.delivery={snapshot.graph_revision-1,snapshot.epoch};marker.status=signal_contracts::Status::unavailable;
         emit app.presenter().numeric_frame_ready(marker);QCoreApplication::processEvents();check(chart(external)->peak_value()==.75f,"stale marker cleared current view");
+        // A live display must not replay a capture backlog at the GUI cadence.
+        auto* pollingTimer=app.window->findChild<QTimer*>("numericRenderTimer");
+        check(pollingTimer,"numeric polling fallback missing");pollingTimer->stop();
+        for(std::uint64_t i=4;i<=100;++i)deliver(i,float(i)/100);
+        check(wait([&]{return chart(external)->peak_value()==1.f;},150),"vector display replayed stale FIFO instead of latest preview");
         marker.delivery.graph_revision=snapshot.graph_revision;emit app.presenter().numeric_frame_ready(marker);
         check(wait([&]{return chart(internal)->value_count()==0 && chart(external)->value_count()==0;}),"unavailable clears all instances");
-        check(chart(mel)->peak_value()==3.f,"unavailable leaked to another endpoint");
+        pollingTimer->start();
+        check(chart(mel)->peak_value()==3.5f,"unavailable leaked to another endpoint");
         auto* historyPort=app.open(8,1,0);auto* countPort=app.open(12,1,0);
         auto* historyPanel=qobject_cast<GraphPanel*>(historyPort->widget());auto* countPanel=qobject_cast<GraphPanel*>(countPort->widget());
         check(historyPanel && countPanel,"all numeric ranks use universal GraphPanel");
@@ -75,6 +91,7 @@ int main(){
         const auto historyNode=std::find_if(changed.nodes.begin(),changed.nodes.end(),[](const auto& n){return n.id==8;});
         node->kind="SpectrogramView";node->inputs=historyNode->inputs;
         for(auto& edge:changed.edges)if(edge.to==10){edge.from=7;edge.output_port=0;}
+        for(auto& binding:changed.configuration_bindings)if(binding.to==10){const auto reference=std::find_if(changed.configuration_bindings.begin(),changed.configuration_bindings.end(),[&](const auto& value){return value.to==8 && value.input==binding.input;});if(reference!=changed.configuration_bindings.end()){binding.from=reference->from;binding.output=reference->output;}}
         check(app.editor->load_numeric_draft(changed),"live typed contract draft");app.apply();
         auto* internalPanel=qobject_cast<GraphPanel*>(internal->widget());auto* externalPanel=qobject_cast<GraphPanel*>(external->widget());
         check(internalPanel && externalPanel,"rank change must retain universal renderer choices");
@@ -97,6 +114,7 @@ int main(){
         check(wait([&]{return chart(internal)->updatesEnabled() && timers(internal).front()->isActive();}),"reopened chart timer did not resume");
         changed.nodes.erase(std::remove_if(changed.nodes.begin(),changed.nodes.end(),[](const auto& n){return n.id==10;}),changed.nodes.end());
         changed.edges.erase(std::remove_if(changed.edges.begin(),changed.edges.end(),[](const auto& e){return e.to==10 || e.from==10;}),changed.edges.end());
+        changed.configuration_bindings.erase(std::remove_if(changed.configuration_bindings.begin(),changed.configuration_bindings.end(),[](const auto& binding){return binding.to==10 || binding.from==10;}),changed.configuration_bindings.end());
         check(app.editor->load_numeric_draft(changed),"delete draft");app.apply();
         check(internal->property("numericEndpoint").toMap().isEmpty() && external->property("numericEndpoint").toMap().isEmpty(),"deleted endpoint remains bound");
         check(chart(external)->value_count()==0,"secondary deleted view retained stale values");
@@ -108,6 +126,16 @@ int main(){
         check(started,"silent actual Run delivery");
         for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))dock->toggleView(false);
         const auto hiddenFrames=liveFrames;check(wait([&]{return liveFrames>=hiddenFrames+3;}),"zero graph views stopped working processing/delivery");
+        // Editor demand is independent. With both it and all graphs hidden,
+        // presentation deliveries stop while the executor keeps its state.
+        app.dock("dataFlowDock")->hide();
+        wait([]{return false;},200);
+        const auto noDemandFrames=totalFrames;
+        wait([]{return false;},200);
+        check(totalFrames==noDemandFrames,"hidden graphs retained transport preview demand");
+        app.live_delivery->store(false,std::memory_order_release);
+        auto* returning=app.dock("rawSamplesDock");returning->toggleView(true);returning->raise();
+        check(wait([&]{return chart(returning)->value_count()>0;}),"returning graph missed cold snapshot without new capture ingress");
         QObject::disconnect(liveConnection);QObject::disconnect(rejectedConnection);
         std::puts("Canonical GUI endpoint fanout, hidden/reopen, compatible Apply, unavailable and live renderer lifecycle PASS");return 0;
     }catch(const std::exception& error){std::fprintf(stderr,"GUI views: %s\n",error.what());return 1;}

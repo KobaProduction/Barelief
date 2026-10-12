@@ -13,6 +13,7 @@
 #include <QDebug>
 #include <cstdio>
 #include <numeric>
+#include <map>
 #include <pipeline/serial_config.h>
 #include <aggregator/aggregator_client.h>
 int main(int argc,char** argv) {
@@ -23,6 +24,7 @@ int main(int argc,char** argv) {
     parser.addOption({"duration","Exit after milliseconds (0: continuous)","ms","0"});
     parser.addOption({"synthetic","Use eight silent changing tones instead of physical capture"});
     parser.addOption({"analysis-interval-ms","Analysis interval in milliseconds (1..60000)","ms"});
+    parser.addOption({"analysis-rate","Analysis results per second (positive integer or numerator/denominator)","Hz"});
     parser.addOption({"server","Enable the numeric CONTROL/DATA server"});
     parser.addOption({"listen","Explicit TCP listen address","address","127.0.0.1"});
     parser.addOption({"port","Numeric endpoint TCP port","port","8213"});
@@ -59,7 +61,22 @@ int main(int argc,char** argv) {
             if(!result){qCritical()<<result.error;return 2;}
         }
     } else if(parser.isSet("preset")){qCritical()<<"Preset requires a canonical project";return 2;}
-    if(parser.isSet("analysis-interval-ms")) {
+    if(parser.isSet("analysis-rate") && parser.isSet("analysis-interval-ms")) {
+        qCritical()<<"Select analysis-rate or analysis-interval-ms, not both";return 2;
+    }
+    if(parser.isSet("analysis-rate")) {
+        const auto parts=parser.value("analysis-rate").split('/');
+        bool numerator_ok=false,denominator_ok=parts.size()==1;
+        const auto numerator=parts.value(0).toLongLong(&numerator_ok);
+        const auto denominator=parts.size()==1?qlonglong{1}:parts.value(1).toLongLong(&denominator_ok);
+        if(parts.size()>2 || !numerator_ok || !denominator_ok || numerator<=0 || denominator<=0) {
+            qCritical()<<"Invalid analysis rate";return 2;
+        }
+        const auto divisor=std::gcd(numerator,denominator);
+        const signal_contracts::Ratio interval{denominator/divisor,std::uint64_t(numerator/divisor)};
+        if(!domain::valid_execution_interval(interval)){qCritical()<<"Analysis rate is outside supported interval limits";return 2;}
+        graph.execution_interval=interval;
+    } else if(parser.isSet("analysis-interval-ms")) {
         bool interval_ok=false;
         const auto interval=parser.value("analysis-interval-ms").toLongLong(&interval_ok);
         if(!interval_ok || interval<1 || interval>60000){qCritical()<<"Invalid analysis interval";return 2;}
@@ -82,6 +99,17 @@ int main(int argc,char** argv) {
         auto* local=dynamic_cast<pipeline::NumericEngine*>(engine.get());if(!local)return 2;
         server=std::make_unique<pipeline::NumericControlServer>(*local);
         if(!server->listen(QHostAddress(parser.value("listen")),quint16(port),parser.isSet("allow-mutations"))){qCritical()<<server->error_string();return 2;}
+    }
+    if(!remote && !parser.isSet("synthetic")) {
+        std::map<domain::NodeId,QString> capture_devices;
+        for(const auto& value:adapter_graph.value("nodes").toArray()) {
+            const auto node=value.toObject();
+            const auto adapter=node.contains("adapter")?node.value("adapter").toObject():node.value("internal-data").toObject().value("adapter").toObject();
+            const auto device=adapter.value("device_identity").toString();
+            if(!device.isEmpty())capture_devices.emplace(node.value("id").toInt(),device);
+        }
+        QString error;
+        if(!pipeline::resolve_native_capture_graph(graph,capture_devices,&error)){qCritical()<<error;return 3;}
     }
     QByteArray bytes;auto encoded=desktop::encode_numeric_graph(graph,bytes);
     if(!encoded){qCritical()<<encoded.error;return 2;}
@@ -130,9 +158,9 @@ int main(int argc,char** argv) {
                     const auto direction=p.direction==domain::PortDirection::Input?QStringLiteral("input"):QStringLiteral("output");
                     const auto identity=QString::fromLatin1(QJsonDocument(QJsonArray{QString::fromStdString(current.graph_id),node.id,direction,p.id}).toJson(QJsonDocument::Compact).toHex());
                     streams.append(QJsonObject{{"id",identity},{"graph_id",QString::fromStdString(current.graph_id)},{"node_id",node.id},
-                        {"direction",direction},{"port_index",p.id},{"payload_version",4}});
+                        {"direction",direction},{"port_index",p.id},{"payload_version",int(current.versions.data)}});
                 }
-                if(streams.size()<=128)registry->set_capabilities({{"control_version",2},{"data_version",4},{"stream_port",server?server->port():0},
+                if(streams.size()<=128)registry->set_capabilities({{"control_version",int(current.versions.control)},{"data_version",int(current.versions.data)},{"stream_port",server?server->port():0},
                     {"publisher_incarnation",QString::number(snapshot.epoch)},{"graph_revision",QString::number(snapshot.graph_revision)},
                     {"allow_mutations",parser.isSet("allow-mutations")},{"streams",streams}});
                 advertised_revision=snapshot.graph_revision;

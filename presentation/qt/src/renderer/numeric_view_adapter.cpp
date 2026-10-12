@@ -1,4 +1,5 @@
 #include <core_app/numeric_view_adapter.h>
+#include <visualization/render_preparation_policy.h>
 #include <cmath>
 #include <algorithm>
 namespace presentation {
@@ -30,7 +31,7 @@ Status NumericViewAdapter::bind(const pipeline::EndpointIdentity& endpoint,std::
 }
 void NumericViewAdapter::unbind(const pipeline::EndpointIdentity& endpoint,std::size_t plane){states_.erase(Key{endpoint,plane});}
 void NumericViewAdapter::clear() noexcept {
-    for(auto& [key,state]:states_){state.matrix_snapshot.clear();state.matrix_projected=false;state.latest={};state.history.clear();state.context.reset();state.status=Status::unavailable;state.history_mode=false;state.fence_seen=false;}
+    for(auto& [key,state]:states_){state.matrix_snapshot.clear();state.matrix_pool.clear();state.matrix_projected=false;state.latest={};state.history.clear();state.context.reset();state.status=Status::unavailable;state.history_mode=false;state.fence_seen=false;}
 }
 void NumericViewAdapter::clear_render_target(NumericRenderTarget target) {
     if(target.metrics)target.metrics->clear_values();
@@ -123,8 +124,9 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
                state.history.capacity()>1048576/state.history.columns())return failure(Status::buffer_too_small);
             if(target.spectrogram)target.spectrogram->set_history_dimensions(state.history.capacity(),state.history.columns());
             const auto axes=state.history.render_axes();SpectrogramAxisMetadata metadata;
-            metadata.time_title_key=axes.seconds?QStringLiteral("Time delay, seconds (X)"):QStringLiteral("Temporal frame (X)");
-            metadata.time_coordinates=axes.seconds;metadata.ages=axes.ages;
+            metadata.time_title_key=axes.seconds && target.axes.time?QStringLiteral("Time delay, seconds (X)"):QStringLiteral("Temporal frame (X)");
+            metadata.time_coordinates=axes.seconds && target.axes.time;metadata.ages=axes.ages;
+            if(!metadata.time_coordinates)for(size_t i=0;i<metadata.ages.size();++i)metadata.ages[i]=double(i);
             metadata.column_coordinates=true;metadata.columns=axes.columns;
             metadata.value_title_key=axes.value_axis==pipeline::HistoryValueAxis::Frames?QStringLiteral("Frames (Y)"):
                 axes.value_axis==pipeline::HistoryValueAxis::Amplitude?QStringLiteral("Amplitude (Y)"):QStringLiteral("Value (Y)");
@@ -139,8 +141,14 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
             metadata.column_index_title_key=historyContract.shape.axes[1]==Axis::Band?QStringLiteral("Frequency, Mel bands (Z)"):
                 historyContract.shape.axes[1]==Axis::Bin?QStringLiteral("Frequency bin (Z)"):
                 historyContract.shape.axes[1]==Axis::Sample?QStringLiteral("Sample (Z)"):QStringLiteral("Column index (Z)");
+            if(axes.column_axis==pipeline::HistoryColumnAxis::Hertz && !target.axes.frequency){
+                metadata.column_coordinates=false;metadata.column_title_key=metadata.column_index_title_key;
+                for(size_t i=0;i<metadata.columns.size();++i)metadata.columns[i]=double(i);
+            }
             if(!state.matrix_projected){
-                state.matrix_snapshot=NumericMatrixSnapshot::take(state.history.render_snapshot());
+                state.matrix_snapshot=RenderPreparationPolicy::snapshot_pool?
+                    state.matrix_pool.fill([&](auto& rows){state.history.render_snapshot_into(rows);}):
+                    NumericMatrixSnapshot::take(state.history.render_snapshot());
                 state.matrix_projected=true;
             }
             const auto& matrix=state.matrix_snapshot;
@@ -191,7 +199,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
             default:break;
             }
             const auto& axis=numeric.contract->coordinates[0];
-            if(axis.mode!=CoordinateMode::None && (axis.unit==NumericUnit::Hertz || axis.unit==NumericUnit::Seconds)) {
+            if(axis.mode!=CoordinateMode::None && ((axis.unit==NumericUnit::Hertz && target.axes.frequency) || (axis.unit==NumericUnit::Seconds && target.axes.time))) {
                 if(numeric.actual[0]>limits_.vectors.max_elements)return failure(Status::buffer_too_small);
                 coordinates.resize(numeric.actual[0]);
                 if(axis.mode==CoordinateMode::Regular) {
@@ -247,9 +255,12 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
         if(!rows || !columns){if(target.spectrogram)target.spectrogram->update_frame_history({});if(target.image)target.image->set_matrix({});}
         else {
             if(!state.matrix_projected) {
-                std::vector<std::vector<float>> matrix(rows,std::vector<float>(columns));
-                for(size_t row=0;row<rows;++row)std::copy_n(projection.begin()+row*columns,columns,matrix[row].begin());
-                state.matrix_snapshot=NumericMatrixSnapshot::take(std::move(matrix));
+                const auto fill=[&](auto& matrix){
+                    matrix.resize(rows);
+                    for(size_t row=0;row<rows;++row){matrix[row].resize(columns);std::copy_n(projection.begin()+row*columns,columns,matrix[row].begin());}
+                };
+                if(RenderPreparationPolicy::snapshot_pool)state.matrix_snapshot=state.matrix_pool.fill(fill);
+                else {NumericMatrixSnapshot::Matrix matrix;fill(matrix);state.matrix_snapshot=NumericMatrixSnapshot::take(std::move(matrix));}
                 state.matrix_inexact_elements=report.inexact_elements;state.matrix_projected=true;
             }
             const auto& matrix=state.matrix_snapshot;
@@ -259,7 +270,9 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
             const bool matrix_rank=numeric.contract->shape.rank==Rank::Matrix;
             const size_t column_axis=matrix_rank?1:0;
             if(numeric.contract->shape.rank!=Rank::Scalar){
-                if(coordinates(numeric,column_axis,columns,metadata.columns)!=Status::ok)return failure(Status::malformed);
+                const auto column_unit=numeric.contract->coordinates[column_axis].unit;
+                const bool column_allowed=(column_unit!=NumericUnit::Hertz || target.axes.frequency) && (column_unit!=NumericUnit::Seconds || target.axes.time);
+                if(column_allowed && coordinates(numeric,column_axis,columns,metadata.columns)!=Status::ok)return failure(Status::malformed);
                 metadata.column_coordinates=!metadata.columns.empty();
                 if(numeric.contract->coordinates[column_axis].unit==NumericUnit::Hertz && metadata.column_coordinates)
                     metadata.column_title_key="Frequency, Hz (Z)";
@@ -271,7 +284,9 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
                     numeric.contract->shape.axes[column_axis]==Axis::Sample?QStringLiteral("Sample (Z)"):QStringLiteral("Column index (Z)");
             }
             if(matrix_rank){
-                if(coordinates(numeric,0,rows,metadata.ages)!=Status::ok)return failure(Status::malformed);
+                const auto time_unit=numeric.contract->coordinates[0].unit;
+                const bool time_allowed=(time_unit!=NumericUnit::Seconds || target.axes.time) && (time_unit!=NumericUnit::Hertz || target.axes.frequency);
+                if(time_allowed && coordinates(numeric,0,rows,metadata.ages)!=Status::ok)return failure(Status::malformed);
                 metadata.time_coordinates=!metadata.ages.empty();
                 if(numeric.contract->coordinates[0].unit==NumericUnit::Seconds && metadata.time_coordinates)
                     metadata.time_title_key="Time, seconds (X)";
@@ -279,7 +294,7 @@ Status NumericViewAdapter::render(const pipeline::EndpointIdentity& endpoint,std
             // Surface geometry addresses rows by reverse index. Map labels back
             // to the supplied matrix without rearranging its values.
             if(target.spectrogram){
-                auto surface_metadata=metadata;surface_metadata.time_coordinates=true;
+                auto surface_metadata=metadata;
                 surface_metadata.ages.clear();
                 for(size_t row=0;row<rows;++row){
                     surface_metadata.ages.push_back(metadata.time_coordinates?metadata.ages[rows-1-row]:double(rows-1-row));

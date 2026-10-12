@@ -1,6 +1,7 @@
 #include <QQuickItem>
 #include "synthetic_engine_provider.h"
 #include "numeric_gui_fixture.h"
+#include "menu_row_font_fixture.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/main_window.h"
 #include "core_app/graph_panel.h"
@@ -57,7 +58,7 @@ static GuiState fixture() {
     state.file_configs.ui.pipeline_auto_apply = false;
     state.file_configs.ui.show_fps = false;
     state.file_configs.ui.editor_view = {{"version", 1}, {"scale", .75}, {"center_x", 800}, {"center_y", 600}};
-    const auto configured=numeric_test_graph();
+    const auto configured=numeric_default_graph();
     state.file_configs.scene_graph=gui_fixture::encoded(configured);
     state.file_configs.pipeline_graph=state.file_configs.scene_graph;
     state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
@@ -146,6 +147,11 @@ static void narrow_controls(GuiPresenter &presenter) {
 
 static void dataflow_footer(GuiPresenter &presenter) {
     MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
+    const auto menuFont = menu_row_fixture_font();
+    window.setFont(menuFont);
+    // The window was polished before the offscreen font was registered. Apply
+    // the owned row's font explicitly, as in the save-status persistence fixture.
+    set_menu_row_fixture_font(window.menuBar(), menuFont);
     // Finish initial engine snapshot/navigation delivery before the user closes
     // graph areas. Otherwise the bootstrap migration legitimately opens them.
     settle();
@@ -155,15 +161,36 @@ static void dataflow_footer(GuiPresenter &presenter) {
     window.resize(800, 600); window.show(); settle();
     for (const auto size : {QSize(800,600), QSize(1200,760), QSize(800,600)}) {
         window.resize(size); settle();
+        // Disk status shares the menu row; ADS starts directly below that row.
+        const int upperChromeBottom = window.menuBar()->geometry().bottom();
+        auto *saveStatus = window.findChild<QLabel *>("configurationSaveStatus");
+        auto *navigation = window.findChild<QWidget *>("navigationControls");
+        require(!window.findChild<QToolBar *>("configurationSaveToolbar"),
+                "Persistent save status adds a separate toolbar row");
+        require(saveStatus && saveStatus->isVisible() && !saveStatus->text().isEmpty() &&
+                saveStatus->parentWidget() == window.menuBar(), "Persistent save status is absent from menu row");
+        const auto statusBounds = rectInWindow(saveStatus);
+        if (!navigation || statusBounds.width() <= 0 || statusBounds.right() >= rectInWindow(navigation).left())
+            qWarning()<<"Menu footer layout"<<window.menuBar()->geometry()<<"status"<<statusBounds
+                      <<"navigation"<<(navigation?rectInWindow(navigation):QRect{})
+                      <<"corner"<<window.menuBar()->cornerWidget(Qt::TopRightCorner);
+        require(window.menuBar()->geometry().contains(statusBounds), "Persistent save status escapes menu row");
+        require(navigation && statusBounds.width() > 0 && statusBounds.right() < rectInWindow(navigation).left(),
+                "Persistent save status overlaps right navigation controls");
+        for (auto *action : window.menuBar()->actions()) {
+            if (!action->isVisible()) continue;
+            const auto bounds = window.menuBar()->actionGeometry(action).translated(window.menuBar()->pos());
+            require(statusBounds.left() > bounds.right(), "Persistent save status overlaps menu actions");
+        }
         require(rectInWindow(flow).bottom() < (window.statusBar()->isVisible() ? window.statusBar()->geometry().top() : window.height()), "Data Flow intersects footer");
         require(rectInWindow(flow).left() <= 1 && rectInWindow(flow).right() >= window.width()-2,
                 "Only Data Flow retained an empty dock splitter area");
-        if (rectInWindow(flow).top() > window.menuBar()->geometry().bottom()+2)
+        if (rectInWindow(flow).top() > upperChromeBottom+2)
         {
             qWarning() << "flow" << rectInWindow(flow) << "menu" << window.menuBar()->geometry() << "footer" << window.statusBar()->geometry();
             for (auto *dock : window.workspaceDocks()) qWarning() << dock->objectName() << dock->isHidden() << rectInWindow(dock);
         }
-        require(rectInWindow(flow).top() <= window.menuBar()->geometry().bottom()+2,
+        require(rectInWindow(flow).top() > upperChromeBottom && rectInWindow(flow).top() <= upperChromeBottom+2,
                 "Only Data Flow retained an empty upper dock area");
         for (auto *control : {window.findChild<QWidget *>("pipelineToggle"), window.findChild<QWidget *>("themeMenuButton")}) {
             require(control, "Footer control absent");

@@ -16,6 +16,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QTimer>
+#include "oscillator_bank_widget.h"
+#include "literal_edit_binding.h"
+#include <QHeaderView>
+#include <QDoubleSpinBox>
 #include <QSignalBlocker>
 #include <QVariant>
 #include <type_traits>
@@ -26,7 +30,7 @@ NodeParameterForm::NodeParameterForm(NodeParameterModel *model, bool inline_form
     setObjectName("numericNodeParameters");
     setProperty("scrollSafeControls", true);
     setProperty("inlineForm", inline_form);
-    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    setSizePolicy(inline_form ? QSizePolicy::Preferred : QSizePolicy::Ignored, QSizePolicy::Preferred);
     connect(model, &NodeParameterModel::structureChanged, this, [this] {
         if (_rebuild_pending)
             return;
@@ -56,32 +60,38 @@ void NodeParameterForm::rebuild() {
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(6);
     auto* bypass=new QCheckBox(this);
+    if(!_inline_form)bypass->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
     bypass->setObjectName("numericBypass");
     ui::bind(bypass,"text","Bypass");
     ui::bind(bypass,"toolTip","Skip processing. Compatible signals pass through; other outputs use typed silence.");
     bypass->setChecked(_model->bypassed());
-    root->addWidget(bypass);
+    root->addWidget(bypass,0,Qt::AlignRight);
     _bindings.push_back(connect(_model,&NodeParameterModel::valuesChanged,bypass,[this,bypass]{
         if(!_model)return;
         QSignalBlocker block(bypass);bypass->setChecked(_model->bypassed());
     }));
     connect(bypass,&QCheckBox::toggled,bypass,[this](bool checked){if(_model)_model->setBypassed(checked);});
-    QMenu *visible = nullptr;
+    ui::CollapsibleSection *placement = nullptr;
     if (!_inline_form) {
-        auto *button = new QToolButton(this);
-        ui::bind(button, "text", "Visible on block");
-        ui::bind(button, "toolTip", "Visible on block");
-        button->setPopupMode(QToolButton::InstantPopup);
-        visible = new QMenu(button);
-        button->setMenu(visible);
-        root->addWidget(button);
+        placement = new ui::CollapsibleSection("Fields on block", this);
+        placement->setObjectName("fieldsOnBlockSection");
+        placement->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        if (auto *toggle = placement->findChild<QToolButton *>())
+            toggle->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        placement->setExpanded(_placement_expanded);
+        connect(placement, &ui::CollapsibleSection::expandedChanged, this,
+                [this](bool expanded) { _placement_expanded = expanded; });
+
     }
     using M = NodeParameterModel;
     QMap<int, QVBoxLayout *> sections;
     auto binding = [this](const QMetaObject::Connection &c) { _bindings.push_back(c); };
+    if (!_inline_form && _model->field("oscillatorCount"))
+        root->addWidget(new OscillatorBankWidget(_model, this));
     for (const auto &descriptor : _model->fields()) {
         // Copy the descriptor: edits can synchronously replace the model's field list.
         const auto f = descriptor;
+        if(!_inline_form && f.key.startsWith("oscillator") && f.key!="oscillatorCount")continue;
         if (_inline_form && f.hide_inline)
             continue;
         QWidget *control = nullptr;
@@ -90,9 +100,12 @@ void NodeParameterForm::rebuild() {
             auto *box = new QWidget(this);
             auto *horizontal = new QHBoxLayout(box);
             horizontal->setContentsMargins(0, 0, 0, 0);
+            if (!_inline_form)
+                horizontal->setDirection(QBoxLayout::TopToBottom);
             auto *type = new QComboBox(box);
             type->addItems({"int64", "uint64", "float32", "float64"});
             type->setObjectName(f.key + "_type");
+            if(f.literal_type){type->setCurrentIndex(*f.literal_type);type->hide();}
             auto *edit = new QLineEdit(box);
             edit->setObjectName(f.key);
             box->setFocusProxy(edit);
@@ -100,42 +113,7 @@ void NodeParameterForm::rebuild() {
             horizontal->addWidget(edit);
             box->setObjectName(f.key + "_field");
             control = box;
-            refresh = [this, f, type, edit] {
-                if (!_model)
-                    return;
-                const auto *field = _model->field(f.key);
-                if (!field || !field->read)
-                    return;
-                const auto state = _model->editState(f.key);
-                QSignalBlocker blocker(type);
-                if (state.dirty) {
-                    type->setCurrentIndex(state.literal_type);
-                    if (edit->text() != state.input)
-                        edit->setText(state.input);
-                    edit->setModified(true);
-                    return;
-                }
-                if (edit->hasFocus() && edit->isModified())
-                    return;
-                const auto v = std::get<signal_contracts::NumericLiteral>(field->read());
-                type->setCurrentIndex(int(v.index()));
-                edit->setText(numeric_editor::literal_text(v));
-                edit->setModified(false);
-            };
-            connect(edit, &QLineEdit::textEdited, box, [this, f, type](const QString &input) {
-                if (_model)
-                    _model->setDraftInput(f.key, input, type->currentIndex());
-            });
-            connect(edit, &QLineEdit::editingFinished, box, [this, f, type, edit] {
-                if (_model && edit->isModified()) {
-                    if (_model->editLiteral(f.key, edit->text(), type->currentIndex()))
-                        edit->setModified(false);
-                }
-            });
-            connect(type, &QComboBox::currentIndexChanged, box, [this, f, edit](int index) {
-                if (_model && _model->editLiteral(f.key, edit->text(), index))
-                    edit->setModified(false);
-            });
+            refresh = numeric_editor::bind_literal_input(_model, f.key, type, edit);
         } else if (f.editor == M::Editor::Choice) {
             auto *combo = new QComboBox(this);
             control = combo;
@@ -152,7 +130,7 @@ void NodeParameterForm::rebuild() {
                 for (std::size_t i = 0; i < field->options.size(); ++i) {
                     const auto &o = field->options[i];
                     auto label = o.translate ? ui::text(o.label.toUtf8().constData()) : o.label;
-                    if (o.label == "Input %1")
+                    if (o.label == "Input %1" || o.label == "Stream %1" || o.label == "Output %1")
                         label = label.arg(unsigned(std::get<int>(o.value)) + 1);
                     if (o.label == "Unavailable device: %1")
                         label = label.arg(std::get<QString>(o.value));
@@ -267,16 +245,43 @@ void NodeParameterForm::rebuild() {
         if (control->objectName().isEmpty())
             control->setObjectName(f.key);
         control->setMinimumWidth(0);
-        control->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        // Keep native editors' minimum size hints in the embedded body's
+        // geometry. Ignored allowed selectors and literal type boxes to shrink
+        // below their usable width when another inline field was added.
+        auto controlPolicy = control->sizePolicy();
+        controlPolicy.setHorizontalPolicy(_inline_form ? QSizePolicy::Preferred : QSizePolicy::Ignored);
+        control->setSizePolicy(controlPolicy);
         auto *row = new ui::FieldRow(f.label, control, this);
+        if(f.key.startsWith("mixerWeight") || f.key.startsWith("mixerShare")){
+            const bool weight=f.key.startsWith("mixerWeight");const auto id=f.key.mid(weight?11:10).toUInt();
+            auto caption=[row,weight,id]{row->label()->setText(ui::text(weight?"Input %1 weight":"Input %1 share").arg(id+1));};caption();binding(connect(&ui::Language::instance(),&ui::Language::changed,row,caption));
+        }
+        if (!_inline_form) {
+            // Inspector width belongs to its splitter/viewport. Stack the label
+            // and editor so a narrow inspector does not inherit the combined
+            // horizontal minimum intended for embedded node controls.
+            auto *line = qobject_cast<QBoxLayout *>(row->layout()->itemAt(0)->layout());
+            line->setDirection(QBoxLayout::TopToBottom);
+            line->setAlignment(Qt::AlignTop);
+            row->layout()->setAlignment(Qt::AlignTop);
+            row->label()->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+            row->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        }
         row->setObjectName(f.key + "_row");
         row->setHelp(f.help.isEmpty() ? QString{} : ui::text(f.help.toUtf8().constData()));
         QAction *show = nullptr;
-        if (visible && f.pinnable && !f.primary) {
-            show = visible->addAction(ui::text(f.label.toUtf8().constData()));
+        if (placement && f.pinnable && !f.primary) {
+            show = new QAction(placement);
             show->setCheckable(true);
             show->setObjectName("showOnBlock_" + f.key);
             ui::bind(show, "text", f.label);
+            auto *check = new QCheckBox(placement);
+            check->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Fixed);
+            check->setObjectName("fieldOnBlock_" + f.key);
+            ui::bind(check, "text", f.label);
+            placement->contentLayout()->addWidget(check);
+            connect(check, &QCheckBox::toggled, show, &QAction::setChecked);
+            connect(show, &QAction::toggled, check, &QCheckBox::setChecked);
             connect(show, &QAction::toggled, row, [this, f](bool v) {
                 if (_model && !_model->setOnBlock(f.key, v))
                     emit _model->presentationChanged();
@@ -297,24 +302,34 @@ void NodeParameterForm::rebuild() {
             if (show) {
                 QSignalBlocker b(show);
                 show->setChecked(pinned);
+                // Action signals are blocked during model synchronization.
+                if (auto *check = findChild<QCheckBox *>("fieldOnBlock_" + f.key)) {
+                    QSignalBlocker checkboxBlocker(check);
+                    check->setChecked(pinned);
+                }
             }
-            if (_inline_form)
-                row->setVisible(pinned && !f.hide_inline);
+            if (_inline_form) {
+                const bool visible=pinned && !f.hide_inline;
+                if(!row->property("parameterVisibilityInitialized").toBool() || !row->isHidden()!=visible){row->setProperty("parameterVisibilityInitialized",true);row->setVisible(visible);row->updateGeometry();if(layout())layout()->invalidate();updateGeometry();}
+            }
         };
         if (_inline_form)
             root->addWidget(row);
         else {
             const int index = int(f.section);
             if (!sections.contains(index)) {
-                auto *section = new ui::CollapsibleSection(M::sectionTitle(f.section), this);
+                auto *section = new QWidget(this);
                 section->setObjectName(QString("parameterSection%1").arg(index));
-                section->setExpanded(_model->expanded(f.section));
+                section->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                auto *content = new QVBoxLayout(section);
+                content->setContentsMargins(0, 0, 0, 0);
+                content->setAlignment(Qt::AlignTop);
+                auto *title = ui::make<QLabel>(M::sectionTitle(f.section), section);
+                title->setWordWrap(true);
+                title->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+                content->addWidget(title);
                 root->addWidget(section);
-                sections[index] = section->contentLayout();
-                connect(section, &ui::CollapsibleSection::expandedChanged, section, [this, f](bool v) {
-                    if (_model)
-                        _model->setExpanded(f.section, v);
-                });
+                sections[index] = content;
             }
             sections[index]->addWidget(row);
         }
@@ -334,5 +349,11 @@ void NodeParameterForm::rebuild() {
         }));
         rowState();
     }
+    if(!_inline_form)root->addWidget(placement);
+    // A tall inspector has spare space below the fields. Keep section, label,
+    // help and validation geometry driven by content rather than distributing
+    // that space between controls.
+    if (!_inline_form)
+        root->addStretch(1);
     updateGeometry();
 }

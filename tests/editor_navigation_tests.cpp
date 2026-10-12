@@ -3,6 +3,7 @@
 #include <core_app/scheme_editor/editor_widget.h>
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/audio_node_model.h>
+#include <core_app/workspace/ui_command_registry.h>
 #include <visualization/ui_text.h>
 #include <QtNodes/internal/NodeGraphicsObject.hpp>
 #include <QApplication>
@@ -16,7 +17,13 @@
 #include <QLineF>
 #include <QKeyEvent>
 #include <QElapsedTimer>
+#include <QDialog>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QWidgetAction>
+#include <QGraphicsProxyWidget>
 #include <cmath>
+#include <type_traits>
 #include <QtTest/QTest>
 #include <QtTest/QSignalSpy>
 #include <cstdio>
@@ -35,11 +42,63 @@ int main(int argc,char** argv){
         const auto selectionSize=view->viewport()->size();const auto selectionCenter=center();for(int i=0;i<5;++i){scene->clearSelection();scene->nodeGraphicsObject(i%2+1)->setSelected(true);emit scene->nodeSelected(i%2+1);QCoreApplication::processEvents();require(inspector->isVisible() && view->viewport()->size()==selectionSize && near(selectionCenter),"Selection changes inspector layout or canvas center");}
         scene->clearSelection();QCoreApplication::processEvents();require(inspector->findChild<QLabel*>("pipelineInspectorPlaceholder"),"Deselection does not restore inspector placeholder");
         auto* handle=splitter->handle(2);auto clickHandle=[&]{const auto point=handle->rect().center();for(const auto type:{QEvent::MouseButtonPress,QEvent::MouseButtonRelease}){QMouseEvent event(type,point,handle->mapToGlobal(point),Qt::LeftButton,type==QEvent::MouseButtonPress?Qt::LeftButton:Qt::NoButton,Qt::NoModifier);QApplication::sendEvent(handle,&event);}QCoreApplication::processEvents();};const auto expandedCenter=center();clickHandle();require(splitter->sizes()[2]==0 && near(expandedCenter),"Inspector collapse loses camera");scene->nodeGraphicsObject(1)->setSelected(true);emit scene->nodeSelected(1);QCoreApplication::processEvents();require(splitter->sizes()[2]==0,"Selection reopens collapsed inspector");clickHandle();require(splitter->sizes()[2]>0 && near(expandedCenter),"Inspector does not restore width/camera");
-        graph->setNodeData(1,QtNodes::NodeRole::Position,QPointF(21000,25000));graph->setNodeData(2,QtNodes::NodeRole::Position,QPointF(-2000,600));const auto beforeArrange=editor.history().count();
+        presentation::UiCommandRegistry commands(&editor);commands.set_editor(&editor);
+        commands.register_command({"undoDataFlow","Undo",QKeySequence("Ctrl+Z"),presentation::UiCommandContext::SchemaEditor,[&]{editor.history().undo();},[&]{return editor.history().canUndo();}});
+        commands.register_command({"redoDataFlow","Redo",QKeySequence("Ctrl+Shift+Z"),presentation::UiCommandContext::SchemaEditor,[&]{editor.history().redo();},[&]{return editor.history().canRedo();}});
+        QObject::connect(&editor.history(),&QUndoStack::indexChanged,&commands,&presentation::UiCommandRegistry::refresh);
+        graph->setNodeData(1,QtNodes::NodeRole::Position,QPointF(21000,25000));graph->setNodeData(2,QtNodes::NodeRole::Position,QPointF(-2000,600));const auto beforeArrange=editor.history().count();const auto beforeArrangeDocument=editor.document();
         // Only this fixture's offscreen Qt widget receives focus/events. No OS
-        // input, cursor positioning, active-window API or desktop capture is used.
+        // input, cursor positioning or desktop capture is used. QApplication's
+        // active-window state below belongs exclusively to offscreen fixtures.
         view->setFocus(Qt::OtherFocusReason);QTest::qWait(10);require(view->hasFocus(),"Offscreen canvas Qt focus unavailable");QTest::keyClick(view,Qt::Key_A,Qt::AltModifier);QTest::qWait(10);require(editor.history().count()==beforeArrange+1,"Canvas Alt+A did not arrange once");
         require(scene->nodeGraphicsObject(1)->sceneBoundingRect().right()<scene->nodeGraphicsObject(2)->sceneBoundingRect().left(),"Arrange does not follow route direction");view->centerOn(90000,90000);QTest::keyClick(view,Qt::Key_F,Qt::AltModifier);require(QLineF(center(),QPointF(90000,90000)).length()>100,"Canvas Alt+F did not center");
+        const auto arrangedDocument=editor.document();const auto arrangedIndex=editor.history().index();
+        QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier);require(editor.document()==beforeArrangeDocument && editor.history().index()==arrangedIndex-1,"Canvas Ctrl+Z did not undo exactly once");
+        QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier|Qt::ShiftModifier);require(editor.document()==arrangedDocument && editor.history().index()==arrangedIndex,"Canvas Ctrl+Shift+Z did not redo exactly once");
+        // Keep the owned menu alive after dismissal: Qt hides a menu before it
+        // dispatches its shared QAction, so the registry must retain its origin.
+        {
+            QMenu menu(&editor);auto* undo=commands.action("undoDataFlow");auto* redo=commands.action("redoDataFlow");menu.addAction(undo);menu.addAction(redo);
+            bool hiddenOnTrigger=false;QSignalSpy undoSignals(undo,&QAction::triggered),redoSignals(redo,&QAction::triggered);
+            QObject::connect(undo,&QAction::triggered,&menu,[&]{hiddenOnTrigger=!menu.isVisible();});
+            view->setFocus(Qt::OtherFocusReason);menu.show();QApplication::setActiveWindow(&menu);menu.setFocus(Qt::PopupFocusReason);QCoreApplication::processEvents();commands.refresh();
+            require(undo->isEnabled() && commands.can_execute("undoDataFlow"),"Canvas-origin menu lost graph Undo context");
+            menu.setActiveAction(nullptr);QTest::keyClick(&menu,Qt::Key_Down);require(menu.activeAction()==undo,"Menu Down did not select shared Undo QAction");QTest::keyClick(&menu,Qt::Key_Return);
+            require(hiddenOnTrigger && undoSignals.count()==1 && editor.history().index()==arrangedIndex-1 && editor.document()==beforeArrangeDocument,"Dismissed menu failed to dispatch shared Undo exactly once");
+            QCoreApplication::processEvents();QApplication::setActiveWindow(&editor);view->setFocus(Qt::OtherFocusReason);commands.refresh();
+            require(redo->isEnabled(),"Closing owned menu did not restore canvas Redo availability");
+            menu.show();QApplication::setActiveWindow(&menu);menu.setFocus(Qt::PopupFocusReason);QCoreApplication::processEvents();menu.setActiveAction(nullptr);QTest::keyClick(&menu,Qt::Key_Down);if(menu.activeAction()!=redo)QTest::keyClick(&menu,Qt::Key_Down);require(menu.activeAction()==redo,"Menu Down navigation did not select shared Redo QAction");QTest::keyClick(&menu,Qt::Key_Return);
+            require(redoSignals.count()==1 && editor.history().index()==arrangedIndex && editor.document()==arrangedDocument,"Retained menu failed to dispatch shared Redo exactly once");
+            QCoreApplication::processEvents();QApplication::setActiveWindow(&editor);view->setFocus(Qt::OtherFocusReason);commands.refresh();
+        }
+        auto check_local_history=[&](auto* input){
+            input->show();QApplication::setActiveWindow(input->window());input->setFocus(Qt::OtherFocusReason);QCoreApplication::processEvents();commands.refresh();
+            QTest::keyClicks(input,"history");require(!commands.can_execute("undoDataFlow") && !commands.can_execute("redoDataFlow"),"Text focus leaves graph history enabled");
+            QTest::keyClick(input,Qt::Key_Z,Qt::ControlModifier);
+            if constexpr(std::is_same_v<std::remove_pointer_t<decltype(input)>,QLineEdit>) require(input->text().isEmpty(),"Line edit local Undo failed");
+            else require(input->toPlainText().isEmpty(),"Plain text local Undo failed");
+            QTest::keyClick(input,Qt::Key_Z,Qt::ControlModifier|Qt::ShiftModifier);
+            require(editor.history().index()==arrangedIndex && editor.document()==arrangedDocument,"Text history shortcut changes graph");
+        };
+        {QLineEdit input(&editor);check_local_history(&input);require(input.text()=="history","Line edit local Undo/Redo failed");}
+        {QPlainTextEdit input(&editor);check_local_history(&input);require(input.toPlainText()=="history","Plain text local Undo/Redo failed");}
+        view->setFocus(Qt::OtherFocusReason);
+        auto restore_canvas_history=[&]{QCoreApplication::processEvents();QApplication::setActiveWindow(&editor);view->setFocus(Qt::OtherFocusReason);commands.refresh();require(commands.action("undoDataFlow")->isEnabled(),"Popup/dialog dismissal left canvas Undo disabled");QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier);require(editor.document()==beforeArrangeDocument && commands.action("redoDataFlow")->isEnabled(),"Restored canvas Undo/Redo unavailable");QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier|Qt::ShiftModifier);require(editor.document()==arrangedDocument && editor.history().index()==arrangedIndex,"Restored canvas Redo failed");};
+        {QMenu popup(&editor);auto* entry=new QWidgetAction(&popup);auto* input=new QLineEdit;entry->setDefaultWidget(input);popup.addAction(entry);popup.show();check_local_history(input);require(input->text()=="history","Popup line edit local Undo/Redo failed");popup.hide();restore_canvas_history();}
+        {QDialog dialog(&editor);dialog.setWindowModality(Qt::WindowModal);QLineEdit input(&dialog);dialog.show();check_local_history(&input);require(input.text()=="history","Dialog line edit local Undo/Redo failed");dialog.hide();restore_canvas_history();}
+        QApplication::setActiveWindow(&editor);view->setFocus(Qt::OtherFocusReason);commands.refresh();
+        {
+            auto* node=graph->delegateModel<AudioNodeModel>(1);require(node && node->set_parameter_on_block("adapterStreamId",true),"Inline stream field could not be enabled");QCoreApplication::processEvents();
+            auto* input=node->embeddedWidget()->findChild<QLineEdit*>("adapterStreamId");require(input && input->isVisible(),"Actual node inline field missing");view->centerOn(scene->nodeGraphicsObject(1));view->setFocus(Qt::OtherFocusReason);input->setFocus(Qt::OtherFocusReason);QCoreApplication::processEvents();
+            auto* proxy=node->embeddedWidget()->graphicsProxyWidget();
+            require((QApplication::focusWidget()==view || view->isAncestorOf(QApplication::focusWidget())) && proxy && scene->focusItem() && (scene->focusItem()==proxy || proxy->isAncestorOf(scene->focusItem())) && node->embeddedWidget()->focusWidget()==input && input->hasFocus(),"Inline field did not use graphics-proxy focus path");
+            const auto inlineDocument=editor.document();const auto inlineIndex=editor.history().index();const auto initial=input->text();input->end(false);QTest::keyClicks(input,"local");commands.refresh();
+            require(!commands.can_execute("undoDataFlow") && !commands.action("undoDataFlow")->isEnabled(),"Inline node text leaves graph Undo enabled");
+            QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier);require(input->text()==initial && editor.document()==inlineDocument && editor.history().index()==inlineIndex,"Inline local Undo changed graph history");
+            QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier|Qt::ShiftModifier);require(input->text()==initial+"local" && editor.document()==inlineDocument && editor.history().index()==inlineIndex,"Inline local Redo changed graph history");
+            QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier);view->setFocus(Qt::OtherFocusReason);scene->clearFocus();QCoreApplication::processEvents();commands.refresh();require(commands.action("undoDataFlow")->isEnabled(),"Leaving inline field did not restore graph Undo");
+            QTest::keyClick(view,Qt::Key_Z,Qt::ControlModifier);require(editor.document()==arrangedDocument && editor.history().index()==arrangedIndex,"Canvas Undo failed to remove inline-field presentation edit");
+        }
         scene->clearSelection();scene->nodeGraphicsObject(1)->setSelected(true);emit scene->nodeSelected(1);QCoreApplication::processEvents();auto* text=inspector->findChild<QLineEdit*>("adapterStreamId");require(text,"Current inspector text input missing");const auto beforeTyping=editor.history().count();text->setFocus(Qt::OtherFocusReason);QTest::keyClick(text,Qt::Key_A,Qt::AltModifier);require(editor.history().count()==beforeTyping,"Arrange intercepts inspector input");
         view->setFocus(Qt::OtherFocusReason);view->centerOn(90000,90000);QElapsedTimer quiet;quiet.start();auto replies=applied.count();for(int i=0;i<300 && (quiet.elapsed()<500 || presenter.graph_request_pending());++i){QTest::qWait(10);if(applied.count()!=replies || presenter.graph_request_pending()){replies=applied.count();quiet.restart();}}require(!presenter.graph_request_pending() && quiet.elapsed()>=500,"Pending source edit before navigation");const auto graphBeforeNavigation=editor.document();const auto runtimeBeforeNavigation=presenter.client().snapshot();applied.clear();
         const QPoint cursor(view->viewport()->width()/3,view->viewport()->height()/3);const auto anchor=view->mapToScene(cursor);const auto beforeWheelScale=view->getScale();QWheelEvent wheel(cursor,view->viewport()->mapToGlobal(cursor),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);QApplication::sendEvent(view->viewport(),&wheel);std::fprintf(stderr,"Wheel before=%.5f after=%.5f anchorDelta=%.5f center=(%.3f,%.3f)\n",beforeWheelScale,view->getScale(),QLineF(anchor,view->mapToScene(cursor)).length(),center().x(),center().y());require(view->getScale()>beforeWheelScale && QLineF(anchor,view->mapToScene(cursor)).length()<4/view->getScale(),"Wheel zoom loses pointer anchor");
