@@ -1,59 +1,38 @@
-# Portable signal contracts
+# Контракты данных
 
-`signal_contracts` is C++20 and depends only on the standard library. FrameType
-values preserve the existing pipeline and BDSP identifiers. FrameView borrows
-sample spans and its metadata stream ID: runtime outputs are valid until the
-next tick, unless the producer explicitly offers a shorter lifetime. A shape
-does not establish PCM, Spectrum or Mel compatibility; PortContract includes
-the semantic type and dimensions. `compatible` requires exact known contracts.
+[Переносимое ядро](../../docs/architecture/portable-core.md) · [Runtime API](../../docs/reference/runtime-api.md)
 
-HistoryView describes contiguous physical `[frame][band]` ring storage and
-logical oldest-to-newest rows.
-`newest_override` is an optional borrowed span of exactly `bands` finite values;
-`row(frames-1)` uses it instead of the physical newest row, preserving older
-history and ring storage. It changes no semantic contract or wire format. Runtime
-may use a prepared zero row to gate the newest sample without a history copy.
-Retain and codecs consume logical rows; retained snapshots materialize the
-replacement and clear the override so its source may safely expire.
+C++20 target `signal_contracts` задаёт данные и владение памятью без Qt, JSON,
+устройств и транспорта. Installed target — `PortableDSP::signal_contracts`.
 
-Its physical capacity is distinct from the
-advertised metadata history capacity; a compact retained snapshot may contain
-only the active rows. `row` requires a validated descriptor and an in-range
-logical index. No physical time/frequency coordinates are invented.
+| Публичный заголовок | Назначение |
+| --- | --- |
+| [data_contract.h](include/signal_contracts/data_contract.h) | Primitive dtype, scalar/vector/matrix, structured contract, clock, координаты и представление памяти |
+| [data_frame.h](include/signal_contracts/data_frame.h) | Borrowed `DataFrameView`, `NumericView`, mutable views, владеющий `OwnedDataFrame` и `retain_frame` |
+| [buffer_pool.h](include/signal_contracts/buffer_pool.h) | Ограниченный caller-owned pool и reference-counted handles |
+| [numeric_frame_gather.h](include/signal_contracts/numeric_frame_gather.h) | Подготовленная проекция числового кадра или отдельной строки матрицы |
+| [numeric_policy.h](include/signal_contracts/numeric_policy.h) | Правила преобразования точности, округления и overflow |
+| [oscillator.h](include/signal_contracts/oscillator.h) | Параметры независимых осцилляторов |
 
-History time coordinates use logical oldest-to-newest row order. Gathering a
-Regular time axis returns `origin + logical_row * step`, including for wrapped
-storage, matching full-frame coordinates. A rolling presentation uses accepted
-row ordinals for relative ages so repeated logical indices after wrap do not
-freeze time. Explicit Seconds retains individual source-clock times. A None
-time axis remains frame indices for both compact rows and full snapshots; a
-single frame timestamp cannot reconstruct earlier row times.
+`semantic` и `history_element` — описательные metadata. Они не выбирают
+алгоритм, допустимость операции или канальность. `same_contract` сравнивает
+полную metadata identity; `same_physical_contract` игнорирует только эти два
+описательных тега. Часы, координаты, normalization и storage остаются частью
+физического контракта. Совместимость операции дополнительно проверяет domain.
 
-BufferPool uses caller-provided byte storage and initially unused BufferSlots;
-the pool and both arrays must outlive every BufferHandle. Handles share a block
-with atomic reference counts and prevent reuse until the last reference is
-released. Pool acquisition is bounded by the slot count. Acquire/release may
-run concurrently; publishing buffers and sharing the same handle object require
-caller synchronization. Prepare storage before processing. Float snapshots
-require float-aligned block starts. No allocation, exceptions or RTTI are needed.
+`NumericView::ring` явно отличает кольцевое хранение от обычной Matrix.
+Строки имеют логический порядок от старой к новой, физический порядок задаётся
+ring descriptor. `matrix_row` выбирается в запросе gather явно. Одна timestamp
+не восстанавливает времена прежних строк: используются объявленные координаты.
 
-`retain` copies all active samples and stream ID into one block, preserves
-metadata, linearizes logical history rows, and leaves its output unchanged on
-failure. After publication treat the buffer as immutable. RetainedFrame copies
-retain ownership; its view remains valid only while at least one owner exists.
-Pool exhaustion, unavailable markers, invalid contracts and ordinary typed
-zero data are explicit states. Pool exhaustion does not allocate fallback memory.
+Borrowed views действуют в пределах жизни предоставленной памяти; runtime
+callbacks ограничивают их жизнь возвратом callback. Для асинхронной доставки
+используется `retain_frame` в заранее подготовленные payload/metadata pools.
+Pool storage и slots живут дольше всех handles. Публикация буфера неизменяема;
+совместный доступ к одному handle object синхронизирует владелец. Исчерпание pool
+возвращает статус без heap fallback; отказ retain не изменяет destination.
 
-Numeric processing types are primitive dtype, scalar/vector/matrix shape, channel
-identity and explicit storage representation. `semantic` and `history_element`
-remain descriptive serialized metadata; they never select admission, conversion,
-processing or transport operations. `same_contract` still compares every field
-for exact metadata identity; `same_physical_contract` ignores only these two tags.
-Clock, coordinates and normalization remain explicit, truthful physical metadata.
-Unsigned normalized silence is selected by `UnsignedUnit`, not by a PCM label.
-
-Ring storage is explicit in `NumericView::ring`; an ordinary Matrix remains an
-ordinary Matrix even when descriptively labelled History. Gather selects one row
-only when its prepared request sets `matrix_row`; otherwise it copies the whole
-numeric value. DSP block kind chooses the algorithm and validates its supported
-primitive geometry. View block kinds accept any numeric dtype and rank.
+Базовые `FrameView`/`HistoryView` находятся в [frame.h](include/signal_contracts/frame.h).
+Числовой граф использует `DataFrameView` и primitive contracts; базовые структуры
+не задают второй набор правил допуска схемы. Сборка/подключение package описаны
+в [SDK guide](../../docs/reference/embedded-sdk.md).

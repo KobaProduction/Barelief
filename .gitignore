@@ -33,3 +33,6 @@ __pycache__/
 /build-refactor-delivery-configure.log
 /config.pre-numeric.json
 /output/*.exe
+
+# Temporary agent notes and evidence; durable work is tracked in GitHub issues.
+/.agent-workspace/

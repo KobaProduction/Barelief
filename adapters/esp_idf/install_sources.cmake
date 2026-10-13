@@ -32,4 +32,9 @@ install(DIRECTORY "${embedded_source_root}/libs/bdsp_protocol/vendor/nanopb/"
     PATTERN "generator" EXCLUDE)
 install(DIRECTORY "${embedded_source_root}/libs/dsp_kernels/vendor/esp_dsp/"
     DESTINATION "${embedded_destination}/libs/dsp_kernels/vendor/esp_dsp")
-install(FILES "${embedded_source_root}/docs/embedded-sdk.md" DESTINATION "${embedded_destination}/docs")
+# Keep the documentation topology: the SDK guide links to sibling reference
+# and architecture pages, and to the installed examples two levels above it.
+install(DIRECTORY "${embedded_source_root}/docs/"
+    DESTINATION "${embedded_destination}/docs"
+    COMPONENT Documentation
+    FILES_MATCHING PATTERN "*.md")
