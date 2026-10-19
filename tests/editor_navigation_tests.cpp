@@ -4,7 +4,7 @@
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/audio_node_model.h>
 #include <core_app/workspace/ui_command_registry.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QtNodes/internal/NodeGraphicsObject.hpp>
 #include <QApplication>
 #include <QAction>

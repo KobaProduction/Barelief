@@ -1,11 +1,11 @@
-#include "visualization/spectrograms/spectrogram_scene_geometry.h"
-#include "visualization/spectrograms/spectrogram_mesh_topology.h"
-#include "visualization/axis_tick_labels.h"
+#include "barelief/spectrograms/spectrogram_scene_geometry.h"
+#include "barelief/spectrograms/spectrogram_mesh_topology.h"
+#include "barelief/axis_tick_labels.h"
 #include <array>
 #include <limits>
 #include <utility>
-#include "visualization/surface_settings.h"
-#include "visualization/slice_overlay.h"
+#include "barelief/surface_settings.h"
+#include "barelief/slice_overlay.h"
 #include <QMatrix4x4>
 #include <cstdio>
 #include <cmath>

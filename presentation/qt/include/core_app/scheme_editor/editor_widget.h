@@ -1,5 +1,5 @@
-#ifndef QT_VISUALIZATION_EDITOR_WIDGET_H
-#define QT_VISUALIZATION_EDITOR_WIDGET_H
+#ifndef BARELIEF_EDITOR_WIDGET_H
+#define BARELIEF_EDITOR_WIDGET_H
 
 #include <QtNodes/DataFlowGraphicsScene>
 #include <QtNodes/GraphicsView>
@@ -236,4 +236,4 @@ protected:
     QtNodes::GraphicsView *_view = nullptr;
 };
 
-#endif // QT_VISUALIZATION_EDITOR_WIDGET_H
+#endif // BARELIEF_EDITOR_WIDGET_H

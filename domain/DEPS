@@ -1,6 +1,6 @@
 include_rules = [
     '-application', '-dataflow_runtime', '-bdsp_protocol', '-embedded_support',
-    '-control', '-desktop', '-pipeline', '-core', '-core_app', '-visualization',
+    '-control', '-desktop', '-pipeline', '-core', '-core_app', '-barelief',
     '-project_storage', '-aggregator', '-analyzer', '-Qt', '-adapters',
     '-presentation', '-apps', '-libs', '-dsp_kernels',
     '+dsp_kernels/window_math.h',

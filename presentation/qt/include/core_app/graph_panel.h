@@ -2,7 +2,7 @@
 #include <QWidget>
 #include <QJsonObject>
 #include <utility>
-#include <visualization/quick/numeric_render_ports.h>
+#include <barelief/quick/numeric_render_ports.h>
 class AbstractChartView;
 class NumericImageView;
 class NumericPieView;

@@ -3,8 +3,8 @@
 #include <core_app/main_window.h>
 #include <core_app/graph_panel.h>
 #include <core_app/gui_event_profile.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/quick2d/plot_model.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
+#include <barelief/quick2d/plot_model.h>
 #include <core/performance.h>
 #include <pipeline/numeric_engine.h>
 #include <QQuickItem>
@@ -243,8 +243,10 @@ class Trace final:public QObject {
     }
     static QList<QWidget*> graphSceneHosts(GraphPanel* panel){
         QList<QWidget*> hosts;
-        for(auto* host:panel->findChildren<QQuickWidget*>())if(host->objectName()!="plotTextureHost")hosts.append(host);
-        for(auto* host:panel->findChildren<QuickPlotWidget*>())hosts.append(host);
+        const auto textureHosts=panel->findChildren<QQuickWidget*>();
+        for(auto* host:textureHosts)if(host->objectName()!="plotTextureHost")hosts.append(host);
+        const auto plotHosts=panel->findChildren<QuickPlotWidget*>();
+        for(auto* host:plotHosts)hosts.append(host);
         return hosts;
     }
     static ui::quick::SceneReference findGraphScene(GraphPanel* panel){
@@ -278,15 +280,21 @@ class Trace final:public QObject {
         graphs_.push_back(std::move(graph));
     }
     void collectGraphs(){
-        for(auto* panel:window_->findChildren<GraphPanel*>())collectGraph(panel);
+        const auto panels=window_->findChildren<GraphPanel*>();
+        for(auto* panel:panels)collectGraph(panel);
+    }
+    void observeGraphItem(Graph& graph,QQuickItem* item){
+        graph.connections.push_back(connect(item,&QQuickItem::widthChanged,this,[this]{observe();}));
+        graph.connections.push_back(connect(item,&QQuickItem::heightChanged,this,[this]{observe();}));
+        graph.connections.push_back(connect(item,&QQuickItem::xChanged,this,[this]{observe();}));
+        graph.connections.push_back(connect(item,&QQuickItem::yChanged,this,[this]{observe();}));
     }
     void observeGraphGeometry(Graph& graph){
         if(!graph.quick)return;
         graph.rendererSize=graph.quick->size();graph.dpr=graph.quick->quickWindow()->effectiveDevicePixelRatio();
         if(auto* area=graphArea(graph)){
             graph.crop=area->mapRectToScene(area->boundingRect());
-            for(auto* item=area;item;item=item->parentItem())for(auto signal:{&QQuickItem::widthChanged,&QQuickItem::heightChanged,&QQuickItem::xChanged,&QQuickItem::yChanged})
-                graph.connections.push_back(connect(item,signal,this,[this]{observe();}));
+            for(auto* item=area;item;item=item->parentItem())observeGraphItem(graph,item);
         }
     }
     void beginGraph(Graph& graph){
@@ -483,7 +491,8 @@ class Trace final:public QObject {
     void mapForegroundMonitor(){
         const auto foreground=GetForegroundWindow();
         monitor_=foreground?MonitorFromWindow(foreground,MONITOR_DEFAULTTONEAREST):nullptr;
-        for(auto* screen:app_.screens()){
+        const auto screens=app_.screens();
+        for(auto* screen:screens){
             const auto* native=screen->nativeInterface<QNativeInterface::QWindowsScreen>();
             if(native&&native->handle()==monitor_){screen_=screen;mapped_=true;break;}
         }
@@ -559,9 +568,13 @@ class Trace final:public QObject {
         watch_.setInterval(100);watch_.setTimerType(Qt::PreciseTimer);
         connect(&watch_,&QTimer::timeout,this,[this]{observe();});
     }
+    void locateMainWindow(){
+        const auto widgets=app_.topLevelWidgets();
+        for(auto* widget:widgets)if(auto* main=qobject_cast<MainWindow*>(widget)){window_=main;break;}
+    }
     void setup(){
         milestone("setup_begin",mainElapsedMs());
-        for(auto* widget:app_.topLevelWidgets())if(auto* main=qobject_cast<MainWindow*>(widget)){window_=main;break;}
+        locateMainWindow();
         const bool passive=qEnvironmentVariableIntValue("CORE_APP_TRACE_PASSIVE")!=0;
         if(passive&&window_){screen_=window_->screen();mapped_=bool(screen_);}
         if(!window_||!mapped_){qCritical("Trace requires mapped foreground monitor and main window");finish();return;}

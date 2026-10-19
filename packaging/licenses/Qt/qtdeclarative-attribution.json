@@ -1,0 +1,1308 @@
+{
+  "name": "qtdeclarative-6.10.2",
+  "source": "Qt 6.10.2 distribution sbom/qtdeclarative-6.10.2.spdx.json",
+  "packages": [
+    {
+      "name": "GNU",
+      "versionInfo": "13.1.0",
+      "downloadLocation": "NOASSERTION",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "homepage": null
+    },
+    {
+      "name": "qtdeclarative",
+      "versionInfo": "09c70541+HEAD",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": "https://qt.io"
+    },
+    {
+      "name": "QmlToolingSettingsPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlTypeRegistrarPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlIntegration",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "Qml_Attribution_masm",
+      "versionInfo": "unknown",
+      "downloadLocation": "https://trac.webkit.org/wiki/JavaScriptCore",
+      "licenseConcluded": "BSD-2-Clause",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "Copyright (C) 2003-2018 Apple Inc. All rights reserved.\nCopyright (C) 2007 Justin Haygood (jhaygood@reaktix.com)\nCopyright (C) 2007-2009 Torch Mobile, Inc. All rights reserved. (http://www.torchmobile.com/)\nCopyright (C) 2009, 2010 University of Szeged\nCopyright (C) 2009-2011 STMicroelectronics. All rights reserved.\nCopyright (C) 2010 MIPS Technologies, Inc. All rights reserved.\nCopyright (C) 2010 Peter Varga (pvarga@inf.u-szeged.hu), University of Szeged\nCopyright (C) 2010 MIPS Technologies, Inc. All rights reserved.\nCopyright (C) 2010, 2011 Research In Motion Limited. All rights reserved.\nCopyright (C) 2011 Google Inc. All rights reserved.\nCopyright (C) 2013 Samsung Electronics. All rights reserved.\nCopyright (C) 2015 Cisco Systems, Inc. All rights reserved.\nCopyright (c) 2002-2009 Vivek Thampi",
+      "homepage": null
+    },
+    {
+      "name": "Qml",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlModels",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "modelsplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlCore",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtqmlcoreplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlNetwork",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlNetworkplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlWorkerScript",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "workerscriptplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlMeta",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlLocalStorage",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmllocalstorageplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlXmlListModel",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlxmllistmodelplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "quickwindow",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "Quick",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquick2plugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickLayouts_Attribution_yoga",
+      "versionInfo": "2.0.1",
+      "downloadLocation": "https://github.com/facebook/yoga/tree/v2.0.1",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "Copyright (c) Facebook, Inc. and its affiliates.\nCopyright (c) Meta Platforms, Inc. and affiliates.",
+      "homepage": null
+    },
+    {
+      "name": "QuickLayouts",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qquicklayoutsplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickTest",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickTestplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickTestUtilsPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickParticlesPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "particlesplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickEffects",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "effectsplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickShapesDesignHelpersPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickshapesdesignhelpersplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickShapesPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlshapesplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickVectorImageGeneratorPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickVectorImage",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qquickvectorimageplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickVectorImageHelpers",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qquickvectorimagehelpersplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickWidgets",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickTemplates2",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquicktemplates2plugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Impl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2implplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2BasicStyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2basicstyleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Basic",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2basicstyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2FusionStyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2fusionstyleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Fusion",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2fusionstyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2ImagineStyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2imaginestyleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Imagine",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2imaginestyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2MaterialStyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2materialstyleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Material_Attribution_shadow_angular_material",
+      "versionInfo": "unknown",
+      "downloadLocation": "https://angularjs.org/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "Copyright (c) 2014-2016 Google, Inc",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Material",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2materialstyleplugin_Attribution_shadow_angular_material",
+      "versionInfo": "unknown",
+      "downloadLocation": "https://angularjs.org/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "Copyright (c) 2014-2016 Google, Inc",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2materialstyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2UniversalStyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2universalstyleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2Universal",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2universalstyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2FluentWinUI3StyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2fluentwinui3styleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2fluentwinui3styleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2WindowsStyleImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2windowsstyleimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2windowsstyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControls2",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2plugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickcontrols2nativestyleplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsSynchronizer",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsSynchronizerplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsSettings",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlsettingsplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsQmlModels",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "labsmodelsplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsFolderListModel",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlfolderlistmodelplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsAnimation",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "labsanimationplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsPlatform",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsPlatformplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsWavefrontMesh",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlwavefrontmeshplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "LabsSharedImage",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "sharedimageplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlAssetDownloader",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlAssetDownloaderplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickDialogs2Utils",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickDialogs2QuickImpl",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickdialogs2quickimplplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickDialogs2",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qtquickdialogsplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControlsTestUtilsPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QuickControlsTestUtilsPrivateplugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlCompiler",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlDomPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlFormatPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlaotstats",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlcachegen",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlLSPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "PacketProtocolPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlNativeDebugConnectorFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QDebugMessageServiceFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlProfilerServiceFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlDebuggerServiceFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlNativeDebugServiceFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlDebugServerFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QTcpServerConnectionFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QLocalClientConnectionFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlInspectorServiceFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQuickProfilerAdapterFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QQmlPreviewServiceFactoryPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlLintQuickPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlLintQdsPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlLSQuickPlugin",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "quicktooling",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "QmlDebugPrivate",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmldom",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmllint",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmltc",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmltyperegistrar",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmljsrootgen",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlformat",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlimportscanner",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlls",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qml_tool",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlprofiler",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlpreview",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlscene",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmltime",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmlplugindump",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmltestrunner",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "qmleasing",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    },
+    {
+      "name": "svgtoqml",
+      "versionInfo": "6.10.2",
+      "downloadLocation": "git://code.qt.io/qt/qtdeclarative.git@09c70541c76659bcd8c49f05841b0e778c9ffd4c",
+      "licenseConcluded": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "licenseDeclared": "LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors.",
+      "homepage": null
+    }
+  ],
+  "licenseTexts": [
+    {
+      "extractedText": "Licensees holding valid commercial Qt licenses may use this software in\naccordance with the the terms contained in a written agreement between\nyou and The Qt Company. Alternatively, the terms and conditions that were\naccepted by the licensee when buying and/or downloading the\nsoftware do apply.\n\nFor the latest licensing terms and conditions, see https://www.qt.io/terms-conditions.\nFor further information use the contact form at https://www.qt.io/contact-us.\n",
+      "licenseId": "LicenseRef-Qt-Commercial"
+    }
+  ]
+}

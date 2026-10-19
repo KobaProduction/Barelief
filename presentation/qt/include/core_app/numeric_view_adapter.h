@@ -2,8 +2,8 @@
 #include <pipeline/numeric_projection.h>
 #include <map>
 #include <optional>
-#include <visualization/numeric_matrix_snapshot.h>
-#include <visualization/quick/numeric_render_ports.h>
+#include <barelief/numeric_matrix_snapshot.h>
+#include <barelief/quick/numeric_render_ports.h>
 namespace presentation {
 struct NumericViewLimits {
     std::size_t max_bindings=0;

@@ -1,8 +1,8 @@
 #include "numeric_gui_fixture.h"
 #include <core_app/graph_panel.h>
 #include <core_app/config_manager.h>
-#include <visualization/charts/line.h>
-#include <visualization/ui_text.h>
+#include <barelief/charts/line.h>
+#include <barelief/ui_text.h>
 #include <QFile>
 #include <QPointer>
 #include <QStatusBar>

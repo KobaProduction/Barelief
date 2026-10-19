@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/qt-visualization.iml" filepath="$PROJECT_DIR$/.idea/qt-visualization.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Barelief.iml" filepath="$PROJECT_DIR$/.idea/Barelief.iml" />
     </modules>
   </component>
 </project>

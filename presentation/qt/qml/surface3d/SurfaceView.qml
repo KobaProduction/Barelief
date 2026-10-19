@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Visualization.Surface 1.0
+import Barelief.Surface 1.0
 
 Control {
     id: root

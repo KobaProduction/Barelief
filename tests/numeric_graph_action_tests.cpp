@@ -8,7 +8,7 @@
 #include <core_app/numeric_default_graph.h>
 #include <core_app/workspace/workspace_window.h>
 #include <desktop/numeric_project_document.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QtNodes/DataFlowGraphicsScene>
 #include <QtNodes/internal/NodeGraphicsObject.hpp>
 #include <QTemporaryDir>

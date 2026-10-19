@@ -1,5 +1,5 @@
-#include "visualization/axis_control_widget.h"
-#include "visualization/ui_text.h"
+#include "barelief/axis_control_widget.h"
+#include "barelief/ui_text.h"
 #include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QLabel>

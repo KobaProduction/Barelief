@@ -75,16 +75,20 @@ inline signal_contracts::Status project_history_contract(signal_contracts::DataC
     }
     return Status::ok;
 }
+inline signal_contracts::Status validate_numeric_delivery_contract(const signal_contracts::DataContract& expected,
+    const signal_contracts::NumericView& numeric,bool compact_history_row) noexcept {
+    using namespace signal_contracts;
+    if(numeric.ring.capacity)return Status::incompatible_contract;
+    if(!numeric.contract)return Status::malformed;
+    auto projected=expected;
+    if(compact_history_row && project_history_contract(projected)!=Status::ok)return Status::incompatible_contract;
+    return same_physical_contract(projected,*numeric.contract)?Status::ok:Status::incompatible_contract;
+}
 inline signal_contracts::Status validate_delivery_contract(const signal_contracts::DataContract& expected,
     const signal_contracts::DataFrameView& input,bool compact_history_row) noexcept {
     using namespace signal_contracts;
-    if(const auto* numeric=std::get_if<NumericView>(&input.payload)) {
-        if(numeric->ring.capacity)return Status::incompatible_contract;
-        if(!numeric->contract)return Status::malformed;
-        auto projected=expected;
-        if(compact_history_row && project_history_contract(projected)!=Status::ok)return Status::incompatible_contract;
-        return same_physical_contract(projected,*numeric->contract)?Status::ok:Status::incompatible_contract;
-    }
+    if(const auto* numeric=std::get_if<NumericView>(&input.payload))
+        return validate_numeric_delivery_contract(expected,*numeric,compact_history_row);
     if(const auto* packet=std::get_if<StructuredView>(&input.payload))
         if(!packet->contract || !same_contract(expected,*packet->contract))return Status::incompatible_contract;
     return Status::ok;
@@ -98,6 +102,9 @@ inline bool valid_history_metadata(const signal_contracts::NumericGatherOutput& 
     const auto& row=input.row;
     return (row.time_coordinate.empty() || row.time_coordinate.size()==8) && row.selected_mask.size()<=1 &&
         (!row.mask_present || row.selected_mask.size()==1);
+}
+inline bool valid_history_row(const signal_contracts::NumericGatherOutput& input,std::uint64_t filled_count,std::uint64_t capacity) noexcept {
+    return valid_history_geometry(input,filled_count,capacity) && valid_history_metadata(input);
 }
 inline void copy_history_metadata(const signal_contracts::NumericGatherOutput& input,DeliveredNumericHistoryRow& out) noexcept {
     out.logical_row=input.row.logical_row;
@@ -142,6 +149,19 @@ inline signal_contracts::Status retain_numeric_delivery(
     if(result!=Status::ok)return result;
     out=std::move(candidate);return Status::ok;
 }
+namespace numeric_delivery_detail {
+inline signal_contracts::Status retain_history_row_payload(const signal_contracts::NumericGatherOutput& input,
+    const signal_contracts::FrameLimits& limits,signal_contracts::BufferPool& payload,
+    signal_contracts::BufferPool& metadata,DeliveredNumericHistoryRow& candidate) noexcept {
+    using namespace signal_contracts;
+    if(!valid_history_row(input,candidate.filled_count,candidate.capacity))return Status::malformed;
+    const auto status=retain_numeric_delivery(candidate.compact.context,candidate.compact.delivery,input.frame,
+        Status::ok,limits,payload,metadata,candidate.compact,true);
+    if(status!=Status::ok)return status;
+    copy_history_metadata(input,candidate);
+    return Status::ok;
+}
+}
 inline signal_contracts::Status retain_numeric_history_row(
     std::shared_ptr<const NumericDeliveryContext> context,DeliveryStamp delivery,NumericHistoryEvent event,
     const signal_contracts::NumericGatherOutput& input,std::uint64_t filled_count,std::uint64_t capacity,
@@ -152,10 +172,8 @@ inline signal_contracts::Status retain_numeric_history_row(
     if(!numeric_delivery_detail::valid_history_contract(*context,filled_count,capacity))return Status::incompatible_contract;
     auto candidate=numeric_delivery_detail::history_event(context,delivery,event,filled_count,capacity,ordinal);
     if(event==NumericHistoryEvent::Row) {
-        if(!numeric_delivery_detail::valid_history_geometry(input,filled_count,capacity) || !numeric_delivery_detail::valid_history_metadata(input))return Status::malformed;
-        auto status=retain_numeric_delivery(std::move(context),delivery,input.frame,Status::ok,limits,payload,metadata,candidate.compact,true);
+        const auto status=numeric_delivery_detail::retain_history_row_payload(input,limits,payload,metadata,candidate);
         if(status!=Status::ok)return status;
-        numeric_delivery_detail::copy_history_metadata(input,candidate);
     } else candidate.compact.status=event==NumericHistoryEvent::Unavailable?Status::unavailable:Status::ok;
     out=std::move(candidate);return Status::ok;
 }

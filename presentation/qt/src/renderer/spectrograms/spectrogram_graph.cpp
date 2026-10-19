@@ -1,18 +1,18 @@
-#include "visualization/spectrograms/spectrogram_graph.h"
-#include "visualization/camera_geometry.h"
-#include "visualization/spectrograms/spectrogram_scene_geometry.h"
-#include "visualization/spectrograms/spectrogram_mesh_topology.h"
-#include "visualization/ui_text.h"
-#include "visualization/surface_settings.h"
-#include "visualization/axis_tick_labels.h"
-#include "visualization/spectrograms/spectrogram_selection.h"
+#include "barelief/spectrograms/spectrogram_graph.h"
+#include "barelief/camera_geometry.h"
+#include "barelief/spectrograms/spectrogram_scene_geometry.h"
+#include "barelief/spectrograms/spectrogram_mesh_topology.h"
+#include "barelief/ui_text.h"
+#include "barelief/surface_settings.h"
+#include "barelief/axis_tick_labels.h"
+#include "barelief/spectrograms/spectrogram_selection.h"
 #include "core/performance.h"
-#include "visualization/quick3d/surface_quick_item.h"
-#include "visualization/quick3d/surface_overlay_commands.h"
-#include "visualization/quick3d/surface_overlay_item.h"
-#include "visualization/quick/quick_ui.h"
-#include <visualization/rendering/qt_frame_pump.h>
-#include <visualization/rendering/latest_preparation.h>
+#include "barelief/quick3d/surface_quick_item.h"
+#include "barelief/quick3d/surface_overlay_commands.h"
+#include "barelief/quick3d/surface_overlay_item.h"
+#include "barelief/quick/quick_ui.h"
+#include <barelief/rendering/qt_frame_pump.h>
+#include <barelief/rendering/latest_preparation.h>
 #include <QQuickWidget>
 #include <QQmlContext>
 #include <QQuickWindow>
@@ -34,7 +34,7 @@
 #include <QWheelEvent>
 #include <QNativeGestureEvent>
 #include "core_app/touchpad_input.h"
-#include "visualization/slice_overlay.h"
+#include "barelief/slice_overlay.h"
 #include <QHideEvent>
 #include <QGuiApplication>
 #include <QPainter>
@@ -54,7 +54,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <tuple>
-#include <visualization/render_preparation_policy.h>
+#include <barelief/render_preparation_policy.h>
 
 
 namespace {
@@ -203,7 +203,7 @@ public:
     }
     bool take(CpuMeshResult& result){if(pool_)return pool_->take(result);std::lock_guard lock(mutex_);if(!ready_)return false;std::swap(result,result_);ready_=false;return true;}
 private:
-    using Pool=visualization::rendering::LatestPreparation<CpuMeshInput,CpuMeshResult>;
+    using Pool=barelief::rendering::LatestPreparation<CpuMeshInput,CpuMeshResult>;
     std::unique_ptr<Pool> pool_;
     bool takeWork(CpuMeshInput& input,std::function<void()>& wake){
         std::unique_lock lock(mutex_);
@@ -434,7 +434,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     }
 
   private:
-    visualization::rendering::QtFramePump frame_pump;
+    barelief::rendering::QtFramePump frame_pump;
     quint64 request_time=0,last_frame=0,submission_token=0;
     GLfloat line_range[2]{1,1};
     std::unique_ptr<QOpenGLTimerQuery> gpu_query;
@@ -1346,8 +1346,8 @@ void SpectrogramGraph::create_surface_model(){
     m_spectrogram_graph->setRenderVisible(_render_visible);m_spectrogram_graph->setRenderFps(_render_fps);
 }
 void SpectrogramGraph::create_surface_view(const QSize& minimum,const QSize& maximum){
-    static const int registered=qmlRegisterType<SurfaceQuickItem>("Visualization.Surface",1,0,"SurfaceCanvas");
-    static const int overlayRegistered=qmlRegisterType<SurfaceOverlayItem>("Visualization.Surface",1,0,"SurfaceOverlay");
+    static const int registered=qmlRegisterType<SurfaceQuickItem>("Barelief.Surface",1,0,"SurfaceCanvas");
+    static const int overlayRegistered=qmlRegisterType<SurfaceOverlayItem>("Barelief.Surface",1,0,"SurfaceOverlay");
     Q_UNUSED(registered);Q_UNUSED(overlayRegistered);
     _quick_view=new QQuickWidget(this);_quick_view->setObjectName("spectrogramQuickView");
     _quick_view->setMinimumSize(minimum);_quick_view->setMaximumSize(maximum);m_container=_quick_view;

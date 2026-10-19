@@ -1,7 +1,7 @@
 param(
     [ValidateSet('release', 'debug')]
     [string]$Preset = 'release',
-    [string[]]$Executables = @('core_app.exe', 'pipeline_cli.exe', 'aggregator_server_app.exe', 'aggregator_client_app.exe'),
+    [string[]]$Executables = @('Barelief.exe', 'pipeline_cli.exe', 'aggregator_server_app.exe', 'aggregator_client_app.exe'),
     [string]$Objdump = $env:OBJDUMP
 )
 $ErrorActionPreference = 'Stop'

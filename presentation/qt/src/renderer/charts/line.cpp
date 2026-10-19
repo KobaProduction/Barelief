@@ -1,2 +1,2 @@
-#include "visualization/charts/line.h"
+#include "barelief/charts/line.h"
 LineChartView::LineChartView(){refresh_presentation();}

@@ -12,7 +12,7 @@
 #include <QDir>
 #include <core/performance.h>
 #include <core_app/gui_event_profile.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <array>
 #include <cstdint>
 #include <cstring>

@@ -12,7 +12,7 @@ namespace {
 }
 }
 void CoreApplication::_parse_command_line() {
-    QCommandLineParser parser;parser.setApplicationDescription("Data Processing System GUI");
+    QCommandLineParser parser;parser.setApplicationDescription("Barelief | Signal Processing & Visualization");
     const auto help=parser.addHelpOption();const auto version=parser.addVersionOption();
     parser.addOptions({QCommandLineOption({"c","config"},"Configuration file path","file"),
         QCommandLineOption("remote-host","Connect to a separate console engine host","host"),

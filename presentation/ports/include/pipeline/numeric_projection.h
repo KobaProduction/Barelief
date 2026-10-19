@@ -262,15 +262,7 @@ public:
         auto status=validate_snapshot_input(input,ordinal,filled_count,plane,snapshot);
         if(status!=Status::ok)return status;
         if(!snapshot.has_payload)return unavailable_snapshot(input,plane);
-        SnapshotGeometry geometry;
-        status=snapshot_geometry(snapshot,filled_count,plane,geometry);
-        if(status!=Status::ok)return status;
-        SnapshotProjection projection;
-        status=project_snapshot(snapshot,geometry,plane,ordinal,projection);
-        if(status!=Status::ok)return status;
-        install_snapshot_storage(projection,geometry);
-        install_snapshot_delivery(input,snapshot.frame.stamp,plane,ordinal,filled_count,projection.loss_count);
-        return available_?Status::ok:Status::unavailable;
+        return accept_validated_snapshot(input,snapshot,ordinal,filled_count,plane);
     }
     Status accept(const DeliveredNumericHistoryRow& event,std::size_t plane=0) {
         CompactInput input;
@@ -320,6 +312,18 @@ public:
         render_compact_snapshot(rows);
     }
 private:
+    Status accept_validated_snapshot(const DeliveredNumericFrame& input,const SnapshotInput& snapshot,
+        std::uint64_t ordinal,std::uint64_t filled_count,std::size_t plane) {
+        SnapshotGeometry geometry;
+        auto status=snapshot_geometry(snapshot,filled_count,plane,geometry);
+        if(status!=Status::ok)return status;
+        SnapshotProjection projection;
+        status=project_snapshot(snapshot,geometry,plane,ordinal,projection);
+        if(status!=Status::ok)return status;
+        install_snapshot_storage(projection,geometry);
+        install_snapshot_delivery(input,snapshot.frame.stamp,plane,ordinal,filled_count,projection.loss_count);
+        return available_?Status::ok:Status::unavailable;
+    }
     void render_authoritative_snapshot(std::vector<std::vector<float>>& rows) const {
         if(ring_.empty()){rows.clear();return;}
         rows.resize(capacity_);
@@ -500,15 +504,18 @@ private:
         for(std::size_t i=0;i<columns_;++i)
             out[i]=decode_coordinate(numeric->coordinates.axes[0].subspan(i*8,8));
     }
-    void project_column_axis(const signal_contracts::AxisCoordinates& axis,HistoryAxes& result) const {
+    void column_coordinates(const signal_contracts::AxisCoordinates& axis,std::vector<double>& values) const {
         using signal_contracts::CoordinateMode;
-        if(axis.mode==CoordinateMode::None)return;
-        std::vector<double> values(columns_,std::numeric_limits<double>::quiet_NaN());
         if(axis.mode==CoordinateMode::Regular && axis.origin.denominator && axis.step.denominator)
             for(std::size_t i=0;i<columns_;++i)
                 values[i]=double(axis.origin.numerator)/double(axis.origin.denominator)
                     +double(i)*double(axis.step.numerator)/double(axis.step.denominator);
         else if(axis.mode==CoordinateMode::ExplicitFloat64LE)explicit_column_coordinates(values);
+    }
+    void project_column_axis(const signal_contracts::AxisCoordinates& axis,HistoryAxes& result) const {
+        if(axis.mode==signal_contracts::CoordinateMode::None)return;
+        std::vector<double> values(columns_,std::numeric_limits<double>::quiet_NaN());
+        column_coordinates(axis,values);
         if(!increasing_finite(values))return;
         result.columns=std::move(values);
         result.column_coordinates=true;
@@ -561,13 +568,21 @@ private:
         snapshot.has_payload=!((input.status==Status::unavailable || !snapshot.frame.stamp.available) && numeric->storage.empty());
         return Status::ok;
     }
+    static Status validate_snapshot_contract(const signal_contracts::DataContract& contract,std::uint64_t ordinal,std::uint64_t filled) {
+        const auto* history=std::get_if<signal_contracts::NumericContract>(&contract);
+        if(!history || history->shape.rank!=signal_contracts::Rank::Matrix)return Status::incompatible_contract;
+        if(filled>ordinal || filled>history->shape.extents[0].maximum)return Status::malformed;
+        return Status::ok;
+    }
     Status validate_snapshot_input(const DeliveredNumericFrame& input,std::uint64_t ordinal,std::uint64_t filled,std::size_t plane,SnapshotInput& snapshot) const {
         if(!input.context || !input.context->contract)return Status::invalid_argument;
         if(fence_seen_ && delivery_precedes(input.delivery,delivery_fence_))return Status::would_block;
         snapshot.contract=input.context->contract.view();
-        const auto* history=std::get_if<signal_contracts::NumericContract>(&snapshot.contract);
-        if(!history || history->shape.rank!=signal_contracts::Rank::Matrix)return Status::incompatible_contract;
-        if(filled>ordinal || filled>history->shape.extents[0].maximum)return Status::malformed;
+        const auto status=validate_snapshot_contract(snapshot.contract,ordinal,filled);
+        if(status!=Status::ok)return status;
+        return validate_snapshot_frame(input,ordinal,plane,snapshot);
+    }
+    Status validate_snapshot_frame(const DeliveredNumericFrame& input,std::uint64_t ordinal,std::size_t plane,SnapshotInput& snapshot) const {
         snapshot.frame=input.frame?input.frame.view():signal_contracts::DataFrameView{};
         if(!input.frame && input.status==Status::unavailable)return Status::ok;
         if(!input.frame)return Status::invalid_argument;

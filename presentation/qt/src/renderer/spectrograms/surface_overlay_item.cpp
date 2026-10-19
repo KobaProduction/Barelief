@@ -1,5 +1,5 @@
-#include <visualization/quick3d/surface_overlay_item.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
+#include <barelief/quick3d/surface_overlay_item.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
 #include <core/performance.h>
 #include <QPainter>
 #include <QFontMetricsF>

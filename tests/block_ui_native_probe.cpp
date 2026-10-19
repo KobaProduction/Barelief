@@ -2,7 +2,7 @@
 #include "core_app/scheme_editor/editor_geometry.h"
 #include "core_app/scheme_editor/numeric_editor_model.h"
 #include "core_app/scheme_editor/numeric_node_operations.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QtNodes/DataFlowGraphicsScene>
 #include <QAbstractItemView>
 #include <QApplication>

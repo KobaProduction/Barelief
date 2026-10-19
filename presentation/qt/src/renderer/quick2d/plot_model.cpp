@@ -1,8 +1,8 @@
-#include <visualization/plot_viewport.h>
-#include <visualization/quick2d/plot_model.h>
-#include <visualization/quick/quick_ui.h>
-#include <visualization/ui_text.h>
-#include <visualization/render_preparation_policy.h>
+#include <barelief/plot_viewport.h>
+#include <barelief/quick2d/plot_model.h>
+#include <barelief/quick/quick_ui.h>
+#include <barelief/ui_text.h>
+#include <barelief/render_preparation_policy.h>
 #include <QQmlEngine>
 #include <QQmlContext>
 #include <QQuickImageProvider>

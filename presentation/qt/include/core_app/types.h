@@ -5,7 +5,7 @@
 #include <QtNodes/NodeDelegateModelRegistry>
 #include <QJsonObject>
 #include <QJsonArray>
-#include "visualization/camera_controls.h"
+#include "barelief/camera_controls.h"
 
 #include "pipeline/engine_models.h"
 

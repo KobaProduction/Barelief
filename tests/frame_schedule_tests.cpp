@@ -1,8 +1,8 @@
-#include <visualization/rendering/frame_schedule.h>
+#include <barelief/rendering/frame_schedule.h>
 #include <cstdlib>
 #include <iostream>
 #include <utility>
-using visualization::rendering::FrameSchedule;
+using barelief::rendering::FrameSchedule;
 void require(bool value,const char* message){if(!value){std::cerr<<message<<'\n';std::exit(1);}}
 void outstanding_frame_and_burst(){
     FrameSchedule s;s.setRate(100);

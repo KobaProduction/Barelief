@@ -4,7 +4,7 @@
 #include <desktop/numeric_project_document.h>
 #include <QJsonDocument>
 #include <QJsonArray>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <algorithm>
 #include <utility>
 #include "core/performance.h"

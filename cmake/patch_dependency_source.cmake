@@ -1,0 +1,18 @@
+# Keep pinned dependency fixes repeatable on fresh downloads and reconfigure.
+# An unexpected upstream revision must fail rather than silently skip a fix.
+include_guard(GLOBAL)
+function(patch_dependency_source source_root relative anchor replacement)
+    set(path "${source_root}/${relative}")
+    file(READ "${path}" content)
+    string(REPLACE "\r\n" "\n" content "${content}")
+    string(FIND "${content}" "${replacement}" patched)
+    if(NOT patched EQUAL -1)
+        return()
+    endif()
+    string(FIND "${content}" "${anchor}" found)
+    if(found EQUAL -1)
+        message(FATAL_ERROR "Pinned dependency patch no longer matches: ${path}")
+    endif()
+    string(REPLACE "${anchor}" "${replacement}" content "${content}")
+    file(WRITE "${path}" "${content}")
+endfunction()

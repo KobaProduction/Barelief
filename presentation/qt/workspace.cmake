@@ -24,6 +24,7 @@ set(BUILD_EXAMPLES OFF)
 FetchContent_MakeAvailable(QtNodes)
 include("${CMAKE_SOURCE_DIR}/cmake/patch_qtnodes_scene_lifetime.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/patch_qtnodes_connection_undo.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/patch_qtnodes_clazy.cmake")
 
 target_link_libraries(core_app_components PUBLIC
         qt_workspace
@@ -36,5 +37,5 @@ target_link_libraries(core_app_components PUBLIC
         QtNodes
         audio_pipeline
         wled_protocol
-        visualization
+        barelief
 )

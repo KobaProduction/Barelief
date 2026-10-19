@@ -1,5 +1,5 @@
 #include "core_app/scheme_editor/numeric_node_operations.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <limits>
 #include "numeric_graph_draft.h"
 #include "parameter_field_specs.h"

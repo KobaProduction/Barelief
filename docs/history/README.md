@@ -6,11 +6,11 @@
 
 | Этап | Изменение устройства системы |
 | --- | --- |
-| [Выделение переносимой основы](https://github.com/ArthurKoba/qt-visualization/commit/0387743) | Контракты, DSP, протокол и application-слой стали отдельными компонентами |
-| [Общий runtime и адаптеры](https://github.com/ArthurKoba/qt-visualization/commit/2236971) | Исполнение схем, desktop composition и embedded SDK получили общие границы |
-| [Численная архитектура](https://github.com/ArthurKoba/qt-visualization/commit/c86f221) | Числовые контракты, редактор и визуализации объединены вокруг canonical numeric модели |
-| [QML-представления](https://github.com/ArthurKoba/qt-visualization/commit/1c5b1cb) | Графические представления переведены на QML/Quick при сохранении границы обработки |
-| [Canonical runtime и desktop engine](https://github.com/ArthurKoba/qt-visualization/commit/1c31221) | Уточнены границы численного runtime, настольного движка и редактора |
+| [Выделение переносимой основы](https://github.com/KobaProduction/Barelief/commit/0387743) | Контракты, DSP, протокол и application-слой стали отдельными компонентами |
+| [Общий runtime и адаптеры](https://github.com/KobaProduction/Barelief/commit/2236971) | Исполнение схем, desktop composition и embedded SDK получили общие границы |
+| [Численная архитектура](https://github.com/KobaProduction/Barelief/commit/c86f221) | Числовые контракты, редактор и визуализации объединены вокруг canonical numeric модели |
+| [QML-представления](https://github.com/KobaProduction/Barelief/commit/1c5b1cb) | Графические представления переведены на QML/Quick при сохранении границы обработки |
+| [Canonical runtime и desktop engine](https://github.com/KobaProduction/Barelief/commit/1c31221) | Уточнены границы численного runtime, настольного движка и редактора |
 
 Текущее устройство, включая отдельные потоки, явные операции и настольные
 адаптеры, описано в [архитектуре](../architecture/README.md). Исторический этап

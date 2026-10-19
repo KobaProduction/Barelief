@@ -1,6 +1,6 @@
 #pragma once
 #include "core_app/scheme_editor/audio_node_model.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QGridLayout>
 #include <QPainter>
 #include <QEvent>

@@ -1,5 +1,5 @@
 #include <core_app/frequency_profile_binding.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <core_app/resampler_presentation.h>
 #include <core_app/spectrum_projection_ui.h>
 #include <array>

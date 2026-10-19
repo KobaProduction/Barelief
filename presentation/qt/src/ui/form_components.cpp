@@ -2,7 +2,7 @@
 #include "core_app/ui/validation_message.h"
 #include "core_app/ui/collapsible_section.h"
 #include "core_app/ui/slider_value_control.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QToolButton>

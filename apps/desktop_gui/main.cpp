@@ -1,6 +1,6 @@
 #include <core_app/core_application.h>
-#include <visualization/quick/quick_ui.h>
-#include <visualization/render_preparation_policy.h>
+#include <barelief/quick/quick_ui.h>
+#include <barelief/render_preparation_policy.h>
 #include "native_performance_trace.h"
 #include <QElapsedTimer>
 

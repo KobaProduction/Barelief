@@ -1,6 +1,6 @@
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/axis_tick_labels.h>
-#include <visualization/spectrograms/spectrogram_scene_geometry.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
+#include <barelief/axis_tick_labels.h>
+#include <barelief/spectrograms/spectrogram_scene_geometry.h>
 #include <cstdio>
 int main() {
     int failures=0,checks=0;

@@ -1,4 +1,4 @@
 include_rules = [
-    '-Qt', '-presentation', '-core', '-core_app', '-visualization', '-desktop',
+    '-Qt', '-presentation', '-core', '-core_app', '-barelief', '-desktop',
     '-pipeline', '-dataflow_runtime', '-dsp_kernels',
 ]

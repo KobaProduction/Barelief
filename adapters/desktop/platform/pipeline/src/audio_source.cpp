@@ -29,7 +29,7 @@ PulseSource pulse_default_source(AudioSourceKind kind, const std::function<bool(
     struct Query { QString source, sink; uint32_t rate = 0; bool server = false, done = false; } query;
     auto *loop = pa_mainloop_new();
     if (!loop) throw std::runtime_error("Cannot allocate PulseAudio mainloop");
-    auto *context = pa_context_new(pa_mainloop_get_api(loop), "qt-visualization capture discovery");
+    auto *context = pa_context_new(pa_mainloop_get_api(loop), "Barelief capture discovery");
     if (!context) { pa_mainloop_free(loop); throw std::runtime_error("Cannot create PulseAudio context"); }
     const auto cleanup = [&] { pa_context_disconnect(context); pa_context_unref(context); pa_mainloop_free(loop); };
     const auto deadline = clock_ns() + 2000000000ULL;

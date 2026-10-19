@@ -2,7 +2,7 @@
 #include "core_app/scheme_editor/numeric_node_operations.h"
 #include "core_app/scheme_editor/typed_parameter_helper.h"
 #include "numeric_graph_draft.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <core_app/spectrum_projection_ui.h>
 #include <algorithm>
 #include <limits>

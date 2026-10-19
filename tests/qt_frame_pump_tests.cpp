@@ -1,11 +1,11 @@
-#include <visualization/rendering/qt_frame_pump.h>
+#include <barelief/rendering/qt_frame_pump.h>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
 #include <memory>
-using visualization::rendering::QtFramePump;
+using barelief::rendering::QtFramePump;
 void require(bool value,const char* message){if(!value){std::cerr<<message<<'\n';std::exit(1);}}
 void settle(int ms){QEventLoop loop;QTimer::singleShot(ms,&loop,&QEventLoop::quit);loop.exec();}
 int main(int argc,char** argv){

@@ -1,7 +1,7 @@
-#include <visualization/quick/quick_ui.h>
-#include <visualization/quick2d/vector_plot_item.h>
+#include <barelief/quick/quick_ui.h>
+#include <barelief/quick2d/vector_plot_item.h>
 #include <qqml.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QQuickWindow>
 #include <QQuickStyle>
 #include <QQmlContext>
@@ -11,7 +11,7 @@
 #include <QResource>
 #include <QEvent>
 #include <QSurfaceFormat>
-static void initialize_visualization_resources(){Q_INIT_RESOURCE(visualization_qml);}
+static void initialize_barelief_resources(){Q_INIT_RESOURCE(barelief_qml);}
 namespace ui::quick {
 namespace {
 QVariantMap current_palette() {
@@ -74,7 +74,7 @@ bool UiBridge::eventFilter(QObject* watched,QEvent* event){
 QString UiBridge::text(const QString& source) const {return ui::text(source.toUtf8().constData());}
 void configure(){
     static const bool configured=[](){
-        initialize_visualization_resources();
+        initialize_barelief_resources();
         qmlRegisterType<VectorPlotItem>("Numeric.Graphs",1,0,"VectorPlot");
         qmlRegisterType<VectorGeometryItem>("Numeric.Graphs",1,0,"VectorGeometry");
         // Qt's painted FBO enables multisampling only when the shared context

@@ -5,8 +5,8 @@
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/audio_node_model.h>
 #include <core_app/scheme_editor/node_parameter_model.h>
-#include <visualization/ui_text.h>
-#include <visualization/numeric_image_view.h>
+#include <barelief/ui_text.h>
+#include <barelief/numeric_image_view.h>
 #include <desktop/numeric_project_document.h>
 #include <dataflow_runtime/runtime.h>
 #include <QApplication>

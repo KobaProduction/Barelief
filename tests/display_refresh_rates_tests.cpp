@@ -47,7 +47,7 @@ void native_probe(){
     for(double value:native.supported)require(std::isfinite(value) && value>1,"native rates usable");
     if(native.current>1)require(std::find(native.supported.begin(),native.supported.end(),native.current)!=native.supported.end(),"native current present");
     else std::puts("native read-only probe unavailable: no active display mode reported");
-    const auto absent=supported_screen_refresh_rates(L"\\\\.\\DISPLAY_INVALID_QT_VISUALIZATION_TEST");
+    const auto absent=supported_screen_refresh_rates(L"\\\\.\\DISPLAY_INVALID_BARELIEF_TEST");
     require(absent.supported.empty() && absent.current==0,"invalid native display never falls back to another monitor");
     std::wstring embedded=L"\\\\.\\DISPLAY1";embedded.push_back(L'\0');embedded.append(L"ignored");
     require(supported_screen_refresh_rates(embedded).supported.empty(),"embedded-zero device is refused");

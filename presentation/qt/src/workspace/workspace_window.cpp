@@ -1,5 +1,5 @@
 #include "core_app/workspace/workspace_window.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <DockAreaWidget.h>
 #include <DockAreaTitleBar.h>
 #include <DockComponentsFactory.h>
@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLayout>
 #include <QStyle>
+#include <map>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <dwmapi.h>
@@ -54,7 +55,8 @@ public:
         setupControls();
     }
     void setupControls() {
-        for(auto *button:findChildren<QToolButton *>()) button->setFixedSize(24,24);
+        const auto buttons=findChildren<QToolButton *>();
+        for(auto *button:buttons) button->setFixedSize(24,24);
         layout()->setContentsMargins(6,2,6,2); layout()->setSpacing(4);
         if(auto *tabs=findChild<QToolButton *>("tabsMenuButton")) {
             layout()->removeWidget(tabs); insertWidget(0,tabs);
@@ -87,7 +89,8 @@ public:
         }
     }
     void refreshPlacementControls() {
-        for(auto *button:findChildren<QToolButton *>()) if(button->objectName()=="graphPlacement") {
+        const auto buttons=findChildren<QToolButton *>();
+        for(auto *button:buttons) if(button->objectName()=="graphPlacement") {
             if(!button->property("compactControl").toBool()) {
                 button->setProperty("compactControl",true); button->setProperty("menuControl",true);
                 button->setAutoRaise(false); button->setFixedHeight(24);
@@ -164,7 +167,8 @@ void WorkspaceWindow::bindWorkspaceEvents() {
         QTimer::singleShot(0,floating,[floating]{applyNativeFrame(floating);});
     });
     connect(qApp,&QGuiApplication::paletteChanged,this,[this] {
-        for(auto *floating:_workspace->floatingWidgets()) applyNativeFrame(floating);
+        const auto floatingWidgets=_workspace->floatingWidgets();
+        for(auto *floating:floatingWidgets) applyNativeFrame(floating);
     });
     connect(_workspace,&ads::CDockManager::focusedDockWidgetChanged,this,
         [this](ads::CDockWidget *,ads::CDockWidget *current) {
@@ -184,14 +188,15 @@ void WorkspaceWindow::recordFocusedDock(ads::CDockWidget *current) {
 WorkspaceWindow::~WorkspaceWindow() {
     disconnect(qApp,nullptr,this,nullptr);
     disconnect(_workspace,nullptr,this,nullptr);
-    for(auto *host:_lastFocus.keys()) disconnect(host,nullptr,this,nullptr);
+    for(auto it=_lastFocus.cbegin();it!=_lastFocus.cend();++it) disconnect(it.key(),nullptr,this,nullptr);
     // ADS also owns parentless inactive tabs. Destroy it while adapter state is
     // alive, before QMainWindow tears down QObject children and floating hosts.
     delete _workspace;
 }
 QList<WorkspaceDock *> WorkspaceWindow::workspaceDocks() const {
     QList<WorkspaceDock *> result;
-    for(auto *panel:_workspace->dockWidgetsMap())
+    const auto panels=_workspace->dockWidgetsMap();
+    for(auto *panel:panels)
         if(auto *dock=qobject_cast<WorkspaceDock *>(panel)) result.append(dock);
     return result;
 }
@@ -250,13 +255,16 @@ void WorkspaceWindow::tabifyDockWidget(WorkspaceDock *anchor,WorkspaceDock *dock
 }
 QList<WorkspaceDock *> WorkspaceWindow::tabifiedDockWidgets(WorkspaceDock *dock) const {
     QList<WorkspaceDock *> result;
-    if (auto *area=dock->dockAreaWidget())
-        for(auto *peer:area->dockWidgets())
+    if (auto *area=dock->dockAreaWidget()) {
+        const auto peers=area->dockWidgets();
+        for(auto *peer:peers)
             if(peer!=dock) if(auto *panel=qobject_cast<WorkspaceDock *>(peer)) result.append(panel);
+    }
     return result;
 }
 void WorkspaceWindow::resizeDocks(const QList<WorkspaceDock *> &docks,const QList<int> &sizes,Qt::Orientation orientation) {
-    QMap<QSplitter *,QList<int>> changes;
+    // Preserve the old QMap pointer ordering when applying nested split sizes.
+    std::map<QSplitter *,QList<int>> changes;
     for(int i=0;i<docks.size() && i<sizes.size();++i) {
         auto *area=docks[i]->dockAreaWidget();
         auto *splitter=area ? qobject_cast<QSplitter *>(area->parentWidget()) : nullptr;
@@ -264,14 +272,16 @@ void WorkspaceWindow::resizeDocks(const QList<WorkspaceDock *> &docks,const QLis
         if(!changes.contains(splitter)) changes[splitter]=splitter->sizes();
         changes[splitter][splitter->indexOf(area)]=sizes[i];
     }
-    for(auto it=changes.cbegin();it!=changes.cend();++it) it.key()->setSizes(it.value());
+    for(const auto& [splitter, splitterSizes]:changes) splitter->setSizes(splitterSizes);
 }
 QByteArray WorkspaceWindow::saveState(int version) const { return _workspace->saveState(version); }
 bool WorkspaceWindow::restoreState(const QByteArray &state,int version) { return _workspace->restoreState(state,version); }
-static QMap<QDockWidget *,WorkspaceDock *> createLegacyProxies(WorkspaceWindow& owner,QMainWindow& legacy,bool oldNames) {
+using LegacyDockMapping = std::map<QDockWidget *,WorkspaceDock *>;
+static LegacyDockMapping createLegacyProxies(WorkspaceWindow& owner,QMainWindow& legacy,bool oldNames) {
     const QMap<QString,QString> aliases{{"spectrogramDock","surfaceDock"},{"windowSignalDock","samplesDock"},{"windowedSignalDock","windowedSamplesDock"}};
-    QMap<QDockWidget *,WorkspaceDock *> mapping;
-    for(auto *dock:owner.workspaceDocks()) {
+    LegacyDockMapping mapping;
+    const auto docks=owner.workspaceDocks();
+    for(auto *dock:docks) {
         auto *proxy=new QDockWidget(&legacy);
         proxy->setObjectName(oldNames ? aliases.value(dock->objectName(),dock->objectName()) : dock->objectName());
         legacy.addDockWidget(Qt::LeftDockWidgetArea,proxy); mapping[proxy]=dock;
@@ -279,16 +289,17 @@ static QMap<QDockWidget *,WorkspaceDock *> createLegacyProxies(WorkspaceWindow& 
     return mapping;
 }
 static void restoreLegacyDock(WorkspaceWindow& owner,QMainWindow& legacy,
-    const QMap<QDockWidget *,WorkspaceDock *>& mapping,QSet<QDockWidget *>& visited,
+    const LegacyDockMapping& mapping,QSet<QDockWidget *>& visited,
     QDockWidget* proxy,WorkspaceDock* dock) {
     if(proxy->isFloating()) {
         auto *floating=owner.workspace()->addDockWidgetFloating(dock);
         floating->setGeometry(proxy->geometry());
     } else {
         owner.workspace()->addDockWidget(adsArea(legacy.dockWidgetArea(proxy)),dock);
-        for(auto *peer:legacy.tabifiedDockWidgets(proxy))if(mapping.contains(peer)) {
-            owner.workspace()->addDockWidgetTabToArea(mapping[peer],dock->dockAreaWidget()); visited.insert(peer);
-            mapping[peer]->toggleView(!peer->isHidden());
+        const auto peers=legacy.tabifiedDockWidgets(proxy);
+        for(auto *peer:peers)if(mapping.contains(peer)) {
+            owner.workspace()->addDockWidgetTabToArea(mapping.at(peer),dock->dockAreaWidget()); visited.insert(peer);
+            mapping.at(peer)->toggleView(!peer->isHidden());
         }
     }
     dock->toggleView(!proxy->isHidden());
@@ -301,7 +312,7 @@ bool WorkspaceWindow::importLegacyState(const QByteArray &state,int version,bool
     if (!legacy.restoreState(state,version)) return false;
     QSet<QDockWidget *> visited;
     for(auto it=mapping.cbegin();it!=mapping.cend();++it) {
-        auto *proxy=it.key(); auto *dock=it.value();
+        auto *proxy=it->first; auto *dock=it->second;
         if(visited.contains(proxy)) continue;
         visited.insert(proxy);
         restoreLegacyDock(*this,legacy,mapping,visited,proxy,dock);

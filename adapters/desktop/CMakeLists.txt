@@ -9,4 +9,4 @@ add_library(desktop_resampling STATIC resampling/speex_backend.cpp resampling/sp
 set_target_properties(desktop_resampling PROPERTIES AUTOMOC OFF)
 target_include_directories(desktop_resampling PUBLIC resampling)
 target_link_libraries(desktop_resampling PUBLIC dsp_kernels)
-install(FILES resampling/vendor/COPYING DESTINATION share/licenses/qt-visualization RENAME SpeexDSP-COPYING)
+install(FILES resampling/vendor/COPYING DESTINATION share/licenses/Barelief RENAME SpeexDSP-COPYING)

@@ -1,10 +1,10 @@
 #include <core_app/graph_panel.h>
-#include <visualization/charts/line.h>
-#include <visualization/numeric_image_view.h>
-#include <visualization/numeric_pie_view.h>
-#include <visualization/numeric_metrics_view.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/ui_text.h>
+#include <barelief/charts/line.h>
+#include <barelief/numeric_image_view.h>
+#include <barelief/numeric_pie_view.h>
+#include <barelief/numeric_metrics_view.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
+#include <barelief/ui_text.h>
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -23,7 +23,7 @@
 #include <cstdio>
 #include <stdexcept>
 #ifdef NUMERIC_QML
-#include <visualization/quick/quick_ui.h>
+#include <barelief/quick/quick_ui.h>
 #include <QQuickWidget>
 #include <QQuickItem>
 #include <QtTest/QTest>

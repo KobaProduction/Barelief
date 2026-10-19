@@ -1,7 +1,7 @@
 #pragma once
 #include "audio_node_model.h"
 #include "node_parameter_model.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QtNodes/internal/DefaultHorizontalNodeGeometry.hpp>
 #include <QtNodes/internal/DefaultNodePainter.hpp>
 #include <QtNodes/internal/NodeGraphicsObject.hpp>

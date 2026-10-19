@@ -7,7 +7,7 @@
 #include <core_app/music_analysis_dialog.h>
 #include <core_app/analysis_services.h>
 #include <speex_backend.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>

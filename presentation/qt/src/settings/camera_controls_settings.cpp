@@ -1,4 +1,4 @@
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include "core_app/settings_widget.h"
 #include "core_app/ui/field_row.h"
 #include "core_app/ui/slider_value_control.h"

@@ -1,7 +1,7 @@
 #pragma once
 #include <core_app/scheme_editor/node_parameter_model.h>
 #include <core_app/scheme_editor/numeric_node_operations.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 template<class Read,class Write>
 void NodeParameterModel::literal(QString label,QString key,Read read,Write write,std::optional<int> fixed_type) {
     auto f=makeField(label,key,Editor::Literal);

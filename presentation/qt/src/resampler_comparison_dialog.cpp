@@ -1,5 +1,5 @@
 #include <core_app/resampler_comparison_dialog.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <offline/resampler_comparison.h>
 #include <core_app/resampler_presentation.h>
 #include <QDialog>

@@ -4,7 +4,7 @@
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/audio_node_model.h>
 #include <config/config_document.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QJsonArray>
 #include <QFileInfo>
 #include <QMessageBox>

@@ -2,7 +2,7 @@
 #include <core_app/plot_composition.h>
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/audio_node_model.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <algorithm>

@@ -8,7 +8,7 @@
 #include "core_app/ui/collapsible_section.h"
 #include "core_app/ui/field_row.h"
 
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 
 #include <desktop/numeric_project_document.h>
 
@@ -21,11 +21,11 @@
 #include <QQuickItem>
 #include <QElapsedTimer>
 #include <QThread>
-#include <visualization/quick3d/surface_quick_item.h>
+#include <barelief/quick3d/surface_quick_item.h>
 #include <QSurfaceFormat>
 #include <QTextStream>
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/axis_control_widget.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
+#include <barelief/axis_control_widget.h>
 #include <QDoubleSpinBox>
 
 #include <QLineEdit>

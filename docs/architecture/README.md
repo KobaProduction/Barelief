@@ -1,4 +1,4 @@
-# Архитектура Qt Visualization
+# Архитектура Barelief
 
 Система позволяет собрать схему обработки из узлов, запустить её в локальном
 или удалённом ядре и показать результаты на графиках. Переносимое ядро выполняет
@@ -130,4 +130,4 @@ miniaudio, сокетов ОС или ESP-IDF. JSON и сетевой I/O нах
 Для практического запуска используйте [руководство](../reference/build-and-run.md),
 для точных API и форматов — [справочники](../README.md#руководства-и-справочники).
 Задачи и ещё не принятые направления ведутся в
-[issues](https://github.com/ArthurKoba/qt-visualization/issues).
+[issues](https://github.com/KobaProduction/Barelief/issues).

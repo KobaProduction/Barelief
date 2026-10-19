@@ -1,4 +1,4 @@
-# Документация Qt Visualization
+# Документация Barelief
 
 Начните с [карты архитектуры](architecture/README.md): она связывает переносимое
 ядро, графический и консольный Qt-runtime, интерфейс и embedded-сборку.
@@ -33,4 +33,4 @@
 [История](history/README.md) сохраняет основные изменения архитектуры,
 а [уроки работы с агентами](engineering/agent-lessons.md) — повторяющиеся ошибки.
 Открытая работа, будущие направления и доказательства приёмки находятся в
-[issues](https://github.com/ArthurKoba/qt-visualization/issues).
+[issues](https://github.com/KobaProduction/Barelief/issues).

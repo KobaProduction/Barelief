@@ -232,7 +232,7 @@ table после успешного выделения twiddles оставляе
 Наш backend откатывает неудачную транзакцию через vendor deinit и обнуляет
 pointer/capacity. Уже initialized tables не изменяются; undersized external
 tables отвергаются без resize/deinit. Regression и воспроизводитель описаны
-в [issue11](https://github.com/ArthurKoba/qt-visualization/issues/11).
+в [issue11](https://github.com/KobaProduction/Barelief/issues/11).
 Прямое использование vendor API требует отдельного контроля lifecycle.
 
 ## Короткие проверки

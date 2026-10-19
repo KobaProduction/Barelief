@@ -2,8 +2,8 @@
 #include <core_app/main_window.h>
 #include <core_app/settings_widget.h>
 #include <core_app/graph_panel.h>
-#include <visualization/surface_settings.h>
-#include <visualization/ui_text.h>
+#include <barelief/surface_settings.h>
+#include <barelief/ui_text.h>
 #include <QScreen>
 #include <QWindow>
 #include <QEvent>
@@ -129,7 +129,8 @@ QSet<QString> CoreApplication::_required_display_devices(const QJsonObject& cade
     return required;
 }
 void CoreApplication::_release_display_modes(const QSet<QString>& required) {
-    for(const auto& device:_managed_displays-required)
+    const auto released=_managed_displays-required;
+    for(const auto& device:released)
         if(_display_session->release(device.toStdWString()))_managed_displays.remove(device);
         else _reconcile_display_mode(device);
 }

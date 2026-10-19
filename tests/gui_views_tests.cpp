@@ -2,8 +2,8 @@
 #include <core/performance.h>
 #include <core_app/numeric_view_adapter.h>
 #include <core_app/graph_panel.h>
-#include <visualization/charts/line.h>
-#include <visualization/numeric_metrics_view.h>
+#include <barelief/charts/line.h>
+#include <barelief/numeric_metrics_view.h>
 #include <QPointer>
 #include <QTimer>
 #include <cstdio>

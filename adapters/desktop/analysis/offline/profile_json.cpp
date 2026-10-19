@@ -163,15 +163,20 @@ class ProfileDecoder {
         else return fail("Unsupported spectrum compensation",ProfileReadIssue::Representation,"normalize");
         return true;
     }
+    bool spectral_layout(const QJsonObject& object){
+        auto& c=frontend();
+        if(!number(object,"coherent_gain",c.coherent_gain) || c.coherent_gain<0)return fail("Invalid coherent gain",ProfileReadIssue::CoherentGain,"coherent_gain");
+        if(!number(object,"power_gain",c.power_gain) || c.power_gain<0)return fail("Invalid power gain",ProfileReadIssue::PowerGain,"power_gain");
+        if(!object.value("include_dc").isBool() || !object.value("include_nyquist").isBool())return fail("Missing explicit spectral layout",ProfileReadIssue::Layout,"include_dc");
+        c.include_dc=object.value("include_dc").toBool();c.include_nyquist=object.value("include_nyquist").toBool();
+        return true;
+    }
     bool metadata(){
         const auto object=source_.value("metadata").toObject();auto& c=frontend();
         if(!number(object,"sample_rate",c.sample_rate) || c.sample_rate<=0)return fail("Invalid sample rate",ProfileReadIssue::SampleRate,"sample_rate");
         if(!count(object,"fft_size",c.fft_size) || c.fft_size<2 || (c.fft_size&(c.fft_size-1)))return fail("Invalid FFT size",ProfileReadIssue::FftSize,"fft_size");
         if(!number(object,"reference",c.reference) || !number(object,"floor_db",c.floor_db))return fail("Missing profile metadata",ProfileReadIssue::Frontend,"reference");
-        if(!number(object,"coherent_gain",c.coherent_gain) || c.coherent_gain<0)return fail("Invalid coherent gain",ProfileReadIssue::CoherentGain,"coherent_gain");
-        if(!number(object,"power_gain",c.power_gain) || c.power_gain<0)return fail("Invalid power gain",ProfileReadIssue::PowerGain,"power_gain");
-        if(!object.value("include_dc").isBool() || !object.value("include_nyquist").isBool())return fail("Missing explicit spectral layout",ProfileReadIssue::Layout,"include_dc");
-        c.include_dc=object.value("include_dc").toBool();c.include_nyquist=object.value("include_nyquist").toBool();
+        if(!spectral_layout(object))return false;
         return resampler(object) && channels(object) && projection(object);
     }
     bool training(){
@@ -192,18 +197,22 @@ class ProfileDecoder {
         budget_-=bins*sizeof(T);output=std::move(decoded);return true;
     }
 
-    template<class T> bool coefficient_vector(const char* key,std::vector<T>& output,std::size_t bins) {
-        const auto value=source_.value(QString::fromUtf8(key));
-        if(value.isArray() && std::size_t(value.toArray().size())!=bins)return fail("Wrong coefficient count",ProfileReadIssue::GainCount,key);
-        if(value.isObject()){
-            std::size_t declared=0;
-            if(!count(value.toObject(),"count",declared))return fail("Invalid coefficient encoding",ProfileReadIssue::Encoding,key);
-            if(declared!=bins)return fail("Wrong coefficient count",ProfileReadIssue::GainCount,key);
-            if(!binary_coefficients(value.toObject(),key,output,bins))return false;
+    template<class T> bool object_coefficients(const QJsonObject& value,const char* key,std::vector<T>& output,std::size_t bins) {
+        std::size_t declared=0;
+        if(!count(value,"count",declared))return fail("Invalid coefficient encoding",ProfileReadIssue::Encoding,key);
+        if(declared!=bins)return fail("Wrong coefficient count",ProfileReadIssue::GainCount,key);
+        return binary_coefficients(value,key,output,bins);
+    }
+    template<class T> bool coefficient_payload(const QJsonValue& value,const char* key,std::vector<T>& output,std::size_t bins) {
+        if(value.isArray()){
+            if(std::size_t(value.toArray().size())!=bins)return fail("Wrong coefficient count",ProfileReadIssue::GainCount,key);
+            return vector(value,output,bins,budget_) || fail("Invalid profile coefficients",ProfileReadIssue::GainValue,key);
         }
-        else if(value.isArray()){
-            if(!vector(value,output,bins,budget_))return fail("Invalid profile coefficients",ProfileReadIssue::GainValue,key);
-        }else return fail("Invalid coefficient encoding",ProfileReadIssue::Encoding,key);
+        if(value.isObject())return object_coefficients(value.toObject(),key,output,bins);
+        return fail("Invalid coefficient encoding",ProfileReadIssue::Encoding,key);
+    }
+    template<class T> bool coefficient_vector(const char* key,std::vector<T>& output,std::size_t bins) {
+        if(!coefficient_payload(source_.value(QString::fromUtf8(key)),key,output,bins))return false;
         if constexpr(std::is_same_v<T,float>){
             if(!std::all_of(output.begin(),output.end(),[](float value){return signal_contracts::valid_profile_gain(value);}))return fail("Invalid gain value",ProfileReadIssue::GainValue,key);
         }
@@ -247,7 +256,8 @@ class ProfileDecoder {
     bool compositions(){
         const auto value=source_.value("compositions");
         if(!value.isArray() || value.toArray().size()>4096)return fail("Invalid composition provenance");
-        for(const auto& item:value.toArray()){
+        const auto items=value.toArray();
+        for(const auto& item:items){
             if(!item.isObject())return fail("Invalid composition statistics");
             if(!composition(item.toObject()))return false;
         }

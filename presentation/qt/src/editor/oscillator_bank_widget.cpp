@@ -1,7 +1,7 @@
 #include "oscillator_bank_widget.h"
 #include "literal_edit_binding.h"
 #include "core_app/scheme_editor/node_parameter_model.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QCheckBox>
 #include <QComboBox>
 #include <QHeaderView>

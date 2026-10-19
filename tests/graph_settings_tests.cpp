@@ -11,9 +11,9 @@
 #include "core_app/settings_widget.h"
 #include "core_app/config_manager.h"
 #include "core_app/scheme_editor/audio_node_model.h"
-#include "visualization/ui_text.h"
-#include "visualization/surface_settings.h"
-#include "visualization/scene_aspect_control.h"
+#include "barelief/ui_text.h"
+#include "barelief/surface_settings.h"
+#include "barelief/scene_aspect_control.h"
 #include <QtNodes/StyleCollection>
 #include <QTemporaryDir>
 #include <QFile>

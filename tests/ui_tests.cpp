@@ -4,7 +4,7 @@
 #include <core_app/settings_widget.h>
 #include <core_app/scheme_editor/editor_widget.h>
 #include <desktop/numeric_project_document.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QTemporaryDir>
 #include <QFile>
 #include <QAction>

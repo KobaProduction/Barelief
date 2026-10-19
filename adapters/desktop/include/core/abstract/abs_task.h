@@ -1,5 +1,5 @@
-#ifndef QT_VISUALIZATION_ABS_TASK_H
-#define QT_VISUALIZATION_ABS_TASK_H
+#ifndef BARELIEF_ABS_TASK_H
+#define BARELIEF_ABS_TASK_H
 #include <atomic>
 #include <cstdint>
 #include <thread>

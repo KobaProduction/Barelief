@@ -18,7 +18,7 @@ target_compile_definitions(graph_performance_compare PRIVATE NUMERIC_QML)
 deploy_desktop_runtime(graph_performance_compare)
 # Separate-process native Quick host A/B; opt-in, no offscreen performance claim.
 add_executable(render_topology_probe render_topology_probe.cpp)
-target_link_libraries(render_topology_probe PRIVATE visualization dsp_kernels)
+target_link_libraries(render_topology_probe PRIVATE barelief dsp_kernels)
 deploy_desktop_runtime(render_topology_probe)
 # Opt-in native preview clock evidence; functional CTest does not claim120Hz.
 add_executable(numeric_preview_cadence_probe numeric_preview_cadence_probe.cpp)
@@ -138,6 +138,10 @@ if(BUILD_GUI)
     add_desktop_check(aggregator_tests aggregator-library)
     target_link_libraries(aggregator_tests PRIVATE Qt6::Test)
     get_filename_component(qt_test_platform_path "${Qt6_DIR}/../../../plugins/platforms" ABSOLUTE)
+    add_desktop_check(product_branding_tests desktop_gui_composition)
+    deploy_desktop_runtime(product_branding_tests)
+    set_tests_properties(product_branding_tests PROPERTIES LABELS "ui;integration" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1;QT_QUICK_BACKEND=software")
     add_desktop_check(numeric_application_tests desktop_gui_composition)
     add_desktop_check(display_mode_application_tests desktop_gui_composition)
     set_tests_properties(display_mode_application_tests PROPERTIES LABELS "ui;integration" TIMEOUT 30

@@ -1,6 +1,6 @@
-#include <visualization/quick/quick_ui.h>
-#include <visualization/quick2d/plot_model.h>
-#include <visualization/quick2d/vector_plot_item.h>
+#include <barelief/quick/quick_ui.h>
+#include <barelief/quick2d/plot_model.h>
+#include <barelief/quick2d/vector_plot_item.h>
 #include <core/performance.h>
 #include <dsp_core/dsp.h>
 #include "renderer_probe_telemetry.h"

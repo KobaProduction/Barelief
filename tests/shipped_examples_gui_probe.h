@@ -11,9 +11,9 @@
 #include <QGraphicsView>
 #include <QMouseEvent>
 #include <desktop/numeric_project_document.h>
-#include <visualization/ui_text.h>
-#include <visualization/abstract/abs.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
+#include <barelief/ui_text.h>
+#include <barelief/abstract/abs.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
 #include <QFile>
 #include <QJsonDocument>
 #include <QPushButton>

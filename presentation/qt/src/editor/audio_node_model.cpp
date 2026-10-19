@@ -1,4 +1,4 @@
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include "core/performance.h"
 #include "core_app/scheme_editor/audio_node_model.h"
 #include "core_app/scheme_editor/node_preview_card.h"

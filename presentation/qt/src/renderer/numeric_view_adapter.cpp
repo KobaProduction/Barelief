@@ -1,6 +1,6 @@
 #include <core_app/numeric_view_adapter.h>
-#include <visualization/render_preparation_policy.h>
-#include <visualization/numeric_plot_limits.h>
+#include <barelief/render_preparation_policy.h>
+#include <barelief/numeric_plot_limits.h>
 #include <cmath>
 #include <algorithm>
 namespace presentation {

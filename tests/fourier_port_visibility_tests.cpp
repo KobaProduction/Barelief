@@ -2,7 +2,7 @@
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/node_parameter_model.h>
 #include <core_app/scheme_editor/node_parameter_form.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <core_app/numeric_default_graph.h>
 #include <dataflow_runtime/runtime.h>
 #include <QApplication>

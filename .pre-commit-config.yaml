@@ -4,6 +4,13 @@ exclude: '^(libs/(dsp_kernels/vendor|bdsp_protocol/(vendor|generated))|adapters/
 repos:
   - repo: local
     hooks:
+      - id: quality-tools
+        name: Quality-tool regression tests
+        language: python
+        additional_dependencies: [identify==2.6.20]
+        entry: python scripts/verify_quality_tools.py
+        pass_filenames: false
+        files: '^(\.pre-commit-config\.yaml|\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution)(_tests)?|run_(clazy|clang_tidy)|verify_quality_tools)\.py|tests/(quality_execution|run_clazy|run_clang_tidy)_tests\.py)$'
       - id: checkdeps
         name: Chromium checkdeps (module boundaries)
         language: python
@@ -11,18 +18,38 @@ repos:
         pass_filenames: false
         always_run: true
       - id: clazy
-        name: Clazy (Qt C++)
+        name: Clazy (production Qt C++)
         language: python
         entry: python scripts/run_clazy.py
         args: [--extra-arg=--target=x86_64-w64-windows-gnu]
-        files: '^(presentation/qt|adapters/desktop|apps)/.*\.(cpp|cc|cxx)$'
-        types: [c++]
+        pass_filenames: false
+        always_run: true
         require_serial: true
       - id: clang-tidy
-        name: clang-tidy (C++ function policy)
+        name: clang-tidy (production C++ function policy)
         language: python
         additional_dependencies: [clang-tidy==22.1.8]
-        entry: clang-tidy
+        entry: python scripts/run_clang_tidy.py
         args: [-p=cmake-build-release, --extra-arg=-xc++, --extra-arg-before=-std=c++23]
-        types: [c++]
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+      - id: clazy-tests
+        name: clazy (test C++)
+        stages: [manual]
+        language: python
+        entry: python scripts/run_clazy.py
+        args: [--scope=full, --code-scope=tests, --extra-arg=--target=x86_64-w64-windows-gnu]
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+      - id: clang-tidy-tests
+        name: clang-tidy (test C++)
+        stages: [manual]
+        language: python
+        additional_dependencies: [clang-tidy==22.1.8]
+        entry: python scripts/run_clang_tidy.py
+        args: [--scope=full, --code-scope=tests, -p=cmake-build-release, --extra-arg=-xc++, --extra-arg-before=-std=c++23]
+        pass_filenames: false
+        always_run: true
         require_serial: true

@@ -4,23 +4,24 @@
 #include <core_app/plot_composition.h>
 #include "core_app/settings_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
-#include "visualization/surface_settings.h"
-#include "visualization/ui_text.h"
-#include "visualization/charts/line.h"
-#include "visualization/charts/freq.h"
+#include "barelief/surface_settings.h"
+#include "barelief/ui_text.h"
+#include "barelief/charts/line.h"
+#include "barelief/charts/freq.h"
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QScreen>
 #include <QHash>
 #include <QStatusBar>
 #include <algorithm>
+#include <utility>
 #include <cmath>
 #include <desktop/numeric_project_document.h>
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/editor_widget.h>
 #include <QLabel>
 #include <QLayout>
-#include <visualization/numeric_metrics_view.h>
+#include <barelief/numeric_metrics_view.h>
 
 Q_DECLARE_LOGGING_CATEGORY(core_app_window)
 
@@ -35,6 +36,16 @@ void refresh_plot_descriptor(GraphPanel* panel,const presentation::PlotDescripto
     if(panel->modes()==capabilities.modes && panel->audio_scales()==capabilities.audio_scales)return;
     panel->set_plot_capabilities(capabilities);
     panel->restore_presentation(preferences);
+}
+QString joined_surface_errors(const QMap<QString,QString>& errors) {
+    QString text;
+    bool first = true;
+    for (const auto& error : errors) {
+        if (!first) text += QStringLiteral(" \u00b7 ");
+        text += error;
+        first = false;
+    }
+    return text;
 }
 bool decode_runtime_view_graph(const QJsonObject& document,domain::NumericProcessingGraph& graph) {
     return !document.isEmpty() && bool(desktop::decode_numeric_graph(
@@ -274,7 +285,7 @@ void MainWindow::sync_node_views(const QJsonObject& document) {
     update_view_draft();
     const auto& graph = _view_draft ? *_view_draft : runtime_graph;
     restore_node_views(&graph);
-    for (auto *dock : graph_docks()) dock->setProperty("numericEndpoint", QVariant{});
+    for (const auto docks = graph_docks(); auto *dock : docks) dock->setProperty("numericEndpoint", QVariant{});
     const auto previous = _active_node_views;
     _active_node_views.clear();
     rebuild_node_view_bindings(graph,runtime_graph,runtime_available);
@@ -302,7 +313,7 @@ void MainWindow::complete_node_view_sync(const QMap<int,QString>& previous) {
     render_numeric_views();
 }
 void MainWindow::retire_node_view_session() {
-    for (auto *dock : graph_docks()) dock->setProperty("numericEndpoint", QVariant{});
+    for (const auto docks = graph_docks(); auto *dock : docks) dock->setProperty("numericEndpoint", QVariant{});
     const auto previous = _active_node_views;
     clear_node_views();
     release_node_view_bindings();
@@ -313,8 +324,8 @@ void MainWindow::retire_node_view_session() {
     refresh_subscriptions();
 }
 void MainWindow::release_node_view_bindings() {
-    for (const auto& binding : _numeric_bindings) _numeric_views.unbind(binding.endpoint, binding.plane);
-    for (const auto& ports : _metric_bindings)
+    for (const auto& binding : std::as_const(_numeric_bindings)) _numeric_views.unbind(binding.endpoint, binding.plane);
+    for (const auto& ports : std::as_const(_metric_bindings))
         for (const auto& binding : ports) _numeric_views.unbind(binding.endpoint, binding.plane);
 }
 
@@ -381,8 +392,10 @@ void MainWindow::add_primary_binding(const domain::ConfiguredProcessingNode& nod
 }
 
 void MainWindow::refresh_additional_node_views(const domain::NumericProcessingGraph& graph) {
-    for (const auto& key : _node_views.keys()) {
-        const auto view = _node_views[key];
+    // Renderer installation can update the live map; retain the original key order.
+    const auto views = _node_views;
+    for (auto it = views.cbegin(); it != views.cend(); ++it) {
+        const auto view = _node_views[it.key()];
         if (view.device != _application.device_id() ||
             view.graph != QString::fromStdString(graph.graph_id)) continue;
         const auto node = std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& candidate) {
@@ -525,7 +538,7 @@ bool MainWindow::has_metric_binding(const NumericBinding& candidate,
 
 void MainWindow::release_old_metric_bindings(const QMap<QString,QList<NumericBinding>>& metric_bindings,
     const QMap<QString,NumericBinding>& bindings) {
-    for (const auto& ports : _metric_bindings) {
+    for (const auto& ports : std::as_const(_metric_bindings)) {
         for (const auto& old : ports) {
             const bool in_views = std::any_of(bindings.cbegin(),bindings.cend(),[&](const auto& binding) {
                 return binding.endpoint == old.endpoint && binding.plane == old.plane;
@@ -537,7 +550,7 @@ void MainWindow::release_old_metric_bindings(const QMap<QString,QList<NumericBin
 }
 
 void MainWindow::publish_metric_bindings() {
-    for (const auto& ports : _metric_bindings)
+    for (const auto& ports : std::as_const(_metric_bindings))
         for (const auto& binding : ports) _numeric_views.bind(binding.endpoint,binding.plane);
     for (auto it = _metric_bindings.cbegin(); it != _metric_bindings.cend(); ++it) {
         if (it.value().isEmpty()) continue;
@@ -668,7 +681,7 @@ void MainWindow::configure_numeric_binding(const QString& key,const NumericBindi
 void MainWindow::sync_numeric_bindings(const domain::NumericProcessingGraph& graph,
     const domain::NumericProcessingGraph& runtime_graph,bool runtime_available,
     QMap<QString,NumericBinding> bindings) {
-    for (const auto& old : _numeric_bindings) {
+    for (const auto& old : std::as_const(_numeric_bindings)) {
         const bool retained = std::any_of(bindings.cbegin(),bindings.cend(),[&](const auto& binding) {
             return binding.endpoint == old.endpoint && binding.plane == old.plane;
         });
@@ -684,7 +697,7 @@ void MainWindow::clear_node_views() {
     _numeric_changed_endpoints.clear();
     _vector_delivery_queues.clear();
     _numeric_views.clear();
-    for(auto* dock:graph_docks())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())){
+    for(const auto docks=graph_docks(); auto* dock:docks)if(auto* panel=qobject_cast<GraphPanel*>(dock->widget())){
         panel->set_axis_permissions({});
         panel->set_value_layout("");
         presentation::NumericViewAdapter::clear_render_target(panel->all_render_targets());
@@ -943,13 +956,13 @@ void MainWindow::apply_render_rate() {
         return display_refresh_rate(display,settings,refresh_rates);
     };
     _render_fps = SurfaceSettings::renderFps(prefs,refresh_rate(screen()));
-    for (auto *dock : graph_docks())
+    for (const auto docks = graph_docks(); auto *dock : docks)
         if (dock->isVisible())
             _render_fps = std::max(_render_fps,SurfaceSettings::renderFps(prefs,refresh_rate(dock->screen())));
     // Preview delivery has jitter headroom; processing clock is independent.
     _application.set_numeric_preview_cadence_hz(std::min(240,_render_fps * 2));
     _numeric_render_timer.setInterval(qMax(1,1000 / qMax(1,_render_fps)));
-    const int precision = SurfaceSettings::effective(prefs)["axis_precision"].toInt();
+    const int precision = SurfaceSettings::effective(prefs).value("axis_precision").toInt();
     update_chart_render_rates(precision);
     update_graph_panel_render_rates(prefs,refresh_rates,precision);
 }
@@ -959,7 +972,7 @@ void MainWindow::update_graph_panel_render_rates(const QJsonObject& prefs,
     const auto refresh_rate = [this,settings,&refresh_rates](QScreen *display) {
         return display_refresh_rate(display,settings,refresh_rates);
     };
-    for (auto *dock : graph_docks()) {
+    for (const auto docks = graph_docks(); auto *dock : docks) {
         auto *panel = qobject_cast<GraphPanel *>(dock->widget());
         if (!panel) continue;
         panel->set_render_fps(SurfaceSettings::renderFps(prefs,refresh_rate(panel->screen())));
@@ -1013,7 +1026,7 @@ void MainWindow::apply_surface_settings() {
 }
 void MainWindow::update_graph_surface_settings() {
     const auto& ui = _application.state().file_configs.ui;
-    for (auto *dock : graph_docks()) {
+    for (const auto docks = graph_docks(); auto *dock : docks) {
         auto *panel = qobject_cast<GraphPanel *>(dock->widget());
         auto *surface = panel ? panel->active_spectrogram() : nullptr;
         if (!surface || surface == _spectrogram_view) continue;
@@ -1106,7 +1119,7 @@ void MainWindow::show_surface_error(const QString& key,SpectrogramGraph *view,co
         label->setObjectName("surfaceSettingsStatus");
         statusBar()->addPermanentWidget(label);
     }
-    label->setText(_surface_errors.values().join(QStringLiteral(" \u00b7 ")));
+    label->setText(joined_surface_errors(_surface_errors));
     label->setToolTip(label->text());
     label->setVisible(!_surface_errors.isEmpty());
 }

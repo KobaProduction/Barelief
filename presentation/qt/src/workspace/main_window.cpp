@@ -1,7 +1,7 @@
-#include "visualization/surface_settings.h"
-#include "visualization/ui_text.h"
+#include "barelief/surface_settings.h"
+#include "barelief/ui_text.h"
 #include "core_app/graph_panel.h"
-#include "visualization/abstract/fps.h"
+#include "barelief/abstract/fps.h"
 #include "core_app/main_window.h"
 #include <core/performance.h>
 #include <cmath>
@@ -35,6 +35,7 @@
 #include <QJsonDocument>
 #include <QComboBox>
 #include <QLineEdit>
+#include <QStringView>
 #include <QSpinBox>
 #include <QFormLayout>
 #include <QStandardItemModel>
@@ -50,9 +51,9 @@
 #include "core_app/settings_widget.h"
 #include "core_app/scheme_editor/editor_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
-#include "visualization/charts/line.h"
-#include "visualization/charts/bar.h"
-#include "visualization/charts/freq.h"
+#include "barelief/charts/line.h"
+#include "barelief/charts/bar.h"
+#include "barelief/charts/freq.h"
 
 Q_LOGGING_CATEGORY(core_app_window, "core_app.window")
 
@@ -225,7 +226,7 @@ void MainWindow::register_navigation_tab_actions(QMenu* navigation) {
 
 void MainWindow::show_workspace_switcher() {
     auto *menu=new QMenu(this); menu->setAttribute(Qt::WA_DeleteOnClose);
-    for(auto *dock:workspaceDocks()) if(!dock->isHidden()) {
+    for(const auto docks=workspaceDocks(); auto *dock:docks) if(!dock->isHidden()) {
         auto *item=menu->addAction(dock->windowTitle());
         connect(item,&QAction::triggered,this,[this,dock]{dock->raise();focusDock(dock);});
     }
@@ -245,7 +246,7 @@ presentation::ProcessorDirectoryModel *MainWindow::create_processor_directory(st
     auto *directory = new presentation::ProcessorDirectoryModel(_application.local_device_id(),std::move(discovery),this);
     if (_application.is_remote()) {
         const auto endpoint=_application.device_id(); const auto separator=endpoint.lastIndexOf(':');
-        directory->add_direct(endpoint,endpoint.left(separator),quint16(endpoint.mid(separator+1).toUInt()));
+        directory->add_direct(endpoint,endpoint.left(separator),quint16(QStringView(endpoint).mid(separator+1).toUInt()));
     }
     directory->set_selected(_application.device_id());
     return directory;
@@ -335,7 +336,7 @@ void MainWindow::setup_theme_menu(QComboBox *themeSelector,QHBoxLayout *deviceLa
     themeActions->setExclusive(true);
     register_theme_actions(themeMenu,themeSelector,themeActions);
     connect(themeMenu, &QMenu::aboutToShow, themeMenu, [themeActions, themeSelector] {
-        for (auto *action : themeActions->actions()) {
+        for (const auto actions = themeActions->actions(); auto *action : actions) {
             const int index = action->data().toInt();
             action->setText(themeSelector->itemText(index));
             action->setChecked(themeSelector->currentIndex() == index);
@@ -396,7 +397,7 @@ void MainWindow::setup_render_telemetry() {
 
 void MainWindow::refresh_fps() {
     if (!_application.state().file_configs.ui.show_fps) return;
-    for (auto *dock:workspaceDocks())
+    for (const auto docks=workspaceDocks(); auto *dock:docks)
         if(is_graph_dock(dock) && !dock->property("renderExposed").toBool()) dock->setRenderFPS(0,true);
     refresh_static_chart_fps();
     refresh_node_view_fps();
@@ -445,7 +446,7 @@ void MainWindow::refresh_presentation_preferences() {
         apply_render_rate();
         if (auto *editor = data_flow_editor()) editor->sync_preferences();
         if (!_application.state().file_configs.ui.show_fps) {
-            for(auto *dock:workspaceDocks()) dock->setRenderFPS(0,false);
+            for(const auto docks=workspaceDocks(); auto *dock:docks) dock->setRenderFPS(0,false);
         } else
             refresh_fps();
 }
@@ -454,7 +455,7 @@ void MainWindow::bind_display_refresh() {
     const auto watchScreen = [this](QScreen *display) {
         connect(display, &QScreen::refreshRateChanged, this, [this] { apply_render_rate(); });
     };
-    for (auto *display : QGuiApplication::screens()) watchScreen(display);
+    for (const auto screens = QGuiApplication::screens(); auto *display : screens) watchScreen(display);
     connect(qApp, &QGuiApplication::screenAdded, this, watchScreen);
     QTimer::singleShot(0, this, [this] {
         if (windowHandle())
@@ -476,7 +477,7 @@ MainWindow::MainWindow(GuiPresenter &application, std::shared_ptr<presentation::
     setup_command_registry();
     ui::Theme::instance().set(_application.state().file_configs.ui.theme);
     ui::Language::instance().set(_application.state().file_configs.ui.language);
-    ui::bind(this, "windowTitle", "Data Processing System Core");
+    ui::bind(this, "windowTitle", "Barelief | Signal Processing & Visualization");
     setMinimumSize(800, 600);
     resize(1000, 800);
     setup_numeric_render_timer();
@@ -503,7 +504,7 @@ void MainWindow::setup_command_registry() {
     _commands->set_workspace_guard([this] {
         auto *active = QApplication::activeWindow();
         if (active == this) return true;
-        for (auto *dock : workspaceDocks()) if (dock->window() == active) return true;
+        for (const auto docks = workspaceDocks(); auto *dock : docks) if (dock->window() == active) return true;
         return false;
     });
 }
@@ -537,13 +538,13 @@ MainWindow::~MainWindow() {
     }
 }
 void MainWindow::disconnect_panel_callbacks() {
-    for (auto *panel : _panels) {
+    for (auto *panel : std::as_const(_panels)) {
         disconnect(panel, nullptr, this, nullptr);
         disconnect(panel->toggleViewAction(), nullptr, this, nullptr);
     }
     // Floating children close during QWidget teardown, after our maps have
     // already been destroyed. Their visibility callbacks must stop here.
-    for(const auto &view:_node_views) disconnect(view.dock,nullptr,this,nullptr);
+    for(const auto &view:std::as_const(_node_views)) disconnect(view.dock,nullptr,this,nullptr);
 }
 
 static const char* configuration_state_key(MainWindow::ConfigurationSaveState state) {
@@ -684,7 +685,7 @@ void MainWindow::bind_settings_signals(SettingsWidget *settings_widget) {
 void MainWindow::update_camera_controls_from_settings() {
     const auto controls = _application.state().file_configs.ui.camera_controls;
     _spectrogram_view->set_camera_controls(controls);
-    for(auto* dock:graph_docks())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
+    for(const auto docks=graph_docks(); auto* dock:docks)if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))
         if(auto* surface=panel->owned_surface())surface->set_camera_controls(controls);
     if (auto *editor = data_flow_editor())
         editor->set_navigation_speed(CameraControls::movementSpeed(controls));
@@ -964,7 +965,7 @@ QAction *MainWindow::setup_reset_camera_action(QMenu *view_menu) {
 }
 
 void MainWindow::reset_active_surface_camera() {
-    for(const auto &key:_active_node_views) {
+    for(const auto &key:std::as_const(_active_node_views)) {
         auto *surface=key=="spectrogram" ? _spectrogram_view : _node_views.value(key).spectrogram;
         if(surface && surface->isVisible()) {surface->reset_camera();return;}
     }

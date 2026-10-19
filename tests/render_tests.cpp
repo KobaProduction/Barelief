@@ -1,9 +1,9 @@
 #include "numeric_render_fixture.h"
 #include "numeric_gui_fixture.h"
 #include <core_app/numeric_view_adapter.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/ui_text.h>
-#include <visualization/numeric_image_view.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
+#include <barelief/ui_text.h>
+#include <barelief/numeric_image_view.h>
 #include <cstdio>
 int main(int argc,char** argv) {
     QApplication application(argc,argv);

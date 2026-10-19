@@ -1,6 +1,6 @@
 #include <core_app/music_analysis_dialog.h>
-#include <visualization/ui_text.h>
-#include <visualization/numeric_image_view.h>
+#include <barelief/ui_text.h>
+#include <barelief/numeric_image_view.h>
 #include <QApplication>
 #include <QComboBox>
 #include <QElapsedTimer>

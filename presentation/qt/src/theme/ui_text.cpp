@@ -1,4 +1,4 @@
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QGroupBox>
 #include <QApplication>
 #include <QStyle>

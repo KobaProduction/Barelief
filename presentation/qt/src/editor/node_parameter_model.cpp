@@ -4,7 +4,7 @@
 #include "numeric_graph_draft.h"
 #include "parameter_field_specs.h"
 #include <domain/graph/node_factory.h>
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <core_app/spectrum_projection_ui.h>
 #include <algorithm>
 #include <limits>

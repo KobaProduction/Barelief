@@ -1,4 +1,4 @@
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include "core/performance.h"
 #include "core_app/scheme_editor/editor_widget.h"
 #include "core_app/wheel_input.h"
@@ -2086,7 +2086,7 @@ public:
 private:
     bool is_typed() const { return !_nodes.isEmpty() && _nodes.first().toObject().contains("kind"); }
     bool read_adapters(QString* error) {
-        for (const auto value : _nodes) {
+        for (const auto value : std::as_const(_nodes)) {
             const auto node = value.toObject();
             const auto adapter = node.contains("kind") ? node.value("adapter") : node.value("internal-data").toObject().value("adapter");
             if (adapter.isUndefined()) continue;
@@ -2102,7 +2102,7 @@ private:
     QJsonObject prepared_visual(NumericEditorGraphModel& candidate) const {
         auto visual = _source;
         QJsonArray nodes;
-        for (const auto value : _nodes) {
+        for (const auto value : std::as_const(_nodes)) {
             auto node = value.toObject();
             auto data = node.value("internal-data").toObject();
             const auto typed = candidate.saveNode(QtNodes::NodeId(node.value("id").toInteger())).value("internal-data").toObject();
@@ -2115,14 +2115,15 @@ private:
     }
     static QMap<int, QJsonObject> positions(const QJsonObject& document) {
         QMap<int, QJsonObject> result;
-        for (const auto value : document.value("nodes").toArray()) {
+        const auto nodes = document.value("nodes").toArray();
+        for (const auto value : nodes) {
             const auto node = value.toObject();
             result[node.value("id").toInt()] = node.value("position").toObject();
         }
         return result;
     }
     void collect_typed_metadata(QMap<int,QJsonObject>& positions, QMap<int,QJsonObject>& presentations, QMap<int,QJsonObject>& adapters) const {
-        for (const auto value : _nodes) {
+        for (const auto value : std::as_const(_nodes)) {
             const auto node = value.toObject();
             const auto id = node.value("id").toInt();
             presentations[id] = node.value("presentation").toObject();
@@ -2142,7 +2143,7 @@ private:
     }
     QJsonObject typed_node_extensions(QJsonObject visual) const {
         QJsonObject original;
-        for (const auto value : _nodes) {
+        for (const auto value : std::as_const(_nodes)) {
             const auto node = value.toObject();
             if (node.value("id") == visual.value("id")) { original = node; break; }
         }
@@ -2168,7 +2169,8 @@ private:
         QMap<int,QJsonObject> presentations, adapters;
         collect_typed_metadata(saved_positions, presentations, adapters);
         QJsonArray nodes;
-        for (const auto value : prepared.value("nodes").toArray())
+        const auto prepared_nodes = prepared.value("nodes").toArray();
+        for (const auto value : prepared_nodes)
             nodes.append(typed_node_extensions(project_typed_node(value.toObject(), saved_positions, presentations, adapters)));
         visual["nodes"] = nodes;
         if (saved_positions.isEmpty()) visual["layout_pending"] = true;
@@ -2281,7 +2283,7 @@ static bool decode_preset_presentation(const QJsonValue& presentation,QJsonObjec
 }
 bool SchemeEditorWidget::load_preset(const QString &id) {
     if (_application.graph_request_pending()) return false;
-    for (const auto &value : _application.state().file_configs.ui.pipeline_presets) {
+    for (const auto &value : std::as_const(_application.state().file_configs.ui.pipeline_presets)) {
         const auto preset=value.toObject();
         if (preset.value("id").toString()!=id || preset.value("version").toInt()!=1) continue;
         return load_selected_preset(preset);
@@ -2441,7 +2443,8 @@ public:
 private:
     void build_edges() {
         for (const auto id : _graph.allNodeIds()) { _incoming[id] = 0; _layer[id] = 0; }
-        for (const auto value : _graph.save().value("connections").toArray()) add_edge(value.toObject());
+        const auto connections = _graph.save().value("connections").toArray();
+        for (const auto value : connections) add_edge(value.toObject());
     }
     void add_edge(const QJsonObject& edge) {
         const auto from = QtNodes::NodeId(edge.value("outNodeId").toInt());

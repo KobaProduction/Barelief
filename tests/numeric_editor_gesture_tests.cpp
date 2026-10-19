@@ -10,7 +10,7 @@
 #include <core_app/ui/collapsible_section.h>
 #include <desktop/numeric_project_document.h>
 #include <domain/graph/preparation_values.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QtNodes/internal/AbstractNodeGeometry.hpp>
 #include <QtNodes/internal/NodeGraphicsObject.hpp>
 #include <QtNodes/internal/ConnectionGraphicsObject.hpp>

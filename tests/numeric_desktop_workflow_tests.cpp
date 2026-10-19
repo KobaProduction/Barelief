@@ -4,7 +4,7 @@
 #include <core_app/numeric_default_graph.h>
 #include <core_app/numeric_view_adapter.h>
 #include "numeric_render_fixture.h"
-#include <visualization/spectrograms/spectrogram_graph.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
 #include <core_app/scheme_editor/editor_widget.h>
 #include <core_app/scheme_editor/audio_node_model.h>
 #include <core_app/scheme_editor/numeric_editor_model.h>

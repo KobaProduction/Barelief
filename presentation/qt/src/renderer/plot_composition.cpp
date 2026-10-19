@@ -1,5 +1,5 @@
 #include <core_app/plot_composition.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QJsonArray>
 namespace presentation {
 PlotDescriptor plot_descriptor_from_preferences(const QJsonObject& preferences,const PlotDescriptor& fallback) {

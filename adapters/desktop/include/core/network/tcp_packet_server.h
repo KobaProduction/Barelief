@@ -1,5 +1,5 @@
-#ifndef QT_VISUALIZATION_TCP_PACKET_SERVER_H
-#define QT_VISUALIZATION_TCP_PACKET_SERVER_H
+#ifndef BARELIEF_TCP_PACKET_SERVER_H
+#define BARELIEF_TCP_PACKET_SERVER_H
 
 #include <QTcpServer>
 #include <QObject>
@@ -17,4 +17,4 @@ protected:
     void incomingConnection(qintptr handle) override;
 };
 
-#endif //QT_VISUALIZATION_TCP_PACKET_SERVER_H
+#endif //BARELIEF_TCP_PACKET_SERVER_H

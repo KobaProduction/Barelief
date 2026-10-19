@@ -13,24 +13,24 @@ cleanup() {
     rm -f "$log"
 }
 trap cleanup EXIT
-module=$(pactl load-module module-null-sink sink_name=qt_visualization_qa rate=48000 channels=2)
+module=$(pactl load-module module-null-sink sink_name=barelief_qa rate=48000 channels=2)
 timeout 30 "$binary" 9000 > "$log" 2>&1 & pid=$!
 sleep 2
-pactl set-default-sink qt_visualization_qa
+pactl set-default-sink barelief_qa
 sleep 3
 # Removing the selected endpoint must recover to the remaining default device.
 pactl unload-module "$module"; module=''
 pactl set-default-sink "$saved"
 wait "$pid"; pid=''
 cat "$log"
-grep -q 'qt_visualization_qa.monitor' "$log"
+grep -q 'barelief_qa.monitor' "$log"
 grep -q "$saved" "$log"
-module=$(pactl load-module module-null-sink sink_name=qt_visualization_mono_qa rate=44100 channels=1 channel_map=mono)
-pactl set-default-sink qt_visualization_mono_qa
-pactl list short sources | grep 'qt_visualization_mono_qa.monitor'
+module=$(pactl load-module module-null-sink sink_name=barelief_mono_qa rate=44100 channels=1 channel_map=mono)
+pactl set-default-sink barelief_mono_qa
+pactl list short sources | grep 'barelief_mono_qa.monitor'
 "$binary" 4000 mono-tone > "$log" 2>&1
 cat "$log"
-grep -q 'qt_visualization_mono_qa.monitor.*44100' "$log"
+grep -q 'barelief_mono_qa.monitor.*44100' "$log"
 pactl set-default-sink "$saved"
 pactl unload-module "$module"; module=''
 "$binary" 2000 microphone

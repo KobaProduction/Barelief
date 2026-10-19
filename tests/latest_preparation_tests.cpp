@@ -1,4 +1,4 @@
-#include <visualization/rendering/latest_preparation.h>
+#include <barelief/rendering/latest_preparation.h>
 #include <QCoreApplication>
 #include <atomic>
 #include <chrono>
@@ -6,7 +6,7 @@
 #include <iostream>
 #include <cstdlib>
 using namespace std::chrono_literals;
-using Worker=visualization::rendering::LatestPreparation<int,int>;
+using Worker=barelief::rendering::LatestPreparation<int,int>;
 void require(bool ok,const char* message){if(!ok){std::cerr<<message<<'\n';std::exit(1);}}
 template<class F> void ready(F& future){require(future.wait_for(3s)==std::future_status::ready,"worker deadline exceeded");}
 void newest_completion_wins(){
@@ -14,7 +14,7 @@ void newest_completion_wins(){
         auto gate=release.get_future().share();auto begin=started.get_future();auto done=finished.get_future();
         Worker worker([&](int& result,const int& input){if(input==1){started.set_value();gate.wait();}result=input;if(input==3)finished.set_value();});
         worker.submit(1,{});ready(begin);worker.submit(2,{});worker.submit(3,{});release.set_value();ready(done);
-        visualization::rendering::preparationPool().waitForDone();
+        barelief::rendering::preparationPool().waitForDone();
         int result=0;require(worker.take(result)&&result==3,"latest pending/completion not retained");
         require(!worker.take(result),"completion consumed twice");
 }
@@ -33,13 +33,13 @@ void pool_is_bounded_and_fair(){
         Worker b([&](auto& out,const auto& in){prepare(out,in,right,secondStarted);});right=&b;
         Worker c([&](int& out,const int& in){out=in;stop=true;thirdFinished.set_value();});
         a.submit(1,{});b.submit(1,{});ready(first);ready(second);c.submit(7,{});release.set_value();ready(third);
-        visualization::rendering::preparationPool().waitForDone();
+        barelief::rendering::preparationPool().waitForDone();
         require(peak<=2,"preparation exceeded pool limit");int out=0;require(c.take(out)&&out==7,"third view starved");
 }
 void exception_does_not_strand_worker(){
         Worker worker([](int& out,const int& in){if(in==1)throw 1;out=in;});
-        worker.submit(1,{});visualization::rendering::preparationPool().waitForDone();
-        worker.submit(2,[]{throw 2;});visualization::rendering::preparationPool().waitForDone();
+        worker.submit(1,{});barelief::rendering::preparationPool().waitForDone();
+        worker.submit(2,[]{throw 2;});barelief::rendering::preparationPool().waitForDone();
         int out=0;require(worker.take(out)&&out==2,"exception stranded worker state");
 }
 void queued_worker_can_retire(){

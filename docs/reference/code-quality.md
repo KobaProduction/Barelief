@@ -55,18 +55,65 @@ Hook явно задаёт язык C++ и начальный стандарт C
 остаётся приоритетнее начального стандарта. Пороги и состав проверок не меняются.
 Описание аргументов: [LLVM clang-tidy](https://releases.llvm.org/22.1.0/tools/clang/tools/extra/docs/clang-tidy/index.html).
 
+`scripts/run_clang_tidy.py` запускает отдельный процесс на каждый выбранный
+C++ файл через общий `scripts/quality_execution.py`. Заголовки проверяются как
+main file, сохраняя диагностику inline-функций без расширения header filter.
+Порог операторов, cognitive complexity и повышение замечаний до ошибок задаёт
+прежний `.clang-tidy`. По умолчанию число workers ограничено доступными CPU и
+75% свободной RAM при оценке 768 MiB на worker. Аргумент `--jobs N` имеет
+приоритет над `QUALITY_JOBS=N`; фиксированного ограничения в четыре worker нет.
+
+Оба hook запускаются один раз через `always_run` и `pass_filenames: false`.
+Общий selector получает область изменений до фильтрации инструментами, поэтому
+изменение только заголовка также запускает соответствующую проверку.
+Pre-commit буферизует консольный вывод; текущий прогресс доступен в ignored
+`.agent-workspace/quality/progress-<tool>-<PID>.status.json` и JSONL-журнале.
+Статус содержит `jobs`, `running`, `completed`, `total`, `failed` и время.
+Ошибка процесса или недоступный инструмент сохраняют ненулевой итог gate.
+
+Hook `quality-tools` запускает regression для selector, scheduler и обоих
+wrappers при изменении quality scripts, их тестов, конфигурации или CI.
+Тот же hook входит в полный CI/pre-push проход. В его изолированной среде
+закреплён `identify==2.6.20`, чтобы проверять соответствие прежнему C++ file
+filter; пропущенный regression считается ошибкой, а не успешной проверкой.
+
 ```powershell
 ./.agent-workspace/quality-venv/Scripts/python.exe -m pre_commit run --all-files --hook-stage pre-push
 ```
 
-Pre-push проверяет отправляемый набор файлов; содержимое берётся из checkout.
-Незакоммиченные правки могут отличаться от отправляемого commit. CI выполняет
-проверку в своей чистой редакции. Созданный workflow не означает успешный
-серверный запуск или настроенные branch protections.
+Pre-push определяет C++ scope через `scripts/quality_scope.py`, а содержимое
+берёт из checkout. Незакоммиченные правки могут отличаться от отправляемого
+commit. CI выполняет проверку в своей чистой редакции. Созданный workflow
+не означает успешный серверный запуск или настроенные branch protections.
 
 Исключения vendor/generated и пользовательского `output/` перечислены в
 `.pre-commit-config.yaml`. Старые нарушения не получают baseline.
 Линтер не заменяет проверку контрактов, архитектурное ревью и тесты.
+
+## Область проверки C++
+
+В автоматическом режиме selector читает `PRE_COMMIT_FROM_REF` и
+`PRE_COMMIT_TO_REF`; wrappers также принимают `--from-ref` и `--to-ref`.
+Проверяются изменения отправляемого Git-диапазона вместе со staged, unstaged
+и untracked изменениями checkout. HEAD должен соответствовать целевому ref.
+Прежние общие исключения из `.pre-commit-config.yaml` применяются централизованно.
+
+Изменённые заголовки сохраняются в scope clang-tidy и добавляют owning translation
+units из compilation database. Обратные зависимости строятся рекурсивно по
+literal includes и include roots. Macro includes, `include_next`, modules,
+response files, неразрешённые includes или заголовок без владельца требуют
+полного scope. Неявные include paths toolchain не угадываются.
+
+Переименование/удаление C++, изменения общих CMake/DEPS/quality scripts или
+конфигурации проверок также требуют полного scope. При отсутствии надёжных
+Git-данных, compilation database или диапазона выбирается полный проход.
+Кэшированный PASS и baseline старых нарушений не используются.
+
+`--scope full`, `--full` или `QUALITY_FULL=1` проверяют всё применимое текущее
+дерево, включая untracked исходники. Обычный `pre-commit run --all-files` без
+Git refs выполняет полный проход. Позиционный список файлов предназначен для
+адресной диагностики и не заменяет gate. Перед первым коммитом требуется полный
+gate текущего checkout; само по себе это не разрешает создание коммита.
 
 ## Qt: Clazy
 
@@ -86,6 +133,49 @@ Qt Creator распространяет clazy-standalone в `bin/clang/bin/`.
 CI устанавливает Qt Creator официальным Qt installer action.
 Отсутствующая/устаревшая compilation database и отсутствующий инструмент
 останавливают проверку, а не считаются PASS.
+
+`scripts/run_clazy.py` передаёт каждый owning translation unit общему
+`scripts/quality_execution.py`. Workers запускаются параллельно; набор `level1`
+(включая level0), `--only-qt`, target, compilation database и повышение всех
+выбранных замечаний Clazy до ошибок одинаковы для каждого процесса.
+Заголовки зависимостей остаются в анализе. Переменные окружения, которые могли
+бы исключить каталоги/заголовки или ослабить ошибки, очищаются перед запуском.
+
+Без `--jobs` общий scheduler учитывает доступные CPU и 75% доступной RAM.
+Для Clazy в расчёте используется оценка 1 GiB на worker; фиксированного ограничения в четыре
+worker нет. `--jobs N` задаёт явное положительное число, `QUALITY_JOBS=N` —
+общую настройку окружения; аргумент CLI имеет приоритет. `QUALITY_JOBS=auto`
+сохраняет автоматический выбор. Явное значение может превысить оценку памяти:
+выбирайте его с учётом одновременно работающих приложений.
+
+Каждый TU получает сообщения `start` и `passed`/`failed` с временем и результатом. Диагностика
+отдельного процесса выводится целиком, без смешивания строк разных workers.
+Машинный прогресс пишется в `.agent-workspace/quality/progress-<tool>-<PID>.jsonl`
+и соседний `*.status.json` с текущими jobs/running/completed/total/failed и временем;
+путь журнала можно задать через `QUALITY_PROGRESS_FILE`. Ошибка любого worker блокирует
+gate; остальные назначенные TU всё равно завершают проверку.
+Для адресной проверки можно передать исходники позиционными аргументами:
+
+```powershell
+python scripts/run_clazy.py --jobs 2 --extra-arg=--target=x86_64-w64-windows-gnu adapters/desktop/analysis/offline/profile_json.cpp
+```
+
+Без позиционных файлов wrapper получает Git-aware scope через общий selector,
+затем выбирает Qt translation units. `--scope full`, `--full` или `QUALITY_FULL=1` принудительно
+проверяет всё применимое текущее дерево, включая новые исходники; явный full
+имеет приоритет над списком адресных файлов. Отсутствие надёжного Git/dependency
+контекста приводит к полному scope, а не к пропуску проверки.
+
+Pinned QtNodes и QtADS исправляются при configure через
+`cmake/patch_qtnodes_clazy.cmake` и `cmake/patch_ads_clazy.cmake`.
+Патчи повторно применимы и останавливают configure при несовпадении исходного
+фрагмента с закреплённой редакцией. QtNodes использует полные имена типов в
+meta-object signatures; `save() const` остаётся вызываемым через `Q_INVOKABLE`.
+QtADS регистрирует `SideBarLocation` через `Q_ENUM_NS` и экспортирует namespace
+meta-object из общей библиотеки.
+Изменяемые свойства QtADS auto-hide tab получают общий `tabStateChanged` NOTIFY:
+сигнал отправляется при изменении положения, ориентации, активности или режима
+иконки. Эти исправления не исключают зависимости из диагностики Clazy.
 
 ## Архитектурные include-границы: Chromium checkdeps
 
@@ -112,3 +202,28 @@ untracked директории, angle brackets, C/C++ extensions и общий Q
 не разрешаются через все CMake roots. Поэтому это защита объявленных границ,
 а не полная автоматическая проверка Clean Architecture. Изменять DEPS для
 подавления существующего нарушения без архитектурного решения нельзя.
+
+## Production and test lint
+
+The owner selected separate production and test passes. Default pre-push Clazy
+and clang-tidy check production. The registered test root is `tests/`, including
+fixtures, headers and non-CDB sources. Filenames and CMake target names do not
+change this category: production and examples outside `tests/` remain production.
+
+`--code-scope production` is the default; `tests` selects tests and `all` explicitly
+combines both. Git scope is independent: `--scope full`, `--full` and
+`QUALITY_FULL=1` expand coverage within the selected category. Explicit files
+from a different category fail. Checks and thresholds are identical in both passes.
+
+Run the separate test lint explicitly:
+
+```powershell
+python -m pre_commit run clang-tidy-tests --all-files --hook-stage manual
+python -m pre_commit run clazy-tests --all-files --hook-stage manual
+```
+
+CI test steps require an explicit workflow_dispatch with test_lint=true. Push and
+pull-request CI do not run test lint. The hooks are manual-only and do not run
+in the default pre-push. Test Clazy selects owning test TUs and preserves only-Qt,
+level0/level1 and errors. Python quality-tool regressions remain in the existing
+meta-hook for changes to quality tooling.

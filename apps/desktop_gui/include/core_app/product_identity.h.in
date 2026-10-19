@@ -1,0 +1,14 @@
+#pragma once
+#include <QIcon>
+
+namespace barelief {
+inline constexpr auto name = "Barelief";
+inline constexpr auto title = "Barelief | Signal Processing & Visualization";
+inline constexpr auto publisher = "Koba Production";
+inline constexpr auto version = "@PROJECT_VERSION@";
+inline constexpr auto repository = "https://github.com/KobaProduction/Barelief";
+inline constexpr auto releases = "https://github.com/KobaProduction/Barelief/releases";
+inline constexpr auto release_api = "https://api.github.com/repos/KobaProduction/Barelief/releases/latest";
+void initialize_resources();
+QIcon application_icon();
+}

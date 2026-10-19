@@ -62,7 +62,7 @@ DSP kernels, numeric contracts и отдельных узлов остаются
 ## Графическое приложение
 
 ```powershell
-./cmake-build-release/bin/core_app.exe --config ./cmake-build-release/bin/config.json
+./cmake-build-release/bin/Barelief.exe --config ./cmake-build-release/bin/config.json
 ```
 
 `-c`/`--config` выбирает файл. Без пути GUI использует `config.json` рядом с exe.
@@ -141,3 +141,28 @@ runtime/Apply; при bounded duration отсутствие успешного A
 Тестовые процессы используют отдельный config, ограниченное время и собственную
 телеметрию. Offscreen PASS не подтверждает native renderer, физический захват
 или производительность платы.
+
+
+## Имя продукта, лицензии и пакеты
+
+Пользовательское приложение — Barelief, исполняемый файл — `Barelief.exe`;
+CMake target остаётся `core_app`. `VERSION.txt` задаёт версию приложения,
+Windows VERSIONINFO и CPack. Разработчик и издатель — Koba Production,
+репозиторий — `KobaProduction/Barelief`.
+Имя рабочего каталога существующего checkout не определяет название продукта.
+Публикация релиза выполняется отдельно.
+
+CPack настроен для portable ZIP и Windows NSIS. Для NSIS требуется установленный
+NSIS; установщик использует общий логотип, MIT и ярлык Barelief, не меняет PATH.
+NSIS собирает единый пакет с быстрым zlib-сжатием. Deployment GUI сканирует
+QML-импорты и включает необходимые модули. Для `cpack -G NSIS -B <каталог>`
+выбирайте короткий выходной путь: NSIS ограничивает длину путей ресурсов Windows.
+Пакеты собираются из install tree с Qt runtime и каталогом `licenses`, а не из
+всей build-папки с пользовательскими конфигурациями и тестовыми EXE.
+Создание архивов и установка выполняются только по отдельному запросу владельца.
+Проверка сборки приложения не означает приёмку install/upgrade/uninstall.
+
+Оформление About, разделение лицензий и ограниченная проверка GitHub Releases
+адаптированы по подходу RedmiBook Manager. Автоматическая проверка раз в сутки,
+каналы prerelease, загрузка/запуск установщика и подписание релизов в Barelief
+пока не реализованы. Проверка обновлений доступна вручную из «О программе».

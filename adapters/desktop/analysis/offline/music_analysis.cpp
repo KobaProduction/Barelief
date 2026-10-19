@@ -256,7 +256,7 @@ class AnalysisBatch {
     void store_summary(AnalysisResult& result,const std::vector<CompositionStatistics>& valid) const {
         result.document.preserved["preview_settings"]=QJsonObject{{"time_cells",double(options_.preview_time_bins)},{"frequency_cells",double(options_.preview_frequency_bins)}};
         if(!result.document.previews.empty())result.preview=result.document.previews.front();
-        QJsonArray failures;for(const auto& error:result.errors)failures.append(error);
+        QJsonArray failures;for(const auto& error:std::as_const(result.errors))failures.append(error);
         const auto active=std::count_if(valid.begin(),valid.end(),[](const auto& track){return track.active_frames>0;});
         result.document.preserved["analysis_run"]=QJsonObject{{"requested_count",int(files_.size())},{"processed_count",int(valid.size())},{"active_composition_count",int(active)},
             {"failed_count",int(result.errors.size())},{"audio_seconds",result.audio_seconds},{"errors",failures}};

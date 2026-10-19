@@ -9,8 +9,8 @@
 #include <core_app/scheme_editor/node_parameter_model.h>
 #include <desktop/numeric_project_document.h>
 #include <offline/profile_json.h>
-#include <visualization/numeric_image_view.h>
-#include <visualization/ui_text.h>
+#include <barelief/numeric_image_view.h>
+#include <barelief/ui_text.h>
 #include <QtNodes/internal/NodeGraphicsObject.hpp>
 #include <QAction>
 #include <QDialog>

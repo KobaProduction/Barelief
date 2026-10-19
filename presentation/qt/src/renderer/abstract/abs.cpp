@@ -1,7 +1,7 @@
-#include <visualization/abstract/abs.h>
+#include <barelief/abstract/abs.h>
 #include <core/performance.h>
-#include <visualization/quick2d/plot_ticks.h>
-#include <visualization/ui_text.h>
+#include <barelief/quick2d/plot_ticks.h>
+#include <barelief/ui_text.h>
 #include <QPaintEvent>
 #include <algorithm>
 #include <utility>

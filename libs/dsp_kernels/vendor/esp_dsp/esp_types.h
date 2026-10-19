@@ -1,5 +1,5 @@
-#ifndef QT_VISUALIZATION_ESP_TYPES_H
-#define QT_VISUALIZATION_ESP_TYPES_H
+#ifndef BARELIEF_ESP_TYPES_H
+#define BARELIEF_ESP_TYPES_H
 
 #include "stdint.h"
 #include "stdlib.h"
@@ -22,4 +22,4 @@ typedef int esp_err_t;
 #define M_PI 3.14159265358979323846
 #endif // M_PI
 
-#endif //QT_VISUALIZATION_ESP_TYPES_H
+#endif //BARELIEF_ESP_TYPES_H

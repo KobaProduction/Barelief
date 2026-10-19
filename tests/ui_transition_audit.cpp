@@ -1,5 +1,5 @@
 #include "ui_audit_recorder.h"
-#include <visualization/quick/quick_ui.h>
+#include <barelief/quick/quick_ui.h>
 #include <QApplication>
 #include <QAction>
 #include <QAbstractButton>

@@ -20,15 +20,22 @@ public:
         if(!_deliver_audio){_worker->set_audio_handler({});return;}
         _worker->set_audio_handler([this,handler=std::move(handler)](const pipeline::AudioFrame& input){
             if(_channels==1){handler(input);return;}
-            if(input.frame_count*_channels>_frame.samples.capacity())return;
-            _frame=input;_frame.channel_count=_channels;_frame.samples.resize(input.frame_count*_channels);
-            for(unsigned lane=0;lane<_channels;++lane)for(std::size_t i=0;i<input.frame_count;++i)_frame.samples[lane*input.frame_count+i]=input.samples[i]/float(lane+1);
-            handler(_frame);
+            deliver_multichannel_frame(input,handler);
         });
     }
     void set_status_handler(StatusHandler handler) override { _worker->set_status_handler(std::move(handler)); }
     void set_lifecycle_handler(LifecycleHandler handler) override { _worker->set_lifecycle_handler(std::move(handler)); }
 private:
+    void deliver_multichannel_frame(const pipeline::AudioFrame& input,const AudioHandler& handler) {
+        if(input.frame_count*_channels>_frame.samples.capacity())return;
+        _frame=input;
+        _frame.channel_count=_channels;
+        _frame.samples.resize(input.frame_count*_channels);
+        for(unsigned lane=0;lane<_channels;++lane)
+            for(std::size_t i=0;i<input.frame_count;++i)
+                _frame.samples[lane*input.frame_count+i]=input.samples[i]/float(lane+1);
+        handler(_frame);
+    }
     pipeline::AudioSourceKind _kind;
     bool _deliver_audio;
     bool _distinct_capture;

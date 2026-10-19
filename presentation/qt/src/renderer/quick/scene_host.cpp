@@ -1,5 +1,5 @@
-#include <visualization/quick/scene_host.h>
-#include <visualization/quick/quick_ui.h>
+#include <barelief/quick/scene_host.h>
+#include <barelief/quick/quick_ui.h>
 #include <QVBoxLayout>
 #include <QQmlContext>
 #include <QQmlEngine>

@@ -1,4 +1,4 @@
-#include "visualization/abstract/mixins.h"
+#include "barelief/abstract/mixins.h"
 #include <algorithm>
 #include <limits>
 

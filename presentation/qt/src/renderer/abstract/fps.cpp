@@ -1,4 +1,4 @@
-#include "visualization/abstract/fps.h"
+#include "barelief/abstract/fps.h"
 
 void FPSChartView::_setFPS(const qreal fps) { _fps=fps; emit fps_changed(display_fps()); }
 

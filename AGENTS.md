@@ -222,7 +222,7 @@
   machine paths не добавляются в общий preset. Старые build/evidence не удалять
   без отдельной проверки содержимого и разрешения.
   Рабочая директория консоли — корень репозитория. Обычный запуск:
-  `./cmake-build-release/bin/core_app.exe --config ./cmake-build-release/bin/config.json`.
+  `./cmake-build-release/bin/Barelief.exe --config ./cmake-build-release/bin/config.json`.
   При открытии Windows PowerShell из окружения автоматизации перед запуском
   дочернего процесса задайте ему системный `PSModulePath`, без bundled-модулей
   Codex: `-NoProfile` не отключает автозагрузку PSReadLine. Не меняйте execution
@@ -270,7 +270,7 @@
 
 ## Issues и рабочие материалы
 
-- Постоянный источник работы — [GitHub Issues](https://github.com/ArthurKoba/qt-visualization/issues).
+- Постоянный источник работы — [GitHub Issues](https://github.com/KobaProduction/Barelief/issues).
   Один связный срез реализации или рефакторинга ведётся в одном issue: цель,
   границы, чек-лист, решения, проблемы, ссылки на проверки и итоговый результат.
   Самостоятельный дефект и идея roadmap получают отдельные связанные issues.

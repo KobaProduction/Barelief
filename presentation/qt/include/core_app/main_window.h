@@ -18,9 +18,9 @@
 #include "core_app/gui_presenter.h"
 #include "core_app/ui/settings_change_request.h"
 #include "core_app/numeric_view_adapter.h"
-#include "visualization/numeric_metrics_view.h"
-#include "visualization/abstract/abs.h"
-#include "visualization/spectrograms/spectrogram_graph.h"
+#include "barelief/numeric_metrics_view.h"
+#include "barelief/abstract/abs.h"
+#include "barelief/spectrograms/spectrogram_graph.h"
 
 class SchemeEditorWidget;
 class SettingsWidget;

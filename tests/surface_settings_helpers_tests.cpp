@@ -1,6 +1,6 @@
-#include "visualization/surface_settings.h"
-#include "visualization/camera_controls.h"
-#include "visualization/camera_geometry.h"
+#include "barelief/surface_settings.h"
+#include "barelief/camera_controls.h"
+#include "barelief/camera_geometry.h"
 #include <cstdio>
 #include <cmath>
 

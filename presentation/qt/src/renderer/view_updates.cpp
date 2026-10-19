@@ -1,6 +1,6 @@
 #include "core_app/main_window.h"
 #include "core_app/settings_widget.h"
-#include "visualization/charts/freq.h"
+#include "barelief/charts/freq.h"
 #include <QLoggingCategory>
 #include <QScreen>
 #include <QSignalBlocker>

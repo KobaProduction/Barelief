@@ -1,5 +1,5 @@
 #include "core_app/workspace/ui_command_registry.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QApplication>
 #include <QWidget>
 #include <QLineEdit>

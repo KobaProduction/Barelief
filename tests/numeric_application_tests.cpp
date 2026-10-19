@@ -17,10 +17,10 @@
 #include <core_app/scheme_editor/audio_node_model.h>
 #include <core_app/scheme_editor/node_parameter_model.h>
 #include <core_app/numeric_default_graph.h>
-#include <visualization/ui_text.h>
-#include <visualization/numeric_piano_view.h>
+#include <barelief/ui_text.h>
+#include <barelief/numeric_piano_view.h>
 #include <core_app/graph_panel.h>
-#include <visualization/abstract/abs.h>
+#include <barelief/abstract/abs.h>
 #include <desktop/numeric_project_document.h>
 #include <QFile>
 #include <QFileInfo>

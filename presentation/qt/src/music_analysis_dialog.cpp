@@ -4,12 +4,12 @@
 #include <utility>
 #include <core_app/spectrum_projection_ui.h>
 #include <core_app/resampler_presentation.h>
-#include <visualization/charts/line.h>
-#include <visualization/numeric_image_view.h>
-#include <visualization/numeric_plot_limits.h>
+#include <barelief/charts/line.h>
+#include <barelief/numeric_image_view.h>
+#include <barelief/numeric_plot_limits.h>
 #include <QWheelEvent>
 #include <QMouseEvent>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <offline/music_analysis.h>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -235,7 +235,7 @@ struct MusicAnalysisDialog::State {
     }
     void refresh_scan_summary(){
         const auto& p=document.profile;
-        if(has_profile)scan_summary->setText(ui::text("Completed scan: %1 Hz; FFT %2; %3; %4; %5; %6 tracks").arg(p.compatibility.sample_rate,0,'g',10).arg(p.compatibility.fft_size).arg(window->itemText(int(p.compatibility.window))).arg(ui::text(presentation::spectrum_projection_caption(p.compatibility.projection.representation))+" · "+ui::text(presentation::spectrum_compensation_caption)+": "+ui::text(p.compatibility.projection.compensate?"On":"Off")).arg(cadence_caption(p.training)).arg(p.compositions.size()));
+        if(has_profile)scan_summary->setText(ui::text("Completed scan: %1 Hz; FFT %2; %3; %4; %5; %6 tracks").arg(p.compatibility.sample_rate,0,'g',10).arg(p.compatibility.fft_size).arg(window->itemText(int(p.compatibility.window)),ui::text(presentation::spectrum_projection_caption(p.compatibility.projection.representation))+" · "+ui::text(presentation::spectrum_compensation_caption)+": "+ui::text(p.compatibility.projection.compensate?"On":"Off"),cadence_caption(p.training)).arg(p.compositions.size()));
     }
     void refresh_curves(){
         const auto& p=document.profile;
@@ -498,7 +498,7 @@ struct MusicAnalysisDialog::State {
     }
     void build_storage_events(){
         auto& s=*this;auto* dialog=owner;
-    QObject::connect(s.save,&QPushButton::clicked,dialog,[&s,dialog]{QFileDialog chooser(dialog,ui::text("Save frequency profile"),s.profile_path,"JSON (*.json)");chooser.setAcceptMode(QFileDialog::AcceptSave);chooser.setDefaultSuffix("json");if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;const auto path=chooser.selectedFiles().front();QString error;if(!dialog->save_profile_to(path,error))s.status->setText(error);else{s.profile_path=path;s.status->setText(ui::text("Profile saved: %1").arg(path));}});
+    QObject::connect(s.save,&QPushButton::clicked,dialog,[&s,dialog]{QFileDialog chooser(dialog,ui::text("Save frequency profile"),s.profile_path,"JSON (*.json)");chooser.setAcceptMode(QFileDialog::AcceptSave);chooser.setDefaultSuffix("json");if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;const auto path=chooser.selectedFiles().value(0);QString error;if(!dialog->save_profile_to(path,error))s.status->setText(error);else{s.profile_path=path;s.status->setText(ui::text("Profile saved: %1").arg(path));}});
     QObject::connect(s.load,&QPushButton::clicked,dialog,[&s,dialog]{auto path=QFileDialog::getOpenFileName(dialog,ui::text("Load frequency profile"),{},"JSON (*.json)");if(path.isEmpty())return;QString error;if(!dialog->load_profile_from(path,error))s.status->setText(error);});
 
     }

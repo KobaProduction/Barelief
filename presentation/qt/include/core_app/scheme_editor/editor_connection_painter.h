@@ -1,6 +1,6 @@
 #pragma once
 #include "numeric_editor_model.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QtNodes/internal/DefaultConnectionPainter.hpp>
 #include <QtNodes/internal/ConnectionGraphicsObject.hpp>
 #include <QApplication>

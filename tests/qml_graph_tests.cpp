@@ -1,16 +1,16 @@
 #include <core_app/plot_composition.h>
 #include <core_app/graph_panel.h>
-#include <visualization/charts/line.h>
-#include <visualization/numeric_image_view.h>
-#include <visualization/numeric_metrics_view.h>
-#include <visualization/numeric_pie_view.h>
-#include <visualization/quick/quick_ui.h>
-#include <visualization/quick2d/vector_plot_item.h>
-#include <visualization/quick3d/surface_overlay_item.h>
-#include <visualization/quick3d/surface_overlay_commands.h>
+#include <barelief/charts/line.h>
+#include <barelief/numeric_image_view.h>
+#include <barelief/numeric_metrics_view.h>
+#include <barelief/numeric_pie_view.h>
+#include <barelief/quick/quick_ui.h>
+#include <barelief/quick2d/vector_plot_item.h>
+#include <barelief/quick3d/surface_overlay_item.h>
+#include <barelief/quick3d/surface_overlay_commands.h>
 #include <QQmlComponent>
 #include <QPainter>
-#include <visualization/spectrograms/spectrogram_graph.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
 #include <QApplication>
 #include <QQuickItem>
 #include <QElapsedTimer>
@@ -335,7 +335,7 @@ int main(int argc,char** argv){
         QQuickWidget overlayHost;noFocus(overlayHost);overlayHost.setClearColor(Qt::transparent);overlayHost.resize(180,160);
         overlayHost.setResizeMode(QQuickWidget::SizeRootObjectToView);
         auto* overlayComponent=new QQmlComponent(overlayHost.engine(),&overlayHost);
-        overlayComponent->setData("import QtQuick\nimport Visualization.Surface 1.0\nSurfaceOverlay {width:180;height:160}",QUrl());
+        overlayComponent->setData("import QtQuick\nimport Barelief.Surface 1.0\nSurfaceOverlay {width:180;height:160}",QUrl());
         auto* nativeOverlay=qobject_cast<SurfaceOverlayItem*>(overlayComponent->create());require(nativeOverlay,"native overlay fixture creation failed");
         overlayHost.setContent(QUrl(),overlayComponent,nativeOverlay);overlayHost.show();ready(&overlayHost);
         const auto overlayPixels=[&]{QElapsedTimer timer;timer.start();while(timer.elapsed()<80){QCoreApplication::processEvents();QThread::msleep(2);}return overlayHost.grabFramebuffer();};

@@ -1,5 +1,5 @@
 #include "core_app/workspace/processor_manager_dialog.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include <QTreeWidget>
 #include <QHeaderView>
 #include <QLabel>

@@ -1,4 +1,12 @@
-# Qt Visualization
+# Barelief
+
+<img src="apps/desktop_gui/resources/barelief.svg" width="128" height="128" alt="Barelief">
+
+**Barelief | Signal Processing & Visualization**
+
+Разработчик и издатель: **Koba Production** ([KobaProduction](https://github.com/KobaProduction)).
+Имя репозитория — `Barelief`, CMake-проекта — `Barelief`. Лицензия приложения — [MIT](LICENSE);
+зависимости сохраняют [свои лицензии](THIRD_PARTY_NOTICES.md).
 
 Среда для построения схем обработки сигналов: захват или генерация данных,
 численные преобразования, история, графики и сетевой обмен. Схема задаёт маршрут
@@ -32,6 +40,6 @@ ESP-IDF-компоненты компилируют те же исходники
 ## Работа над проектом
 
 Задачи, рефакторинг, дефекты, идеи и результаты проверок ведутся в
-[GitHub Issues](https://github.com/ArthurKoba/qt-visualization/issues).
+[GitHub Issues](https://github.com/KobaProduction/Barelief/issues).
 Документация обновляется вместе с изменением действующего поведения системы.
 Правила разработки и работы агентов находятся в [AGENTS.md](AGENTS.md).

@@ -2,7 +2,7 @@
 #include "core_app/ui/field_row.h"
 #include "core_app/ui/collapsible_section.h"
 #include "core_app/wheel_input.h"
-#include "visualization/ui_text.h"
+#include "barelief/ui_text.h"
 #include "literal_edit_binding.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>

@@ -1,5 +1,5 @@
-#include <visualization/quick2d/vector_plot_item.h>
-#include <visualization/quick2d/plot_model.h>
+#include <barelief/quick2d/vector_plot_item.h>
+#include <barelief/quick2d/plot_model.h>
 #include <core/performance.h>
 #include <QPainter>
 #include <QPainterPath>

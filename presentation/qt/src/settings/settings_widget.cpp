@@ -1,6 +1,6 @@
-#include "visualization/scene_aspect_control.h"
-#include "visualization/auto_range_interval_control.h"
-#include "visualization/ui_text.h"
+#include "barelief/scene_aspect_control.h"
+#include "barelief/auto_range_interval_control.h"
+#include "barelief/ui_text.h"
 #include "core_app/settings_widget.h"
 #include "core_app/ui/field_row.h"
 #include "core_app/ui/slider_value_control.h"
@@ -35,7 +35,7 @@
 #include <QInputDialog>
 #include <QUuid>
 #include <QSet>
-#include "visualization/surface_settings.h"
+#include "barelief/surface_settings.h"
 
 #include "core/utils.h"
 

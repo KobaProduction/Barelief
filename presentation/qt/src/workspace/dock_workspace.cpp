@@ -8,9 +8,10 @@
 #include <desktop/numeric_project_document.h>
 #include <domain/graph_definition.h>
 #include <optional>
+#include <utility>
 #include <DockAreaWidget.h>
-#include "visualization/ui_text.h"
-#include "visualization/charts/line.h"
+#include "barelief/ui_text.h"
+#include "barelief/charts/line.h"
 #include <QApplication>
 #include <QCloseEvent>
 #include <QGuiApplication>
@@ -166,7 +167,7 @@ void MainWindow::panel_view_toggled(const QString& id,bool UIApplicationConfig::
     refresh_subscriptions();
 }
 void MainWindow::restore_default_dock_groups() {
-    for(auto* dock:_panels)removeDockWidget(dock);
+    for(auto* dock:std::as_const(_panels))removeDockWidget(dock);
     addDockWidget(Qt::LeftDockWidgetArea,_panels["spectrogram"]);
     splitDockWidget(_panels["spectrogram"],_panels["dataFlow"],Qt::Vertical);
     for(const auto& id:{"fft","mel","rawSamples","windowSignal","windowedSignal","windowFunction"}){
@@ -299,7 +300,8 @@ void MainWindow::restore_preset_dock_layout(bool& restored) {
     if(restored)return;
     auto* flow=_panels.value("dataFlow");placeDock(flow,nullptr,Qt::BottomDockWidgetArea);
     WorkspaceDock* anchor=nullptr;
-    for(auto* dock:graph_docks()) {
+    const auto docks=graph_docks();
+    for(auto* dock:docks) {
         if(!anchor){placeDock(dock,flow,Qt::TopDockWidgetArea);anchor=dock;}
         else tabifyDockWidget(anchor,dock);
     }
@@ -325,7 +327,8 @@ void MainWindow::restore_preset_camera(const QJsonObject& surface) {
     ui.spectrogram_side_panel_ratio=float(surface.value("side_ratio").toDouble(.25));
 }
 void MainWindow::finish_preset_restore(bool previous_layout) {
-    for(auto* dock:graph_docks())refresh_graph_title(dock);
+    const auto docks=graph_docks();
+    for(auto* dock:docks)refresh_graph_title(dock);
     if(auto* settings=findChild<SettingsWidget*>())settings->refresh_graph_preferences();
     _restoring_preset=false;_restoring_layout=previous_layout;
     auto& ui=_application.state().file_configs.ui;
@@ -413,7 +416,8 @@ void MainWindow::recover_offscreen_panels() {
     if (screens.isEmpty())
         return;
     QSet<QWidget *> visited;
-    for (auto *panel : workspaceDocks())
+    const auto panels=workspaceDocks();
+    for (auto *panel : panels)
         if (auto *dock = panel->floatingDockContainer(); dock && !visited.contains(dock)) {
             visited.insert(dock);
             recover_floating_panel(dock,screens);
@@ -470,12 +474,14 @@ WorkspaceDock *MainWindow::graph_open_slot() const {
 WorkspaceDock *MainWindow::find_editor_graph_slot() const {
     for(auto it=_active_node_views.cbegin();it!=_active_node_views.cend();++it)
         if(_render_visible.value(it.value()) && in_editor_window(graph_dock(it.key())))return graph_dock(it.key());
-    for(auto *candidate:graph_docks())
+    const auto candidates=graph_docks();
+    for(auto *candidate:candidates)
         if(in_editor_window(candidate) && candidate->property("renderExposed").toBool())return candidate;
     return nullptr;
 }
 bool MainWindow::focus_existing_graph(int node) {
-    for(auto *candidate:graph_docks())
+    const auto candidates=graph_docks();
+    for(auto *candidate:candidates)
         if(candidate->property("graphNode").toInt()==node && in_editor_window(candidate) && !candidate->isHidden()) {
             candidate->raise();_last_graph_slot=candidate;return true;
         }
@@ -523,7 +529,8 @@ bool MainWindow::is_graph_dock(WorkspaceDock *dock) const {
 QList<WorkspaceDock *> MainWindow::graph_docks() const {
     QList<WorkspaceDock *> result;
     const auto selected_graph=_view_draft?QString::fromStdString(_view_draft->graph_id):_application.graph_id();
-    for(int node:_active_node_views.keys()) if(auto *dock=graph_dock(node)) result.append(dock);
+    for(auto it=_active_node_views.cbegin();it!=_active_node_views.cend();++it)
+        if(auto *dock=graph_dock(it.key())) result.append(dock);
     for(const auto &view:_node_views)
         if(view.device==_application.device_id() && view.graph==selected_graph && _active_node_views.contains(view.node)
            && !result.contains(view.dock)) result.append(view.dock);
@@ -591,7 +598,8 @@ void MainWindow::populate_graph_ports(int node,const domain::NumericProcessingGr
 void MainWindow::populate_graph_focus(int node,QMenu *menu) {
     auto *focus=menu->addMenu(ui::text("Focus representation")); focus->setObjectName("graphRepresentations");
     int internal=0,external=0;
-    for(auto *dock:graph_docks()) {
+    const auto docks=graph_docks();
+    for(auto *dock:docks) {
         if(dock->isHidden() || dock->property("graphNode").toInt()!=node) continue;
         const bool outside=dock->isFloating();
         auto *action=focus->addAction(ui::text(outside ? "External window %1" : "Internal area %1")
@@ -615,7 +623,8 @@ void MainWindow::populate_graph_placements(int node,QMenu *menu) {
 void MainWindow::populate_graph_targets(int node,QMenu *menu) {
     auto *beside=menu->addMenu(ui::text("Open beside")); beside->setObjectName("graphPlacementTargets");
     int index=0;
-    for(auto *target:graph_docks()) if(in_editor_window(target) && !target->isHidden()) {
+    const auto targets=graph_docks();
+    for(auto *target:targets) if(in_editor_window(target) && !target->isHidden()) {
         auto *action=beside->addAction(ui::text("Internal area %1").arg(++index)+": "+target->windowTitle());
         connect(action,&QAction::triggered,this,[this,node,target] { _last_graph_slot=target; add_graph_node(node,2); });
     }
@@ -677,8 +686,11 @@ void MainWindow::rebuild_graph_areas(WorkspaceDock *dock,WorkspaceDock *anchor,i
 WorkspaceDock *MainWindow::graph_placement_anchor(WorkspaceDock *dock) const {
     auto *anchor=_last_graph_slot.data();
     if(anchor==dock || !in_editor_window(anchor) || anchor->isHidden())anchor=nullptr;
-    if(!anchor)for(auto *candidate:graph_docks())
-        if(candidate!=dock && in_editor_window(candidate) && !candidate->isHidden()){anchor=candidate;break;}
+    if(!anchor) {
+        const auto candidates=graph_docks();
+        for(auto *candidate:candidates)
+            if(candidate!=dock && in_editor_window(candidate) && !candidate->isHidden()){anchor=candidate;break;}
+    }
     return anchor;
 }
 void MainWindow::expose_floating_graph(WorkspaceDock *dock) {
@@ -771,7 +783,8 @@ bool MainWindow::is_current_graph_dock(WorkspaceDock *dock,const QString& key) c
          _active_node_views.value(dock->property("graphNode").toInt())==key);
 }
 void MainWindow::clear_scalar_input_binding(GraphPanel *panel) {
-    for(const auto& connection:panel->property("scalarInputConnections").value<QList<QMetaObject::Connection>>())
+    const auto previousConnections=panel->property("scalarInputConnections").value<QList<QMetaObject::Connection>>();
+    for(const auto& connection:previousConnections)
         QObject::disconnect(connection);
     panel->setProperty("scalarInputConnections",QVariant{});
     panel->setProperty("scalarInputsModel",QVariant{});
@@ -804,7 +817,8 @@ void MainWindow::bind_scalar_input_lifecycle(GraphPanel *panel,AudioNodeModel *m
     panel->setProperty("scalarInputConnections",QVariant::fromValue(connections));
 }
 void MainWindow::bind_scalar_input_actions(GraphPanel *panel,AudioNodeModel *model) {
-    for(const auto& connection:panel->property("scalarInputConnections").value<QList<QMetaObject::Connection>>())
+    const auto previousConnections=panel->property("scalarInputConnections").value<QList<QMetaObject::Connection>>();
+    for(const auto& connection:previousConnections)
         QObject::disconnect(connection);
     auto connections=scalar_input_command_connections(panel,model);
     bind_scalar_input_lifecycle(panel,model,connections);

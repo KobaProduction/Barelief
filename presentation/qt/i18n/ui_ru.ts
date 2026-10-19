@@ -307,8 +307,8 @@ The second column adds an alternative key for the same action.</source>
       <translation>Поток данных</translation>
     </message>
     <message>
-      <source>Data Processing System Core</source>
-      <translation>Система обработки аудио</translation>
+      <source>Barelief | Signal Processing &amp; Visualization</source>
+      <translation>Barelief | Signal Processing &amp; Visualization</translation>
     </message>
     <message>
       <source>Default</source>
@@ -1508,7 +1508,24 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Peak frequency, Hz</source><translation>Частота пика, Гц</translation></message>
 <message><source>Peak magnitude</source><translation>Величина пика</translation></message>
 <message><source>Note grid unavailable</source><translation>Нотная сетка недоступна</translation></message>
-</context>
+
+    <message><source>Help</source><translation>Справка</translation></message>
+    <message><source>About Barelief</source><translation>О программе Barelief</translation></message>
+    <message><source>Licenses</source><translation>Лицензии</translation></message>
+    <message><source>Third-party licenses</source><translation>Лицензии зависимостей</translation></message>
+    <message><source>Signal Processing &amp; Visualization</source><translation>Обработка и визуализация сигналов</translation></message>
+    <message><source>Developer and publisher: Koba Production</source><translation>Разработчик и издатель: Koba Production</translation></message>
+    <message><source>GitHub repository</source><translation>Репозиторий GitHub</translation></message>
+    <message><source>Check for updates</source><translation>Проверить обновления</translation></message>
+    <message><source>View releases</source><translation>Открыть релизы</translation></message>
+    <message><source>Check GitHub for a newer stable release.</source><translation>Проверка новой стабильной версии на GitHub.</translation></message>
+    <message><source>Checking for updates…</source><translation>Проверка обновлений…</translation></message>
+    <message><source>No supported release is available.</source><translation>Поддерживаемый релиз недоступен.</translation></message>
+    <message><source>A new version is available: %1</source><translation>Доступна новая версия: %1</translation></message>
+    <message><source>You are using the latest version.</source><translation>Вы используете последнюю версию.</translation></message>
+    <message><source>No published releases are available yet.</source><translation>Опубликованных релизов пока нет.</translation></message>
+    <message><source>Could not check for updates. Please try again later.</source><translation>Не удалось проверить обновления. Повторите попытку позже.</translation></message>
+  </context>
     <context><name>Ui</name>
     <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
     <message><source>Open settings…</source><translation>Открыть настройки…</translation></message>

@@ -1,11 +1,11 @@
 #pragma once
-#include <visualization/abstract/abs.h>
-#include <visualization/spectrograms/spectrogram_graph.h>
-#include <visualization/numeric_image_view.h>
-#include <visualization/numeric_pie_view.h>
-#include <visualization/numeric_metrics_view.h>
-#include <visualization/quick/numeric_render_ports.h>
-#include <visualization/ui_text.h>
+#include <barelief/abstract/abs.h>
+#include <barelief/spectrograms/spectrogram_graph.h>
+#include <barelief/numeric_image_view.h>
+#include <barelief/numeric_pie_view.h>
+#include <barelief/numeric_metrics_view.h>
+#include <barelief/quick/numeric_render_ports.h>
+#include <barelief/ui_text.h>
 #include <QLabel>
 
 namespace render_fixture {

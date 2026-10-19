@@ -12,7 +12,7 @@
 #include <pipeline/numeric_engine.h>
 #include <config/config_document.h>
 #include <core/performance.h>
-#include <visualization/ui_text.h>
+#include <barelief/ui_text.h>
 #include <QFile>
 #include <QFileInfo>
 #include <QCommandLineParser>
@@ -23,6 +23,9 @@
 #include <utility>
 
 #include "core_application_state.h"
+#include <core_app/product_identity.h>
+#include "product_information.h"
+#include <QIcon>
 static int &prepare_gui_arguments(int &argc) {
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
     return argc;
@@ -55,9 +58,13 @@ void CoreApplication::_initialize_display(desktop::DisplayModeApi display_api) {
         _display_session=std::make_unique<desktop::DisplayRefreshSession>(_display_api);
 }
 void CoreApplication::_initialize_identity() {
-    setApplicationName("Data Processing System Core");
-    setApplicationVersion("1.0.0");
-    setOrganizationName("Data Processing System");
+    barelief::initialize_resources();
+    setApplicationName(barelief::name);
+    setApplicationDisplayName(barelief::title);
+    setApplicationVersion(barelief::version);
+    setOrganizationName(barelief::publisher);
+    setOrganizationDomain("github.com/KobaProduction");
+    setWindowIcon(barelief::application_icon());
     _parse_command_line();
 }
 namespace {
@@ -146,7 +153,8 @@ void CoreApplication::_create_startup_example(StartupState& state) {
 void CoreApplication::_create_editor_models() {
     _ctx.delegate_model_registry = std::make_shared<QtNodes::NodeDelegateModelRegistry>();
     _ctx.data_flow_graph = std::make_shared<NumericEditorGraphModel>(_ctx.delegate_model_registry);
-    for (const auto &kind : numeric_editor::catalog()) {
+    const auto kinds=numeric_editor::catalog();
+    for (const auto &kind : kinds) {
         _ctx.delegate_model_registry->registerModel(
             [kind] { return std::make_unique<AudioNodeModel>(kind); }, numeric_editor::category(kind));
     }
@@ -211,6 +219,7 @@ void CoreApplication::_create_main_window() {
     _processor_discovery = std::make_shared<desktop::ProcessorDiscoveryAdapter>();
     _engine_provider->set_registry(_processor_discovery->client());
     _main_window = new MainWindow(*_presenter, _processor_discovery);
+    barelief::install_product_information(*_main_window);
 }
 
 void CoreApplication::_restore_startup_draft(StartupState& state,SchemeEditorWidget* editor) {
