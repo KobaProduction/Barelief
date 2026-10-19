@@ -7,28 +7,22 @@
 #include <QQuickItem>
 
 namespace ui::quick {
-SceneHost::SceneHost(presentation::PlotHost kind, QWidget* parent):QWidget(parent) {
-    configure();
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0,0,0,0);
-    if(kind==presentation::PlotHost::NativeWindow) {
-        view_ = new QQuickView;
-        view_->setResizeMode(QQuickView::SizeRootObjectToView);
-        view_->setFormat(QSurfaceFormat::defaultFormat());
-        container_ = QWidget::createWindowContainer(view_,this);
-        auto* bridge = new UiBridge(view_);
-        rootContext()->setContextProperty("quickUi",bridge);
-        const auto refresh = [this,bridge]{view_->setColor(bridge->palette().value("window").value<QColor>());};
-        refresh();connect(bridge,&UiBridge::changed,this,refresh);
-        connect(view_,&QQuickView::statusChanged,this,[this](auto state){
-            if(state==QQuickView::Error){QStringList messages;for(const auto& error:errors())messages.append(error.toString());setProperty("qmlErrors",messages);}
-        });
-    } else {
-        widget_ = new QQuickWidget(this);
-        widget_->setObjectName("plotTextureHost");
-        install(widget_);
-        container_ = widget_;
-    }
+void SceneHost::createNativeScene(){
+    view_=new QQuickView;view_->setResizeMode(QQuickView::SizeRootObjectToView);view_->setFormat(QSurfaceFormat::defaultFormat());
+    container_=QWidget::createWindowContainer(view_,this);
+    auto* bridge=new UiBridge(view_);rootContext()->setContextProperty("quickUi",bridge);
+    const auto refresh=[this,bridge]{view_->setColor(bridge->palette().value("window").value<QColor>());};
+    refresh();connect(bridge,&UiBridge::changed,this,refresh);
+    connect(view_,&QQuickView::statusChanged,this,[this](auto state){
+        if(state==QQuickView::Error){QStringList messages;const auto failures=errors();for(const auto& error:failures)messages.append(error.toString());setProperty("qmlErrors",messages);}
+    });
+}
+void SceneHost::createTextureScene(){
+    widget_=new QQuickWidget(this);widget_->setObjectName("plotTextureHost");install(widget_);container_=widget_;
+}
+SceneHost::SceneHost(presentation::PlotHost kind,QWidget* parent):QWidget(parent){
+    configure();auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,0);
+    if(kind==presentation::PlotHost::NativeWindow)createNativeScene();else createTextureScene();
     layout->addWidget(container_);
 }
 SceneHost::~SceneHost() {
@@ -49,7 +43,7 @@ QQuickWidget::Status SceneHost::status() const {return view_?QQuickWidget::Statu
 QList<QQmlError> SceneHost::errors() const {return view_?view_->errors():widget_->errors();}
 void SceneHost::setSource(const QUrl& source){
     if(view_)view_->setSource(source);else widget_->setSource(source);
-    QStringList messages;for(const auto& error:errors())messages.append(error.toString());setProperty("qmlErrors",messages);
+    QStringList messages;const auto failures=errors();for(const auto& error:failures)messages.append(error.toString());setProperty("qmlErrors",messages);
 }
 void SceneHost::setFormat(const QSurfaceFormat& format){if(view_)view_->setFormat(format);else widget_->setFormat(format);}
 QSurfaceFormat SceneHost::format() const {return view_?view_->format():widget_->format();}

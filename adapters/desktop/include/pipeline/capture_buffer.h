@@ -16,6 +16,17 @@ class CaptureBuffer {
     uint64_t _sample_written = 0;
     bool _gap = false;
     uint32_t _rate = 0, _channels = 0;
+    static void copy_samples(float *destination,const float *source,size_t count) noexcept {
+        if(source)std::memcpy(destination,source,count*sizeof(float));
+        else std::fill_n(destination,count,0.0f);
+    }
+    void unpack_samples(AudioFrame& frame,const Packet& packet,const float* source,size_t begin,size_t count) const {
+        for(size_t i=0;i<count;++i){
+            for(size_t channel=0;channel<_channels;++channel){
+                frame.samples[channel*packet.frames+begin+i]=source[i*_channels+channel];
+            }
+        }
+    }
   public:
     void reset(uint32_t rate, uint32_t channels) {
         // Admission bounds channels before opening a device. No callback allocation.
@@ -34,13 +45,9 @@ class CaptureBuffer {
         }
         const auto start = _sample_written % capacity;
         const auto first = std::min<uint64_t>(frames, capacity - start);
-        const auto copy = [](float *destination, const float *source, size_t count) noexcept {
-            if (source) std::memcpy(destination, source, count * sizeof(float));
-            else std::fill_n(destination, count, 0.0f);
-        };
         // At most two contiguous copies, including packets crossing the ring end.
-        copy(_samples.data() + start * _channels, pcm, first * _channels);
-        copy(_samples.data(), pcm ? pcm + first * _channels : nullptr, (frames - first) * _channels);
+        copy_samples(_samples.data() + start * _channels, pcm, first * _channels);
+        copy_samples(_samples.data(), pcm ? pcm + first * _channels : nullptr, (frames - first) * _channels);
         _packets[written % _packets.size()] = {_sample_written, timestamp, sample_position, frames, _gap};
         _gap = false; _sample_written += frames;
         _written.store(written + 1, std::memory_order_release); return true;
@@ -55,14 +62,8 @@ class CaptureBuffer {
         frame.samples.resize(size_t(packet.frames) * _channels);
         const auto start = packet.offset % (_samples.size() / _channels);
         const auto first = std::min<uint64_t>(packet.frames, _samples.size() / _channels - start);
-        const auto unpack = [&](const float *source, size_t begin, size_t count) {
-            for (size_t i = 0; i < count; ++i) {
-                for (size_t channel = 0; channel < _channels; ++channel)
-                    frame.samples[channel * packet.frames + begin + i] = source[i * _channels + channel];
-            }
-        };
-        unpack(_samples.data() + start * _channels, 0, first);
-        unpack(_samples.data(), first, packet.frames - first);
+        unpack_samples(frame,packet,_samples.data() + start * _channels,0,first);
+        unpack_samples(frame,packet,_samples.data(),first,packet.frames-first);
         _sample_read.store(packet.offset + packet.frames, std::memory_order_release);
         _read.store(read + 1, std::memory_order_release); return true;
     }

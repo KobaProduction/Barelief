@@ -52,7 +52,7 @@ struct NumericRemoteEndpoint::Impl {
         QMetaObject::invokeMethod(&owner,[this,reply=std::move(reply),generation=snapshot_generation,handler_generation=reply_handler_generation]() mutable {
             if(handler_generation!=reply_handler_generation)return;
             if(generation!=snapshot_generation) {
-                reply.accepted=false;reply.error=QStringLiteral("Remote session retired after command");reply.snapshot=state;
+                reply.accepted=false;reply.error=QStringLiteral("Remote session retired after command");reply.numeric_diagnostic.reset();reply.snapshot=state;
             } else reply.snapshot=state;
             if(reply_handler)reply_handler(std::move(reply));
         },Qt::QueuedConnection);
@@ -62,19 +62,26 @@ struct NumericRemoteEndpoint::Impl {
             if(generation==snapshot_generation&&handler_generation==snapshot_handler_generation&&snapshot_handler)snapshot_handler(state);
         },Qt::QueuedConnection);
     }
-    void finish(bool accepted,QString error={}) {
-        if(active)emit_reply({active->id,accepted,std::move(error),state});active.reset();apply_next=false;
+    void finish(bool accepted,QString error={},std::optional<EngineDiagnostic> diagnostic={}) {
+        if(active)emit_reply({active->id,accepted,std::move(error),state,std::move(diagnostic)});
+        active.reset();apply_next=false;
         cold_snapshot=cold_selected=false;queries.clear();
     }
     void fence() {bindings.clear();staged_arena.reset();ingress.clear();received.clear();receive_losses.clear();ingress_losses.clear();history_snapshots.clear();queries.clear();cold_selected=false;codec.reset();received_sequence=0;discard_data=true;}
     void retire(QString error={}) {
         if(retiring)return;retiring=true;
         auto retired_bindings=std::move(bindings);
+        retire_transport();
+        if(!notify_retired_bindings(retired_bindings))return;
+        retire_snapshot(std::move(error));
+        retiring=false;
+    }
+    void retire_transport() {
         timer.stop();connected=false;fence();unsent.reset();waiting=0;capabilities=bootstrapped=rebind=false;
         arena.reset();
         if(control)control->reset();control.reset();
-        // Terminal notifications use the retiring delivery fence while snapshot()
-        // still names it, so the selected presenter can clear the matching views.
+    }
+    bool notify_retired_bindings(const std::deque<Binding>& retired_bindings) {
         QPointer<NumericRemoteEndpoint> lifetime(&owner);
         const auto on_frame=frame_handler;const auto on_history=history_handler;
         const auto frame_generation=frame_handler_generation,history_generation=history_handler_generation;
@@ -85,30 +92,50 @@ struct NumericRemoteEndpoint::Impl {
                 DeliveredNumericHistoryRow marker;marker.compact=std::move(unavailable);marker.event=NumericHistoryEvent::Unavailable;
                 marker.capacity=history->shape.extents[0].maximum;if(on_history && history_generation==history_handler_generation)on_history(std::move(marker));
             } else if(on_frame && frame_generation==frame_handler_generation)on_frame(std::move(unavailable));
-            if(!lifetime)return;
+            if(!lifetime)return false;
         }
-        // No applied snapshot or cold frame remains authoritative after this
-        // transport session is retired. Previously queued snapshots are fenced.
-        ++snapshot_generation;graph={};state={};token=0;nonce=0;
+        return true;
+    }
+    void retire_snapshot(QString error) {
+        auto diagnostics=std::move(state.diagnostics);
+        ++snapshot_generation;graph={};state={};state.diagnostics=std::move(diagnostics);token=0;nonce=0;
         state.statuses[QStringLiteral("analyzer")]={State::Stopped,error,0};
         emit_snapshot();
         if(active)finish(false,error);
         while(!work.empty()) {auto w=std::move(work.front());work.pop_front();emit_reply({w.id,false,error,state});}
         if(!error.isEmpty())warning=std::move(error);
-        retiring=false;
     }
     void start() {
-        if(control)retire();fence();warning.clear();control::numeric::SessionConfig config;
+        if(control)retire();fence();warning.clear();state.diagnostics={};
         ++snapshot_generation;
+        auto config=desktop_session_config();
         config.endpoint_authorized=true;config.device_identity=device.toStdString();config.codec_limits=control_limits();
         control=std::make_unique<control::numeric::ControlSession>(config,clock);
-        control->set_reply_handler([](const nc::Message& m,void* p){static_cast<Impl*>(p)->reply(m);},this);
-        control->set_packet_handler([](bdsp_protocol::PacketView p,void* c){static_cast<Impl*>(c)->packet(p);},this);
+        bind_control_handlers();
         nonce=QRandomGenerator::global()->generate64();if(!nonce)nonce=1;
         next_request=1;next_binding=1;sequence=0;last_state=0;connected=true;
         if(control->open(nonce)!=Status::ok){retire(QStringLiteral("CONTROL2 negotiation failed"));return;}
         timer.start();
     }
+    void bind_control_handlers() {
+        control->set_reply_handler([](const nc::Message& message,void* context){static_cast<Impl*>(context)->reply(message);},this);
+        control->set_packet_handler([](bdsp_protocol::PacketView packet,void* context){static_cast<Impl*>(context)->packet(packet);},this);
+    }
+    void finish_rejected(const nc::Reply& reply) {
+        std::optional<EngineDiagnostic> diagnostic;
+        if(reply.diagnostic.reason!=domain::ProcessingReason::None) {
+            domain::ProcessingDiagnostic value;
+            value.error=domain::ProcessingError::InvalidParameters;
+            value.node=reply.diagnostic.node.value_or(-1);
+            value.port=reply.diagnostic.port.value_or(0);
+            if(reply.diagnostic.edge && *reply.diagnostic.edge<=std::numeric_limits<std::size_t>::max())
+                value.edge=std::size_t(*reply.diagnostic.edge);
+            value.reason=reply.diagnostic.reason;value.parameter=reply.diagnostic.parameter;
+            diagnostic=EngineDiagnostic::own(value);
+        }
+        finish(false,QStringLiteral("Remote control rejected (%1)").arg(int(reply.error)),std::move(diagnostic));
+    }
+
     void reply(const nc::Message& m) {
         if(m.request!=waiting)return;waiting=0;
         const auto* r=std::get_if<nc::Reply>(&m.body);if(!r)return;
@@ -134,7 +161,7 @@ struct NumericRemoteEndpoint::Impl {
             bootstrapped=true;rebind=true;return;
         }
         if(!active)return;
-        if(r->error!=nc::Error::None) {finish(false,QStringLiteral("Remote control rejected (%1)").arg(int(r->error)));return;}
+        if(r->error!=nc::Error::None) {finish_rejected(*r);return;}
         if(phase==nc::CommandId::State&&active->command.kind==EngineCommand::Snapshot) {
             cold_snapshot=true;cold_started=clock.now_ms();cold_selected=false;state.numeric_frames.clear();return;
         }
@@ -158,16 +185,21 @@ struct NumericRemoteEndpoint::Impl {
         if(!next_arena){warning=QStringLiteral("Remote numeric retention budget exhausted");rebind=true;return;}
         std::deque<Binding> next;
         auto next_id=next_binding;
+        if(!prepare_bindings(selected,next_arena,next,next_id))return;
+        fence();arena=std::move(next_arena);bindings=std::move(next);next_binding=next_id;
+    }
+    bool prepare_bindings(const std::vector<EndpointIdentity>& selected,const std::shared_ptr<Arena>& next_arena,
+                          std::deque<Binding>& next,std::uint64_t& next_id) {
         for(const auto& e:selected) {
             const auto* p=find_port(graph,e);if(!p){warning=QStringLiteral("Remote numeric port missing");continue;}
             if(std::any_of(next.begin(),next.end(),[&](const auto& b){return b.context->endpoint==e;}))continue;
             Binding binding;
             if(make_binding(e,p->contract,std::uint32_t(next_id++),next_arena,binding)!=Status::ok) {
-                warning=QStringLiteral("Remote numeric binding preparation refused");return;
+                warning=QStringLiteral("Remote numeric binding preparation refused");return false;
             }
             next.push_back(std::move(binding));
         }
-        fence();arena=std::move(next_arena);bindings=std::move(next);next_binding=next_id;
+        return true;
     }
     void packet(bdsp_protocol::PacketView p) {
         if(!capabilities||!control)return;
@@ -180,26 +212,34 @@ struct NumericRemoteEndpoint::Impl {
            m.envelope.delivery_generation!=m.stamp.generation)return;
         auto found=std::find_if(bindings.begin(),bindings.end(),[&](const auto& b){return b.context->endpoint==endpoint(m.endpoint);});
         if(found==bindings.end())return;
-        if(p.id==nd::AckId) {
-            if(m.kind==nd::Kind::Unavailable&&!m.stamp.available&&m.envelope.delivery_sequence==1&&!m.envelope.delivery_generation&&
-                m.envelope.request==found->id&&m.stamp.stream_id==found->stream&&
-                signal_contracts::same_contract(m.contract,found->wire_owner.view()))found->acknowledged=true;
-            return;
-        }
+        if(p.id==nd::AckId){accept_ack(m,*found);return;}
         if(!found->acknowledged||!m.envelope.delivery_sequence||m.envelope.delivery_sequence<=received_sequence)return;
-        if(m.envelope.request) {
-            auto query=std::find_if(queries.begin(),queries.end(),[&](const auto& q){return q.sent&&q.request==m.envelope.request&&q.endpoint==found->context->endpoint;});
-            if(query==queries.end())return;
-            DeliveredNumericFrame retained;if(retain_snapshot(m,*found,codec,arena,retained)!=Status::ok)return;
-            found->ring=m.history.capacity!=0;
-            if(m.kind==nd::Kind::Frame || (m.kind==nd::Kind::Unavailable && !m.history.capacity)){
-                Queued ordinary=retained;enqueue_delivery(received,ordinary,receive_losses);
-            }else if(history_snapshot_handler&&history_snapshots.size()<QueueSize)history_snapshots.push_back({retained,m.history.ordinal,m.history.filled});
-            received_sequence=m.envelope.delivery_sequence;state.numeric_frames.push_back(std::move(retained));queries.erase(query);return;
-        }
+        if(m.envelope.request)receive_snapshot(m,*found);
+        else receive_delivery(m,*found);
+    }
+    void accept_ack(const nd::Message& m,Binding& binding) {
+        if(m.kind==nd::Kind::Unavailable&&!m.stamp.available&&m.envelope.delivery_sequence==1&&
+           !m.envelope.delivery_generation&&m.envelope.request==binding.id&&m.stamp.stream_id==binding.stream&&
+           signal_contracts::same_contract(m.contract,binding.wire_owner.view()))binding.acknowledged=true;
+    }
+    void receive_snapshot(nd::Message& m,Binding& binding) {
+        auto query=std::find_if(queries.begin(),queries.end(),[&](const auto& pending){
+            return pending.sent&&pending.request==m.envelope.request&&pending.endpoint==binding.context->endpoint;});
+        if(query==queries.end())return;
+        DeliveredNumericFrame retained;if(retain_snapshot(m,binding,codec,arena,retained)!=Status::ok)return;
+        binding.ring=m.history.capacity!=0;
+        if(m.kind==nd::Kind::Frame || (m.kind==nd::Kind::Unavailable && !m.history.capacity)){
+            Queued ordinary=retained;enqueue_delivery(received,ordinary,receive_losses);
+        }else if(history_snapshot_handler&&history_snapshots.size()<QueueSize)
+            history_snapshots.push_back({retained,m.history.ordinal,m.history.filled});
+        received_sequence=m.envelope.delivery_sequence;
+        state.numeric_frames.push_back(std::move(retained));queries.erase(query);
+    }
+    void receive_delivery(nd::Message& m,Binding& binding) {
         Queued retained;
-        if(retain_delivery(m,*found,codec,arena,retained)!=Status::ok){receive_losses.insert(found->context->endpoint);warning=QStringLiteral("Remote numeric delivery refused");return;}
-        found->ring=m.history.capacity!=0;
+        if(retain_delivery(m,binding,codec,arena,retained)!=Status::ok){
+            receive_losses.insert(binding.context->endpoint);warning=QStringLiteral("Remote numeric delivery refused");return;}
+        binding.ring=m.history.capacity!=0;
         received_sequence=m.envelope.delivery_sequence;
         if(enqueue_delivery(received,retained,receive_losses)==EnqueueResult::Overflow)
             warning=QStringLiteral("Remote numeric delivery mailbox overflow");
@@ -207,111 +247,230 @@ struct NumericRemoteEndpoint::Impl {
     void pump() {
         if(pumping||!connected||!control)return;pumping=true;
         QPointer<NumericRemoteEndpoint> lifetime(&owner);
+        if(!poll_control())return;
+        if(discard_data&&control->state()==control::ControlSessionState::Ready)
+            discard_data=control->discard_outbound_data()==Status::would_block;
+        if(!drain_received(lifetime)||!drain_history_snapshots(lifetime))return;
+        if(control->state()!=control::ControlSessionState::Ready||waiting){pumping=false;return;}
+        process_ready();
+        if(lifetime)pumping=false;
+    }
+    bool poll_control() {
         auto* transport=serial?static_cast<bdsp_protocol::ByteTransport*>(serial.get()):tcp.get();
         const auto pending=serial?serial->device().bytesToWrite():socket.bytesToWrite();
         const auto result=control->poll(*transport,pending);
-        if(result!=Status::ok&&result!=Status::would_block) {pumping=false;retire(QStringLiteral("Remote session failed"));return;}
-        if(discard_data&&control->state()==control::ControlSessionState::Ready)
-            discard_data=control->discard_outbound_data()==Status::would_block;
+        if(result==Status::ok||result==Status::would_block)return true;
+        const QJsonObject diagnostic{{"session_state",int(control->state())},{"session_error",int(control->error())},
+                {"status",int(result)},{"command",int(phase)},{"request",QString::number(waiting)},
+                {"wire_pending",QString::number(control->pending_bytes())},{"assembly_bytes",QString::number(control->assembly_bytes())},
+                {"device_pending",QString::number(pending)},{"receive_buffered",QString::number(serial?serial->device().bytesAvailable():socket.bytesAvailable())}};
+        const auto timeout=control->error()==control::ControlSessionError::Timeout;
+        state.diagnostics["control_failure"]=diagnostic;
+        pumping=false;retire(timeout?QStringLiteral("Remote control timed out"):QStringLiteral("Remote session failed"));
+        return false;
+    }
+    bool drain_received(QPointer<NumericRemoteEndpoint> lifetime) {
         while(!received.empty()) {
             auto value=std::move(received.front());received.pop_front();
             if(auto* f=std::get_if<DeliveredNumericFrame>(&value)){if(frame_handler)frame_handler(std::move(*f));}
             else if(history_handler)history_handler(std::move(std::get<DeliveredNumericHistoryRow>(value)));
-            if(!lifetime)return;
-            if(!control||!connected){pumping=false;return;}
+            if(!lifetime)return false;
+            if(!control||!connected){pumping=false;return false;}
         }
+        return true;
+    }
+    bool drain_history_snapshots(QPointer<NumericRemoteEndpoint> lifetime) {
         while(!history_snapshots.empty()) {
             auto next=std::move(history_snapshots.front());history_snapshots.pop_front();
             if(next.frame.delivery.epoch==state.epoch&&next.frame.delivery.graph_revision==state.graph_revision&&history_snapshot_handler)
                 history_snapshot_handler(std::move(next.frame),next.ordinal,next.filled_count);
-            if(!lifetime)return;
-            if(!control||!connected){pumping=false;return;}
+            if(!lifetime)return false;
+            if(!control||!connected){pumping=false;return false;}
         }
-        if(control->state()!=control::ControlSessionState::Ready||waiting){pumping=false;return;}
+        return true;
+    }
+    void process_ready() {
         if(unsent) {auto c=*unsent;send(c,unsent_expected);}
         else if(!bootstrapped) {nc::Command c;c.id=nc::CommandId::Capabilities;send(c,state.revision);}
         else if(active&&apply_next) {nc::Command c;c.id=nc::CommandId::Apply;c.token=token;c.graph_id=projection.wire().graph_id;send(c,state.revision);}
-        else if(!active&&!work.empty()) {
-            active=std::move(work.front());work.pop_front();nc::Command c;
-            // EnginePort uses the applied graph revision. CONTROL has a separate
-            // mutation revision, including Start/Stop and preparation ownership.
-            const auto expected=state.revision;
-            switch(active->command.kind) {
-            case EngineCommand::Snapshot:c.id=nc::CommandId::State;break;
-            case EngineCommand::ApplyGraph: {
-                bool routing=false;
-                for(const auto value:active->command.graph.value("nodes").toArray()) {
-                    const auto node=value.toObject();
-                    for(const auto adapter:{node.value("adapter"),node.value("internal-data").toObject().value("adapter")})
-                        routing|=!adapter.isUndefined()&&(!adapter.isObject()||!adapter.toObject().isEmpty());
-                }
-                if(routing){finish(false,QStringLiteral("Remote adapter routing configuration is not supported by CONTROL2"));pumping=false;return;}
-                if(active->command.expected_revision!=std::numeric_limits<quint64>::max()&&active->command.expected_revision!=state.graph_revision) {
-                    finish(false,QStringLiteral("Graph revision conflict"));pumping=false;return;
-                }
-                domain::NumericProcessingGraph next;auto decoded=desktop::decode_numeric_graph(QJsonDocument(active->command.graph).toJson(QJsonDocument::Compact),next);
-                if(!decoded||!projection.assign(next,control_limits())){finish(false,decoded?QStringLiteral("Remote graph exceeds CONTROL2 limits"):decoded.error);pumping=false;return;}
-                c.id=nc::CommandId::Prepare;c.graph=projection.wire();break;
-            }
-            case EngineCommand::Subscribe:rebind=true;finish(true);pumping=false;return;
-            default:finish(false,QStringLiteral("Remote canonical command unsupported"));pumping=false;return;
-            }
-            send(c,expected);
-        } else if(!active&&clock.now_ms()-last_state>=500) {nc::Command c;c.id=nc::CommandId::State;if(send(c,state.revision))last_state=clock.now_ms();}
-        else if(capabilities) {
-            if(rebind)select_bindings();
-            // Complete cancellation of retiring DATA before queueing a fresh
-            // binding. A partially written old packet may need another poll.
-            if(discard_data){pumping=false;return;}
-            if(codec.wire_bytes)codec.flush(*control);
-            else {
-                // readyRead and the timer can both pump. Only one binding may
-                // await an ACK; retry the same ID after bounded backpressure.
-                auto pending=std::find_if(bindings.begin(),bindings.end(),[](const auto& b){return !b.acknowledged&&b.sent;});
-                auto unbound=bindings.end();const auto now=clock.now_ms();
-                if(pending!=bindings.end()) {
-                    if(now-pending->sent_at>=500)unbound=pending;
-                } else unbound=std::find_if(bindings.begin(),bindings.end(),[](const auto& b){return !b.acknowledged&&!b.sent;});
-                if(unbound!=bindings.end()) {auto m=handshake(*unbound,nonce,control->identity().session,state.graph_revision,state.epoch);if(codec.encode(m,nd::SubscribeId)==Status::ok){unbound->sent=true;unbound->sent_at=now;codec.flush(*control);}}
-                else if(cold_snapshot) {
-                    if(!cold_selected&&std::all_of(bindings.begin(),bindings.end(),[](const auto& b){return b.acknowledged;})) {
-                        for(const auto& b:bindings) {
-                            const auto c=b.context->contract.view();const auto* h=std::get_if<signal_contracts::NumericContract>(&c);
-                            if(h&&h->shape.rank==signal_contracts::Rank::Matrix)queries.push_back({b.context->endpoint,next_query++,false});
-                        }
-                        cold_selected=true;
-                        if(queries.size()>QueueSize){finish(false,QStringLiteral("Cold snapshot query exceeds bounded queue"));pumping=false;return;}
-                    }
-                    if(cold_selected&&queries.empty())finish(true);
-                    else if(clock.now_ms()-cold_started>=5000)finish(false,QStringLiteral("Cold history snapshot timeout"));
-                    else {
-                        auto q=std::find_if(queries.begin(),queries.end(),[](const auto& q){return !q.sent;});
-                        if(q!=queries.end()) {
-                            auto b=std::find_if(bindings.begin(),bindings.end(),[&](const auto& b){return b.context->endpoint==q->endpoint;});
-                            if(b!=bindings.end()) {
-                                auto m=handshake(*b,nonce,control->identity().session,state.graph_revision,state.epoch);
-                                m.kind=nd::Kind::Query;m.history.capacity=std::get<signal_contracts::NumericContract>(m.contract).shape.extents[0].maximum;m.stamp.available=true;m.envelope.request=q->request;m.envelope.delivery_sequence=++sequence;
-                                if(codec.encode(m,nd::QueryId)==Status::ok){q->sent=true;codec.flush(*control);}
-                            }
-                        }
-                    }
-                }
-                else if(!ingress.empty()) {
-                    auto item=std::move(ingress.front());ingress.pop_front();
-                    auto b=std::find_if(bindings.begin(),bindings.end(),[&](const auto& v){return v.context->endpoint==item.endpoint;});
-                    if(b!=bindings.end()&&b->acknowledged) {
-                        const auto delivery_sequence=++sequence;
-                        Status encoded;
-                        if(item.history_ordinal)encoded=encode_snapshot(codec,item.frame,*b,nonce,control->identity().session,
-                            state.graph_revision,delivery_sequence,delivery_sequence,state.epoch,*item.history_ordinal,item.filled_count,nd::EventsId);
-                        else {Queued value=std::move(item.frame);encoded=encode_delivery(codec,value,*b,nonce,control->identity().session,state.graph_revision,delivery_sequence,false,state.epoch);}
-                        if(encoded==Status::ok)codec.flush(*control);
-                        else warning=QStringLiteral("Remote numeric ingress exceeds DATA4 contract or limits");
-                    }
-                }
-            }
+        else if(!active&&!work.empty())start_work();
+        else if(!active&&clock.now_ms()-last_state>=500) {
+            nc::Command command;command.id=nc::CommandId::State;
+            if(send(command,state.revision))last_state=clock.now_ms();
+        } else if(capabilities)schedule_data();
+    }
+    static bool has_routing_adapter(const QJsonObject& graph) {
+        const auto nodes=graph.value("nodes").toArray();
+        for(const auto& value:nodes) {
+            const auto node=value.toObject();
+            for(const auto& adapter:{node.value("adapter"),node.value("internal-data").toObject().value("adapter")})
+                if(!adapter.isUndefined()&&(!adapter.isObject()||!adapter.toObject().isEmpty()))return true;
         }
-        pumping=false;
+        return false;
+    }
+    bool prepare_work_graph(nc::Command& command) {
+        if(has_routing_adapter(active->command.graph)) {
+            finish(false,QStringLiteral("Remote adapter routing configuration is not supported by CONTROL2"));return false;}
+        if(active->command.expected_revision!=std::numeric_limits<quint64>::max()&&
+           active->command.expected_revision!=state.graph_revision){
+            finish(false,QStringLiteral("Graph revision conflict"));return false;}
+        domain::NumericProcessingGraph next;
+        const auto decoded=desktop::decode_numeric_graph(
+            QJsonDocument(active->command.graph).toJson(QJsonDocument::Compact),next);
+        if(!decoded||!projection.assign(next,control_limits())){
+            finish(false,decoded?QStringLiteral("Remote graph exceeds CONTROL2 limits"):decoded.error);return false;}
+        command.id=nc::CommandId::Prepare;command.graph=projection.wire();return true;
+    }
+    void start_work() {
+        active=std::move(work.front());work.pop_front();nc::Command command;
+        const auto expected=state.revision;
+        switch(active->command.kind) {
+        case EngineCommand::Snapshot:command.id=nc::CommandId::State;break;
+        case EngineCommand::ApplyGraph:if(!prepare_work_graph(command))return;break;
+        case EngineCommand::Subscribe:rebind=true;finish(true);return;
+        default:finish(false,QStringLiteral("Remote canonical command unsupported"));return;
+        }
+        send(command,expected);
+    }
+    bool schedule_binding() {
+        auto pending=std::find_if(bindings.begin(),bindings.end(),[](const auto& binding){return !binding.acknowledged&&binding.sent;});
+        auto unbound=bindings.end();const auto now=clock.now_ms();
+        if(pending!=bindings.end()) {
+            if(now-pending->sent_at>=500)unbound=pending;
+        } else unbound=std::find_if(bindings.begin(),bindings.end(),[](const auto& binding){return !binding.acknowledged&&!binding.sent;});
+        if(unbound==bindings.end())return false;
+        auto message=handshake(*unbound,nonce,control->identity().session,state.graph_revision,state.epoch);
+        if(codec.encode(message,nd::SubscribeId)==Status::ok){
+            unbound->sent=true;unbound->sent_at=now;codec.flush(*control);}
+        return true;
+    }
+    void select_cold_queries() {
+        if(cold_selected||!std::all_of(bindings.begin(),bindings.end(),[](const auto& binding){return binding.acknowledged;}))return;
+        for(const auto& binding:bindings) {
+            const auto contract=binding.context->contract.view();
+            const auto* history=std::get_if<signal_contracts::NumericContract>(&contract);
+            if(history&&history->shape.rank==signal_contracts::Rank::Matrix)
+                queries.push_back({binding.context->endpoint,next_query++,false});
+        }
+        cold_selected=true;
+    }
+    void send_cold_query() {
+        auto query=std::find_if(queries.begin(),queries.end(),[](const auto& item){return !item.sent;});
+        if(query==queries.end())return;
+        auto binding=std::find_if(bindings.begin(),bindings.end(),[&](const auto& item){return item.context->endpoint==query->endpoint;});
+        if(binding==bindings.end())return;
+        auto message=handshake(*binding,nonce,control->identity().session,state.graph_revision,state.epoch);
+        message.kind=nd::Kind::Query;
+        message.history.capacity=std::get<signal_contracts::NumericContract>(message.contract).shape.extents[0].maximum;
+        message.stamp.available=true;message.envelope.request=query->request;message.envelope.delivery_sequence=++sequence;
+        if(codec.encode(message,nd::QueryId)==Status::ok){query->sent=true;codec.flush(*control);}
+    }
+    void schedule_cold_snapshot() {
+        select_cold_queries();
+        if(queries.size()>QueueSize){finish(false,QStringLiteral("Cold snapshot query exceeds bounded queue"));return;}
+        if(cold_selected&&queries.empty()){finish(true);return;}
+        if(clock.now_ms()-cold_started>=5000){finish(false,QStringLiteral("Cold history snapshot timeout"));return;}
+        send_cold_query();
+    }
+    void send_ingress() {
+        auto item=std::move(ingress.front());ingress.pop_front();
+        auto binding=std::find_if(bindings.begin(),bindings.end(),[&](const auto& value){return value.context->endpoint==item.endpoint;});
+        if(binding==bindings.end()||!binding->acknowledged)return;
+        const auto delivery_sequence=++sequence;
+        Status encoded;
+        if(item.history_ordinal)encoded=encode_snapshot(codec,item.frame,*binding,nonce,control->identity().session,
+            state.graph_revision,delivery_sequence,delivery_sequence,state.epoch,*item.history_ordinal,item.filled_count,nd::EventsId);
+        else {Queued value=std::move(item.frame);encoded=encode_delivery(codec,value,*binding,nonce,
+            control->identity().session,state.graph_revision,delivery_sequence,false,state.epoch);}
+        if(encoded==Status::ok)codec.flush(*control);
+        else warning=QStringLiteral("Remote numeric ingress exceeds DATA4 contract or limits");
+    }
+    void schedule_data() {
+        if(rebind)select_bindings();
+        if(discard_data)return;
+        if(codec.wire_bytes){codec.flush(*control);return;}
+        if(schedule_binding())return;
+        if(cold_snapshot){schedule_cold_snapshot();return;}
+        if(!ingress.empty())send_ingress();
+    }
+    bool select_subscriptions(std::vector<EndpointIdentity> endpoints,QString* error) {
+        if(endpoints.size()>MaxBindings){if(error)*error=QStringLiteral("Too many numeric subscriptions");return false;}
+        if(capabilities&&!graph.nodes.empty()) {
+            const auto count=endpoints.empty()?default_endpoints(graph).size():endpoints.size();
+            auto prepared=Arena::prepare_rebind(nd::desktop_limits().frame,count,arena_budget,arena);
+            if(!prepared){if(error)*error=QStringLiteral("Remote numeric retention budget exhausted");return false;}
+            staged_arena=std::move(prepared);
+        }
+        ++frame_handler_generation;++history_handler_generation;
+        desired=std::move(endpoints);rebind=true;return true;
+    }
+    bool configure_serial(const QJsonObject& config,QString* error) {
+        auto endpoint=*serial_endpoint;endpoint.port_name=config.value("port_name").toString(endpoint.port_name);
+        endpoint.baud_rate=config.value("baud_rate").toInt(endpoint.baud_rate);
+        const auto next_device=config.value("device_identity").toString(device);
+        if(endpoint.port_name.isEmpty()||endpoint.baud_rate<=0||next_device.isEmpty()||next_device.toUtf8().size()>256) {
+            if(error)*error=QStringLiteral("Explicit UART port, baud rate and device identity required");return false;
+        }
+        const bool changed=endpoint.port_name!=serial_endpoint->port_name||
+                           endpoint.baud_rate!=serial_endpoint->baud_rate||next_device!=device;
+        const bool reconnect=connected;
+        if(changed){owner.disconnect_remote();serial_endpoint=endpoint;device=next_device;if(reconnect)owner.connect_remote();}
+        return true;
+    }
+    bool configure_tcp(const QJsonObject& config,QString* error) {
+        const auto next_host=config.value("host").toString(host);const int next_port=config.value("port").toInt(port);
+        const auto next_device=config.value("device_identity").toString(device);
+        if(next_port<1||next_port>65535||next_host.isEmpty()||next_device.isEmpty()||next_device.toUtf8().size()>256) {
+            if(error)*error=QStringLiteral("Explicit TCP host, port and device identity required");return false;}
+        const bool changed=next_host!=host||next_port!=port||next_device!=device;
+        const bool reconnect=connected||socket.state()!=QAbstractSocket::UnconnectedState;
+        if(changed){owner.disconnect_remote();host=next_host;port=quint16(next_port);device=next_device;
+            if(reconnect)owner.connect_remote();}
+        return true;
+    }
+    bool frame_ingress_available(const EndpointIdentity& endpoint,const DeliveredNumericFrame& frame,
+                                 const domain::ProcessingPort* port) {
+        if(ingress.size()>=QueueSize && port)ingress_losses.insert(endpoint);
+        return connected&&port&&frame.context&&frame.frame&&ingress.size()<QueueSize&&
+               signal_contracts::same_contract(port->contract.view(),frame.context->contract.view());
+    }
+    static bool is_history_payload(const DeliveredNumericFrame& frame) {
+        const auto incoming=frame.frame.view();
+        const auto* payload=std::get_if<signal_contracts::NumericView>(&incoming.payload);
+        return payload&&payload->ring.capacity;
+    }
+    bool publish_frame(const EndpointIdentity& endpoint,DeliveredNumericFrame frame,QString* error) {
+        const auto* port=find_port(graph,endpoint);
+        if(!frame_ingress_available(endpoint,frame,port)) {
+            if(error)*error=QStringLiteral("Remote ingress unavailable, incompatible or full");return false;
+        }
+        if(is_history_payload(frame)) {
+            if(error)*error=QStringLiteral("History ingress requires its explicit real ordinal");return false;
+        }
+        if(ingress_losses.erase(endpoint))frame.frame=frame.frame.with_discontinuity();
+        ingress.push_back({endpoint,std::move(frame),{}});return true;
+    }
+    bool publish_history(const EndpointIdentity& endpoint,DeliveredNumericFrame frame,
+                         std::uint64_t ordinal,std::uint64_t filled_count,QString* error) {
+        const auto* port=find_port(graph,endpoint);
+        if(!frame_ingress_available(endpoint,frame,port)||!frame.context->retention_owner) {
+            if(error)*error=QStringLiteral("Remote History ingress unavailable, incompatible or full");return false;
+        }
+        if(!valid_history_snapshot(*port,frame,ordinal,filled_count)) {
+            if(error)*error=QStringLiteral("History requires an exact snapshot and its real row ordinal");return false;
+        }
+        if(ingress_losses.erase(endpoint))frame.frame=frame.frame.with_discontinuity();
+        ingress.push_back({endpoint,std::move(frame),ordinal,filled_count});return true;
+    }
+    static bool valid_history_snapshot(const domain::ProcessingPort& port,const DeliveredNumericFrame& frame,
+                                       std::uint64_t ordinal,std::uint64_t filled_count) {
+        const auto contract=port.contract.view();
+        const auto* history=std::get_if<signal_contracts::NumericContract>(&contract);
+        const auto value=frame.frame.view();
+        const auto* payload=std::get_if<signal_contracts::NumericView>(&value.payload);
+        return history&&history->shape.rank==signal_contracts::Rank::Matrix&&payload&&
+               (!value.stamp.available||payload->ring.capacity)&&
+               (!value.stamp.available||(filled_count<=payload->actual[0]&&ordinal>=filled_count));
     }
 };
 NumericRemoteEndpoint::NumericRemoteEndpoint(QString host,quint16 port,QObject* parent):QObject(parent),impl_(std::make_unique<Impl>(*this)) {
@@ -327,16 +486,7 @@ NumericRemoteEndpoint::NumericRemoteEndpoint(desktop::SerialEndpoint endpoint,QO
 NumericRemoteEndpoint::~NumericRemoteEndpoint(){disconnect_remote();}
 EnginePort::PortDeliveryMode NumericRemoteEndpoint::port_delivery_mode() const noexcept{return PortDeliveryMode::CanonicalNumericPortsV2;}
 bool NumericRemoteEndpoint::subscribe_numeric_frames(std::vector<EndpointIdentity> endpoints,QString* error) {
-    if(endpoints.size()>MaxBindings){if(error)*error=QStringLiteral("Too many numeric subscriptions");return false;}
-    auto& d=*impl_;
-    if(d.capabilities&&!d.graph.nodes.empty()) {
-        const auto count=endpoints.empty()?default_endpoints(d.graph).size():endpoints.size();
-        auto prepared=Arena::prepare_rebind(nd::desktop_limits().frame,count,d.arena_budget,d.arena);
-        if(!prepared){if(error)*error=QStringLiteral("Remote numeric retention budget exhausted");return false;}
-        d.staged_arena=std::move(prepared);
-    }
-    ++impl_->frame_handler_generation;++impl_->history_handler_generation;
-    impl_->desired=std::move(endpoints);impl_->rebind=true;return true;
+    return impl_->select_subscriptions(std::move(endpoints),error);
 }
 void NumericRemoteEndpoint::set_numeric_frame_handler(std::function<void(DeliveredNumericFrame)> f){++impl_->frame_handler_generation;impl_->frame_handler=std::move(f);}
 void NumericRemoteEndpoint::set_numeric_history_handler(std::function<void(DeliveredNumericHistoryRow)> f){++impl_->history_handler_generation;impl_->history_handler=std::move(f);}
@@ -353,24 +503,7 @@ void NumericRemoteEndpoint::set_reply_handler(std::function<void(EngineReply)> f
 EngineSnapshot NumericRemoteEndpoint::snapshot() const{return impl_->state;}
 QString NumericRemoteEndpoint::network_warning() const{return impl_->warning;}
 bool NumericRemoteEndpoint::configure_network(QJsonObject config,QString* error) {
-    auto& d=*impl_;
-    if(d.serial) {
-        auto endpoint=*d.serial_endpoint;endpoint.port_name=config.value("port_name").toString(endpoint.port_name);
-        endpoint.baud_rate=config.value("baud_rate").toInt(endpoint.baud_rate);
-        const auto device=config.value("device_identity").toString(d.device);
-        if(endpoint.port_name.isEmpty()||endpoint.baud_rate<=0||device.isEmpty()||device.toUtf8().size()>256) {
-            if(error)*error=QStringLiteral("Explicit UART port, baud rate and device identity required");return false;
-        }
-        const bool changed=endpoint.port_name!=d.serial_endpoint->port_name||endpoint.baud_rate!=d.serial_endpoint->baud_rate||device!=d.device;
-        const bool reconnect=d.connected;
-        if(changed){disconnect_remote();d.serial_endpoint=endpoint;d.device=device;if(reconnect)connect_remote();}return true;
-    }
-    const auto host=config.value("host").toString(d.host);const int port=config.value("port").toInt(d.port);
-    const auto device=config.value("device_identity").toString(d.device);
-    if(port<1||port>65535||host.isEmpty()||device.isEmpty()||device.toUtf8().size()>256) {if(error)*error=QStringLiteral("Explicit TCP host, port and device identity required");return false;}
-    const bool changed=host!=d.host||port!=d.port||device!=d.device;
-    const bool reconnect=d.connected||d.socket.state()!=QAbstractSocket::UnconnectedState;
-    if(changed){disconnect_remote();d.host=host;d.port=quint16(port);d.device=device;if(reconnect)connect_remote();}return true;
+    return impl_->serial?impl_->configure_serial(config,error):impl_->configure_tcp(config,error);
 }
 void NumericRemoteEndpoint::connect_remote() {
     auto& d=*impl_;if(d.retiring||d.connected||d.socket.state()!=QAbstractSocket::UnconnectedState)return;
@@ -379,33 +512,9 @@ void NumericRemoteEndpoint::connect_remote() {
 }
 void NumericRemoteEndpoint::disconnect_remote(){auto& d=*impl_;d.retire();if(d.serial)d.serial->close();else d.socket.abort();}
 bool NumericRemoteEndpoint::publish_numeric_frame(const EndpointIdentity& endpoint,DeliveredNumericFrame frame,QString* error) {
-    auto& d=*impl_;const auto* p=find_port(d.graph,endpoint);
-    if(d.ingress.size()>=QueueSize && p)d.ingress_losses.insert(endpoint);
-    if(!d.connected||!p||!frame.context||!frame.frame||d.ingress.size()>=QueueSize||
-       !signal_contracts::same_contract(p->contract.view(),frame.context->contract.view())) {
-        if(error)*error=QStringLiteral("Remote ingress unavailable, incompatible or full");return false;
-    }
-    const auto incoming=frame.frame.view();
-    if(const auto* payload=std::get_if<signal_contracts::NumericView>(&incoming.payload);payload && payload->ring.capacity) {
-        if(error)*error=QStringLiteral("History ingress requires its explicit real ordinal");return false;
-    }
-    if(d.ingress_losses.erase(endpoint))frame.frame=frame.frame.with_discontinuity();
-    d.ingress.push_back({endpoint,std::move(frame),{}});return true;
+    return impl_->publish_frame(endpoint,std::move(frame),error);
 }
 bool NumericRemoteEndpoint::publish_numeric_history(const EndpointIdentity& endpoint,DeliveredNumericFrame frame,std::uint64_t ordinal,std::uint64_t filled_count,QString* error) {
-    auto& d=*impl_;const auto* port=find_port(d.graph,endpoint);
-    if(d.ingress.size()>=QueueSize && port)d.ingress_losses.insert(endpoint);
-    if(!d.connected||!port||!frame.context||!frame.context->retention_owner||!frame.frame||d.ingress.size()>=QueueSize||
-       !signal_contracts::same_contract(port->contract.view(),frame.context->contract.view())) {
-        if(error)*error=QStringLiteral("Remote History ingress unavailable, incompatible or full");return false;
-    }
-    const auto c=port->contract.view();const auto* history=std::get_if<signal_contracts::NumericContract>(&c);
-    const auto value=frame.frame.view();const auto* payload=std::get_if<signal_contracts::NumericView>(&value.payload);
-    if(!history||history->shape.rank!=signal_contracts::Rank::Matrix||!payload|| (value.stamp.available && !payload->ring.capacity)||
-       (value.stamp.available&&(filled_count>payload->actual[0] || ordinal<filled_count))) {
-        if(error)*error=QStringLiteral("History requires an exact snapshot and its real row ordinal");return false;
-    }
-    if(d.ingress_losses.erase(endpoint))frame.frame=frame.frame.with_discontinuity();
-    d.ingress.push_back({endpoint,std::move(frame),ordinal,filled_count});return true;
+    return impl_->publish_history(endpoint,std::move(frame),ordinal,filled_count,error);
 }
 }

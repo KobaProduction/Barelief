@@ -8,6 +8,13 @@ DATA переносит результаты конкретного порта. 
 
 ## Кто с кем взаимодействует
 
+DATA сохраняет отдельную компонентную ось `Component` для комплексного RFFT,
+а quantity/unit различают спектральные проекции и музыкальные признаки.
+Новые символы дописаны к прежним числовым кодам; старые коды не переименованы.
+Приёмник, не знающий нового символа или операции, явно отклоняет контракт.
+Типизированные UInt8/UInt16 History передают коды и исходные координаты,
+не превращая их в скрытые аудиоканалы или автоматически нормированные Float32.
+
 **Клиент** — графическое приложение, консольное приложение или другой участник,
 который подключается к ядру. **Ядро** — процесс или устройство со своей схемой
 обработки и исполнителем. **CONTROL** передаёт возможности, состояние и команды
@@ -66,6 +73,16 @@ sequenceDiagram
 
 ## Согласование и управление
 
+Версия CONTROL packet равна 4, DATA payload — 6. `GraphVersions` внутри
+CONTROL сохраняет отдельную оболочку схемы с document=4, graph=5,
+processing=4, control=4, data=5. Последнее поле — processing data edition,
+оно не задаёт версию сетевого DATA payload. В API этим величинам соответствуют
+разные константы: `bdsp_protocol::data_version` для payload и
+`bdsp_protocol::processing_data_version` для оболочки и persistence header.
+Mapper явно переводит оболочку в domain `graph/processing`; domain не решает
+поддержку версий файла или транспорта. Registry advertising использует
+фактические версии пакетов.
+
 HELLO содержит nonce, CONTROL schema, codec mask, лимиты сообщения/пакета и
 ожидаемую identity. HELLO_ACK подтверждает согласованные параметры, writable,
 выданные client/session/epoch и identity. CBOR имеет mask 1, Protobuf — 2;
@@ -96,11 +113,15 @@ transport nonce/session/sequence, delivery epoch/generation, graph revision и
 request. FrameStamp сохраняет происхождение и время производителя. Reconnect
 не является новым sample clock и не синхронизирует независимые устройства.
 
-DATA начинается с magic `NDAT`, payload version 5, grammar 1, kind, flags,
+DATA начинается с magic `NDAT`, payload version 6, grammar 1, kind, flags,
 value domain и envelope. Полный descriptor несёт dtype, форму, representation,
 координаты, clock, planes/strides; accepted reference разрешается только после
 положительного ACK привязки. Numeric storage имеет явное wire encoding;
 structured payload содержит ограниченный schema/encoding descriptor.
+FrameStamp передаёт рациональную номинальную задержку и
+`frequency_dependent_latency`: частотозависимая задержка IIR не выдаётся за
+нулевую. Source-aligned Mixer отклоняет такие данные, поскольку одного
+числа задержки недостаточно для выравнивания. Старая версия DATA не согласуется.
 
 History realtime передаёт компактную строку, capacity, filled и ordinal.
 Query/Snapshot восстанавливают полную согласованную матрицу отдельно.
@@ -117,5 +138,17 @@ TTL и session/revision. Частичная запись сохраняет не
 
 Профили размеров: [CONTROL limits](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_control_limits.h)
 и [DATA limits](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_data_limits.h).
+
+PC-адаптер расширяет CONTROL-профиль для встроенного `profile_json`:
+1 MiB на строку, 4 MiB на суммарный текст, wire message и decode arena.
+Перед Prepare проверяется также помещаемость полного Reply с applied graph,
+capabilities и диагностикой; допустимый отдельный профиль не отменяет
+общих пределов сообщения. На peer заданы 17 MiB storage и 13 MiB in-flight
+budget, максимум четыре peer. Их 120 MiB учитываются консервативно в desktop
+admission отдельно от replay; это верхняя резервация, не измеренный RSS.
+Embedded CONTROL-профиль этих расширений не получает.
+PC read chunk равен 65535 байтам: крупный ответ не дозируется по 4 KiB
+через каждый 5-ms poll. Обработка вызова остаётся ограниченной,
+а timeout сессии сохраняется равным 5 секундам.
 Их maxima не обещаются одновременно; device profile и схема проходят admission.
 Checksum обнаруживает повреждение пакета и не является шифрованием.

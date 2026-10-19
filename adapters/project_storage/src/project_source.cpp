@@ -119,14 +119,18 @@ private:
         }
         return true;
     }
+    static bool utf8_prefix(unsigned lead,unsigned& length,std::uint32_t& cp,
+                            std::uint32_t& minimum) noexcept {
+        if(lead>=0xc2 && lead<=0xdf){length=2;cp=lead&31;minimum=0x80;return true;}
+        if(lead>=0xe0 && lead<=0xef){length=3;cp=lead&15;minimum=0x800;return true;}
+        if(lead>=0xf0 && lead<=0xf4){length=4;cp=lead&7;minimum=0x10000;return true;}
+        return false;
+    }
     void utf8() noexcept {
         const auto begin = at_;
         const auto lead = static_cast<unsigned char>(current());
         unsigned length = 0; std::uint32_t cp = 0, minimum = 0;
-        if (lead >= 0xc2 && lead <= 0xdf) { length = 2; cp = lead & 31; minimum = 0x80; }
-        else if (lead >= 0xe0 && lead <= 0xef) { length = 3; cp = lead & 15; minimum = 0x800; }
-        else if (lead >= 0xf0 && lead <= 0xf4) { length = 4; cp = lead & 7; minimum = 0x10000; }
-        else { fail(Error::InvalidUtf8); return; }
+        if(!utf8_prefix(lead,length,cp,minimum)){fail(Error::InvalidUtf8);return;}
         if (bytes_.size() - at_ < length) { fail(Error::InvalidUtf8); return; }
         for (unsigned i = 1; i < length; ++i) {
             const auto b = static_cast<unsigned char>(bytes_[begin+i]);
@@ -139,6 +143,37 @@ private:
         for (unsigned i = 0; i < length; ++i) emit(static_cast<unsigned char>(bytes_[begin+i]));
         at_ += length;
     }
+    void escaped_unicode() noexcept {
+        std::uint32_t cp;
+        if(!unicode_unit(cp))return;
+        if(cp>=0xd800 && cp<=0xdbff) {
+            if(bytes_.size()-at_<2 || bytes_[at_]!='\\' || bytes_[at_+1]!='u') {
+                fail(Error::InvalidEscape);return;
+            }
+            at_+=2;
+            std::uint32_t low;
+            if(!unicode_unit(low))return;
+            if(low<0xdc00 || low>0xdfff){fail(Error::InvalidEscape);return;}
+            cp=0x10000u+((cp-0xd800u)<<10)+low-0xdc00u;
+        }else if(cp>=0xdc00 && cp<=0xdfff){fail(Error::InvalidEscape);return;}
+        codepoint(cp);
+    }
+    bool escaped_simple(char escape) noexcept {
+        switch(escape) {
+        case '"':emit('"');return true;case '\\':emit('\\');return true;
+        case '/':emit('/');return true;case 'b':emit('\b');return true;
+        case 'f':emit('\f');return true;case 'n':emit('\n');return true;
+        case 'r':emit('\r');return true;case 't':emit('\t');return true;
+        default:return false;
+        }
+    }
+    void escaped_character() noexcept {
+        ++at_;
+        if(at_==bytes_.size()){fail(Error::InvalidEscape);return;}
+        const char escape=current();++at_;
+        if(escape=='u'){escaped_unicode();return;}
+        if(!escaped_simple(escape))fail(Error::InvalidEscape);
+    }
     void string(bool key, TextRange& result) noexcept {
         if (!error_) return;
         if (current() != '"' || at_ == bytes_.size()) { fail(Error::InvalidJson); return; }
@@ -150,27 +185,8 @@ private:
         while (error_ && at_ < bytes_.size() && current() != '"') {
             const auto b = static_cast<unsigned char>(current());
             if (b < 0x20) { fail(Error::InvalidJson); break; }
-            if (b == '\\') {
-                ++at_; if (at_ == bytes_.size()) { fail(Error::InvalidEscape); break; }
-                const char escape = current(); ++at_;
-                switch (escape) {
-                case '"': emit('"'); break; case '\\': emit('\\'); break; case '/': emit('/'); break;
-                case 'b': emit('\b'); break; case 'f': emit('\f'); break; case 'n': emit('\n'); break;
-                case 'r': emit('\r'); break; case 't': emit('\t'); break;
-                case 'u': {
-                    std::uint32_t cp; if (!unicode_unit(cp)) break;
-                    if (cp >= 0xd800 && cp <= 0xdbff) {
-                        if (bytes_.size() - at_ < 2 || bytes_[at_] != '\\' || bytes_[at_+1] != 'u') { fail(Error::InvalidEscape); break; }
-                        at_ += 2; std::uint32_t low;
-                        if (!unicode_unit(low)) break;
-                        if (low < 0xdc00 || low > 0xdfff) { fail(Error::InvalidEscape); break; }
-                        cp = 0x10000u + ((cp-0xd800u) << 10) + low-0xdc00u;
-                    } else if (cp >= 0xdc00 && cp <= 0xdfff) { fail(Error::InvalidEscape); break; }
-                    codepoint(cp); break;
-                }
-                default: fail(Error::InvalidEscape); break;
-                }
-            } else if (b >= 0x80) utf8();
+            if (b == '\\') escaped_character();
+            else if (b >= 0x80) utf8();
             else { emit(b); ++at_; }
             if (at_ - raw_begin > raw_limit || count_.decoded - result.begin > decoded_limit) fail(Error::TextLimit);
         }
@@ -179,21 +195,29 @@ private:
         if (at_ == bytes_.size()) { fail(Error::InvalidJson); return; }
         ++at_;
     }
+    void number_fraction() noexcept {
+        if(at_==bytes_.size() || current()!='.')return;
+        ++at_;
+        if(at_==bytes_.size() || !digit(current())){fail(Error::InvalidJson);return;}
+        while(at_<bytes_.size() && digit(current()))++at_;
+    }
+    void number_exponent() noexcept {
+        if(at_==bytes_.size() || (current()!='e' && current()!='E'))return;
+        ++at_;
+        if(at_<bytes_.size() && (current()=='-' || current()=='+'))++at_;
+        if(at_==bytes_.size() || !digit(current())){fail(Error::InvalidJson);return;}
+        while(at_<bytes_.size() && digit(current()))++at_;
+    }
     void number() noexcept {
         const auto begin = at_; token(); if (!error_) return;
         if (current() == '-') ++at_;
         if (at_ == bytes_.size() || !digit(current())) { fail(Error::InvalidJson); return; }
         if (current() == '0') ++at_;
         else while (at_ < bytes_.size() && digit(current())) ++at_;
-        if (at_ < bytes_.size() && current() == '.') {
-            ++at_; if (at_ == bytes_.size() || !digit(current())) { fail(Error::InvalidJson); return; }
-            while (at_ < bytes_.size() && digit(current())) ++at_;
-        }
-        if (at_ < bytes_.size() && (current() == 'e' || current() == 'E')) {
-            ++at_; if (at_ < bytes_.size() && (current() == '-' || current() == '+')) ++at_;
-            if (at_ == bytes_.size() || !digit(current())) { fail(Error::InvalidJson); return; }
-            while (at_ < bytes_.size() && digit(current())) ++at_;
-        }
+        number_fraction();
+        if(!error_)return;
+        number_exponent();
+        if(!error_)return;
         if (at_ - begin > limits_.number_bytes) fail(Error::TextLimit);
     }
     void literal(std::string_view wanted) noexcept {
@@ -201,41 +225,59 @@ private:
         if (bytes_.substr(at_, wanted.size()) != wanted) { fail(Error::InvalidJson); return; }
         at_ += wanted.size();
     }
+    void append_child(Node& parent,std::size_t child,std::size_t previous,
+                      TextRange key,std::size_t member_begin) noexcept {
+        if(!nodes_)return;
+        nodes_[child].key=key;nodes_[child].member_begin=member_begin;
+        if(previous==none)parent.first=child;
+        else nodes_[previous].next=child;
+    }
+    void container_members(Node& node,std::size_t index,std::size_t depth,
+                           char opening,char closing) noexcept {
+        if(current()==closing)return;
+        std::size_t previous=none;
+        while(error_) {
+            TextRange key;std::size_t member_begin=at_;
+            if(opening=='{'){string(true,key);whitespace();punctuation(':');whitespace();}
+            const auto child=value(index,depth+1);
+            if(!error_)break;
+            append_child(node,child,previous,key,member_begin);
+            previous=child;whitespace();
+            if(current()==closing)break;
+            punctuation(',');whitespace();
+        }
+    }
+    void container_value(Node& node,std::size_t index,std::size_t depth,char opening) noexcept {
+        node.kind=opening=='{'?NodeKind::Object:NodeKind::Array;
+        punctuation(opening);whitespace();
+        const char closing=opening=='{'?'}':']';
+        container_members(node,index,depth,opening,closing);
+        punctuation(closing);
+    }
+    void scalar_value(Node& node,char lead) noexcept {
+        if(lead=='"'){node.kind=NodeKind::String;string(false,node.decoded);}
+        else if(lead=='-' || digit(lead)){node.kind=NodeKind::Number;number();}
+        else if(lead=='t' || lead=='f'){node.kind=NodeKind::Boolean;literal(lead=='t'?"true":"false");}
+        else if(lead=='n'){node.kind=NodeKind::Null;literal("null");}
+        else fail(Error::InvalidJson);
+    }
+    bool value_available() noexcept {
+        if(!error_)return false;
+        if(at_==bytes_.size()){fail(Error::InvalidJson);return false;}
+        if(count_.nodes>=limits_.records){fail(Error::RecordLimit);return false;}
+        return true;
+    }
     std::size_t value(std::size_t parent, std::size_t depth) noexcept {
-        if (!error_) return none;
-        if (at_ == bytes_.size()) { fail(Error::InvalidJson); return none; }
-        if (count_.nodes >= limits_.records) { fail(Error::RecordLimit); return none; }
+        if(!value_available())return none;
         const auto index = count_.nodes++;
         Node scratch; Node& n = nodes_ ? nodes_[index] : scratch;
         n.begin = at_; n.member_begin = at_; n.parent = parent;
         const char c = current();
-        if (c == '{' || c == '[') {
-            if (depth >= limits_.depth) { fail(Error::DepthLimit); return index; }
-            n.kind = c == '{' ? NodeKind::Object : NodeKind::Array;
-            punctuation(c); whitespace();
-            const char closing = c == '{' ? '}' : ']';
-            std::size_t previous = none;
-            if (current() != closing) {
-                while (error_) {
-                    TextRange key; std::size_t member_begin = at_;
-                    if (c == '{') { string(true,key); whitespace(); punctuation(':'); whitespace(); }
-                    auto child = value(index,depth+1);
-                    if (!error_) break;
-                    if (nodes_) {
-                        nodes_[child].key = key; nodes_[child].member_begin = member_begin;
-                        if (previous == none) n.first = child; else nodes_[previous].next = child;
-                    }
-                    previous = child; whitespace();
-                    if (current() == closing) break;
-                    punctuation(','); whitespace();
-                }
-            }
-            punctuation(closing);
-        } else if (c == '"') { n.kind = NodeKind::String; string(false,n.decoded); }
-        else if (c == '-' || digit(c)) { n.kind = NodeKind::Number; number(); }
-        else if (c == 't' || c == 'f') { n.kind = NodeKind::Boolean; literal(c == 't' ? "true" : "false"); }
-        else if (c == 'n') { n.kind = NodeKind::Null; literal("null"); }
-        else fail(Error::InvalidJson);
+        if(c=='{' || c=='['){
+            if(depth>=limits_.depth){fail(Error::DepthLimit);return index;}
+            container_value(n,index,depth,c);
+        }
+        else scalar_value(n,c);
         n.end = at_; return index;
     }
 };
@@ -266,24 +308,39 @@ std::uint64_t new_id() noexcept {
     }
     return 0; // Never wrap and accidentally reuse a provenance identity.
 }
+bool materialization_charge(std::string_view input,Counts counts,std::size_t& resident,
+                            std::size_t& own,const DocumentLimits& limits) noexcept {
+    std::size_t node_bytes=0;
+    own=sizeof(Storage);
+    return multiply(counts.nodes,sizeof(Node),node_bytes) &&
+        charge(own,input.size(),limits.peak_bytes) &&
+        charge(own,node_bytes,limits.peak_bytes) &&
+        charge(own,counts.decoded,limits.peak_bytes) &&
+        charge(resident,own,limits.peak_bytes);
+}
+Diagnostic allocate_materialization(Storage& storage,std::string_view input,Counts counts,
+                                    std::unique_ptr<char[]> owned,std::size_t own) noexcept {
+    storage.bytes=std::move(owned);
+    if(!storage.bytes && !input.empty())storage.bytes.reset(new(std::nothrow) char[input.size()]);
+    storage.nodes.reset(new(std::nothrow) Node[counts.nodes]);
+    if(counts.decoded)storage.decoded.reset(new(std::nothrow) char[counts.decoded]);
+    if((!input.empty() && !storage.bytes) || !storage.nodes ||
+       (counts.decoded && !storage.decoded))return {Error::AllocationFailure};
+    if(storage.bytes.get()!=input.data())std::memcpy(storage.bytes.get(),input.data(),input.size());
+    storage.size=input.size();storage.count=counts.nodes;
+    storage.decoded_size=counts.decoded;storage.charge=own;storage.id=new_id();
+    if(!storage.id)return {Error::InvalidHandle};
+    return {};
+}
 Diagnostic materialize(std::string_view input, Counts counts, std::size_t resident,
                        std::unique_ptr<char[]> owned, OwnedProjectSource& out,
                        const DocumentLimits& limits) noexcept {
-    std::size_t node_bytes, own = sizeof(Storage);
-    if (!multiply(counts.nodes,sizeof(Node),node_bytes) || !charge(own,input.size(),limits.peak_bytes)
-        || !charge(own,node_bytes,limits.peak_bytes) || !charge(own,counts.decoded,limits.peak_bytes)
-        || !charge(resident,own,limits.peak_bytes)) return {Error::PeakLimit};
+    std::size_t own=0;
+    if(!materialization_charge(input,counts,resident,own,limits))return {Error::PeakLimit};
     std::unique_ptr<Storage> storage(new (std::nothrow) Storage);
     if (!storage) return {Error::AllocationFailure};
-    storage->bytes = std::move(owned);
-    if (!storage->bytes && !input.empty()) storage->bytes.reset(new (std::nothrow) char[input.size()]);
-    storage->nodes.reset(new (std::nothrow) Node[counts.nodes]);
-    if (counts.decoded) storage->decoded.reset(new (std::nothrow) char[counts.decoded]);
-    if ((!input.empty() && !storage->bytes) || !storage->nodes || (counts.decoded && !storage->decoded)) return {Error::AllocationFailure};
-    if (storage->bytes.get() != input.data()) std::memcpy(storage->bytes.get(),input.data(),input.size());
-    storage->size = input.size(); storage->count = counts.nodes;
-    storage->decoded_size = counts.decoded; storage->charge = own; storage->id = new_id();
-    if (!storage->id) return {Error::InvalidHandle};
+    const auto allocated=allocate_materialization(*storage,input,counts,std::move(owned),own);
+    if(!allocated)return allocated;
     Parser parser({storage->bytes.get(),storage->size},limits,storage->nodes.get(),storage->decoded.get());
     auto result = parser.run(); if (!result) return result;
     SourceAccess::publish(out,std::move(storage)); return {};
@@ -305,6 +362,14 @@ bool ambiguous_path(const Storage& s, std::size_t index) noexcept {
     for (auto i = index; i != none; i = s.nodes[i].parent) if (ambiguous(s,i)) return true;
     return false;
 }
+bool parse_integer_digits(std::string_view raw,std::uint64_t max,std::uint64_t& value) noexcept {
+    value=0;
+    for(char c:raw) {
+        if(!digit(c) || value>(max-static_cast<unsigned>(c-'0'))/10u)return false;
+        value=value*10u+static_cast<unsigned>(c-'0');
+    }
+    return true;
+}
 Diagnostic integer(const OwnedProjectSource& source, NodeHandle h, bool signed_type,
                    std::uint64_t& magnitude, bool& negative) noexcept {
     NodeView v; auto d = source.view(h,v); if (!d) return d;
@@ -314,11 +379,8 @@ Diagnostic integer(const OwnedProjectSource& source, NodeHandle h, bool signed_t
     if ((negative && (!signed_type || raw == "0")) || raw.empty()) return {Error::IntegerRange,v.offset};
     const auto max = signed_type ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + (negative ? 1u : 0u)
                                  : std::numeric_limits<std::uint64_t>::max();
-    std::uint64_t value = 0;
-    for (char c : raw) {
-        if (!digit(c) || value > (max-static_cast<unsigned>(c-'0'))/10u) return {Error::IntegerRange,v.offset};
-        value = value*10u + static_cast<unsigned>(c-'0');
-    }
+    std::uint64_t value=0;
+    if(!parse_integer_digits(raw,max,value))return {Error::IntegerRange,v.offset};
     magnitude = value; return {};
 }
 } // namespace
@@ -344,16 +406,25 @@ Diagnostic parse_project_source(std::string_view input, OwnedProjectSource& out,
     Parser parser(input,l); auto result = parser.run(); if (!result) return result;
     return materialize(input,parser.counts(),out.owned_bytes(),{},out,l);
 }
-Diagnostic find_unique_member(const OwnedProjectSource& source, NodeHandle h, std::string_view key, NodeHandle& out) noexcept {
-    const auto* s = SourceAccess::get(source); auto d = object(s,h); if (!d) return d;
-    auto found = none;
+static Diagnostic unique_member_index(const Storage& storage,NodeHandle h,std::string_view key,
+                                      std::size_t& found) noexcept {
+    const auto* s=&storage;
+    found=none;
     for (auto i = s->nodes[h.index].first; i != none; i = s->nodes[i].next) {
         if (s->text(s->nodes[i].key) != key) continue;
         if (found != none) return {Error::AmbiguousKey,s->nodes[i].member_begin};
         found = i;
     }
     if (found == none) return {Error::MissingMember,s->nodes[h.index].begin};
-    out = s->handle(found); return {};
+    return {};
+}
+Diagnostic find_unique_member(const OwnedProjectSource& source, NodeHandle h, std::string_view key, NodeHandle& out) noexcept {
+    const auto* s=SourceAccess::get(source);
+    const auto valid=object(s,h);if(!valid)return valid;
+    std::size_t found=none;
+    const auto unique=unique_member_index(*s,h,key,found);
+    if(!unique)return unique;
+    out=s->handle(found);return {};
 }
 Diagnostic validate_known_keys(const OwnedProjectSource& source, NodeHandle h, std::span<const std::string_view> keys) noexcept {
     const auto* s = SourceAccess::get(source); auto d = object(s,h); if (!d) return d;
@@ -432,127 +503,262 @@ private:
             }
         }
     }
+    void render_child(std::size_t child,NodeKind parent_kind,bool& first) noexcept {
+        insertions(nodes_[child].before_first,first);
+        const auto operation=nodes_[child].operation;
+        if(operation!=none && (edits_[operation].kind==EditKind::Remove ||
+                               edits_[operation].kind==EditKind::Move))return;
+        separator(first);
+        const auto& node=source_.nodes[child];
+        if(parent_kind==NodeKind::Object)
+            emit({source_.bytes.get()+node.member_begin,node.begin-node.member_begin});
+        render(child);
+    }
+    void render_children(const Node& parent,bool& first) noexcept {
+        for(auto child=parent.first;child!=none && error_;child=source_.nodes[child].next)
+            render_child(child,parent.kind,first);
+    }
     void render(std::size_t index) noexcept {
         if (!error_) return;
         const auto& n = source_.nodes[index]; const auto& p = nodes_[index];
         if (p.operation != none && edits_[p.operation].kind == EditKind::Replace) { emit(edits_[p.operation].replacement); return; }
         if (!p.changed || !is_container(n.kind)) { emit(source_.raw(n)); return; }
         emit(n.kind == NodeKind::Object ? "{" : "["); bool first = true;
-        for (auto child = n.first; child != none && error_; child = source_.nodes[child].next) {
-            insertions(nodes_[child].before_first,first);
-            auto operation = nodes_[child].operation;
-            if (operation != none && (edits_[operation].kind == EditKind::Remove || edits_[operation].kind == EditKind::Move)) continue;
-            separator(first); const auto& c = source_.nodes[child];
-            if (n.kind == NodeKind::Object) emit({source_.bytes.get()+c.member_begin,c.begin-c.member_begin});
-            render(child);
-        }
+        render_children(n,first);
         insertions(p.append_first,first); emit(n.kind == NodeKind::Object ? "}" : "]");
     }
 };
+Diagnostic stage_budget(const Storage& source,const OwnedProjectSource& original,
+                        const OwnedProjectSource& output,std::span<const DocumentEdit> edits,
+                        const DocumentLimits& limits,std::size_t& resident,
+                        std::size_t& replacement_bytes) noexcept {
+    replacement_bytes=0;
+    for(const auto& edit:edits)
+        if(!charge(replacement_bytes,edit.replacement.size(),limits.replacement_bytes))
+            return {Error::EditLimit};
+    resident=original.owned_bytes();
+    if(&original!=&output && !charge(resident,output.owned_bytes(),limits.peak_bytes))
+        return {Error::PeakLimit};
+    std::size_t plan_bytes=0,edit_bytes=0,borrowed_edit_bytes=0;
+    if(!multiply(source.count,sizeof(NodePlan),plan_bytes) ||
+       !multiply(edits.size(),sizeof(EditPlan),edit_bytes) ||
+       !multiply(edits.size(),sizeof(DocumentEdit),borrowed_edit_bytes) ||
+       !charge(resident,plan_bytes,limits.peak_bytes) ||
+       !charge(resident,edit_bytes,limits.peak_bytes) ||
+       !charge(resident,borrowed_edit_bytes,limits.peak_bytes) ||
+       !charge(resident,replacement_bytes,limits.peak_bytes))return {Error::PeakLimit};
+    return {};
+}
+Diagnostic prepare_edit_stage(const OwnedProjectSource& source,const OwnedProjectSource& output,
+    std::span<const DocumentEdit> edits,const DocumentLimits& limits,const Storage*& storage,
+    std::size_t& resident,std::unique_ptr<NodePlan[]>& plan,
+    std::unique_ptr<EditPlan[]>& staged) noexcept {
+    if(!valid_limits(limits))return {Error::InvalidLimits};
+    storage=SourceAccess::get(source);
+    if(!storage)return {Error::InvalidHandle};
+    if(edits.size()>limits.edits)return {Error::EditLimit};
+    std::size_t replacement_bytes=0;
+    const auto budget=stage_budget(*storage,source,output,edits,limits,resident,replacement_bytes);
+    if(!budget)return budget;
+    plan.reset(new(std::nothrow) NodePlan[storage->count]);
+    if(!edits.empty())staged.reset(new(std::nothrow) EditPlan[edits.size()]);
+    if(!plan || (!edits.empty() && !staged))return {Error::AllocationFailure};
+    return {};
+}
+struct EditStage {
+    const Storage& source;
+    std::span<const DocumentEdit> edits;
+    const DocumentLimits& limits;
+    NodePlan* plan;
+    EditPlan* staged;
+
+    Diagnostic target(std::size_t index) noexcept {
+        const auto& edit=edits[index];
+        if((!edit.target.source && edit.target.index) ||
+           (!edit.parent.source && edit.parent.index) ||
+           (!edit.before.source && edit.before.index))return {Error::InvalidHandle};
+        if(edit.kind!=EditKind::Replace && edit.kind!=EditKind::Remove &&
+           edit.kind!=EditKind::Insert && edit.kind!=EditKind::Move)return {Error::InvalidEdit};
+        if(edit.kind==EditKind::Insert)
+            return edit.target.source?Diagnostic{Error::InvalidEdit}:Diagnostic{};
+        if(!source.valid(edit.target))return {Error::InvalidHandle};
+        const auto& node=source.nodes[edit.target.index];
+        if(source.raw(node)!=edit.expected)return {Error::ExpectedMismatch,node.begin};
+        if(ambiguous_path(source,edit.target.index))return {Error::AmbiguousKey,node.member_begin};
+        if(plan[edit.target.index].operation!=none)return {Error::ConflictingEdits,node.begin};
+        if((edit.kind==EditKind::Remove || edit.kind==EditKind::Move) &&
+           node.parent==none)return {Error::InvalidEdit,node.begin};
+        plan[edit.target.index].operation=index;
+        mark(source,plan,edit.target.index);
+        return {};
+    }
+    Diagnostic replacement(std::size_t index) noexcept {
+        const auto& edit=edits[index];
+        if(edit.parent.source || edit.before.source)return {Error::InvalidEdit};
+        Parser parser(edit.replacement,limits);
+        return parser.run();
+    }
+    Diagnostic removal(std::size_t index) const noexcept {
+        const auto& edit=edits[index];
+        return edit.parent.source || edit.before.source || !edit.replacement.empty()?
+            Diagnostic{Error::InvalidEdit}:Diagnostic{};
+    }
+    Diagnostic placement_parent(std::size_t index) const noexcept {
+        const auto& edit=edits[index];
+        if(!source.valid(edit.parent))return {Error::InvalidHandle};
+        const auto& parent=source.nodes[edit.parent.index];
+        if(!is_container(parent.kind))return {Error::InvalidEdit,parent.begin};
+        if(ambiguous_path(source,edit.parent.index))return {Error::AmbiguousKey,parent.member_begin};
+        if(edit.before.source && (!source.valid(edit.before) ||
+           source.nodes[edit.before.index].parent!=edit.parent.index))return {Error::InvalidHandle};
+        if(edit.before.source && ambiguous_path(source,edit.before.index))
+            return {Error::AmbiguousKey,source.nodes[edit.before.index].member_begin};
+        return {};
+    }
+    Diagnostic insertion(std::size_t index) noexcept {
+        const auto& edit=edits[index];
+        const auto& parent=source.nodes[edit.parent.index];
+        if(source.raw(parent)!=edit.expected)return {Error::ExpectedMismatch,parent.begin};
+        Parser parser(edit.replacement,limits);
+        if(parent.kind==NodeKind::Object)
+            return parser.member_fragment(staged[index].key,staged[index].key_size);
+        return parser.run();
+    }
+    Diagnostic move(std::size_t index) noexcept {
+        const auto& edit=edits[index];
+        const auto& parent=source.nodes[edit.parent.index];
+        if(!edit.replacement.empty())return {Error::InvalidEdit};
+        const auto& node=source.nodes[edit.target.index];
+        if(source.nodes[node.parent].kind!=parent.kind ||
+           ancestor(source,edit.target.index,edit.parent.index))
+            return {Error::InvalidEdit,parent.begin};
+        const auto key=source.text(node.key);
+        staged[index].key_size=key.size();
+        if(!key.empty())std::memcpy(staged[index].key,key.data(),key.size());
+        return {};
+    }
+    Diagnostic placement(std::size_t index) noexcept {
+        const auto parent=placement_parent(index);
+        if(!parent)return parent;
+        const auto& edit=edits[index];
+        const auto content=edit.kind==EditKind::Insert?insertion(index):move(index);
+        if(!content)return content;
+        mark(source,plan,edit.parent.index);
+        if(edit.before.source)
+            chain(staged,index,plan[edit.before.index].before_first,plan[edit.before.index].before_last);
+        else chain(staged,index,plan[edit.parent.index].append_first,plan[edit.parent.index].append_last);
+        return {};
+    }
+    Diagnostic one(std::size_t index) noexcept {
+        const auto valid=target(index);
+        if(!valid)return valid;
+        const auto kind=edits[index].kind;
+        if(kind==EditKind::Replace)return replacement(index);
+        if(kind==EditKind::Remove)return removal(index);
+        return placement(index);
+    }
+    bool ancestors_clear(std::size_t index) const noexcept {
+        for(auto ancestor=index;ancestor!=none;ancestor=source.nodes[ancestor].parent)
+            if(plan[ancestor].operation!=none &&
+               edits[plan[ancestor].operation].kind!=EditKind::Insert)return false;
+        return true;
+    }
+    Diagnostic conflict(std::size_t index) const noexcept {
+        const auto& edit=edits[index];
+        if(edit.kind!=EditKind::Insert &&
+           !ancestors_clear(source.nodes[edit.target.index].parent))
+            return {Error::ConflictingEdits,source.nodes[edit.target.index].begin};
+        if(edit.kind!=EditKind::Insert && edit.kind!=EditKind::Move)return {};
+        if(!ancestors_clear(edit.parent.index))
+            return {Error::ConflictingEdits,source.nodes[edit.parent.index].begin};
+        if(edit.before.source && plan[edit.before.index].operation!=none &&
+           edits[plan[edit.before.index].operation].kind!=EditKind::Replace)
+            return {Error::ConflictingEdits,source.nodes[edit.before.index].begin};
+        return {};
+    }
+    Diagnostic duplicate_existing(std::size_t index,std::string_view key) const noexcept {
+        const auto& edit=edits[index];
+        for(auto child=source.nodes[edit.parent.index].first;child!=none;
+            child=source.nodes[child].next) {
+            const auto operation=plan[child].operation;
+            if(operation!=none && (edits[operation].kind==EditKind::Remove ||
+                                   edits[operation].kind==EditKind::Move))continue;
+            if(source.text(source.nodes[child].key)==key)
+                return {Error::AmbiguousKey,source.nodes[child].member_begin};
+        }
+        return {};
+    }
+    Diagnostic duplicate_planned(std::size_t index,std::string_view key) const noexcept {
+        const auto& edit=edits[index];
+        for(std::size_t previous=0;previous<index;++previous) {
+            const auto& prior=edits[previous];
+            if((prior.kind==EditKind::Insert || prior.kind==EditKind::Move) &&
+               prior.parent==edit.parent &&
+               std::string_view(staged[previous].key,staged[previous].key_size)==key)
+                return {Error::AmbiguousKey,source.nodes[edit.parent.index].begin};
+        }
+        return {};
+    }
+    Diagnostic duplicate(std::size_t index) const noexcept {
+        const auto& edit=edits[index];
+        if((edit.kind!=EditKind::Insert && edit.kind!=EditKind::Move) ||
+           source.nodes[edit.parent.index].kind!=NodeKind::Object)return {};
+        const std::string_view key(staged[index].key,staged[index].key_size);
+        const auto existing=duplicate_existing(index,key);
+        return existing?duplicate_planned(index,key):existing;
+    }
+    Diagnostic validate_all() noexcept {
+        for(std::size_t index=0;index<edits.size();++index) {
+            const auto result=one(index);
+            if(!result)return result;
+        }
+        return {};
+    }
+    Diagnostic conflicts_all() const noexcept {
+        for(std::size_t index=0;index<edits.size();++index) {
+            const auto result=conflict(index);
+            if(!result)return result;
+        }
+        return {};
+    }
+    Diagnostic duplicates_all() const noexcept {
+        for(std::size_t index=0;index<edits.size();++index) {
+            const auto result=duplicate(index);
+            if(!result)return result;
+        }
+        return {};
+    }
+};
+Diagnostic render_candidate(const Storage& source,const NodePlan* plan,const EditPlan* staged,
+                            std::span<const DocumentEdit> edits,const DocumentLimits& limits,
+                            std::size_t resident,OwnedProjectSource& output) noexcept {
+    Renderer count(source,plan,staged,edits,limits.candidate_bytes);
+    auto result=count.run();if(!result)return result;
+    std::size_t candidate_charge=resident;
+    if(!charge(candidate_charge,count.size(),limits.peak_bytes))return {Error::PeakLimit};
+    std::unique_ptr<char[]> bytes(new(std::nothrow) char[count.size()]);
+    if(!bytes)return {Error::AllocationFailure};
+    Renderer write(source,plan,staged,edits,limits.candidate_bytes,bytes.get());
+    result=write.run();if(!result)return result;
+    const std::string_view candidate(bytes.get(),count.size());
+    Parser parser(candidate,limits);
+    result=parser.run();if(!result)return result;
+    return materialize(candidate,parser.counts(),resident,std::move(bytes),output,limits);
+}
 } // namespace
 
-Diagnostic stage_project_edits(const OwnedProjectSource& source, std::span<const DocumentEdit> edits,
-                               OwnedProjectSource& out, const DocumentLimits& l) noexcept {
-    if (!valid_limits(l)) return {Error::InvalidLimits};
-    const auto* s = SourceAccess::get(source); if (!s) return {Error::InvalidHandle};
-    if (edits.size() > l.edits) return {Error::EditLimit};
-    std::size_t replacement_bytes = 0;
-    for (const auto& e : edits) if (!charge(replacement_bytes,e.replacement.size(),l.replacement_bytes)) return {Error::EditLimit};
-    std::size_t resident = source.owned_bytes();
-    if (&source != &out && !charge(resident,out.owned_bytes(),l.peak_bytes)) return {Error::PeakLimit};
-    std::size_t plan_bytes, edit_bytes, borrowed_edit_bytes;
-    if (!multiply(s->count,sizeof(NodePlan),plan_bytes) || !multiply(edits.size(),sizeof(EditPlan),edit_bytes)
-        || !multiply(edits.size(),sizeof(DocumentEdit),borrowed_edit_bytes)
-        || !charge(resident,plan_bytes,l.peak_bytes) || !charge(resident,edit_bytes,l.peak_bytes)
-        || !charge(resident,borrowed_edit_bytes,l.peak_bytes)
-        || !charge(resident,replacement_bytes,l.peak_bytes)) return {Error::PeakLimit};
-    std::unique_ptr<NodePlan[]> plan(new (std::nothrow) NodePlan[s->count]);
-    std::unique_ptr<EditPlan[]> ep;
-    if (!edits.empty()) ep.reset(new (std::nothrow) EditPlan[edits.size()]);
-    if (!plan || (!edits.empty() && !ep)) return {Error::AllocationFailure};
-    for (std::size_t i = 0; i < edits.size(); ++i) {
-        const auto& e = edits[i];
-        if ((!e.target.source && e.target.index) || (!e.parent.source && e.parent.index)
-            || (!e.before.source && e.before.index)) return {Error::InvalidHandle};
-        if (e.kind != EditKind::Replace && e.kind != EditKind::Remove && e.kind != EditKind::Insert && e.kind != EditKind::Move) return {Error::InvalidEdit};
-        if (e.kind != EditKind::Insert) {
-            if (!s->valid(e.target)) return {Error::InvalidHandle};
-            const auto& n = s->nodes[e.target.index];
-            if (s->raw(n) != e.expected) return {Error::ExpectedMismatch,n.begin};
-            if (ambiguous_path(*s,e.target.index)) return {Error::AmbiguousKey,n.member_begin};
-            if (plan[e.target.index].operation != none) return {Error::ConflictingEdits,n.begin};
-            if ((e.kind == EditKind::Remove || e.kind == EditKind::Move) && n.parent == none) return {Error::InvalidEdit,n.begin};
-            plan[e.target.index].operation = i; mark(*s,plan.get(),e.target.index);
-        } else if (e.target.source) return {Error::InvalidEdit};
-        if (e.kind == EditKind::Replace) {
-            if (e.parent.source || e.before.source) return {Error::InvalidEdit};
-            Parser replacement(e.replacement,l); auto d = replacement.run(); if (!d) return d;
-        } else if (e.kind == EditKind::Remove) {
-            if (e.parent.source || e.before.source || !e.replacement.empty()) return {Error::InvalidEdit};
-        } else {
-            if (!s->valid(e.parent)) return {Error::InvalidHandle};
-            const auto& parent = s->nodes[e.parent.index];
-            if (!is_container(parent.kind)) return {Error::InvalidEdit,parent.begin};
-            if (ambiguous_path(*s,e.parent.index)) return {Error::AmbiguousKey,parent.member_begin};
-            if (e.before.source && (!s->valid(e.before) || s->nodes[e.before.index].parent != e.parent.index)) return {Error::InvalidHandle};
-            if (e.before.source && ambiguous_path(*s,e.before.index)) return {Error::AmbiguousKey,s->nodes[e.before.index].member_begin};
-            if (e.kind == EditKind::Insert) {
-                if (s->raw(parent) != e.expected) return {Error::ExpectedMismatch,parent.begin};
-                Parser replacement(e.replacement,l); Diagnostic d;
-                if (parent.kind == NodeKind::Object) d = replacement.member_fragment(ep[i].key,ep[i].key_size);
-                else d = replacement.run();
-                if (!d) return d;
-            } else {
-                if (!e.replacement.empty()) return {Error::InvalidEdit};
-                const auto& n = s->nodes[e.target.index];
-                if (s->nodes[n.parent].kind != parent.kind || ancestor(*s,e.target.index,e.parent.index)) return {Error::InvalidEdit,parent.begin};
-                auto key = s->text(n.key); ep[i].key_size = key.size();
-                if (!key.empty()) std::memcpy(ep[i].key,key.data(),key.size());
-            }
-            mark(*s,plan.get(),e.parent.index);
-            if (e.before.source) chain(ep.get(),i,plan[e.before.index].before_first,plan[e.before.index].before_last);
-            else chain(ep.get(),i,plan[e.parent.index].append_first,plan[e.parent.index].append_last);
-        }
-    }
-    // Complete plan first, then detect conflicts regardless of edit order.
-    for (const auto& e : edits) {
-        auto check_ancestors = [&](std::size_t index) noexcept {
-            for (auto a = index; a != none; a = s->nodes[a].parent)
-                if (plan[a].operation != none && edits[plan[a].operation].kind != EditKind::Insert) return false;
-            return true;
-        };
-        if (e.kind != EditKind::Insert && !check_ancestors(s->nodes[e.target.index].parent)) return {Error::ConflictingEdits,s->nodes[e.target.index].begin};
-        if (e.kind == EditKind::Insert || e.kind == EditKind::Move) {
-            if (!check_ancestors(e.parent.index)) return {Error::ConflictingEdits,s->nodes[e.parent.index].begin};
-            if (e.before.source && plan[e.before.index].operation != none
-                && edits[plan[e.before.index].operation].kind != EditKind::Replace) return {Error::ConflictingEdits,s->nodes[e.before.index].begin};
-        }
-    }
-    // Introducing a duplicate is ambiguous. Existing untouched opaque duplicates
-    // remain ordered raw members; changing their individual occurrences refuses.
-    for (std::size_t i = 0; i < edits.size(); ++i) {
-        const auto& e = edits[i];
-        if ((e.kind != EditKind::Insert && e.kind != EditKind::Move) || s->nodes[e.parent.index].kind != NodeKind::Object) continue;
-        const std::string_view key(ep[i].key,ep[i].key_size);
-        for (auto child = s->nodes[e.parent.index].first; child != none; child = s->nodes[child].next) {
-            const auto op = plan[child].operation;
-            if (op != none && (edits[op].kind == EditKind::Remove || edits[op].kind == EditKind::Move)) continue;
-            if (s->text(s->nodes[child].key) == key) return {Error::AmbiguousKey,s->nodes[child].member_begin};
-        }
-        for (std::size_t j = 0; j < i; ++j) {
-            if ((edits[j].kind == EditKind::Insert || edits[j].kind == EditKind::Move) && edits[j].parent == e.parent
-                && std::string_view(ep[j].key,ep[j].key_size) == key) return {Error::AmbiguousKey,s->nodes[e.parent.index].begin};
-        }
-    }
-    Renderer count(*s,plan.get(),ep.get(),edits,l.candidate_bytes); auto d = count.run(); if (!d) return d;
-    std::size_t candidate_charge = resident;
-    if (!charge(candidate_charge,count.size(),l.peak_bytes)) return {Error::PeakLimit};
-    std::unique_ptr<char[]> bytes(new (std::nothrow) char[count.size()]); if (!bytes) return {Error::AllocationFailure};
-    Renderer write(*s,plan.get(),ep.get(),edits,l.candidate_bytes,bytes.get()); d = write.run(); if (!d) return d;
-    const std::string_view candidate(bytes.get(),count.size());
-    Parser parser(candidate,l); d = parser.run(); if (!d) return d;
-    // resident excludes candidate bytes; materialize charges them once and takes
-    // over their ownership without allocating or copying a second byte buffer.
-    return materialize(candidate,parser.counts(),resident,std::move(bytes),out,l);
+Diagnostic stage_project_edits(const OwnedProjectSource& source,std::span<const DocumentEdit> edits,
+                               OwnedProjectSource& out,const DocumentLimits& limits) noexcept {
+    const Storage* storage=nullptr;
+    std::size_t resident=0;
+    std::unique_ptr<NodePlan[]> plan;
+    std::unique_ptr<EditPlan[]> staged;
+    const auto prepared=prepare_edit_stage(source,out,edits,limits,storage,resident,plan,staged);
+    if(!prepared)return prepared;
+    EditStage stage{*storage,edits,limits,plan.get(),staged.get()};
+    const auto valid=stage.validate_all();if(!valid)return valid;
+    const auto conflicts=stage.conflicts_all();if(!conflicts)return conflicts;
+    const auto duplicates=stage.duplicates_all();if(!duplicates)return duplicates;
+    return render_candidate(*storage,plan.get(),staged.get(),edits,limits,resident,out);
 }
 } // namespace project_storage

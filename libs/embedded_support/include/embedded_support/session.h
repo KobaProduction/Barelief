@@ -43,6 +43,15 @@ public:
     std::uint64_t dropped() const noexcept {return dropped_;}
 private:
     void packet(bdsp_protocol::PacketView) noexcept;
+    void decode_complete(std::span<const std::uint8_t>) noexcept;
+    Status encode_outgoing(const bdsp_protocol::numeric_data::Message&) noexcept;
+    Status validate_binding(const signal_contracts::NumericContract*&) const noexcept;
+    Status validate_buffers() const noexcept;
+    Status validate_marker(const signal_contracts::NumericContract&) const noexcept;
+    void stamp_outgoing(bdsp_protocol::numeric_data::Message&) const noexcept;
+    bool accepts_envelope(const bdsp_protocol::numeric_data::Message&) const noexcept;
+    void accept_message(bdsp_protocol::numeric_data::Message&) noexcept;
+    Status read_packets(bdsp_protocol::ByteTransport&) noexcept;
     Status pump() noexcept;
     Status fail(Status) noexcept;
     bool matches(const bdsp_protocol::numeric_data::Message&) const noexcept;

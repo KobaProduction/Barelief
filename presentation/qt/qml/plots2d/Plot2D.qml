@@ -7,15 +7,20 @@ Rectangle {
     property var axes: graphModel.axes
     property var colors: quickUi.palette
     FontMetrics { id: labelMetrics; font: caption.font }
-    color: colors.base
+    color: root.s.kind === "piano" ? colors.window : colors.base
     clip: true
     function requestVisiblePaints() {
         if(vectorCanvas.visible)vectorCanvas.requestPaint()
         if(pieCanvas.visible)pieCanvas.requestPaint()
     }
+    Loader {
+        anchors.fill: parent; active: root.s.kind === "piano"
+        sourceComponent: Component { Piano {presentation: root.s; colors: root.colors} }
+    }
     // All labels arrive as C++ strings. Exact scalar values never enter JS arithmetic.
     Text {
         id: caption
+        visible: root.s.kind !== "piano"
         x: 8; y: 2; width: parent.width - 16; height: 22
         text: root.s.title || ""
         textFormat: Text.PlainText; color: root.colors.text
@@ -48,12 +53,15 @@ Rectangle {
         Item {
             anchors.fill: parent; clip: true
             visible: root.s.kind === "image" && root.s.available === true
+            transform: Scale {origin.x: plot.width/2;origin.y: plot.height/2;xScale: root.s.reverseX ? -1 : 1;yScale: root.s.reverseY ? -1 : 1}
             Image {
                 objectName: "numericRaster"
-                anchors.fill: parent
+                width: parent.width / (root.s.viewWidth || 1)
+                height: parent.height / (root.s.viewHeight || 1)
+                x: -(root.s.viewLeft || 0) * width
+                y: -(root.s.viewTop || 0) * height
                 source: root.s.available === true ? (root.s.imageSource || "") : ""
                 cache: false; smooth: false; asynchronous: false
-                transform: Scale {origin.x: plot.width/2;origin.y: plot.height/2;xScale: root.s.reverseX ? -1 : 1;yScale: root.s.reverseY ? -1 : 1}
             }
         }
         Text {
@@ -62,6 +70,36 @@ Rectangle {
             color: root.colors.text
             visible: root.s.kind === "image" && root.s.available !== true
             text: {const revision=quickUi.revision; return quickUi.text("Renderer projection unavailable")}
+        }
+        Repeater {
+            model: root.s.kind === "image" ? (root.axes.xGrid || []) : []
+            Rectangle {required property var modelData; x:modelData.position*plot.width; width:1; height:plot.height; color:root.colors.mid; opacity:0.3}
+        }
+        Repeater {
+            model: root.s.kind === "image" ? (root.axes.yGrid || []) : []
+            Rectangle {required property var modelData; y:modelData.position*plot.height; height:1; width:plot.width; color:root.colors.mid; opacity:0.3}
+        }
+        MouseArea {
+            objectName: "plotNavigation"
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+            property real previousX: 0
+            property real previousY: 0
+            onPressed: function(mouse) {previousX=mouse.x;previousY=mouse.y}
+            onPositionChanged: function(mouse) {
+                if(pressed) {
+                    graphModel.navigate("pan",(mouse.x-previousX)/width,(mouse.y-previousY)/height)
+                    previousX=mouse.x;previousY=mouse.y
+                }
+            }
+            onDoubleClicked: graphModel.navigate("reset",0,0)
+            onWheel: function(wheel) {
+                const delta=wheel.pixelDelta.y !== 0 ? wheel.pixelDelta.y/40 : wheel.angleDelta.y/120
+                const axes=(wheel.modifiers & Qt.ShiftModifier) ? 1 : ((wheel.modifiers & Qt.ControlModifier) ? 2 : 3)
+                graphModel.navigate("zoom",wheel.x/width,wheel.y/height,Math.pow(1.2,-delta),axes)
+                wheel.accepted=true
+            }
         }
         Repeater {
             model: root.axes.xTicks || []

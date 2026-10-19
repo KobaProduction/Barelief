@@ -6,6 +6,7 @@
 #include <pb_decode.h>
 #include <array>
 #include <cstring>
+#include <iterator>
 #ifdef PB_ENABLE_MALLOC
 #error Numeric control requires caller storage
 #endif
@@ -16,66 +17,38 @@ namespace bdsp_protocol::numeric_control {
 namespace {
 using namespace detail;
 const pb_msgdesc_t *descriptor(Schema s) noexcept {
-    switch (s) {
-    case Schema::Literal:
-        return &bdsp_numeric_control_v4_Literal_msg;
-    case Schema::Ratio:
-        return &bdsp_numeric_control_v4_Ratio_msg;
-    case Schema::Extent:
-        return &bdsp_numeric_control_v4_Extent_msg;
-    case Schema::Coordinates:
-        return &bdsp_numeric_control_v4_Coordinates_msg;
-    case Schema::Representation:
-        return &bdsp_numeric_control_v4_Representation_msg;
-    case Schema::Numeric:
-        return &bdsp_numeric_control_v4_Numeric_msg;
-    case Schema::Structured:
-        return &bdsp_numeric_control_v4_Structured_msg;
-    case Schema::Contract:
-        return &bdsp_numeric_control_v4_Contract_msg;
-    case Schema::Policy:
-        return &bdsp_numeric_control_v4_Policy_msg;
-    case Schema::Dyadic:
-        return &bdsp_numeric_control_v4_Dyadic_msg;
-    case Schema::Parameter:
-        return &bdsp_numeric_control_v4_Parameter_msg;
-    case Schema::Oscillator:
-        return &bdsp_numeric_control_v4_Oscillator_msg;
-    case Schema::MixerWeight:
-        return &bdsp_numeric_control_v4_MixerWeight_msg;
-    case Schema::Parameters:
-        return &bdsp_numeric_control_v4_Parameters_msg;
-    case Schema::Port:
-        return &bdsp_numeric_control_v4_Port_msg;
-    case Schema::Node:
-        return &bdsp_numeric_control_v4_Node_msg;
-    case Schema::Edge:
-        return &bdsp_numeric_control_v4_Edge_msg;
-    case Schema::Versions:
-        return &bdsp_numeric_control_v4_Versions_msg;
-    case Schema::Graph:
-        return &bdsp_numeric_control_v4_Graph_msg;
-    case Schema::Command:
-        return &bdsp_numeric_control_v4_Command_msg;
-    case Schema::Resources:
-        return &bdsp_numeric_control_v4_Resources_msg;
-    case Schema::CapabilityRow:
-        return &bdsp_numeric_control_v4_CapabilityRow_msg;
-    case Schema::Capabilities:
-        return &bdsp_numeric_control_v4_Capabilities_msg;
-    case Schema::Diagnostic:
-        return &bdsp_numeric_control_v4_Diagnostic_msg;
-    case Schema::State:
-        return &bdsp_numeric_control_v4_State_msg;
-    case Schema::Reply:
-        return &bdsp_numeric_control_v4_Reply_msg;
-    case Schema::Extension:
-        return &bdsp_numeric_control_v4_Extension_msg;
-    case Schema::Message:
-        return &bdsp_numeric_control_v4_Message_msg;
-    default:
-        return nullptr;
-    }
+    static const pb_msgdesc_t *const descriptors[]{
+        &bdsp_numeric_control_v4_Literal_msg,
+        &bdsp_numeric_control_v4_Ratio_msg,
+        &bdsp_numeric_control_v4_Extent_msg,
+        &bdsp_numeric_control_v4_Coordinates_msg,
+        &bdsp_numeric_control_v4_Representation_msg,
+        &bdsp_numeric_control_v4_Numeric_msg,
+        &bdsp_numeric_control_v4_Structured_msg,
+        &bdsp_numeric_control_v4_Contract_msg,
+        &bdsp_numeric_control_v4_Policy_msg,
+        &bdsp_numeric_control_v4_Dyadic_msg,
+        &bdsp_numeric_control_v4_Parameter_msg,
+        &bdsp_numeric_control_v4_Parameters_msg,
+        &bdsp_numeric_control_v4_Oscillator_msg,
+        &bdsp_numeric_control_v4_MixerWeight_msg,
+        &bdsp_numeric_control_v4_Port_msg,
+        &bdsp_numeric_control_v4_Node_msg,
+        &bdsp_numeric_control_v4_Edge_msg,
+        &bdsp_numeric_control_v4_Versions_msg,
+        &bdsp_numeric_control_v4_Graph_msg,
+        &bdsp_numeric_control_v4_Command_msg,
+        &bdsp_numeric_control_v4_Resources_msg,
+        &bdsp_numeric_control_v4_CapabilityRow_msg,
+        &bdsp_numeric_control_v4_Capabilities_msg,
+        &bdsp_numeric_control_v4_Diagnostic_msg,
+        &bdsp_numeric_control_v4_State_msg,
+        &bdsp_numeric_control_v4_Reply_msg,
+        &bdsp_numeric_control_v4_Extension_msg,
+        &bdsp_numeric_control_v4_Message_msg
+    };
+    const auto index=static_cast<unsigned>(s);
+    return index<std::size(descriptors) ? descriptors[index] : nullptr;
 }
 pb_wire_type_t wire_type(pb_type_t type) noexcept {
     switch (PB_LTYPE(type)) {
@@ -166,6 +139,44 @@ class Writer final : public Archive {
         }
         return wire_type(f.type);
     }
+    bool cbor_element(CborEncoder &array, Schema schema, void *p, std::size_t index, ElementVisit f) noexcept {
+        if (schema == Schema::UIntElement) {
+            Writer w(state, codec_, schema, depth_ + 1, sizing_, &array, nullptr);
+            return f(w, p, index);
+        }
+        Counter counter(state);
+        if (!f(counter, p, index)) return false;
+        CborEncoder child;
+        if (!ok(cbor_encoder_create_map(&array, &child, counter.fields))) return false;
+        Writer w(state, codec_, schema, depth_ + 2, sizing_, &child, nullptr);
+        return f(w, p, index) && ok(cbor_encoder_close_container_checked(&array, &child));
+    }
+    bool cbor_sequence(unsigned tag, Schema schema, void *p, std::size_t n, ElementVisit f) noexcept {
+        if (!key(tag)) return false;
+        CborEncoder array;
+        if (!ok(cbor_encoder_create_array(cbor_, &array, n))) return false;
+        for (std::size_t i = 0; i < n; ++i)
+            if (!cbor_element(array, schema, p, i, f)) return false;
+        return ok(cbor_encoder_close_container_checked(cbor_, &array));
+    }
+    bool protobuf_element(unsigned tag, Schema schema, void *p, std::size_t index, ElementVisit f) noexcept {
+        if (schema == Schema::UIntElement) {
+            if (!key(tag)) return false;
+            Writer w(state, codec_, schema, depth_ + 1, sizing_, nullptr, pb_);
+            return f(w, p, index);
+        }
+        if (!key(tag, PB_WT_STRING)) return false;
+        auto measure = pb_ostream_t PB_OSTREAM_SIZING;
+        Writer m(state, codec_, schema, depth_ + 2, true, nullptr, &measure);
+        if (!f(m, p, index) || !pb_encode_varint(pb_, measure.bytes_written)) return state.fail(Status::CodecFailure);
+        Writer w(state, codec_, schema, depth_ + 2, sizing_, nullptr, pb_);
+        return f(w, p, index);
+    }
+    bool protobuf_sequence(unsigned tag, Schema schema, void *p, std::size_t n, ElementVisit f) noexcept {
+        for (std::size_t i = 0; i < n; ++i)
+            if (!protobuf_element(tag, schema, p, i, f)) return false;
+        return true;
+    }
 
   public:
     Writer(Context &s, CodecId codec, Schema schema, std::size_t depth, bool sizing, CborEncoder *cbor,
@@ -251,67 +262,22 @@ class Writer final : public Archive {
     bool sequence(unsigned tag, Schema schema, void *p, std::size_t n, ElementVisit f) noexcept override {
         if (depth_ + 1 > state.limits.depth || depth_ + 2 > HardDepth)
             return state.fail(Status::Limit);
-        if (codec_ == CodecId::Cbor) {
-            if (!key(tag))
-                return false;
-            CborEncoder array;
-            if (!ok(cbor_encoder_create_array(cbor_, &array, n)))
-                return false;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (schema == Schema::UIntElement) {
-                    Writer w(state, codec_, schema, depth_ + 1, sizing_, &array, nullptr);
-                    if (!f(w, p, i))
-                        return false;
-                } else {
-                    Counter counter(state);
-                    if (!f(counter, p, i))
-                        return false;
-                    CborEncoder child;
-                    if (!ok(cbor_encoder_create_map(&array, &child, counter.fields)))
-                        return false;
-                    Writer w(state, codec_, schema, depth_ + 2, sizing_, &child, nullptr);
-                    if (!f(w, p, i) || !ok(cbor_encoder_close_container_checked(&array, &child)))
-                        return false;
-                }
-            }
-            return ok(cbor_encoder_close_container_checked(cbor_, &array));
-        }
-        for (std::size_t i = 0; i < n; ++i) {
-            if (schema == Schema::UIntElement) {
-                if (!key(tag))
-                    return false;
-                Writer w(state, codec_, schema, depth_ + 1, sizing_, nullptr, pb_);
-                if (!f(w, p, i))
-                    return false;
-            } else {
-                if (!key(tag, PB_WT_STRING))
-                    return false;
-                auto measure = pb_ostream_t PB_OSTREAM_SIZING;
-                Writer m(state, codec_, schema, depth_ + 2, true, nullptr, &measure);
-                if (!f(m, p, i) || !pb_encode_varint(pb_, measure.bytes_written))
-                    return state.fail(Status::CodecFailure);
-                Writer w(state, codec_, schema, depth_ + 2, sizing_, nullptr, pb_);
-                if (!f(w, p, i))
-                    return false;
-            }
-        }
-        return true;
+        return codec_ == CodecId::Cbor ? cbor_sequence(tag, schema, p, n, f)
+                                       : protobuf_sequence(tag, schema, p, n, f);
     }
 };
+bool bounded(CborValue &v, std::size_t depth, Context &s) noexcept;
+bool bounded_container(CborValue &v, std::size_t depth, Context &s) noexcept {
+    if (!cbor_value_is_length_known(&v)) return s.fail();
+    CborValue child;
+    if (cbor_value_enter_container(&v, &child) != CborNoError) return s.fail();
+    while (!cbor_value_at_end(&child))
+        if (!bounded(child, depth + 1, s)) return false;
+    return cbor_value_leave_container(&v, &child) == CborNoError || s.fail();
+}
 bool bounded(CborValue &v, std::size_t depth, Context &s) noexcept {
-    if (depth > s.limits.depth || depth > HardDepth)
-        return s.fail(Status::Limit);
-    if (cbor_value_is_container(&v)) {
-        if (!cbor_value_is_length_known(&v))
-            return s.fail();
-        CborValue child;
-        if (cbor_value_enter_container(&v, &child) != CborNoError)
-            return s.fail();
-        while (!cbor_value_at_end(&child))
-            if (!bounded(child, depth + 1, s))
-                return false;
-        return cbor_value_leave_container(&v, &child) == CborNoError || s.fail();
-    }
+    if (depth > s.limits.depth || depth > HardDepth) return s.fail(Status::Limit);
+    if (cbor_value_is_container(&v)) return bounded_container(v, depth, s);
     if (cbor_value_is_tag(&v))
         return s.fail();
     return cbor_value_advance(&v) == CborNoError || s.fail();
@@ -341,6 +307,161 @@ class Reader final : public Archive {
         bytes = {static_cast<const std::uint8_t *>(child.state), child.bytes_left};
         return true;
     }
+    bool read_cbor_field(CborValue &child) noexcept {
+        std::uint64_t tag = 0;
+        if (!cbor_value_is_unsigned_integer(&child) || cbor_value_get_uint64(&child, &tag) != CborNoError)
+            return state.fail();
+        if (!tag || tag > max_tag(schema_) || tag >= cbor_.size()) return state.fail(Status::UnsupportedField);
+        auto bit = std::uint32_t{1} << tag;
+        if (present_ & bit) return state.fail();
+        if (cbor_value_advance_fixed(&child) != CborNoError || cbor_value_at_end(&child)) return state.fail();
+        present_ |= bit;
+        cbor_[tag] = child;
+        return cbor_value_advance(&child) == CborNoError || state.fail();
+    }
+    bool index_cbor(const CborValue *cbor) noexcept {
+        if (!cbor_value_is_map(cbor) || !cbor_value_is_length_known(cbor)) return state.fail();
+        CborValue child;
+        if (cbor_value_enter_container(cbor, &child) != CborNoError) return state.fail();
+        while (!cbor_value_at_end(&child)) if (!read_cbor_field(child)) return false;
+        return true;
+    }
+    bool protobuf_field_descriptor(std::uint32_t tag,pb_wire_type_t wire,pb_field_iter_t &field) noexcept {
+        if (!pb_field_iter_begin(&field, descriptor(schema_), nullptr) || !pb_field_iter_find(&field, tag) ||
+            wire_type(field.type) != wire) return state.fail();
+        auto bit = std::uint32_t{1} << tag;
+        if ((present_ & bit) && PB_HTYPE(field.type) != PB_HTYPE_REPEATED) return state.fail();
+        return true;
+    }
+    bool read_protobuf_field(pb_istream_t &stream) noexcept {
+        std::uint32_t tag = 0;
+        pb_wire_type_t wt;
+        bool eof = false;
+        if (!pb_decode_tag(&stream, &wt, &tag, &eof) || !tag || tag > max_tag(schema_) || tag >= pb_.size())
+            return state.fail(Status::UnsupportedField);
+        pb_field_iter_t f;
+        if (!protobuf_field_descriptor(tag,wt,f)) return false;
+        auto bit = std::uint32_t{1} << tag;
+        auto *start = static_cast<const std::uint8_t *>(stream.state);
+        auto remaining = stream.bytes_left;
+        if (!pb_skip_field(&stream, wt)) return state.fail();
+        pb_[tag] = {start, remaining - stream.bytes_left};
+        present_ |= bit;
+        return true;
+    }
+    bool index_protobuf(std::span<const std::uint8_t> source) noexcept {
+        auto stream = pb_istream_from_buffer(source.data(), source.size());
+        while (stream.bytes_left) if (!read_protobuf_field(stream)) return false;
+        return true;
+    }
+    bool protobuf_uint(unsigned tag, std::uint64_t &v) noexcept {
+        auto stream = pb_istream_from_buffer(pb_[tag].data(), pb_[tag].size());
+        auto wt = PB_WT_VARINT;
+        if (schema_ != Schema::UIntElement) {
+            pb_field_iter_t f;
+            if (!pb_field_iter_begin(&f, descriptor(schema_), nullptr) || !pb_field_iter_find(&f, tag)) return state.fail();
+            wt = wire_type(f.type);
+        }
+        bool ok = false;
+        if (wt == PB_WT_32BIT) {
+            std::uint32_t n = 0;
+            ok = pb_decode_fixed32(&stream, &n);
+            v = n;
+        } else if (wt == PB_WT_64BIT) ok = pb_decode_fixed64(&stream, &v);
+        else ok = pb_decode_varint(&stream, &v);
+        return (ok && stream.bytes_left == 0) || state.fail();
+    }
+    bool cbor_binary_chunk(CborValue& item,CborValue& next,std::string_view& value) noexcept {
+        const std::uint8_t* bytes=nullptr;
+        std::size_t size=0;
+        if(!cbor_value_is_byte_string(&item) ||
+           cbor_value_get_byte_string_chunk(&item,&bytes,&size,&next)!=CborNoError)
+            return state.fail();
+        value={reinterpret_cast<const char*>(bytes),size};
+        return true;
+    }
+    bool cbor_text_chunk(CborValue& item,CborValue& next,std::string_view& value) noexcept {
+        const char* bytes=nullptr;
+        std::size_t size=0;
+        if(!cbor_value_is_text_string(&item) ||
+           cbor_value_get_text_string_chunk(&item,&bytes,&size,&next)!=CborNoError)
+            return state.fail();
+        value={bytes,size};
+        return true;
+    }
+    bool cbor_text(unsigned tag, std::string_view &v, bool binary) noexcept {
+        if (!take(tag)) return false;
+        auto item = cbor_[tag];
+        CborValue next;
+        if (!cbor_value_is_length_known(&item) || cbor_value_begin_string_iteration(&item) != CborNoError)
+            return state.fail();
+        return binary?cbor_binary_chunk(item,next,v):cbor_text_chunk(item,next,v);
+    }
+    bool protobuf_sequence_size(unsigned tag, std::size_t &n) noexcept {
+        used_ |= present_ & (std::uint32_t{1} << tag);
+        n = 0;
+        auto stream = pb_istream_from_buffer(source_.data(), source_.size());
+        while (stream.bytes_left) {
+            pb_wire_type_t wt;
+            std::uint32_t t;
+            bool eof = false;
+            if (!pb_decode_tag(&stream, &wt, &t, &eof) || !pb_skip_field(&stream, wt)) return state.fail();
+            if (t == tag) {
+                if (n == SIZE_MAX) return state.fail(Status::Overflow);
+                ++n;
+            }
+        }
+        return true;
+    }
+    bool cbor_sequence(Schema schema, void *p, std::size_t count, ElementVisit f, unsigned tag) noexcept {
+        CborValue child;
+        if (cbor_value_enter_container(&cbor_[tag], &child) != CborNoError) return state.fail();
+        std::size_t index = 0;
+        while (!cbor_value_at_end(&child)) {
+            Reader r(state, codec_, schema, depth_ + (schema == Schema::UIntElement ? 1 : 2), &child, {});
+            if (index >= count || state.error != Status::Ok || !f(r, p, index++) || !r.finish() ||
+                cbor_value_advance(&child) != CborNoError) return state.fail();
+        }
+        return index == count || state.fail();
+    }
+    bool protobuf_sequence_element(std::span<const std::uint8_t> bytes, Schema schema,
+                                   void *p, std::size_t index, ElementVisit f) noexcept {
+        if (schema != Schema::UIntElement) {
+            auto stream = pb_istream_from_buffer(bytes.data(), bytes.size());
+            pb_istream_t sub;
+            if (!pb_make_string_substream(&stream, &sub)) return state.fail();
+            bytes = {static_cast<const std::uint8_t *>(sub.state), sub.bytes_left};
+        }
+        Reader r(state, codec_, schema, depth_ + (schema == Schema::UIntElement ? 1 : 2), nullptr, bytes);
+        return state.error == Status::Ok && f(r, p, index) && r.finish();
+    }
+    bool protobuf_sequence_entry(pb_istream_t& stream,unsigned tag,Schema schema,void* data,
+                                 std::size_t count,std::size_t& index,ElementVisit visit) noexcept {
+        pb_wire_type_t wire;
+        std::uint32_t field_tag;
+        bool eof=false;
+        if(!pb_decode_tag(&stream,&wire,&field_tag,&eof))return state.fail();
+        auto* start=static_cast<const std::uint8_t*>(stream.state);
+        const auto remaining=stream.bytes_left;
+        if(!pb_skip_field(&stream,wire))return state.fail();
+        if(field_tag!=tag)return true;
+        std::span<const std::uint8_t> bytes{start,remaining-stream.bytes_left};
+        if(index>=count || !protobuf_sequence_element(bytes,schema,data,index,visit))return state.fail();
+        ++index;
+        return true;
+    }
+    bool protobuf_sequence(unsigned tag, Schema schema, void *p, std::size_t count, ElementVisit f) noexcept {
+        std::size_t index = 0;
+        auto stream = pb_istream_from_buffer(source_.data(), source_.size());
+        while(stream.bytes_left)
+            if(!protobuf_sequence_entry(stream,tag,schema,p,count,index,f))return false;
+        return index == count || state.fail();
+    }
+    void initialize_scalar(const CborValue* cbor,std::span<const std::uint8_t> source) noexcept {
+        if(cbor)cbor_[0]=*cbor;
+        else pb_[0]=source;
+        present_=1;
+    }
 
   public:
     Reader(Context &s, CodecId codec, Schema schema, std::size_t depth, const CborValue *cbor,
@@ -351,80 +472,11 @@ class Reader final : public Archive {
             return;
         }
         if (schema == Schema::UIntElement) {
-            if (cbor)
-                cbor_[0] = *cbor;
-            else
-                pb_[0] = source;
-            present_ = 1;
+            initialize_scalar(cbor,source);
             return;
         }
-        if (codec == CodecId::Cbor) {
-            if (!cbor_value_is_map(cbor) || !cbor_value_is_length_known(cbor)) {
-                state.fail();
-                return;
-            }
-            CborValue child;
-            if (cbor_value_enter_container(cbor, &child) != CborNoError) {
-                state.fail();
-                return;
-            }
-            while (!cbor_value_at_end(&child)) {
-                std::uint64_t tag = 0;
-                if (!cbor_value_is_unsigned_integer(&child) || cbor_value_get_uint64(&child, &tag) != CborNoError) {
-                    state.fail();
-                    return;
-                }
-                if (!tag || tag > max_tag(schema) || tag >= cbor_.size()) {
-                    state.fail(Status::UnsupportedField);
-                    return;
-                }
-                auto bit = std::uint32_t{1} << tag;
-                if (present_ & bit) {
-                    state.fail();
-                    return;
-                }
-                if (cbor_value_advance_fixed(&child) != CborNoError || cbor_value_at_end(&child)) {
-                    state.fail();
-                    return;
-                }
-                present_ |= bit;
-                cbor_[tag] = child;
-                if (cbor_value_advance(&child) != CborNoError) {
-                    state.fail();
-                    return;
-                }
-            }
-        } else {
-            auto stream = pb_istream_from_buffer(source.data(), source.size());
-            while (stream.bytes_left) {
-                std::uint32_t tag = 0;
-                pb_wire_type_t wt;
-                bool eof = false;
-                if (!pb_decode_tag(&stream, &wt, &tag, &eof) || !tag || tag > max_tag(schema) || tag >= pb_.size()) {
-                    state.fail(Status::UnsupportedField);
-                    return;
-                }
-                pb_field_iter_t f;
-                if (!pb_field_iter_begin(&f, descriptor(schema), nullptr) || !pb_field_iter_find(&f, tag) ||
-                    wire_type(f.type) != wt) {
-                    state.fail();
-                    return;
-                }
-                auto bit = std::uint32_t{1} << tag;
-                if ((present_ & bit) && PB_HTYPE(f.type) != PB_HTYPE_REPEATED) {
-                    state.fail();
-                    return;
-                }
-                auto *start = static_cast<const std::uint8_t *>(stream.state);
-                auto remaining = stream.bytes_left;
-                if (!pb_skip_field(&stream, wt)) {
-                    state.fail();
-                    return;
-                }
-                pb_[tag] = {start, remaining - stream.bytes_left};
-                present_ |= bit;
-            }
-        }
+        if (codec == CodecId::Cbor) index_cbor(cbor);
+        else index_protobuf(source);
     }
     bool finish() noexcept {
         return state.error == Status::Ok && (present_ == used_ || state.fail());
@@ -436,24 +488,7 @@ class Reader final : public Archive {
             return (cbor_value_is_unsigned_integer(&cbor_[tag]) &&
                     cbor_value_get_uint64(&cbor_[tag], &v) == CborNoError) ||
                    state.fail();
-        auto stream = pb_istream_from_buffer(pb_[tag].data(), pb_[tag].size());
-        auto wt = PB_WT_VARINT;
-        if (schema_ != Schema::UIntElement) {
-            pb_field_iter_t f;
-            if (!pb_field_iter_begin(&f, descriptor(schema_), nullptr) || !pb_field_iter_find(&f, tag))
-                return state.fail();
-            wt = wire_type(f.type);
-        }
-        bool ok = false;
-        if (wt == PB_WT_32BIT) {
-            std::uint32_t n = 0;
-            ok = pb_decode_fixed32(&stream, &n);
-            v = n;
-        } else if (wt == PB_WT_64BIT)
-            ok = pb_decode_fixed64(&stream, &v);
-        else
-            ok = pb_decode_varint(&stream, &v);
-        return (ok && stream.bytes_left == 0) || state.fail();
+        return protobuf_uint(tag, v);
     }
     bool int_field(unsigned tag, std::int64_t &v) noexcept override {
         if (!take(tag))
@@ -480,26 +515,7 @@ class Reader final : public Archive {
     }
     bool text_field(unsigned tag, std::string_view &v, bool binary) noexcept override {
         if (codec_ == CodecId::Cbor) {
-            if (!take(tag))
-                return false;
-            auto item = cbor_[tag];
-            CborValue next;
-            std::size_t n = 0;
-            if (!cbor_value_is_length_known(&item) || cbor_value_begin_string_iteration(&item) != CborNoError)
-                return state.fail();
-            if (binary) {
-                const std::uint8_t *p = nullptr;
-                if (!cbor_value_is_byte_string(&item) ||
-                    cbor_value_get_byte_string_chunk(&item, &p, &n, &next) != CborNoError)
-                    return state.fail();
-                v = {reinterpret_cast<const char *>(p), n};
-            } else {
-                const char *p = nullptr;
-                if (!cbor_value_is_text_string(&item) ||
-                    cbor_value_get_text_string_chunk(&item, &p, &n, &next) != CborNoError)
-                    return state.fail();
-                v = {p, n};
-            }
+            if (!cbor_text(tag, v, binary)) return false;
         } else {
             std::span<const std::uint8_t> bytes;
             if (!blob(tag, bytes))
@@ -540,63 +556,11 @@ class Reader final : public Archive {
             return (cbor_value_is_array(&cbor_[tag]) && cbor_value_get_array_length(&cbor_[tag], &n) == CborNoError) ||
                    state.fail();
         }
-        used_ |= present_ & (std::uint32_t{1} << tag);
-        n = 0;
-        auto stream = pb_istream_from_buffer(source_.data(), source_.size());
-        while (stream.bytes_left) {
-            pb_wire_type_t wt;
-            std::uint32_t t;
-            bool eof = false;
-            if (!pb_decode_tag(&stream, &wt, &t, &eof) || !pb_skip_field(&stream, wt))
-                return state.fail();
-            if (t == tag) {
-                if (n == SIZE_MAX)
-                    return state.fail(Status::Overflow);
-                ++n;
-            }
-        }
-        return true;
+        return protobuf_sequence_size(tag, n);
     }
     bool sequence(unsigned tag, Schema schema, void *p, std::size_t count, ElementVisit f) noexcept override {
-        std::size_t i = 0;
-        if (codec_ == CodecId::Cbor) {
-            CborValue child;
-            if (cbor_value_enter_container(&cbor_[tag], &child) != CborNoError)
-                return state.fail();
-            while (!cbor_value_at_end(&child)) {
-                Reader r(state, codec_, schema, depth_ + (schema == Schema::UIntElement ? 1 : 2), &child, {});
-                if (i >= count || state.error != Status::Ok || !f(r, p, i++) || !r.finish() ||
-                    cbor_value_advance(&child) != CborNoError)
-                    return state.fail();
-            }
-            return i == count || state.fail();
-        }
-        auto stream = pb_istream_from_buffer(source_.data(), source_.size());
-        while (stream.bytes_left) {
-            pb_wire_type_t wt;
-            std::uint32_t t;
-            bool eof = false;
-            if (!pb_decode_tag(&stream, &wt, &t, &eof))
-                return state.fail();
-            auto *start = static_cast<const std::uint8_t *>(stream.state);
-            auto remaining = stream.bytes_left;
-            if (!pb_skip_field(&stream, wt))
-                return state.fail();
-            if (t != tag)
-                continue;
-            std::span<const std::uint8_t> bytes{start, remaining - stream.bytes_left};
-            if (schema != Schema::UIntElement) {
-                auto s = pb_istream_from_buffer(bytes.data(), bytes.size());
-                pb_istream_t sub;
-                if (!pb_make_string_substream(&s, &sub))
-                    return state.fail();
-                bytes = {static_cast<const std::uint8_t *>(sub.state), sub.bytes_left};
-            }
-            Reader r(state, codec_, schema, depth_ + (schema == Schema::UIntElement ? 1 : 2), nullptr, bytes);
-            if (i >= count || state.error != Status::Ok || !f(r, p, i++) || !r.finish())
-                return state.fail();
-        }
-        return i == count || state.fail();
+        return codec_ == CodecId::Cbor ? cbor_sequence(schema, p, count, f, tag)
+                                       : protobuf_sequence(tag, schema, p, count, f);
     }
 };
 bool read(CodecId codec, std::span<const std::uint8_t> input, Context &s, Message &m) noexcept {
@@ -617,6 +581,36 @@ bool read(CodecId codec, std::span<const std::uint8_t> input, Context &s, Messag
     Reader r(s, codec, Schema::Message, 1, &root, {});
     return s.error == Status::Ok && visit_message(r, &m) && r.finish();
 }
+bool measure_numeric(CodecId codec, Context &state, Message &message, std::size_t &size) noexcept {
+    CborEncoder cbor;
+    cbor_encoder_init(&cbor, nullptr, 0, 0);
+    auto pb = pb_ostream_t PB_OSTREAM_SIZING;
+    Writer measure(state, codec, Schema::Message, 1, true, &cbor, &pb);
+    if (!measure.map(&message, visit_message)) return false;
+    size = codec == CodecId::Cbor ? cbor_encoder_get_extra_bytes_needed(&cbor) : pb.bytes_written;
+    return true;
+}
+bool emit_numeric(CodecId codec, Context &state, Message &message, std::span<std::uint8_t> output,
+                  std::span<std::uint8_t> scratch, std::size_t size) noexcept {
+    CborEncoder cbor;
+    cbor_encoder_init(&cbor, scratch.data(), scratch.size(), 0);
+    auto pb = pb_ostream_from_buffer(scratch.data(), scratch.size());
+    Writer writer(state, codec, Schema::Message, 1, false, &cbor, &pb);
+    if (!writer.map(&message, visit_message)) return false;
+    auto actual = codec == CodecId::Cbor ? cbor_encoder_get_buffer_size(&cbor, scratch.data()) : pb.bytes_written;
+    if (actual != size) return state.fail(Status::CodecFailure);
+    std::memcpy(output.data(), scratch.data(), size);
+    return true;
+}
+bool numeric_output_capacity(CodecId codec,Context& state,Message& message,
+                             std::span<std::uint8_t> output,std::span<std::uint8_t> scratch,
+                             Result& result,std::size_t& size) noexcept {
+    if(!measure_numeric(codec,state,message,size)){result={state.error};return false;}
+    if(size>state.limits.wire_bytes){result={Status::Limit};return false;}
+    result.required_wire=size;result.required_scratch=size;
+    if(output.size()<size || scratch.size()<size){result.status=Status::BufferTooSmall;return false;}
+    return true;
+}
 Result encode_impl(CodecId codec, const Message &source, std::span<std::uint8_t> output,
                    std::span<std::uint8_t> scratch, const Limits &limits) noexcept {
     auto result = validate(source, limits);
@@ -624,72 +618,60 @@ Result encode_impl(CodecId codec, const Message &source, std::span<std::uint8_t>
         return result;
     Context s{limits, {}};
     Message m = source;
-    CborEncoder cbor;
-    cbor_encoder_init(&cbor, nullptr, 0, 0);
-    auto pb = pb_ostream_t PB_OSTREAM_SIZING;
-    Writer measure(s, codec, Schema::Message, 1, true, &cbor, &pb);
-    if (!measure.map(&m, visit_message))
-        return {s.error};
-    auto size = codec == CodecId::Cbor ? cbor_encoder_get_extra_bytes_needed(&cbor) : pb.bytes_written;
-    if (size > limits.wire_bytes)
-        return {Status::Limit};
-    result.required_wire = size;
-    result.required_scratch = size;
-    if (output.size() < size || scratch.size() < size) {
-        result.status = Status::BufferTooSmall;
-        return result;
-    }
-    cbor_encoder_init(&cbor, scratch.data(), scratch.size(), 0);
-    pb = pb_ostream_from_buffer(scratch.data(), scratch.size());
-    Writer writer(s, codec, Schema::Message, 1, false, &cbor, &pb);
-    if (!writer.map(&m, visit_message))
-        return {s.error};
-    auto actual = codec == CodecId::Cbor ? cbor_encoder_get_buffer_size(&cbor, scratch.data()) : pb.bytes_written;
-    if (actual != size)
-        return {Status::CodecFailure};
-    std::memcpy(output.data(), scratch.data(), size);
+    std::size_t size=0;
+    if(!numeric_output_capacity(codec,s,m,output,scratch,result,size))return result;
+    if (!emit_numeric(codec,s,m,output,scratch,size)) return {s.error};
     result.produced = size;
     return result;
 }
 bool aligned(std::span<std::byte> bytes) noexcept {
     return bytes.empty() || reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(std::max_align_t) == 0;
 }
-Result decode_impl(CodecId codec, std::span<const std::uint8_t> input, std::span<std::byte> arena,
-                   std::span<std::byte> stage, Message &output, const Limits &limits) noexcept {
-    if (limits.depth > HardDepth || !aligned(arena) || !aligned(stage))
-        return {Status::InvalidArgument};
-    if (input.empty())
-        return {Status::Malformed};
-    if (input.size() > limits.wire_bytes)
-        return {Status::Limit};
+Result stage_numeric(CodecId codec,std::span<const std::uint8_t> input,std::span<std::byte> stage,
+                     Message &message,const Limits &limits) noexcept {
+    Context staging{limits, stage, true, true};
+    message = {};
+    if (!read(codec, input, staging, message)) return {staging.error};
+    return validate(message, limits);
+}
+bool commit_numeric(CodecId codec,std::span<const std::uint8_t> input,std::span<std::byte> arena,
+                    Message &message,Message &output,const Limits &limits) noexcept {
+    Context commit{limits, arena, true, true};
+    message = {};
+    if (!read(codec, input, commit, message)) return false;
+    output = message;
+    return true;
+}
+Result inspect_numeric(CodecId codec,std::span<const std::uint8_t> input,std::span<std::byte> arena,
+                       std::span<std::byte> stage,Message &message,const Limits &limits) noexcept {
+    if (limits.depth > HardDepth || !aligned(arena) || !aligned(stage)) return {Status::InvalidArgument};
+    if (input.empty()) return {Status::Malformed};
+    if (input.size() > limits.wire_bytes) return {Status::Limit};
     Context count{limits, {}, true, false};
-    Message m;
-    if (!read(codec, input, count, m))
-        return {count.error};
+    if (!read(codec, input, count, message)) return {count.error};
     Result result;
     result.required_arena = count.used;
     result.required_scratch = count.used;
-    if (stage.size() < count.used) {
-        result.status = Status::BufferTooSmall;
-        return result;
-    }
-    Context staging{limits, stage, true, true};
-    m = {};
-    if (!read(codec, input, staging, m))
-        return {staging.error};
-    auto checked = validate(m, limits);
-    if (!checked)
-        return checked;
-    result.required_text = checked.required_text;
-    if (arena.size() < count.used) {
-        result.status = Status::BufferTooSmall;
-        return result;
-    }
-    Context commit{limits, arena, true, true};
-    m = {};
-    if (!read(codec, input, commit, m))
-        return {Status::CodecFailure};
-    output = m;
+    return result;
+}
+Result validate_numeric_staging(CodecId codec,std::span<const std::uint8_t> input,
+                                std::span<std::byte> arena,std::span<std::byte> stage,
+                                Message& message,const Limits& limits,Result result) noexcept {
+    if(stage.size()<result.required_scratch){result.status=Status::BufferTooSmall;return result;}
+    const auto checked=stage_numeric(codec,input,stage,message,limits);
+    if(!checked)return checked;
+    result.required_text=checked.required_text;
+    if(arena.size()<result.required_arena){result.status=Status::BufferTooSmall;return result;}
+    return result;
+}
+Result decode_impl(CodecId codec, std::span<const std::uint8_t> input, std::span<std::byte> arena,
+                   std::span<std::byte> stage, Message &output, const Limits &limits) noexcept {
+    Message m;
+    auto result=inspect_numeric(codec,input,arena,stage,m,limits);
+    if (!result) return result;
+    result=validate_numeric_staging(codec,input,arena,stage,m,limits,result);
+    if(!result)return result;
+    if (!commit_numeric(codec,input,arena,m,output,limits)) return {Status::CodecFailure};
     result.consumed = input.size();
     return result;
 }

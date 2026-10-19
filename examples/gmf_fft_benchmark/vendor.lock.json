@@ -1,0 +1,71 @@
+{
+  "repository": "espressif/esp-gmf",
+  "revision": "255fb531ddc97ff5e1e113dad97c88f70d6297be",
+  "package": "packages/gmf_fft",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "4e49d8f2119fa8cde8311a9801ecfa57d3bfb1027bfb10bd59312873e0ed8c2a"
+    },
+    {
+      "path": "idf_component.yml",
+      "sha256": "21a41482ccc3c7a804beb4264fa6beeef825169558772df80523d68844c3c8b3"
+    },
+    {
+      "path": "Kconfig",
+      "sha256": "892470cd1fc95f14143f2ddd3b06d139262e68b80d0079c3fbb381ba519edd2f"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "24c5f24313e013f99686d6275500d5ac5f7b1ec4fba2a98073fd05d6e2a182f0"
+    },
+    {
+      "path": "README.md",
+      "sha256": "a1df2e07fffe7a5ad5c9ab290faa4d00d6841916ae879ab0f222baa597057093"
+    },
+    {
+      "path": "include/esp_gmf_fft_heap.h",
+      "sha256": "1f78aeabf0888b981898158f00c74239e19d8dcb04d3c3bff3d3e11caa8194ca"
+    },
+    {
+      "path": "include/esp_gmf_fft.h",
+      "sha256": "c47b49c6f88af382005dc6acbc99465347ab8630728edae3b335669a230494bb"
+    },
+    {
+      "path": "src/common/fft_heap.c",
+      "sha256": "123fe4415d3b7ee3ab32ec854b7d28b86223881044d5488c231e8ec8adbc7188"
+    },
+    {
+      "path": "src/common/fft_power2_q15.c",
+      "sha256": "4cc831af8bf57d7afe1dd4379d199c269f05f2bdf385264ea63bb26b0a17eaf1"
+    },
+    {
+      "path": "src/esp32s3/fft_bitrev_s16.c",
+      "sha256": "4545ba6da293e54f56c501719e37aa3a7fdd6f0f4f66fd1f697dd6c9dd219ccd"
+    },
+    {
+      "path": "src/esp32s3/fft_pie_radix2_dit_s16.S",
+      "sha256": "3eb185086095c1ee54a6cb61de2623983bce942d25b8ca136544737c6b7f4ba5"
+    },
+    {
+      "path": "src/esp32s3/fft_pie_radix2_hp_s16.S",
+      "sha256": "44cf9aa8a1b46a881fe96a7928b43755c639dbb1f6f6059941fc885a578532af"
+    },
+    {
+      "path": "src/esp_c/fft_hp_pack.c",
+      "sha256": "596e8c7b707499e1b878d74f9ce29a33a3693f8c3def646daf00f22fe59b459d"
+    },
+    {
+      "path": "src/esp_c/fft_hp_scale_s16.c",
+      "sha256": "15af95fea07cf152c8b810e747648ac86142a06fb3b366b46f6da103d7e1cf7f"
+    },
+    {
+      "path": "src/esp_c/gmf_fft_radix2_dit_s16.c",
+      "sha256": "0438abe3a14ece058aee1c856c67939a81b9bca7932d441a5fe341473251e06d"
+    },
+    {
+      "path": "src/esp_c/gmf_fft_radix2_hp_s16.c",
+      "sha256": "678fbb22485a1b56544325381a07728886b5ddd01f925771f85b060d8889147c"
+    }
+  ]
+}

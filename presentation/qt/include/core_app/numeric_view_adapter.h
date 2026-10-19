@@ -1,6 +1,7 @@
 #pragma once
 #include <pipeline/numeric_projection.h>
 #include <map>
+#include <optional>
 #include <visualization/numeric_matrix_snapshot.h>
 #include <visualization/quick/numeric_render_ports.h>
 namespace presentation {
@@ -43,6 +44,30 @@ private:
         pipeline::DeliveryStamp delivery_fence;
         bool fence_seen=false;
     };
+    std::optional<signal_contracts::Status> accept_frame_for_state(const Key&,State&,
+        const pipeline::DeliveredNumericFrame&);
+    bool reset_frame_state(State&,const pipeline::DeliveredNumericFrame&);
+    bool stale_frame_sequence(const State&,const pipeline::DeliveredNumericFrame&,bool changed) const;
+    signal_contracts::Status validate_scalar_frame(const Key&,State&,const signal_contracts::NumericView&);
+    signal_contracts::Status accept_snapshot_for_state(const Key&,State&,
+        const pipeline::DeliveredNumericFrame&,std::uint64_t ordinal,std::uint64_t filled_count);
+    signal_contracts::Status render_history(State&,NumericRenderTarget);
+    signal_contracts::Status publish_history_snapshot(State&,NumericRenderTarget);
+    SpectrogramAxisMetadata history_axes(const State&,NumericRenderTarget) const;
+    void normalize_history_axes(SpectrogramAxisMetadata&,NumericRenderTarget) const;
+    void prepare_history_snapshot(State&);
+    void history_captions(const State&,NumericRenderTarget) const;
+    void prepare_matrix_snapshot(State&,std::size_t,std::size_t,const std::vector<float>&,const pipeline::FloatProjectionReport&);
+    signal_contracts::Status render_frame(State&,const pipeline::EndpointIdentity&,std::size_t,NumericRenderTarget);
+    signal_contracts::Status render_numeric_frame(State&,const pipeline::EndpointIdentity&,std::size_t,
+        const signal_contracts::NumericView&,NumericRenderTarget);
+    struct FrameProjection {std::vector<float> values;pipeline::FloatProjectionReport report;QString exact;};
+    signal_contracts::Status project_frame(State&,const signal_contracts::NumericView&,std::size_t,FrameProjection&);
+    signal_contracts::Status publish_frame(State&,const signal_contracts::NumericView&,FrameProjection&,NumericRenderTarget);
+    signal_contracts::Status configure_vector(const signal_contracts::NumericView&,std::size_t,NumericRenderTarget);
+    signal_contracts::Status vector_coordinates(const signal_contracts::NumericView&,NumericRenderTarget,
+        std::vector<double>&,QString&);
+    signal_contracts::Status render_matrix(State&,const signal_contracts::NumericView&,const std::vector<float>&,const pipeline::FloatProjectionReport&,NumericRenderTarget);
     NumericViewLimits limits_;
     std::map<Key,State> states_;
 };

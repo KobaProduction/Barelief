@@ -15,6 +15,71 @@ constexpr FrameDescriptor descriptors[]{
     {FrameType::Scalar,"scalar",DataShape::Scalar,false,Quantity::Unspecified,Unit::Unspecified},
     {FrameType::WledPacket,"wled-packet",DataShape::Packet,false,Quantity::Packet,Unit::Bytes}
 };
+bool history_present(const HistoryView& history) noexcept {
+    return !history.storage.empty() || history.bands || history.frames || history.capacity || history.oldest || !history.newest_override.empty() || !history.zero_rows.empty() || !history.zero_row.empty() || history.zero_oldest;
+}
+bool metadata_bounded(const FrameMetadata& metadata) noexcept {
+    return metadata.sample_rate<=768000 && metadata.fft_size<=65536 && metadata.bands<=4096 && metadata.history_capacity<=2000 && metadata.stream_id.size()<=256 && std::isfinite(metadata.frequency_step) && metadata.frequency_step>=0 && std::isfinite(metadata.peak_hz) && std::isfinite(metadata.magnitude);
+}
+bool finite_samples(std::span<const float> samples) noexcept {
+    for(const auto sample:samples)if(!std::isfinite(sample))return false;
+    return true;
+}
+bool scalar_metadata(const FrameMetadata& metadata) noexcept {
+    return !metadata.fft_size && !metadata.bands && !metadata.history_capacity && !metadata.frequency_step && !metadata.bark_weighted;
+}
+Status stereo_frame(const FrameView& frame,bool history) noexcept {
+    if(frame.left.empty() || frame.left.size()!=frame.right.size() || !frame.values.empty() || history || !finite_samples(frame.left) || !finite_samples(frame.right))return Status::invalid_argument;
+    if(frame.type!=FrameType::PCM && frame.metadata.fft_size && frame.left.size()!=(frame.type==FrameType::StereoSpectrum?frame.metadata.fft_size/2:frame.metadata.fft_size))return Status::invalid_argument;
+    return Status::ok;
+}
+Status packet_frame(const FrameView& frame,bool history) noexcept {
+    return frame.packet.size()==44 && frame.left.empty() && frame.right.empty() && frame.values.empty() && !history && scalar_metadata(frame.metadata)?Status::ok:Status::invalid_argument;
+}
+Status scalar_frame(const FrameView& frame,bool history) noexcept {
+    return frame.values.size()==1 && frame.left.empty() && frame.right.empty() && !history && finite_samples(frame.values) && scalar_metadata(frame.metadata)?Status::ok:Status::invalid_argument;
+}
+Status feature_frame(const FrameView& frame,bool history) noexcept {
+    if(frame.values.empty() || !frame.left.empty() || !frame.right.empty() || history || !finite_samples(frame.values))return Status::invalid_argument;
+    if(frame.type==FrameType::Mel && frame.metadata.bands && frame.values.size()!=frame.metadata.bands)return Status::invalid_argument;
+    if(frame.type==FrameType::Spectrum && frame.metadata.fft_size && frame.values.size()!=frame.metadata.fft_size/2)return Status::invalid_argument;
+    return Status::ok;
+}
+bool history_storage_valid(const FrameView& frame) noexcept {
+    const auto& history=frame.history;
+    if(!frame.left.empty() || !frame.right.empty() || !frame.values.empty() || !history.bands || !history.frames || !history.capacity || history.frames>history.capacity || history.oldest>=history.capacity)return false;
+    if(history.bands>std::numeric_limits<std::size_t>::max()/history.capacity || history.storage.size()!=history.bands*history.capacity)return false;
+    return (!frame.metadata.bands || frame.metadata.bands==history.bands) && (!frame.metadata.history_capacity || history.capacity<=frame.metadata.history_capacity);
+}
+bool history_overrides_valid(const HistoryView& history) noexcept {
+    if(!history.newest_override.empty() && history.newest_override.size()!=history.bands)return false;
+    if(history.zero_rows.empty()!=history.zero_row.empty())return false;
+    if(history.zero_rows.empty())return history.zero_oldest==0;
+    return history.zero_rows.size()>=history.frames && history.zero_rows.size()<=2000 && history.zero_oldest<history.zero_rows.size() && history.zero_row.size()==history.bands;
+}
+bool history_samples_valid(const HistoryView& history) noexcept {
+    for(const auto flag:history.zero_rows)if(flag>1)return false;
+    for(const auto value:history.zero_row)if(value!=0)return false;
+    for(std::size_t row=0;row<history.frames;++row)if(!finite_samples(history.row(row)))return false;
+    return true;
+}
+Status history_frame(const FrameView& frame) noexcept {
+    const auto& history=frame.history;
+    if(!history_storage_valid(frame) || !history_overrides_valid(history))return Status::invalid_argument;
+    return history_samples_valid(history)?Status::ok:Status::invalid_argument;
+}
+Status frame_payload(const FrameView& frame,const FrameDescriptor& descriptor,bool history) noexcept {
+    if(descriptor.stereo)return stereo_frame(frame,history);
+    switch(frame.type) {
+    case FrameType::WledPacket:return packet_frame(frame,history);
+    case FrameType::Scalar:return scalar_frame(frame,history);
+    case FrameType::Spectrum:case FrameType::Mel:return feature_frame(frame,history);
+    default:return history_frame(frame);
+    }
+}
+Status unavailable_frame(const FrameView& frame,bool history) noexcept {
+    return !frame.metadata.sequence && frame.left.empty() && frame.right.empty() && frame.values.empty() && !history && frame.packet.empty()?Status::unavailable:Status::invalid_argument;
+}
 }
 std::span<const FrameDescriptor> frame_descriptors() noexcept { return descriptors; }
 const FrameDescriptor* frame_descriptor(FrameType t) noexcept {
@@ -31,47 +96,12 @@ PortContract contract(const FrameView &f) noexcept {
         frame_descriptor(f.type) && frame_descriptor(f.type)->stereo?f.left.size():f.type==FrameType::WledPacket?f.packet.size():f.type==FrameType::History?f.history.bands:f.values.size(),
         m.frequency_step,m.bark_weighted};
 }
-Status validate(const FrameView &f) noexcept {
-    const auto &m=f.metadata; const auto* descriptor=frame_descriptor(f.type);
-    const bool has_history_descriptor=!f.history.storage.empty() || f.history.bands ||
-        f.history.frames || f.history.capacity || f.history.oldest || !f.history.newest_override.empty() ||
-        !f.history.zero_rows.empty() || !f.history.zero_row.empty() || f.history.zero_oldest;
-    if(!descriptor || (f.type!=FrameType::WledPacket && !f.packet.empty()) || m.sample_rate>768000 || m.fft_size>65536 || m.bands>4096 ||
-       m.history_capacity>2000 || m.stream_id.size()>256 || !std::isfinite(m.frequency_step) ||
-       m.frequency_step<0 || !std::isfinite(m.peak_hz) || !std::isfinite(m.magnitude)) return Status::invalid_argument;
-    if(!m.available) return !m.sequence && f.left.empty() && f.right.empty() && f.values.empty() &&
-        !has_history_descriptor && f.packet.empty()?Status::unavailable:Status::invalid_argument;
-    if(!m.sequence || !m.sample_rate) return Status::invalid_argument;
-    auto finite=[](auto values){for(float v:values) if(!std::isfinite(v))return false;return true;};
-    if(descriptor->stereo) {
-        if(f.left.empty() || f.left.size()!=f.right.size() || !f.values.empty() ||
-           has_history_descriptor || !finite(f.left) || !finite(f.right))return Status::invalid_argument;
-        if(f.type!=FrameType::PCM && m.fft_size && f.left.size() != (f.type==FrameType::StereoSpectrum?m.fft_size/2:m.fft_size))return Status::invalid_argument;
-    } else if(f.type==FrameType::WledPacket) {
-        if(f.packet.size()!=44 || !f.left.empty() || !f.right.empty() || !f.values.empty() || has_history_descriptor ||
-           m.fft_size || m.bands || m.history_capacity || m.frequency_step || m.bark_weighted)return Status::invalid_argument;
-    } else if(f.type==FrameType::Scalar) {
-        if(f.values.size()!=1 || !f.left.empty() || !f.right.empty() || has_history_descriptor || !finite(f.values) ||
-           m.fft_size || m.bands || m.history_capacity || m.frequency_step || m.bark_weighted)return Status::invalid_argument;
-    } else if(f.type==FrameType::Spectrum || f.type==FrameType::Mel) {
-        if(f.values.empty() || !f.left.empty() || !f.right.empty() || has_history_descriptor ||
-           !finite(f.values) || (f.type==FrameType::Mel && m.bands && f.values.size()!=m.bands) ||
-           (f.type==FrameType::Spectrum && m.fft_size && f.values.size()!=m.fft_size/2))return Status::invalid_argument;
-    } else {
-        const auto &h=f.history;
-        if(!f.left.empty() || !f.right.empty() || !f.values.empty() || !h.bands || !h.frames ||
-           !h.capacity || h.frames>h.capacity || h.oldest>=h.capacity ||
-           h.bands>std::numeric_limits<std::size_t>::max()/h.capacity || h.storage.size()!=h.bands*h.capacity ||
-           (!h.newest_override.empty() && h.newest_override.size()!=h.bands) ||
-           (h.zero_rows.empty()!=h.zero_row.empty()) ||
-           (h.zero_rows.empty() && h.zero_oldest) ||
-           (!h.zero_rows.empty() && (h.zero_rows.size()<h.frames || h.zero_rows.size()>2000 ||
-                                    h.zero_oldest>=h.zero_rows.size() || h.zero_row.size()!=h.bands)) ||
-           (m.bands && m.bands!=h.bands) || (m.history_capacity && h.capacity>m.history_capacity))return Status::invalid_argument;
-        for(auto flag:h.zero_rows)if(flag>1)return Status::invalid_argument;
-        for(float value:h.zero_row)if(value!=0)return Status::invalid_argument;
-        for(std::size_t i=0;i<h.frames;++i) if(!finite(h.row(i))) return Status::invalid_argument;
-    }
-    return Status::ok;
+Status validate(const FrameView& frame) noexcept {
+    const auto* descriptor=frame_descriptor(frame.type);
+    const bool history=history_present(frame.history);
+    if(!descriptor || (frame.type!=FrameType::WledPacket && !frame.packet.empty()) || !metadata_bounded(frame.metadata))return Status::invalid_argument;
+    if(!frame.metadata.available)return unavailable_frame(frame,history);
+    if(!frame.metadata.sequence || !frame.metadata.sample_rate)return Status::invalid_argument;
+    return frame_payload(frame,*descriptor,history);
 }
 }

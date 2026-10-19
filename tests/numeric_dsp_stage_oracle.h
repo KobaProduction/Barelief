@@ -25,19 +25,20 @@ struct StageTrace {
     }
 };
 void stage_trace_output(void* user,const NumericPortFrameView& frame) {
-    if(frame.identity.node<2||frame.identity.node>8||frame.frame.stamp.timestamp_ticks!=4800)return;
+    const auto stage=frame.identity.node==21?3:frame.identity.node;
+    if(stage<2||stage>8||frame.identity.node==3||frame.identity.port!=0||frame.frame.stamp.timestamp_ticks!=4800)return;
     auto& trace=*static_cast<StageTrace*>(user);
     CHECK(frame.status==Status::ok);
     if(frame.status!=Status::ok)return;
     const auto& view=std::get<NumericView>(frame.frame.payload);
     CHECK(view.contract->shape.rank==Rank::Vector&&view.actual[1]==1);
-    const auto width=view.actual[0];auto& values=trace.stages[frame.identity.node];
+    const auto width=view.actual[0];auto& values=trace.stages[stage];
     CHECK(width*view.planes.size()==values.size());
     if(width*view.planes.size()!=values.size())return;
     for(std::size_t channel=0;channel<view.planes.size();++channel)
         for(std::size_t bin=0;bin<width;++bin)
             CHECK(load_element(view,{channel,bin,0},values[channel*width+bin])==Status::ok);
-    trace.seen[frame.identity.node]=true;
+    trace.seen[stage]=true;
 }
 void numeric_full_chain_oracle(bool retag=false) {
     auto graph=dsp_graph();graph.graph_id="dsp.independent.stage.trace";

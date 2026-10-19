@@ -10,11 +10,19 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QSet>
+#include <QMap>
 #include <functional>
 #include <map>
 #include <pipeline/owned_frame.h>
 #include <domain/processing_contracts.h>
+namespace pipeline { struct DeliveredNumericHistoryRow; }
+class QHBoxLayout;
+class QFormLayout;
+class QLineEdit;
+class QKeySequence;
 class GuiPresenter;
+class AudioNodeModel;
+class NumericEditorGraphModel;
 class QVBoxLayout;
 class QPushButton;
 class QScrollArea;
@@ -22,6 +30,8 @@ class QAction;
 class QToolButton;
 class QSplitter;
 class QMenu;
+class QTreeWidget;
+class QJsonArray;
 
 class SchemeEditorWidget final : public QWidget {
     Q_OBJECT
@@ -32,13 +42,14 @@ class SchemeEditorWidget final : public QWidget {
     void flush_presentation();
     void arrange_nodes();
     void initialize_default_layout();
+    void restore_node_positions(const QJsonObject&);
     bool save_preset(const QString &name);
     bool load_preset(const QString &id);
     bool remove_preset(const QString &id);
     QJsonObject document() const;
     QJsonObject graph_adapter_metadata() const;
     bool restore_graph_adapters(const QJsonObject &node_adapters,QString *error=nullptr);
-    bool numeric_draft(domain::NumericProcessingGraph&,QString* error=nullptr) const;
+    bool numeric_draft(domain::NumericProcessingGraph&,QString* error=nullptr,bool resolve_native=true) const;
     bool load_numeric_draft(const domain::NumericProcessingGraph&,QString* error=nullptr,const QJsonObject& node_adapters={});
     void sync_preferences();
     void set_navigation_speed(float speed);
@@ -72,6 +83,83 @@ protected:
     GuiPresenter &_application;
     std::function<QJsonObject()> _preset_presentation_provider;
     quint64 _apply_request = 0;
+    QHBoxLayout* create_toolbar(QVBoxLayout*);
+    void setup_editor_chrome();
+    void initialize_preview_ui();
+    QAction* canvas_shortcut(const char*,const char*,const QKeySequence&,void(SchemeEditorWidget::*)());
+    int selected_graph() const;
+    void setup_graph_shortcut(const char*,const char*,const QKeySequence&,int);
+    void open_selected_graph(int placement);
+    void setup_canvas_actions(QHBoxLayout*,QPushButton*);
+    void bind_view_interactions();
+    void bind_view_camera_saving();
+    void synchronize_moved_positions();
+    void refresh_library_language(QTreeWidget* library);
+    void inspect_scene_selection();
+    void refresh_graph_indicators();
+    void refresh_connection_diagnostics();
+    void refresh_node_connection_diagnostics(NumericEditorGraphModel*,QtNodes::NodeId);
+    void set_editor_display_setting(const QString& key,int value);
+    void on_numeric_preview(const pipeline::DeliveredNumericFrame& frame);
+    void on_history_preview(const pipeline::DeliveredNumericHistoryRow& row);
+    void on_snapshot_preview(const pipeline::DeliveredNumericFrame& frame,quint64 ordinal,quint64 filled_count);
+    void clear_node_previews();
+    void on_graph_apply_finished(quint64 request,bool accepted,const QString& error);
+    void restore_saved_camera(quint64 generation);
+    bool refresh_processing_rate_label(const QJsonObject& telemetry);
+    void refresh_node_processing_activity(const QJsonArray& stats,bool current,bool measured);
+    void apply_initial_layout(quint64 generation);
+    bool preview_matches_active(const pipeline::DeliveredNumericFrame& frame) const;
+    bool preview_port_available(const pipeline::DeliveredNumericFrame& frame) const;
+    using AdapterMap=QMap<QtNodes::NodeId,QJsonObject>;
+    bool decode_graph_adapters(const QJsonObject& node_adapters,AdapterMap& checked,QString* error) const;
+    bool apply_graph_adapters(const AdapterMap& checked,QString* error);
+    void restore_previous_adapters(const AdapterMap&);
+    bool prepare_draft_import(NumericEditorGraphModel* numeric,const domain::NumericProcessingGraph& graph,
+                              const QJsonObject& adapters,domain::NumericProcessingGraph& prepared,QString* error);
+    bool commit_draft_import(NumericEditorGraphModel* numeric,const domain::NumericProcessingGraph& prepared,
+                             const QJsonObject& adapters,QString* error);
+    void finish_draft_import(NumericEditorGraphModel* numeric);
+    void populate_node_inspector(AudioNodeModel* model,QtNodes::NodeId id);
+    void populate_empty_inspector();
+    bool add_preset_presentation(QJsonObject& preset) const;
+    void record_loaded_document(bool active,bool switch_device);
+    void record_processing_edit(const QJsonObject& processing);
+    void record_adapter_edit();
+    void setup_validation_status(QHBoxLayout*);
+    void setup_capture_status(QHBoxLayout*);
+    void bind_apply_timer();
+    void bind_save_timer();
+    void setup_processing_rate(QHBoxLayout*);
+    void setup_zoom_control(QHBoxLayout*);
+    QPushButton* setup_center_control(QHBoxLayout*);
+    void setup_splitter(QVBoxLayout*);
+    void setup_node_library(QSplitter*);
+    void setup_inspector(QSplitter*);
+    void bind_scene_selection();
+    QMenu* create_preset_menu();
+    void request_builtin(bool);
+    void populate_user_presets(QMenu*,QMenu*);
+    bool load_selected_preset(const QJsonObject&);
+    void setup_user_presets(QMenu*);
+    void setup_presets();
+    void bind_graph_model();
+    void bind_graph_changes();
+    void bind_connection_diagnostics();
+    void setup_editor_display(QHBoxLayout*);
+    void add_editor_display_control(QFormLayout*,QWidget*,const char*,const char*,int,int,int);
+    void initialize_document();
+    void configure_scene();
+    void configure_view();
+    void initialize_preview_tracking();
+    bool active_adapters_match(const QJsonObject&) const;
+    void reconcile_pending_apply(const QJsonObject&,const QJsonObject&);
+    void observe_active_graph(const QJsonObject&);
+    void bind_preview_delivery();
+    void bind_application_feedback();
+    void restore_initial_camera();
+    void apply_saved_camera(const QJsonObject& saved);
+    void refresh_execution_rate_text(NumericEditorGraphModel*,QLineEdit*);
     void wire_source_model(QtNodes::NodeId id);
     QLabel *_status = nullptr;
     QLabel *_capture_status = nullptr;
@@ -86,6 +174,7 @@ protected:
     QWidget *_toolbar = nullptr;
     bool _auto_apply = false;
     bool _live_apply_pending = false;
+    bool _immediate_apply_pending = false;
     QTimer _apply_timer, _save_timer;
     QJsonObject _last_processing_document;
     QJsonObject _last_adapter_metadata;
@@ -94,8 +183,16 @@ protected:
     QJsonArray _unrendered_connections;
     void retain_unrendered_connections();
     QtNodes::NodeId _inspected_node = QtNodes::InvalidNodeId;
+    QSet<QtNodes::NodeId> _preview_nodes;
     QVBoxLayout *_inspector_layout = nullptr;
     QScrollArea *_inspector = nullptr;
+    void clear_inspector();
+    void append_inspector_title(AudioNodeModel*);
+    void append_input_summary(AudioNodeModel*);
+    void rename_node(QtNodes::NodeId);
+    void append_rename_action(AudioNodeModel*,QtNodes::NodeId);
+    void refresh_node_timing(QtNodes::NodeId,QLabel*);
+    void append_node_diagnostics(QtNodes::NodeId);
     void inspect_node(QtNodes::NodeId id);
     void inspect_connection(QtNodes::ConnectionId);
     QSplitter *_splitter = nullptr;
@@ -123,7 +220,14 @@ protected:
     bool _initial_layout_pending=false,_initial_layout_scheduled=false,_initial_layout_fit=true;
     void schedule_initial_layout();
     void apply();
+    void schedule_apply();
     void load_active_pipeline();
+    bool prepare_document_visual(const QJsonObject& document, bool active, QJsonObject& visual);
+    void begin_document_load(const QJsonObject& visual, bool switch_device);
+    void rebuild_document_graph();
+    void restore_document_view(const QJsonObject& view);
+    void finish_document_load(bool active, bool switch_device);
+
     bool load_document(const QJsonObject &document, const QJsonObject &view = {}, bool active = false, bool switch_device = false);
     void layout_nodes(bool undoable);
     void fit_nodes();

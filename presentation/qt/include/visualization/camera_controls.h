@@ -65,23 +65,23 @@ inline double movementSpeed(const QJsonObject &saved) {
     const double value = input.toDouble(3.0);
     return std::isfinite(value) ? std::clamp(value, .5, 10.0) : 3.0;
 }
+inline QJsonArray normalizedBindings(const QJsonArray& saved) {
+    QJsonArray valid;
+    for(const auto& value:saved) {
+        auto object=value.toObject();
+        const int scanCode=object["scan"].toInt(-1),key=object["key"].toInt(-1);
+        if(scanCode<0 || scanCode>0x1ff || key<=0 || key==Qt::Key_Escape || key==Qt::Key_Control || scanCode==29 || valid.size()>=2)continue;
+        object["scan"]=scanCode;object["key"]=logical(key);valid.append(object);
+    }
+    return valid;
+}
 inline QJsonObject normalized(const QJsonObject &saved) {
     auto result = saved;
     const auto base = defaults();
     for (auto it = base.begin(); it != base.end(); ++it) {
         if (it.key() == "movement_speed")
             continue;
-        QJsonArray valid;
-        for (const auto &value : saved[it.key()].toArray()) {
-            auto object = value.toObject();
-            const int scanCode = object["scan"].toInt(-1), key = object["key"].toInt(-1);
-            if (scanCode >= 0 && scanCode <= 0x1ff && key > 0 && key != Qt::Key_Escape &&
-                key != Qt::Key_Control && scanCode != 29 && valid.size() < 2) {
-                object["scan"] = scanCode;
-                object["key"] = logical(key);
-                valid.append(object);
-            }
-        }
+        const auto valid=normalizedBindings(saved[it.key()].toArray());
         result[it.key()] = valid.isEmpty() ? it.value() : QJsonValue(valid);
     }
     result["movement_speed"] = movementSpeed(saved);

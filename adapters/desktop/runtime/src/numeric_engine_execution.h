@@ -8,7 +8,7 @@
 
 namespace pipeline::numeric_engine_detail {
 using namespace signal_contracts;
-inline constexpr FrameLimits frame_limits{8,32768,262144,16384,256,8192};
+inline constexpr FrameLimits frame_limits{8,131072,524288,16384,256,8192};
 inline std::uint64_t steady_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }

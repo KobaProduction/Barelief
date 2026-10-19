@@ -62,6 +62,9 @@ public:
 signals:
     void graphAreaActivated(WorkspaceDock *dock);
 private:
+    void configureWorkspace();
+    void bindWorkspaceEvents();
+    void recordFocusedDock(ads::CDockWidget *current);
     ads::CDockManager *_workspace;
     QHash<QWidget *,QPointer<WorkspaceDock>> _lastFocus;
 };

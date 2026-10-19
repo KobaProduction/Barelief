@@ -22,11 +22,31 @@ add_foundation_test(numeric_frame_gather_tests signal_contracts)
 add_foundation_test(numeric_runtime_scenario_tests dataflow_runtime)
 add_foundation_test(single_stream_runtime_tests dataflow_runtime)
 target_link_libraries(single_stream_runtime_tests PRIVATE graph_application)
+add_foundation_test(temporal_fft_tests dataflow_runtime)
+add_foundation_test(matrix_center_tests dataflow_runtime)
+add_foundation_test(rfft_tests dsp_kernels)
+add_foundation_test(complex_fft_tests dsp_kernels)
+add_foundation_test(fourier_runtime_tests dataflow_runtime)
+add_foundation_test(routing_points_tests dataflow_runtime)
+add_foundation_test(numeric_values_runtime_tests dataflow_runtime)
+add_foundation_test(fft_table_lifecycle_tests dsp_kernels)
+target_sources(fft_table_lifecycle_tests PRIVATE fft_vendor_memory_probe.c fft_vendor_memory_probe2.c)
+target_link_libraries(fft_table_lifecycle_tests PRIVATE dsp)
+include(${CMAKE_CURRENT_LIST_DIR}/fft_size_benchmark.cmake)
+add_foundation_test(esp_dsp_dispatch_tests signal_contracts)
+target_sources(esp_dsp_dispatch_tests PRIVATE ${CMAKE_SOURCE_DIR}/libs/dsp_kernels/src/backend_esp_dsp.cpp)
+target_include_directories(esp_dsp_dispatch_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/fft_fake_esp_dsp ${CMAKE_SOURCE_DIR}/libs/dsp_kernels/include)
+add_foundation_test(musical_features_tests dsp_kernels)
+add_foundation_test(musical_spectrogram_runtime_tests dataflow_runtime)
+add_foundation_test(music_runtime_tests dataflow_runtime)
+set_tests_properties(music_runtime_tests PROPERTIES TIMEOUT 60)
+set_tests_properties(musical_features_tests PROPERTIES TIMEOUT 60)
+set_tests_properties(rfft_tests PROPERTIES TIMEOUT 60)
 foreach(runtime_test IN ITEMS dataflow_runtime_tests graph_continuity_tests portable_dsp_cadence_tests processing_control_tests application_lifecycle_tests)
     add_foundation_test(${runtime_test} dataflow_runtime)
     target_link_libraries(${runtime_test} PRIVATE graph_application)
-    target_sources(${runtime_test} PRIVATE ${CMAKE_SOURCE_DIR}/apps/desktop_gui/src/numeric_default_graph.cpp)
-    target_include_directories(${runtime_test} PRIVATE ${CMAKE_SOURCE_DIR}/apps/desktop_gui/include)
+    target_link_libraries(${runtime_test} PRIVATE desktop_numeric_defaults)
 endforeach()
 if(MSVC)
     target_compile_options(numeric_contract_tests PRIVATE /GR- /EHs-c-)
@@ -94,3 +114,31 @@ if(MSVC)
 else()
     target_compile_options(numeric_control_session_tests PRIVATE -fno-exceptions -fno-rtti)
 endif()
+
+# Orthogonal subject labels: a small numerical kernel can be run separately
+# from node descriptor/admission and bounded graph-processing contracts.
+foreach(kernel_test IN ITEMS rfft_tests complex_fft_tests fft_table_lifecycle_tests
+        esp_dsp_dispatch_tests musical_features_tests dsp_kernels_characterization_tests
+        dsp_kernels_resource_tests scalar_reduce_tests numeric_conversion_tests
+        numeric_reduction_tests pcm_conversion_tests)
+    set_property(TEST ${kernel_test} APPEND PROPERTY LABELS kernel)
+endforeach()
+foreach(node_test IN ITEMS numeric_processing_contracts_tests numeric_runtime_scenario_tests
+        routing_points_tests numeric_values_runtime_tests temporal_fft_tests
+        matrix_center_tests fourier_runtime_tests musical_spectrogram_runtime_tests)
+    set_property(TEST ${node_test} APPEND PROPERTY LABELS node)
+endforeach()
+foreach(long_test IN ITEMS rfft_tests musical_features_tests music_runtime_tests)
+    set_property(TEST ${long_test} APPEND PROPERTY LABELS long)
+endforeach()
+# These suites combine multiple graph routes, lifecycle edits, or full musical
+# pipelines. Keep them registered for explicit integration runs, outside quick.
+foreach(integration_test IN ITEMS dataflow_runtime_tests graph_continuity_tests
+        single_stream_runtime_tests numeric_runtime_scenario_tests
+        numeric_values_runtime_tests temporal_fft_tests matrix_center_tests
+        musical_spectrogram_runtime_tests music_runtime_tests portable_dsp_cadence_tests)
+    set_property(TEST ${integration_test} APPEND PROPERTY LABELS integration)
+endforeach()
+foreach(long_test IN ITEMS numeric_runtime_scenario_tests numeric_values_runtime_tests temporal_fft_tests)
+    set_property(TEST ${long_test} APPEND PROPERTY LABELS long)
+endforeach()

@@ -10,7 +10,8 @@ constexpr Limits desktop_limits() noexcept {
     return {{16, 800000, 800000, 65536, 256, 32768}, 900000, 65536, 4096, 2000, 256};
 }
 constexpr Limits device_block_limits() noexcept {
-    // DATA5 adds 41 bytes of exact signal-interval/latency provenance to DATA4.
+    // DATA6 includes signal interval, nominal latency and its nonlinear flag.
+    // Stereo256 reference payload still fits the existing2281-byte envelope.
     return {{2, 512, 2048, 1024, 64, 256}, 2281, 2048, 128, 0, 32};
 }
 } // namespace bdsp_protocol::numeric_data

@@ -56,6 +56,8 @@ private:
     std::array<std::size_t,2> coordinate_offsets_{};
     std::size_t time_offset_=0, mask_offset_=0, stream_offset_=0;
     friend Status prepare_numeric_gather(const NumericGatherRequest&,BufferPool&,PreparedNumericGather&) noexcept;
+    friend struct NumericGatherPlanBuilder;
+    friend struct NumericGatherRunner;
     friend Status gather_numeric_frame(const PreparedNumericGather&,const DataFrameView&,NumericGatherRow,
         const NumericGatherDestination&,std::span<std::byte>,NumericGatherOutput&) noexcept;
 };

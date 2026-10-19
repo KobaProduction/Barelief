@@ -60,6 +60,63 @@ static domain::NumericProcessingGraph graph_with_two_sources() {
     source.id=1;sink.id=3;graph.nodes={source,sink};source.id=2;sink.id=4;
     graph.nodes.push_back(source);graph.nodes.push_back(sink);graph.edges={{1,3,0,0},{2,4,0,0}};return graph;
 }
+static void selected_native_lane() {
+    using namespace signal_contracts;
+    auto graph=graph_with_two_sources();
+    std::get<domain::EndpointProcessingParameters>(graph.nodes[0].parameters).values.push_back({"output_count",NumericLiteral{std::uint64_t{1}}});
+    std::vector<std::shared_ptr<Probe>> probes;
+    NumericEngine engine([&](auto){auto p=std::make_shared<Probe>();probes.push_back(p);return std::make_unique<ProbeSource>(p);});
+    QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"limited native graph encode");
+    bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
+    EngineCommand command;command.kind=EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();engine.submit(command);
+    require(wait([&]{return replied;})&&accepted&&probes.size()==2,"limited native graph accepted");
+    require(probes[0]->configuration.value("channel_count").toInt()==0,"capture retains native geometry for selected lanes");
+    unsigned received=0;bool exact=true;
+    auto token=engine.subscribe_numeric_tap({},[&](const auto& e){if(!e.context || e.context->endpoint.node!=3 || !e.frame)return;
+        const auto f=e.frame.view();if(!f.stamp.available || !f.stamp.has_sample_interval)return;
+        const auto* data=std::get_if<NumericView>(&f.payload);if(!data)return;
+        float value=0;exact=exact && load_element(*data,{0,0,0},value)==Status::ok && value==.25f;++received;
+    },{});
+    auto frame=tones();frame.channel_count=2;frame.samples.assign(512,-.75f);std::fill_n(frame.samples.begin(),256,.25f);
+    probes[0]->audio(frame);require(wait([&]{return received>0;})&&exact,"mono output selects first native stereo lane without mixing");
+    engine.unsubscribe_numeric_tap(token);
+}
+static void downstream_error_preserves_capture_continuity() {
+    using namespace signal_contracts;
+    auto defaults=numeric_default_graph();auto source=defaults.nodes.front(),window=defaults.nodes[1];
+    domain::ConfiguredProcessingNode product;product.id=50;product.kind="ArrayMultiply";
+    product.parameters=domain::TransformProcessingParameters{};
+    product.inputs={source.outputs.front(),source.outputs.front()};
+    for(std::size_t i=0;i<product.inputs.size();++i){product.inputs[i].direction=domain::PortDirection::Input;product.inputs[i].id=domain::PortId(i);}
+    product.outputs={source.outputs.front()};
+    domain::NumericProcessingGraph graph;graph.graph_id="main";graph.nodes={source,window,product};
+    graph.edges={{source.id,window.id,0,0},{source.id,product.id,0,0},{source.id,product.id,0,1}};
+    std::shared_ptr<Probe> probe;NumericEngine engine([&](auto){probe=std::make_shared<Probe>();return std::make_unique<ProbeSource>(probe);});
+    QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"error isolation encode");
+    bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
+    EngineCommand command;command.kind=EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();engine.submit(command);
+    require(wait([&]{return replied;}) && accepted && probe,"error isolation Apply");
+    unsigned boundaries=0,sourceFrames=0,errors=0;std::size_t windowPrefix=4096;
+    const auto token=engine.subscribe_numeric_tap({},[&](const DeliveredNumericFrame& delivered){
+        if(!delivered.context || !delivered.frame)return;const auto frame=delivered.frame.view();
+        if(delivered.context->endpoint.node==source.id && delivered.context->endpoint.port==0){++sourceFrames;boundaries+=frame.stamp.discontinuity;}
+        if(delivered.context->endpoint.node==product.id && !frame.stamp.available)++errors;
+        if(delivered.context->endpoint.node==window.id && frame.stamp.available){
+            const auto& values=std::get<NumericView>(frame.payload);windowPrefix=0;
+            for(std::size_t i=0;i<values.actual[0];++i){float value=0;require(load_element(values,{0,i,0},value)==Status::ok,"window read");if(value!=0)break;++windowPrefix;}
+        }
+    },{});require(token!=0,"error isolation tap");
+    for(unsigned packet=0;packet<32;++packet){auto frame=tones(17);frame.sample_position=packet*256;frame.discontinuity=packet==0;
+        // Eight finite tones are accepted PCM; their product overflows Float32
+        // only in the separate downstream branch.
+        for(auto& value:frame.samples)value*=1e22f;
+        probe->audio(frame);QCoreApplication::processEvents();
+    }
+    require(wait([&]{return sourceFrames==32 && errors>0;}),"failed downstream operation not observed");
+    std::fprintf(stderr,"error isolation: source=%u boundaries=%u rejected=%u windowPrefix=%zu\n",sourceFrames,boundaries,errors,windowPrefix);
+    require(boundaries==1 && windowPrefix<2,"downstream error fabricated capture gaps and cleared rolling window");
+    engine.unsubscribe_numeric_tap(token);
+}
 static void capture_lifecycle() {
     std::vector<std::shared_ptr<Probe>> probes;
     NumericEngine engine([&](auto){auto probe=std::make_shared<Probe>();probes.push_back(probe);return std::make_unique<ProbeSource>(probe);});
@@ -126,7 +183,9 @@ static void capture_declared_rate() {
             domain::OwnedProcessingContract owned;require(domain::own_processing_contract(contract,{8,32768,65536,8192,256,8192},65536,owned)==signal_contracts::Status::ok,"rate contract ownership");port.contract=std::move(owned);
         }
         auto& parameters=std::get<domain::EndpointProcessingParameters>(graph.nodes[0].parameters);
-        parameters.values.push_back({"sample_rate",signal_contracts::NumericLiteral{std::uint64_t(rate)}});
+        const auto sample_rate=std::find_if(parameters.values.begin(),parameters.values.end(),[](const auto& field){return field.key=="sample_rate";});
+        require(sample_rate!=parameters.values.end(),"factory declares source sample rate");
+        sample_rate->value=signal_contracts::NumericLiteral{std::uint64_t(rate)};
         QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"rate graph encode");
         bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
         EngineCommand apply;apply.kind=EngineCommand::ApplyGraph;apply.graph=QJsonDocument::fromJson(bytes).object();engine.submit(apply);
@@ -372,6 +431,6 @@ static void physical_discovery() {
 }
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);
-    try {if(argc>1 && QByteArray(argv[1])=="--physical-discovery")physical_discovery();else if(argc>1 && QByteArray(argv[1]).startsWith("--physical")){const auto mode=QByteArray(argv[1]);require(mode=="--physical"||mode=="--physical-nonzero"||mode=="--physical-pinned"||mode=="--physical-pinned-nonzero","unknown physical probe mode");physical_probe(mode.contains("nonzero"),mode.contains("pinned"));}else {capture_lifecycle();capture_declared_rate();unavailable_provider();capture_device_selection();capture_multichannel();measured_processing_telemetry();test_signal_backend_identity();capture_partial_interval_gap();capture_resource_admission();external_clock_exhaustion();}return 0;}
+    try {if(argc>1 && QByteArray(argv[1])=="--physical-discovery")physical_discovery();else if(argc>1 && QByteArray(argv[1]).startsWith("--physical")){const auto mode=QByteArray(argv[1]);require(mode=="--physical"||mode=="--physical-nonzero"||mode=="--physical-pinned"||mode=="--physical-pinned-nonzero","unknown physical probe mode");physical_probe(mode.contains("nonzero"),mode.contains("pinned"));}else {downstream_error_preserves_capture_continuity();selected_native_lane();capture_lifecycle();capture_declared_rate();unavailable_provider();capture_device_selection();capture_multichannel();measured_processing_telemetry();test_signal_backend_identity();capture_partial_interval_gap();capture_resource_admission();external_clock_exhaustion();}return 0;}
     catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 1;}
 }

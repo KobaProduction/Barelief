@@ -25,82 +25,109 @@ const Binding *binding_for(const Message &m, ReferenceContext context) {
         }
     return found;
 }
-bool dense_layout(const Message &m, std::span<PlaneLayout> out) {
-    const auto *c = std::get_if<NumericContract>(&m.contract);
-    if (!c)
-        return true;
-    std::size_t w = 0;
-    if (storage_width(*c, w) != Status::ok || c->channel_order.empty() ||
-        c->channel_order.size() > out.size())
-        return false;
-    const auto rank = c->shape.rank == Rank::Scalar ? 0 : c->shape.rank == Rank::Vector ? 1 : 2;
-    std::size_t e0 = 1, e1 = 1;
+bool dense_extents(const NumericContract &contract,std::size_t &e0,std::size_t &e1,unsigned &rank) {
+    rank = contract.shape.rank == Rank::Scalar ? 0 : contract.shape.rank == Rank::Vector ? 1 : 2;
+    e0 = 1;
+    e1 = 1;
     const auto max = std::numeric_limits<std::size_t>::max();
     if (rank) {
-        if (c->shape.extents[0].maximum > max)
-            return false;
-        e0 = static_cast<std::size_t>(c->shape.extents[0].maximum);
+        if (contract.shape.extents[0].maximum > max) return false;
+        e0 = static_cast<std::size_t>(contract.shape.extents[0].maximum);
     }
     if (rank == 2) {
-        if (c->shape.extents[1].maximum > max)
-            return false;
-        e1 = static_cast<std::size_t>(c->shape.extents[1].maximum);
+        if (contract.shape.extents[1].maximum > max) return false;
+        e1 = static_cast<std::size_t>(contract.shape.extents[1].maximum);
     }
-    if (!e0 || !e1)
-        return false;
-    const auto planes = c->channel_order.size();
-    if (e0 && e1 > max / e0)
-        return false;
-    auto elements = e0 * e1;
-    if (elements > max / w || elements * w > max / planes)
-        return false;
-    const auto lane = c->representation.layout == ChannelLayout::Interleaved ? planes * w : w;
-    for (std::size_t p = 0; p < planes; ++p)
-        out[p] = {c->representation.layout == ChannelLayout::Interleaved ? p * w : p * elements * w,
-                  {rank ? (rank == 2 ? e1 * lane : lane) : 0, rank == 2 ? lane : 0}};
+    return e0 && e1;
+}
+bool dense_geometry(const NumericContract& contract,std::size_t available,
+                    std::size_t& width,std::size_t& elements,std::size_t& second,
+                    unsigned& rank) noexcept {
+    if(storage_width(contract,width)!=Status::ok || contract.channel_order.empty() ||
+       contract.channel_order.size()>available)return false;
+    std::size_t first=0;
+    if(!dense_extents(contract,first,second,rank))return false;
+    const auto maximum=std::numeric_limits<std::size_t>::max();
+    if(first && second>maximum/first)return false;
+    elements=first*second;
+    if(elements>maximum/width ||
+       elements*width>maximum/contract.channel_order.size())return false;
+    return true;
+}
+
+bool dense_layout(const Message& message,std::span<PlaneLayout> output) {
+    const auto* contract=std::get_if<NumericContract>(&message.contract);
+    if(!contract)return true;
+    std::size_t width=0,elements=0,second=0;
+    unsigned rank=0;
+    if(!dense_geometry(*contract,output.size(),width,elements,second,rank))return false;
+    const auto planes=contract->channel_order.size();
+    const auto lane=contract->representation.layout==ChannelLayout::Interleaved?planes*width:width;
+    for(std::size_t plane=0;plane<planes;++plane)
+        output[plane]={contract->representation.layout==ChannelLayout::Interleaved?
+                       plane*width:plane*elements*width,
+                       {rank?(rank==2?second*lane:lane):0,rank==2?lane:0}};
     return true;
 }
 DataContract binding_contract(const Binding& b,Kind kind) {
-    if(kind==Kind::HistoryRow)if(const auto* matrix=std::get_if<NumericContract>(&b.contract);matrix && matrix->shape.rank==Rank::Matrix){
-        auto row=*matrix;row.semantic=row.history_element;row.history_element=Semantic::Numeric;
-        row.shape={Rank::Vector,{matrix->shape.axes[1],Axis::None},{matrix->shape.extents[1],ExtentBounds{}}};
-        row.coordinates={matrix->coordinates[1],AxisCoordinates{}};return row;
+    if(kind!=Kind::HistoryRow)return b.contract;
+    const auto* registered=std::get_if<NumericContract>(&b.contract);
+    if(!registered)return b.contract;
+    const bool matrix_history=registered->shape.rank==Rank::Matrix;
+    const bool vector_history=registered->shape.rank==Rank::Vector &&
+        b.history_contract.shape.rank==Rank::Vector;
+    if(!matrix_history && !vector_history)return b.contract;
+    auto row=*registered;
+    row.semantic=row.history_element;
+    row.history_element=Semantic::Numeric;
+    if(matrix_history){
+        row.shape={Rank::Vector,{registered->shape.axes[1],Axis::None},
+            {registered->shape.extents[1],ExtentBounds{}}};
+        row.coordinates={registered->coordinates[1],AxisCoordinates{}};
+    }else{
+        row.shape={Rank::Scalar,{Axis::None,Axis::None},{ExtentBounds{},ExtentBounds{}}};
+        row.coordinates={AxisCoordinates{},AxisCoordinates{}};
     }
-    return b.contract;
+    return row;
+}
+bool matches_dense_planes(const NumericPayload& payload,const NumericContract& contract,
+                          std::span<const PlaneLayout> dense) noexcept {
+    if(payload.planes.size()!=contract.channel_order.size())return false;
+    for(std::size_t index=0;index<payload.planes.size();++index)
+        if(payload.planes[index].offset!=dense[index].offset ||
+           payload.planes[index].stride_bytes!=dense[index].stride_bytes)return false;
+    return true;
+}
+
+bool reference_actual_extents(const NumericPayload& payload,const NumericContract& contract) noexcept {
+    if(payload.ring.capacity)return true;
+    for(unsigned axis=0;axis<2;++axis)
+        if(payload.actual[axis]!=contract.shape.extents[axis].maximum)return false;
+    return true;
+}
+
+bool reference_numeric_layout(const Message& message) {
+    const auto* contract=std::get_if<NumericContract>(&message.contract);
+    if(!contract)return true;
+    const bool marker=message.kind==Kind::Query || message.kind==Kind::Empty ||
+                      message.kind==Kind::Reset || message.kind==Kind::Unavailable;
+    if(marker)return true;
+    std::array<PlaneLayout,16> dense{};
+    if(!dense_layout(message,dense) || !matches_dense_planes(message.numeric,*contract,dense))return false;
+    std::size_t required=0;
+    if(required_storage(*contract,message.numeric.planes,required)!=Status::ok ||
+       required!=message.numeric.storage.size())return false;
+    return reference_actual_extents(message.numeric,*contract);
 }
 bool reference_matches(const Message &m, ReferenceContext context) {
     const auto *b = binding_for(m, context);
     if (!b || b->values != m.values || b->endpoint.graph != m.endpoint.graph ||
         b->endpoint.node != m.endpoint.node || b->endpoint.port != m.endpoint.port ||
         b->endpoint.direction != m.endpoint.direction || b->stream != m.stamp.stream_id ||
-        !same_contract(binding_contract(*b,m.kind), m.contract))
-        return false;
+        !same_contract(binding_contract(*b,m.kind), m.contract)) return false;
     if (m.kind == Kind::HistoryRow &&
-        !same_contract(DataContract{b->history_contract}, DataContract{m.history_contract}))
-        return false;
-    const auto *c = std::get_if<NumericContract>(&m.contract);
-    if (!c)
-        return true;
-    const bool marker = m.kind == Kind::Query || m.kind == Kind::Empty || m.kind == Kind::Reset ||
-                        m.kind == Kind::Unavailable;
-    if (marker)
-        return true;
-    std::array<PlaneLayout, 16> dense{};
-    if (!dense_layout(m, dense) || m.numeric.planes.size() != c->channel_order.size())
-        return false;
-    for (std::size_t i = 0; i < m.numeric.planes.size(); ++i)
-        if (m.numeric.planes[i].offset != dense[i].offset ||
-            m.numeric.planes[i].stride_bytes != dense[i].stride_bytes)
-            return false;
-    std::size_t required = 0;
-    if (required_storage(*c, m.numeric.planes, required) != Status::ok ||
-        required != m.numeric.storage.size())
-        return false;
-    if (!m.numeric.ring.capacity)
-        for (unsigned i = 0; i < 2; ++i)
-            if (m.numeric.actual[i] != c->shape.extents[i].maximum)
-                return false;
-    return true;
+        !same_contract(DataContract{b->history_contract}, DataContract{m.history_contract})) return false;
+    return reference_numeric_layout(m);
 }
 
 struct Archive {
@@ -218,7 +245,7 @@ struct Archive {
     }
     void unit(NumericUnit &x) { symbol(x); }
     void semantic(Semantic &x) { symbol(x); }
-    void numeric_contract(NumericContract &c) {
+    void numeric_contract_shape(NumericContract &c) {
         symbol(c.dtype);
         symbol(c.shape.rank);
         semantic(c.semantic);
@@ -230,12 +257,16 @@ struct Archive {
             u(c.shape.extents[i].minimum);
             u(c.shape.extents[i].maximum);
         }
+    }
+    void numeric_contract_representation(NumericContract &c) {
         symbol(c.representation.encoding);
         u(c.representation.valid_bits);
         symbol(c.representation.placement);
         symbol(c.representation.layout);
         symbol(c.representation.normalization);
         size(c.representation.alignment);
+    }
+    void numeric_contract_coordinates(NumericContract &c) {
         for (auto &axis : c.coordinates) {
             symbol(axis.mode);
             unit(axis.unit);
@@ -245,6 +276,15 @@ struct Archive {
         text(c.clock.domain);
         ratio(c.clock.tick_seconds);
         u(c.clock.sample_rate);
+    }
+    void transfer_channels(NumericContract& contract,std::uint16_t count) {
+        if(reading) {
+            auto channels=std::span(plan->channels).subspan(channel_at,count);
+            for(auto& channel:channels)u(channel);
+            contract.channel_order=channels;
+        }else for(auto channel:contract.channel_order)u(channel);
+    }
+    void numeric_contract_channels(NumericContract &c) {
         if (c.channel_order.size() > 16) {
             fail(Status::exhausted);
             return;
@@ -255,16 +295,15 @@ struct Archive {
             fail(Status::exhausted);
             return;
         }
-        if (reading) {
-            auto span = std::span(plan->channels).subspan(channel_at, n);
-            for (auto &x : span)
-                u(x);
-            c.channel_order = span;
-        } else
-            for (auto value : c.channel_order)
-                u(value);
+        transfer_channels(c,n);
         channel_at += n;
         req.channels += n;
+    }
+    void numeric_contract(NumericContract &c) {
+        numeric_contract_shape(c);
+        numeric_contract_representation(c);
+        numeric_contract_coordinates(c);
+        numeric_contract_channels(c);
     }
     void contract(DataContract &data) {
         std::uint8_t type = std::holds_alternative<NumericContract>(data) ? 1 : 2;
@@ -285,24 +324,20 @@ struct Archive {
         } else
             fail();
     }
-    void reference_message(Message &m) {
+    bool reference_binding(Message &m) {
         u(m.reference.binding);
         u(m.reference.contract);
         const auto *b = binding_for(m, context);
-        if (!b) {
-            fail(Status::incompatible_contract);
-            return;
-        }
-        if (reading) {
-            m.contract = binding_contract(*b,m.kind);
-            m.history_contract = m.kind == Kind::HistoryRow ? b->history_contract : NumericContract{};
-            m.endpoint = b->endpoint;
-            m.stamp.stream_id = b->stream;
-            if (m.values != b->values) {
-                fail(Status::incompatible_contract);
-                return;
-            }
-        }
+        if (!b) { fail(Status::incompatible_contract); return false; }
+        if (!reading) return true;
+        m.contract = binding_contract(*b,m.kind);
+        m.history_contract = m.kind == Kind::HistoryRow ? b->history_contract : NumericContract{};
+        m.endpoint = b->endpoint;
+        m.stamp.stream_id = b->stream;
+        if (m.values != b->values) { fail(Status::incompatible_contract); return false; }
+        return true;
+    }
+    void reference_stamp(Message &m) {
         u(m.stamp.sequence);
         u(m.stamp.generation);
         u(m.stamp.epoch);
@@ -318,37 +353,48 @@ struct Archive {
         u(m.stamp.latency_samples);
         signed64(m.stamp.latency_seconds.numerator);
         u(m.stamp.latency_seconds.denominator);
+        boolean(m.stamp.frequency_dependent_latency);
+    }
+    void reference_history(Message &m) {
         if (m.kind != Kind::Frame) {
             u(m.history.filled);
             u(m.history.capacity);
             u(m.history.ordinal);
         }
+    }
+    bool reference_numeric_layout(Message &m,const NumericContract &contract) {
+        auto &n = m.numeric;
+        size(n.actual[0]);
+        size(n.actual[1]);
+        size(n.ring.capacity);
+        size(n.ring.oldest);
+        boolean(n.semantic_silence);
+        if (reading && m.kind != Kind::Query && m.kind != Kind::Empty && m.kind != Kind::Reset &&
+            m.kind != Kind::Unavailable) {
+            if (!dense_layout(m, plan->planes)) { fail(Status::overflow); return false; }
+            n.planes = std::span(plan->planes).first(contract.channel_order.size());
+        }
+        return true;
+    }
+    bool reference_numeric(Message &m,const NumericContract &contract) {
+        if (!reference_numeric_layout(m,contract)) return false;
+        auto &n = m.numeric;
+        blob(n.storage);
+        blob(n.ring.silence_mask);
+        blob(n.coordinates.axes[0]);
+        blob(n.coordinates.axes[1]);
+        req.text += contract.clock.domain.size();
+        req.channels += contract.channel_order.size();
+        req.planes = n.planes.size();
+        if (m.kind == Kind::HistoryRow) {
+            req.text += m.history_contract.clock.domain.size();
+            req.channels += m.history_contract.channel_order.size();
+        }
+        return true;
+    }
+    void reference_payload(Message &m) {
         if (const auto *c = std::get_if<NumericContract>(&m.contract)) {
-            auto &n = m.numeric;
-            size(n.actual[0]);
-            size(n.actual[1]);
-            size(n.ring.capacity);
-            size(n.ring.oldest);
-            boolean(n.semantic_silence);
-            if (reading && m.kind != Kind::Query && m.kind != Kind::Empty && m.kind != Kind::Reset &&
-                m.kind != Kind::Unavailable) {
-                if (!dense_layout(m, plan->planes)) {
-                    fail(Status::overflow);
-                    return;
-                }
-                n.planes = std::span(plan->planes).first(c->channel_order.size());
-            }
-            blob(n.storage);
-            blob(n.ring.silence_mask);
-            blob(n.coordinates.axes[0]);
-            blob(n.coordinates.axes[1]);
-            req.text += c->clock.domain.size();
-            req.channels += c->channel_order.size();
-            req.planes = n.planes.size();
-            if (m.kind == Kind::HistoryRow) {
-                req.text += m.history_contract.clock.domain.size();
-                req.channels += m.history_contract.channel_order.size();
-            }
+            if (!reference_numeric(m,*c)) return;
         } else {
             const auto &s = std::get<StructuredContract>(m.contract);
             req.text += s.schema.size() + s.encoding.size();
@@ -357,7 +403,13 @@ struct Archive {
         req.text += m.endpoint.graph.size() + m.stamp.stream_id.size();
         blob(m.extensions);
     }
-    void message(Message &m) {
+    void reference_message(Message &m) {
+        if (!reference_binding(m)) return;
+        reference_stamp(m);
+        reference_history(m);
+        reference_payload(m);
+    }
+    bool message_versions() {
         std::uint32_t magic = 0x5441444e;
         std::uint16_t version = PayloadVersion, grammar = DeliveryVersion;
         u(magic);
@@ -365,23 +417,30 @@ struct Archive {
         u(grammar);
         if (magic != 0x5441444e) {
             fail();
-            return;
+            return false;
         }
         if (version != PayloadVersion || grammar != DeliveryVersion) {
             fail(Status::unsupported_version);
-            return;
+            return false;
         }
+        return true;
+    }
+    bool message_identity(Message &m,bool &referenced) {
+        if(!message_versions())return false;
         symbol(m.kind);
         std::uint8_t flags = m.reference.binding ? 1 : 0;
         u(flags);
         if (flags > 1)
             fail();
-        const bool referenced = flags == 1;
+        referenced = flags == 1;
         std::uint8_t reserved = 0;
         symbol(m.values);
         u(reserved);
         if (reserved)
             fail();
+        return true;
+    }
+    void message_envelope(Message &m) {
         u(m.envelope.nonce);
         u(m.envelope.session);
         u(m.envelope.delivery_sequence);
@@ -389,18 +448,16 @@ struct Archive {
         u(m.envelope.delivery_generation);
         u(m.envelope.revision);
         u(m.envelope.request);
-        if (referenced) {
-            reference_message(m);
-            req.wire = at;
-            return;
-        }
+    }
+    void explicit_endpoint(Message &m) {
         auto node = std::bit_cast<std::uint32_t>(m.endpoint.node);
         u(node);
-        if (reading)
-            m.endpoint.node = std::bit_cast<std::int32_t>(node);
+        if (reading) m.endpoint.node = std::bit_cast<std::int32_t>(node);
         symbol(m.endpoint.direction);
         u(m.endpoint.port);
         text(m.endpoint.graph);
+    }
+    void explicit_stamp(Message &m) {
         u(m.stamp.sequence);
         u(m.stamp.generation);
         u(m.stamp.epoch);
@@ -417,119 +474,143 @@ struct Archive {
         u(m.stamp.latency_samples);
         signed64(m.stamp.latency_seconds.numerator);
         u(m.stamp.latency_seconds.denominator);
+        boolean(m.stamp.frequency_dependent_latency);
+    }
+    void explicit_plane(NumericPayload& payload,std::size_t index) {
+        PlaneLayout plane=reading?PlaneLayout{}:payload.planes[index];
+        size(plane.offset);
+        size(plane.stride_bytes[0]);
+        size(plane.stride_bytes[1]);
+        if(reading)plan->planes[index]=plane;
+    }
+    void explicit_planes(NumericPayload &n) {
+        if (n.planes.size() > 16) { fail(Status::exhausted); return; }
+        std::uint16_t count = static_cast<std::uint16_t>(n.planes.size());
+        u(count);
+        if (count > 16) { fail(Status::exhausted); return; }
+        if (reading) n.planes = std::span(plan->planes).first(count);
+        req.planes = count;
+        for(std::size_t index=0;index<count;++index)explicit_plane(n,index);
+    }
+    void explicit_numeric_payload(NumericPayload &n) {
+        size(n.actual[0]);
+        size(n.actual[1]);
+        size(n.ring.capacity);
+        size(n.ring.oldest);
+        boolean(n.semantic_silence);
+        explicit_planes(n);
+        if (status != Status::ok) return;
+        blob(n.storage);
+        blob(n.ring.silence_mask);
+        blob(n.coordinates.axes[0]);
+        blob(n.coordinates.axes[1]);
+    }
+    void explicit_payload(Message &m) {
         contract(m.contract);
         u(m.history.filled);
         u(m.history.capacity);
         u(m.history.ordinal);
-        if (m.kind == Kind::HistoryRow)
-            numeric_contract(m.history_contract);
-        if (std::holds_alternative<NumericContract>(m.contract)) {
-            auto &n = m.numeric;
-            size(n.actual[0]);
-            size(n.actual[1]);
-            size(n.ring.capacity);
-            size(n.ring.oldest);
-            boolean(n.semantic_silence);
-            if (n.planes.size() > 16) {
-                fail(Status::exhausted);
-                return;
-            }
-            std::uint16_t count = static_cast<std::uint16_t>(n.planes.size());
-            u(count);
-            if (count > 16) {
-                fail(Status::exhausted);
-                return;
-            }
-            if (reading)
-                n.planes = std::span(plan->planes).first(count);
-            req.planes = count;
-            for (std::size_t i = 0; i < count; ++i) {
-                PlaneLayout p = reading ? PlaneLayout{} : n.planes[i];
-                size(p.offset);
-                size(p.stride_bytes[0]);
-                size(p.stride_bytes[1]);
-                if (reading)
-                    plan->planes[i] = p;
-            }
-            blob(n.storage);
-            blob(n.ring.silence_mask);
-            blob(n.coordinates.axes[0]);
-            blob(n.coordinates.axes[1]);
-        } else
-            blob(m.structured);
+        if (m.kind == Kind::HistoryRow) numeric_contract(m.history_contract);
+        if (std::holds_alternative<NumericContract>(m.contract)) explicit_numeric_payload(m.numeric);
+        else blob(m.structured);
+        if (status != Status::ok) return;
         blob(m.extensions);
+    }
+    void message(Message &m) {
+        bool referenced=false;
+        if (!message_identity(m,referenced)) return;
+        message_envelope(m);
+        if (referenced) {
+            reference_message(m);
+            req.wire = at;
+            return;
+        }
+        explicit_endpoint(m);
+        explicit_stamp(m);
+        explicit_payload(m);
         req.wire = at;
     }
 };
+bool metadata_fits(const Message &message,const Requirements &required,const Limits &limits) {
+    const auto payload=std::holds_alternative<NumericContract>(message.contract)
+        ? message.numeric.storage.size() : message.structured.size();
+    const auto metadata=required.bytes-payload+required.text+required.channels*sizeof(std::uint32_t)+
+        required.planes*sizeof(PlaneLayout);
+    return required.text<=limits.text_bytes && metadata<=limits.frame.max_metadata_bytes;
+}
+Status read_wire_plan(std::span<const std::byte> wire,Plan &plan,ReferenceContext context,Archive &archive) {
+    archive.in=wire;
+    archive.reading=true;
+    archive.plan=&plan;
+    archive.context=context;
+    archive.message(plan.message);
+    if(archive.status!=Status::ok)return archive.status;
+    if(archive.at!=wire.size())return Status::malformed;
+    if(plan.message.reference.binding && !reference_matches(plan.message,context))return Status::incompatible_contract;
+    return Status::ok;
+}
 Result preflight(std::span<const std::byte> wire, const Limits &l, Plan &p, ReferenceContext context) {
     if (wire.size() > l.message_bytes)
         return {Status::exhausted, {}};
     Archive a;
-    a.in = wire;
-    a.reading = true;
-    a.plan = &p;
-    a.context = context;
-    a.message(p.message);
-    if (a.status != Status::ok)
-        return {a.status, {}};
-    if (a.at != wire.size())
-        return {Status::malformed, {}};
-    if (p.message.reference.binding && !reference_matches(p.message, context))
-        return {Status::incompatible_contract, {}};
+    if(const auto status=read_wire_plan(wire,p,context,a);status!=Status::ok)return {status,{}};
     auto s = validate(p.message, l);
     if (s != Status::ok)
         return {s, {}};
-    const auto payload = std::holds_alternative<NumericContract>(p.message.contract)
-                             ? p.message.numeric.storage.size()
-                             : p.message.structured.size();
-    const auto metadata = a.req.bytes - payload + a.req.text + a.req.channels * sizeof(std::uint32_t) +
-                          a.req.planes * sizeof(PlaneLayout);
-    if (a.req.text > l.text_bytes || metadata > l.frame.max_metadata_bytes)
+    if (!metadata_fits(p.message,a.req,l))
         return {Status::exhausted, {}};
     return {Status::ok, a.req};
 }
-void rebase(Message &m, Arena arena) {
-    std::size_t text_at = 0, byte_at = 0, channel_at = 0;
-    auto text = [&](std::string_view &s) {
+struct Rebaser {
+    Arena arena;
+    std::size_t text_at=0,byte_at=0,channel_at=0;
+    void text(std::string_view &s) {
         auto n = s.size();
         if (n)
             std::memcpy(arena.text.data() + text_at, s.data(), n);
         s = n ? std::string_view(arena.text.data() + text_at, n) : std::string_view{};
         text_at += n;
-    };
-    auto bytes = [&](std::span<const std::byte> &s) {
+    }
+    void bytes(std::span<const std::byte> &s) {
         auto n = s.size();
         if (n)
             std::memcpy(arena.bytes.data() + byte_at, s.data(), n);
         s = n ? std::span<const std::byte>(arena.bytes.data() + byte_at, n) : std::span<const std::byte>{};
         byte_at += n;
-    };
-    auto nc = [&](NumericContract &c) {
+    }
+    void numeric_contract(NumericContract &c) {
         text(c.clock.domain);
         const auto n = c.channel_order.size();
         std::copy(c.channel_order.begin(), c.channel_order.end(), arena.channels.begin() + channel_at);
         c.channel_order = arena.channels.subspan(channel_at, n);
         channel_at += n;
-    };
-    text(m.endpoint.graph);
-    text(m.stamp.stream_id);
-    if (auto *c = std::get_if<NumericContract>(&m.contract)) {
-        nc(*c);
-        if (m.kind == Kind::HistoryRow)
-            nc(m.history_contract);
+    }
+    void numeric_payload(Message &m,NumericContract &contract) {
+        numeric_contract(contract);
+        if (m.kind == Kind::HistoryRow) numeric_contract(m.history_contract);
         std::copy(m.numeric.planes.begin(), m.numeric.planes.end(), arena.planes.begin());
         m.numeric.planes = arena.planes.first(m.numeric.planes.size());
         bytes(m.numeric.storage);
         bytes(m.numeric.ring.silence_mask);
         bytes(m.numeric.coordinates.axes[0]);
         bytes(m.numeric.coordinates.axes[1]);
-    } else {
+    }
+    void structured_payload(Message &m) {
         auto &structured = std::get<StructuredContract>(m.contract);
         text(structured.schema);
         text(structured.encoding);
         bytes(m.structured);
     }
-    bytes(m.extensions);
+    void apply(Message &m) {
+        text(m.endpoint.graph);
+        text(m.stamp.stream_id);
+        if (auto *contract = std::get_if<NumericContract>(&m.contract)) numeric_payload(m,*contract);
+        else structured_payload(m);
+        bytes(m.extensions);
+    }
+};
+void rebase(Message &m, Arena arena) {
+    Rebaser{arena}.apply(m);
 }
 } // namespace
 Result measure(const Message &m, const Limits &l, ReferenceContext context) noexcept {
@@ -544,12 +625,7 @@ Result measure(const Message &m, const Limits &l, ReferenceContext context) noex
     a.message(copy);
     if (a.status != signal_contracts::Status::ok)
         return {a.status, {}};
-    const auto payload = std::holds_alternative<signal_contracts::NumericContract>(m.contract)
-                             ? m.numeric.storage.size()
-                             : m.structured.size();
-    const auto metadata = a.req.bytes - payload + a.req.text + a.req.channels * sizeof(std::uint32_t) +
-                          a.req.planes * sizeof(signal_contracts::PlaneLayout);
-    if (a.req.wire > l.message_bytes || a.req.text > l.text_bytes || metadata > l.frame.max_metadata_bytes)
+    if (a.req.wire > l.message_bytes || !metadata_fits(m,a.req,l))
         return {signal_contracts::Status::exhausted, {}};
     return {signal_contracts::Status::ok, a.req};
 }

@@ -237,27 +237,35 @@ struct Device final:application::NumericGraphPreparationPort {
         caps.numeric=application::NumericProcessingCapabilities{capabilities(),{r.admission,r.resources}};
     }
     domain::NumericDeviceCapabilities capabilities() const noexcept {
-        return {this,[](const void* c,const domain::ResolvedProcessingNode& node,const domain::ProcessingResourceProfile& resources) noexcept {
-            const auto& d=*static_cast<const Device*>(c);
-            if(node.kind=="NetworkInput")return domain::ProcessingSupport{};
-            if(node.kind=="SampleClock") {
-                const auto* clock=std::get_if<domain::SampleClockProcessingParameters>(node.parameters);
-                if(!clock || clock->sample_rate!=d.profile.sample_rate)return domain::ProcessingSupport{};
-            } else if(node.kind=="SignalGenerator") {
-                if(node.outputs.size()!=1)return domain::ProcessingSupport{};
-                const auto contract=node.outputs.front().contract.view();
-                const auto* numeric=std::get_if<signal_contracts::NumericContract>(&contract);
-                if(!numeric || numeric->clock.sample_rate!=d.profile.sample_rate ||
-                    numeric->shape.extents[0].minimum>BlockSamples || numeric->shape.extents[0].maximum<BlockSamples)return domain::ProcessingSupport{};
-            } else if(node.role==domain::NodeRole::Source && (node.kind!="AudioSource" || node.id!=0 || node.outputs.size()!=1 ||
-               !signal_contracts::same_contract(node.outputs.front().contract.view(),d.source.input_contract())))return domain::ProcessingSupport{};
-            const auto actual=embedded_support::numeric_capabilities(d.effective);
-            auto support=actual.query(actual.context,node,resources);
-            // The stock task owns its entire allocated stack, even when a
-            // particular graph's reference dispatch estimate is smaller.
-            if(support.supported)support.resources.stack_bytes=std::max(support.resources.stack_bytes,d.profile.task_stack_bytes);
-            return support;
-        },embedded_support::numeric_capabilities(effective).profile};
+        return {this,query_support,embedded_support::numeric_capabilities(effective).profile};
+    }
+    bool accepts_source(const domain::ResolvedProcessingNode& node) const noexcept {
+        if(node.kind=="SampleClock") {
+            const auto* clock=std::get_if<domain::SampleClockProcessingParameters>(node.parameters);
+            return clock && clock->sample_rate==profile.sample_rate;
+        }
+        if(node.kind=="SignalGenerator") {
+            if(node.outputs.size()!=1)return false;
+            const auto contract=node.outputs.front().contract.view();
+            const auto* numeric=std::get_if<signal_contracts::NumericContract>(&contract);
+            return numeric && numeric->clock.sample_rate==profile.sample_rate &&
+                numeric->shape.extents[0].minimum<=BlockSamples &&
+                numeric->shape.extents[0].maximum>=BlockSamples;
+        }
+        return node.role!=domain::NodeRole::Source ||
+            (node.kind=="AudioSource" && node.id==0 && node.outputs.size()==1 &&
+             signal_contracts::same_contract(node.outputs.front().contract.view(),source.input_contract()));
+    }
+    static domain::ProcessingSupport query_support(const void* context,const domain::ResolvedProcessingNode& node,
+                                                    const domain::ProcessingResourceProfile& resources) noexcept {
+        const auto& owner=*static_cast<const Device*>(context);
+        if(node.kind=="NetworkInput" || !owner.accepts_source(node))return {};
+        const auto actual=embedded_support::numeric_capabilities(owner.effective);
+        auto support=actual.query(actual.context,node,resources);
+        // The stock task owns its entire allocated stack, even when a
+        // particular graph's reference dispatch estimate is smaller.
+        if(support.supported)support.resources.stack_bytes=std::max(support.resources.stack_bytes,owner.profile.task_stack_bytes);
+        return support;
     }
     bool discard_data=false;
     void fence() noexcept {selected_endpoint.store(UINT64_MAX,std::memory_order_release);if(data)data->stop();data.reset();ack_pending=false;discard_data=true;gap=true;}
@@ -286,41 +294,76 @@ struct Device final:application::NumericGraphPreparationPort {
         auto reply=service->submit(local,{++request,state.revision},command);publish_state(reply);
         if(!reply.state.own_prepared_token){service->close_session(local);local={};}return reply;
     }
+    dataflow_runtime::GraphExecutor::PreparationBase snapshot_base() {
+        std::lock_guard lock(processing_mutex);
+        return executor->snapshot_preparation_base();
+    }
+    Status register_candidate(const application::PreparedExecution& prepared,
+                              const dataflow_runtime::GraphExecutor::PreparationBase& base) {
+        std::lock_guard lock(processing_mutex);
+        return executor->register_prepared(prepared,base);
+    }
     Status prepare_numeric(const domain::NumericProcessingGraph& graph,const application::NumericRuntimeLimits& limits,application::PreparedExecution& prepared) override {
         const auto packet_capacity=control && control->state()==control::ControlSessionState::Ready?control->packet_payload_capacity():profile.packet_payload_capacity;
         const auto admitted=embedded_support::graph_link_admission(profile,graph,packet_capacity);
         if(admitted.status!=Status::ok)return admitted.status;
         if(!control::numeric::reply_envelope_fits(graph,control_limits(),advertised))return Status::exhausted;
         auto query=capabilities();
-        dataflow_runtime::GraphExecutor::PreparationBase base;
-        {std::lock_guard lock(processing_mutex);
-            base=executor->snapshot_preparation_base();}
-        if(base.plan) {
-            const auto memory=base.plan->memory_requirements();
-            // Same immutable profile shares the silence pool across old/new
-            // plans. Full physical task stack is still charged once by query.
-            const auto retained=memory.state_bytes+memory.buffer_bytes+memory.scratch_bytes-effective.runtime.admission.frame.max_payload_bytes;
-            if(retained>SIZE_MAX-query.profile.retained_working_bytes)return Status::overflow;
-            query.profile.retained_working_bytes+=retained;
-        }
+        const auto base=snapshot_base();
+        const auto charged=charge_retained_plan(base,query);
+        if(charged!=Status::ok)return charged;
         std::array<std::size_t,16> workspace{};domain::ProcessingGraphAdmission checked;
         const auto result=domain::admit_processing_graph(graph,limits.admission,query,workspace,checked);
         if(!result)return result.error==domain::ProcessingError::ResourceLimit || result.error==domain::ProcessingError::Limit?Status::exhausted:Status::incompatible_contract;
         const auto status=executor->prepare_numeric_detached(graph,limits,base,prepared);
         if(status!=Status::ok)return status;
-        std::lock_guard lock(processing_mutex);return executor->register_prepared(prepared,base);
+        return register_candidate(prepared,base);
+    }
+    Status charge_retained_plan(const dataflow_runtime::GraphExecutor::PreparationBase& base,
+                                domain::NumericDeviceCapabilities& query) const noexcept {
+        if(!base.plan)return Status::ok;
+        const auto memory=base.plan->memory_requirements();
+        // Same immutable profile shares the silence pool across old/new plans.
+        // Full physical task stack is still charged once by query.
+        const auto retained=memory.state_bytes+memory.buffer_bytes+memory.scratch_bytes-
+            effective.runtime.admission.frame.max_payload_bytes;
+        if(retained>SIZE_MAX-query.profile.retained_working_bytes)return Status::overflow;
+        query.profile.retained_working_bytes+=retained;
+        return Status::ok;
     }
     Status prepare() {
         if(embedded_support::admit(profile,std::char_traits<char>::length(StreamId)).status!=Status::ok)return Status::exhausted;
         configure_runtime();
+        auto config=session_config();std::size_t cold_bytes=0;
+        const auto budget=prepare_control_budget(config,cold_bytes);
+        if(budget!=Status::ok)return budget;
+        const auto runtime_status=create_runtime(cold_bytes);
+        if(runtime_status!=Status::ok)return runtime_status;
+        domain::NumericProcessingGraph restored;Status restore_status=Status::unavailable;
+        auto* host_persistence=streamer_host_persistence();
+        const auto restore=restore_graph(restored,restore_status,host_persistence);
+        if(restore!=Status::ok)return restore;
+        const auto activation=activate_graph(restored,restore_status,host_persistence);
+        if(activation!=Status::ok)return activation;
+        return configure_control(config);
+    }
+    Status configure_control(control::numeric::SessionConfig& config) {
+        config.codec_limits=control_limits();
+        control=std::make_unique<control::numeric::ControlSession>(config,clock,service.get());
+        control->set_command_commit_handler([](const application::ProcessingReply& reply,void* c){static_cast<Device*>(c)->publish_state(reply);},this);
+        control->set_packet_handler([](bdsp_protocol::PacketView p,void* c){static_cast<Device*>(c)->packet(p);},this);
+        retire=false;discard_data=false;
+        return control->state()==control::ControlSessionState::Failed?Status::exhausted:Status::ok;
+    }
+    Status prepare_control_budget(control::numeric::SessionConfig& config,std::size_t& cold_bytes) {
         caps.control.max_sessions=slots_.size();caps.control.max_field_string_bytes=64;caps.control.max_graph_identity_bytes=64;
         const auto snapshot_bytes=application::control_snapshot_bytes(caps);if(!snapshot_bytes)return Status::exhausted;
         caps.control.max_replay_bytes_per_session=*snapshot_bytes;caps.control.max_replay_bytes_total=slots_.size() * *snapshot_bytes;
         caps.control.max_control_scratch_bytes=*snapshot_bytes;
-        auto config=session_config();const auto session_bytes=control::numeric::ControlSession::storage_requirements(config);
+        config=session_config();const auto session_bytes=control::numeric::ControlSession::storage_requirements(config);
         if(!session_bytes)return Status::exhausted;
         config.storage_budget_bytes=session_bytes->persistent_bytes;
-        const auto cold_bytes=std::max(sizeof(PersistenceBuffers),session_bytes->external_staging_bytes);
+        cold_bytes=std::max(sizeof(PersistenceBuffers),session_bytes->external_staging_bytes);
         // DTO replay slots include their own objects. DATA tx/scratch are exactly
         // the two max_frame_bytes owners already charged by Profile::admit.
         profile.adapter_bytes=sizeof(Device)-sizeof(slots_)-2*FrameBytes+BlockSamples*profile.channels*sizeof(float)+8*1024+4096+TaskStackBytes+2*sizeof(StaticTask_t);
@@ -330,7 +373,11 @@ struct Device final:application::NumericGraphPreparationPort {
             sizeof(Runtime)+sizeof(esp_idf_adapter::NvsProcessingStorage)+4096;
         effective=embedded_support::device_profile(profile);
         if(embedded_support::admit(profile,std::char_traits<char>::length(StreamId)).status!=Status::ok)return Status::exhausted;
-        configure_runtime();auto& r=effective.runtime;
+        configure_runtime();
+        return Status::ok;
+    }
+    Status create_runtime(std::size_t cold_bytes) {
+        auto& r=effective.runtime;
         executor=std::make_unique<dataflow_runtime::GraphExecutor>(r);
         delivery=std::make_unique<Runtime>(*this);
         const application::NumericRuntimeLimits limits{r.admission,r.resources};
@@ -340,8 +387,10 @@ struct Device final:application::NumericGraphPreparationPort {
         caps.numeric=application::NumericProcessingCapabilities{query,limits};
         if(cold.prepare(cold_bytes)!=Status::ok)return Status::exhausted;
         if(source.prepare_source(profile,StreamId)!=Status::ok)return Status::exhausted;
-        auto* host_persistence=streamer_host_persistence();
-        domain::NumericProcessingGraph restored;auto restore_status=Status::unavailable;
+        return Status::ok;
+    }
+    Status restore_graph(domain::NumericProcessingGraph& restored,Status& restore_status,
+                         application::ProcessingPersistencePort*& host_persistence) {
         if(!host_persistence) {
             // Entrypoint owns NVS lifecycle. Never erase or repair a partition.
             if(nvs_flash_init()!=ESP_OK || nvs_open("numeric",NVS_READWRITE,&nvs_handle)!=ESP_OK)return Status::disconnected;
@@ -349,6 +398,10 @@ struct Device final:application::NumericGraphPreparationPort {
             host_persistence=&persistence_port;restore_status=with_persistence([&](auto& persistence){return persistence.restore(restored);});
         } else restore_status=streamer_host_restore_processing(&restored);
         if(restore_status!=Status::ok && restore_status!=Status::unavailable)return restore_status;
+        return Status::ok;
+    }
+    Status activate_graph(domain::NumericProcessingGraph& restored,Status restore_status,
+                          application::ProcessingPersistencePort* host_persistence) {
         caps.explicit_persist=true;
         service=std::make_unique<application::ProcessingControlService>(*runtime,clock,caps,slots_,clock.now_ms()+1,host_persistence);
         submit(application::GetState{});
@@ -356,11 +409,7 @@ struct Device final:application::NumericGraphPreparationPort {
         auto reply=submit(application::PrepareProcessing{&dto});if(!reply.accepted)return reply.status;
         reply=submit(application::ApplyProcessing{reply.prepared_token,dto.numeric->graph_id});if(!reply.accepted)return reply.status;
         // No speculative Cartesian inventory. Prepare queries actual combinations.
-        config.codec_limits=control_limits();
-        control=std::make_unique<control::numeric::ControlSession>(config,clock,service.get());
-        control->set_command_commit_handler([](const application::ProcessingReply& reply,void* c){static_cast<Device*>(c)->publish_state(reply);},this);
-        control->set_packet_handler([](bdsp_protocol::PacketView p,void* c){static_cast<Device*>(c)->packet(p);},this);
-        retire=false;discard_data=false;return control->state()==control::ControlSessionState::Failed?Status::exhausted:Status::ok;
+        return Status::ok;
     }
     void packet(bdsp_protocol::PacketView packet) {
         if(packet.id!=nd::SubscribeId || packet.payload.size()>FrameBytes || ack_pending || discard_data)return;
@@ -397,11 +446,7 @@ struct Device final:application::NumericGraphPreparationPort {
         if(!graph || std::none_of(graph->nodes.begin(),graph->nodes.end(),[](const auto& node){return node.id==0 && node.kind=="AudioSource";}))return;
         const auto began=esp_timer_get_time();
         const auto status=executor->process_numeric_ports(0,input,{delivery_revision.load(std::memory_order_relaxed),delivery_epoch.load(std::memory_order_relaxed)},
-            {nullptr,[](void* c,const dataflow_runtime::NumericPortFrameView& out) {
-                auto& owner=*static_cast<Device*>(c);
-                if(owner.selected_endpoint.load(std::memory_order_acquire)!=((std::uint64_t(std::uint32_t(out.identity.node))<<16)|out.identity.port))return;
-                owner.output_queue.push(out.frame,owner.effective.data.frame,out.identity.node,out.identity.port,out.delivery);
-            },nullptr,this});
+            {nullptr,enqueue_output,nullptr,this});
         if(status==Status::ok)processed_frames.fetch_add(1,std::memory_order_relaxed);
         else {
             processing_errors.fetch_add(1,std::memory_order_relaxed);
@@ -414,45 +459,58 @@ struct Device final:application::NumericGraphPreparationPort {
     void tick_clocks(bool missing_input) noexcept {
         std::lock_guard lock(processing_mutex);
         if(!executor->running() || clock_sequence==UINT64_MAX || clock_samples>std::uint64_t(INT64_MAX)-BlockSamples)return;
+        const auto event=next_clock_stamp();
+        const dataflow_runtime::DeliveryStamp delivery{event.graph_revision,event.epoch};
+        const dataflow_runtime::NumericRuntimeCallbacks callbacks{nullptr,enqueue_output,nullptr,this};
+        const auto* graph=executor->plan()->numeric_definition();
+        if(graph)advance_clocks(*graph,missing_input,event,delivery,callbacks);
+        clock_samples+=BlockSamples;
+    }
+    signal_contracts::FrameStamp next_clock_stamp() noexcept {
         signal_contracts::FrameStamp event;
         event.sequence=event.source_sequence=++clock_sequence;
         event.epoch=event.producer_epoch=delivery_epoch.load(std::memory_order_relaxed);
         event.generation=event.epoch;event.graph_revision=delivery_revision.load(std::memory_order_relaxed);
         event.timestamp_ticks=event.sample_begin=std::int64_t(clock_samples);
         event.sample_count=BlockSamples;event.has_sample_interval=true;event.stream_id="esp32-clock";
-        const dataflow_runtime::DeliveryStamp delivery{event.graph_revision,event.epoch};
-        const dataflow_runtime::NumericRuntimeCallbacks callbacks{nullptr,[](void* c,const dataflow_runtime::NumericPortFrameView& out) {
-            auto& owner=*static_cast<Device*>(c);
-            if(owner.selected_endpoint.load(std::memory_order_acquire)==((std::uint64_t(std::uint32_t(out.identity.node))<<16)|out.identity.port))
-                owner.output_queue.push(out.frame,owner.effective.data.frame,out.identity.node,out.identity.port,out.delivery);
-        },nullptr,this};
-        const auto* graph=executor->plan()->numeric_definition();
+        return event;
+    }
+    static void enqueue_output(void* context,const dataflow_runtime::NumericPortFrameView& out) noexcept {
+        auto& owner=*static_cast<Device*>(context);
+        if(owner.selected_endpoint.load(std::memory_order_acquire)==
+           ((std::uint64_t(std::uint32_t(out.identity.node))<<16)|out.identity.port))
+            owner.output_queue.push(out.frame,owner.effective.data.frame,out.identity.node,out.identity.port,out.delivery);
+    }
+    void advance_clocks(const domain::NumericProcessingGraph& graph,bool missing_input,
+                        const signal_contracts::FrameStamp& event,const dataflow_runtime::DeliveryStamp& delivery,
+                        const dataflow_runtime::NumericRuntimeCallbacks& callbacks) noexcept {
         auto observe=[&](Status status) {
             if(status!=Status::ok){processing_errors.fetch_add(1,std::memory_order_relaxed);last_processing_error.store(status,std::memory_order_relaxed);}
         };
-        if(graph) {
-            if(missing_input)for(const auto& node:graph->nodes)if(node.kind=="AudioSource" && node.id==0)
+        if(missing_input)for(const auto& node:graph.nodes)if(node.kind=="AudioSource" && node.id==0)
                 observe(executor->advance_unavailable_source(node.id,event,delivery,callbacks));
-            for(const auto& node:graph->nodes)if(node.kind=="SampleClock")observe(executor->process_clock(node.id,event,delivery,callbacks));
-        }
-        clock_samples+=BlockSamples;
+        for(const auto& node:graph.nodes)if(node.kind=="SampleClock")
+            observe(executor->process_clock(node.id,event,delivery,callbacks));
     }
     void transmit_outputs() {
         for(std::size_t i=0;i<OutputQueue::Capacity;++i) {
             signal_contracts::OwnedDataFrame retained;domain::NodeId node;domain::PortId port;dataflow_runtime::DeliveryStamp delivery;
             if(!output_queue.pop(retained,node,port,delivery))break;
-            const auto frame=retained.view();
+            transmit_output(retained.view(),node,port,delivery);
+        }
+    }
+    void transmit_output(const signal_contracts::DataFrameView& frame,domain::NodeId node,domain::PortId port,
+                         const dataflow_runtime::DeliveryStamp& delivery) {
             if(!data || ack_pending || retire || discard_data || node!=binding.binding.endpoint.node || port!=binding.binding.endpoint.port ||
-               delivery.graph_revision!=state.graph_revision || delivery.epoch!=state.epoch)continue;
+               delivery.graph_revision!=state.graph_revision || delivery.epoch!=state.epoch)return;
             const auto selected=std::find_if(state.applied_numeric->nodes.begin(),state.applied_numeric->nodes.end(),[&](const auto& value){return value.id==node;});
-            if(selected==state.applied_numeric->nodes.end()||!selected->enabled)continue;
+            if(selected==state.applied_numeric->nodes.end()||!selected->enabled)return;
             nd::Message message;message.endpoint=binding.binding.endpoint;message.contract=binding.binding.contract;message.stamp=frame.stamp;
             message.stamp.stream_id=output_stream;message.stamp.discontinuity|=gap;message.kind=message.stamp.available?nd::Kind::Frame:nd::Kind::Unavailable;
             message.envelope.delivery_generation=message.stamp.generation;
             if(message.stamp.available)if(const auto* numeric=std::get_if<signal_contracts::NumericView>(&frame.payload))
                 message.numeric={numeric->storage,numeric->planes,numeric->actual,numeric->ring,numeric->coordinates,numeric->semantic_silence};
             const auto sent=data->publish(message);gap=sent!=Status::ok&&sent!=Status::would_block;
-        }
     }
 
     void report_nodes() {
@@ -501,19 +559,24 @@ void acquire(void*) {
 StaticTask_t task_control;
 std::unique_ptr<StackType_t[]> task_stack;
 
-void worker(void*) {
-    auto& d=*device;esp_idf_adapter::TcpTransport tcp;esp_idf_adapter::UartTransport uart;
-    QueueHandle_t events=nullptr;bdsp_protocol::ByteTransport* transport=&tcp;int descriptor=-1;
+struct WorkerConnection {
+    Device& d;
+    esp_idf_adapter::TcpTransport tcp;
+    esp_idf_adapter::UartTransport uart;
+    QueueHandle_t events=nullptr;
+    bdsp_protocol::ByteTransport* transport=&tcp;
+    int descriptor=-1;
+    std::uint64_t fence_at=0,reconnect_at=0,report_at=0;
+    void initialize() {
 #ifdef CONFIG_STREAMER_UART
-    uart_config_t config{};config.baud_rate=CONFIG_STREAMER_UART_BAUD;config.data_bits=UART_DATA_8_BITS;
-    config.parity=UART_PARITY_DISABLE;config.stop_bits=UART_STOP_BITS_1;config.flow_ctrl=UART_HW_FLOWCTRL_DISABLE;config.source_clk=UART_SCLK_DEFAULT;
-    if(uart_param_config(UART_NUM_1,&config)!=ESP_OK || uart_set_pin(UART_NUM_1,CONFIG_STREAMER_UART_TX,CONFIG_STREAMER_UART_RX,UART_PIN_NO_CHANGE,UART_PIN_NO_CHANGE)!=ESP_OK ||
-       uart_driver_install(UART_NUM_1,8192,0,8,&events,0)!=ESP_OK){ESP_LOGE(Tag,"UART setup failed; processing remains active");}
-    transport=&uart;
+        uart_config_t config{};config.baud_rate=CONFIG_STREAMER_UART_BAUD;config.data_bits=UART_DATA_8_BITS;
+        config.parity=UART_PARITY_DISABLE;config.stop_bits=UART_STOP_BITS_1;config.flow_ctrl=UART_HW_FLOWCTRL_DISABLE;config.source_clk=UART_SCLK_DEFAULT;
+        if(uart_param_config(UART_NUM_1,&config)!=ESP_OK || uart_set_pin(UART_NUM_1,CONFIG_STREAMER_UART_TX,CONFIG_STREAMER_UART_RX,UART_PIN_NO_CHANGE,UART_PIN_NO_CHANGE)!=ESP_OK ||
+           uart_driver_install(UART_NUM_1,8192,0,8,&events,0)!=ESP_OK)ESP_LOGE(Tag,"UART setup failed; processing remains active");
+        transport=&uart;
 #endif
-    std::uint64_t fence_at=0;
-    std::uint64_t reconnect_at=0,report_at=0;
-    for(;;) {
+    }
+    void report() {
         if(d.clock.now_ms()>=report_at) {
             report_at=d.clock.now_ms()+1000;
             streamer_host_report_processing(d.processed_frames.load(std::memory_order_relaxed),d.processing_us.load(std::memory_order_relaxed),
@@ -521,58 +584,98 @@ void worker(void*) {
             streamer_host_report_processing_errors(d.processing_errors.load(std::memory_order_relaxed),d.last_processing_error.load(std::memory_order_relaxed));
             d.report_nodes();
         }
-        d.transmit_outputs();
-        if(d.discard_data) {
-            const auto discarded=d.control->discard_outbound_data();
-            if(discarded==Status::ok)d.discard_data=false;
-            else if(discarded!=Status::would_block)d.retire=true;
-        }
-        if(d.retire && transport->state()==bdsp_protocol::TransportState::connected && d.control->state()!=control::ControlSessionState::Failed) {
-            // Finish the accepted CONTROL reply while acquisition/processing continues.
-            // Then reset the host transport before any new binding is admitted.
-            if(!fence_at)fence_at=d.clock.now_ms()+1000;
-            d.control->poll(*transport);
-            if(d.control->pending_bytes() && d.clock.now_ms()<fence_at){vTaskDelay(1);continue;}
-        }
-        if(transport->state()!=bdsp_protocol::TransportState::connected || d.control->state()==control::ControlSessionState::Failed || d.retire) {
-            d.fence();d.control->reset();tcp.detach();uart.detach();
-            if(descriptor>=0){streamer_host_release_socket(descriptor);descriptor=-1;}
+    }
+    void discard_outbound() {
+        if(!d.discard_data)return;
+        const auto discarded=d.control->discard_outbound_data();
+        if(discarded==Status::ok)d.discard_data=false;
+        else if(discarded!=Status::would_block)d.retire=true;
+    }
+    bool flush_retiring_reply() {
+        if(!d.retire || transport->state()!=bdsp_protocol::TransportState::connected ||
+           d.control->state()==control::ControlSessionState::Failed)return true;
+        // Finish the accepted CONTROL reply while acquisition/processing continues.
+        if(!fence_at)fence_at=d.clock.now_ms()+1000;
+        d.control->poll(*transport);
+        if(!d.control->pending_bytes() || d.clock.now_ms()>=fence_at)return true;
+        vTaskDelay(1);return false;
+    }
+    bool disconnected() const noexcept {
+        return transport->state()!=bdsp_protocol::TransportState::connected ||
+            d.control->state()==control::ControlSessionState::Failed || d.retire;
+    }
+    bool reconnect() {
+        d.fence();d.control->reset();tcp.detach();uart.detach();
+        if(descriptor>=0){streamer_host_release_socket(descriptor);descriptor=-1;}
+        if(!attach_transport())return false;
+        d.retire=false;d.discard_data=false;fence_at=0;
+        return true;
+    }
+    bool attach_transport() {
 #ifdef CONFIG_STREAMER_UART
-            if(!events) {
-                if(d.clock.now_ms()<reconnect_at){vTaskDelay(1);continue;}
-                reconnect_at=d.clock.now_ms()+100;
-                if(uart_driver_install(UART_NUM_1,8192,0,8,&events,0)!=ESP_OK){vTaskDelay(1);continue;}
-            }
-            uart_flush_input(UART_NUM_1);xQueueReset(events);
-            if(uart.attach(UART_NUM_1,events)!=Status::ok){vTaskDelay(1);continue;}
-            constexpr std::array<std::uint8_t,1> delimiter{0};if(uart.write(delimiter).transferred!=1){vTaskDelay(1);continue;}
-#else
-            if(d.clock.now_ms()<reconnect_at){vTaskDelay(1);continue;}
+        if(!events) {
+            if(d.clock.now_ms()<reconnect_at){vTaskDelay(1);return false;}
             reconnect_at=d.clock.now_ms()+100;
-            descriptor=streamer_host_acquire_socket();if(descriptor<0){vTaskDelay(1);continue;}
-            if(tcp.attach(descriptor)!=Status::ok){streamer_host_release_socket(descriptor);descriptor=-1;continue;}
-#endif
-            d.retire=false;d.discard_data=false;fence_at=0;
+            if(uart_driver_install(UART_NUM_1,8192,0,8,&events,0)!=ESP_OK){vTaskDelay(1);return false;}
         }
+        uart_flush_input(UART_NUM_1);xQueueReset(events);
+        if(uart.attach(UART_NUM_1,events)!=Status::ok){vTaskDelay(1);return false;}
+        constexpr std::array<std::uint8_t,1> delimiter{0};
+        if(uart.write(delimiter).transferred!=1){vTaskDelay(1);return false;}
+#else
+        if(d.clock.now_ms()<reconnect_at){vTaskDelay(1);return false;}
+        reconnect_at=d.clock.now_ms()+100;
+        descriptor=streamer_host_acquire_socket();if(descriptor<0){vTaskDelay(1);return false;}
+        if(tcp.attach(descriptor)!=Status::ok){streamer_host_release_socket(descriptor);descriptor=-1;return false;}
+#endif
+        return true;
+    }
+    void poll_connected() {
         const auto status=d.control->poll(*transport);d.publish_state(d.service->observe_state());
-        if(status!=Status::ok && status!=Status::would_block){d.retire=true;continue;}
-        if(d.retire || d.discard_data)continue;
+        if(status!=Status::ok && status!=Status::would_block){d.retire=true;return;}
+        if(d.retire || d.discard_data)return;
         d.acknowledge();if(d.data)d.data->drain_packets();
         vTaskDelay(1);
     }
+    void cycle() {
+        report();
+        d.transmit_outputs();
+        discard_outbound();
+        if(!flush_retiring_reply())return;
+        if(disconnected() && !reconnect())return;
+        poll_connected();
+    }
+};
+void worker(void*) {
+    WorkerConnection connection{*device};
+    connection.initialize();
+    for(;;)connection.cycle();
 }
-}
-extern "C" void app_main() {
-    if(!streamer_host_setup()){ESP_LOGE(Tag,"Host setup failed");return;}
+bool prepare_device() {
+    if(!streamer_host_setup()){ESP_LOGE(Tag,"Host setup failed");return false;}
     const auto available_memory=streamer_host_memory_budget();
-    device.reset(new(std::nothrow) Device(available_memory));if(!device){ESP_LOGE(Tag,"Device storage unavailable");return;}const auto status=device->prepare();
-    if(status!=Status::ok){ESP_LOGE(Tag,"Numeric profile/control admission refused: %d",int(status));device.reset();return;}
+    device.reset(new(std::nothrow) Device(available_memory));
+    if(!device){ESP_LOGE(Tag,"Device storage unavailable");return false;}
+    const auto status=device->prepare();
+    if(status!=Status::ok){ESP_LOGE(Tag,"Numeric profile/control admission refused: %d",int(status));device.reset();return false;}
+    return true;
+}
+bool prepare_task_storage() {
     acquisition_stack.reset(new(std::nothrow) StackType_t[AcquisitionStackBytes/sizeof(StackType_t)]);
     task_stack.reset(new(std::nothrow) StackType_t[TaskStackBytes/sizeof(StackType_t)]);
-    if(!task_stack || !acquisition_stack){ESP_LOGE(Tag,"Task storage unavailable");device.reset();task_stack.reset();acquisition_stack.reset();return;}
+    if(task_stack && acquisition_stack)return true;
+    ESP_LOGE(Tag,"Task storage unavailable");device.reset();task_stack.reset();acquisition_stack.reset();
+    return false;
+}
+void start_tasks() {
     const auto producer=xTaskCreateStatic(acquire,"numeric-acquisition",AcquisitionStackBytes,nullptr,6,acquisition_stack.get(),&acquisition_control);
     if(!producer){ESP_LOGE(Tag,"Acquisition task creation failed");device.reset();task_stack.reset();acquisition_stack.reset();return;}
     if(!xTaskCreateStatic(worker,"numeric-device",TaskStackBytes,nullptr,5,task_stack.get(),&task_control)) {
         vTaskDelete(producer);ESP_LOGE(Tag,"Task creation failed");device.reset();task_stack.reset();acquisition_stack.reset();
     }
+}
+}
+extern "C" void app_main() {
+    if(!prepare_device() || !prepare_task_storage())return;
+    start_tasks();
 }

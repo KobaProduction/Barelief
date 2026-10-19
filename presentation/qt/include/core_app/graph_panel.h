@@ -1,20 +1,27 @@
 #pragma once
 #include <QWidget>
 #include <QJsonObject>
+#include <utility>
 #include <visualization/quick/numeric_render_ports.h>
 class AbstractChartView;
 class NumericImageView;
 class NumericPieView;
+class NumericPianoView;
 class NumericMetricsView;
 class SpectrogramGraph;
 class QStackedWidget;
 class QQuickWidget;
 class QSplitter;
 class QTimer;
+struct PlotCapabilities {
+    QStringList modes{"line","points","bars","pie"};
+    bool audio_scales=false;
+};
 class GraphPanel final : public QWidget {
     Q_OBJECT
     Q_PROPERTY(QVariantMap preferences READ preferences NOTIFY state_changed)
-    Q_PROPERTY(QStringList modes READ modes CONSTANT)
+    Q_PROPERTY(QStringList modes READ modes NOTIFY state_changed)
+    Q_PROPERTY(bool audioScales READ audio_scales NOTIFY state_changed)
     Q_PROPERTY(QString displayMode READ display_mode NOTIFY state_changed)
     Q_PROPERTY(int planeCount READ plane_count NOTIFY state_changed)
     Q_PROPERTY(int selectedPlane READ selected_plane NOTIFY state_changed)
@@ -22,13 +29,14 @@ class GraphPanel final : public QWidget {
     Q_PROPERTY(bool physicalTime READ physical_time NOTIFY state_changed)
     Q_PROPERTY(QString diagnostic READ diagnostic NOTIFY diagnosticChanged)
     Q_PROPERTY(QString information READ information NOTIFY informationChanged)
+    Q_PROPERTY(QString valueLayout READ value_layout NOTIFY state_changed)
     Q_PROPERTY(int renderFps READ render_fps NOTIFY state_changed)
     Q_PROPERTY(int axisPrecision READ axis_precision NOTIFY state_changed)
     Q_PROPERTY(QVariantList scalarInputs READ scalar_inputs NOTIFY state_changed)
     Q_PROPERTY(bool canAddScalarInput READ can_add_scalar_input NOTIFY state_changed)
     Q_PROPERTY(QObject* surfaceModel READ surface_model NOTIFY state_changed)
 public:
-    GraphPanel(const QString&,AbstractChartView*,QJsonObject,QWidget*,SpectrogramGraph* supplied_surface=nullptr);
+    GraphPanel(const QString&,AbstractChartView*,QJsonObject,QWidget*,SpectrogramGraph* supplied_surface=nullptr,PlotCapabilities capabilities={});
     ~GraphPanel() override;
     void set_numeric_plane_count(size_t count,size_t selected);
     void set_render_visible(bool visible);
@@ -39,8 +47,13 @@ public:
     QObject* surface_model() const;
     NumericImageView* image_view() const;
     NumericPieView* pie_view() const;
+    NumericPianoView* piano_view() const;
+    void set_first_midi(unsigned);
     NumericMetricsView* metrics_view() const {return _metrics;}
+    void set_plot_presentation(presentation::PlotPresentation value){_plot_presentation=std::move(value);}
+    void set_plot_capabilities(PlotCapabilities);
     void set_axis_permissions(presentation::NumericAxisPermissions);
+    void set_frequency_grid(presentation::NumericRenderTarget::FrequencyGrid grid){_frequency_grid=grid;}
     presentation::NumericRenderTarget render_target(bool visible);
     presentation::NumericRenderTarget all_render_targets();
     QString display_mode() const {return _display_mode;}
@@ -49,12 +62,15 @@ public:
     void set_axis_precision(int);
     QVariantMap preferences() const {return _preferences.toVariantMap();}
     QStringList modes() const {return _allowed_modes;}
+    bool audio_scales() const {return _audio_scales;}
     int plane_count() const {return int(_plane_count);}
     int selected_plane() const {return int(_selected_plane);}
     bool physical_frequency() const;
     bool physical_time() const;
     QString diagnostic() const {return _diagnostic;}
     QString information() const {return _information;}
+    QString value_layout() const;
+    void set_value_layout(const char* key,QStringList arguments={});
     int render_fps() const {return _render_fps;}
     qreal display_fps() const;
     int axis_precision() const {return _axis_precision;}
@@ -85,14 +101,44 @@ signals:
     void diagnosticChanged();
     void informationChanged();
 private:
+    void ensure_optional_renderers();
+    QWidget* selected_renderer_widget();
+    void build_layout();
+    void build_renderers();
+    void bind_panel_events();
+    void start_information_timer();
     void apply_preferences();
+    void apply_value_range(ValueDisplayScale);
+    void apply_axis_preferences();
+    void adjust_scale_range(QJsonObject&,const QString&) const;
+    void publish_preference_change(const QString&,const QJsonObject&,bool);
     void initialize_surface();
+    void prepare_surface_renderer();
+    void bind_surface_events();
+    void store_surface_preference(const QString&,const QJsonValue&,bool notify_state=true);
     void restore_surface_preferences();
     void initialize_ports();
+    void initialize_chart_port();
+    void initialize_surface_port();
+    void initialize_matrix_port();
+    void initialize_auxiliary_ports();
+    void initialize_metric_port();
+    void set_value_source(bool,int);
+    void set_axis_title_keys(const QString&,const QString&);
+    void select_renderer_widget();
+    void notify_renderer_change();
+    std::pair<size_t,float> active_value_summary() const;
     void refresh_captions();
+    ValueDisplayScale display_scale(ValueDisplayScale source) const;
+    SpectrogramAxisMetadata display_metadata(SpectrogramAxisMetadata source) const;
+    void refresh_value_titles();
+    ValueDisplayScale _value_source;
+    bool _value_source_supplied=false;
+    ValueDisplayScale current_value_source()const;
     void set_diagnostic(QString text);
     void refresh_information();
     void refresh_axis_display_controls();
+    presentation::NumericRenderTarget::FrequencyGrid _frequency_grid;
     presentation::NumericAxisPermissions _axis_permissions;
     bool _physical_frequency_available=false,_physical_time_available=false;
     QString caption(QObject*,const char*,QStringList,bool,bool);
@@ -100,17 +146,22 @@ private:
     SpectrogramGraph* _surface=nullptr;
     NumericImageView* _image=nullptr;
     NumericPieView* _pie=nullptr;
+    NumericPianoView* _piano=nullptr;
     NumericMetricsView* _metrics=nullptr;
     QStackedWidget* _renderers=nullptr;
     QQuickWidget* _settings=nullptr;
     QSplitter* _splitter=nullptr;
     QTimer* _information_timer=nullptr;
     QString _display_mode="line",_default_display_mode="line",_id;
+    presentation::PlotPresentation _plot_presentation;
+    bool _audio_scales=false;
     QStringList _allowed_modes;
     QJsonObject _preferences;
+    bool _minimum_explicit=false,_maximum_explicit=false;
     bool _render_visible=true,_restoring=false,_surface_integrated=false;
     size_t _plane_count=0,_selected_plane=0;
     int _render_fps=60,_axis_precision=0;
+    QString _value_layout_key;QStringList _value_layout_arguments;
     QString _diagnostic,_information,_x_title_key="Value index (X)",_y_title_key="Value (Y)";
     QVariantList _scalar_inputs;
     bool _can_add_scalar_input=false;
@@ -118,6 +169,7 @@ private:
     presentation::NumericSurfacePort _surface_port;
     presentation::NumericImagePort _image_port;
     presentation::NumericPiePort _pie_port;
+    presentation::NumericPianoPort _piano_port;
     presentation::NumericMetricsPort _metrics_port;
     presentation::NumericCaptionPort _caption_port;
 };

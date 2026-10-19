@@ -86,7 +86,7 @@ int main(){
         {auto stock=embedded_support::default_processing_graph(d.profile,StreamId);std::size_t owned=0;const auto bytes_status=domain::processing_graph_owned_bytes(stock,d.effective.runtime.admission,owned);std::fprintf(stderr,"stock DTO owned=%zu status=%d ceiling=%zu\n",owned,int(bytes_status),d.effective.runtime.admission.max_owned_metadata_bytes);}
         {auto stock=embedded_support::default_processing_graph(d.profile,StreamId);auto diagnostic_caps=d.capabilities();
             diagnostic_caps.profile.max_peak_bytes=SIZE_MAX;
-            std::array<std::size_t,16> workspace{};domain::ProcessingGraphAdmission required;
+            std::array<std::size_t,2*bdsp_protocol::numeric_control::device_limits().nodes> workspace{};domain::ProcessingGraphAdmission required;
             const auto admitted=domain::admit_processing_graph(stock,d.effective.runtime.admission,diagnostic_caps,workspace,required);
             std::fprintf(stderr,"stock model validation=%d node=%d required_peak=%zu plan=%zu payload=%zu scratch=%zu stack=%zu retained=%zu limit=%zu\n",
                 int(admitted.error),int(admitted.node),required.peak_bytes,required.resources.plan_bytes,required.resources.payload_bytes,

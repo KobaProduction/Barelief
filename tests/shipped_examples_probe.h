@@ -58,6 +58,8 @@ inline bool measure_shipped_example(const domain::NumericProcessingGraph& graph,
         double energy=0;
         for(std::size_t plane=0;plane<numeric->planes.size();++plane)for(std::size_t i=0;i<numeric->actual[0];++i) {
             if(numeric->contract->dtype==DType::Float32){float x=0;if(load_element(*numeric,{plane,i,0},x)!=Status::ok||!std::isfinite(x)){bad=true;return;}energy+=double(x)*x;}
+            else if(numeric->contract->dtype==DType::Float64){double x=0;if(load_element(*numeric,{plane,i,0},x)!=Status::ok || !std::isfinite(x)){bad=true;return;}energy+=x*x;}
+            else if(numeric->contract->dtype==DType::UInt32){std::uint32_t x=0;if(load_element(*numeric,{plane,i,0},x)!=Status::ok){bad=true;return;}energy+=double(x);}
             else if(numeric->contract->dtype==DType::UInt64){std::uint64_t x=0;if(load_element(*numeric,{plane,i,0},x)!=Status::ok){bad=true;return;}energy+=double(x);}
             else {bad=true;return;}
         }
@@ -74,7 +76,10 @@ inline bool measure_shipped_example(const domain::NumericProcessingGraph& graph,
         for(std::size_t i=0;i<values->actual[0];++i){float value=0;if(load_element(*values,{0,i,0},value)!=Status::ok||!std::isfinite(value)){bad=true;return;}at->second.positive|=std::abs(value)>1e-12f;}
     });
     if(!tap)return false;
-    const auto ready=[&]{if(bad)return true;for(const auto& [key,s]:stages){const auto id=std::get<0>(key);const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});const bool signed_metric=node->kind=="ChannelComparison"||id==221;
+    const auto ready=[&]{if(bad)return true;for(const auto& [key,s]:stages){const auto id=std::get<0>(key);const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});const bool agreement=node->kind=="MusicalSpectrogram" && (std::get<2>(key)==1 || std::get<2>(key)==2);
+        const bool scalar_agreement=node->kind=="ScalarView" && std::any_of(graph.edges.begin(),graph.edges.end(),[&](const auto& e){if(e.to!=id)return false;const auto parent=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==e.from;});return parent!=graph.nodes.end() && parent->kind=="MusicalSpectrogram";});
+        const bool signed_metric=agreement||scalar_agreement||node->kind=="ChannelComparison"||id==221||((node->kind=="Fourier" || node->kind=="RealFourier") && std::get<2>(key)>=2);
+        if(domain::numeric_constant_kind(node->kind)){if(!s.frames || !s.positive)return false;continue;}
         if(s.frames<5||s.last<=s.first||(!signed_metric&&!s.positive))return false;}for(const auto& [id,h]:histories)if(h.rows<5||!h.positive)return false;return true;};
     const bool delivered=wait([&]{std::lock_guard lock(mutex);return ready();});engine.unsubscribe_numeric_tap(tap);
     std::lock_guard lock(mutex);const bool good=delivered&&!bad&&opened==expected_opens&&ready();

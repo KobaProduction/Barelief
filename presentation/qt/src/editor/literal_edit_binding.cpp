@@ -6,8 +6,8 @@
 #include <QPointer>
 #include <QSignalBlocker>
 namespace numeric_editor {
-std::function<void()> bind_literal_input(NodeParameterModel* model,const QString& key,QComboBox* type,QLineEdit* edit) {
-    const QPointer<NodeParameterModel> guarded(model);
+namespace {
+void bind_literal_signals(const QPointer<NodeParameterModel>& guarded,const QString& key,QComboBox* type,QLineEdit* edit) {
     QObject::connect(edit,&QLineEdit::textEdited,edit,[guarded,key,type](const QString& input){
         if(guarded)guarded->setDraftInput(key,input,type->currentIndex());
     });
@@ -21,20 +21,36 @@ std::function<void()> bind_literal_input(NodeParameterModel* model,const QString
     QObject::connect(type,&QComboBox::currentIndexChanged,edit,[guarded,key,edit](int index){
         if(guarded && guarded->editLiteral(key,edit->text(),index))edit->setModified(false);
     });
-    return [guarded,key,type,edit]{
-        if(!guarded)return;
-        const auto* field=guarded->field(key);if(!field || !field->read)return;
-        const auto state=guarded->editState(key);
-        const QSignalBlocker block(type);
-        if(state.dirty){
-            type->setCurrentIndex(state.literal_type);
-            if(edit->text()!=state.input)edit->setText(state.input);
-            edit->setModified(true);
-        }else{
-            const auto value=std::get<signal_contracts::NumericLiteral>(field->read());
-            type->setCurrentIndex(int(value.index()));
-            edit->setText(literal_text(value));edit->setModified(false);
-        }
-    };
+}
+
+void refresh_clean_literal(const NodeParameterModel::Field& field,QComboBox* type,QLineEdit* edit) {
+    const auto value=std::get<signal_contracts::NumericLiteral>(field.read());
+    // A schema integer editor can store an unsigned literal internally.
+    // Keep its declared editor type rather than silently selecting the
+    // hidden unsigned combo item and rejecting the next user edit.
+    type->setCurrentIndex(field.literal_type.value_or(int(value.index())));
+    edit->setText(literal_text(value));
+    edit->setModified(false);
+}
+
+void refresh_literal_input(const QPointer<NodeParameterModel>& guarded,const QString& key,QComboBox* type,QLineEdit* edit) {
+    if(!guarded)return;
+    const auto* field=guarded->field(key);if(!field || !field->read)return;
+    const auto state=guarded->editState(key);
+    const QSignalBlocker block(type);
+    if(state.dirty){
+        type->setCurrentIndex(field->literal_type.value_or(state.literal_type));
+        if(edit->text()!=state.input)edit->setText(state.input);
+        edit->setModified(true);
+        return;
+    }
+    refresh_clean_literal(*field,type,edit);
+}
+}
+
+std::function<void()> bind_literal_input(NodeParameterModel* model,const QString& key,QComboBox* type,QLineEdit* edit) {
+    const QPointer<NodeParameterModel> guarded(model);
+    bind_literal_signals(guarded,key,type,edit);
+    return [guarded,key,type,edit]{refresh_literal_input(guarded,key,type,edit);};
 }
 }

@@ -22,6 +22,10 @@ public:
     bdsp_protocol::numeric_data::Binding output_binding() const noexcept;
     application::MemoryRequirements memory_requirements() const noexcept;
 private:
+    void publish_source(const Profile&,std::string,std::vector<float>,domain::OwnedProcessingContract);
+    void clear_processing() noexcept;
+    void fill_source_samples() noexcept;
+    signal_contracts::FrameStamp source_stamp() noexcept;
     Profile profile_;
     std::string id_;
     domain::OwnedProcessingContract input_,output_contract_;

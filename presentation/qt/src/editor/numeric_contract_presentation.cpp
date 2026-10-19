@@ -2,10 +2,53 @@
 #include "visualization/ui_text.h"
 #include <limits>
 #include "numeric_graph_draft.h"
+#include "parameter_field_specs.h"
 namespace numeric_editor {
 using namespace domain;
 using namespace signal_contracts;
 bool view_accepts(const QString& kind,const NumericContract& c) {return draft_view_accepts(kind.toStdString(),c);}
+namespace {
+QString processing_reason_caption(domain::ProcessingReason reason) {
+    static constexpr const char* captions[]{
+        "", "FFT size does not match", "Sample rate does not match",
+        "Spectrum layout does not match", "Spectrum representation does not match",
+        "Window function does not match", "Window coefficient sum does not match",
+        "Window coefficient square sum does not match", "Audio frontend does not match",
+        "Resampler settings do not match", "Gain count does not match",
+        "Gain values must be finite and valid", "Profile encoding is invalid"};
+    const auto index=std::size_t(reason);
+    return index<std::size(captions)?ui::text(captions[index]):ui::text("Unsupported node settings");
+}
+}
+
+QString processing_reason_text(domain::ProcessingReason reason,std::string_view parameter) {
+    auto result=processing_reason_caption(reason);
+    if(!parameter.empty()) {
+        const auto key=QString::fromUtf8(parameter.data(),qsizetype(parameter.size()));
+        result+="\n"+ui::text("Parameter: %1").arg(ui::text(parameter_title(key).toUtf8().constData()));
+    }
+    return result;
+}
+
+QString processing_diagnostic_text(const domain::ProcessingDiagnostic& diagnostic) {
+    static constexpr const char* messages[]{"", "Unsupported version", "Graph exceeds limits", "Invalid node", "Unknown node kind",
+        "Invalid parameters", "Invalid port", "Invalid contract", "Incompatible connection", "Multiple connections to one input",
+        "Missing endpoint", "Graph contains a cycle", "Unsupported operation combination", "Resource limit exceeded", "Insufficient workspace",
+        "Preparation value unavailable", "Preparation value type mismatch", "Audio frontend settings do not match",
+        "Preparation value is invalid", "Preparation value is outside the allowed range"};
+    const auto index=std::size_t(diagnostic.error);
+    if(!index)return {};
+    const auto message=diagnostic.reason==domain::ProcessingReason::None
+        ?ui::text(index<std::size(messages)?messages[index]:"Unsupported node settings")
+        :processing_reason_caption(diagnostic.reason);
+    auto result=ui::text("Node %1, port %2: %3").arg(diagnostic.node).arg(diagnostic.port).arg(message);
+    if(diagnostic.edge)result+="\n"+ui::text("Connection #%1").arg(qulonglong(*diagnostic.edge));
+    if(!diagnostic.parameter.empty()) {
+        const auto key=QString::fromUtf8(diagnostic.parameter.data(),qsizetype(diagnostic.parameter.size()));
+        result+="\n"+ui::text("Parameter: %1").arg(ui::text(parameter_title(key).toUtf8().constData()));
+    }
+    return result;
+}
 QString dtype_caption(DType type) {
     switch(type) {
     case DType::Int8:return "int8";case DType::UInt8:return "uint8";
@@ -20,21 +63,40 @@ QString port_caption(const ProcessingPort& p,bool include_extents) {
     auto c=p.contract.view();
     if(const auto* s=std::get_if<StructuredContract>(&c))return QString::fromUtf8(s->schema.data(),int(s->schema.size()))+" v"+QString::number(s->version);
     const auto& n=std::get<NumericContract>(c);
-    QString shape=n.shape.rank==Rank::Scalar?QStringLiteral("● ")+ui::text("Number"):n.shape.rank==Rank::Vector?QStringLiteral("≡ ")+ui::text("Array"):QStringLiteral("▦ ")+ui::text("Matrix");
-    if(include_extents && n.shape.rank!=Rank::Scalar){shape+=" · "+QString::number(n.shape.extents[0].maximum);if(n.shape.rank==Rank::Matrix)shape+="×"+QString::number(n.shape.extents[1].maximum);}
-    return dtype_caption(n.dtype)+"\n"+shape;
+    if(n.shape.rank==Rank::Scalar)return dtype_caption(n.dtype);
+    if(n.shape.rank==Rank::Vector)return include_extents?QStringLiteral("%1[%2]").arg(dtype_caption(n.dtype)).arg(n.shape.extents[0].maximum):dtype_caption(n.dtype)+QStringLiteral("[]");
+    if(!include_extents)return dtype_caption(n.dtype)+QStringLiteral("[,]");
+    return dtype_caption(n.dtype)+QStringLiteral("[%1×%2]").arg(n.shape.extents[0].maximum).arg(n.shape.extents[1].maximum);
+}
+QStringList contract_bounds(const NumericContract& contract) {
+    const char* axes[]={"None","Sample","Bin","Band","Time","Declared"};
+    QStringList bounds;
+    for(unsigned i=0;i<unsigned(contract.shape.rank);++i)
+        bounds<<ui::text(axes[int(contract.shape.axes[i])])+": "+QString::number(contract.shape.extents[i].minimum)+"…"+QString::number(contract.shape.extents[i].maximum);
+    return bounds;
+}
+QStringList contract_channels(const NumericContract& contract) {
+    QStringList channel_ids;
+    for(auto id:contract.channel_order)channel_ids<<QString::number(id);
+    return channel_ids;
 }
 QString contract_details(const ProcessingPort& p) {
     if(!p.contract)return ui::text("Unavailable");auto data=p.contract.view();const auto* n=std::get_if<NumericContract>(&data);if(!n)return port_caption(p);
     const char* encodings[]={"Native","Little endian","Big endian","Packed PCM24 LE","Packed PCM24 BE"};
     const char* normalizations[]={"None","Signed unit","Unsigned unit","Float unit"};
-    const char* axes[]={"None","Sample","Bin","Band","Time","Declared"};QStringList channel_ids,bounds;
-    for(auto id:n->channel_order)channel_ids<<QString::number(id);
-    for(unsigned i=0;i<unsigned(n->shape.rank);++i)bounds<<ui::text(axes[int(n->shape.axes[i])])+": "+QString::number(n->shape.extents[i].minimum)+"…"+QString::number(n->shape.extents[i].maximum);
-    return port_caption(p)+"\n"+bounds.join(" · ")+"\n"+
+    return port_caption(p)+"\n"+contract_bounds(*n).join(" · ")+"\n"+
         ui::text("Layout")+": "+ui::text(n->representation.layout==ChannelLayout::Planar?"Planar":"Interleaved")+" · "+ui::text(encodings[int(n->representation.encoding)])+"\n"+
         ui::text("Normalization")+": "+ui::text(normalizations[int(n->representation.normalization)])+"\n"+
-        ui::text("Channels")+": ["+channel_ids.join(", ")+"]\n"+ui::text("Clock")+": "+QString::fromUtf8(n->clock.domain.data(),int(n->clock.domain.size()))+" · "+QString::number(n->clock.sample_rate)+" Hz; "+QString::number(n->clock.tick_seconds.numerator)+"/"+QString::number(n->clock.tick_seconds.denominator)+" s";
+        ui::text("Channels")+": ["+contract_channels(*n).join(", ")+"]\n"+ui::text("Clock")+": "+QString::fromUtf8(n->clock.domain.data(),int(n->clock.domain.size()))+" · "+QString::number(n->clock.sample_rate)+" Hz; "+QString::number(n->clock.tick_seconds.numerator)+"/"+QString::number(n->clock.tick_seconds.denominator)+" s";
+}
+QString destination_integer_range(const DTypeDescriptor& target) {
+    const unsigned bits=target.bytes*8;
+    QString low="0",high;
+    if(target.signed_value){
+        low=bits==64?QString::number(std::numeric_limits<qint64>::min()):QString::number(-(qint64{1}<<(bits-1)));
+        high=bits==64?QString::number(std::numeric_limits<qint64>::max()):QString::number((qint64{1}<<(bits-1))-1);
+    } else high=bits==64?QString::number(std::numeric_limits<quint64>::max()):QString::number((quint64{1}<<bits)-1);
+    return ui::text("Destination range: %1 … %2").arg(low,high);
 }
 QString conversion_effects(DType from,DType to) {
     if(domain::dtype_conversion_is_exact(from,to))return ui::text("Every finite source value is preserved exactly");
@@ -42,11 +104,7 @@ QString conversion_effects(DType from,DType to) {
     if(a->ieee && !b->ieee)result<<ui::text("Fractional values require rounding; exact mode rejects them");
     if(!b->signed_value && !b->ieee && (a->signed_value || a->ieee))result<<ui::text("Negative values are outside the destination range");
     if(b->ieee)result<<ui::text("Some values lose precision in the destination mantissa");
-    if(!b->ieee){const unsigned bits=b->bytes*8;QString low="0",high;
-        if(b->signed_value){low=bits==64?QString::number(std::numeric_limits<qint64>::min()):QString::number(-(qint64{1}<<(bits-1)));high=bits==64?QString::number(std::numeric_limits<qint64>::max()):QString::number((qint64{1}<<(bits-1))-1);}
-        else high=bits==64?QString::number(std::numeric_limits<quint64>::max()):QString::number((quint64{1}<<bits)-1);
-        result<<ui::text("Destination range: %1 … %2").arg(low,high);
-    }
+    if(!b->ieee)result<<destination_integer_range(*b);
     result<<ui::text("Overflow is rejected or saturated according to the selected policy; no wrap");
     return result.join('\n');
 }

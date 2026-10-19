@@ -35,7 +35,6 @@ target_link_libraries(${LIB_NAME} PUBLIC
         BDSP
 )
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/apps/registry ${CMAKE_BINARY_DIR}/apps/registry)
 
 # Desktop discovery implements a presentation port; concrete assembly is GUI composition.
 add_library(desktop_processor_discovery STATIC

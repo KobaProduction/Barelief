@@ -3,6 +3,7 @@
 class QCheckBox;
 class QDoubleSpinBox;
 class QLabel;
+class QVBoxLayout;
 
 // Shared numerical axis editor; presentation/persistence remains with the caller.
 class AxisControlWidget final : public QWidget {
@@ -20,6 +21,10 @@ class AxisControlWidget final : public QWidget {
     void range_changed(double minimum,double maximum,bool automatic);
     void reverse_changed(bool reverse);
   private:
+    void setup_options(QVBoxLayout *layout);
+    void setup_heading(QVBoxLayout *layout,const char* title);
+    void setup_range_boxes(QVBoxLayout *layout);
+    void bind_controls();
     void apply_range(bool minimumChanged);
     QDoubleSpinBox *_minimum,*_maximum;
     QCheckBox *_automatic,*_reverse;

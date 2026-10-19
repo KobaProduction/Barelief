@@ -116,6 +116,16 @@ class GuiPresenter final : public QObject {
     std::map<QString, std::unique_ptr<pipeline::EnginePort>> _inactive_clients;
     bool _load_selected_snapshot = false;
     void bind_client();
+    void bind_control_handlers(const QString& selected,quint64 generation);
+    void bind_numeric_handlers(const QString& selected,quint64 generation);
+    void bind_numeric_frame_handler(const QString& selected,quint64 generation);
+    void bind_numeric_history_handler(const QString& selected,quint64 generation);
+    void bind_numeric_snapshot_handler(const QString& selected,quint64 generation);
+    void accept_graph_reply(const pipeline::EngineReply&);
+    void publish_component_statuses(const pipeline::EngineSnapshot&,bool incarnation_changed);
+    void restore_selected_device_document();
+    void switch_selected_client(const QString& uuid,const QString& host,quint16 port);
+    void release_selected_client();
     void save_device_document();
     struct DraftPatch {
         int id;
@@ -133,6 +143,7 @@ class GuiPresenter final : public QObject {
     quint64 _logical_request = 0;
     QString _local_device_id = "local";
     QString _device_id = "local", _graph_id = "main", _apply_status = "Draft";
+    std::optional<pipeline::EngineDiagnostic> _last_numeric_rejection;
     quint64 dispatch_graph(PendingGraph request);
     void set_apply_status(QString status);
     QJsonObject _active_graph;

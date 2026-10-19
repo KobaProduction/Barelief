@@ -19,6 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-tools', action='store_true')
     parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--schema', choices=('control', 'numeric_control'), default='numeric_control')
     args = parser.parse_args()
     if not sys.flags.no_site:
         parser.error('invoke this runner with Python -S')
@@ -52,8 +53,8 @@ def main():
         else:
             args.output_dir.resolve().mkdir(parents=True, exist_ok=True)
             argv = ['--error-on-unmatched', '-I', str(schema), '-f',
-                    str(schema / 'control.options'), '-D', str(args.output_dir.resolve()),
-                    str(schema / 'control.proto')]
+                    str(schema / (args.schema + '.options')), '-D', str(args.output_dir.resolve()),
+                    str(schema / (args.schema + '.proto'))]
         sys.argv = [str(vendor / 'nanopb_generator.py'), *argv]
         runpy.run_path(sys.argv[0], run_name='__main__')
 

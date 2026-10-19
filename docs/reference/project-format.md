@@ -3,10 +3,14 @@
 [Конфигурация и хранение](../architecture/configuration-and-storage.md) · [Протокол](protocol.md)
 
 Текущая desktop-граница принимает UTF-8 JSON: document **4**, graph **5**,
-processing **4**. CONTROL **4** и DATA **5** описывают отдельные сетевые границы.
+processing **4**. Пакеты CONTROL **4** и DATA **6** описывают отдельные сетевые
+границы. Поле `data=5` оболочки схемы CONTROL обозначает processing data edition,
+а не версию DATA payload; эти числа не взаимозаменяемы.
 Автоматического перехода со старых редакций и downgrade нет.
 Источник формата — [NumericProjectDocument](../../adapters/desktop/src/numeric_project_document.cpp)
-и [domain DTO](../../domain/include/domain/processing_contracts.h).
+и [оболочка CONTROL](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_control_message.h).
+В [domain DTO](../../domain/include/domain/graph/processing_model.h) находятся
+только версии графа и обработки; внешние editions проверяются адаптерами.
 
 ## Структура
 
@@ -96,7 +100,19 @@ Reader ограничивает исходный файл 16 МиБ, прове�
 source-owned и сохраняются с точными raw-значениями; typed snapshot не является
 полным writer исходного файла.
 
+Строковое значение может содержать до 1 MiB декодированных данных, в том числе
+загруженный частотный профиль. Raw-строка с escape-последовательностями ограничена
+6 MiB. Общие пределы документа сохраняются: 16 MiB исходника, 4 MiB суммарных
+декодированных строк и 64 MiB peak ownership при атомарном staging.
+
 Save проверяет baseline и допустимость назначения, затем использует атомарную
 замену `QSaveFile`. Future/malformed/неоднозначный документ и `SourceChanged`
-требуют явного решения вызывающего приложения. API чтения, staging и записи
+требуют явного решения вызывающего приложения. Ручной Save/Save As может
+заменить такое назначение после предупреждения и подтверждения. Диалог
+ручного сохранения показывается до проверки схемы; Ctrl+S подтверждает также
+создание отсутствующего файла. Сохранение не переопределяет контракты редактора
+повторным опросом аудиоустройств. Согласие
+`NumericSaveConsent` связано с точными байтами и путём файла. Текущий кандидат
+всегда проходит обычную валидацию. Отмена не меняет файл и активный путь;
+изменение назначения после подтверждения отклоняет запись. API чтения, staging и записи
 объявлен в [numeric_project_document.h](../../adapters/desktop/include/desktop/numeric_project_document.h).

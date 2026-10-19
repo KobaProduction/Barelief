@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QCommandLineParser>
 
 #include "aggregator/aggregator_server.h"
 
@@ -20,51 +21,75 @@ struct CommandLineParseResult {
     QString error_string;
 };
 
+namespace {
+struct ServerOptions {
+    QCommandLineOption help;
+    QCommandLineOption version;
+    QCommandLineOption port;
+    QCommandLineOption registration_timeout;
+};
+
+ServerOptions configure_parser(QCommandLineParser& parser,const ServerConfiguration& config) {
+    parser.setApplicationDescription("Aggregator Server - central component for tracking component availability\n\nUsage: aggregator_server_app run [options]\n\nThe 'run' command starts the aggregator server.");
+    auto help=parser.addHelpOption();
+    auto version=parser.addVersionOption();
+    parser.addPositionalArgument("run","Start the aggregator server");
+    QCommandLineOption port(QStringList{"p","port"},"Port to listen on (default: 8212)","port",QString::number(config.port));
+    QCommandLineOption timeout(QStringList{"t","registration-timeout"},"Registration timeout in milliseconds. If a client doesn't register within this time, connection will be closed. Use 0 to disable timeout (default: 1000)","timeout_ms",QString::number(config.registration_timeout_ms));
+    parser.addOption(port);
+    parser.addOption(timeout);
+    return {help,version,port,timeout};
+}
+
+CommandLineParseResult parse_server_settings(QCommandLineParser& parser,const ServerOptions& options,ServerConfiguration& config) {
+    using Status=CommandLineParseResult::Status;
+    if(parser.isSet(options.port)) {
+        bool valid=false;
+        const auto value=parser.value(options.port).toUInt(&valid);
+        if(!valid || value==0 || value>65535)return {Status::Error,QString("Invalid port number: %1").arg(parser.value(options.port))};
+        config.port=static_cast<uint16_t>(value);
+    }
+    if(parser.isSet(options.registration_timeout)) {
+        bool valid=false;
+        const auto value=parser.value(options.registration_timeout).toUInt(&valid);
+        if(!valid || value>60000)return {Status::Error,QString("Invalid registration timeout: %1 (must be between 0 and 60000 ms, 0 = no timeout)").arg(parser.value(options.registration_timeout))};
+        config.registration_timeout_ms=value;
+    }
+    return {Status::Ok};
+}
+
+int run_server(QCoreApplication& app,const ServerConfiguration& config) {
+    qInfo("Starting aggregator server...");
+    qInfo("Port: %d",config.port);
+    if(config.registration_timeout_ms==0)qInfo("Registration timeout: disabled (clients can connect without time limit)");
+    else qInfo("Registration timeout: %d ms",config.registration_timeout_ms);
+    QLoggingCategory::setFilterRules("tcp_socket.bdsp.debug=false");
+    AggregatorServer server(&app);
+    if(!server.start(config.port,config.registration_timeout_ms))return 1;
+    const auto result=QCoreApplication::exec();
+    server.stop();
+    return result;
+}
+}
+
 /// @brief Парсинг аргументов командной строки
 /// @param parser Парсер командной строки
 /// @param config Конфигурация сервера для заполнения
 /// @return Результат парсинга
 CommandLineParseResult parse_command_line(QCommandLineParser &parser, ServerConfiguration *config) {
     using Status = CommandLineParseResult::Status;
-
-    // Настройка парсера
-    parser.setApplicationDescription("Aggregator Server - central component for tracking component availability\n\nUsage: aggregator_server_app run [options]\n\nThe 'run' command starts the aggregator server.");
-    
-    // Добавление стандартных опций
-    const QCommandLineOption help_option = parser.addHelpOption();
-    const QCommandLineOption version_option = parser.addVersionOption();
-    
-    // Позиционный аргумент для команды запуска
-    parser.addPositionalArgument("run", "Start the aggregator server");
-    
-    // Опция для порта сервера
-    const QCommandLineOption port_option(
-        QStringList() << "p" << "port",
-        "Port to listen on (default: 8212)",
-        "port",
-        QString::number(config->port)
-    );
-    parser.addOption(port_option);
-    
-    // Опция для таймаута регистрации
-    const QCommandLineOption registration_timeout_option(
-        QStringList() << "t" << "registration-timeout",
-        "Registration timeout in milliseconds. If a client doesn't register within this time, connection will be closed. Use 0 to disable timeout (default: 1000)",
-        "timeout_ms",
-        QString::number(config->registration_timeout_ms)
-    );
-    parser.addOption(registration_timeout_option);
+    const auto options=configure_parser(parser,*config);
 
     // Парсинг аргументов
     if (not parser.parse(QCoreApplication::arguments())) {
         return { Status::Error, parser.errorText() };
     }
 
-    if (parser.isSet(version_option)) {
+    if (parser.isSet(options.version)) {
         return { Status::VersionRequested };
     }
 
-    if (parser.isSet(help_option)) {
+    if (parser.isSet(options.help)) {
         return { Status::HelpRequested };
     }
 
@@ -79,27 +104,7 @@ CommandLineParseResult parse_command_line(QCommandLineParser &parser, ServerConf
         return { Status::Error, QString("Error: unknown command '%1'. Use 'run' to start the server").arg(command) };
     }
 
-    // Обработка порта сервера
-    if (parser.isSet(port_option)) {
-        bool ok = false;
-        const uint32_t parsed_port = parser.value(port_option).toUInt(&ok);
-        if (not ok or parsed_port == 0 or parsed_port > 65535) {
-            return { Status::Error, QString("Invalid port number: %1").arg(parser.value(port_option)) };
-        }
-        config->port = static_cast<uint16_t>(parsed_port);
-    }
-
-    // Обработка таймаута регистрации
-    if (parser.isSet(registration_timeout_option)) {
-        bool ok = false;
-        const uint32_t parsed_timeout = parser.value(registration_timeout_option).toUInt(&ok);
-        if (not ok or parsed_timeout > 60000) {
-            return { Status::Error, QString("Invalid registration timeout: %1 (must be between 0 and 60000 ms, 0 = no timeout)").arg(parser.value(registration_timeout_option)) };
-        }
-        config->registration_timeout_ms = static_cast<uint32_t>(parsed_timeout);
-    }
-
-    return { Status::Ok };
+    return parse_server_settings(parser,options,*config);
 }
 
 /// @brief Точка входа в приложение сервера агрегации
@@ -132,24 +137,5 @@ int32_t main(int32_t argc, char* argv[]) {
         parser.showHelp();
     }
 
-    // Логирование конфигурации
-    qInfo("Starting aggregator server...");
-    qInfo("Port: %d", config.port);
-    if (config.registration_timeout_ms == 0) {
-        qInfo("Registration timeout: disabled (clients can connect without time limit)");
-    } else {
-        qInfo("Registration timeout: %d ms", config.registration_timeout_ms);
-    }
-
-    // Отключаем логирование tcp_socket.bdsp для чистого вывода
-    QLoggingCategory::setFilterRules("tcp_socket.bdsp.debug=false");
-
-    // Создание и запуск сервера агрегации
-    AggregatorServer server(&app);
-    if (not server.start(config.port, config.registration_timeout_ms)) {
-        return 1;
-    }
-    int32_t result = QCoreApplication::exec();
-    server.stop();
-    return result;
+    return run_server(app,config);
 }

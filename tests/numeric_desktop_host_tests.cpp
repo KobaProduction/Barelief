@@ -224,6 +224,33 @@ static std::pair<domain::NumericProcessingGraph,std::vector<EndpointIdentity>> f
  for(int i=0;i<count;++i){auto output=graph().nodes[1];output.id=100+i;g.nodes.push_back(output);g.edges.push_back({0,output.id,0,0});selected.push_back({g.graph_id,output.id,domain::PortDirection::Input,0});}
  return {std::move(g),std::move(selected)};
 }
+static void wide_host_preview_fairness(){
+ auto [g,selected]=fanout_graph(65);NumericDesktopHost host;{Replies replies(host);replies.accepted(apply(g));}
+ require(host.subscribe_numeric_frames(selected),"wide host subscription");host.set_numeric_preview_cadence_hz(240);
+ FrameProbe peer(*host.local_engine(),{g.graph_id,0,domain::PortDirection::Output,0});
+ struct Seen {unsigned count=0;std::uint64_t first=0,last=0;};std::array<Seen,65> seen{};bool invalid=false;
+ host.set_numeric_frame_handler([&](const DeliveredNumericFrame& frame){
+  if(!frame.context || frame.context->endpoint.node<100 || frame.context->endpoint.node>=165)return;
+  if(frame.status!=Status::ok || !frame.frame || !frame.frame.view().stamp.available){invalid=true;return;}
+  auto& lane=seen[std::size_t(frame.context->endpoint.node-100)];std::uint64_t exact=0;
+  if(load_element(std::get<NumericView>(frame.frame.view().payload),{0,0,0},exact)!=Status::ok || exact!=frame.frame.view().stamp.source_sequence || (lane.count && exact<=lane.last)){invalid=true;return;}
+  if(!lane.count)lane.first=exact;lane.last=exact;++lane.count;
+ });
+ auto complete=[&]{return std::all_of(seen.begin(),seen.end(),[](const auto& lane){return lane.count>=5 && lane.last>lane.first;});};
+ QElapsedTimer deadline;deadline.start();std::uint64_t sequence=0;
+ while(!complete() && !invalid && deadline.elapsed()<5000){
+  ++sequence;feed(host,1,sequence,sequence);
+  // GUI intentionally paused. The independent loss-sensitive peer must keep
+  // advancing while the worker fills the same fixed 32 GUI owning slots.
+  QElapsedTimer peerDeadline;peerDeadline.start();while(!peer.equals(sequence) && peerDeadline.elapsed()<500)QThread::msleep(1);
+  require(peer.equals(sequence),"paused wide GUI owners starved independent peer");
+  QCoreApplication::processEvents();
+ }
+ if(invalid || !complete()){std::fprintf(stderr,"wide host rounds=%llu invalid=%d",(unsigned long long)sequence,int(invalid));for(std::size_t i=0;i<seen.size();++i)std::fprintf(stderr," %zu:%u/%llu..%llu",i,seen[i].count,(unsigned long long)seen[i].first,(unsigned long long)seen[i].last);std::fprintf(stderr,"\n");}
+ require(!invalid && complete(),"65 producing endpoints did not each deliver five progressing GUI frames");
+ require(peer.count()>=sequence,"wide GUI preview lost peer frames");host.set_numeric_frame_handler({});
+ std::fprintf(stderr,"65-endpoint host fairness: five progressing frames each, rounds=%llu, paused GUI peer preserved\n",(unsigned long long)sequence);
+}
 static void local_delivery_saturation(){NumericEngine engine;auto [g,selected]=fanout_graph();{Replies replies(engine);replies.accepted(apply(g));}require(engine.subscribe_numeric_frames(selected),"core saturation selected ports");
  std::map<domain::NodeId,std::uint64_t> latest;std::set<domain::NodeId> gaps;engine.set_numeric_frame_handler([&](const auto& f){if(f.context&&f.frame&&f.frame.view().stamp.available){latest[f.context->endpoint.node]=value(f);if(f.frame.view().stamp.discontinuity)gaps.insert(f.context->endpoint.node);}});
  for(std::uint64_t i=1;i<=200;++i)feed(engine,1,i,i);
@@ -332,4 +359,4 @@ static void active_remote_rebind(){NumericDesktopHost producer;auto g=graph();g.
  std::array<std::uint64_t,60> source_sequences{};auto deliver=[&](std::uint64_t sequence,std::uint64_t expected){for(int i=0;i<60;++i){require(wait([&]{feed(producer,1,++source_sequences[i],expected,i);auto found=retained.find(100+i);return found!=retained.end()&&value(found->second)==expected;}),"active rebind selected port delivery");}};
  deliver(1,20);require(retained.size()==60,"active rebind60 renderer owners");require(receiver.subscribe_numeric_frames(selected),"same60 active arena admission refused");deliver(2,21);for(const auto& [node,f]:retained)require(value(f)==21,"same60 rebind lost retained renderer or latest delivery");
 }
-int main(int argc,char**argv){std::setvbuf(stderr,nullptr,_IONBF,0);std::fprintf(stderr,"phase main before Qt\n");QCoreApplication app(argc,argv);std::fprintf(stderr,"phase Qt ready\n");try{event_preview_pending_and_reentrancy();cadence_fixture::preview_cadence();asynchronous_snapshot_query();slow_history_preview_preserves_taps();for(bool remote:{false,true})for(auto tag:{Semantic::Numeric,Semantic::History})ordinary_matrix_query(remote,tag);if(argc>1&&QByteArray(argv[1])=="--eviction-gap"){evicted_endpoint_gap();return 0;}std::fprintf(stderr,"phase eviction\n");evicted_endpoint_gap();std::fprintf(stderr,"phase saturation\n");local_delivery_saturation();std::fprintf(stderr,"phase capacity\n");capacity();std::fprintf(stderr,"phase live\n");live_replies();std::fprintf(stderr,"phase reentrant\n");reentrant("stop");reentrant("apply");reentrant("subscribe");std::fprintf(stderr,"phase lifetime\n");lifetime();std::fprintf(stderr,"phase rebind\n");newest_and_rebind();all_selected_ports(false);all_selected_ports(true);all_selected_cold_matrices();std::fprintf(stderr,"phase active_remote_rebind\n");active_remote_rebind();std::fprintf(stderr,"phase owning History ingress\n");owning_history_ingress();std::fprintf(stderr,"phase history local\n");history_resume(false);std::fprintf(stderr,"phase history remote\n");history_resume(true);std::puts("worker admission/live completion/reentrant data fences/lifetime/newest/rebind/all selected ports/active60 rebind/local and remote History resume PASS");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
+int main(int argc,char**argv){std::setvbuf(stderr,nullptr,_IONBF,0);std::fprintf(stderr,"phase main before Qt\n");QCoreApplication app(argc,argv);std::fprintf(stderr,"phase Qt ready\n");try{if(argc>1&&QByteArray(argv[1])=="--wide-preview"){wide_host_preview_fairness();return 0;}wide_host_preview_fairness();event_preview_pending_and_reentrancy();cadence_fixture::preview_cadence();asynchronous_snapshot_query();slow_history_preview_preserves_taps();for(bool remote:{false,true})for(auto tag:{Semantic::Numeric,Semantic::History})ordinary_matrix_query(remote,tag);if(argc>1&&QByteArray(argv[1])=="--eviction-gap"){evicted_endpoint_gap();return 0;}std::fprintf(stderr,"phase eviction\n");evicted_endpoint_gap();std::fprintf(stderr,"phase saturation\n");local_delivery_saturation();std::fprintf(stderr,"phase capacity\n");capacity();std::fprintf(stderr,"phase live\n");live_replies();std::fprintf(stderr,"phase reentrant\n");reentrant("stop");reentrant("apply");reentrant("subscribe");std::fprintf(stderr,"phase lifetime\n");lifetime();std::fprintf(stderr,"phase rebind\n");newest_and_rebind();all_selected_ports(false);all_selected_ports(true);all_selected_cold_matrices();std::fprintf(stderr,"phase active_remote_rebind\n");active_remote_rebind();std::fprintf(stderr,"phase owning History ingress\n");owning_history_ingress();std::fprintf(stderr,"phase history local\n");history_resume(false);std::fprintf(stderr,"phase history remote\n");history_resume(true);std::puts("worker admission/live completion/reentrant data fences/lifetime/newest/rebind/all selected ports/active60 rebind/local and remote History resume PASS");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

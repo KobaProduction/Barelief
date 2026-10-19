@@ -1,3 +1,4 @@
+#include <core_app/plot_composition.h>
 #include <core_app/graph_panel.h>
 #include <visualization/charts/line.h>
 #include <visualization/numeric_image_view.h>
@@ -39,7 +40,7 @@ int main(int argc,char** argv){
         const auto capture=[&](auto* view,const QString& name){if(argc!=2)return;require(artifacts.mkpath("."),"artifact directory");QElapsedTimer timer;timer.start();while(timer.elapsed()<100){QCoreApplication::processEvents();QThread::msleep(2);}require(view->grabFramebuffer().save(artifacts.filePath(name+".png")),"save own QML framebuffer");};
         const auto noFocus=[](QWidget& view){view.setAttribute(Qt::WA_ShowWithoutActivating);view.setWindowFlag(Qt::WindowDoesNotAcceptFocus);};
         auto* schedulingChart=new SchedulingChart;
-        GraphPanel vector("vector",schedulingChart,{{"kind","FFTView"}},nullptr);
+        GraphPanel vector("vector",schedulingChart,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
         noFocus(vector);
         vector.resize(900,500);vector.show();
         auto* controls=vector.findChild<QQuickWidget*>("numericGraphSettings");ready(controls);
@@ -295,7 +296,7 @@ int main(int argc,char** argv){
         require(wait([&]{return chart->presentation_model()->vectorPoints().isEmpty();}),
                 "oversize rejection left stale vector geometry");
 
-        GraphPanel matrix("matrix",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","image2d"},{"auto_range",false},{"minimum",0},{"maximum",6}},nullptr);
+        GraphPanel matrix("matrix",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","image2d"},{"auto_range",false},{"minimum",0},{"maximum",6}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},false}));
         noFocus(matrix);
         matrix.resize(800,500);matrix.show();auto* image=matrix.image_view();ready(image);
         image->set_y_range(false,0,6,10);image->set_matrix({{1,2,3},{4,5,6}});
@@ -315,7 +316,7 @@ int main(int argc,char** argv){
 
         // Per-view surface state survives lazy renderer creation without writing a document delta.
         const QJsonObject savedCamera{{"version",2},{"position",QJsonArray{2,3,4}},{"quaternion",QJsonArray{1,0,0,0}}};
-        GraphPanel surface("surface",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","image2d"}},nullptr);
+        GraphPanel surface("surface",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","image2d"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},false}));
         QSignalSpy surfaceWrites(&surface,&GraphPanel::presentation_changed);
         surface.restore_presentation({{"display_mode","image2d"},{"camera",savedCamera},{"renderer",QJsonObject{{"pause",true},{"selection",1}}},{"surface_side_ratio",.35}});
         require(surfaceWrites.isEmpty() && !surface.owned_surface(),"surface restore eagerly creates renderer or writes state");
@@ -388,7 +389,7 @@ int main(int argc,char** argv){
         require(overlayNotifications.size()==1 && surfaceView->axis_layout_telemetry().value("paintCount").toULongLong()==43,
                 "identical surface overlay repainted or feedback acknowledgement was lost");
 
-        GraphPanel metrics("metrics",new LineChartView,{{"kind","ScalarView"}},nullptr);
+        GraphPanel metrics("metrics",new LineChartView,{{"kind","ScalarView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"metrics","signedbar"},{},false}));
         noFocus(metrics);
         metrics.resize(800,400);metrics.show();auto* values=metrics.metrics_view();ready(values);
         values->set_inputs({{0,"<b>Literal name</b>"},{9,"Maximum"}});values->set_value(0,"9007199254740993");values->set_value(9,"18446744073709551615");

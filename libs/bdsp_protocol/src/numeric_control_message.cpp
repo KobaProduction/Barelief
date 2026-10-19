@@ -1,7 +1,10 @@
+#include "text_validation.h"
+#include <bdsp_protocol/version_admission.h>
 #include <bdsp_protocol/numeric_control_codec.h>
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <iterator>
 #include <new>
 #include <cmath>
 namespace bdsp_protocol::numeric_control {
@@ -39,42 +42,10 @@ void *Context::reserve(std::size_t n, std::size_t width, std::size_t alignment) 
     }
     return materializing && !arena.empty() ? arena.data() + start : nullptr;
 }
-bool utf8(std::string_view s) noexcept {
-    for (std::size_t i = 0; i < s.size();) {
-        auto c = static_cast<unsigned char>(s[i++]);
-        if (!c)
-            return false;
-        if (c < 128)
-            continue;
-        unsigned n = 0;
-        std::uint32_t v = 0, m = 0;
-        if (c >= 194 && c <= 223) {
-            n = 1;
-            v = c & 31;
-            m = 128;
-        } else if (c >= 224 && c <= 239) {
-            n = 2;
-            v = c & 15;
-            m = 2048;
-        } else if (c >= 240 && c <= 244) {
-            n = 3;
-            v = c & 7;
-            m = 65536;
-        } else
-            return false;
-        if (n > s.size() - i)
-            return false;
-        while (n--) {
-            c = static_cast<unsigned char>(s[i++]);
-            if ((c & 192) != 128)
-                return false;
-            v = (v << 6) | (c & 63);
-        }
-        if (v < m || v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff))
-            return false;
-    }
-    return true;
+bool utf8(std::string_view text) noexcept {
+    return bdsp_protocol::text_detail::utf8_without_nul(text);
 }
+
 bool Context::store(std::string_view &s, std::size_t maximum, bool binary) noexcept {
     if (s.size() > maximum || s.size() > limits.total_text_bytes - text)
         return fail(Status::Limit);
@@ -86,84 +57,30 @@ bool Context::store(std::string_view &s, std::size_t maximum, bool binary) noexc
         binary_bytes += s.size();
     }
     text += s.size();
-    if (reading || validating) {
-        // Text bytes are not descriptor records.
-        if (s.empty()) {
-            if (materializing)
-                s = {};
-            return true;
-        }
-        if (s.size() > limits.arena_bytes - used)
-            return fail(Status::Limit);
-        auto *p = materializing ? arena.data() + used : nullptr;
-        used += s.size();
-        if (materializing) {
-            if (!s.empty())
-                std::memcpy(p, s.data(), s.size());
-            s = {reinterpret_cast<const char *>(p), s.size()};
-        }
+    return (!reading && !validating) || store_text_bytes(s);
+}
+bool Context::store_text_bytes(std::string_view &s) noexcept {
+    // Text bytes are not descriptor records.
+    if (s.empty()) {
+        if (materializing) s = {};
+        return true;
+    }
+    if (s.size() > limits.arena_bytes - used) return fail(Status::Limit);
+    auto *p = materializing ? arena.data() + used : nullptr;
+    used += s.size();
+    if (materializing) {
+        std::memcpy(p, s.data(), s.size());
+        s = {reinterpret_cast<const char *>(p), s.size()};
     }
     return true;
 }
 unsigned max_tag(Schema s) noexcept {
-    switch (s) {
-    case Schema::Literal:
-        return 5;
-    case Schema::Ratio:
-    case Schema::Extent:
-    case Schema::Dyadic:
-    case Schema::Contract:
-        return 2;
-    case Schema::Coordinates:
-        return 4;
-    case Schema::Representation:
-        return 6;
-    case Schema::Numeric:
-        return 17;
-    case Schema::Structured:
-        return 5;
-    case Schema::Policy:
-        return 10;
-    case Schema::Parameter:
-        return 5;
-    case Schema::Parameters:
-        return 21;
-    case Schema::Oscillator:
-        return 7;
-    case Schema::MixerWeight:
-        return 2;
-    case Schema::Port:
-        return 3;
-    case Schema::Node:
-        return 6;
-    case Schema::Edge:
-        return 5;
-    case Schema::Versions:
-        return 5;
-    case Schema::Graph:
-        return 6;
-    case Schema::Command:
-        return 8;
-    case Schema::Resources:
-        return 5;
-    case Schema::CapabilityRow:
-        return 5;
-    case Schema::Capabilities:
-        return 5;
-    case Schema::Diagnostic:
-        return 4;
-    case Schema::State:
-        return 6;
-    case Schema::Reply:
-        return 5;
-    case Schema::Extension:
-        return 2;
-    case Schema::Message:
-        return 9;
-    case Schema::UIntElement:
-        return 0;
-    }
-    return 0;
+    constexpr unsigned tags[]{
+        5, 2, 2, 4, 6, 17, 5, 2, 10, 2, 5, 21, 7, 2, 3,
+        6, 5, 5, 6, 8, 5, 5, 5, 5, 6, 5, 2, 9, 0
+    };
+    const auto index = static_cast<unsigned>(s);
+    return index < std::size(tags) ? tags[index] : 0;
 }
 namespace {
 using namespace signal_contracts;
@@ -232,15 +149,19 @@ template <class T> bool element(Archive &a, void *p, std::size_t i) noexcept {
     return true;
 }
 template <class T>
+T *sequence_storage(Context &state, std::size_t count) noexcept {
+    if (state.reading || state.validating)
+        return static_cast<T *>(state.reserve(count, sizeof(T), alignof(T)));
+    return nullptr;
+}
+template <class T>
 bool seq(Archive &a, unsigned tag, Schema schema, std::span<const T> &v, std::size_t maximum, Visit f) noexcept {
     std::size_t n = v.size();
     if (!a.sequence_size(tag, n))
         return false;
     if (n > maximum)
         return a.state.fail(Status::Limit);
-    T *out = nullptr;
-    if (a.state.reading || a.state.validating)
-        out = static_cast<T *>(a.state.reserve(n, sizeof(T), alignof(T)));
+    T *out = sequence_storage<T>(a.state, n);
     if (a.state.error != Status::Ok)
         return false;
     Seq<T> s{v, out, f};
@@ -250,44 +171,41 @@ bool seq(Archive &a, unsigned tag, Schema schema, std::span<const T> &v, std::si
         v = {out, n};
     return true;
 }
+bool literal_signed(Archive &a, Literal &v) noexcept {
+    std::int64_t n = a.state.reading ? 0 : std::get<std::int64_t>(v);
+    if (!a.int_field(2, n)) return false;
+    v = n;
+    return true;
+}
+bool literal_unsigned(Archive &a, Literal &v) noexcept {
+    std::uint64_t n = a.state.reading ? 0 : std::get<std::uint64_t>(v);
+    if (!a.uint_field(3, n)) return false;
+    v = n;
+    return true;
+}
+bool literal_float(Archive &a, Literal &v) noexcept {
+    std::uint32_t n = a.state.reading ? 0 : std::bit_cast<std::uint32_t>(std::get<float>(v));
+    if (!u(a, 4, n)) return false;
+    v = std::bit_cast<float>(n);
+    return true;
+}
+bool literal_double(Archive &a, Literal &v) noexcept {
+    std::uint64_t n = a.state.reading ? 0 : std::bit_cast<std::uint64_t>(std::get<double>(v));
+    if (!a.uint_field(5, n)) return false;
+    v = std::bit_cast<double>(n);
+    return true;
+}
 bool literal(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Literal *>(p);
-    std::uint64_t tag = 0;
-    if (!a.state.reading) {
-        if (std::holds_alternative<std::int64_t>(v))
-            tag = 1;
-        else if (std::holds_alternative<std::uint64_t>(v))
-            tag = 2;
-        else if (std::holds_alternative<float>(v))
-            tag = 3;
-        else
-            tag = 4;
+    std::uint64_t tag = a.state.reading ? 0 : v.index() + 1;
+    if (!a.uint_field(1, tag)) return false;
+    switch (tag) {
+    case 1: return literal_signed(a, v);
+    case 2: return literal_unsigned(a, v);
+    case 3: return literal_float(a, v);
+    case 4: return literal_double(a, v);
+    default: return a.state.fail();
     }
-    if (!a.uint_field(1, tag))
-        return false;
-    if (tag == 1) {
-        std::int64_t n = a.state.reading ? 0 : std::get<std::int64_t>(v);
-        if (!a.int_field(2, n))
-            return false;
-        v = n;
-    } else if (tag == 2) {
-        std::uint64_t n = a.state.reading ? 0 : std::get<std::uint64_t>(v);
-        if (!a.uint_field(3, n))
-            return false;
-        v = n;
-    } else if (tag == 3) {
-        std::uint32_t n = a.state.reading ? 0 : std::bit_cast<std::uint32_t>(std::get<float>(v));
-        if (!u(a, 4, n))
-            return false;
-        v = std::bit_cast<float>(n);
-    } else if (tag == 4) {
-        std::uint64_t n = a.state.reading ? 0 : std::bit_cast<std::uint64_t>(std::get<double>(v));
-        if (!a.uint_field(5, n))
-            return false;
-        v = std::bit_cast<double>(n);
-    } else
-        return a.state.fail();
-    return true;
 }
 bool ratio(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Ratio *>(p);
@@ -339,29 +257,24 @@ bool structured(Archive &a, void *p) noexcept {
     return a.text_field(1, v.schema) && u(a, 2, v.version) && a.text_field(3, v.encoding) &&
            a.uint_field(4, v.payload_bytes.minimum) && a.uint_field(5, v.payload_bytes.maximum);
 }
+template <class T>
+bool contract_alternative(Archive &a, DataContract &v, unsigned tag, Schema schema, Visit visitor,
+                          unsigned &selected) noexcept {
+    T item{};
+    bool present = !a.state.reading && std::holds_alternative<T>(v);
+    if (present) item = std::get<T>(v);
+    if (!a.object(tag, schema, &item, visitor, &present)) return false;
+    if (present) {
+        v = item;
+        ++selected;
+    }
+    return true;
+}
 bool contract(Archive &a, void *p) noexcept {
     auto &v = *static_cast<DataContract *>(p);
     unsigned selected = 0;
-    NumericContract n{};
-    bool pn = !a.state.reading && std::holds_alternative<NumericContract>(v);
-    if (pn)
-        n = std::get<NumericContract>(v);
-    if (!a.object(1, Schema::Numeric, &n, numeric, &pn))
-        return false;
-    if (pn) {
-        v = n;
-        ++selected;
-    }
-    StructuredContract s{};
-    bool ps = !a.state.reading && std::holds_alternative<StructuredContract>(v);
-    if (ps)
-        s = std::get<StructuredContract>(v);
-    if (!a.object(2, Schema::Structured, &s, structured, &ps))
-        return false;
-    if (ps) {
-        v = s;
-        ++selected;
-    }
+    if (!contract_alternative<NumericContract>(a, v, 1, Schema::Numeric, numeric, selected) ||
+        !contract_alternative<StructuredContract>(a, v, 2, Schema::Structured, structured, selected)) return false;
     if (selected != 1)
         return a.state.fail();
     if (!a.state.reading || a.state.materializing)
@@ -388,31 +301,37 @@ bool policy(Archive &a, void *p) noexcept {
            a.object(9, Schema::Literal, &v.negative_inf_replacement, literal) &&
            a.object(10, Schema::Literal, &v.positive_inf_replacement, literal);
 }
+bool parameter_literal(Archive &a, Parameter &v) noexcept {
+    Literal value = a.state.reading ? Literal{std::int64_t{0}} : std::get<Literal>(v.value);
+    if (!a.object(3, Schema::Literal, &value, literal)) return false;
+    v.value = value;
+    return true;
+}
+bool parameter_bool(Archive &a, Parameter &v) noexcept {
+    bool value = a.state.reading ? false : std::get<bool>(v.value);
+    if (!a.bool_field(4, value)) return false;
+    v.value = value;
+    return true;
+}
+bool parameter_text(Archive &a, Parameter &v) noexcept {
+    std::string_view value = a.state.reading ? std::string_view{} : std::get<std::string_view>(v.value);
+    if (!a.text_field(5, value)) return false;
+    v.value = value;
+    return true;
+}
 bool parameter(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Parameter *>(p);
-    if (!a.text_field(1, v.key))
-        return false;
-    std::uint64_t kind = std::holds_alternative<Literal>(v.value) ? 1 : std::holds_alternative<bool>(v.value) ? 2 : 3;
-    if (!a.uint_field(2, kind))
-        return false;
-    if (kind == 1) {
-        Literal l = a.state.reading ? Literal{std::int64_t{0}} : std::get<Literal>(v.value);
-        if (!a.object(3, Schema::Literal, &l, literal))
-            return false;
-        v.value = l;
-    } else if (kind == 2) {
-        bool b = a.state.reading ? false : std::get<bool>(v.value);
-        if (!a.bool_field(4, b))
-            return false;
-        v.value = b;
-    } else if (kind == 3) {
-        std::string_view s = a.state.reading ? std::string_view{} : std::get<std::string_view>(v.value);
-        if (!a.text_field(5, s))
-            return false;
-        v.value = s;
-    } else
-        return a.state.fail();
-    return !v.key.empty() || a.state.fail();
+    if (!a.text_field(1, v.key)) return false;
+    std::uint64_t kind = a.state.reading ? 0 : v.value.index()+1;
+    if (!a.uint_field(2, kind)) return false;
+    bool valid = false;
+    switch (kind) {
+    case 1: valid = parameter_literal(a, v); break;
+    case 2: valid = parameter_bool(a, v); break;
+    case 3: valid = parameter_text(a, v); break;
+    default: return a.state.fail();
+    }
+    return valid && (!v.key.empty() || a.state.fail());
 }
 bool binary64(Archive& a,unsigned tag,double& value) noexcept {
     auto bits=std::bit_cast<std::uint64_t>(value);
@@ -429,103 +348,134 @@ bool mixer_weight(Archive& a,void* p) noexcept {
     auto& v=*static_cast<domain::MixerInputWeight*>(p);
     return u(a,1,v.port)&&binary64(a,2,v.weight);
 }
+std::uint64_t primary_parameter_kind(const Parameters& value) noexcept {
+    if(std::holds_alternative<EndpointParameters>(value))return 1;
+    if(std::holds_alternative<TransformParameters>(value))return 2;
+    if(std::holds_alternative<domain::ConverterProcessingParameters>(value))return 3;
+    if(std::holds_alternative<domain::RouteProcessingParameters>(value))return 4;
+    if(std::holds_alternative<ReductionParameters>(value))return 5;
+    return 0;
+}
+
+std::uint64_t parameter_kind(const Parameters& value) noexcept {
+    if(const auto primary=primary_parameter_kind(value))return primary;
+    if(std::holds_alternative<domain::HistoryProcessingParameters>(value))return 6;
+    if(std::holds_alternative<GeneratorParameters>(value))return 7;
+    if(std::holds_alternative<ClockParameters>(value))return 8;
+    if(std::holds_alternative<MixerParameters>(value))return 9;
+    return 0;
+}
+bool unique_parameter_keys(std::span<const Parameter> values) noexcept {
+    for (std::size_t i = 0; i < values.size(); ++i)
+        for (std::size_t j = 0; j < i; ++j)
+            if (values[i].key == values[j].key) return false;
+    return true;
+}
+bool endpoint_parameters(Archive &a, Parameters &v, std::uint64_t kind) noexcept {
+    std::span<const Parameter> values;
+    if (!a.state.reading)
+        values = kind == 1 ? std::get<EndpointParameters>(v).values : std::get<TransformParameters>(v).values;
+    if (!seq(a, 2, Schema::Parameter, values, a.state.limits.parameters, parameter)) return false;
+    if ((!a.state.reading || a.state.materializing) && !unique_parameter_keys(values)) return a.state.fail();
+    if (kind == 1) v = EndpointParameters{values};
+    else v = TransformParameters{values};
+    return true;
+}
+bool converter_parameters(Archive &a, Parameters &v) noexcept {
+    domain::ConverterProcessingParameters c;
+    if (!a.state.reading) c = std::get<domain::ConverterProcessingParameters>(v);
+    if (!a.object(3, Schema::Policy, &c.policy, policy)) return false;
+    v = c;
+    return true;
+}
+bool route_parameters(Archive &a, Parameters &v) noexcept {
+    domain::RouteProcessingParameters r;
+    if (!a.state.reading) r = std::get<domain::RouteProcessingParameters>(v);
+    if (!u(a, 4, r.outputs) || !u(a, 5, r.selected) || !a.bool_field(6, r.open) || !u(a,21,r.channels_per_stream)) return false;
+    v = r;
+    return true;
+}
+bool reduction_parameters(Archive &a, Parameters &v) noexcept {
+    ReductionParameters r;
+    if (!a.state.reading) r = std::get<ReductionParameters>(v);
+    constexpr domain::NumericReduction ops[]{domain::NumericReduction::MaxAbs, domain::NumericReduction::SignedMean, domain::NumericReduction::RMS};
+    constexpr domain::ReductionChannels ch[]{domain::ReductionChannels::AllChannels, domain::ReductionChannels::BothChannels, domain::ReductionChannels::SelectedChannels};
+    constexpr domain::ReductionRows rows[]{domain::ReductionRows::WholeValue, domain::ReductionRows::LatestHistoryRow};
+    constexpr PrecisionLoss prec[]{PrecisionLoss::RejectInexact, PrecisionLoss::AllowDeclared};
+    constexpr Rounding rounds[]{Rounding::TowardZero, Rounding::NearestTiesEven};
+    if (!choice(a, 7, r.operation, ops) || !choice(a, 8, r.channels, ch) || !choice(a, 9, r.rows, rows) ||
+        !seq(a, 10, Schema::UIntElement, r.selected_channels, a.state.limits.channels, uint_element) ||
+        !choice(a, 11, r.precision_loss, prec) || !choice(a, 12, r.rounding, rounds)) return false;
+    v = r;
+    return true;
+}
+bool history_parameters(Archive &a, Parameters &v) noexcept {
+    domain::HistoryProcessingParameters h;
+    if (!a.state.reading) h = std::get<domain::HistoryProcessingParameters>(v);
+    if (!a.uint_field(13, h.capacity)) return false;
+    v = h;
+    return true;
+}
+bool unique_oscillators(std::span<const signal_contracts::OscillatorParameters> values) noexcept {
+    for (std::size_t i = 0; i < values.size(); ++i)
+        for (std::size_t j = 0; j < i; ++j)
+            if (values[i].id == values[j].id) return false;
+    return true;
+}
+bool generator_parameters(Archive &a, Parameters &v) noexcept {
+    GeneratorParameters g;
+    if (!a.state.reading) g = std::get<GeneratorParameters>(v);
+    if (!seq(a, 14, Schema::Oscillator, g.oscillators,
+             std::min<std::size_t>(signal_contracts::max_oscillators, a.state.limits.parameters), oscillator) ||
+        ((!a.state.reading || a.state.materializing) && g.oscillators.empty())) return a.state.fail();
+    if ((!a.state.reading || a.state.materializing) && !unique_oscillators(g.oscillators)) return a.state.fail();
+    v = g;
+    return true;
+}
+bool clock_parameters(Archive &a, Parameters &v) noexcept {
+    ClockParameters c;
+    if (!a.state.reading) c = std::get<ClockParameters>(v);
+    if (!u(a, 15, c.sample_rate) || !a.text_field(16, c.domain) ||
+        c.sample_rate < domain::min_sample_clock_rate || c.sample_rate > domain::max_sample_clock_rate || c.domain.empty()) return a.state.fail();
+    v = c;
+    return true;
+}
+bool valid_mixer_weights(const MixerParameters &m) noexcept {
+    for (std::size_t i = 0; i < m.weights.size(); ++i) {
+        if (domain::mixer_requires_nonnegative_weights(m.mode) && m.weights[i].weight < 0) return false;
+        for (std::size_t j = 0; j < i; ++j)
+            if (m.weights[i].port == m.weights[j].port) return false;
+    }
+    return true;
+}
+bool mixer_parameters(Archive &a, Parameters &v) noexcept {
+    MixerParameters m;
+    if (!a.state.reading) m = std::get<MixerParameters>(v);
+    constexpr domain::MixerMode modes[]{domain::MixerMode::WeightedSum, domain::MixerMode::WeightedMean, domain::MixerMode::WeightedRMS, domain::MixerMode::MaxAbsolute};
+    constexpr domain::MixerConsumption consumption[]{domain::MixerConsumption::ClockedFifo, domain::MixerConsumption::SourceAligned};
+    if (!choice(a, 17, m.mode, modes) || !seq(a, 18, Schema::MixerWeight, m.weights, a.state.limits.ports, mixer_weight) ||
+        !u(a, 19, m.fifo_milliseconds) || !choice(a, 20, m.consumption, consumption) ||
+        ((!a.state.reading || a.state.materializing) && m.weights.empty()) ||
+        m.fifo_milliseconds < domain::min_mixer_fifo_ms || m.fifo_milliseconds > domain::max_mixer_fifo_ms) return a.state.fail();
+    if ((!a.state.reading || a.state.materializing) && !valid_mixer_weights(m)) return a.state.fail();
+    v = m;
+    return true;
+}
 bool parameters(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Parameters *>(p);
-    std::uint64_t kind = 0;
-    if (!a.state.reading) {
-        if (std::holds_alternative<EndpointParameters>(v))
-            kind = 1;
-        else if (std::holds_alternative<TransformParameters>(v))
-            kind = 2;
-        else if (std::holds_alternative<domain::ConverterProcessingParameters>(v))
-            kind = 3;
-        else if (std::holds_alternative<domain::RouteProcessingParameters>(v))
-            kind = 4;
-        else if (std::holds_alternative<ReductionParameters>(v))
-            kind = 5;
-        else if (std::holds_alternative<domain::HistoryProcessingParameters>(v)) kind=6;
-        else if (std::holds_alternative<GeneratorParameters>(v)) kind=7;
-        else if (std::holds_alternative<ClockParameters>(v)) kind=8;
-        else if (std::holds_alternative<MixerParameters>(v)) kind=9;
+    std::uint64_t kind = a.state.reading ? 0 : parameter_kind(v);
+    if (!a.uint_field(1, kind)) return false;
+    switch (kind) {
+    case 1: case 2: return endpoint_parameters(a, v, kind);
+    case 3: return converter_parameters(a, v);
+    case 4: return route_parameters(a, v);
+    case 5: return reduction_parameters(a, v);
+    case 6: return history_parameters(a, v);
+    case 7: return generator_parameters(a, v);
+    case 8: return clock_parameters(a, v);
+    case 9: return mixer_parameters(a, v);
+    default: return a.state.fail();
     }
-    if (!a.uint_field(1, kind))
-        return false;
-    if (kind == 1 || kind == 2) {
-        std::span<const Parameter> values;
-        if (!a.state.reading)
-            values = kind == 1 ? std::get<EndpointParameters>(v).values : std::get<TransformParameters>(v).values;
-        if (!seq(a, 2, Schema::Parameter, values, a.state.limits.parameters, parameter))
-            return false;
-        if (!a.state.reading || a.state.materializing)
-            for (std::size_t i = 0; i < values.size(); ++i)
-                for (std::size_t j = 0; j < i; ++j)
-                    if (values[i].key == values[j].key)
-                        return a.state.fail();
-        if (kind == 1)
-            v = EndpointParameters{values};
-        else
-            v = TransformParameters{values};
-    } else if (kind == 3) {
-        domain::ConverterProcessingParameters c;
-        if (!a.state.reading)
-            c = std::get<domain::ConverterProcessingParameters>(v);
-        if (!a.object(3, Schema::Policy, &c.policy, policy))
-            return false;
-        v = c;
-    } else if (kind == 4) {
-        domain::RouteProcessingParameters r;
-        if (!a.state.reading)
-            r = std::get<domain::RouteProcessingParameters>(v);
-        if (!u(a, 4, r.outputs) || !u(a, 5, r.selected) || !a.bool_field(6, r.open) || !u(a,21,r.channels_per_stream))
-            return false;
-        v = r;
-    } else if (kind == 5) {
-        ReductionParameters r;
-        if (!a.state.reading)
-            r = std::get<ReductionParameters>(v);
-        constexpr domain::NumericReduction ops[]{domain::NumericReduction::MaxAbs, domain::NumericReduction::SignedMean,
-                                                 domain::NumericReduction::RMS};
-        constexpr domain::ReductionChannels ch[]{domain::ReductionChannels::AllChannels,
-                                                 domain::ReductionChannels::BothChannels,
-                                                 domain::ReductionChannels::SelectedChannels};
-        constexpr domain::ReductionRows rows[]{domain::ReductionRows::WholeValue,
-                                               domain::ReductionRows::LatestHistoryRow};
-        constexpr PrecisionLoss prec[]{PrecisionLoss::RejectInexact, PrecisionLoss::AllowDeclared};
-        constexpr Rounding rounds[]{Rounding::TowardZero, Rounding::NearestTiesEven};
-        if (!choice(a, 7, r.operation, ops) || !choice(a, 8, r.channels, ch) || !choice(a, 9, r.rows, rows) ||
-            !seq(a, 10, Schema::UIntElement, r.selected_channels, a.state.limits.channels, uint_element) ||
-            !choice(a, 11, r.precision_loss, prec) || !choice(a, 12, r.rounding, rounds))
-            return false;
-        v = r;
-    } else if (kind == 6) {
-        domain::HistoryProcessingParameters h;
-        if (!a.state.reading)
-            h = std::get<domain::HistoryProcessingParameters>(v);
-        if (!a.uint_field(13, h.capacity))
-            return false;
-        v = h;
-    } else if(kind==7) {
-        GeneratorParameters g;if(!a.state.reading)g=std::get<GeneratorParameters>(v);
-        if(!seq(a,14,Schema::Oscillator,g.oscillators,std::min<std::size_t>(128,a.state.limits.parameters),oscillator)||((!a.state.reading||a.state.materializing)&&g.oscillators.empty()))return a.state.fail();
-        if(!a.state.reading||a.state.materializing)for(std::size_t i=0;i<g.oscillators.size();++i)for(std::size_t j=0;j<i;++j)
-            if(g.oscillators[i].id==g.oscillators[j].id)return a.state.fail();
-        v=g;
-    } else if(kind==8) {
-        ClockParameters c;if(!a.state.reading)c=std::get<ClockParameters>(v);
-        if(!u(a,15,c.sample_rate)||!a.text_field(16,c.domain)||c.sample_rate<8000||c.sample_rate>192000||c.domain.empty())return a.state.fail();
-        v=c;
-    } else if(kind==9) {
-        MixerParameters m;if(!a.state.reading)m=std::get<MixerParameters>(v);
-        constexpr domain::MixerMode modes[]{domain::MixerMode::WeightedSum,domain::MixerMode::WeightedMean,domain::MixerMode::WeightedRMS,domain::MixerMode::MaxAbsolute};
-        constexpr domain::MixerConsumption consumption[]{domain::MixerConsumption::ClockedFifo,domain::MixerConsumption::SourceAligned};
-        if(!choice(a,17,m.mode,modes)||!seq(a,18,Schema::MixerWeight,m.weights,a.state.limits.ports,mixer_weight)||!u(a,19,m.fifo_milliseconds)||!choice(a,20,m.consumption,consumption)||((!a.state.reading||a.state.materializing)&&m.weights.size()<1)||!m.fifo_milliseconds||m.fifo_milliseconds>10000)return a.state.fail();
-        if(!a.state.reading||a.state.materializing)for(std::size_t i=0;i<m.weights.size();++i){
-            if((m.mode==domain::MixerMode::WeightedMean||m.mode==domain::MixerMode::WeightedRMS)&&m.weights[i].weight<0)return a.state.fail();
-            for(std::size_t j=0;j<i;++j)if(m.weights[i].port==m.weights[j].port)return a.state.fail();}
-        v=m;
-    } else
-        return a.state.fail();
-    return true;
 }
 bool port(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Port *>(p);
@@ -555,9 +505,9 @@ bool binding(Archive& a,void* p) noexcept {
     return si(a,1,v.from) && si(a,2,v.to) && choice(a,3,v.output,roles) && choice(a,4,v.input,roles) && u(a,5,reserved) && (reserved==0 || a.state.fail());
 }
 bool versions(Archive &a, void *p) noexcept {
-    auto &v = *static_cast<domain::ProcessingVersions *>(p);
+    auto &v = *static_cast<GraphVersions *>(p);
     return u(a, 1, v.document) && u(a, 2, v.graph) && u(a, 3, v.processing) && u(a, 4, v.control) && u(a, 5, v.data) &&
-           (domain::processing_versions_supported(v) == signal_contracts::Status::ok ||
+           (graph_versions_supported(v) == signal_contracts::Status::ok ||
             a.state.fail(Status::UnsupportedVersion));
 }
 bool graph(Archive &a, void *p) noexcept {
@@ -620,6 +570,15 @@ template <class T> bool optu(Archive &a, unsigned tag, std::optional<T> &v) noex
         v.reset();
     return true;
 }
+bool diagnostic_reason(Archive& archive,domain::ProcessingReason& value) noexcept {
+    std::optional<std::uint8_t> reason;
+    if(value!=domain::ProcessingReason::None)reason=std::uint8_t(value);
+    if(!optu(archive,5,reason))return false;
+    if(reason && *reason>std::uint8_t(domain::ProcessingReason::ProfileEncoding))return archive.state.fail();
+    value=reason?domain::ProcessingReason(*reason):domain::ProcessingReason::None;
+    return true;
+}
+
 bool diagnostic(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Diagnostic *>(p);
     bool present = v.node.has_value();
@@ -632,7 +591,7 @@ bool diagnostic(Archive &a, void *p) noexcept {
         v.node = static_cast<std::int32_t>(n);
     } else
         v.node.reset();
-    return optu(a, 2, v.port) && optu(a, 3, v.edge) && a.text_field(4, v.parameter);
+    return optu(a, 2, v.port) && optu(a, 3, v.edge) && a.text_field(4, v.parameter) && diagnostic_reason(a,v.reason);
 }
 bool state(Archive &a, void *p) noexcept {
     auto &v = *static_cast<State *>(p);
@@ -658,47 +617,43 @@ bool extension(Archive &a, void *p) noexcept {
     return (v.tag >= 1024 && v.tag <= 32767) || a.state.fail(Status::UnsupportedField);
 }
 } // namespace
+template <class T>
+bool visit_body_alternative(Archive &a, Message &v, unsigned tag, Schema schema, Visit visitor,
+                            unsigned &selected) noexcept {
+    T item{};
+    bool present = !a.state.reading && std::holds_alternative<T>(v.body);
+    if (present) item = std::get<T>(v.body);
+    if (!a.object(tag, schema, &item, visitor, &present)) return false;
+    if (present) {
+        v.body = item;
+        ++selected;
+    }
+    return true;
+}
+bool visit_body(Archive &a, Message &v) noexcept {
+    unsigned selected = 0;
+    if (!visit_body_alternative<Command>(a, v, 7, Schema::Command, command, selected) ||
+        !visit_body_alternative<Reply>(a, v, 8, Schema::Reply, reply, selected)) return false;
+    return selected == 1 || a.state.fail();
+}
+bool unique_extension_tags(std::span<const Extension> extensions) noexcept {
+    for (std::size_t i = 0; i < extensions.size(); ++i)
+        for (std::size_t j = 0; j < i; ++j)
+            if (extensions[i].tag == extensions[j].tag) return false;
+    return true;
+}
 bool visit_message(Archive &a, void *p) noexcept {
     auto &v = *static_cast<Message *>(p);
-    if (!u(a, 1, v.schema_version))
-        return false;
+    if (!u(a, 1, v.schema_version)) return false;
     if (v.schema_version != SchemaVersion ||
-        domain::processing_boundary_version_supported(domain::ProcessingBoundary::Control, v.schema_version) !=
-            signal_contracts::Status::ok)
-        return a.state.fail(Status::UnsupportedVersion);
+        bdsp_protocol::processing_boundary_version_supported(bdsp_protocol::ProcessingBoundary::Control, v.schema_version) !=
+            signal_contracts::Status::ok) return a.state.fail(Status::UnsupportedVersion);
     if (!a.uint_field(2, v.client) || !a.uint_field(3, v.session) || !a.uint_field(4, v.epoch) ||
-        !a.uint_field(5, v.request) || !a.uint_field(6, v.expected_revision))
-        return false;
-    unsigned selected = 0;
-    Command c;
-    bool pc = !a.state.reading && std::holds_alternative<Command>(v.body);
-    if (pc)
-        c = std::get<Command>(v.body);
-    if (!a.object(7, Schema::Command, &c, command, &pc))
-        return false;
-    if (pc) {
-        v.body = c;
-        ++selected;
-    }
-    Reply r;
-    bool pr = !a.state.reading && std::holds_alternative<Reply>(v.body);
-    if (pr)
-        r = std::get<Reply>(v.body);
-    if (!a.object(8, Schema::Reply, &r, reply, &pr))
-        return false;
-    if (pr) {
-        v.body = r;
-        ++selected;
-    }
-    if (selected != 1)
-        return a.state.fail();
+        !a.uint_field(5, v.request) || !a.uint_field(6, v.expected_revision)) return false;
+    if (!visit_body(a, v)) return false;
     if (!seq(a, 9, Schema::Extension, v.extensions, a.state.limits.extensions, extension))
         return false;
-    if (!a.state.reading || a.state.materializing)
-        for (std::size_t i = 0; i < v.extensions.size(); ++i)
-            for (std::size_t j = 0; j < i; ++j)
-                if (v.extensions[i].tag == v.extensions[j].tag)
-                    return a.state.fail();
+    if ((!a.state.reading || a.state.materializing) && !unique_extension_tags(v.extensions)) return a.state.fail();
     return true;
 }
 class Validator final : public Archive {

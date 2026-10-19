@@ -46,12 +46,8 @@ public:
         auto panel=start;const auto delta=point-anchor;
         const double padding=spectrogramSlicePanel(viewport,{0,0}).left();
         const QRectF bounds(padding,padding,std::max(0.0,viewport.width()-2*padding),std::max(0.0,viewport.height()-2*padding));
-        const double minWidth=std::min(180.0,bounds.width()),minHeight=std::min(120.0,bounds.height());
         if(resizeEdges) {
-            if(resizeEdges.testFlag(Qt::LeftEdge)) panel.setLeft(std::clamp(start.left()+delta.x(),bounds.left(),start.right()-minWidth));
-            if(resizeEdges.testFlag(Qt::RightEdge)) panel.setRight(std::clamp(start.right()+delta.x(),start.left()+minWidth,bounds.right()));
-            if(resizeEdges.testFlag(Qt::TopEdge)) panel.setTop(std::clamp(start.top()+delta.y(),bounds.top(),start.bottom()-minHeight));
-            if(resizeEdges.testFlag(Qt::BottomEdge)) panel.setBottom(std::clamp(start.bottom()+delta.y(),start.top()+minHeight,bounds.bottom()));
+            resize_panel(panel,bounds,delta);
             preferredSize=panel.size();
         } else {
             panel.translate(delta);
@@ -64,6 +60,13 @@ public:
     }
     void end() {active=false;}
 private:
+    void resize_panel(QRectF& panel,const QRectF& bounds,const QPointF& delta) const {
+        const double minWidth=std::min(180.0,bounds.width()),minHeight=std::min(120.0,bounds.height());
+        if(resizeEdges.testFlag(Qt::LeftEdge))panel.setLeft(std::clamp(start.left()+delta.x(),bounds.left(),start.right()-minWidth));
+        if(resizeEdges.testFlag(Qt::RightEdge))panel.setRight(std::clamp(start.right()+delta.x(),start.left()+minWidth,bounds.right()));
+        if(resizeEdges.testFlag(Qt::TopEdge))panel.setTop(std::clamp(start.top()+delta.y(),bounds.top(),start.bottom()-minHeight));
+        if(resizeEdges.testFlag(Qt::BottomEdge))panel.setBottom(std::clamp(start.bottom()+delta.y(),start.top()+minHeight,bounds.bottom()));
+    }
     QRectF start;
     QPointF anchor;
     Qt::Edges resizeEdges;

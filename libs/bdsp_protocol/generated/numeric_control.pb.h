@@ -10,6 +10,7 @@
 #endif
 
 /* Struct definitions */
+/* Explicit typed canonical schema; presence/alternatives validated by shared traversal. */
 typedef struct _bdsp_numeric_control_v4_Literal {
     bool has_kind;
     uint32_t kind;
@@ -315,6 +316,8 @@ typedef struct _bdsp_numeric_control_v4_Diagnostic {
     bool has_edge;
     uint64_t edge;
     pb_callback_t parameter;
+    bool has_reason;
+    uint32_t reason;
 } bdsp_numeric_control_v4_Diagnostic;
 
 typedef struct _bdsp_numeric_control_v4_State {
@@ -393,7 +396,7 @@ extern "C" {
 #define bdsp_numeric_control_v4_Resources_init_default {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define bdsp_numeric_control_v4_CapabilityRow_init_default {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define bdsp_numeric_control_v4_Capabilities_init_default {false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
-#define bdsp_numeric_control_v4_Diagnostic_init_default {false, 0, false, 0, false, 0, {{NULL}, NULL}}
+#define bdsp_numeric_control_v4_Diagnostic_init_default {false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
 #define bdsp_numeric_control_v4_State_init_default {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define bdsp_numeric_control_v4_Reply_init_default {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define bdsp_numeric_control_v4_Extension_init_default {false, 0, {{NULL}, NULL}}
@@ -421,7 +424,7 @@ extern "C" {
 #define bdsp_numeric_control_v4_Resources_init_zero {false, 0, false, 0, false, 0, false, 0, false, 0}
 #define bdsp_numeric_control_v4_CapabilityRow_init_zero {{{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, false, 0, {{NULL}, NULL}}
 #define bdsp_numeric_control_v4_Capabilities_init_zero {false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
-#define bdsp_numeric_control_v4_Diagnostic_init_zero {false, 0, false, 0, false, 0, {{NULL}, NULL}}
+#define bdsp_numeric_control_v4_Diagnostic_init_zero {false, 0, false, 0, false, 0, {{NULL}, NULL}, false, 0}
 #define bdsp_numeric_control_v4_State_init_zero  {false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}}
 #define bdsp_numeric_control_v4_Reply_init_zero  {false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}}
 #define bdsp_numeric_control_v4_Extension_init_zero {false, 0, {{NULL}, NULL}}
@@ -570,6 +573,7 @@ extern "C" {
 #define bdsp_numeric_control_v4_Diagnostic_port_tag 2
 #define bdsp_numeric_control_v4_Diagnostic_edge_tag 3
 #define bdsp_numeric_control_v4_Diagnostic_parameter_tag 4
+#define bdsp_numeric_control_v4_Diagnostic_reason_tag 5
 #define bdsp_numeric_control_v4_State_lifecycle_tag 1
 #define bdsp_numeric_control_v4_State_run_intent_tag 2
 #define bdsp_numeric_control_v4_State_revision_tag 3
@@ -864,7 +868,8 @@ X(a, CALLBACK, OPTIONAL, MESSAGE,  maximum,           5)
 X(a, STATIC,   OPTIONAL, SINT64,   node,              1) \
 X(a, STATIC,   OPTIONAL, UINT32,   port,              2) \
 X(a, STATIC,   OPTIONAL, UINT64,   edge,              3) \
-X(a, CALLBACK, OPTIONAL, STRING,   parameter,         4)
+X(a, CALLBACK, OPTIONAL, STRING,   parameter,         4) \
+X(a, STATIC,   OPTIONAL, UINT32,   reason,            5)
 #define bdsp_numeric_control_v4_Diagnostic_CALLBACK pb_default_field_callback
 #define bdsp_numeric_control_v4_Diagnostic_DEFAULT NULL
 

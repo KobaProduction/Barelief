@@ -1,0 +1,4 @@
+include_rules = [
+    '-domain', '-application', '-dsp_kernels', '-dataflow_runtime',
+    '-bdsp_protocol', '-embedded_support', '-control', '-wled_protocol', '-libs',
+]

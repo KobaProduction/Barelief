@@ -1,0 +1,28 @@
+default_install_hook_types: [pre-push]
+default_stages: [pre-push]
+exclude: '^(libs/(dsp_kernels/vendor|bdsp_protocol/(vendor|generated))|adapters/desktop/resampling/vendor|tools/control_codegen/toolchain|output)/'
+repos:
+  - repo: local
+    hooks:
+      - id: checkdeps
+        name: Chromium checkdeps (module boundaries)
+        language: python
+        entry: python scripts/vendor/chromium_checkdeps/checkdeps.py --root .
+        pass_filenames: false
+        always_run: true
+      - id: clazy
+        name: Clazy (Qt C++)
+        language: python
+        entry: python scripts/run_clazy.py
+        args: [--extra-arg=--target=x86_64-w64-windows-gnu]
+        files: '^(presentation/qt|adapters/desktop|apps)/.*\.(cpp|cc|cxx)$'
+        types: [c++]
+        require_serial: true
+      - id: clang-tidy
+        name: clang-tidy (C++ function policy)
+        language: python
+        additional_dependencies: [clang-tidy==22.1.8]
+        entry: clang-tidy
+        args: [-p=cmake-build-release, --extra-arg=-xc++, --extra-arg-before=-std=c++23]
+        types: [c++]
+        require_serial: true

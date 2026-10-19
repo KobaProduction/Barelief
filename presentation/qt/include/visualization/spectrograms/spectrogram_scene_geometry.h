@@ -32,24 +32,42 @@ inline QRectF spectrogramSlicePlot(QRectF panel) {
                           -std::min(12.0, panel.width() * .1), -std::min(44.0, panel.height() * .3));
 }
 
-inline QRectF spectrogramAxisTitleRect(QPointF anchor,QPointF outward,QSizeF size,QRectF viewport,
-                                      const QVector<QRectF> &occupied) {
-    const double length=std::hypot(outward.x(),outward.y());
-    outward=length>1e-6 ? outward/length : QPointF(0,1);
+inline double spectrogramOverlapArea(const QRectF& candidate,const QVector<QRectF>& occupied) {
+    double score=0;
+    for(const auto& other:occupied) {
+        const auto overlap=candidate.intersected(other);
+        score+=overlap.width()*overlap.height();
+    }
+    return score;
+}
+
+inline QRectF spectrogramTitleCandidate(QPointF center,QSizeF size,QRectF viewport) {
+    QRectF candidate(center.x()-size.width()/2,center.y()-size.height()/2,size.width(),size.height());
+    candidate.moveLeft(std::clamp(candidate.left(),viewport.left(),viewport.right()-size.width()));
+    candidate.moveTop(std::clamp(candidate.top(),viewport.top(),viewport.bottom()-size.height()));
+    return candidate;
+}
+
+inline QRectF spectrogramTitleSearch(QPointF anchor,QPointF outward,QSizeF size,QRectF viewport,
+                                    const QVector<QRectF>& occupied) {
     const QPointF sideways(-outward.y(),outward.x());
-    size.setWidth(std::min(size.width(),viewport.width()));size.setHeight(std::min(size.height(),viewport.height()));
     double bestScore=std::numeric_limits<double>::infinity();QRectF best;
     for(int step=0;step<8;++step) for(int offset:{0,-1,1,-2,2}) {
         const auto center=anchor+outward*(28+step*24)+sideways*(offset*32);
-        QRectF candidate(center.x()-size.width()/2,center.y()-size.height()/2,size.width(),size.height());
-        candidate.moveLeft(std::clamp(candidate.left(),viewport.left(),viewport.right()-size.width()));
-        candidate.moveTop(std::clamp(candidate.top(),viewport.top(),viewport.bottom()-size.height()));
-        double score=0;
-        for(const auto &other:occupied) {const auto overlap=candidate.intersected(other);score+=overlap.width()*overlap.height();}
+        const auto candidate=spectrogramTitleCandidate(center,size,viewport);
+        const double score=spectrogramOverlapArea(candidate,occupied);
         if(score==0) return candidate;
         if(score<bestScore) {bestScore=score;best=candidate;}
     }
     return bestScore==0 ? best : QRectF{};
+}
+inline QRectF spectrogramAxisTitleRect(QPointF anchor,QPointF outward,QSizeF size,QRectF viewport,
+                                      const QVector<QRectF> &occupied) {
+    const double length=std::hypot(outward.x(),outward.y());
+    outward=length>1e-6 ? outward/length : QPointF(0,1);
+    size.setWidth(std::min(size.width(),viewport.width()));
+    size.setHeight(std::min(size.height(),viewport.height()));
+    return spectrogramTitleSearch(anchor,outward,size,viewport,occupied);
 }
 
 // Keep labels near their tick; omit crowded/offscreen labels instead of making
@@ -126,8 +144,7 @@ public:
     template<class Sample>
     void prepare(const SpectrogramSceneGeometry& scene,size_t bandBegin,size_t bandEnd,
                  size_t ageBegin,size_t ageEnd,size_t bands,size_t history,Sample sample) {
-        band_begin_=bandBegin?bandBegin-1:0;age_begin_=ageBegin?ageBegin-1:0;
-        band_end_=bandEnd<bands?bandEnd+1:bands;age_end_=ageEnd<history?ageEnd+1:history;
+        configure_bounds(bandBegin,bandEnd,ageBegin,ageEnd,bands,history);
         const size_t rows=band_end_>band_begin_?band_end_-band_begin_:0;
         columns_=age_end_>age_begin_?age_end_-age_begin_:0;
         enabled_=rows && columns_ && rows<=262144/columns_;
@@ -143,6 +160,12 @@ public:
     }
     bool enabled() const {return enabled_;}
 private:
+    void configure_bounds(size_t bandBegin,size_t bandEnd,size_t ageBegin,size_t ageEnd,size_t bands,size_t history) {
+        band_begin_=bandBegin?bandBegin-1:0;
+        age_begin_=ageBegin?ageBegin-1:0;
+        band_end_=bandEnd<bands?bandEnd+1:bands;
+        age_end_=ageEnd<history?ageEnd+1:history;
+    }
     std::vector<QVector3D> points_;
     size_t band_begin_=0,band_end_=0,age_begin_=0,age_end_=0,columns_=0;
     bool enabled_=false;
@@ -211,13 +234,13 @@ inline int spectrogramReadableSections(double span,int maximum,bool positions) {
 struct SpectrogramPeakSample {size_t band=0,age=0;float value=0;};
 template<class Matrix=std::vector<std::vector<float>>>
 inline SpectrogramPeakSample spectrogramPeakSample(const Matrix& data,
-    size_t bandBegin,size_t bandEnd,size_t ageBegin,size_t ageEnd,size_t capacity) {
+    size_t bandBegin,size_t bandEnd,size_t ageBegin,size_t ageEnd,size_t capacity,bool decibels=false) {
     SpectrogramPeakSample peak{bandBegin,ageBegin,0};
     bool seen=false;
     for(size_t band=bandBegin;band<bandEnd;++band)
         for(size_t age=ageBegin;age<ageEnd;++age) {
             const float value=spectrogramHistorySample(data,band,age,capacity);
-            if(!seen || std::abs(value)>std::abs(peak.value)){peak={band,age,value};seen=true;}
+            if(!seen || (decibels?value>peak.value:std::abs(value)>std::abs(peak.value))){peak={band,age,value};seen=true;}
         }
     return peak;
 }

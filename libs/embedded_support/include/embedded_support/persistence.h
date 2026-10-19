@@ -32,7 +32,13 @@ public:
 private:
     struct Record { signal_contracts::Status status; std::uint64_t sequence=0; std::span<const std::uint8_t> payload; };
     Record read(unsigned slot, std::span<std::uint8_t>) noexcept;
+    signal_contracts::Status decode_payload(const Record&,domain::NumericProcessingGraph&);
     signal_contracts::Status decode(const Record&, domain::NumericProcessingGraph&);
+    signal_contracts::Status select_save_slot(const Record&,const Record&,unsigned&,std::uint64_t&);
+    signal_contracts::Status encode_record(const domain::NumericProcessingGraph&,unsigned,std::uint64_t,
+        const bdsp_protocol::numeric_control::GraphVersions&);
+    signal_contracts::Status commit_record(const bdsp_protocol::numeric_control::Message&,unsigned,
+        std::uint64_t,const bdsp_protocol::numeric_control::GraphVersions&);
     ProcessingStoragePort& storage_;
     PersistenceBuffers buffers_;
     const bdsp_protocol::numeric_control::Codec& codec_;

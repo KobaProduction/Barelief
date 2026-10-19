@@ -1,6 +1,6 @@
 # Canonical numeric integration, plus independent retained capture, transport,
-# DSP and workspace oracles. Old executor/schema/migration fixtures are retired
-# by registration; their source/evidence is retained for the final owner review.
+# DSP and workspace oracles. The registrations below define current coverage;
+# retired executor/schema/migration fixtures and old evidence do not cover it.
 
 # Opt-in native graph capture; deliberately not registered as an offscreen CTest.
 # The same harness can be injected into the pre-QML checkout for A/B evidence.
@@ -35,8 +35,16 @@ else()
     add_compile_options(-UNDEBUG)
 endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/portable_foundation.cmake)
+if(NOT BUILD_DSP_ONLY AND NOT BUILD_PORTABLE_SDK)
+    add_foundation_test(resampling_modes_tests desktop_resampling)
+    set_tests_properties(resampling_modes_tests PROPERTIES TIMEOUT 60)
+    add_foundation_test(resampler_accuracy_tests dsp_kernels)
+    add_foundation_test(resampler_runtime_tests desktop_resampling)
+    target_link_libraries(resampler_runtime_tests PRIVATE dataflow_runtime)
+    set_tests_properties(resampler_accuracy_tests resampler_runtime_tests PROPERTIES TIMEOUT 60)
+endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/embedded_sdk_tests.cmake)
-foreach(test IN ITEMS portable_dsp_tests portable_dsp_legacy_tests portable_dsp_backend_tests)
+foreach(test IN ITEMS portable_dsp_tests portable_dsp_backend_tests)
     add_executable(${test} ${test}.cpp)
     target_link_libraries(${test} PRIVATE portable_dsp dsp)
     add_test(NAME ${test} COMMAND ${test})
@@ -56,6 +64,32 @@ function(add_desktop_check target library)
     set_tests_properties(${target} PROPERTIES LABELS "numeric;quick" TIMEOUT 15)
 endfunction()
 add_desktop_check(numeric_project_document_tests graph_document_adapter)
+add_desktop_check(numeric_source_format_tests desktop_source_formats)
+target_link_libraries(numeric_source_format_tests PRIVATE graph_document_adapter desktop_numeric_defaults)
+add_desktop_check(music_profile_tests desktop_analysis)
+set_tests_properties(music_profile_tests PROPERTIES TIMEOUT 60)
+add_desktop_check(music_profile_control_tests desktop_numeric_remote)
+set_tests_properties(music_profile_control_tests PROPERTIES TIMEOUT 60)
+if(BUILD_GUI)
+    get_filename_component(music_qt_platform_path "${Qt6_DIR}/../../../plugins/platforms" ABSOLUTE)
+    add_desktop_check(music_analysis_dialog_tests core_app_components)
+    add_desktop_check(normalization_scheme_tests desktop_gui_composition)
+    set_tests_properties(normalization_scheme_tests PROPERTIES TIMEOUT 60
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
+    add_executable(music_gui_tests music_gui_tests.cpp)
+    target_link_libraries(music_gui_tests PRIVATE desktop_gui_composition)
+    add_test(NAME music_gui_tests COMMAND music_gui_tests
+        --export "${CMAKE_SOURCE_DIR}/.agent-workspace/music/music-research-example.json"
+        --image-dir "${CMAKE_SOURCE_DIR}/.agent-workspace/music/gui-render")
+    target_link_libraries(music_gui_tests PRIVATE desktop_analysis)
+    set_tests_properties(music_gui_tests PROPERTIES TIMEOUT 120
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
+    add_test(NAME music_gui_native32000 COMMAND music_gui_tests --native32000)
+    set_tests_properties(music_gui_native32000 PROPERTIES TIMEOUT 120
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
+    set_tests_properties(music_analysis_dialog_tests PROPERTIES TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
+endif()
 add_desktop_check(numeric_wled_output_policy_tests wled_protocol)
 target_link_libraries(numeric_wled_output_policy_tests PRIVATE signal_contracts)
 target_include_directories(numeric_wled_output_policy_tests PRIVATE ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
@@ -73,6 +107,7 @@ add_desktop_check(numeric_runtime_startup_tests dataflow_runtime)
 target_link_libraries(numeric_runtime_startup_tests PRIVATE desktop_numeric_defaults wled_protocol)
 add_desktop_check(device_poller_tests Threads::Threads)
 add_desktop_check(desktop_byte_transport_tests core)
+add_desktop_check(display_refresh_rates_tests core)
 add_desktop_check(desktop_packet_socket_tests core)
 add_desktop_check(registry_discovery_tests aggregator-library)
 target_link_libraries(registry_discovery_tests PRIVATE desktop_numeric_remote)
@@ -104,11 +139,17 @@ if(BUILD_GUI)
     target_link_libraries(aggregator_tests PRIVATE Qt6::Test)
     get_filename_component(qt_test_platform_path "${Qt6_DIR}/../../../plugins/platforms" ABSOLUTE)
     add_desktop_check(numeric_application_tests desktop_gui_composition)
+    add_desktop_check(display_mode_application_tests desktop_gui_composition)
+    set_tests_properties(display_mode_application_tests PROPERTIES LABELS "ui;integration" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     add_executable(numeric_loopback_probe numeric_loopback_probe.cpp)
     target_link_libraries(numeric_loopback_probe PRIVATE desktop_gui_composition)
     # Explicit native scenario: requires a real OpenGL platform and evidence path.
     add_executable(numeric_native_axes_tests numeric_native_axes_tests.cpp)
     target_link_libraries(numeric_native_axes_tests PRIVATE desktop_gui_composition)
+    add_desktop_check(fourier_port_visibility_tests desktop_gui_composition)
+    set_tests_properties(fourier_port_visibility_tests PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     add_desktop_check(numeric_graph_action_tests desktop_gui_composition)
     target_link_libraries(numeric_graph_action_tests PRIVATE Qt6::Test)
     set_tests_properties(numeric_graph_action_tests PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 20
@@ -139,8 +180,19 @@ if(BUILD_GUI)
     add_desktop_check(numeric_presenter_incarnation_tests desktop_gui_composition)
     add_test(NAME numeric_application_rejected COMMAND numeric_application_tests --rejected)
     add_test(NAME numeric_application_first_run COMMAND numeric_application_tests --first-run)
+    add_test(NAME numeric_application_workspace_persistence COMMAND numeric_application_tests --workspace-persistence)
+    set_tests_properties(numeric_application_workspace_persistence PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1;QT_QUICK_BACKEND=software")
     add_test(NAME numeric_application_shipped_examples COMMAND numeric_application_tests --shipped-examples)
     add_test(NAME numeric_application_current_examples COMMAND numeric_application_tests --current-examples)
+    add_test(NAME numeric_application_temporal_fft COMMAND numeric_application_tests --temporal-fft)
+    add_test(NAME numeric_application_temporal_fft_44100 COMMAND numeric_application_tests --temporal-fft-44100)
+    add_test(NAME numeric_application_matrix_bypass COMMAND numeric_application_tests --matrix-center-ring-bypass)
+    set_tests_properties(numeric_application_matrix_bypass PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
+    set_tests_properties(numeric_application_temporal_fft_44100 PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 45
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
+    set_tests_properties(numeric_application_temporal_fft PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 45
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     set_tests_properties(numeric_application_current_examples PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 60
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     add_test(NAME numeric_application_shipped_examples_ui COMMAND numeric_application_tests --shipped-examples-ui)
@@ -156,6 +208,8 @@ if(BUILD_GUI)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     set_tests_properties(numeric_application_tests numeric_application_rejected numeric_application_first_run numeric_presenter_incarnation_tests PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 15
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
+    # First-run now exercises all seven live spectral representation revisions.
+    set_tests_properties(numeric_application_first_run PROPERTIES TIMEOUT 120)
     add_executable(numeric_config_manager_tests numeric_project_document_tests.cpp)
     target_compile_definitions(numeric_config_manager_tests PRIVATE NUMERIC_CONFIG_MANAGER_TESTS)
     target_link_libraries(numeric_config_manager_tests PRIVATE desktop_gui_configuration)
@@ -221,10 +275,42 @@ if(BUILD_GUI)
     add_test(NAME latest_preparation_tests COMMAND latest_preparation_tests)
 endif()
 
+include(gmf_fft_benchmark.cmake)
+include(resampler_packet_benchmark.cmake)
+
 # Explicit native artifact collection, never part of offscreen CTest or ALL.
 # Run with an owned artifact directory and the native Qt platform plugin.
 if(BUILD_GUI)
     add_executable(block_ui_native_probe EXCLUDE_FROM_ALL block_ui_native_probe.cpp)
     target_link_libraries(block_ui_native_probe PRIVATE desktop_gui_composition)
     deploy_desktop_runtime(block_ui_native_probe)
+endif()
+
+# The ordinary CTest presets select quick component/core checks. Keep the wider
+# scenarios registered so integration, audit and UI runs remain explicit options.
+set_property(TEST portable_dsp_tests portable_dsp_backend_tests APPEND PROPERTY LABELS kernel)
+set_property(TEST resampler_accuracy_tests APPEND PROPERTY LABELS kernel long)
+set_property(TEST resampling_modes_tests resampler_runtime_tests APPEND PROPERTY LABELS integration long)
+set_property(TEST music_profile_tests music_profile_control_tests APPEND PROPERTY LABELS integration long)
+set_property(TEST numeric_runtime_startup_tests desktop_history_demand_tests console_config_tests
+    APPEND PROPERTY LABELS integration)
+set_property(TEST performance_tests portable_dsp_cadence_tests APPEND PROPERTY LABELS performance)
+set_tests_properties(numeric_presentation_tests PROPERTIES LABELS "quick;component" TIMEOUT 15)
+add_desktop_check(plot_viewport_component_tests Qt6::Core)
+target_include_directories(plot_viewport_component_tests PRIVATE ${CMAKE_SOURCE_DIR}/presentation/qt/include)
+set_tests_properties(plot_viewport_component_tests PROPERTIES LABELS "quick;ui;component;plot" TIMEOUT 15)
+if(BUILD_GUI)
+    set_property(TEST music_analysis_dialog_tests normalization_scheme_tests APPEND PROPERTY LABELS ui integration)
+    set_property(TEST music_gui_tests music_gui_native32000 APPEND PROPERTY LABELS ui integration long)
+    set_tests_properties(numeric_config_manager_tests PROPERTIES LABELS "quick;component" TIMEOUT 15)
+    set_tests_properties(frame_schedule_tests qt_frame_pump_tests latest_preparation_tests
+        PROPERTIES LABELS "quick;ui;primitive" TIMEOUT 15)
+    # These geometry and axis checks use bounded values, without an app fixture
+    # or renderer surface. The port check uses only an editor model and form.
+    set_property(TEST surface_settings_helpers_tests APPEND PROPERTY LABELS ui geometry)
+    set_property(TEST spectrogram_geometry_tests numeric_spectrogram_axis_tests
+        APPEND PROPERTY LABELS ui geometry)
+    set_tests_properties(fourier_port_visibility_tests
+        PROPERTIES LABELS "quick;ui;node;component" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
 endif()

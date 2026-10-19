@@ -29,6 +29,11 @@ protected:
     // Derived scene owners call this before their callback state is destroyed.
     // Deleting a native container also joins its Quick rendering lifetime.
     void destroyScene();
+private:
+    void createNativeScene();
+    void createTextureScene();
+protected:
+
     void paintEvent(QPaintEvent*) override;
 private:
     QQuickWidget* widget_ = nullptr;

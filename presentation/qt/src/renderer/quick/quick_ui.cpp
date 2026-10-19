@@ -28,6 +28,24 @@ QVariantMap current_palette() {
     }
     return result;
 }
+
+void refresh_clear_color(QQuickWidget* widget,const UiBridge* bridge) {
+    const auto color=bridge->palette().value("window").value<QColor>();
+    if(widget->property("numericQuickClearColor").value<QColor>()==color)return;
+    widget->setProperty("numericQuickClearColor",color);
+    widget->setClearColor(color);
+}
+
+void record_qml_errors(QQuickWidget* widget,QQuickWidget::Status status) {
+    if(status!=QQuickWidget::Error)return;
+    QStringList errors;
+    const auto errors_from_widget=widget->errors();
+    for(const auto& error:errors_from_widget){
+        errors.append(error.toString());
+        qWarning().noquote()<<error.toString();
+    }
+    widget->setProperty("qmlErrors",errors);
+}
 }
 UiBridge::UiBridge(QObject* parent):QObject(parent),palette_(current_palette()) {
     connect(&Theme::instance(),&Theme::changed,this,[this]{schedule_refresh();});
@@ -78,12 +96,10 @@ UiBridge* install(QQuickWidget* widget){
     auto* bridge=new UiBridge(widget);
     widget->rootContext()->setContextProperty("quickUi",bridge);
     widget->setResizeMode(QQuickWidget::SizeRootObjectToView);
-    const auto refresh=[widget,bridge]{const auto color=bridge->palette().value("window").value<QColor>();if(widget->property("numericQuickClearColor").value<QColor>()!=color){widget->setProperty("numericQuickClearColor",color);widget->setClearColor(color);}};
+    const auto refresh=[widget,bridge]{refresh_clear_color(widget,bridge);};
     refresh();QObject::connect(bridge,&UiBridge::changed,widget,refresh);
     QObject::connect(widget,&QQuickWidget::statusChanged,widget,[widget](QQuickWidget::Status status){
-        if(status!=QQuickWidget::Error)return;
-        QStringList errors;for(const auto& error:widget->errors()){errors.append(error.toString());qWarning().noquote()<<error.toString();}
-        widget->setProperty("qmlErrors",errors);
+        record_qml_errors(widget,status);
     });
     return bridge;
 }

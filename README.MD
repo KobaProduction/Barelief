@@ -9,6 +9,7 @@
 - [Архитектура](docs/architecture/README.md) — устройство системы, модули и их связи.
 - [Документация](docs/README.md) — руководства, API, форматы и SDK.
 - [Сборка и запуск](docs/reference/build-and-run.md) — desktop, консоль и переносимый SDK.
+- [Контроль сложности функций](docs/reference/code-quality.md) — установка линтера, pre-push и CI.
 - [Интерфейс](docs/guides/interface.md) и [графики](docs/guides/graphs.md) — работа со схемой и представлениями.
 - [История развития](docs/history/README.md) — основные изменения устройства проекта.
 - [Уроки работы с агентами](docs/engineering/agent-lessons.md) — повторяющиеся ошибки и способы их избежать.

@@ -13,44 +13,39 @@ AggregatorClient::AggregatorClient(const AggregatorClientConfig &config, QObject
     _session_token = _cfg.session_token.value_or(
         aggregator_utils::generate_session_token(_cfg.uuid, _cfg.type, _cfg.component_server_port));
     connect(&_socket, &TcpBDSPSocket::on_got_packet, this, &AggregatorClient::_handle_packet);
-
     _timeout_timer.setSingleShot(true);
     _reconnect_timer.setSingleShot(true);
-    connect(&_socket, &QTcpSocket::connected, this, [this] {
-        if (!_enabled) {
-            _socket.abort();
-            return;
-        }
-        _timeout_timer.start(aggregator_component::REGISTRATION_TIMEOUT_MS);
-        emit on_client_connected();
-        _send_registration_request();
-    });
-    connect(&_socket, &QTcpSocket::disconnected, this, [this] {
-        _timeout_timer.stop();
-        _invalidate_discovery();
-        if (_is_registered) {
-            _is_registered = false;
-            emit on_client_disconnected();
-        }
-        _start_reconnecting();
-    });
-    connect(&_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
-        _timeout_timer.stop();
-        _invalidate_discovery();
-        _error = _socket.errorString();
-        _start_reconnecting();
-    });
-    connect(&_timeout_timer, &QTimer::timeout, this, [this] {
-        _error = is_connected() ? "Registration timeout" : "Connection timeout";
-        _socket.abort();
-        _start_reconnecting();
-    });
+    _bind_socket_signals();
+    qCDebug(aggregator_client, "AggregatorClient created for component: %s", qPrintable(_cfg.uuid.toString()));
+}
+
+void AggregatorClient::_bind_socket_signals() {
+    connect(&_socket,&QTcpSocket::connected,this,&AggregatorClient::_on_connected);
+    connect(&_socket,&QTcpSocket::disconnected,this,&AggregatorClient::_on_disconnected);
+    connect(&_socket,&QTcpSocket::errorOccurred,this,[this](QAbstractSocket::SocketError){_on_socket_error();});
+    connect(&_timeout_timer,&QTimer::timeout,this,&AggregatorClient::_on_timeout);
     connect(&_reconnect_timer, &QTimer::timeout, this, [this] {
         ++_current_reconnect_attempt;
         _begin_connection();
     });
 
-    qCDebug(aggregator_client, "AggregatorClient created for component: %s", qPrintable(_cfg.uuid.toString()));
+}
+void AggregatorClient::_on_connected() {
+    if(!_enabled){_socket.abort();return;}
+    _timeout_timer.start(aggregator_component::REGISTRATION_TIMEOUT_MS);
+    emit on_client_connected();_send_registration_request();
+}
+void AggregatorClient::_on_disconnected() {
+    _timeout_timer.stop();_invalidate_discovery();
+    if(_is_registered){_is_registered=false;emit on_client_disconnected();}
+    _start_reconnecting();
+}
+void AggregatorClient::_on_socket_error() {
+    _timeout_timer.stop();_invalidate_discovery();_error=_socket.errorString();_start_reconnecting();
+}
+void AggregatorClient::_on_timeout() {
+    _error=is_connected()?"Registration timeout":"Connection timeout";
+    _socket.abort();_start_reconnecting();
 }
 
 AggregatorClient::~AggregatorClient() {
@@ -137,127 +132,127 @@ void AggregatorClient::_start_reconnecting() {
 void AggregatorClient::_handle_packet(BDSP::packet_context_t &packet_context) {
     const auto packet_type = static_cast<PacketType>(packet_context.packet_id);
     switch (packet_type) {
-    case static_cast<PacketType>(aggregator_capabilities::PacketId): {
-        QJsonObject metadata;
-        if (!aggregator_capabilities::decode(
-                QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), metadata))
-            return;
-        const QUuid uuid(metadata["uuid"].toString());
-        metadata["registry_available"] = true;
-        if (_components.contains(uuid)) {
-            const auto info = _components.value(uuid);
-            metadata["component_type"] = int(info.type);
-            metadata["state"] = int(info.state);
-            metadata["engine_port"] = info.component_server_port;
-            metadata["control_available"] = info.type == ComponentType::core && info.component_server_port > 0;
-        }
-        _capabilities[uuid] = metadata;
-        emit capabilities_changed(uuid, metadata);
-        break;
-    }
-    case PacketType::error: {
-        const auto message = QString::fromUtf8(reinterpret_cast<const char *>(packet_context.data_ptr),
-                                               static_cast<qsizetype>(packet_context.size));
-        _enabled = false;
-        _reconnect_timer.stop();
-        _timeout_timer.stop();
-        _socket.abort();
-        _set_status(core::RuntimeState::Failed, message);
-        return;
-    }
-    case PacketType::component_state_change: {
-        if (packet_context.size not_eq sizeof(component_update_state_packet_t)) {
-            qCWarning(aggregator_client, "Component state change packet size incorrect.");
-            return;
-        }
-
-        component_update_state_packet_t decoded{};
-        if (!aggregator_wire::decode(
-                QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded))
-            return;
-        const auto [uuid_bytes, new_state] = decoded;
-        const auto uuid = QUuid::fromBytes(&uuid_bytes);
-
-        if (uuid == _cfg.uuid)
-            return;
-        if (_components.contains(uuid))
-            _components[uuid].state = new_state;
-        qCInfo(aggregator_client, "Component state change: %s",
-               qPrintable(aggregator_utils::format_component_state_change(uuid, new_state)));
-        if (_capabilities.contains(uuid)) {
-            _capabilities[uuid]["state"] = int(new_state);
-            emit capabilities_changed(uuid, _capabilities[uuid]);
-        }
-        emit on_update_component_state(uuid, new_state);
-        break;
-    }
-    case PacketType::component_info_update: {
-        if (packet_context.size not_eq sizeof(component_update_full_packet_t)) {
-            qCWarning(aggregator_client, "Component info packet size incorrect.");
-            return;
-        }
-
-        component_update_full_packet_t decoded{};
-        if (!aggregator_wire::decode(
-                QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded))
-            return;
-        const auto [uuid_raw, type, address_raw, component_server_port, state] = decoded;
-        const QUuid uuid = QUuid::fromBytes(&uuid_raw);
-
-        const component_info_t info{
-            .type = type,
-            .state = state,
-            .component_server_port = component_server_port,
-            .address = QHostAddress(address_raw),
-        };
-        if (uuid != _cfg.uuid) {
-            _components[uuid] = info;
-            auto metadata = _capabilities.value(uuid);
-            metadata["uuid"] = uuid.toString();
-            metadata["address"] = info.address.toString();
-            metadata["state"] = int(info.state);
-            metadata["component_type"] = int(info.type);
-            metadata["engine_port"] = info.component_server_port;
-            metadata["control_available"] = info.type == ComponentType::core && info.component_server_port > 0;
-            metadata["registry_available"] = true;
-            _capabilities[uuid] = metadata;
-            emit capabilities_changed(uuid, metadata);
-        }
-
-        if (uuid == _cfg.uuid) {
-            if (state >= ComponentState::registered) {
-                if (_is_registered)
-                    return;
-                _is_registered = true;
-                if (_waiting_for_first_registration) {
-                    _reconnect_tries = _saved_reconnect_tries;
-                    _waiting_for_first_registration = false;
-                }
-                _current_reconnect_attempt = 0;
-                _reconnect_timer.stop();
-                _timeout_timer.stop();
-                _set_status(core::RuntimeState::Running);
-                qCInfo(aggregator_client, "Registration AggregatorClient successful! External Ip: %s",
-                       qPrintable(convert_qt_host_address_to_string(info.address)));
-                emit on_client_registered();
-                if (!_own_capabilities.isEmpty())
-                    _socket.send_packet(aggregator_capabilities::PacketId,
-                                        aggregator_capabilities::encode(_own_capabilities));
-            }
-            return;
-        }
-
-        qCInfo(aggregator_client, "New component: %s",
-               qPrintable(aggregator_utils::format_component_info(uuid, type, state)));
-
-        // Генерируем событие обновления компонента
-        emit on_update_component_info(uuid, info);
-        break;
-    }
+    case static_cast<PacketType>(aggregator_capabilities::PacketId):_handle_capabilities(packet_context);break;
+    case PacketType::error:_handle_error(packet_context);break;
+    case PacketType::component_state_change:_handle_state_change(packet_context);break;
+    case PacketType::component_info_update:_handle_info_update(packet_context);break;
     default:
         qCWarning(aggregator_client, "Got unknown packet type: %d", packet_type);
         break;
     }
+}
+
+void AggregatorClient::_handle_capabilities(BDSP::packet_context_t &packet_context) {
+    QJsonObject metadata;
+    if (!aggregator_capabilities::decode(
+            QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), metadata))
+        return;
+    const QUuid uuid(metadata["uuid"].toString());
+    metadata["registry_available"] = true;
+    if (_components.contains(uuid)) {
+        const auto info = _components.value(uuid);
+        metadata["component_type"] = int(info.type);
+        metadata["state"] = int(info.state);
+        metadata["engine_port"] = info.component_server_port;
+        metadata["control_available"] = info.type == ComponentType::core && info.component_server_port > 0;
+    }
+    _capabilities[uuid] = metadata;
+    emit capabilities_changed(uuid, metadata);
+}
+
+void AggregatorClient::_handle_error(BDSP::packet_context_t &packet_context) {
+    const auto message = QString::fromUtf8(reinterpret_cast<const char *>(packet_context.data_ptr),
+                                           static_cast<qsizetype>(packet_context.size));
+    _enabled = false;
+    _reconnect_timer.stop();
+    _timeout_timer.stop();
+    _socket.abort();
+    _set_status(core::RuntimeState::Failed, message);
+}
+
+void AggregatorClient::_handle_state_change(BDSP::packet_context_t &packet_context) {
+    if (packet_context.size not_eq sizeof(component_update_state_packet_t)) {
+        qCWarning(aggregator_client, "Component state change packet size incorrect.");
+        return;
+    }
+    component_update_state_packet_t decoded{};
+    if (!aggregator_wire::decode(
+            QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded))
+        return;
+    const auto [uuid_bytes, new_state] = decoded;
+    const auto uuid = QUuid::fromBytes(&uuid_bytes);
+    if (uuid == _cfg.uuid)
+        return;
+    if (_components.contains(uuid))
+        _components[uuid].state = new_state;
+    qCInfo(aggregator_client, "Component state change: %s",
+           qPrintable(aggregator_utils::format_component_state_change(uuid, new_state)));
+    if (_capabilities.contains(uuid)) {
+        _capabilities[uuid]["state"] = int(new_state);
+        emit capabilities_changed(uuid, _capabilities[uuid]);
+    }
+    emit on_update_component_state(uuid, new_state);
+}
+
+void AggregatorClient::_record_component_info(const QUuid &uuid, const component_info_t &info) {
+    _components[uuid] = info;
+    auto metadata = _capabilities.value(uuid);
+    metadata["uuid"] = uuid.toString();
+    metadata["address"] = info.address.toString();
+    metadata["state"] = int(info.state);
+    metadata["component_type"] = int(info.type);
+    metadata["engine_port"] = info.component_server_port;
+    metadata["control_available"] = info.type == ComponentType::core && info.component_server_port > 0;
+    metadata["registry_available"] = true;
+    _capabilities[uuid] = metadata;
+    emit capabilities_changed(uuid, metadata);
+}
+
+void AggregatorClient::_record_self_registration(const component_info_t &info) {
+    if (info.state < ComponentState::registered || _is_registered)
+        return;
+    _is_registered = true;
+    if (_waiting_for_first_registration) {
+        _reconnect_tries = _saved_reconnect_tries;
+        _waiting_for_first_registration = false;
+    }
+    _current_reconnect_attempt = 0;
+    _reconnect_timer.stop();
+    _timeout_timer.stop();
+    _set_status(core::RuntimeState::Running);
+    qCInfo(aggregator_client, "Registration AggregatorClient successful! External Ip: %s",
+           qPrintable(convert_qt_host_address_to_string(info.address)));
+    emit on_client_registered();
+    if (!_own_capabilities.isEmpty())
+        _socket.send_packet(aggregator_capabilities::PacketId,
+                            aggregator_capabilities::encode(_own_capabilities));
+}
+
+void AggregatorClient::_handle_info_update(BDSP::packet_context_t &packet_context) {
+    if (packet_context.size not_eq sizeof(component_update_full_packet_t)) {
+        qCWarning(aggregator_client, "Component info packet size incorrect.");
+        return;
+    }
+    component_update_full_packet_t decoded{};
+    if (!aggregator_wire::decode(
+            QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded))
+        return;
+    const auto [uuid_raw, type, address_raw, component_server_port, state] = decoded;
+    const QUuid uuid = QUuid::fromBytes(&uuid_raw);
+    const component_info_t info{
+        .type = type,
+        .state = state,
+        .component_server_port = component_server_port,
+        .address = QHostAddress(address_raw),
+    };
+    if (uuid == _cfg.uuid) {
+        _record_self_registration(info);
+        return;
+    }
+    _record_component_info(uuid, info);
+    qCInfo(aggregator_client, "New component: %s",
+           qPrintable(aggregator_utils::format_component_info(uuid, type, state)));
+    emit on_update_component_info(uuid, info);
 }
 
 void AggregatorClient::set_reconnect_mode(const bool infinite_mode, int32_t tries,
@@ -279,14 +274,15 @@ void AggregatorClient::_send_registration_request() {
     _socket.send_packet(static_cast<uint8_t>(PacketType::component_registration), aggregator_wire::encode(data));
 }
 
-void AggregatorClient::set_capabilities(QJsonObject metadata) {
+bool AggregatorClient::set_capabilities(QJsonObject metadata) {
     metadata["version"] = 3;
     metadata["uuid"] = _cfg.uuid.toString(QUuid::WithoutBraces);
     if (!aggregator_capabilities::valid(metadata))
-        return;
+        return false;
     _own_capabilities = metadata;
     if (_is_registered)
         _socket.send_packet(aggregator_capabilities::PacketId, aggregator_capabilities::encode(metadata));
+    return true;
 }
 
 void AggregatorClient::_invalidate_discovery() {
@@ -322,27 +318,14 @@ QString AggregatorClient::discovery_status() const {
         .arg(endpoint, _error.isEmpty() ? QString("connection lost") : _error);
 }
 QJsonObject AggregatorClient::resolve_engine(const QUuid &uuid, QString *error) const {
-    auto failure = [&](QString message) {
+    const auto failure = _engine_resolution_error(uuid);
+    if (!failure.isEmpty()) {
         if (error)
-            *error = std::move(message);
-        return QJsonObject{};
-    };
-    if (!is_registered() || !is_connected() || _state != core::RuntimeState::Running)
-        return failure(discovery_status());
-    if (!_components.contains(uuid))
-        return failure(
-            "Core is not registered in this directory. Refresh discovery or enter a direct engine endpoint.");
+            *error = failure;
+        return {};
+    }
     const auto info = _components.value(uuid);
-    if (info.type != ComponentType::core)
-        return failure("This component is not a processing core.");
-    if (info.state < ComponentState::registered)
-        return failure("Core endpoint is unavailable. Wait for reconnection or enter another engine endpoint.");
-    if (!info.component_server_port)
-        return failure("This core publishes streams but has no control endpoint. Enable its engine server to open it "
-                       "for remote viewing or editing.");
     auto result = _capabilities.value(uuid);
-    if(!aggregator_capabilities::valid(result))
-        return failure("Canonical numeric CONTROL/DATA endpoint metadata is unavailable.");
     result["uuid"] = uuid.toString();
     result["address"] = info.address.toString();
     result["port"] = info.component_server_port;
@@ -354,4 +337,22 @@ QJsonObject AggregatorClient::resolve_engine(const QUuid &uuid, QString *error) 
     if (error)
         error->clear();
     return result;
+}
+
+QString AggregatorClient::_engine_resolution_error(const QUuid &uuid) const {
+    if (!is_registered() || !is_connected() || _state != core::RuntimeState::Running)
+        return discovery_status();
+    if (!_components.contains(uuid))
+        return "Core is not registered in this directory. Refresh discovery or enter a direct engine endpoint.";
+    const auto info = _components.value(uuid);
+    if (info.type != ComponentType::core)
+        return "This component is not a processing core.";
+    if (info.state < ComponentState::registered)
+        return "Core endpoint is unavailable. Wait for reconnection or enter another engine endpoint.";
+    if (!info.component_server_port)
+        return "This core publishes streams but has no control endpoint. Enable its engine server to open it "
+               "for remote viewing or editing.";
+    if (!aggregator_capabilities::valid(_capabilities.value(uuid)))
+        return "Canonical numeric CONTROL/DATA endpoint metadata is unavailable.";
+    return {};
 }

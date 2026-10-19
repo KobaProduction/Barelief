@@ -31,6 +31,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
+#include <memory>
 
 inline bool measure_shipped_gui(CoreApplication& app,MainWindow* window,const char* label) {
     using namespace pipeline;using namespace signal_contracts;
@@ -40,7 +42,7 @@ inline bool measure_shipped_gui(CoreApplication& app,MainWindow* window,const ch
     if(!wait([&]{return presenter.client().snapshot().graph_revision>before && !presenter.graph_request_pending() && presenter.client().snapshot().statuses.value("analyzer").state==State::Running;}))return false;
     if(!presenter.applied_numeric_graph())return false;const auto expected=*presenter.applied_numeric_graph();
     const auto revision=presenter.client().snapshot().graph_revision,epoch=presenter.client().snapshot().epoch;
-    struct Stage {EndpointIdentity endpoint;Rank rank;DType dtype;std::size_t width;unsigned count=0;std::uint64_t first=0,last=0;bool positive=false;};
+    struct Stage {EndpointIdentity endpoint;Rank rank;DType dtype;std::size_t width;unsigned count=0;std::uint64_t first=0,last=0;bool positive=false;std::uint64_t producer_epoch=0,generation=0;unsigned received=0,unavailable=0,exhausted=0;};
     std::vector<Stage> stages;std::vector<EndpointIdentity> endpoints;
     for(const auto& node:expected.nodes){
         const bool view=node.kind=="AudioView"||node.kind=="FFTView"||node.kind=="MelView"||node.kind=="SpectrogramView"||node.kind=="ScalarView";
@@ -53,25 +55,53 @@ inline bool measure_shipped_gui(CoreApplication& app,MainWindow* window,const ch
     }
     if(stages.empty())return false;QObject witness;bool bad=false;std::uint64_t ordinal=0;
     const auto observe=[&](const DeliveredNumericFrame& frame,bool compact){
-        if(!frame.context||!frame.frame||frame.delivery.graph_revision!=revision||frame.delivery.epoch!=epoch||!frame.frame.view().stamp.available)return;
+        if(!frame.context||frame.delivery.graph_revision!=revision||frame.delivery.epoch!=epoch)return;
         auto stage=std::find_if(stages.begin(),stages.end(),[&](const auto& item){return item.endpoint==frame.context->endpoint;});if(stage==stages.end())return;
         if((stage->rank==Rank::Matrix)!=compact)return;
-        const auto view=frame.frame.view();const auto* numeric=std::get_if<NumericView>(&view.payload);if(!numeric||numeric->contract->dtype!=stage->dtype){bad=true;return;}
+        ++stage->received;
+        if(!frame.frame || !frame.frame.view().stamp.available){++stage->unavailable;if(frame.status==Status::exhausted)++stage->exhausted;return;}
+        const auto fail=[&](const char* reason){
+            if(!bad)std::fprintf(stderr,"GUI %s stage%d:%u invalid: %s producer=%llu/%llu sequence=%llu prior=%llu/%llu/%llu\n",label,int(stage->endpoint.node),unsigned(stage->endpoint.port),reason,
+                (unsigned long long)frame.frame.view().stamp.producer_epoch,(unsigned long long)frame.frame.view().stamp.generation,(unsigned long long)frame.frame.view().stamp.sequence,
+                (unsigned long long)stage->producer_epoch,(unsigned long long)stage->generation,(unsigned long long)stage->last);
+            bad=true;
+        };
+        const auto view=frame.frame.view();const auto* numeric=std::get_if<NumericView>(&view.payload);if(!numeric||numeric->contract->dtype!=stage->dtype){fail("payload or dtype mismatch");return;}
         double energy=0;
-        if(stage->dtype==DType::UInt64){std::uint64_t value=0;if(load_element(*numeric,{0,0,0},value)!=Status::ok){bad=true;return;}energy=double(value);}
-        else if(stage->dtype==DType::Float32){if(numeric->planes.size()!=1 || numeric->actual[0]==0 || numeric->actual[0]>stage->width || (stage->rank==Rank::Matrix && numeric->actual[0]!=stage->width)){bad=true;return;}for(std::size_t i=0;i<numeric->actual[0];++i){float value=0;if(load_element(*numeric,{0,i,0},value)!=Status::ok||!std::isfinite(value)){bad=true;return;}energy+=double(value)*value;}}
-        else {bad=true;return;}
-        if(stage->count && view.stamp.sequence<stage->last){bad=true;return;}
+        if(stage->dtype==DType::UInt64){std::uint64_t value=0;if(load_element(*numeric,{0,0,0},value)!=Status::ok){fail("UInt64 read");return;}energy=double(value);}
+        else if(stage->dtype==DType::UInt32){std::uint32_t value=0;if(load_element(*numeric,{0,0,0},value)!=Status::ok){fail("UInt32 read");return;}energy=double(value);}
+        else if(stage->dtype==DType::Float64){double value=0;if(load_element(*numeric,{0,0,0},value)!=Status::ok || !std::isfinite(value)){fail("Float64 read or finiteness");return;}energy=value*value;}
+        else if(stage->dtype==DType::Float32){if(numeric->planes.size()!=1 || numeric->actual[0]==0 || numeric->actual[0]>stage->width || (stage->rank==Rank::Matrix && numeric->actual[0]!=stage->width)){fail("Float32 geometry");return;}for(std::size_t i=0;i<numeric->actual[0];++i){float value=0;if(load_element(*numeric,{0,i,0},value)!=Status::ok||!std::isfinite(value)){fail("Float32 read or finiteness");return;}energy+=double(value)*value;}}
+        else {fail("unsupported primitive dtype");return;}
+        // Sequence is producer-local. A source/generation transition can restart
+        // it within the same applied graph; require five progressing frames
+        // from the new producer instead of comparing unrelated sequences.
+        if(stage->count && (view.stamp.producer_epoch!=stage->producer_epoch || view.stamp.generation!=stage->generation)){
+            stage->count=0;stage->positive=false;
+        }
+        if(stage->count && view.stamp.sequence<stage->last){fail("sequence regressed within producer generation");return;}
+        stage->producer_epoch=view.stamp.producer_epoch;stage->generation=view.stamp.generation;
         if(!stage->count)stage->first=view.stamp.sequence;stage->last=view.stamp.sequence;++stage->count;stage->positive|=energy>1e-12;
     };
     QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,&witness,[&](const auto& frame){observe(frame,false);});
-    QObject::connect(&presenter,&GuiPresenter::numeric_history_ready,&witness,[&](const auto& row){if(row.event!=NumericHistoryEvent::Row || row.compact.delivery.graph_revision!=revision || row.compact.delivery.epoch!=epoch)return;bad|=row.capacity!=400 || row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400});ordinal=std::max(ordinal,row.accepted_row_ordinal);observe(row.compact,true);});
+    QObject::connect(&presenter,&GuiPresenter::numeric_history_ready,&witness,[&](const auto& row){if(row.event!=NumericHistoryEvent::Row || row.compact.delivery.graph_revision!=revision || row.compact.delivery.epoch!=epoch)return;if(row.capacity!=400 || row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400})){if(!bad)std::fprintf(stderr,"GUI %s History invalid: node=%d capacity=%llu filled=%llu ordinal=%llu\n",label,row.compact.context?int(row.compact.context->endpoint.node):-1,(unsigned long long)row.capacity,(unsigned long long)row.filled_count,(unsigned long long)row.accepted_row_ordinal);bad=true;}ordinal=std::max(ordinal,row.accepted_row_ordinal);observe(row.compact,true);});
+    struct RawWindowObservation {std::mutex mutex;unsigned available=0,unavailable=0,exhausted=0;std::uint64_t first=0,last=0;};
+    auto rawWindow=std::make_shared<RawWindowObservation>();std::uint64_t rawWindowTap=0;
+    if(std::any_of(stages.begin(),stages.end(),[](const auto& stage){return stage.endpoint.node==102 && stage.endpoint.direction==domain::PortDirection::Output && stage.endpoint.port==0;}))
+        rawWindowTap=app.pipeline().subscribe_numeric_tap({{expected.graph_id,102,domain::PortDirection::Output,0}},[rawWindow,revision,epoch](const DeliveredNumericFrame& frame){
+            if(frame.delivery.graph_revision!=revision || frame.delivery.epoch!=epoch)return;std::lock_guard lock(rawWindow->mutex);
+            if(!frame.frame || !frame.frame.view().stamp.available){++rawWindow->unavailable;if(frame.status==Status::exhausted)++rawWindow->exhausted;return;}
+            if(!rawWindow->available)rawWindow->first=frame.frame.view().stamp.sequence;rawWindow->last=frame.frame.view().stamp.sequence;++rawWindow->available;
+        },{});
+    struct TapGuard {NumericEngine& engine;std::uint64_t token;~TapGuard(){if(token)engine.unsubscribe_numeric_tap(token);}} tapGuard{app.pipeline(),rawWindowTap};
     presenter.set_editor_numeric_endpoints(std::move(endpoints));
-    const auto complete=[&]{for(const auto& stage:stages)if(stage.count<5 || stage.last<=stage.first || (stage.rank!=Rank::Scalar && !stage.positive))return false;return ordinal>=5;};
+    const bool has_history=std::any_of(expected.nodes.begin(),expected.nodes.end(),[](const auto& n){return n.kind=="Spectrogram";});
+    const auto complete=[&]{for(const auto& stage:stages)if(stage.count<5 || stage.last<=stage.first || (stage.rank!=Rank::Scalar && !stage.positive))return false;return !has_history || ordinal>=5;};
     const bool delivered=wait([&]{return bad||complete();});presenter.set_editor_numeric_endpoints({});
     bool good=delivered&&!bad&&complete();
     std::printf("GUI %s own engine epoch=%llu revision=%llu History=%llu",label,(unsigned long long)epoch,(unsigned long long)revision,(unsigned long long)ordinal);
-    for(const auto& stage:stages)std::printf(" stage%d:%u=%u/%llu",int(stage.endpoint.node),unsigned(stage.endpoint.port),stage.count,(unsigned long long)stage.last);
+    for(const auto& stage:stages)std::printf(" stage%d:%u=%u/%llu(r%u,u%u,x%u,p%d)",int(stage.endpoint.node),unsigned(stage.endpoint.port),stage.count,(unsigned long long)stage.last,stage.received,stage.unavailable,stage.exhausted,int(stage.positive));
+    if(rawWindowTap){std::lock_guard lock(rawWindow->mutex);std::printf(" raw102=%u/%llu..%llu(u%u,x%u)",rawWindow->available,(unsigned long long)rawWindow->first,(unsigned long long)rawWindow->last,rawWindow->unavailable,rawWindow->exhausted);}
     auto* validation=window->findChild<QLabel*>("pipelineValidation");good&=validation&&validation->toolTip().isEmpty();std::printf(" %s\n",good?"PASS":"FAIL");return good;
 }
 
@@ -90,7 +120,9 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
     auto* selectorBody=selector->embeddedWidget();
     auto* editor=window->findChild<SchemeEditorWidget*>();
     if(!editor||selector->selected_input()!=0||selectorBody->findChild<QWidget*>("pipelineDataStatus"))return false;
-    if(selector->numeric_node()->inputs.size()!=6 || selector->numeric_node()->outputs.size()!=2 || selector->grouped_channels(QtNodes::PortType::In)!=2)return false;
+    if(selector->numeric_node()->inputs.size()!=6 || domain::data_outputs(*selector->numeric_node()).size()!=2 || selector->grouped_channels(QtNodes::PortType::In)!=2)return false;
+    auto* inspectorScene=editor->findChild<QtNodes::DataFlowGraphicsScene*>();if(!inspectorScene)return false;
+    emit inspectorScene->nodeSelected(1);
     auto click_input=[&](domain::PortId id){
         for(auto* view:editor->findChildren<QGraphicsView*>()){
             auto* scene=dynamic_cast<QtNodes::BasicGraphicsScene*>(view->scene());if(!scene)continue;
@@ -144,7 +176,7 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
         std::fprintf(stderr,"selector diagnostic phase=%d selected=%d bad=%d unavailable=%d rev=%llu current=%llu state=%d gen=%u cap=%u chosen=%u unavailable_frames=%u ordinal=%llu seq=%llu cardActivity=%s values=%s first=%s apply=%s\n",phase,selected,int(bad),int(unavailable),static_cast<unsigned long long>(revision),static_cast<unsigned long long>(snapshot.graph_revision),int(snapshot.statuses.value("analyzer").state),generator_frames,capture_frames,selected_frames,unavailable_frames,static_cast<unsigned long long>(ordinal),static_cast<unsigned long long>(history_sequence),qPrintable(card->property("previewActivity").toString()),qPrintable(values->text()),qPrintable(first->text()),qPrintable(presenter.apply_status()));
     }};
     auto wait=[](const auto& predicate){QElapsedTimer timer;timer.start();while(timer.elapsed()<6000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}return predicate();};
-    QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,&witness,[&](const DeliveredNumericFrame& frame){
+    const auto observe=[&](const DeliveredNumericFrame& frame){
         const auto current=presenter.client().snapshot();
         if(!frame.context||!frame.frame||frame.delivery.graph_revision!=current.graph_revision||frame.delivery.epoch!=current.epoch||
            (revision?frame.delivery.graph_revision!=revision:frame.delivery.graph_revision<=transition_after))return;
@@ -167,20 +199,26 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
         if(endpoint.node==1)++generator_frames;
         if(endpoint.node==13)++capture_frames;
         if(endpoint.node==200){++selected_frames;bad|=selected==0?energy<=0.002:(unavailable?energy!=0:energy<=0||energy>=0.002);}
-    });
-    QObject::connect(&presenter,&GuiPresenter::numeric_history_ready,&witness,[&](const auto& row){
+    };
+    QObject::connect(&presenter,&GuiPresenter::numeric_frame_ready,&witness,[&](const auto& frame){if(frame.context && frame.context->endpoint.node==10)observe(frame);});
+    const auto observeHistory=[&](const DeliveredNumericHistoryRow& row){
         const auto current=presenter.client().snapshot();
         if(row.event!=NumericHistoryEvent::Row||!row.compact.context||row.compact.context->endpoint.node!=7||row.compact.context->endpoint.direction!=PortDirection::Output||row.compact.delivery.graph_revision!=current.graph_revision||row.compact.delivery.epoch!=current.epoch||
            (revision?row.compact.delivery.graph_revision!=revision:row.compact.delivery.graph_revision<=transition_after))return;
         bad|=row.accepted_row_ordinal<=ordinal||row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400})||row.capacity!=400;
         const auto sequence=row.compact.frame.view().stamp.sequence;bad|=sequence<=history_sequence;
         ordinal=row.accepted_row_ordinal;history_sequence=sequence;
-    });
+    };
+    // Raw processing witnesses do not depend on which GUI dock/inspector is open.
+    const auto rawTap=app.pipeline().subscribe_numeric_tap({{"main",1,PortDirection::Output,0},{"main",13,PortDirection::Output,0},{"main",200,PortDirection::Output,0},{"main",7,PortDirection::Output,0}},[&](DeliveredNumericFrame frame){
+        QMetaObject::invokeMethod(&witness,[&,frame]{observe(frame);},Qt::QueuedConnection);
+    },[&](DeliveredNumericHistoryRow row){QMetaObject::invokeMethod(&witness,[&,row]{observeHistory(row);},Qt::QueuedConnection);});
+    struct RawTapGuard{NumericEngine& engine;std::uint64_t token;~RawTapGuard(){engine.unsubscribe_numeric_tap(token);}} rawGuard{app.pipeline(),rawTap};
     if(!wait([&]{return !presenter.graph_request_pending()&&presenter.client().snapshot().statuses.value("analyzer").state==State::Running;}))return false;
     auto subscribe=[&]{revision=presenter.client().snapshot().graph_revision;epoch=presenter.client().snapshot().epoch;};
     subscribe();
     phase=1;
-    if(!wait([&]{return bad||(selected_frames>=5&&generator_frames>=5&&ordinal>=5&&(!unavailable?capture_frames>=5:true)&&card->property("previewActivity").toString().isEmpty()&&values->text().toULongLong()>0&&first->text()!=QStringLiteral("—"));})||bad)return false;
+    if(!wait([&]{return bad||(selected_frames>=5&&generator_frames>=5&&ordinal>=5&&(!unavailable?capture_frames>=5:true)&&card->property("previewActivity").toString().isEmpty()&&liveCard(card,source->numeric_node()->outputs.size()));})||bad)return false;
     const auto original_edges=model->numeric_graph().edges;
     const auto source_before=generator_frames;
     int transition=0;
@@ -216,7 +254,7 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
             auto* selectorCard=selectorDiagnostics.get();
             auto* selectorValues=selectorCard->findChild<QLabel*>("previewValues");
             auto* selectorFirst=selectorCard->findChild<QLabel*>("previewExactValue");
-            phase=choice==1?23:33;
+            phase=choice==1?23:33;emit inspectorScene->nodeSelected(200);
             if(!wait([&]{return liveCard(selectorCard,selector->numeric_node()->outputs.size());})){
                 std::fprintf(stderr,"selector card activity=%s values=%s first=%s lanes=%zu\n",qPrintable(selectorCard->property("previewActivity").toString()),qPrintable(selectorValues->text()),qPrintable(selectorFirst->text()),selector->numeric_node()->outputs.size());return false;
             }
@@ -225,6 +263,7 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
     if(generator_frames<=source_before+10)return false;
     if(!unavailable) {
         phase=4;
+        emit inspectorScene->nodeSelected(13);
         auto* capture=model->delegateModel<AudioNodeModel>(13);
         std::unique_ptr<QWidget> captureDiagnostics(capture?capture->preview_widget():nullptr);
         auto* captureCard=captureDiagnostics.get();
@@ -249,10 +288,10 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
     auto expanded=*selector->numeric_node();if(!numeric_editor::set_input_count(expanded,4))return false;
     phase=71;if(!model->edit_node(200,expanded))return false;
     phase=72;
-    model->addConnection({1,0,200,6});model->addConnection({101,0,200,7});QCoreApplication::processEvents();
+    model->addConnection({1,0,200,6});model->addConnection({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7});QCoreApplication::processEvents();
     const auto configInputs=unsigned(selector->configuration_port(QtNodes::PortType::In,domain::ConfigurationRole::SampleClock)!=QtNodes::InvalidPortIndex)+unsigned(selector->configuration_port(QtNodes::PortType::In,domain::ConfigurationRole::FrequencyGrid)!=QtNodes::InvalidPortIndex);
-    if(selector->numeric_node()->inputs.size()!=8 || selector->nPorts(QtNodes::PortType::In)!=8+configInputs || !model->connectionExists({1,0,200,6}) || !model->connectionExists({101,0,200,7})){
-        std::fprintf(stderr,"selector growth inputs=%zu ports=%u config=%u edge6=%d edge7=%d possible6=%d possible7=%d\n",selector->numeric_node()->inputs.size(),selector->nPorts(QtNodes::PortType::In),configInputs,int(model->connectionExists({1,0,200,6})),int(model->connectionExists({101,0,200,7})),int(model->connectionPossible({1,0,200,6})),int(model->connectionPossible({101,0,200,7})));return false;
+    if(selector->numeric_node()->inputs.size()!=8 || selector->nPorts(QtNodes::PortType::In)!=8+configInputs || !model->connectionExists({1,0,200,6}) || !model->connectionExists({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7})){
+        std::fprintf(stderr,"selector growth inputs=%zu ports=%u config=%u edge6=%d edge7=%d possible6=%d possible7=%d\n",selector->numeric_node()->inputs.size(),selector->nPorts(QtNodes::PortType::In),configInputs,int(model->connectionExists({1,0,200,6})),int(model->connectionExists({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7})),int(model->connectionPossible({1,0,200,6})),int(model->connectionPossible({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7})));return false;
     }
     phase=73;if(!click_input(3))return false;selected=0;selected_frames=0;
     phase=74;
@@ -279,10 +318,13 @@ inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool
     std::fprintf(stderr,"selector surface mode=%s active=%d hidden=%d exposed=%d frames=%zu bands=%zu revision=%llu endpoint=%d\n",
         surfacePanel?qPrintable(surfacePanel->display_mode()):"none",int(surfacePanel && surfacePanel->active_spectrogram()==surface),int(surfaceDock->isHidden()),int(surfaceDock->property("renderExposed").toBool()),
         surface->projected_history_frames(),surface->projected_history_bands(),static_cast<unsigned long long>(surface->history_projection_revision()),int(surfaceDock->property("numericEndpoint").isValid()));
-    if(!surfacePanel || surfacePanel->active_spectrogram()!=surface)return false;
-    phase=78;if(!wait([&]{return surface->projected_history_frames()>0 && surface->projected_history_bands()==50 && surface->history_projection_revision()>0;}))return false;
+    if(!surfacePanel || surfacePanel->active_spectrogram()!=surface || surfacePanel->value_layout().isEmpty())return false;
+    const auto currentGraph=presenter.applied_numeric_graph();if(!currentGraph)return false;
+    const auto rowNode=std::find_if(currentGraph->nodes.begin(),currentGraph->nodes.end(),[](const auto& node){return node.kind=="ArrayConcat";});if(rowNode==currentGraph->nodes.end())return false;
+    const auto expectedBands=std::get<NumericContract>(rowNode->outputs[0].contract.view()).shape.extents[0].maximum;
+    phase=78;if(!wait([&]{return surface->projected_history_frames()>0 && surface->projected_history_bands()==expectedBands && surface->history_projection_revision()>0;}))return false;
     float peak=0;
-    for(std::size_t frame=0;frame<surface->projected_history_frames();++frame)for(std::size_t band=0;band<50;++band){float value=0;if(!surface->projected_history_sample(frame,band,value)||!std::isfinite(value))return false;peak=std::max(peak,value);}
+    for(std::size_t frame=0;frame<surface->projected_history_frames();++frame)for(std::size_t band=0;band<expectedBands;++band){float value=0;if(!surface->projected_history_sample(frame,band,value)||!std::isfinite(value))return false;peak=std::max(peak,value);}
     phase=79;if(!(peak>0))return false;
     phase=80;const auto projected=surface->history_projection_revision();if(!wait([&]{return surface->history_projection_revision()>projected;}))return false;
     std::printf("app-owned History to renderer projection frames=%zu bands=%zu peak=%.9g (pre-GL)\n",surface->projected_history_frames(),surface->projected_history_bands(),peak);

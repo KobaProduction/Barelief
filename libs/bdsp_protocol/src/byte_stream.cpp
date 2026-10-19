@@ -50,15 +50,17 @@ Status PacketStream::feed(std::span<const std::uint8_t> bytes) noexcept {
     if(feeding_)return Status::invalid_argument;
     feeding_=true;feed_generation_=generation_;
     feed_status_=Status::ok;
-    for(auto byte:bytes) {
-        const auto status=reader_.read(byte);
-        if(feed_generation_!=generation_){reader_.reset_read_state(false);break;}
-        if(status==BDSP::streams::STREAM_READ_ERROR || status==BDSP::streams::STREAM_READER_NOT_READY_ERROR) {
-            if(!discarding_)report_error(BDSP::STREAM_READING_ERROR);
-            feed_status_=Status::malformed;discarding_=true;
-        }
-    }
+    for(auto byte:bytes)if(!read_byte(byte))break;
     feeding_=false;return feed_status_;
+}
+bool PacketStream::read_byte(std::uint8_t byte) noexcept {
+    const auto status=reader_.read(byte);
+    if(feed_generation_!=generation_){reader_.reset_read_state(false);return false;}
+    if(status==BDSP::streams::STREAM_READ_ERROR || status==BDSP::streams::STREAM_READER_NOT_READY_ERROR) {
+        if(!discarding_)report_error(BDSP::STREAM_READING_ERROR);
+        feed_status_=Status::malformed;discarding_=true;
+    }
+    return true;
 }
 void PacketStream::on_byte(std::uint8_t byte,BDSP::streams::stream_read_status_t status) noexcept {
     if(feeding_ && feed_generation_!=generation_)return;
@@ -66,24 +68,55 @@ void PacketStream::on_byte(std::uint8_t byte,BDSP::streams::stream_read_status_t
         if(!discarding_)report_error(BDSP::STREAM_READING_ERROR);
         feed_status_=Status::malformed;discarding_=true;return;
     }
-    if(status!=BDSP::streams::STREAM_READ_DELIMITER) {
-        if(discarding_)return;
-        if(incoming_size_==incoming_.size()){discarding_=true;feed_status_=Status::overflow;++overflows_;report_error(BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR);return;}
-        incoming_[incoming_size_++]=byte;return;
+    if(status!=BDSP::streams::STREAM_READ_DELIMITER){on_payload_byte(byte);return;}
+    on_delimiter();
+}
+void PacketStream::on_payload_byte(std::uint8_t byte) noexcept {
+    if(discarding_)return;
+    if(incoming_size_==incoming_.size()){
+        discarding_=true;feed_status_=Status::overflow;++overflows_;
+        report_error(BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR);return;
     }
+    incoming_[incoming_size_++]=byte;
+}
+void PacketStream::on_delimiter() noexcept {
     if(discarding_){discarding_=false;incoming_size_=0;return;}
     const auto count=incoming_size_;incoming_size_=0;
     if(!count)return; // Ignore the delimiter used to resynchronize after errors.
-    auto malformed=[&]{feed_status_=Status::malformed;report_error(BDSP::STREAM_READING_ERROR);};
-    BDSP::core::packet_v1_header header{};std::memcpy(&header,incoming_.data(),1);
-    if(header.is_unsupported_protocol_version){feed_status_=Status::unsupported_version;report_error(BDSP::UNSUPPORTED_PROTOCOL_ERROR);return;}
-    const std::size_t start=header.is_two_bytes_for_packet_size?3:2;
-    if(count<start){malformed();return;}
-    const std::size_t size=header.is_two_bytes_for_packet_size?(std::size_t(incoming_[1])<<8)|incoming_[2]:incoming_[1];
-    if(!size){feed_status_=Status::malformed;report_error(BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR);return;}
-    if(count!=start+size+(header.is_checksum_used?1:0)){malformed();return;}
-    if(header.is_checksum_used && Checksum{}._calc_checksum(header,incoming_.data()+start,size)!=incoming_[count-1]){feed_status_=Status::malformed;report_error(BDSP::CHECKSUM_ERROR);return;}
-    if(handler_)handler_({std::uint8_t(header.packet_id),incoming_.subspan(start,size)},context_);
+    dispatch_packet(count);
+}
+struct PacketShape {
+    BDSP::core::packet_v1_header header{};
+    std::size_t start=0,size=0;
+    Status status=Status::ok;
+    BDSP::parse_packet_status_t error=BDSP::STREAM_READING_ERROR;
+};
+static PacketShape inspect_packet(std::span<const std::uint8_t> incoming,std::size_t count) noexcept {
+    PacketShape shape;
+    std::memcpy(&shape.header,incoming.data(),1);
+    if(shape.header.is_unsupported_protocol_version){
+        shape.status=Status::unsupported_version;shape.error=BDSP::UNSUPPORTED_PROTOCOL_ERROR;return shape;
+    }
+    shape.start=shape.header.is_two_bytes_for_packet_size?3:2;
+    if(count<shape.start){shape.status=Status::malformed;return shape;}
+    shape.size=shape.header.is_two_bytes_for_packet_size?
+        (std::size_t(incoming[1])<<8)|incoming[2]:incoming[1];
+    if(!shape.size){
+        shape.status=Status::malformed;shape.error=BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR;
+        return shape;
+    }
+    if(count!=shape.start+shape.size+(shape.header.is_checksum_used?1:0))
+        shape.status=Status::malformed;
+    return shape;
+}
+void PacketStream::dispatch_packet(std::size_t count) noexcept {
+    const auto shape=inspect_packet(incoming_,count);
+    if(shape.status!=Status::ok){feed_status_=shape.status;report_error(shape.error);return;}
+    if(shape.header.is_checksum_used &&
+       Checksum{}._calc_checksum(shape.header,incoming_.data()+shape.start,shape.size)!=incoming_[count-1]){
+        feed_status_=Status::malformed;report_error(BDSP::CHECKSUM_ERROR);return;
+    }
+    if(handler_)handler_({std::uint8_t(shape.header.packet_id),incoming_.subspan(shape.start,shape.size)},context_);
 }
 Status PacketStream::enqueue(std::uint8_t id,std::span<const std::uint8_t> payload) noexcept {
     if(pending_bytes()){++overflows_;return Status::overflow;}

@@ -28,7 +28,7 @@ instance принадлежит одному processing owner. Нельзя вы
 с host simulation headers. `ESP_DSP` требует уже существующий внешний target
 `idf::esp-dsp` либо имя из `DSP_KERNELS_ESP_DSP_TARGET`; установка SDK не выполняется.
 `compiled_backend()` сообщает выбранную интеграцию, а не измеренную аппаратную
-оптимизацию. `PORTABLE_DSP_MAX_FFT_SIZE` выбирает capacity 512/1024/2048/4096.
+оптимизацию. `PORTABLE_DSP_MAX_FFT_SIZE` selects compiled capacity; desktop supports up to16384, while the embedded device profile can remain4096.
 Kernel FFT поддерживает power-of-two размеры от 4; ограничения runtime-графа
 могут быть строже. Mel принимает до capacity/2 bins и до 50 bands.
 
@@ -39,7 +39,7 @@ Kernel FFT поддерживает power-of-two размеры от 4; огра
 
 ## Численный смысл
 
-FFT публикует bins `[0,N/2)`, включая DC и исключая Nyquist, с magnitude
+MagnitudeSpectrum публикует bins `[0,N/2)`, включая DC и исключая Nyquist, с magnitude
 `abs(DFT)/N`, без one-sided doubling. Нечисленные входы/результаты отвергаются.
 Window gain не компенсируется автоматически.
 
@@ -57,9 +57,22 @@ magnitude: нет возведения в квадрат, dB, area normalization
 compensation. Удвоение magnitude удваивает результат. Номер полосы не равен Hz;
 сравнение разных FFT sizes и band counts не является калиброванным PSD.
 
-`PcmResampler` поддерживает Fs 8–192 kHz и отношения 1/8…8. Для разных Fs
-используются causal 128-tap Hann-windowed sinc, 128 fractional phases и cutoff
-`0.45 * min(input_rate, output_rate)`. Фильтр задерживает содержимое на 63 входных
-отсчёта; runtime учитывает задержку отдельно от delivery time. При равных Fs
-действует точный identity без filter delay. Это явная конверсия сетки отсчётов,
-а не ASRC или синхронизация независимых устройств.
+PreparedResampler uses the explicitly selected policy and backend port.
+Existing/Compact FIR share the kernel with B=64/16 and nominal input delay
+ceil(B*max(Fs_in,Fs_out)/Fs_out). Taps and phase count depend on the ratio.
+Equal rates use an exact identity without delay. Content delay is separate from
+output timestamps. See ../../docs/reference/resampling.md for modes and EOF drain.
+
+Raw PreparedRfft returns interleaved Re/Im bins 0..N/2, including DC/Nyquist,
+without division by N. PreparedSpectrumScaling/Projection apply explicitly
+selected magnitude/peak/power/PSD and sums C=sum(w), E=sum(w*w).
+Rectangular C=E=N. Logarithmic display belongs to the audio presenter.
+
+MelFilterBank shares prepared boundaries for canonical and explicit Hz grids.
+spectral_weights.h owns common Mel/Bark/triangle math. sample_cadence.h shares
+an integer phase accumulator between live and offline window deadlines.
+
+FrequencyProfile declares channel mean/select, Fs/N/window, C/E, full DC/Nyquist
+layout, representation and resampler policy. C/E=0 derives sums from the declared
+window/N, without upstream discovery. Runtime consumes typed gains arrays.
+Profile JSON and file decoding belong to desktop adapters.

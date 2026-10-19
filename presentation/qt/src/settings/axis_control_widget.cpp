@@ -27,14 +27,25 @@ AxisControlWidget::AxisControlWidget(const char *title,QWidget *parent):QWidget(
     QSizePolicy policy(QSizePolicy::Expanding,QSizePolicy::Minimum);
     policy.setHeightForWidth(true);setSizePolicy(policy);
     auto *layout=new QVBoxLayout(this);layout->setContentsMargins(0,4,0,4);layout->setSpacing(4);
+    setup_heading(layout,title);
+    setup_options(layout);
+    setup_range_boxes(layout);
+    set_state(0,1,true,false);
+    bind_controls();
+}
+void AxisControlWidget::setup_heading(QVBoxLayout* layout,const char* title) {
     auto *heading=ui::make<QLabel>(title,this);heading->setWordWrap(true);
     heading->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);layout->addWidget(heading);
     _hint=new QLabel(this);_hint->setWordWrap(true);
     _hint->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Minimum);_hint->hide();layout->addWidget(_hint);
+}
+void AxisControlWidget::setup_options(QVBoxLayout *layout) {
     _automatic=ui::make<QCheckBox>("Auto",this);_reverse=ui::make<QCheckBox>("Reverse",this);
     ui::bind(_automatic,"toolTip","Automatic");ui::bind(_reverse,"toolTip","Reverse axis");
     _automatic->setObjectName("axisAutomatic");_reverse->setObjectName("axisReverse");
     layout->addWidget(_automatic);layout->addWidget(_reverse);
+}
+void AxisControlWidget::setup_range_boxes(QVBoxLayout *layout) {
     _minimum=new CompactAxisSpin(this);_maximum=new CompactAxisSpin(this);
     _minimum->setObjectName("axisMinimum");_maximum->setObjectName("axisMaximum");
     auto *row=new QHBoxLayout;row->setSpacing(6);
@@ -44,7 +55,9 @@ AxisControlWidget::AxisControlWidget(const char *title,QWidget *parent):QWidget(
         ui::bind(entry.second,"accessibleName",entry.first);
         column->addWidget(label);column->addWidget(entry.second);row->addLayout(column,1);
     }
-    layout->addLayout(row);set_state(0,1,true,false);
+    layout->addLayout(row);
+}
+void AxisControlWidget::bind_controls() {
     connect(_minimum,&QDoubleSpinBox::valueChanged,this,[this]{apply_range(true);});
     connect(_maximum,&QDoubleSpinBox::valueChanged,this,[this]{apply_range(false);});
     connect(_automatic,&QCheckBox::toggled,this,[this](bool automatic){

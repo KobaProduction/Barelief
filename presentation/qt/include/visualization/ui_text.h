@@ -66,6 +66,17 @@ inline QString text(const char *source) {
         source = "System audio (output)";
     return QCoreApplication::translate("Ui", source);
 }
+inline QPushButton* color_reset_button(QColorDialog& dialog) {
+    QPushButton* reset=nullptr;
+    if(auto* buttons=dialog.findChild<QDialogButtonBox*>())
+        reset=buttons->addButton(text("Reset to default"),QDialogButtonBox::ResetRole);
+    else {
+        reset=new QPushButton(text("Reset to default"),&dialog);
+        dialog.layout()->addWidget(reset);
+    }
+    reset->setObjectName("resetColorToDefault");
+    return reset;
+}
 inline QColor select_color(const QColor &initial, QWidget *parent, const QString &title, bool *use_default = nullptr,
                            const QColor &default_color = QColor{}) {
     // Qt's chooser follows the application palette, including explicit Light/Dark.
@@ -75,14 +86,7 @@ inline QColor select_color(const QColor &initial, QWidget *parent, const QString
     QColorDialog dialog(initial, parent);
     dialog.setWindowTitle(title);
     dialog.setOption(QColorDialog::DontUseNativeDialog);
-    QPushButton *reset = nullptr;
-    if (auto *buttons = dialog.findChild<QDialogButtonBox *>())
-        reset = buttons->addButton(text("Reset to default"), QDialogButtonBox::ResetRole);
-    else {
-        reset = new QPushButton(text("Reset to default"), &dialog);
-        dialog.layout()->addWidget(reset);
-    }
-    reset->setObjectName("resetColorToDefault");
+    auto* reset=color_reset_button(dialog);
     bool reset_requested = false;
     QObject::connect(&dialog, &QColorDialog::currentColorChanged, &dialog, [&] { reset_requested = false; });
     QObject::connect(reset, &QPushButton::clicked, &dialog, [&] {

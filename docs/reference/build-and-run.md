@@ -24,9 +24,40 @@ ctest --preset release
 
 Для Debug или SDK заменить имя preset. SDK устанавливается командой
 `cmake --install cmake-build-sdk` в `cmake-build-sdk/install`.
+Обычные `release`, `debug` и `sdk` CTest presets выбирают короткие
+`quick` unit/component/core/node проверки. Все тесты остаются
+зарегистрированными; более широкие прогоны выбираются явно:
+
+```powershell
+ctest --preset release-kernel       # численные DSP kernels
+ctest --preset release-node         # контракты и допуск узлов
+ctest --preset release-integration  # взаимодействие подсистем, включая UI
+ctest --preset release-ui           # UI primitives и широкие UI-сценарии
+ctest --preset release-audit        # сбор машинных UI evidence
+ctest --preset release-long         # длительные DSP/analysis/component проверки
+ctest --preset release-all          # все зарегистрированные CTest
+```
+
+Для полного Debug/SDK прогона используйте `debug-all`/`sdk-all`.
+`release-integration` и `release-ui` могут пересекаться; это выбор сценария,
+а не разбиение полного набора. Opt-in native OpenGL/устройство probes
+собираются и запускаются отдельно с собственным evidence; offscreen CTest
+не подтверждает native renderer.
+Короткий `plot_viewport_component_tests` проверяет только общий нормализованный
+crop, pan/zoom, выбор осей и границы. Отображение явных координат/value series
+в line/bars и жесты Qt Quick проверяются отдельными UI-сценариями.
+Составные dataflow/continuity/single-stream, полные musical/numeric pipelines
+и многорежимный cadence относятся к `release-integration`; небольшие проверки
+DSP kernels, numeric contracts и отдельных узлов остаются в обычном preset.
 Один build-каталог обслуживает один Ninja-процесс; параллельные агенты согласуют
 сборку с интегратором. DLL и Qt plugins размещаются рядом с desktop targets
 в `bin`; exe запускается оттуда.
+
+`scripts/verify-desktop-runtime.ps1 -Preset release` проверяет PE imports
+и наличие deployed DLL/plugins в соответствующем `bin`, без запуска приложения.
+Для Debug задайте `-Preset debug`. Инструмент берётся из `-Objdump`, `OBJDUMP`,
+`CMAKE_OBJDUMP` build cache или `PATH`. Эта проверка файлов не подтверждает
+нативную отрисовку и работу устройств.
 
 ## Графическое приложение
 

@@ -9,9 +9,7 @@ using namespace std::chrono_literals;
 using Worker=visualization::rendering::LatestPreparation<int,int>;
 void require(bool ok,const char* message){if(!ok){std::cerr<<message<<'\n';std::exit(1);}}
 template<class F> void ready(F& future){require(future.wait_for(3s)==std::future_status::ready,"worker deadline exceeded");}
-int main(int argc,char** argv){
-    QCoreApplication app(argc,argv);
-    {
+void newest_completion_wins(){
         std::promise<void> started,release,finished;
         auto gate=release.get_future().share();auto begin=started.get_future();auto done=finished.get_future();
         Worker worker([&](int& result,const int& input){if(input==1){started.set_value();gate.wait();}result=input;if(input==3)finished.set_value();});
@@ -19,8 +17,8 @@ int main(int argc,char** argv){
         visualization::rendering::preparationPool().waitForDone();
         int result=0;require(worker.take(result)&&result==3,"latest pending/completion not retained");
         require(!worker.take(result),"completion consumed twice");
-    }
-    {
+}
+void pool_is_bounded_and_fair(){
         std::promise<void> release,firstStarted,secondStarted,thirdFinished;
         auto gate=release.get_future().share();auto first=firstStarted.get_future(),second=secondStarted.get_future(),third=thirdFinished.get_future();
         std::atomic<int> active=0,peak=0;
@@ -37,14 +35,14 @@ int main(int argc,char** argv){
         a.submit(1,{});b.submit(1,{});ready(first);ready(second);c.submit(7,{});release.set_value();ready(third);
         visualization::rendering::preparationPool().waitForDone();
         require(peak<=2,"preparation exceeded pool limit");int out=0;require(c.take(out)&&out==7,"third view starved");
-    }
-    {
+}
+void exception_does_not_strand_worker(){
         Worker worker([](int& out,const int& in){if(in==1)throw 1;out=in;});
         worker.submit(1,{});visualization::rendering::preparationPool().waitForDone();
         worker.submit(2,[]{throw 2;});visualization::rendering::preparationPool().waitForDone();
         int out=0;require(worker.take(out)&&out==2,"exception stranded worker state");
-    }
-    {
+}
+void queued_worker_can_retire(){
         std::promise<void> release,startedA,startedB;
         auto gate=release.get_future().share();auto sa=startedA.get_future(),sb=startedB.get_future();
         Worker a([&](int&,const int&){startedA.set_value();gate.wait();});
@@ -57,6 +55,12 @@ int main(int argc,char** argv){
         release.set_value();ready(retired);
         // Closing may race runnable startup; either finishes safely, no borrowed input.
         require(unwanted<=1,"queued teardown executed duplicate job");
-    }
+}
+int main(int argc,char** argv){
+    QCoreApplication app(argc,argv);
+    newest_completion_wins();
+    pool_is_bounded_and_fair();
+    exception_does_not_strand_worker();
+    queued_worker_can_retire();
     std::cout<<"latest_preparation_tests PASS\n";
 }

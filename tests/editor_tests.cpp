@@ -1,3 +1,4 @@
+#include <desktop/numeric_source_format.h>
 #include "synthetic_engine_provider.h"
 #include "core_app/gui_presenter.h"
 #include "core_app/scheme_editor/editor_widget.h"
@@ -37,17 +38,18 @@
 #include <bit>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 static void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 static std::shared_ptr<QtNodes::NodeDelegateModelRegistry> inventory_registry(){
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
     for(const auto& kind:numeric_editor::catalog())registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);});
     return registry;
 }
-static void catalogue_acceptance_checks(){
+struct CatalogueSpec {const char* kind;unsigned inputs,outputs;const char* control;NodeParameterModel::Editor editor;};
+static std::vector<CatalogueSpec> established_catalogue_specs(){
     using E=NodeParameterModel::Editor;
-    // Product inventory, deliberately independent of catalog() and descriptors.
-    struct Spec {const char* kind;unsigned inputs,outputs;const char* control;E editor;};
-    const std::array<Spec,30> specs{{
+    // Established product oracles are independent of descriptor enumeration.
+    return {
         {"AudioSource",0,1,"captureDevice",E::Choice},{"SignalGenerator",0,1,"oscillatorCount",E::Integer},
         {"SampleClock",0,0,"clockSampleRate",E::Integer},{"PcmResampler",1,1,"output_rate",E::Literal},
         {"Window",1,1,"size",E::Literal},{"WindowFunction",1,1,"function",E::Choice},
@@ -56,6 +58,9 @@ static void catalogue_acceptance_checks(){
         {"Mixer",2,1,"mixerMode",E::Choice},{"InputSelector",2,1,"numericSelectorChannels",E::Integer},
         {"Switch",1,2,"numericRouteChannels",E::Integer},{"Gate",1,1,"numericGate",E::Choice},
         {"Spectrogram",1,2,"numericCapacity",E::Literal},{"IndexExtract",1,1,"index",E::Literal},
+        {"MatrixTranspose",1,1,nullptr,E::Caption},{"MatrixWindowFunction",1,1,"function",E::Choice},
+        {"MatrixCenter",1,1,"method",E::Choice},
+        {"MatrixFFT",1,1,"fft_size",E::Literal},{"MatrixRow",1,1,"row",E::Literal},
         {"ScalarReduce",1,1,"numericReduction",E::Choice},{"Converter",1,1,"numericRounding",E::Choice},
         {"AudioView",1,0,nullptr,E::Caption},{"WindowView",1,0,nullptr,E::Caption},
         {"WindowedView",1,0,nullptr,E::Caption},{"FFTView",1,0,nullptr,E::Caption},
@@ -63,36 +68,77 @@ static void catalogue_acceptance_checks(){
         {"ScalarView",1,0,nullptr,E::Caption},{"NetworkInput",0,1,"adapterHost",E::Text},
         {"NetworkOutput",1,0,nullptr,E::Caption},{"WLEDEncode",1,1,"gain",E::Literal},
         {"WLEDOutput",1,0,"destination",E::Text},{"ChannelComparison",2,1,"window_samples",E::Literal}
-    }};
-    QStringList expected;for(const auto& spec:specs)expected.append(spec.kind);expected.sort();auto actual=numeric_editor::catalog();actual.sort();
-    require(actual==expected,"Product catalogue differs from the explicit 30-kind inventory");
-    for(const auto& spec:specs){
-        AudioNodeModel node(spec.kind);const auto* dto=node.numeric_node();auto* parameters=node.parameter_model();
-        require(dto->inputs.size()==spec.inputs && dto->outputs.size()==spec.outputs,qPrintable(QString("Wrong mono port roles for ")+spec.kind));
-        if(spec.control){const auto* field=parameters->field(spec.control);require(field && field->editor==spec.editor,qPrintable(QString("Missing operation/adapter editor for ")+spec.kind));}
-        for(auto direction:{domain::PortDirection::Input,domain::PortDirection::Output}){
-            const auto& ports=direction==domain::PortDirection::Input?dto->inputs:dto->outputs;
-            for(const auto& port:ports){const auto prefix=QString(direction==domain::PortDirection::Input?"input%1":"output%1").arg(port.id);
-                const auto* caption=parameters->field(prefix+"Caption");require(caption && caption->editor==E::Caption && !caption->pinnable && caption->section==NodeParameterModel::Section::Contract,"Every data port needs a read-only contract role");
-                for(const auto* unsupported:{"Channels","Unit","Layout","Semantic","Meaning"})require(!parameters->field(prefix+unsupported),"Descriptive contract controls must not be registered");
-                for(int axis=0;axis<2;++axis)if(const auto* extent=parameters->field(prefix+QString("Extent%1").arg(axis)))require(extent->literal_type==1 && std::holds_alternative<std::uint64_t>(std::get<signal_contracts::NumericLiteral>(extent->read())),"Dimensional editor must use exact UInt64");
-            }
-        }
-        std::unique_ptr<QWidget> form(node.parameter_widget());
-        const auto saved=node.save();node.set_processing_activity(true,true,120);require(node.save()==saved,"Catalogue diagnostics mutate a configured node");
-        if(numeric_editor::is_graph_view(spec.kind))require(!parameters->field("input0Dtype") && !parameters->field("input0Extent0"),"View must derive its contract from upstream");
-        if(QString(spec.kind)=="AudioSource")require(!parameters->field("sample_rate") && parameters->field("source") && parameters->field("captureSavedFormat") && parameters->field("captureDeviceError") && parameters->field("refreshCaptureDevices"),"Capture operation and adapter responsibilities are not separated");
-        if(QString(spec.kind)=="NetworkInput")for(const auto* key:{"adapterProviderUuid","adapterStreamId","adapterHost","adapterPort","adapterDeviceIdentity","adapterGraphId","adapterNodeId","adapterPortIndex","adapterDirection"})require(parameters->field(key),"Network adapter route editor absent");
-        if(QString(spec.kind)=="Spectrogram")require(node.portCaption(QtNodes::PortType::Out,0).startsWith(ui::text("History")) && node.portCaption(QtNodes::PortType::Out,1).startsWith(ui::text("Filled frames")),"History/count outputs have ambiguous roles");
-        for(const auto& language:{QString("ru"),QString("en")})for(const auto& theme:{QString("light"),QString("dark")}){
-            ui::Language::instance().set(language);ui::Theme::instance().set(theme);QCoreApplication::processEvents();
-            auto* bypass=form->findChild<QCheckBox*>("numericBypass");require(bypass && bypass->text()==ui::text("Bypass"),"Catalogue form fails live translated bypass");
-            for(auto* control:form->findChildren<QWidget*>())for(auto group:{QPalette::Active,QPalette::Inactive,QPalette::Disabled})
-                require(control->palette().color(group,QPalette::WindowText)==QApplication::palette().color(group,QPalette::WindowText),"Catalogue control overrides centralized theme text colors");
-            form->setEnabled(false);require(!bypass->isEnabled(),"Catalogue disabled controls ignore their inspector");form->setEnabled(true);
-            require(node.save()==saved,"Catalogue localization/theme mutates processing configuration");
-        }
+    };
+}
+static void catalogue_port_contract(NodeParameterModel& parameters,const QString& prefix){
+    const auto* caption=parameters.field(prefix+"Caption");
+    require(caption && caption->editor==NodeParameterModel::Editor::Caption && !caption->pinnable && caption->section==NodeParameterModel::Section::Contract,"Every data port needs a read-only contract role");
+    for(const auto* unsupported:{"Channels","Unit","Layout","Semantic","Meaning"})require(!parameters.field(prefix+unsupported),"Descriptive contract controls must not be registered");
+    for(int axis=0;axis<2;++axis)if(const auto* extent=parameters.field(prefix+QString("Extent%1").arg(axis)))require(extent->literal_type==1 && std::holds_alternative<std::uint64_t>(std::get<signal_contracts::NumericLiteral>(extent->read())),"Dimensional editor must use exact UInt64");
+}
+static void catalogue_contract_controls(AudioNodeModel& node){
+    const auto* dto=node.numeric_node();
+    for(auto direction:{domain::PortDirection::Input,domain::PortDirection::Output}){
+        const auto& ports=direction==domain::PortDirection::Input?dto->inputs:dto->outputs;
+        for(const auto& port:ports)catalogue_port_contract(*node.parameter_model(),QString(direction==domain::PortDirection::Input?"input%1":"output%1").arg(port.id));
     }
+}
+static void matrix_center_controls(const domain::ConfiguredProcessingNode& dto,NodeParameterModel& parameters){
+    const auto* method=parameters.field("method");const auto* offset=parameters.field("offset");
+    require(method && offset,"Centering controls absent");
+    QStringList methods;for(const auto& option:method->options)methods.append(option.label);
+    require(methods==QStringList{"Subtract mean","Center between minimum and maximum","Manual offset"} && std::get<int>(method->read())==0 && dto.enabled && method->primary,"Row centering exposes its explicit methods and defaults to enabled mean subtraction");
+    require(offset->editor==NodeParameterModel::Editor::Literal && offset->label=="Manual offset" && offset->literal_type==3 && offset->available && !offset->available(),"Manual centering offset is disabled for automatic methods");
+}
+static void matrix_operation_controls(AudioNodeModel& node,const QString& kind){
+    using E=NodeParameterModel::Editor;auto* parameters=node.parameter_model();
+    if(kind=="MatrixFFT"){
+        const auto* size=parameters->field("fft_size");
+        require(size && size->editor==E::Literal && std::visit([](auto value){return value==512;},std::get<signal_contracts::NumericLiteral>(size->read())),"Matrix FFT exposes an explicit numeric N with a 512-value default");
+        require(!parameters->field("function") && !parameters->field("window_enabled"),"Matrix FFT must not contain a hidden window stage");
+    }
+    if(kind=="MatrixWindowFunction"){
+        const auto* window=parameters->field("function");
+        require(window && window->editor==E::Choice && window->options.size()==7 && std::get<int>(window->read())==0 && !node.numeric_node()->enabled,"Matrix window exposes the shared window functions and defaults to generic bypass");
+    }
+    if(kind=="MatrixRow")require(parameters->field("row")->numeric_minimum==0 && std::visit([](auto value){return value==0;},std::get<signal_contracts::NumericLiteral>(parameters->field("row")->read())),"Matrix row selection must begin at zero");
+    if(kind=="MatrixCenter")matrix_center_controls(*node.numeric_node(),*parameters);
+}
+static void catalogue_specialized_controls(AudioNodeModel& node,const QString& kind){
+    auto* parameters=node.parameter_model();
+    if(numeric_editor::is_graph_view(kind))require(!parameters->field("input0Dtype") && !parameters->field("input0Extent0"),"View must derive its contract from upstream");
+    if(kind=="AudioSource")require(!parameters->field("sample_rate") && parameters->field("source") && parameters->field("captureSavedFormat") && parameters->field("captureDeviceError") && parameters->field("refreshCaptureDevices"),"Capture operation and adapter responsibilities are not separated");
+    if(kind=="NetworkInput")for(const auto* key:{"adapterProviderUuid","adapterStreamId","adapterHost","adapterPort","adapterDeviceIdentity","adapterGraphId","adapterNodeId","adapterPortIndex","adapterDirection"})require(parameters->field(key),"Network adapter route editor absent");
+    if(kind=="Spectrogram")require(node.portCaption(QtNodes::PortType::Out,0).startsWith(ui::text("History")) && node.portCaption(QtNodes::PortType::Out,1).startsWith(ui::text("Filled frames")),"History/count outputs have ambiguous roles");
+    matrix_operation_controls(node,kind);
+}
+static void catalogue_form_appearance(AudioNodeModel& node,QWidget& form){
+    auto* bypass=form.findChild<QCheckBox*>("numericBypass");
+    require(bool(bypass)==node.parameter_model()->supportsBypass(),"Catalogue form exposes bypass only for supported identity operations");
+    if(bypass)require(bypass->text()==ui::text("Bypass"),"Catalogue form fails live translated bypass");
+    for(auto* control:form.findChildren<QWidget*>())for(auto group:{QPalette::Active,QPalette::Inactive,QPalette::Disabled})
+        require(control->palette().color(group,QPalette::WindowText)==QApplication::palette().color(group,QPalette::WindowText),"Catalogue control overrides centralized theme text colors");
+    form.setEnabled(false);if(bypass)require(!bypass->isEnabled(),"Catalogue disabled controls ignore their inspector");form.setEnabled(true);
+}
+static void catalogue_live_preferences(AudioNodeModel& node,QWidget& form){
+    const auto saved=node.save();
+    for(const auto& language:{QString("ru"),QString("en")})for(const auto& theme:{QString("light"),QString("dark")}){
+        ui::Language::instance().set(language);ui::Theme::instance().set(theme);QCoreApplication::processEvents();
+        catalogue_form_appearance(node,form);
+        require(node.save()==saved,"Catalogue localization/theme mutates processing configuration");
+    }
+}
+static void catalogue_operation(const CatalogueSpec& spec){
+    AudioNodeModel node(spec.kind);const auto* dto=node.numeric_node();auto* parameters=node.parameter_model();
+    require(domain::data_inputs(*dto).size()==spec.inputs && domain::data_outputs(*dto).size()==spec.outputs,qPrintable(QString("Wrong mono data port roles for ")+spec.kind));
+    if(spec.control){const auto* field=parameters->field(spec.control);require(field && field->editor==spec.editor,qPrintable(QString("Missing operation/adapter editor for ")+spec.kind));}
+    catalogue_contract_controls(node);
+    std::unique_ptr<QWidget> form(node.parameter_widget());
+    const auto saved=node.save();node.set_processing_activity(true,true,120);require(node.save()==saved,"Catalogue diagnostics mutate a configured node");
+    catalogue_specialized_controls(node,spec.kind);
+    catalogue_live_preferences(node,*form);
+}
+static void oscillator_table_translation(){
     AudioNodeModel generator("SignalGenerator");std::unique_ptr<QWidget> form(generator.parameter_widget());auto* table=form->findChild<QTableWidget*>("oscillatorTable");require(table,"Generator table absent");
     const auto saved=generator.save();
     for(const auto& language:{QString("ru"),QString("en"),QString("ru")}){
@@ -102,6 +148,14 @@ static void catalogue_acceptance_checks(){
         require(generator.save()==saved,"Language switching changes oscillator parameters");
     }
     ui::Language::instance().set("en");
+}
+static void catalogue_acceptance_checks(){
+    const auto specs=established_catalogue_specs();
+    const auto actual=numeric_editor::catalog();
+    for(const auto& spec:specs)require(actual.contains(spec.kind),qPrintable(QString("Missing established catalogue operation: ")+spec.kind));
+    for(const auto& kind:actual){AudioNodeModel node(kind);require(node.numeric_node() && node.parameter_model(),"Catalogue operation has no numeric UI contract");}
+    for(const auto& spec:specs)catalogue_operation(spec);
+    oscillator_table_translation();
 }
 static void oscillator_bank_acceptance_checks(){
     NumericEditorGraphModel graph(inventory_registry());QUndoStack undo;graph.set_undo_stack(&undo);
@@ -230,36 +284,51 @@ static void grouped_layout_acceptance_checks(){
     history.undo();require(routeModel->selected_input()==0 && routeModel->operation_summary().contains("Generator"),"Undo leaves stale selected stream name");history.redo();require(history.index()==before+1 && routeModel->operation_summary().contains(longName),"Redo loses selected stream name");
     NumericEditorGraphModel restored(registry);restored.load(connected.save());auto* restoredRoute=restored.delegateModel<AudioNodeModel>(route);require(restoredRoute && restoredRoute->selected_input()==1 && restoredRoute->operation_summary().contains(longName),"Document reload loses selected stream name");
 }
+static void node_activity_checks(AudioNodeModel& model,QWidget* body){
+    if(!body)return;
+    auto* activity=body->findChild<QLabel*>("pipelineNodeActivity");require(activity,"Block processing activity indicator absent");
+    const auto configured=model.save();model.set_processing_activity(true,true,120.);
+    require(activity->text()==ui::text("Activity: processing") && activity->toolTip().contains("120.0"),"Activity indicator ignores measured node telemetry");
+    const auto statusText=activity->text();
+    for(int i=0;i<100;++i)model.set_processing_activity(true,true,100.+i);
+    require(activity->text()==statusText && model.save()==configured,"Execution counter refresh changes status/processing parameters");
+    model.set_processing_activity(true,false,0.);require(activity->text()==ui::text("Activity: no processing in interval"),"Inactive interval retains active node indicator");
+    model.set_processing_activity(false,false,120.);require(activity->toolTip().contains(QStringLiteral("—")),"Unmeasured activity displays configured target as measured rate");
+}
+static void scalar_inspector_order(QWidget* body,QWidget& inspector){
+    auto* form=inspector.findChild<QWidget*>("numericNodeParameters");require(form,"Scalar parameter form absent");
+    auto* wrapper=form->parentWidget();
+    require(wrapper && wrapper->layout() && wrapper->layout()->count()==2 && wrapper->layout()->itemAt(0)->widget()==form && wrapper->layout()->itemAt(1)->widget() && wrapper->layout()->itemAt(1)->widget()->objectName()=="scalarInputsEditor","Scalar wrappers must place parameter form before metric input controls");
+    require(!body || !body->findChild<QWidget*>("scalarInputsEditor"),"Scalar input management belongs to the inspector");
+}
+static void bypass_edit_checks(AudioNodeModel& model,QCheckBox& inspector){
+    const auto presentation=model.presentation();
+    model.parameter_model()->setBypassed(true);
+    require(!model.numeric_node()->enabled && inspector.isChecked() && model.presentation()==presentation,"Bypass changes execution mode and synchronizes the inspector");
+    inspector.setChecked(false);
+    require(model.numeric_node()->enabled && !inspector.isChecked(),"Inspector must restore processing");
+    model.set_numeric_edit_handler([](const auto&){return false;});inspector.setChecked(true);
+    require(model.numeric_node()->enabled && !inspector.isChecked(),"Rejected bypass edit must restore bound controls");
+}
+static void bypass_policy_checks(AudioNodeModel& model,QWidget* body,QWidget& inspector,const QString& kind){
+    require(!body || !body->findChild<QCheckBox*>("numericBypass"),"Inline node bypass uses the shared node painter");
+    auto* toggle=inspector.findChild<QCheckBox*>("numericBypass");
+    require(bool(toggle)==model.parameter_model()->supportsBypass(),"Only supported identity operations expose inspector bypass");
+    require(!model.parameter_model()->field("numericEnabled") && !model.parameter_model()->field("numericBypass") && !inspector.findChild<QAction*>("showOnBlock_numericEnabled") && !inspector.findChild<QAction*>("showOnBlock_numericBypass"),"Bypass must not be a pinnable processing parameter");
+    require(!model.set_parameter_on_block("numericBypass",false) && !model.parameter_model()->setOnBlock("numericEnabled",true),"Presentation pinning cannot hide or duplicate bypass");
+    if(kind=="ScalarView")scalar_inspector_order(body,inspector);
+    if(!toggle)return;
+    const bool defaultBypass=kind=="MatrixWindowFunction";
+    require(model.numeric_node()->enabled==!defaultBypass && toggle->isChecked()==defaultBypass,"Matrix window defaults to identity bypass; other identity operations process");
+    auto* form=inspector.findChild<QWidget*>("numericNodeParameters");
+    require(form && form->layout()->itemAt(0)->widget()==toggle,"Inspector bypass stays at the top of its parameter form");
+    bypass_edit_checks(model,*toggle);
+}
 static void bypass_controls_checks(){
     for(const auto& kind:numeric_editor::catalog()){
         AudioNodeModel model(kind);
         std::unique_ptr<QWidget> body(model.embeddedWidget()),inspector(model.parameter_widget());
-        auto* inlineBypass=body->findChild<QCheckBox*>("numericBypass");auto* inspectorBypass=inspector->findChild<QCheckBox*>("numericBypass");
-        require(inlineBypass && inspectorBypass && model.numeric_node()->enabled && !inlineBypass->isChecked() && !inspectorBypass->isChecked(),"Every new node must expose unchecked bypass with processing enabled");
-        auto* form=body->findChild<QWidget*>("numericNodeParameters");
-        auto* inspectorForm=inspector->objectName()=="numericNodeParameters"?inspector.get():inspector->findChild<QWidget*>("numericNodeParameters");
-        require(form && inspectorForm && form->layout()->itemAt(0)->widget()==inlineBypass && inspectorForm->layout()->itemAt(0)->widget()==inspectorBypass,"Bypass must stay available at the top of both parameter forms");
-        if(kind=="ScalarView"){
-            const auto ordered=[](QWidget* parameters){auto* wrapper=parameters->parentWidget();return wrapper && wrapper->layout() && wrapper->layout()->count()==2 && wrapper->layout()->itemAt(0)->widget()==parameters && wrapper->layout()->itemAt(1)->widget() && wrapper->layout()->itemAt(1)->widget()->objectName()=="scalarInputsEditor";};
-            require(!body->findChild<QWidget*>("scalarInputsEditor") && ordered(inspectorForm),"Scalar wrappers must place the bypass/parameter form before metric input controls");
-        }
-        require(!model.parameter_model()->field("numericEnabled") && !model.parameter_model()->field("numericBypass") && !inspector->findChild<QAction*>("showOnBlock_numericEnabled") && !inspector->findChild<QAction*>("showOnBlock_numericBypass"),"Bypass must not be a pinnable processing parameter");
-        require(!model.set_parameter_on_block("numericBypass",false) && !model.parameter_model()->setOnBlock("numericEnabled",true),"Presentation pinning cannot hide or duplicate bypass");
-        auto* activity=body->findChild<QLabel*>("pipelineNodeActivity");require(activity,"Block processing activity indicator absent");
-        const auto configured=model.save();model.set_processing_activity(true,true,120.);
-        require(activity->text()==ui::text("Activity: processing") && activity->toolTip().contains("120.0"),"Activity indicator ignores measured node telemetry");
-        const auto statusText=activity->text();
-        for(int i=0;i<100;++i)model.set_processing_activity(true,true,100.+i);
-        require(activity->text()==statusText && model.save()==configured,"Execution counter refresh changes status/processing parameters");
-        model.set_processing_activity(true,false,0.);require(activity->text()==ui::text("Activity: no processing in interval"),"Inactive interval retains active node indicator");
-        model.set_processing_activity(false,false,120.);require(activity->toolTip().contains(QStringLiteral("—")),"Unmeasured activity displays configured target as measured rate");
-        const auto presentation=model.presentation();
-        inlineBypass->setChecked(true);
-        require(!model.numeric_node()->enabled && inspectorBypass->isChecked() && model.presentation()==presentation,"Bypass must invert only the execution mode and synchronize forms");
-        inspectorBypass->setChecked(false);
-        require(model.numeric_node()->enabled && !inlineBypass->isChecked(),"Inspector must restore processing and synchronize inline bypass");
-        model.set_numeric_edit_handler([](const auto&){return false;});inlineBypass->setChecked(true);
-        require(model.numeric_node()->enabled && !inlineBypass->isChecked() && !inspectorBypass->isChecked(),"Rejected bypass edit must restore both controls");
+        node_activity_checks(model,body.get());bypass_policy_checks(model,body.get(),*inspector,kind);
     }
 }
 static void selector_repair_and_names_checks(){
@@ -273,17 +342,84 @@ static void selector_repair_and_names_checks(){
     retained->setText("Retained stream");QMetaObject::invokeMethod(retained,"editingFinished",Qt::DirectConnection);
     require(mono.stream_name(2)=="Retained stream" && mono.portCaption(QtNodes::PortType::In,mono.port_index(QtNodes::PortType::In,2)).contains("Retained stream"),"Retained stream rename must update its actual port caption");
 }
-static void canonical_parameter_checks(){
+static void canonical_selector_checks(){
     AudioNodeModel selector("InputSelector");require(selector.parameter_model()->field("numericSelectorChannels"),"Selector channels field filtered by suffix");
-    auto grouped=*selector.numeric_node();require(numeric_editor::set_selector_channels(grouped,2) && numeric_editor::set_input_count(grouped,3),"Grouped selector geometry rejected");selector.set_numeric_node(grouped);require(selector.grouped_channels(QtNodes::PortType::In)==2 && selector.numeric_node()->inputs.size()==6,"Selector requires three groups of two ports");require(selector.portCaption(QtNodes::PortType::In,0).contains(ui::text("Channel %1").arg(1)) && selector.portCaption(QtNodes::PortType::In,1).contains(ui::text("Channel %1").arg(2)),"Selector channel captions lose positions");
-    AudioNodeModel router("Switch");auto route=*router.numeric_node();require(numeric_editor::set_route_channels(route,2) && numeric_editor::set_output_count(route,3),"Grouped output switch rejected");router.set_numeric_node(route);require(router.numeric_node()->inputs.size()==2 && router.numeric_node()->outputs.size()==6 && router.grouped_channels(QtNodes::PortType::Out)==2,"Output switch must preserve C channels across S groups");
-    AudioNodeModel clock("SampleClock");const auto clockPin=clock.configuration_port(QtNodes::PortType::Out,domain::ConfigurationRole::SampleClock);require(clockPin!=QtNodes::InvalidPortIndex && clock.configuration_role(QtNodes::PortType::Out,clockPin)==domain::ConfigurationRole::SampleClock,"Configuration clock port not exposed");
-    AudioNodeModel window("WindowFunction");auto* function=window.parameter_model()->field("function");require(function && function->editor==NodeParameterModel::Editor::Choice && function->options.size()==4,"Window function requires an enumerated editor");require(window.parameter_model()->edit("function",1),"Window choice edit rejected");require(std::get<int>(window.parameter_model()->field("function")->read())==1,"Window choice does not roundtrip canonical string parameter");
-    AudioNodeModel history("Spectrogram");auto* capacity=history.parameter_model()->field("numericCapacity");require(capacity && capacity->literal_type==1,"History capacity must retain UInt64 representation");
-    AudioNodeModel generator("SignalGenerator");require(generator.parameter_model()->edit("generatorBank1",false),"Generator bank action rejected");require(std::get<domain::SignalGeneratorProcessingParameters>(generator.numeric_node()->parameters).oscillators.size()==8,"Multitone bank not reflected in ordinary parameters");
+    auto grouped=*selector.numeric_node();require(numeric_editor::set_selector_channels(grouped,2) && numeric_editor::set_input_count(grouped,3),"Grouped selector geometry rejected");
+    selector.set_numeric_node(grouped);
+    require(selector.grouped_channels(QtNodes::PortType::In)==2 && domain::data_inputs(*selector.numeric_node()).size()==6,"Selector requires three groups of two ports");
+    require(selector.portCaption(QtNodes::PortType::In,0).contains(ui::text("Channel %1").arg(1)) && selector.portCaption(QtNodes::PortType::In,1).contains(ui::text("Channel %1").arg(2)),"Selector channel captions lose positions");
+    require(selector.parameter_model()->edit("numericResetSettings",false),"Grouped selector reset rejected");
+    const auto& parameters=std::get<domain::TransformProcessingParameters>(selector.numeric_node()->parameters).values;
+    require(std::count_if(parameters.begin(),parameters.end(),[](const auto& value){return value.key=="channels_per_stream";})==1,"Selector reset duplicates registered channel setting");
+    require(domain::data_inputs(*selector.numeric_node()).size()==6 && domain::data_outputs(*selector.numeric_node()).size()==2,"Selector reset changes explicit port geometry");
+}
+static void canonical_routing_checks(){
+    AudioNodeModel router("Switch");auto route=*router.numeric_node();
+    require(numeric_editor::set_route_channels(route,2) && numeric_editor::set_output_count(route,3),"Grouped output switch rejected");router.set_numeric_node(route);
+    require(domain::data_inputs(*router.numeric_node()).size()==2 && domain::data_outputs(*router.numeric_node()).size()==6 && router.grouped_channels(QtNodes::PortType::Out)==2,"Output switch must preserve C channels across S groups");
+    AudioNodeModel clock("SampleClock");const auto clockPin=clock.configuration_port(QtNodes::PortType::Out,domain::ConfigurationRole::SampleClock);
+    require(clockPin!=QtNodes::InvalidPortIndex && clock.configuration_role(QtNodes::PortType::Out,clockPin)==domain::ConfigurationRole::SampleClock,"Configuration clock port not exposed");
+}
+static void canonical_processing_controls_checks(){
+    AudioNodeModel window("WindowFunction");auto* function=window.parameter_model()->field("function");
+    require(function && function->editor==NodeParameterModel::Editor::Choice && function->options.size()==7,"Window function requires the complete shared enumerated editor");
+    require(window.parameter_model()->edit("function",1),"Window choice edit rejected");
+    require(std::get<int>(window.parameter_model()->field("function")->read())==1,"Window choice does not roundtrip canonical string parameter");
+    AudioNodeModel history("Spectrogram");auto* capacity=history.parameter_model()->field("numericCapacity");
+    require(capacity && capacity->literal_type==1,"History capacity must retain UInt64 representation");
+    AudioNodeModel generator("SignalGenerator");require(generator.parameter_model()->edit("generatorBank1",false),"Generator bank action rejected");
+    require(std::get<domain::SignalGeneratorProcessingParameters>(generator.numeric_node()->parameters).oscillators.size()==8,"Multitone bank not reflected in ordinary parameters");
     std::unique_ptr<QWidget> panel(generator.parameter_widget());require(panel->findChild<QWidget*>("oscillatorTable"),"Generator bank table absent");
-    AudioNodeModel capture("AudioSource");int generation=0;capture.set_capture_device_provider([&](int,QString*){QJsonArray devices;for(int i=0;i<generation;++i)devices.append(QJsonObject{{"id",QString::number(i)},{"name",QString("Device %1").arg(i)}});return devices;});generation=2;require(capture.parameter_model()->edit("refreshCaptureDevices",false),"Capture refresh rejected");require(capture.parameter_model()->field("captureDevice")->options.size()==3,"Capture refresh retains old choices");
-    AudioNodeModel mixer("Mixer");require(mixer.parameter_model()->field("mixerInputCount")->minimum==1,"Mixer cannot use one independent input");require(mixer.parameter_model()->field("mixerShare0"),"Normalized proportion readout absent");
+}
+static void literal_device_caption_checks(){
+    AudioNodeModel capture("AudioSource");
+    capture.set_capture_device_provider([](int,QString*){return QJsonArray{QJsonObject{{"id","literal-caption"},{"name","Input %1"}}};});
+    std::unique_ptr<QWidget> inspector(capture.parameter_widget());
+    auto* devices=inspector->findChild<QComboBox*>("captureDevice");
+    require(devices && devices->findText("Input %1")>=0,"Literal device caption was interpreted as a numbered port label");
+    require(ui::Language::instance().set("ru"),"RU language unavailable");
+    require(devices->findText("Input %1")>=0,"Literal device caption was translated during language refresh");
+    require(ui::Language::instance().set("en"),"EN language unavailable");
+}
+static void canonical_capture_controls_checks(){
+    AudioNodeModel capture("AudioSource");int generation=0;
+    capture.set_capture_device_provider([&](int,QString*){QJsonArray devices;for(int i=0;i<generation;++i)devices.append(QJsonObject{{"id",QString::number(i)},{"name",QString("Device %1").arg(i)}});return devices;});
+    generation=2;require(capture.parameter_model()->edit("refreshCaptureDevices",false),"Capture refresh rejected");
+    require(capture.parameter_model()->field("captureDevice")->options.size()==3,"Capture refresh retains old choices");
+}
+static void canonical_mixer_controls_checks(){
+    AudioNodeModel mixer("Mixer");require(mixer.parameter_model()->field("mixerInputCount")->minimum==1,"Mixer cannot use one independent input");
+    auto node=*mixer.numeric_node();auto& parameters=std::get<domain::MixerProcessingParameters>(node.parameters);
+    parameters.mode=domain::MixerMode::WeightedMean;
+    for(auto& weight:parameters.weights)weight.weight=std::numeric_limits<double>::max();
+    mixer.set_numeric_node(node);
+    const auto key=QString("mixerShare%1").arg(parameters.weights.front().port);
+    require(std::get<QString>(mixer.parameter_model()->field(key)->read())=="50.00 %","Large finite weights overflow normalized UI proportion");
+    for(auto& weight:parameters.weights)weight.weight=0;
+    mixer.set_numeric_node(node);require(std::get<QString>(mixer.parameter_model()->field(key)->read())=="0.00 %","All-zero weights must show zero proportion");
+}
+static void explicit_profile_controls_checks(){
+    AudioNodeModel selector("InputSelector");auto node=*selector.numeric_node();
+    require(numeric_editor::set_selector_channels(node,2) && numeric_editor::set_input_count(node,3),"Profile fixture geometry rejected");selector.set_numeric_node(node);
+    auto profile=numeric_editor::limits();profile.max_ports_per_node=2;
+    const auto before=selector.save();selector.set_admission_limits(profile);
+    std::unique_ptr<QWidget> inspector(selector.parameter_widget());auto* count=inspector->findChild<QSpinBox*>("numericInputs");
+    require(count && count->value()==3,"Profile refresh clamps an existing draft value");
+    require(selector.save()==before && selector.parameter_model()->field("numericInputs")->maximum==1,"Profile refresh changes draft or ignores geometry budget");
+    require(!selector.parameter_model()->edit("numericInputs",2) && selector.save()==before,"Profile-dependent edit exceeds supplied execution profile");
+    selector.set_admission_limits(std::nullopt);QApplication::processEvents();count=inspector->findChild<QSpinBox*>("numericInputs");
+    require(count && count->value()==3 && !count->isEnabled() && selector.save()==before,"Missing profile uses fallback policy or mutates draft");
+}
+static void literal_operation_summary_checks(){
+    AudioNodeModel fft("MatrixFFT");
+    require(fft.parameter_model()->editLiteral("fft_size","512",0),"Matrix FFT size edit rejected");
+    require(fft.operation_summary().contains("512"),"Matrix FFT summary infers size from a removed choice index");
+    AudioNodeModel row("MatrixRow");
+    require(row.parameter_model()->editLiteral("row","1",0),"Matrix row selection rejected");
+    require(row.operation_summary().endsWith(": 1"),"Matrix row summary reads a literal as an integer editor index");
+}
+static void canonical_parameter_checks(){
+    literal_operation_summary_checks();canonical_selector_checks();canonical_routing_checks();canonical_processing_controls_checks();canonical_capture_controls_checks();literal_device_caption_checks();canonical_mixer_controls_checks();explicit_profile_controls_checks();
 }
 struct PreviewPools {
     alignas(64) std::array<std::byte,8192> payload{},metadata{};
@@ -373,182 +509,328 @@ static void preview_model_checks() {
     require(!history.preview_history_snapshot(full,80,3) && historyCard->findChild<QLabel*>("previewValues")->text()==QStringLiteral("4\n—"),"Late cold snapshot replaces newer compact ordinal");
     require(history.save()==historyConfigured,"Cold History preview mutates parameters");full={};row.compact={};require(pools.p.in_use()==0 && pools.m.in_use()==0,"Cold History preview retains pooled storage");
 }
-int main(int argc,char** argv) {
-    QApplication app(argc,argv);
-    try {
-        ui::Language::instance().set("en");catalogue_acceptance_checks();oscillator_bank_acceptance_checks();dimensional_editor_acceptance_checks();grouped_layout_acceptance_checks();bypass_controls_checks();canonical_parameter_checks();selector_repair_and_names_checks();preview_model_checks();
-        GuiState state;state.file_configs.ui.autosave_enabled=false;state.file_configs.ui.pipeline_auto_apply=false;
-        state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-        for(const auto& kind:numeric_editor::catalog())state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
-        auto graph=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);state.data_flow_graph=graph;
-        domain::NumericProcessingGraph empty;empty.graph_id="main";require(graph->set_numeric_graph(empty),"Empty canonical fixture rejected");state.file_configs.scene_graph=graph->save();
-        GuiPresenter presenter(state,test_fixture::synthetic_engine_provider(false));SchemeEditorWidget editor(presenter);editor.resize(1000,700);editor.show();QApplication::processEvents();
-        QSignalSpy typedSave(&editor,&SchemeEditorWidget::numeric_draft_changed),applied(&presenter,&GuiPresenter::graph_apply_finished);
-        // Presentation-only capture status: injected projected backend states,
-        // never physical capture, OS input or a forged successful Apply.
-        auto* capture=editor.toolbar()->findChild<QLabel*>("pipelineCaptureStatus");
-        auto* validation=editor.toolbar()->findChild<QLabel*>("pipelineValidation");
-        require(capture && validation,"Capture status indicator absent");
-        const auto beforeCapture=editor.document();const int beforeCaptureUndo=editor.history().index();
-        emit presenter.apply_status_changed("Not applied: fixture contract");const auto admissionWarning=validation->toolTip();
-        emit presenter.component_status_changed("capture",int(pipeline::State::Failed),"fixture: loopback device unavailable");
-        require(capture->isVisibleTo(editor.toolbar()) && capture->text()==ui::text("Capture failed") && capture->toolTip().contains("fixture: loopback device unavailable"),"Projected capture failure is not visible with backend error");
-        emit presenter.apply_status_changed("Applied");
-        emit presenter.component_status_changed("analyzer",int(pipeline::State::Running),{});
-        require(capture->text()==ui::text("Capture failed") && validation->toolTip()==admissionWarning,"Apply or analyzer status masks capture/admission failure");
-        ui::Language::instance().set("ru");
-        require(capture->text()==QString::fromUtf8("Ошибка захвата") && capture->toolTip().contains("fixture: loopback device unavailable"),"Live capture failure is not translated to RU");
-        emit presenter.component_status_changed("capture",int(pipeline::State::Starting),{});
-        require(capture->text()==ui::text("Capture starting") && !capture->toolTip().contains("fixture:"),"Capture starting retains stale failure");
-        emit presenter.component_status_changed("capture",int(pipeline::State::Running),{});
-        require(capture->text()==ui::text("Audio capture: receiving") && validation->toolTip()==admissionWarning,"Capture recovery overwrites admission warning");
-        ui::Language::instance().set("en");require(capture->text()=="Audio capture: receiving","Live capture recovery fails EN refresh");
-        emit presenter.component_status_changed("capture",int(pipeline::State::Stopped),{});
-        require(capture->isVisibleTo(editor.toolbar()) && capture->text()==ui::text("Audio capture: inactive") && !capture->toolTip().isEmpty() && !capture->toolTip().contains("fixture:") && capture->textInteractionFlags()==Qt::NoTextInteraction && validation->toolTip()==admissionWarning && editor.document()==beforeCapture && editor.history().index()==beforeCaptureUndo,"Inactive capture status loses independence/visibility or mutates draft/history/admission warning");
-
-        auto* library=editor.findChild<QTreeWidget*>("pipelineNodeLibrary");require(library && library->topLevelItemCount()==3,"Sidebar categories differ from shared roles");
-        auto* scene=editor.findChild<QtNodes::DataFlowGraphicsScene*>();std::unique_ptr<QMenu> menu(scene->createSceneMenu({9000,9000}));
-        auto* context=menu->findChild<QTreeWidget*>("numericContextCatalog");require(context && context->topLevelItemCount()==3,"Context catalog missing shared roles");
-        auto kinds=[](QTreeWidget* tree){QStringList result;std::function<void(QTreeWidgetItem*)> visit=[&](auto* item){const auto kind=item->data(0,Qt::UserRole).toString();if(!kind.isEmpty())result.append(kind);for(int i=0;i<item->childCount();++i)visit(item->child(i));};for(int i=0;i<tree->topLevelItemCount();++i)visit(tree->topLevelItem(i));result.sort();return result;};
-        auto expectedKinds=numeric_editor::catalog();expectedKinds.sort();require(kinds(context)==kinds(library) && kinds(library)==expectedKinds,"Sidebar/context must expose every catalog leaf in the shared hierarchy");
-        {
-            const auto source=graph->addNode("AudioSource"),sink=graph->addNode("Converter");auto node=*graph->delegateModel<AudioNodeModel>(sink)->numeric_node();numeric_editor::set_dtype(node,domain::PortDirection::Input,0,signal_contracts::DType::UInt16);graph->edit_node(sink,node);
-            const QtNodes::ConnectionId edge{source,0,sink,0};graph->addConnection(edge);scene->connectionGraphicsObject(edge)->setSelected(true);
-            auto* policy=editor.findChild<QComboBox*>("connectionConversionPolicy");require(policy && policy->currentIndex()==0 && editor.findChild<QLabel*>("connectionRisk"),"Selecting a dtype edge must expose its actual policy in the existing inspector");
-            policy->setCurrentIndex(3);require(graph->connection_policy(edge)==3,"Inspector policy must edit the processing graph");editor.history().undo();require(graph->connection_policy(edge)==0 && policy->currentIndex()==0,"Inspector policy undo must refresh both representations");
-            graph->deleteNode(sink);graph->deleteNode(source);
-        }
-        {
-            QJsonArray devices{QJsonObject{{"id","default-mono"},{"is_default",true},{"native_sample_rate",48000},{"native_channels",1}},
-                QJsonObject{{"id","saved-three"},{"is_default",false},{"native_sample_rate",44100},{"native_channels",3}}};
-            graph->set_capture_device_provider([&](int,QString*){return devices;});
-            domain::NumericProcessingGraph pinned;pinned.graph_id="main";
-            auto source=numeric_editor::default_node("AudioSource");source.id=1;
-            auto view=numeric_editor::default_node("AudioView");view.id=2;view.inputs[0].contract=source.outputs[0].contract;
-            pinned.nodes={source,view};pinned.edges={{1,2,0,0}};QString error;
-            require(desktop::resolve_numeric_source_format(pinned,1,44100,3,&error),"Prepare saved three-output contract");
-            pinned.edges[0].output_port=2;
-            const QJsonObject adapters{{"1",QJsonObject{{"device_identity","saved-three"}}}};
-            require(editor.load_numeric_draft(pinned,&error,adapters),"Atomic widget pinned graph and adapter import");
-            domain::NumericProcessingGraph applied;
-            require(editor.numeric_draft(applied,&error) && applied.edges==pinned.edges && applied.nodes[0].outputs.size()==3 &&
-                graph->delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="saved-three",
-                "Widget load rewired pinned output three to default mono");
-            const auto before=editor.document();const auto undoIndex=editor.history().index(),undoCount=editor.history().count();
-            devices[1]=QJsonObject{{"id","saved-three"},{"is_default",false},{"native_sample_rate",7999},{"native_channels",3}};
-            require(!editor.load_numeric_draft(pinned,&error,adapters) && editor.document()==before &&
-                editor.history().index()==undoIndex && editor.history().count()==undoCount &&
-                graph->delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="saved-three",
-                "Rejected widget pinned import changed graph, bindings or Undo");
-            graph->set_capture_device_provider({});
-        }
-        auto converter=numeric_editor::default_node("Converter");converter.id=3;
-        std::get<domain::ConverterProcessingParameters>(converter.parameters).policy.nan_replacement=std::uint64_t{9007199254740993ULL};
-        domain::NumericProcessingGraph draft;draft.graph_id="main";draft.nodes.push_back(converter);QString error;
-        require(editor.load_numeric_draft(draft,&error),"Widget canonical load failed");domain::NumericProcessingGraph exported;
+static void collect_catalogue_leaves(QTreeWidgetItem* item,QStringList& result){
+    const auto kind=item->data(0,Qt::UserRole).toString();if(!kind.isEmpty())result.append(kind);
+    for(int i=0;i<item->childCount();++i)collect_catalogue_leaves(item->child(i),result);
+}
+static QStringList catalogue_leaves(QTreeWidget& tree){
+    QStringList result;
+    for(int i=0;i<tree.topLevelItemCount();++i)collect_catalogue_leaves(tree.topLevelItem(i),result);
+    result.sort();return result;
+}
+static void widget_catalogue_checks(SchemeEditorWidget& editor){
+    auto* library=editor.findChild<QTreeWidget*>("pipelineNodeLibrary");require(library && library->topLevelItemCount()==4,"Sidebar must expose sources, processors, outputs and graphs");
+    auto* scene=editor.findChild<QtNodes::DataFlowGraphicsScene*>();require(scene,"Editor scene absent");
+    std::unique_ptr<QMenu> menu(scene->createSceneMenu({9000,9000}));
+    auto* context=menu->findChild<QTreeWidget*>("numericContextCatalog");require(context && context->topLevelItemCount()==4,"Context catalog must expose the same four root sections");
+    auto expected=numeric_editor::visible_catalog();expected.sort();
+    require(catalogue_leaves(*context)==catalogue_leaves(*library) && catalogue_leaves(*library)==expected,"Sidebar/context must expose every public catalog leaf in the shared hierarchy");
+}
+static void connection_policy_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph){
+    const auto source=graph.addNode("AudioSource"),sink=graph.addNode("Converter");auto node=*graph.delegateModel<AudioNodeModel>(sink)->numeric_node();
+    numeric_editor::set_dtype(node,domain::PortDirection::Input,0,signal_contracts::DType::UInt16);graph.edit_node(sink,node);
+    const QtNodes::ConnectionId edge{source,0,sink,0};graph.addConnection(edge);
+    auto* scene=editor.findChild<QtNodes::DataFlowGraphicsScene*>();scene->connectionGraphicsObject(edge)->setSelected(true);
+    auto* policy=editor.findChild<QComboBox*>("connectionConversionPolicy");require(policy && policy->currentIndex()==0 && editor.findChild<QLabel*>("connectionRisk"),"Selecting a dtype edge must expose its actual policy in the existing inspector");
+    policy->setCurrentIndex(3);require(graph.connection_policy(edge)==3,"Inspector policy must edit the processing graph");
+    editor.history().undo();require(graph.connection_policy(edge)==0 && policy->currentIndex()==0,"Inspector policy undo must refresh both representations");
+    graph.deleteNode(sink);graph.deleteNode(source);
+}
+static domain::NumericProcessingGraph pinned_capture_graph(){
+    domain::NumericProcessingGraph graph;graph.graph_id="main";
+    auto source=numeric_editor::default_node("AudioSource");source.id=1;
+    auto view=numeric_editor::default_node("AudioView");view.id=2;view.inputs[0].contract=source.outputs[0].contract;
+    graph.nodes={source,view};graph.edges={{1,2,0,0}};QString error;
+    require(desktop::resolve_numeric_source_format(graph,1,44100,3,numeric_editor::limits(),&error),"Prepare saved three-output contract");
+    graph.edges[0].output_port=2;return graph;
+}
+static void rejected_pinned_import(SchemeEditorWidget& editor,NumericEditorGraphModel& model,const domain::NumericProcessingGraph& graph,const QJsonObject& adapters){
+    const auto before=editor.document();const auto undoIndex=editor.history().index(),undoCount=editor.history().count();QString error;
+    require(!editor.load_numeric_draft(graph,&error,adapters) && editor.document()==before && editor.history().index()==undoIndex && editor.history().count()==undoCount && model.delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="saved-three","Rejected widget pinned import changed graph, bindings or Undo");
+}
+static void pinned_capture_import(SchemeEditorWidget& editor,NumericEditorGraphModel& model){
+    auto devices=std::make_shared<QJsonArray>(QJsonArray{QJsonObject{{"id","default-mono"},{"is_default",true},{"native_sample_rate",48000},{"native_channels",1}},QJsonObject{{"id","saved-three"},{"is_default",false},{"native_sample_rate",44100},{"native_channels",3}}});
+    model.set_admission_limits(numeric_editor::limits());model.set_capture_device_provider([devices](int,QString*){return *devices;});
+    const auto graph=pinned_capture_graph();const QJsonObject adapters{{"1",QJsonObject{{"device_identity","saved-three"}}}};QString error;
+    require(editor.load_numeric_draft(graph,&error,adapters),"Atomic widget pinned graph and adapter import");
+    domain::NumericProcessingGraph applied;
+    require(editor.numeric_draft(applied,&error) && applied.edges==graph.edges && domain::data_outputs(applied.nodes[0]).size()==3 && model.delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="saved-three","Widget load rewired pinned output three to default mono");
+    (*devices)[1]=QJsonObject{{"id","saved-three"},{"is_default",false},{"native_sample_rate",999},{"native_channels",3}};
+    rejected_pinned_import(editor,model,graph,adapters);model.set_admission_limits(numeric_editor::limits());model.set_capture_device_provider({});
+}
+static void inspector_bypass_translation(QCheckBox& bypass){
+    ui::Language::instance().set("ru");require(bypass.text()==ui::text("Bypass"),"Inspector bypass is not live translated");
+    ui::Language::instance().set("en");require(bypass.text()==ui::text("Bypass"),"Inspector bypass does not restore English");
+}
+static void connected_bypass_undo(SchemeEditorWidget& editor,NumericEditorGraphModel& graph){
+    auto node=numeric_editor::default_node("Converter");node.id=42;
+    domain::NumericProcessingGraph draft;draft.graph_id="main";draft.nodes.push_back(node);
+    require(editor.load_numeric_draft(draft),"Identity bypass fixture load");
+    auto* model=graph.delegateModel<AudioNodeModel>(42);std::unique_ptr<QWidget> controls(model->parameter_widget());
+    auto* bypass=controls->findChild<QCheckBox*>("numericBypass");require(bypass,"Identity operation inspector bypass absent");
+    const int before=editor.history().index();bypass->setChecked(true);
+    require(!model->numeric_node()->enabled && editor.history().index()==before+1,"Bypass edit bypasses editor command/undo path");
+    editor.history().undo();require(model->numeric_node()->enabled && !bypass->isChecked(),"Undo fails to restore bypass control");
+    editor.history().redo();require(!model->numeric_node()->enabled && bypass->isChecked(),"Redo fails to restore bypass control");
+    editor.history().undo();inspector_bypass_translation(*bypass);
+}
+class CaptureStatusChecks {
+    SchemeEditorWidget& editor_;GuiPresenter& presenter_;QLabel* capture_;QLabel* validation_;
+    QJsonObject before_;int undo_;QString warning_;
+public:
+    CaptureStatusChecks(SchemeEditorWidget& editor,GuiPresenter& presenter):editor_(editor),presenter_(presenter),
+        capture_(editor.toolbar()->findChild<QLabel*>("pipelineCaptureStatus")),validation_(editor.toolbar()->findChild<QLabel*>("pipelineValidation")),before_(editor.document()),undo_(editor.history().index()) {
+        require(capture_ && validation_,"Capture status indicator absent");
+    }
+    void failure(){
+        emit presenter_.apply_status_changed("Not applied: fixture contract");warning_=validation_->toolTip();
+        emit presenter_.component_status_changed("capture",int(pipeline::State::Failed),"fixture: loopback device unavailable");
+        require(capture_->isVisibleTo(editor_.toolbar()) && capture_->text()==ui::text("Capture failed") && capture_->toolTip().contains("fixture: loopback device unavailable"),"Projected capture failure is not visible with backend error");
+        emit presenter_.apply_status_changed("Applied");emit presenter_.component_status_changed("analyzer",int(pipeline::State::Running),{});
+        require(capture_->text()==ui::text("Capture failed") && validation_->toolTip()==warning_,"Apply or analyzer status masks capture/admission failure");
+    }
+    void recovery(){
+        ui::Language::instance().set("ru");require(capture_->text()==QString::fromUtf8("Ошибка захвата") && capture_->toolTip().contains("fixture: loopback device unavailable"),"Live capture failure is not translated to RU");
+        emit presenter_.component_status_changed("capture",int(pipeline::State::Starting),{});
+        require(capture_->text()==ui::text("Capture starting") && !capture_->toolTip().contains("fixture:"),"Capture starting retains stale failure");
+        emit presenter_.component_status_changed("capture",int(pipeline::State::Running),{});
+        require(capture_->text()==ui::text("Audio capture: receiving") && validation_->toolTip()==warning_,"Capture recovery overwrites admission warning");
+        ui::Language::instance().set("en");require(capture_->text()=="Audio capture: receiving","Live capture recovery fails EN refresh");
+    }
+    void inactive(){
+        emit presenter_.component_status_changed("capture",int(pipeline::State::Stopped),{});
+        require(capture_->isVisibleTo(editor_.toolbar()) && capture_->text()==ui::text("Audio capture: inactive") && !capture_->toolTip().isEmpty() && !capture_->toolTip().contains("fixture:") && capture_->textInteractionFlags()==Qt::NoTextInteraction,"Inactive capture status loses independence or visibility");
+        require(validation_->toolTip()==warning_ && editor_.document()==before_ && editor_.history().index()==undo_,"Capture status mutates draft/history/admission warning");
+    }
+};
+static void capture_status_checks(SchemeEditorWidget& editor,GuiPresenter& presenter){
+    CaptureStatusChecks checks(editor,presenter);checks.failure();checks.recovery();checks.inactive();
+}
+static domain::NumericProcessingGraph exact_converter_graph(){
+    auto converter=numeric_editor::default_node("Converter");converter.id=3;
+    std::get<domain::ConverterProcessingParameters>(converter.parameters).policy.nan_replacement=std::uint64_t{9007199254740993ULL};
+    domain::NumericProcessingGraph graph;graph.graph_id="main";graph.nodes.push_back(converter);return graph;
+}
+static void clipboard_shortcuts(QtNodes::GraphicsView& view){
+    int actions=0;
+    for(auto* action:view.actions())if(action->shortcuts().contains(QKeySequence(QKeySequence::Copy)) || action->shortcuts().contains(QKeySequence(QKeySequence::Paste))){
+        ++actions;require(action->shortcutContext()==Qt::WidgetWithChildrenShortcut && !action->autoRepeat(),"Graph clipboard shortcuts escape the focused view or repeat");
+    }
+    require(actions==2,"Graph Ctrl+C/V shortcuts were remapped or missing");
+}
+class ExactDocumentChecks {
+    SchemeEditorWidget& editor;NumericEditorGraphModel& graph;GuiPresenter& presenter;GuiState& state;
+    QSignalSpy& typedSave;QSignalSpy& applied;
+    domain::NumericProcessingGraph draft=exact_converter_graph();
+    std::unique_ptr<QWidget> settings;QLineEdit* rate=nullptr;signal_contracts::Ratio interval;QString preset;
+public:
+    ExactDocumentChecks(SchemeEditorWidget& e,NumericEditorGraphModel& g,GuiPresenter& p,GuiState& s,QSignalSpy& saves,QSignalSpy& replies)
+        :editor(e),graph(g),presenter(p),state(s),typedSave(saves),applied(replies){}
+    void load(){
+        QString error;require(editor.load_numeric_draft(draft,&error),"Widget canonical load failed");domain::NumericProcessingGraph exported;
         require(editor.numeric_draft(exported,&error) && exported.nodes.size()==1 && exported.nodes[0].id==3,"Widget export lost owning node/id");
         require(!editor.toolbar()->findChild<QLineEdit*>("pipelineAnalysisRate") && editor.toolbar()->findChild<QLabel*>("pipelineProcessingRate"),"Toolbar must show measured rate, with editable target in settings only");
-        auto* captureStatus=editor.toolbar()->findChild<QLabel*>("pipelineCaptureStatus");require(captureStatus && !captureStatus->toolTip().isEmpty() && captureStatus->textInteractionFlags()==Qt::NoTextInteraction,"Capture must be a descriptive noninteractive status");
-        std::unique_ptr<QWidget> executionSettings(editor.execution_settings_widget());
-        auto* rate=executionSettings->findChild<QLineEdit*>("pipelineAnalysisRate");require(rate,"Execution settings missing rational rate editor");
-        const auto interval=graph->numeric_graph().execution_interval;const auto rateUndo=editor.history().index();
-        rate->setText("24000/1001");emit rate->editingFinished();
-        require(graph->numeric_graph().execution_interval.numerator==1001 && graph->numeric_graph().execution_interval.denominator==24000 && editor.history().index()==rateUndo+1,"Rational analysis rate loses exact numerator/denominator or undo");
-        editor.history().undo();require(graph->numeric_graph().execution_interval==interval,"Rate settings undo fails");
-        rate->setText("120/0");emit rate->editingFinished();require(graph->numeric_graph().execution_interval==interval && editor.history().index()==rateUndo,"Malformed settings rate changes graph");
+        auto* status=editor.toolbar()->findChild<QLabel*>("pipelineCaptureStatus");
+        require(status && !status->toolTip().isEmpty() && status->textInteractionFlags()==Qt::NoTextInteraction,"Capture must be a descriptive noninteractive status");
+        settings.reset(editor.execution_settings_widget());rate=settings->findChild<QLineEdit*>("pipelineAnalysisRate");require(rate,"Execution settings missing rational rate editor");
+        interval=graph.numeric_graph().execution_interval;
+    }
+    void rational_rate(){
+        const auto before=editor.history().index();rate->setText("24000/1001");emit rate->editingFinished();
+        require(graph.numeric_graph().execution_interval.numerator==1001 && graph.numeric_graph().execution_interval.denominator==24000 && editor.history().index()==before+1,"Rational analysis rate loses exact numerator/denominator or undo");
+        editor.history().undo();require(graph.numeric_graph().execution_interval==interval,"Rate settings undo fails");
+        rate->setText("120/0");emit rate->editingFinished();require(graph.numeric_graph().execution_interval==interval && editor.history().index()==before,"Malformed settings rate changes graph");
         auto sixty=draft;sixty.execution_interval={1,60};require(editor.load_numeric_draft(sixty) && rate->text()=="60","Loading a graph leaves existing rate settings on previous target");
         require(editor.load_numeric_draft(draft) && rate->text()=="120","Restoring graph does not synchronize persistent rate settings");
-
-        const auto before=editor.document();auto invalid=draft;invalid.nodes[0].kind="UnknownNumericNode";
+    }
+    void rejected_load(){
+        const auto before=editor.document();auto invalid=draft;invalid.nodes[0].kind="UnknownNumericNode";QString error;
         require(!editor.load_numeric_draft(invalid,&error) && editor.document()==before,"Rejected load changed current draft");
-        graph->setNodeData(3,QtNodes::NodeRole::Position,QPointF(420,230));
-        auto* converterModel=graph->delegateModel<AudioNodeModel>(3);require(converterModel->set_parameter_on_block("numericNan",true),"Preset visibility edit failed");
-        auto* editorView=editor.findChild<QtNodes::GraphicsView*>();require(editorView,"Graph clipboard view missing");
-        int clipboardActions=0;
-        for(auto* action:editorView->actions())if(action->shortcuts().contains(QKeySequence(QKeySequence::Copy)) || action->shortcuts().contains(QKeySequence(QKeySequence::Paste))) {
-            ++clipboardActions;require(action->shortcutContext()==Qt::WidgetWithChildrenShortcut && !action->autoRepeat(),"Graph clipboard shortcuts escape the focused view or repeat");
-        }
-        require(clipboardActions==2,"Graph Ctrl+C/V shortcuts were remapped or missing");
-        scene->nodeSelected(3);auto* renameBlock=editor.findChild<QPushButton*>("pipelineRenameNode");require(renameBlock,"Ordinary processor inspector lacks rename control");
-        auto* inspector=editor.findChild<QWidget*>("pipelineInspector");
+    }
+    void inspector_order(QPushButton* rename){
+        auto* inspector=editor.findChild<QWidget*>("pipelineInspector");require(inspector,"Node inspector absent");
         auto* preview=inspector->findChild<QWidget*>("pipelineDataStatus");auto* form=inspector->findChild<QWidget*>("numericNodeParameters");
-        require(preview && form && preview->parentWidget()->layout()->indexOf(preview)<preview->parentWidget()->layout()->indexOf(form) &&
-            preview->parentWidget()->layout()->indexOf(form)<preview->parentWidget()->layout()->indexOf(renameBlock),"Inspector data availability and parameters must precede rename/options");
-        auto* textEditor=editor.findChild<QLineEdit*>("numericNan");require(textEditor,"Exact numeric text editor absent");
-        const auto clipboardNodeCount=graph->allNodeIds().size();textEditor->setFocus();textEditor->selectAll();
-        QTest::keyClick(textEditor,Qt::Key_C,Qt::ControlModifier);
-        require(QApplication::clipboard()->text()=="9007199254740993" && graph->allNodeIds().size()==clipboardNodeCount,"Copy inside a parameter field copied graph nodes instead of text");
-        const auto renameUndo=editor.history().index();
+        require(preview && form && preview->parentWidget()->layout()->indexOf(preview)<preview->parentWidget()->layout()->indexOf(form) && preview->parentWidget()->layout()->indexOf(form)<preview->parentWidget()->layout()->indexOf(rename),"Inspector data availability and parameters must precede rename/options");
+    }
+    void clipboard(){
+        auto* view=editor.findChild<QtNodes::GraphicsView*>();require(view,"Graph clipboard view missing");clipboard_shortcuts(*view);
+        auto* text=editor.findChild<QLineEdit*>("numericNan");require(text,"Exact numeric text editor absent");
+        const auto count=graph.allNodeIds().size();text->setFocus();text->selectAll();QTest::keyClick(text,Qt::Key_C,Qt::ControlModifier);
+        require(QApplication::clipboard()->text()=="9007199254740993" && graph.allNodeIds().size()==count,"Copy inside a parameter field copied graph nodes instead of text");
+    }
+    void rename(){
+        graph.setNodeData(3,QtNodes::NodeRole::Position,QPointF(420,230));auto* model=graph.delegateModel<AudioNodeModel>(3);
+        require(model->set_parameter_on_block("numericNan",true),"Preset visibility edit failed");
+        editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(3);auto* button=editor.findChild<QPushButton*>("pipelineRenameNode");require(button,"Ordinary processor inspector lacks rename control");
+        inspector_order(button);clipboard();rename_command(*model,*button);
+    }
+    void rename_command(AudioNodeModel& model,QPushButton& button){
+        const auto before=editor.history().index();
         QTimer::singleShot(0,[]{for(auto* widget:QApplication::topLevelWidgets())if(auto* dialog=qobject_cast<QInputDialog*>(widget)){dialog->setTextValue("Exact converter");dialog->accept();}});
-        renameBlock->click();require(converterModel->caption()=="Exact converter" && converterModel->name()=="Converter" && editor.history().index()==renameUndo+1,"Inspector rename did not update user caption with one undo command");
-        editor.history().undo();require(converterModel->caption()!="Exact converter","Inspector rename undo did not restore default");editor.history().redo();
-        require(editor.save_preset("exact snapshot"),"Canonical preset save failed");const auto preset=state.file_configs.ui.pipeline_presets.last().toObject();
-        rate->setText("90");emit rate->editingFinished();
-        graph->deleteNode(3);require(editor.load_preset(preset["id"].toString()),"Canonical preset reload failed");
-        require(rate->text()=="120" && graph->numeric_graph().execution_interval==interval,"Preset replacement leaves stale persistent analysis target");
-        require(editor.numeric_draft(exported,&error),qPrintable(QString("Preset export failed: ")+error));
+        button.click();require(model.caption()=="Exact converter" && model.name()=="Converter" && editor.history().index()==before+1,"Inspector rename did not update user caption with one undo command");
+        editor.history().undo();require(model.caption()!="Exact converter","Inspector rename undo did not restore default");editor.history().redo();
+    }
+    void reload_preset(){
+        require(editor.save_preset("exact snapshot"),"Canonical preset save failed");preset=state.file_configs.ui.pipeline_presets.last().toObject()["id"].toString();
+        rate->setText("90");emit rate->editingFinished();graph.deleteNode(3);require(editor.load_preset(preset),"Canonical preset reload failed");
+        require(rate->text()=="120" && graph.numeric_graph().execution_interval==interval,"Preset replacement leaves stale persistent analysis target");
+        verify_preset();
+    }
+    void verify_preset(){
+        domain::NumericProcessingGraph exported;QString error;require(editor.numeric_draft(exported,&error),qPrintable(QString("Preset export failed: ")+error));
         const auto& replacement=std::get<domain::ConverterProcessingParameters>(exported.nodes[0].parameters).policy.nan_replacement;
         require(std::holds_alternative<std::uint64_t>(replacement),"Preset changes UInt64 literal tag");
         require(std::get<std::uint64_t>(replacement)==9007199254740993ULL,qPrintable(QString("Preset rounds exact UInt64 literal to ")+QString::number(std::get<std::uint64_t>(replacement))));
-        require(graph->nodeData(3,QtNodes::NodeRole::Position).toPointF()==QPointF(420,230),"Preset loses node position");
-        require(graph->delegateModel<AudioNodeModel>(3)->parameter_on_block("numericNan"),"Preset loses presentation flag");
-        require(graph->delegateModel<AudioNodeModel>(3)->caption()=="Exact converter","Preset loses the user display name");
-        editor.findChild<QPushButton*>("applyPipeline")->click();
+        require(graph.nodeData(3,QtNodes::NodeRole::Position).toPointF()==QPointF(420,230),"Preset loses node position");
+        require(graph.delegateModel<AudioNodeModel>(3)->parameter_on_block("numericNan"),"Preset loses presentation flag");
+        require(graph.delegateModel<AudioNodeModel>(3)->caption()=="Exact converter","Preset loses the user display name");
+    }
+    void inject_typed_extensions() {
+        QByteArray encoded;
+        require(bool(desktop::encode_numeric_graph(graph.numeric_graph(),encoded)), "Typed extension fixture encode failed");
+        auto document=QJsonDocument::fromJson(encoded).object();
+        auto nodes=document.value("nodes").toArray();
+        auto node=nodes[0].toObject();
+        const auto visual=editor.document().value("nodes").toArray()[0].toObject();
+        node["position"]=visual.value("position");
+        node["presentation"]=visual.value("internal-data").toObject().value("presentation");
+        node["future_node"]=QJsonObject{{"value",42}};
+        nodes[0]=node;
+        document["nodes"]=nodes;
+        document["future_graph"]=QJsonObject{{"value","retained"}};
+        auto entries=state.file_configs.ui.pipeline_presets;
+        auto saved=entries.last().toObject();
+        saved["graph"]=document;
+        entries[entries.size()-1]=saved;
+        state.file_configs.ui.pipeline_presets=entries;
+    }
+    void typed_extensions() {
+        inject_typed_extensions();
+        require(editor.load_preset(preset),"Typed extension preset load failed");
+        const auto saved=editor.document();
+        const auto node=saved.value("nodes").toArray()[0].toObject();
+        require(saved.value("future_graph").toObject().value("value")=="retained","Typed import loses graph extension");
+        require(node.value("future_node").toObject().value("value")==42,"Typed import loses node extension");
+        require(!node.contains("kind") && node.value("internal-data").toObject().contains("numeric_processing"),"Canonical processing fields polluted visual projection");
+        verify_preset();
+    }
+
+    void apply(){
+        applied.clear();editor.findChild<QPushButton*>("applyPipeline")->click();
         for(int i=0;i<100 && applied.isEmpty();++i)QTest::qWait(10);
         require(!applied.isEmpty() && applied.last()[1].toBool() && typedSave.count()>=1,"Canonical Apply not acknowledged by executor");
         require(!QJsonDocument(presenter.client().snapshot().graph).toJson().contains("inline_parameters"),"Presentation flags reached engine Apply snapshot");
         domain::NumericProcessingGraph actual;require(bool(desktop::decode_numeric_editor_graph(QJsonDocument(presenter.client().snapshot().graph).toJson(QJsonDocument::Compact),actual)) && actual.nodes.size()==1 && actual.nodes[0].id==3,"Apply did not reach canonical engine snapshot");
-        graph->deleteNode(3);editor.flush_presentation();require(graph->has_numeric_nodes() && typedSave.count()>=2,"Empty draft drops owning save notification");
-        require(editor.remove_preset(preset["id"].toString()),"Preset removal failed");
-        domain::NumericProcessingGraph diagnostic;diagnostic.graph_id="main";
-        auto scalar=numeric_editor::default_node("ScalarView");scalar.id=12;
-        require(numeric_editor::set_dtype(scalar,domain::PortDirection::Input,0,signal_contracts::DType::UInt64),"Diagnostic UInt64 input");diagnostic.nodes.push_back(scalar);
+        graph.deleteNode(3);editor.flush_presentation();require(graph.has_numeric_nodes() && typedSave.count()>=2,"Empty draft drops owning save notification");
+        require(editor.remove_preset(preset),"Preset removal failed");
+    }
+};
+static void exact_document_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph,GuiPresenter& presenter,GuiState& state,QSignalSpy& typedSave,QSignalSpy& applied){
+    ExactDocumentChecks checks(editor,graph,presenter,state,typedSave,applied);
+    checks.load();checks.rational_rate();checks.rejected_load();checks.rename();checks.reload_preset();checks.typed_extensions();checks.apply();
+}
+static domain::NumericProcessingGraph diagnostic_graph(){
+    auto scalar=numeric_editor::default_node("ScalarView");scalar.id=12;
+    require(numeric_editor::set_dtype(scalar,domain::PortDirection::Input,0,signal_contracts::DType::UInt64),"Diagnostic UInt64 input");
+    domain::NumericProcessingGraph graph;graph.graph_id="main";graph.nodes.push_back(scalar);return graph;
+}
+class PreviewLifecycleChecks {
+    SchemeEditorWidget& editor;NumericEditorGraphModel& graph;GuiPresenter& presenter;QSignalSpy& applied;
+    domain::NumericProcessingGraph diagnostic=diagnostic_graph();AudioNodeModel* model=nullptr;
+    std::unique_ptr<QWidget> card;QLabel* exact=nullptr;pipeline::EngineSnapshot snapshot;QJsonObject parameters;
+    // Frame handles die before their arena; the fixture owns both across fences.
+    PreviewPools pools;pipeline::DeliveredNumericFrame frame;
+public:
+    PreviewLifecycleChecks(SchemeEditorWidget& e,NumericEditorGraphModel& g,GuiPresenter& p,QSignalSpy& replies):editor(e),graph(g),presenter(p),applied(replies){}
+    void load(){
         require(editor.load_numeric_draft(diagnostic),"Diagnostic graph load");applied.clear();editor.findChild<QPushButton*>("applyPipeline")->click();
         for(int i=0;i<100 && applied.isEmpty();++i)QTest::qWait(10);
         require(!applied.isEmpty() && applied.last()[1].toBool(),"Diagnostic graph Apply failed");
-        auto* model=graph->delegateModel<AudioNodeModel>(12);std::unique_ptr<QWidget> diagnosticCard(model->preview_widget());auto* exact=diagnosticCard->findChild<QLabel*>("previewExactValue");
-        require(exact,"Registered diagnostic preview value absent");
+        model=graph.delegateModel<AudioNodeModel>(12);card.reset(model->preview_widget());exact=card->findChild<QLabel*>("previewExactValue");require(exact,"Registered diagnostic preview value absent");
+    }
+    void publish(){
         for(int i=0;i<200 && presenter.client().snapshot().statuses.value("analyzer").state!=pipeline::State::Running;++i)QTest::qWait(10);
         require(presenter.client().snapshot().statuses.value("analyzer").state==pipeline::State::Running,"Preview fixture must run actual current graph");
-        const auto snapshot=presenter.client().snapshot();PreviewPools pools;
-        auto frame=scalar_delivery(pools,scalar,{snapshot.graph_revision,snapshot.epoch},9007199254740993ULL,1);
-        emit presenter.numeric_frame_ready(frame);require(exact->text()=="9007199254740993","Connected presenter signal fails inline preview");
-        const auto parameters=model->save();editor.hide();require(exact->text()==QStringLiteral("—"),"Hidden editor retains available stale diagnostic");
+        snapshot=presenter.client().snapshot();frame=scalar_delivery(pools,diagnostic.nodes[0],{snapshot.graph_revision,snapshot.epoch},9007199254740993ULL,1);
+        emit presenter.numeric_frame_ready(frame);require(exact->text()=="9007199254740993","Connected presenter signal fails inline preview");parameters=model->save();
+    }
+    void visibility(){
+        editor.hide();require(exact->text()==QStringLiteral("—"),"Hidden editor retains available stale diagnostic");
         emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"Hidden editor consumes numeric delivery");editor.show();
         emit presenter.numeric_frame_ready(frame);require(exact->text()=="9007199254740993","Reopened editor fails current delivery");
+    }
+    void revision_fence(){
         presenter.apply_pipeline_graph(editor.document());
         for(int i=0;i<200 && (presenter.client().snapshot().graph_revision==snapshot.graph_revision || presenter.graph_request_pending());++i)QTest::qWait(10);
         QCoreApplication::processEvents();
         require(presenter.client().snapshot().graph_revision>snapshot.graph_revision && presenter.client().snapshot().statuses.value("analyzer").state==pipeline::State::Running,"Apply did not advance the continuous graph");
         emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"New graph revision accepts stale preview frame");
-        auto* bypass=model->embeddedWidget()->findChild<QCheckBox*>("numericBypass");require(bypass,"Connected node bypass absent");
-        const int bypassUndo=editor.history().index();bypass->setChecked(true);
-        require(!model->numeric_node()->enabled && editor.history().index()==bypassUndo+1,"Bypass edit bypasses editor command/undo path");
-        editor.history().undo();require(model->numeric_node()->enabled && !bypass->isChecked(),"Undo fails to restore bypass control");
-        editor.history().redo();require(!model->numeric_node()->enabled && bypass->isChecked(),"Redo fails to restore bypass control");
-        editor.history().undo();
-        auto changed=*model->numeric_node();changed.enabled=false;require(graph->edit_node(12,changed),"Draft parameter edit failed");
-        changed.enabled=true;require(graph->edit_node(12,changed),"Draft reenable failed");
-        auto alternate=*model->numeric_node();numeric_editor::set_dtype(alternate,domain::PortDirection::Input,0,signal_contracts::DType::Int64);require(graph->edit_node(12,alternate),"Diverging contract edit failed");
-        emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"Divergent draft displays active graph data");
-        require(parameters!=model->save(),"Fixture draft edit failed to change typed snapshot");
-        auto badFrame=frame;auto badContext=std::make_shared<pipeline::NumericDeliveryContext>(*frame.context);badContext->endpoint.graph_id="foreign";badFrame.context=badContext;
-        emit presenter.numeric_frame_ready(badFrame);require(exact->text()==QStringLiteral("—"),"Foreign graph populates inline preview");
-        std::unique_ptr<QWidget> controls(model->parameter_widget());auto* inspectorBypass=controls->findChild<QCheckBox*>("numericBypass");require(inspectorBypass,"Missing dedicated bypass control");
-        ui::Language::instance().set("ru");require(inspectorBypass->text()==ui::text("Bypass") && bypass->text()==ui::text("Bypass"),"Bypass controls not live translated");ui::Language::instance().set("en");
-        auto* view=editor.findChild<QtNodes::GraphicsView*>();const auto retainedPosition=graph->nodeData(12,QtNodes::NodeRole::Position).toPointF();const auto retainedScale=view->getScale();
-        editor.hide();editor.show();QApplication::processEvents();require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==retainedPosition && view->getScale()==retainedScale,"Ordinary show resets explicit layout");
-        editor.hide();graph->setNodeData(12,QtNodes::NodeRole::Position,QPointF(9000,7000));editor.initialize_default_layout();QApplication::processEvents();
-        require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(9000,7000),"Default layout runs before editor viewport visible");
-        const auto processingBefore=editor.document().value("nodes").toArray().first().toObject().value("internal-data").toObject().value("numeric_processing");
-        editor.show();QApplication::processEvents();const auto arranged=graph->nodeData(12,QtNodes::NodeRole::Position).toPointF();
-        require(arranged!=QPointF(9000,7000) && editor.document().value("nodes").toArray().first().toObject().value("internal-data").toObject().value("numeric_processing")==processingBefore,"One-time default layout missing or mutates processing");
-        require(QLineF(view->mapToScene(view->viewport()->rect().center()),scene->itemsBoundingRect().center()).length()<5/view->getScale(),"Default fit fails to center ready viewport");
-        graph->setNodeData(12,QtNodes::NodeRole::Position,QPointF(111,222));editor.hide();editor.show();QApplication::processEvents();
-        require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(111,222),"Default layout repeats and destroys user positions");
-        editor.hide();editor.initialize_default_layout();
-        require(editor.load_numeric_draft(diagnostic),"Explicit typed replacement rejected");graph->setNodeData(12,QtNodes::NodeRole::Position,QPointF(333,444));
-        editor.show();QApplication::processEvents();require(graph->nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(333,444),"Stale initial layout overwrites explicit typed replacement");
+    }
+    void divergent_draft(){
+        auto changed=*model->numeric_node();changed.enabled=false;require(graph.edit_node(12,changed),"Draft parameter edit failed");changed.enabled=true;require(graph.edit_node(12,changed),"Draft reenable failed");
+        auto alternate=*model->numeric_node();numeric_editor::set_dtype(alternate,domain::PortDirection::Input,0,signal_contracts::DType::Int64);require(graph.edit_node(12,alternate),"Diverging contract edit failed");
+        emit presenter.numeric_frame_ready(frame);require(exact->text()==QStringLiteral("—"),"Divergent draft displays active graph data");require(parameters!=model->save(),"Fixture draft edit failed to change typed snapshot");
+    }
+    void foreign_graph(){
+        auto bad=frame;auto context=std::make_shared<pipeline::NumericDeliveryContext>(*frame.context);context->endpoint.graph_id="foreign";bad.context=context;
+        emit presenter.numeric_frame_ready(bad);require(exact->text()==QStringLiteral("—"),"Foreign graph populates inline preview");
+        std::unique_ptr<QWidget> controls(model->parameter_widget());require(!controls->findChild<QCheckBox*>("numericBypass"),"Scalar sink must not expose identity bypass");
+    }
+};
+static void editor_layout_checks(SchemeEditorWidget&,NumericEditorGraphModel&);
+static void preview_lifecycle_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph,GuiPresenter& presenter,QSignalSpy& applied){
+    PreviewLifecycleChecks checks(editor,graph,presenter,applied);
+    checks.load();checks.publish();checks.visibility();checks.revision_fence();checks.divergent_draft();checks.foreign_graph();
+    editor_layout_checks(editor,graph);
+}
+static QJsonValue processing_snapshot(SchemeEditorWidget& editor){return editor.document().value("nodes").toArray().first().toObject().value("internal-data").toObject().value("numeric_processing");}
+static void ordinary_layout_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph,QtNodes::GraphicsView& view){
+    const auto position=graph.nodeData(12,QtNodes::NodeRole::Position).toPointF();const auto scale=view.getScale();
+    editor.hide();editor.show();QApplication::processEvents();
+    require(graph.nodeData(12,QtNodes::NodeRole::Position).toPointF()==position && view.getScale()==scale,"Ordinary show resets explicit layout");
+}
+static void one_time_layout_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph,QtNodes::GraphicsView& view){
+    editor.hide();graph.setNodeData(12,QtNodes::NodeRole::Position,QPointF(9000,7000));editor.initialize_default_layout();QApplication::processEvents();
+    require(graph.nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(9000,7000),"Default layout runs before editor viewport visible");
+    const auto before=processing_snapshot(editor);editor.show();QApplication::processEvents();const auto arranged=graph.nodeData(12,QtNodes::NodeRole::Position).toPointF();
+    require(arranged!=QPointF(9000,7000) && processing_snapshot(editor)==before,"One-time default layout missing or mutates processing");
+    auto* scene=editor.findChild<QtNodes::DataFlowGraphicsScene*>();
+    require(QLineF(view.mapToScene(view.viewport()->rect().center()),scene->itemsBoundingRect().center()).length()<5/view.getScale(),"Default fit fails to center ready viewport");
+}
+static void replacement_layout_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph){
+    graph.setNodeData(12,QtNodes::NodeRole::Position,QPointF(111,222));editor.hide();editor.show();QApplication::processEvents();
+    require(graph.nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(111,222),"Default layout repeats and destroys user positions");
+    editor.hide();editor.initialize_default_layout();require(editor.load_numeric_draft(diagnostic_graph()),"Explicit typed replacement rejected");graph.setNodeData(12,QtNodes::NodeRole::Position,QPointF(333,444));
+    editor.show();QApplication::processEvents();require(graph.nodeData(12,QtNodes::NodeRole::Position).toPointF()==QPointF(333,444),"Stale initial layout overwrites explicit typed replacement");
+}
+static void editor_layout_checks(SchemeEditorWidget& editor,NumericEditorGraphModel& graph){
+    auto* view=editor.findChild<QtNodes::GraphicsView*>();require(view,"Editor viewport absent");
+    ordinary_layout_checks(editor,graph,*view);one_time_layout_checks(editor,graph,*view);replacement_layout_checks(editor,graph);
+}
+static std::shared_ptr<NumericEditorGraphModel> widget_graph(GuiState& state){
+    state.file_configs.ui.autosave_enabled=false;state.file_configs.ui.pipeline_auto_apply=false;
+    state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
+    for(const auto& kind:numeric_editor::catalog())state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    auto graph=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);state.data_flow_graph=graph;
+    domain::NumericProcessingGraph empty;empty.graph_id="main";require(graph->set_numeric_graph(empty),"Empty canonical fixture rejected");state.file_configs.scene_graph=graph->save();return graph;
+}
+static void widget_acceptance_checks(){
+        GuiState state;auto graph=widget_graph(state);
+        GuiPresenter presenter(state,test_fixture::synthetic_engine_provider(false));SchemeEditorWidget editor(presenter);editor.resize(1000,700);editor.show();QApplication::processEvents();
+        QSignalSpy typedSave(&editor,&SchemeEditorWidget::numeric_draft_changed),applied(&presenter,&GuiPresenter::graph_apply_finished);
+        capture_status_checks(editor,presenter);
+        widget_catalogue_checks(editor);connection_policy_checks(editor,*graph);pinned_capture_import(editor,*graph);connected_bypass_undo(editor,*graph);
+        exact_document_checks(editor,*graph,presenter,state,typedSave,applied);
+        preview_lifecycle_checks(editor,*graph,presenter,applied);
+}
+static void model_acceptance_checks(){
+    catalogue_acceptance_checks();oscillator_bank_acceptance_checks();dimensional_editor_acceptance_checks();grouped_layout_acceptance_checks();
+    bypass_controls_checks();canonical_parameter_checks();selector_repair_and_names_checks();preview_model_checks();
+}
+int main(int argc,char** argv) {
+    QApplication app(argc,argv);
+    try {
+        ui::Language::instance().set("en");model_acceptance_checks();widget_acceptance_checks();
         qInfo("Canonical editor: catalog, atomic import, presets, Apply, exact bounded diagnostic, fences, live theme/RU/EN passed");return 0;
     }catch(const std::exception& error){qCritical("%s",error.what());return 1;}
 }

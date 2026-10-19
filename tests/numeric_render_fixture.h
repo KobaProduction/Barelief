@@ -21,6 +21,8 @@ struct Target {
     bool visible=false;
     // Most projection fixtures explicitly model connected coordinate controls.
     presentation::NumericAxisPermissions axes{true,true};
+    presentation::PlotPresentation plot_presentation;
+    presentation::NumericRenderTarget::FrequencyGrid frequency_grid;
     bool chartEnabled=false,surfaceEnabled=false,imageEnabled=false,pieEnabled=false,metricsEnabled=false,captionEnabled=false;
     static QString text(const char* source,const QStringList& args,bool loss,bool unavailable) {
         auto result=*source?ui::text(source):QString{};
@@ -33,6 +35,7 @@ struct Target {
            NumericImageView* image=nullptr,NumericPieView* pie=nullptr,NumericMetricsView* metrics=nullptr):visible(exposed) {
         if(chart) {
             chartEnabled=true;
+            chartPort.set_value_source=[chart](bool db,int factor){auto scale=chart->value_scale();scale.source_decibels=db;scale.factor=factor;chart->set_value_scale(scale);};
             chartPort.update=[chart](const auto& values){chart->update(values);};
             chartPort.set_scalar_readout=[chart](const auto& value,bool scalar,bool available){chart->set_scalar_readout(value,scalar,available);};
             chartPort.scalar_readout_enabled=[chart]{return chart->scalar_readout_enabled();};
@@ -77,7 +80,7 @@ struct Target {
     }
     operator presentation::NumericRenderTarget() {
         return {chartEnabled?&chartPort:nullptr,surfaceEnabled?&surfacePort:nullptr,captionEnabled?&captionPort:nullptr,visible,
-            imageEnabled?&imagePort:nullptr,pieEnabled?&piePort:nullptr,metricsEnabled?&metricsPort:nullptr,axes};
+            imageEnabled?&imagePort:nullptr,pieEnabled?&piePort:nullptr,metricsEnabled?&metricsPort:nullptr,axes,nullptr,frequency_grid,plot_presentation};
     }
 };
 inline QVariantList points(const AbstractChartView& chart){

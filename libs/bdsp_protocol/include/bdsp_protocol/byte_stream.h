@@ -41,7 +41,11 @@ public:
     }
     std::uint64_t overflow_count() const noexcept {return overflows_;}
 private:
+    bool read_byte(std::uint8_t) noexcept;
     void on_byte(std::uint8_t, BDSP::streams::stream_read_status_t) noexcept;
+    void on_payload_byte(std::uint8_t) noexcept;
+    void on_delimiter() noexcept;
+    void dispatch_packet(std::size_t) noexcept;
     BDSP::strategies::COBSZPEReadStrategy strategy_;
     BDSP::streams::core::StreamReaderCore reader_;
     std::span<std::uint8_t> incoming_,outgoing_;

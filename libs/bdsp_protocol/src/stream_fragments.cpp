@@ -3,6 +3,20 @@
 #include <cstring>
 namespace bdsp_protocol {
 using signal_contracts::Status;
+namespace {
+std::uint32_t fragment_word(std::span<const std::uint8_t> bytes,std::size_t at) noexcept {
+    std::uint32_t value=0;
+    for(int i=0;i<4;++i)value|=std::uint32_t(bytes[at+i])<<(8*i);
+    return value;
+}
+struct FragmentHeader {std::size_t total,offset,chunk;};
+bool fragment_header(std::span<const std::uint8_t> bytes,FragmentHeader& header) noexcept {
+    if(bytes.size()<9 || bytes.size()>8+StreamFragmentBytes)return false;
+    header={fragment_word(bytes,0),fragment_word(bytes,4),bytes.size()-8};
+    return header.total>=StreamHeaderBytes && header.total<=MaxFrameBytes &&
+        header.offset<=header.total && header.chunk<=header.total-header.offset;
+}
+}
 CodecResult encode_fragment(std::span<const std::uint8_t> frame,std::size_t offset,std::span<std::uint8_t> out,std::size_t max_chunk_bytes) noexcept {
     if(!max_chunk_bytes || max_chunk_bytes>StreamFragmentBytes || frame.size()<StreamHeaderBytes || frame.size()>MaxFrameBytes || offset>=frame.size())return {Status::invalid_argument};
     const auto chunk=std::min(max_chunk_bytes,frame.size()-offset);
@@ -12,17 +26,22 @@ CodecResult encode_fragment(std::span<const std::uint8_t> frame,std::size_t offs
     std::memcpy(out.data()+8,frame.data()+offset,chunk);
     return {Status::ok,required,required};
 }
+static Status fragment_admission(std::span<const std::uint8_t> fragment,std::size_t capacity,
+    std::size_t total,std::size_t received,FragmentHeader& header) noexcept {
+    if(!fragment_header(fragment,header))return Status::malformed;
+    if(header.total>capacity)return Status::buffer_too_small;
+    if(header.offset==0){total=header.total;received=0;}
+    if(header.total!=total || header.offset!=received)return Status::malformed;
+    return Status::ok;
+}
 Status FrameAssembler::accept(std::span<const std::uint8_t> fragment,std::span<const std::uint8_t> &complete) noexcept {
     complete={};
-    auto fail=[&](Status status){reset();return status;};
-    if(fragment.size()<9 || fragment.size()>8+StreamFragmentBytes)return fail(Status::malformed);
-    auto get=[&](std::size_t p){std::uint32_t v=0;for(int i=0;i<4;++i)v|=std::uint32_t(fragment[p+i])<<(8*i);return v;};
-    const std::size_t total=get(0),offset=get(4),chunk=fragment.size()-8;
-    if(total<StreamHeaderBytes || total>MaxFrameBytes || offset>total || chunk>total-offset)return fail(Status::malformed);
-    if(total>storage_.size())return fail(Status::buffer_too_small);
-    if(offset==0){reset();total_=total;}
-    if(total!=total_ || offset!=received_)return fail(Status::malformed);
-    std::memcpy(storage_.data()+offset,fragment.data()+8,chunk);received_+=chunk;
+    FragmentHeader header{};
+    const auto admitted=fragment_admission(fragment,storage_.size(),total_,received_,header);
+    if(admitted!=Status::ok){reset();return admitted;}
+    if(header.offset==0){reset();total_=header.total;}
+    std::memcpy(storage_.data()+header.offset,fragment.data()+8,header.chunk);
+    received_+=header.chunk;
     if(received_!=total_)return Status::would_block;
     complete=storage_.first(total_);reset();return Status::ok;
 }

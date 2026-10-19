@@ -5,9 +5,14 @@ target_include_directories(desktop_gui_configuration PUBLIC
     ${CMAKE_SOURCE_DIR}/adapters/desktop/gui_config/include
     ${CMAKE_SOURCE_DIR}/presentation/qt/include)
 target_link_libraries(desktop_gui_configuration PUBLIC config_document graph_document_adapter visualization audio_pipeline aggregator-library Qt6::Widgets QtNodes)
-add_library(desktop_gui_composition STATIC src/core_application.cpp include/core_app/core_application.h)
+add_library(desktop_gui_composition STATIC src/core_application.cpp src/analysis_services.cpp
+    src/core_application_startup.cpp src/core_application_actions.cpp
+    src/core_application_display.cpp src/core_application_persistence.cpp
+    src/core_application_arguments.cpp src/core_application_state.h
+    src/example_presentation.cpp src/example_actions.cpp include/core_app/core_application.h)
 target_include_directories(desktop_gui_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(desktop_gui_composition PUBLIC core_app_components desktop_gui_configuration desktop_numeric_defaults desktop_numeric_remote desktop_numeric_routing desktop_processor_discovery)
+target_link_libraries(desktop_gui_composition PUBLIC core_app_components desktop_gui_configuration desktop_numeric_defaults desktop_numeric_remote desktop_numeric_routing desktop_processor_discovery
+    PRIVATE desktop_analysis desktop_resampling)
 add_executable(core_app main.cpp)
 target_link_libraries(core_app PRIVATE desktop_gui_composition)
 if(WIN32)

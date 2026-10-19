@@ -1,6 +1,7 @@
 #include "core_app/workspace/processor_directory_model.h"
 #include <QUuid>
 #include <algorithm>
+#include <utility>
 namespace presentation {
 static QString canonical(const QString &id) {
     const QUuid uuid(id); return uuid.isNull() ? id : uuid.toString(QUuid::WithoutBraces);
@@ -18,19 +19,20 @@ void ProcessorDirectoryModel::refresh() {
     for (auto &existing : _processors) if (existing.from_registry) {
         existing.available = false; existing.error = _snapshot.error;
     }
-    for (auto endpoint : _snapshot.processors) {
-        if (canonical(endpoint.id) == canonical(_local)) continue;
-        auto found = std::find_if(_processors.begin(), _processors.end(), [&](const auto &item) { return canonical(item.id) == canonical(endpoint.id); });
-        if (found == _processors.end()) _processors.append(endpoint);
-        else {
-            endpoint.id = found->id;
-            if (!endpoint.available) {
-                endpoint.name = found->name; endpoint.address = found->address; endpoint.port = found->port;
-            }
-            *found = endpoint;
-        }
-    }
+    for (auto endpoint : std::as_const(_snapshot.processors)) merge_registry_endpoint(std::move(endpoint));
     emit changed();
+}
+void ProcessorDirectoryModel::merge_registry_endpoint(ProcessorEndpoint endpoint) {
+    if (canonical(endpoint.id) == canonical(_local)) return;
+    auto found = std::find_if(_processors.begin(), _processors.end(), [&](const auto &item) { return canonical(item.id) == canonical(endpoint.id); });
+    if (found == _processors.end()) _processors.append(endpoint);
+    else {
+        endpoint.id = found->id;
+        if (!endpoint.available) {
+            endpoint.name = found->name; endpoint.address = found->address; endpoint.port = found->port;
+        }
+        *found = endpoint;
+    }
 }
 const ProcessorEndpoint *ProcessorDirectoryModel::selected() const {
     for (const auto &item : _processors) if (canonical(item.id) == canonical(_selected)) return &item;
@@ -39,14 +41,14 @@ const ProcessorEndpoint *ProcessorDirectoryModel::selected() const {
 void ProcessorDirectoryModel::set_selected(const QString &id) { _selected = id; emit changed(); }
 void ProcessorDirectoryModel::add_direct(const QString &id, const QString &address, quint16 port) {
     if (id.isEmpty() || address.isEmpty() || !port) return;
-    for (const auto &item : _processors) if (canonical(item.id) == canonical(id)) return;
+    for (const auto &item : std::as_const(_processors)) if (canonical(item.id) == canonical(id)) return;
     ProcessorEndpoint item; item.id = id; item.name = id; item.address = address; item.port = port;
     _processors.append(item); emit changed();
 }
 bool ProcessorDirectoryModel::request_selection(const QString &id) {
     // Read the port immediately before dispatch; stale widgets cannot select a lost endpoint.
     refresh();
-    for (const auto &item : _processors) if (canonical(item.id) == canonical(id)) {
+    for (const auto &item : std::as_const(_processors)) if (canonical(item.id) == canonical(id)) {
         if (!item.available) return false;
         emit selection_requested(item); return true;
     }

@@ -76,7 +76,7 @@ struct BatchIo final:bdsp_protocol::ByteTransport {
 };
 static void multi_peer_commit_batch() {
     NumericEngine engine;Replies local(engine);auto g=graph("batch");local.accepted(apply(g));auto profile=engine.capabilities();remote_numeric::CapabilitySnapshot advertised;require(advertised.assign(g,profile)==Status::ok,"batch capabilities");remote_numeric::Clock clock;
-    control::numeric::SessionConfig config;config.endpoint_authorized=true;config.device_identity="batch";config.codec_limits=remote_numeric::control_limits();config.runtime_preflights_reply_envelope=true;config.application_capabilities=&profile;config.advertised_capabilities=&advertised.value;
+    auto config=remote_numeric::desktop_session_config();config.endpoint_authorized=true;config.device_identity="batch";config.codec_limits=remote_numeric::control_limits();config.runtime_preflights_reply_envelope=true;config.application_capabilities=&profile;config.advertised_capabilities=&advertised.value;
     std::unique_ptr<control::numeric::ControlSession> one,two;
     engine.with_control_service([&](auto& service){config.client_identity=81;one=std::make_unique<control::numeric::ControlSession>(config,clock,&service);config.client_identity=82;two=std::make_unique<control::numeric::ControlSession>(config,clock,&service);});
     for(auto* session:{one.get(),two.get()})session->set_command_commit_handler([](const application::ProcessingReply& reply,void* owner){static_cast<NumericEngine*>(owner)->synchronize_control_state(reply);},&engine);

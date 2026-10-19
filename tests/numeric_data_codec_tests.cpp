@@ -35,12 +35,11 @@ void snapshot_contract_cases();
 void matrix_cases();
 void boundary_cases();
 void history_cases();
+void music_contract_cases();
 
-int main() {
-    std::array<std::uint32_t, 1> channels{17};
-    std::array<PlaneLayout, 1> planes{};
-    std::array<std::byte, 8> source;
-    source.fill(std::byte{255});
+Message exact_uint64_message(std::span<const std::uint32_t> channels,
+                            std::span<const PlaneLayout> planes,
+                            std::span<const std::byte> source) {
     NumericContract c;
     c.dtype = DType::UInt64;
     c.channel_order = channels;
@@ -54,8 +53,28 @@ int main() {
     m.stamp.source_sequence = 9007199254740993ULL;
     m.stamp.stream_id = "exact";
     m.stamp.has_sample_interval=true;m.stamp.sample_begin=9007199254740993LL;m.stamp.sample_count=256;m.stamp.latency_samples=63;m.stamp.latency_seconds={1,700};
+    m.stamp.frequency_dependent_latency=true;
     m.numeric.storage = source;
     m.numeric.planes = planes;
+    return m;
+}
+void assert_exact_uint64(const Message& out) {
+    check(out.stamp.frequency_dependent_latency,"frequency-dependent delay survives DATA codec");
+    std::uint64_t value = 0;
+    check(load_element(std::get<NumericView>(out.frame_view().payload), {}, value) == Status::ok &&
+              value == UINT64_MAX, "exact UInt64 max");
+    check(out.stamp.source_sequence == 9007199254740993ULL, "exact lineage >2^53");
+    check(out.stamp.has_sample_interval&&out.stamp.sample_begin==9007199254740993LL&&
+          out.stamp.sample_count==256&&out.stamp.latency_samples==63&&
+          out.stamp.latency_seconds.numerator==1&&out.stamp.latency_seconds.denominator==700,
+          "full DATA5 exact sample interval and latency ratio");
+}
+void exact_uint64_case() {
+    std::array<std::uint32_t, 1> channels{17};
+    std::array<PlaneLayout, 1> planes{};
+    std::array<std::byte, 8> source;
+    source.fill(std::byte{255});
+    const auto m=exact_uint64_message(channels,planes,source);
     std::array<std::byte, 8192> wire{}, scratch{}, bytes{};
     std::array<char, 2048> text{};
     std::array<std::uint32_t, 32> cs{};
@@ -66,22 +85,19 @@ int main() {
         Message out;
         auto d = decode(std::span(wire).first(e.produced), out, {bytes, text, cs, ps}, desktop_limits());
         check(bool(d), "UInt64 decode");
-        if (d) {
-            std::uint64_t value = 0;
-            check(load_element(std::get<NumericView>(out.frame_view().payload), {}, value) == Status::ok &&
-                      value == UINT64_MAX,
-                  "exact UInt64 max");
-            check(out.stamp.source_sequence == 9007199254740993ULL, "exact lineage >2^53");
-            check(out.stamp.has_sample_interval&&out.stamp.sample_begin==9007199254740993LL&&out.stamp.sample_count==256&&out.stamp.latency_samples==63&&out.stamp.latency_seconds.numerator==1&&out.stamp.latency_seconds.denominator==700,"full DATA5 exact sample interval and latency ratio");
-        }
+        if (d) assert_exact_uint64(out);
     }
-    check(negotiate(5, 4, 15, 15).payload == 0, "no legacy negotiation fallback");
+}
+int main() {
+    exact_uint64_case();
+    check(negotiate(PayloadVersion, PayloadVersion-1, 15, 15).payload == 0, "no legacy negotiation fallback");
     observe_allocations = true;
     matrix_cases();
     boundary_cases();
     history_cases();
     reference_cases();
     snapshot_contract_cases();
+    music_contract_cases();
     observe_allocations = false;
     check(allocations == 0, "public codec/malformed/ownership paths no heap allocations");
     std::printf("observed allocations=%zu\n", allocations);
@@ -121,12 +137,26 @@ Message base(const NumericContract &c, std::span<const std::byte> storage,
     return m;
 }
 } // namespace
-void matrix_cases() {
-    for (const auto dtype : {DType::Int8, DType::UInt8, DType::Int16, DType::UInt16, DType::Int32,
-                             DType::UInt32, DType::Int64, DType::UInt64, DType::Float32, DType::Float64})
-        for (const auto rank : {Rank::Scalar, Rank::Vector, Rank::Matrix})
-            for (const auto encoding :
-                 {StorageEncoding::FixedLittleEndian, StorageEncoding::FixedBigEndian}) {
+void music_contract_cases() {
+    std::array<std::uint32_t,1> channels{0};
+    std::array<PlaneLayout,1> planes{{{0,{8,4}}}};
+    alignas(8) std::array<std::byte,16> payload{};
+    NumericContract contract;contract.dtype=DType::Float32;contract.semantic=Semantic::Numeric;
+    contract.channel_order=channels;contract.clock={"music",{1,32768},32768};
+    contract.representation.encoding=StorageEncoding::FixedLittleEndian;
+    contract.shape={Rank::Matrix,{Axis::Bin,Axis::Component},{ExtentBounds{2,2},ExtentBounds{2,2}}};
+    for(int quantity=int(Quantity::SpectrumComplex);quantity<=int(Quantity::NoteSalience);++quantity)
+        for(const auto unit:{NumericUnit::Radians,NumericUnit::SquaredAmplitude,NumericUnit::SquaredAmplitudePerHertz,NumericUnit::Decibels}) {
+            contract.quantity=Quantity(quantity);contract.unit=unit;
+            auto message=base(contract,payload,planes);message.numeric.actual={2,2};Buffers buffers;
+            if(buffers.roundtrip(message)) {
+                const auto& decoded=std::get<NumericContract>(buffers.decoded.contract);
+                check(decoded.shape.axes[1]==Axis::Component && decoded.quantity==contract.quantity && decoded.unit==unit,
+                      "music component/quantity/unit exact roundtrip");
+            }
+        }
+}
+void primitive_matrix_case(DType dtype, Rank rank, StorageEncoding encoding) {
                 const auto width = dtype_descriptor(dtype)->bytes;
                 const std::size_t count = rank == Rank::Scalar ? 1 : 3, elements = rank == Rank::Scalar   ? 1
                                                                                    : rank == Rank::Vector ? 2
@@ -174,7 +204,7 @@ void matrix_cases() {
                     check(store_bits(v, {p, 0, 0}, dtype, bits) == Status::ok, "literal store");
                 Buffers b;
                 if (!b.roundtrip(m))
-                    continue;
+                    return;
                 check(same_contract(m.contract, b.decoded.contract), "full contract equality");
                 check(validate_view(b.decoded.frame_view(), desktop_limits().frame) == Status::ok,
                       "decoded canonical view");
@@ -208,15 +238,20 @@ void matrix_cases() {
                 Message moved = std::move(copied);
                 check(validate_view(moved.frame_view(), desktop_limits().frame) == Status::ok,
                       "copy/move rebased contract pointer");
-            }
-    // Explicit PCM24 and valid24-in32 encoding, no normalization.
-    for (auto encoding : {StorageEncoding::PackedSigned24LE, StorageEncoding::PackedSigned24BE,
-                          StorageEncoding::FixedLittleEndian, StorageEncoding::FixedBigEndian})
-        for (auto placement : {BitPlacement::LeastSignificant, BitPlacement::MostSignificant}) {
+
+}
+void primitive_matrix_cases() {
+    for (const auto dtype : {DType::Int8, DType::UInt8, DType::Int16, DType::UInt16, DType::Int32,
+                             DType::UInt32, DType::Int64, DType::UInt64, DType::Float32, DType::Float64})
+        for (const auto rank : {Rank::Scalar, Rank::Vector, Rank::Matrix})
+            for (const auto encoding : {StorageEncoding::FixedLittleEndian, StorageEncoding::FixedBigEndian})
+                primitive_matrix_case(dtype, rank, encoding);
+}
+void pcm24_case(StorageEncoding encoding, BitPlacement placement) {
             if ((encoding == StorageEncoding::PackedSigned24LE ||
                  encoding == StorageEncoding::PackedSigned24BE) &&
                 placement == BitPlacement::MostSignificant)
-                continue;
+                return;
             std::array<std::uint32_t, 1> ch{0};
             std::array<PlaneLayout, 1> ps{};
             alignas(8) std::array<std::byte, 16> p{};
@@ -263,9 +298,15 @@ void matrix_cases() {
             }
             m.numeric.storage = m.numeric.storage.first(2 * w - 1);
             check(!measure(m, desktop_limits()), "truncated PCM sample refused");
-        }
-    // Shared interleaved backing, padded planar storage, and explicit coordinates.
-    for (bool inter : {false, true}) {
+
+}
+void pcm24_cases() {
+    for (auto encoding : {StorageEncoding::PackedSigned24LE, StorageEncoding::PackedSigned24BE,
+                          StorageEncoding::FixedLittleEndian, StorageEncoding::FixedBigEndian})
+        for (auto placement : {BitPlacement::LeastSignificant, BitPlacement::MostSignificant})
+            pcm24_case(encoding, placement);
+}
+void layout_coordinate_case(bool inter) {
         std::array<std::uint32_t, 3> ch{10, 11, 12};
         std::array<PlaneLayout, 3> ps{};
         alignas(8) std::array<std::byte, 40> p{};
@@ -291,7 +332,15 @@ void matrix_cases() {
         for (unsigned i = 0; i < 8; ++i)
             coords[i] = std::byte((0x7ff8000000000000ULL >> (8 * i)) & 255);
         check(!measure(m, desktop_limits()), "nonfinite coordinate refused regardless of value domain");
-    }
+
+}
+void layout_coordinate_cases() {
+    for (bool inter : {false, true}) layout_coordinate_case(inter);
+}
+void matrix_cases() {
+    primitive_matrix_cases();
+    pcm24_cases();
+    layout_coordinate_cases();
 }
 void boundary_cases() {
     std::array<std::uint32_t, 1> ch{7};
@@ -309,12 +358,12 @@ void boundary_cases() {
     if (!e)
         return;
     const std::array<std::byte, 12> prefix{std::byte{0x4e}, std::byte{0x44}, std::byte{0x41}, std::byte{0x54},
-                                           std::byte{5},    std::byte{0},    std::byte{1},    std::byte{0},
+                                           std::byte{6},    std::byte{0},    std::byte{1},    std::byte{0},
                                            std::byte{1},    std::byte{0},    std::byte{1},    std::byte{0}};
     check(std::equal(prefix.begin(), prefix.end(), b.wire.begin()), "literal fixed header golden");
-    // Independent DATA5 field table: interval flag + five uint64 fields add 41 bytes
-    // before the contract; canonical zero latency is 0/1. Complete 449-byte fixture.
-    std::array<std::byte, 449> golden{};
+    // Independent DATA6 field table: DATA5 fields plus nonlinear-latency flag
+    // at183, before the contract. Canonical zero latency is0/1. Complete450 bytes.
+    std::array<std::byte, 450> golden{};
     std::copy(prefix.begin(), prefix.end(), golden.begin());
     for (auto [at, value] :
          {std::pair{12, 1}, {20, 2},  {28, 3},    {36, 4},  {44, 5},  {52, 6},   {72, 1},  {75, 4},
@@ -322,16 +371,16 @@ void boundary_cases() {
           {191, 1},         {199, 1}, {208, 1},   {216, 1}, {224, 1}, {226, 1},  {227, 1}, {229, 1},
           {247, 1},         {263, 1}, {281, 1},   {297, 1}, {305, 5}, {312, 1},  {320, 1}, {332, 1},
           {334, 7},         {362, 1}, {370, 1},   {395, 1}, {421, 8}})
-        golden[at] = std::byte(value);
+        golden[at>=183?at+1:at] = std::byte(value);
     for (unsigned n = 0; n < 4; ++n)
         golden[77 + n] = std::byte("main"[n]);
     for (unsigned n = 0; n < 5; ++n)
-        golden[307 + n] = std::byte("event"[n]);
+        golden[308 + n] = std::byte("event"[n]);
     check(e.produced == golden.size() && std::equal(golden.begin(), golden.end(), b.wire.begin()),
           "complete literal scalar wire golden");
     check(bool(decode(golden, b.decoded, {b.bytes, b.text, b.channels, b.planes}, desktop_limits())),
           "literal golden decode independent of encode");
-    std::array<std::byte, 450> misaligned_wire{};
+    std::array<std::byte, 451> misaligned_wire{};
     std::copy(golden.begin(), golden.end(), misaligned_wire.begin() + 1);
     check(bool(decode(std::span(misaligned_wire).subspan(1), b.decoded,
                       {b.bytes, b.text, b.channels, b.planes}, desktop_limits())),
@@ -362,8 +411,11 @@ void boundary_cases() {
               "magic/version/grammar/kind/reserved/value refusal");
         b.wire[at] = old;
     }
+    {const auto old=b.wire[183];b.wire[183]=std::byte{255};
+        check(!inspect(std::span(b.wire).first(e.produced),desktop_limits()),"nonlinear latency boolean refused");b.wire[183]=old;}
     for (auto at : {183U, 184U, 185U, 186U, 187U, 188U, 189U, 190U, 207U, 224U, 226U, 227U, 228U, 237U, 238U,
                     271U, 272U, 394U}) {
+        ++at; // DATA6 inserts one boolean before the descriptor.
         auto old = b.wire[at];
         b.wire[at] = std::byte{255};
         check(!inspect(std::span(b.wire).first(e.produced), desktop_limits()),
@@ -488,16 +540,57 @@ void boundary_cases() {
     std::get<StructuredContract>(structured.contract).version = 2;
     check(!measure(structured, desktop_limits()), "known WLED schema version mismatch");
     // Pure negotiation intersection does not create a session or promise support.
-    check(negotiate(5, 5, 15, 9).features == 1, "row/query pair required");
-    check(negotiate(5, 5, 15, 15).features == 15, "positive feature intersection");
-    check(!negotiate(5, 5, 16, 15).payload, "unknown feature bit refusal");
+    check(negotiate(PayloadVersion, PayloadVersion, 15, 9).features == 1, "row/query pair required");
+    check(negotiate(PayloadVersion, PayloadVersion, 15, 15).features == 15, "positive feature intersection");
+    check(!negotiate(PayloadVersion, PayloadVersion, 16, 15).payload, "unknown feature bit refusal");
     std::uint8_t id = 44;
     DType dtype = DType::Int8;
     check(symbol_id(DType::UInt64, id) && id == 8 && symbol_value(8, dtype) && dtype == DType::UInt64,
           "shared explicit dtype table");
     check(!symbol_value(99, dtype) && dtype == DType::UInt64, "symbol failure unchanged");
 }
+void scalar_history_cases() {
+    std::array<std::uint32_t,1> channels{7};
+    std::array<PlaneLayout,1> planes{{{0,{0,0}}}};
+    std::array<std::byte,4> payload{};
+    NumericContract history;
+    history.dtype=DType::Float32;
+    history.semantic=Semantic::History;
+    history.history_element=Semantic::Scalar;
+    history.channel_order=channels;
+    history.shape={Rank::Vector,{Axis::Time,Axis::None},{ExtentBounds{4,4},ExtentBounds{}}};
+    history.representation.encoding=StorageEncoding::FixedLittleEndian;
+    history.clock.domain="scalar-history";
+    auto scalar=history;
+    scalar.semantic=Semantic::Scalar;
+    scalar.history_element=Semantic::Numeric;
+    scalar.shape={Rank::Scalar,{Axis::None,Axis::None},{ExtentBounds{},ExtentBounds{}}};
+    auto message=base(scalar,payload,planes);
+    message.kind=Kind::HistoryRow;
+    message.numeric.actual={1,1};
+    message.history_contract=history;
+    message.history={3,4,5};
+    Buffers buffers;
+    check(bool(buffers.roundtrip(message)) &&
+          std::get<NumericContract>(buffers.decoded.contract).shape.rank==Rank::Scalar &&
+          buffers.decoded.history.capacity==4,"scalar History compact DATA roundtrip");
+    message.reference={5,6};
+    Binding binding{message.reference,message.endpoint,message.stamp.stream_id,history,history,message.values};
+    ReferenceContext context{1,2,6,std::span(&binding,1)};
+    const auto encoded=encode(message,buffers.wire,buffers.scratch,desktop_limits(),context);
+    check(bool(encoded),"registered vector History scalar row encode");
+    if(encoded){
+        const auto decoded=decode(std::span(buffers.wire).first(encoded.produced),buffers.decoded,
+            {buffers.bytes,buffers.text,buffers.channels,buffers.planes},desktop_limits(),context);
+        check(bool(decoded) && same_contract(buffers.decoded.contract,DataContract{scalar}),
+            "registered vector History scalar row decode");
+    }
+    message.numeric.storage={};
+    message.reference={};
+    check(!measure(message,desktop_limits()),"scalar History row refuses absent payload");
+}
 void history_cases() {
+    scalar_history_cases();
     std::array<std::uint32_t, 2> ch{1, 2};
     std::array<PlaneLayout, 2> rowplanes{{{0, {2, 0}}, {6, {2, 0}}}};
     alignas(8) std::array<std::byte, 36> ring{};
@@ -626,16 +719,16 @@ void reference_cases() {
     auto long_identity=m;long_identity.endpoint.graph="012345678901234567890123456789012";
     check(validate(long_identity,device_block_limits())!=Status::ok,"device identity32 bound separate from schema64");
     auto e = encode(m, b.wire, b.scratch, device_block_limits(), context);
-    check(bool(e) && e.produced == 2276, "device stereo256 compact reference required");
+    check(bool(e) && e.produced == 2277, "device stereo256 compact reference required");
     if (!e)
         return;
-    auto exact_limit=device_block_limits();exact_limit.message_bytes=2276;
+    auto exact_limit=device_block_limits();exact_limit.message_bytes=2277;
     check(bool(measure(m,exact_limit,context)),"DATA5 compact reference exact envelope boundary");
-    exact_limit.message_bytes=2275;
+    exact_limit.message_bytes=2276;
     check(!measure(m,exact_limit,context),"DATA5 compact reference one byte short rejects");
-    std::array<std::byte, 2276> golden{};
+    std::array<std::byte, 2277> golden{};
     const std::array<std::byte, 12> prefix{std::byte{0x4e}, std::byte{0x44}, std::byte{0x41}, std::byte{0x54},
-                                           std::byte{5},    std::byte{0},    std::byte{1},    std::byte{0},
+                                           std::byte{6},    std::byte{0},    std::byte{1},    std::byte{0},
                                            std::byte{1},    std::byte{1},    std::byte{1},    std::byte{0}};
     std::copy(prefix.begin(), prefix.end(), golden.begin());
     for (auto [at, value] : {std::pair{12, 1},
@@ -652,7 +745,7 @@ void reference_cases() {
                              {176, 1},
                              {183, 1},
                              {209, 8}})
-        golden[at] = std::byte(value);
+        golden[at>=175?at+1:at] = std::byte(value);
     check(std::equal(golden.begin(), golden.end(), b.wire.begin()),
           "complete literal stereo256 reference golden");
     auto d = decode(std::span(b.wire).first(e.produced), b.decoded, {b.bytes, b.text, b.channels, b.planes},
@@ -708,9 +801,10 @@ void reference_cases() {
                device_block_limits(), context);
     check(bool(d), "reference donor lifetime seed");
     m.stamp.has_sample_interval=true;m.stamp.sample_begin=9007199254740993LL;m.stamp.sample_count=256;m.stamp.latency_samples=63;m.stamp.latency_seconds={1,700};
-    e=encode(m,b.wire,b.scratch,device_block_limits(),context);check(bool(e),"DATA5 reference timing encode");
+    m.stamp.frequency_dependent_latency=true;
+    e=encode(m,b.wire,b.scratch,device_block_limits(),context);check(bool(e),"DATA6 reference timing encode");
     d=decode(std::span(b.wire).first(e.produced),b.decoded,{b.bytes,b.text,b.channels,b.planes},device_block_limits(),context);
-    check(d&&b.decoded.stamp.has_sample_interval&&b.decoded.stamp.sample_begin==9007199254740993LL&&b.decoded.stamp.sample_count==256&&b.decoded.stamp.latency_samples==63&&b.decoded.stamp.latency_seconds.numerator==1&&b.decoded.stamp.latency_seconds.denominator==700,"referenced DATA5 exact sample interval and latency ratio");
+    check(d&&b.decoded.stamp.has_sample_interval&&b.decoded.stamp.sample_begin==9007199254740993LL&&b.decoded.stamp.sample_count==256&&b.decoded.stamp.latency_samples==63&&b.decoded.stamp.latency_seconds.numerator==1&&b.decoded.stamp.latency_seconds.denominator==700&&b.decoded.stamp.frequency_dependent_latency,"referenced DATA6 exact sample interval and latency model");
     binding.endpoint.graph = "gone";
     binding.stream = "gone";
     std::get<NumericContract>(binding.contract).clock.domain = "gone";

@@ -5,6 +5,8 @@ namespace numeric_editor {
 domain::ProcessingAdmissionLimits limits();
 domain::ConfiguredProcessingNode default_node(const QString &kind);
 QStringList catalog();
+// User-facing entries expose canonical operation frontends.
+QStringList visible_catalog();
 QString category(const QString &kind);
 QString direction_group(const QString &kind);
 bool is_graph_view(const QString &kind);
@@ -14,6 +16,8 @@ QString contract_details(const domain::ProcessingPort &);
 QString conversion_effects(signal_contracts::DType, signal_contracts::DType);
 QString conversion_policy_caption(std::uint8_t);
 QString conversion_policy_details(std::uint8_t);
+QString processing_diagnostic_text(const domain::ProcessingDiagnostic&);
+QString processing_reason_text(domain::ProcessingReason,std::string_view parameter={});
 QString dtype_caption(signal_contracts::DType);
 int capture_source_kind(const domain::ConfiguredProcessingNode &);
 bool set_sample_rate(domain::ConfiguredProcessingNode &, std::uint32_t);

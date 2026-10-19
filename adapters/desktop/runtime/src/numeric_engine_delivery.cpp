@@ -30,80 +30,82 @@ bool DeliveryHub::selected(const EndpointIdentity& endpoint) const {
         return tap_selected(endpoint)||std::find(subscriptions.begin(),subscriptions.end(),endpoint)!=subscriptions.end();
     }
 void DeliveryHub::output(const dataflow_runtime::NumericPortFrameView& borrowed) {
-        // Contexts are prepared: lookup avoids constructing/copying an identity on the hot path.
-        auto found=std::find_if(contexts.begin(),contexts.end(),[&](const auto& entry) {
-            const auto& key=entry.first;return key.node==borrowed.identity.node && key.port==borrowed.identity.port &&
-                key.direction==borrowed.direction && key.graph_id==borrowed.graph_id;
-        });
+        auto found=find_context(borrowed);
         if(found==contexts.end() || (!selected(found->first) &&
             !(borrowed.direction==domain::PortDirection::Input && wled_outputs.contains(borrowed.identity.node))))return;
         core::perf::Scope selected_output_trace(core::perf::Stage::NumericSelectedOutput);
-        // Prepared History endpoints publish compact row/lifecycle events through history().
-        // A second generic delivery would reject the borrowed matrix and reset consumers.
+        // Both matrix and vector History publish compact row/lifecycle events through history().
+        // Full ring snapshots remain available only through the explicit query boundary.
         // Explicit query_numeric remains the owning full-history snapshot boundary.
         if(const auto* numeric=std::get_if<NumericView>(&borrowed.frame.payload);numeric && numeric->ring.capacity)return;
         auto cached=latest_matrices.find(found->first);
         // Release the prior shared slot before retaining its replacement. Pool
         // exhaustion stays bounded and cannot permanently pin all prior values.
         if(cached!=latest_matrices.end())cached->second={};
-        if(borrowed.direction==domain::PortDirection::Input)if(auto target=wled_outputs.find(borrowed.identity.node);target!=wled_outputs.end()) {
-            if(borrowed.frame.stamp.available)target->second.policy.update(borrowed.frame,milliseconds_now());else target->second.policy.unavailable();
-        }
-        if(std::find(subscriptions.begin(),subscriptions.end(),found->first)!=subscriptions.end()) {
-            core::perf::Scope preview_produce(core::perf::Stage::NumericPreviewProduce);
-            // Capture can produce adjacent analysis frames in one callback.
-            // Capture callback bursts may contain several analysis frames.
-            // Spread a small bounded window over GUI deadlines. Keep at most
-            // four frames, at most 16ms of policy budget, and at most 64 pending
-            // slots for smoothing; wide/slow selections remain latest-only.
-            // This is presentation pacing, never audio or DSP buffering.
-            // Lifecycle/discontinuity invalidates the prior stream immediately.
-            const auto depth=preview_depth_locked();
-            std::size_t matching=0;
-            const auto count=previews.size();
-            for(std::size_t i=0;i<count;++i){auto old=previews.pop();
-                if(old && old->context && old->context->endpoint==found->first)++matching;
-                if(old)previews.push(std::move(*old));}
-            const bool reset=borrowed.status!=Status::ok || !borrowed.frame.stamp.available || borrowed.frame.stamp.discontinuity;
-            for(std::size_t i=0;i<count;++i){auto old=previews.pop();
-                if(!old)continue;
-                bool discard=!old->context;
-                if(old->context && old->context->endpoint==found->first){
-                    const auto prior=old->frame?old->frame.view().stamp:FrameStamp{};
-                    discard=reset || matching>=depth || prior.producer_epoch!=borrowed.frame.stamp.producer_epoch || prior.generation!=borrowed.frame.stamp.generation;
-                    --matching;
-                }
-                if(discard)++preview_coalesced;else previews.push(std::move(*old));
-            }
-            if(previews.size()==128)previews.pop();
-            DeliveredNumericFrame preview;
-            const auto status=retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},borrowed.frame,borrowed.status,
-                frame_limits,preview_arena->payload_pool,preview_arena->metadata_pool,preview);
-            if(status!=Status::ok)preview={found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},{},status};
-            if(cached!=latest_matrices.end())cached->second=preview;
-            previews.push(std::move(preview));
-            schedule_preview_locked();
-        }
-        if(!tap_selected(found->first))return;
-        // Loss-sensitive processing/transport delivery is FIFO. GUI previews
-        // coalesce downstream, after this bounded owning boundary.
-        auto pending_gap=delivery_gaps.find(found->first);
-        if(frames.size()==128){++transport_frame_drops;if(pending_gap!=delivery_gaps.end())pending_gap->second=true;return;}
-        auto delivered_frame=borrowed.frame;
-        // Taps include network consumers: report skipped frames at this
-        // adapter boundary without altering the prepared graph's DSP history.
-        delivered_frame.stamp.discontinuity|=(pending_gap!=delivery_gaps.end()&&pending_gap->second);
-        DeliveredNumericFrame retained;
-        const auto status=retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},
-            delivered_frame,borrowed.status,frame_limits,arena->payload_pool,arena->metadata_pool,retained);
-        if(pending_gap!=delivery_gaps.end())pending_gap->second=status!=Status::ok;
-        if(status!=Status::ok)retained={found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},{},status};
-        if(cached!=latest_matrices.end())cached->second=retained;
-        if(!frames.push(std::move(retained))) {
-            ++transport_frame_drops;
-            if(pending_gap!=delivery_gaps.end())pending_gap->second=true;
-        }
+        update_wled_input(borrowed);
+        if(std::find(subscriptions.begin(),subscriptions.end(),found->first)!=subscriptions.end())queue_preview(found,cached,borrowed);
+        if(tap_selected(found->first))queue_tap_frame(found,cached,borrowed);
     }
+DeliveryHub::ContextIterator DeliveryHub::find_context(const dataflow_runtime::NumericPortFrameView& borrowed) {
+    return std::find_if(contexts.begin(),contexts.end(),[&](const auto& entry) {
+        const auto& key=entry.first;return key.node==borrowed.identity.node && key.port==borrowed.identity.port &&
+            key.direction==borrowed.direction && key.graph_id==borrowed.graph_id;
+    });
+}
+void DeliveryHub::update_wled_input(const dataflow_runtime::NumericPortFrameView& borrowed) {
+    if(borrowed.direction!=domain::PortDirection::Input)return;
+    const auto target=wled_outputs.find(borrowed.identity.node);
+    if(target==wled_outputs.end())return;
+    if(borrowed.frame.stamp.available)target->second.policy.update(borrowed.frame,milliseconds_now());
+    else target->second.policy.unavailable();
+}
+void DeliveryHub::coalesce_preview_frames(const EndpointIdentity& endpoint,const FrameStamp& stamp,Status status) {
+    const auto depth=preview_depth_locked();
+    std::size_t matching=0;
+    const auto count=previews.size();
+    for(std::size_t i=0;i<count;++i){auto old=previews.pop();
+        if(old && old->context && old->context->endpoint==endpoint)++matching;
+        if(old)previews.push(std::move(*old));}
+    const bool reset=status!=Status::ok || !stamp.available || stamp.discontinuity;
+    for(std::size_t i=0;i<count;++i){auto old=previews.pop();
+        if(!old)continue;
+        bool discard=!old->context;
+        if(old->context && old->context->endpoint==endpoint){
+            const auto prior=old->frame?old->frame.view().stamp:FrameStamp{};
+            discard=reset || matching>=depth || prior.producer_epoch!=stamp.producer_epoch || prior.generation!=stamp.generation;
+            --matching;
+        }
+        if(discard)++preview_coalesced;else previews.push(std::move(*old));
+    }
+}
+void DeliveryHub::queue_preview(ContextIterator found,LatestIterator cached,const dataflow_runtime::NumericPortFrameView& borrowed) {
+    core::perf::Scope preview_produce(core::perf::Stage::NumericPreviewProduce);
+    coalesce_preview_frames(found->first,borrowed.frame.stamp,borrowed.status);
+    if(previews.size()==128)previews.pop();
+    DeliveredNumericFrame preview;
+    const auto status=retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},
+        borrowed.frame,borrowed.status,frame_limits,preview_arena->payload_pool,preview_arena->metadata_pool,preview);
+    if(status!=Status::ok)preview={found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},{},status};
+    if(cached!=latest_matrices.end())cached->second=preview;
+    previews.push(std::move(preview));
+    schedule_preview_locked();
+}
+void DeliveryHub::queue_tap_frame(ContextIterator found,LatestIterator cached,const dataflow_runtime::NumericPortFrameView& borrowed) {
+    auto pending_gap=delivery_gaps.find(found->first);
+    if(frames.size()==128){++transport_frame_drops;if(pending_gap!=delivery_gaps.end())pending_gap->second=true;return;}
+    auto delivered_frame=borrowed.frame;
+    delivered_frame.stamp.discontinuity|=(pending_gap!=delivery_gaps.end()&&pending_gap->second);
+    DeliveredNumericFrame retained;
+    const auto status=retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},
+        delivered_frame,borrowed.status,frame_limits,arena->payload_pool,arena->metadata_pool,retained);
+    if(pending_gap!=delivery_gaps.end())pending_gap->second=status!=Status::ok;
+    if(status!=Status::ok)retained={found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},{},status};
+    if(cached!=latest_matrices.end())cached->second=retained;
+    if(!frames.push(std::move(retained))) {
+        ++transport_frame_drops;
+        if(pending_gap!=delivery_gaps.end())pending_gap->second=true;
+    }
+}
 void DeliveryHub::history(const dataflow_runtime::NumericHistoryRowView& borrowed) {
         const auto& endpoint=borrowed.endpoint;
         auto found=std::find_if(contexts.begin(),contexts.end(),[&](const auto& entry) {
@@ -120,44 +122,56 @@ void DeliveryHub::history(const dataflow_runtime::NumericHistoryRowView& borrowe
         case dataflow_runtime::NumericHistoryEventKind::Reset:event=NumericHistoryEvent::Reset;break;
         case dataflow_runtime::NumericHistoryEventKind::Unavailable:break;
         }
-        const auto retain=[&](DeliveryArena& storage){
-            DeliveredNumericHistoryRow retained;
-            const auto status=retain_numeric_history_row(found->second,{endpoint.delivery.graph_revision,endpoint.delivery.epoch},event,
-                borrowed.compact,borrowed.filled_count,borrowed.capacity,borrowed.accepted_row_ordinal,frame_limits,
-                storage.payload_pool,storage.metadata_pool,retained);
-            if(status!=Status::ok){retained={};retained.event=NumericHistoryEvent::Unavailable;
-                retained.compact={found->second,{endpoint.delivery.graph_revision,endpoint.delivery.epoch},{},status};
-                retained.capacity=borrowed.capacity;retained.filled_count=borrowed.filled_count;}
-            return retained;
-        };
-        if(std::find(subscriptions.begin(),subscriptions.end(),found->first)!=subscriptions.end()){
-            // A slow/paused GUI must never lease the loss-sensitive tap arena.
-            if(preview_rows.size()<128)preview_rows.push(retain(*preview_arena));
-            else{
-                ++preview_row_drops;preview_rows.pop();DeliveredNumericHistoryRow marker;marker.event=NumericHistoryEvent::Unavailable;
-                marker.compact={found->second,{endpoint.delivery.graph_revision,endpoint.delivery.epoch},{},Status::exhausted};
-                marker.capacity=borrowed.capacity;preview_rows.push(std::move(marker));
-            }
-            schedule_preview_locked();
-        }
-        if(!tap_selected(found->first))return;
-        if(!rows.push(retain(*arena))) {
-            ++transport_row_drops;
-            rows.pop();DeliveredNumericHistoryRow marker;marker.event=NumericHistoryEvent::Unavailable;
-            marker.compact={found->second,{endpoint.delivery.graph_revision,endpoint.delivery.epoch},{},Status::exhausted};
-            marker.capacity=borrowed.capacity;rows.push(std::move(marker));
-        }
+        if(std::find(subscriptions.begin(),subscriptions.end(),found->first)!=subscriptions.end())
+            queue_preview_row(found,borrowed,event);
+        if(tap_selected(found->first))queue_transport_row(found,borrowed,event);
     }
+DeliveredNumericHistoryRow DeliveryHub::retain_history_row(ContextIterator found,
+    const dataflow_runtime::NumericHistoryRowView& borrowed,NumericHistoryEvent event,DeliveryArena& storage) {
+    const auto& endpoint=borrowed.endpoint;
+    DeliveredNumericHistoryRow retained;
+    const auto status=retain_numeric_history_row(found->second,{endpoint.delivery.graph_revision,endpoint.delivery.epoch},event,
+        borrowed.compact,borrowed.filled_count,borrowed.capacity,borrowed.accepted_row_ordinal,frame_limits,
+        storage.payload_pool,storage.metadata_pool,retained);
+    if(status!=Status::ok){retained={};retained.event=NumericHistoryEvent::Unavailable;
+        retained.compact={found->second,{endpoint.delivery.graph_revision,endpoint.delivery.epoch},{},status};
+        retained.capacity=borrowed.capacity;retained.filled_count=borrowed.filled_count;}
+    return retained;
+}
+void DeliveryHub::queue_preview_row(ContextIterator found,const dataflow_runtime::NumericHistoryRowView& borrowed,
+                                    NumericHistoryEvent event) {
+    if(preview_rows.size()<128)preview_rows.push(retain_history_row(found,borrowed,event,*preview_arena));
+    else{
+        ++preview_row_drops;preview_rows.pop();DeliveredNumericHistoryRow marker;marker.event=NumericHistoryEvent::Unavailable;
+        marker.compact={found->second,{borrowed.endpoint.delivery.graph_revision,borrowed.endpoint.delivery.epoch},{},Status::exhausted};
+        marker.capacity=borrowed.capacity;preview_rows.push(std::move(marker));
+    }
+    schedule_preview_locked();
+}
+void DeliveryHub::queue_transport_row(ContextIterator found,const dataflow_runtime::NumericHistoryRowView& borrowed,
+                                      NumericHistoryEvent event) {
+    if(rows.push(retain_history_row(found,borrowed,event,*arena)))return;
+    ++transport_row_drops;
+    rows.pop();DeliveredNumericHistoryRow marker;marker.event=NumericHistoryEvent::Unavailable;
+    marker.compact={found->second,{borrowed.endpoint.delivery.graph_revision,borrowed.endpoint.delivery.epoch},{},Status::exhausted};
+    marker.capacity=borrowed.capacity;rows.push(std::move(marker));
+}
 std::size_t DeliveryHub::preview_depth_locked() const {
         if(subscriptions.empty())return 1;
         return std::max(std::size_t{1},std::min({std::size_t{4},
             std::size_t(16/preview_interval_ms),std::size_t{64}/subscriptions.size()}));
     }
 void DeliveryHub::normalize_previews_locked() {
-        std::array<std::optional<DeliveredNumericFrame>,128> queued;
+        PreviewSlots queued;
         std::array<bool,128> keep{};
         const auto count=previews.size(),depth=preview_depth_locked();
         for(std::size_t i=0;i<count;++i)queued[i]=previews.pop();
+        mark_latest_previews(queued,keep,count,depth,subscriptions);
+        restore_previews(queued,keep,count);
+    }
+void DeliveryHub::mark_latest_previews(const PreviewSlots& queued,std::array<bool,128>& keep,
+                                       std::size_t count,std::size_t depth,
+                                       const std::vector<EndpointIdentity>& subscriptions) {
         for(std::size_t i=count;i-->0;){
             const auto& frame=queued[i];
             if(!frame || !frame->context)continue;
@@ -168,6 +182,8 @@ void DeliveryHub::normalize_previews_locked() {
                 if(keep[j] && queued[j]->context->endpoint==endpoint)++later;
             keep[i]=later<depth;
         }
+    }
+void DeliveryHub::restore_previews(PreviewSlots& queued,const std::array<bool,128>& keep,std::size_t count) {
         for(std::size_t i=0;i<count;++i){
             if(keep[i])previews.push(std::move(*queued[i]));else if(queued[i])++preview_coalesced;
         }
@@ -182,19 +198,7 @@ void DeliveryHub::schedule_preview_locked() {
         },Qt::QueuedConnection);
     }
 void DeliveryHub::dispatch_previews() {
-        {
-            std::lock_guard lock(mutex);
-            if(!preview_scheduled||preview_flushing)return;
-            if(!previews.size()&&!preview_rows.size()){preview_scheduled=false;return;}
-            const auto now=steady_ns();
-            const auto interval=std::uint64_t(preview_interval_ms)*1000000;
-            const auto deadline=preview_last_flush_ns+interval;
-            if(now<deadline){preview_timer_armed_ns=now;preview_timer.start(int((deadline-now+999999)/1000000));return;}
-            // Preserve phase through ordinary timer rounding/work. After idle
-            // or a long stall restart from now, never replay missed deadlines.
-            preview_last_flush_ns=preview_last_flush_ns && now<deadline+interval?deadline:now;
-            preview_flushing=true;
-        }
+        if(!begin_preview_flush())return;
         QPointer<NumericEngine> lifetime(&owner);
         drain_previews();
         if(!lifetime)return;
@@ -202,10 +206,26 @@ void DeliveryHub::dispatch_previews() {
         preview_flushing=false;preview_scheduled=false;
         if(previews.size()||preview_rows.size())schedule_preview_locked();
     }
+bool DeliveryHub::begin_preview_flush() {
+    std::lock_guard lock(mutex);
+    if(!preview_scheduled||preview_flushing)return false;
+    if(!previews.size()&&!preview_rows.size()){preview_scheduled=false;return false;}
+    const auto now=steady_ns();
+    const auto interval=std::uint64_t(preview_interval_ms)*1000000;
+    const auto deadline=preview_last_flush_ns+interval;
+    if(now<deadline){preview_timer_armed_ns=now;preview_timer.start(int((deadline-now+999999)/1000000));return false;}
+    preview_last_flush_ns=preview_last_flush_ns && now<deadline+interval?deadline:now;
+    preview_flushing=true;
+    return true;
+}
 void DeliveryHub::drain_previews() {
         core::perf::Scope preview_tick(core::perf::Stage::NumericPreviewTick);
         // Copies carry cancellation identity; unsubscribe invalidates already copied work.
         QPointer<NumericEngine> lifetime(&owner);
+        drain_preview_frames(lifetime);
+        if(lifetime)drain_preview_rows(lifetime);
+    }
+void DeliveryHub::drain_preview_frames(QPointer<NumericEngine> lifetime) {
         std::array<EndpointIdentity,128> deliveredEndpoints;
         std::size_t deliveredCount=0,frameCount=0;
         {std::lock_guard lock(mutex);frameCount=previews.size();}
@@ -226,6 +246,8 @@ void DeliveryHub::drain_previews() {
             {std::lock_guard lock(mutex);if(generation!=delivery_generation)break;}
         }
 
+    }
+void DeliveryHub::drain_preview_rows(QPointer<NumericEngine> lifetime) {
         for(std::size_t i=0;i<128;++i){
             std::optional<DeliveredNumericHistoryRow> next;std::function<void(DeliveredNumericHistoryRow)> handler;
             std::shared_ptr<std::atomic_bool> active;std::uint64_t generation;
@@ -240,6 +262,10 @@ void DeliveryHub::drain_previews() {
     }
 void DeliveryHub::drain() {
         QPointer<NumericEngine> lifetime(&owner);
+        drain_frames(lifetime);
+        if(lifetime)drain_rows(lifetime);
+    }
+void DeliveryHub::drain_frames(QPointer<NumericEngine> lifetime) {
         for(std::size_t i=0;i<128;++i) {
             std::optional<DeliveredNumericFrame> next;
             struct Pending {std::function<void(DeliveredNumericFrame)> callback;std::shared_ptr<std::atomic_bool> active;};
@@ -260,6 +286,8 @@ void DeliveryHub::drain() {
                 if(!lifetime)return;
             }
         }
+    }
+void DeliveryHub::drain_rows(QPointer<NumericEngine> lifetime) {
         for(std::size_t i=0;i<128;++i) {
             std::optional<DeliveredNumericHistoryRow> next;
             struct Pending {std::function<void(DeliveredNumericHistoryRow)> callback;std::shared_ptr<std::atomic_bool> active;};
@@ -281,20 +309,27 @@ void DeliveryHub::drain() {
         }
     }
 void DeliveryHub::flush_wled() {
-        struct Send {domain::NodeId node;std::shared_ptr<QUdpSocket> socket;QHostAddress destination,interface;quint16 port;wled_protocol::WledPacket packet;};
-        std::array<Send,512> pending;std::size_t count=0;
-        {std::lock_guard lock(mutex);for(auto& [node,output]:wled_outputs) {
+        std::array<WledSend,512> pending;
+        const auto count=collect_due_wled(pending);
+        for(std::size_t i=0;i<count;++i)send_wled_packet(pending[i]);
+    }
+std::size_t DeliveryHub::collect_due_wled(std::array<WledSend,512>& pending) {
+        std::size_t count=0;
+        std::lock_guard lock(mutex);
+        for(auto& [node,output]:wled_outputs) {
             wled_protocol::WledPacket packet;if(output.policy.take_due_packet(milliseconds_now(),packet)!=Status::ok)continue;
             pending[count++]={node,output.socket,output.destination,output.interface,output.port,packet};
-        }}
-        for(std::size_t i=0;i<count;++i) {
-            auto& output=pending[i];const bool bound=output.socket->state()!=QAbstractSocket::UnconnectedState || output.socket->bind(output.interface,quint16(0));
-            const bool sent=bound && output.socket->writeDatagram(reinterpret_cast<const char*>(output.packet.data()),output.packet.size(),output.destination,output.port)==qint64(output.packet.size());
-            {std::lock_guard lock(mutex);const auto current=wled_outputs.find(output.node);
-                if(current==wled_outputs.end() || current->second.socket!=output.socket)continue;
-                current->second.policy.note_send_result(sent);
-                if(!sent)state.statuses[QStringLiteral("wled")]={State::Failed,output.socket->errorString(),state.revision};
-            }
         }
+        return count;
+    }
+void DeliveryHub::send_wled_packet(WledSend& output) {
+        const bool bound=output.socket->state()!=QAbstractSocket::UnconnectedState ||
+                         output.socket->bind(output.interface,quint16(0));
+        const bool sent=bound && output.socket->writeDatagram(reinterpret_cast<const char*>(output.packet.data()),
+            output.packet.size(),output.destination,output.port)==qint64(output.packet.size());
+        std::lock_guard lock(mutex);const auto current=wled_outputs.find(output.node);
+        if(current==wled_outputs.end() || current->second.socket!=output.socket)return;
+        current->second.policy.note_send_result(sent);
+        if(!sent)state.statuses[QStringLiteral("wled")]={State::Failed,output.socket->errorString(),state.revision};
     }
 }

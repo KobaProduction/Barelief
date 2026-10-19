@@ -3,12 +3,32 @@ add_library(dataflow_runtime STATIC
     src/runtime_context.cpp
     src/runtime_queries.cpp
     src/graph_preparation.cpp
+    src/graph_node_preparation.cpp
+    src/graph_continuity_preparation.cpp
+    src/value_execution.cpp
+    src/ingress_acceptance.cpp
+    src/clock_mix_execution.cpp
+    src/history_execution.cpp
+    src/conversion_execution.cpp
+    src/resampler_execution.cpp
+    src/window_execution.cpp
     src/capability_admission.cpp
     src/buffer_preparation.cpp
     src/node_state.cpp
     src/signal_time.cpp
     src/frame_access.cpp
     src/numeric_execution.cpp
+    src/matrix_execution.cpp
+    src/music_execution.cpp
+    src/numeric_operation_preparation.cpp
+    src/signal_operation_preparation.cpp
+    src/signal_feature_preparation.cpp
+    src/music_operation_preparation.cpp
+    src/numeric_array_execution.cpp
+    src/signal_operation_execution.cpp
+    src/music_operation_execution.cpp
+    src/prepared_operation_process.cpp
+    src/pcm_packet_queue.cpp
     src/transform_execution.cpp
     src/mixer_execution.cpp
     src/clock_execution.cpp)

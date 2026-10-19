@@ -12,8 +12,8 @@ const DTypeDescriptor* dtype_descriptor(DType) noexcept;
 enum class Rank { Scalar, Vector, Matrix };
 // Optional descriptive metadata. Never a data type or an operation admission gate.
 enum class Semantic { Scalar, PCM, Window, Windowed, SpectrumMagnitude, MelEnergy, History, Numeric };
-enum class Axis { None, Sample, Bin, Band, Time, Declared };
-enum class NumericUnit { Unspecified, NormalizedAmplitude, RawAmplitude, Frames, Hertz, Seconds, Values };
+enum class Axis { None, Sample, Bin, Band, Time, Declared, Component };
+enum class NumericUnit { Unspecified, NormalizedAmplitude, RawAmplitude, Frames, Hertz, Seconds, Values, Radians, SquaredAmplitude, SquaredAmplitudePerHertz, Decibels };
 enum class ValueDomain { FiniteOnly, AnyIeee };
 enum class StorageEncoding { Native, FixedLittleEndian, FixedBigEndian, PackedSigned24LE, PackedSigned24BE };
 enum class BitPlacement { LeastSignificant, MostSignificant };

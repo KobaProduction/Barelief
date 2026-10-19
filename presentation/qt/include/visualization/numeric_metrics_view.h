@@ -5,6 +5,7 @@
 #include <QHash>
 #include <cmath>
 #include <algorithm>
+#include <utility>
 
 // Stable GUI rows: value delivery changes only the affected roles, never the
 // Repeater topology. Exact values remain strings throughout presentation.
@@ -39,13 +40,7 @@ public:
         }
     }
     void set_inputs(const QList<Input>& inputs) {
-        bool topology=inputs.size()!=rows_.size();
-        for(qsizetype i=0;!topology&&i<inputs.size();++i)topology=inputs[i].port!=rows_[i].input.port;
-        if(topology){
-            beginResetModel();rows_.clear();indices_.clear();rows_.reserve(inputs.size());
-            for(const auto& input:inputs){indices_.insert(input.port,int(rows_.size()));rows_.append({input,{},false});}
-            endResetModel();return;
-        }
+        if(topology_changed(inputs)){reset_inputs(inputs);return;}
         for(int i=0;i<inputs.size();++i)if(rows_[i].input.name!=inputs[i].name){
             rows_[i].input.name=inputs[i].name;emit dataChanged(index(i),index(i),{NameRole});
         }
@@ -62,7 +57,7 @@ public:
         rows_[row].available=false;rows_[row].exact.clear();
         emit dataChanged(index(row),index(row),{ExactRole,AvailableRole,BarRole});
     }
-    void clear_values(){for(const auto& row:rows_)set_unavailable(row.input.port);}
+    void clear_values(){for(const auto& row:std::as_const(rows_))set_unavailable(row.input.port);}
     QString exact_value(quint16 port) const {const int row=indices_.value(port,-1);return row<0?QString{}:rows_[row].exact;}
     bool value_available(quint16 port) const {const int row=indices_.value(port,-1);return row>=0&&rows_[row].available;}
     QString input_name(quint16 port) const {
@@ -70,6 +65,16 @@ public:
         const auto& name=rows_[row].input.name;return name.isEmpty()?ui::text("Value %1").arg(unsigned(port)+1):name;
     }
 private:
+    bool topology_changed(const QList<Input>& inputs) const {
+        if(inputs.size()!=rows_.size())return true;
+        for(qsizetype i=0;i<inputs.size();++i)if(inputs[i].port!=rows_[i].input.port)return true;
+        return false;
+    }
+    void reset_inputs(const QList<Input>& inputs) {
+        beginResetModel();rows_.clear();indices_.clear();rows_.reserve(inputs.size());
+        for(const auto& input:inputs){indices_.insert(input.port,int(rows_.size()));rows_.append({input,{},false});}
+        endResetModel();
+    }
     struct Row {Input input;QString exact;bool available;};
     QList<Row> rows_;QHash<quint16,int> indices_;
 };

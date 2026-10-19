@@ -1,0 +1,7 @@
+include_rules = [
+    '-dataflow_runtime', '-dsp_kernels', '-bdsp_protocol', '-embedded_support',
+    '-control', '-desktop', '-pipeline', '-core', '-core_app', '-visualization',
+    '-project_storage', '-aggregator', '-analyzer', '-Qt', '-adapters',
+    '-presentation', '-apps', '-libs',
+    '-driver', '-freertos', '-lwip', '-pulse', '-wrl', '-esp_idf_adapter',
+]

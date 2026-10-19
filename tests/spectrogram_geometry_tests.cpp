@@ -278,9 +278,9 @@ int main() {
     if(!check(viewport.contains(title) && !title.intersects(ticks),
               "Projected axis titles stay within the scene and avoid numeric labels")) return 1;
     using namespace SurfaceSettings;
-    if(!check(renderFps({},144)==60 && renderFps(QJsonObject{{"gui_fps_mode","screen"}},144)==144 &&
+    if(!check(renderFps({},360)==360 && renderFps(QJsonObject{{"gui_fps_mode","screen"}},144)==144 &&
               renderFps(QJsonObject{{"gui_fps_mode","screen"}},0)==60 &&
-              renderFps(QJsonObject{{"gui_target_fps",999}})==240,
+              renderFps(QJsonObject{{"gui_target_fps",999}})==999 && renderFps(QJsonObject{{"gui_target_fps",9999}})==1000,
               "GUI cadence defaults, screen selection, fallback and bounds")) return 1;
     const auto base=defaults();
     if(!check(base["axis_grid"].toBool() && base["floor_grid"].toBool() &&

@@ -6,6 +6,8 @@ install(DIRECTORY "${embedded_source_root}/adapters/esp_idf/"
     DESTINATION "${embedded_destination}/adapters/esp_idf")
 install(DIRECTORY "${embedded_source_root}/examples/esp32_streamer/"
     DESTINATION "${embedded_destination}/examples/esp32_streamer")
+install(DIRECTORY "${embedded_source_root}/examples/esp32_fft_benchmark/"
+    DESTINATION "${embedded_destination}/examples/esp32_fft_benchmark")
 foreach(part IN ITEMS libs/signal_contracts libs/bdsp_protocol libs/wled_protocol domain application
     libs/dataflow_runtime libs/dsp_kernels libs/embedded_support)
     install(DIRECTORY "${embedded_source_root}/${part}/include/"
@@ -15,13 +17,15 @@ foreach(part IN ITEMS libs/signal_contracts libs/bdsp_protocol libs/wled_protoco
 endforeach()
 install(FILES "${embedded_source_root}/adapters/control/include/control/numeric_processing_message_mapper.h"
     "${embedded_source_root}/adapters/control/include/control/control_session_types.h"
+    "${embedded_source_root}/adapters/control/include/control/numeric_control_session.h"
     DESTINATION "${embedded_destination}/adapters/control/include/control")
 install(FILES "${embedded_source_root}/adapters/control/src/numeric_processing_message_mapper.cpp"
+    "${embedded_source_root}/adapters/control/src/numeric_control_session.cpp"
     DESTINATION "${embedded_destination}/adapters/control/src")
-install(FILES "${embedded_source_root}/adapters/desktop/include/control/numeric_control_session.h"
-    DESTINATION "${embedded_destination}/adapters/desktop/include/control")
-install(FILES "${embedded_source_root}/adapters/desktop/runtime/src/numeric_control_session.cpp"
-    DESTINATION "${embedded_destination}/adapters/desktop/runtime/src")
+install(FILES "${embedded_source_root}/adapters/project_storage/include/project_storage/numeric_array_codec.h"
+    DESTINATION "${embedded_destination}/adapters/project_storage/include/project_storage")
+install(FILES "${embedded_source_root}/adapters/project_storage/src/numeric_array_codec.cpp"
+    DESTINATION "${embedded_destination}/adapters/project_storage/src")
 # Original licensed ANSI dependency, used only by the ANSI source profile.
 install(DIRECTORY "${embedded_source_root}/libs/bdsp_protocol/generated/"
     DESTINATION "${embedded_destination}/libs/bdsp_protocol/generated")

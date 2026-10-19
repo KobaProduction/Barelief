@@ -1,7 +1,9 @@
 #pragma once
 #include <signal_contracts/frame.h>
+#include <signal_contracts/window_policy.h>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -14,18 +16,26 @@ enum class NodeKind {
     AudioSource, StereoFFT, SpectrumMerge, SpectrumGain, Mel, Spectrogram,
     FFTView, MelView, SpectrogramView, AudioView, WLED, TestSignal, Window,
     WindowFunction, BarkWeighting, WindowView, WindowedView, NetworkInput, NetworkOutput,
-    Splitter, Switch, Gate, ScalarReduce, ScalarView, WLEDEncode, WLEDOutput, InputSelector, PcmResampler, IndexExtract, SignalGenerator, SampleClock, Mixer, ChannelComparison
+    Splitter, Switch, Gate, ScalarReduce, ScalarView, WLEDEncode, WLEDOutput, InputSelector, PcmResampler, IndexExtract, SignalGenerator, SampleClock, Mixer, ChannelComparison, MatrixTranspose, MatrixWindowFunction, MatrixFFT, MatrixRow, MatrixCenter, RFFT, SpectrumProjection, FrequencyNormalizer, BroadbandFeatures, NoteSalience, SpectralQuantize, Fourier, RealFourier, ComplexPolar, Reroute, Fs, UInt32Constant, ArrayLength, SampleRate, SpectrumAxis, SpectrumAmplitude, AmplitudePhase, WindowGain, Number, ArrayFill, ArrayMultiply, MusicalSpectrogram, FrequencyStep, BroadbandRow, NoteSpectrum, ArrayConcat, PianoView, SpectrumPeak,
+    ScalarMetricsView, ScalarSignedBarView,
+    VectorLineView, VectorPointView, VectorBarView, VectorPieView,
+    MatrixImageView, MatrixSurfaceView,
+    AudioLineView, AudioPointView, AudioBarView, AudioPieView,
+    AudioImageView, AudioSurfaceView,
+    NumberAccumulator
 };
 enum class NodeRole { Source, Processor, Sink, Unknown };
 NodeRole node_role(NodeKind) noexcept;
 bool is_view(NodeKind) noexcept;
-constexpr std::size_t node_kind_count=33;
+bool is_scalar_view(NodeKind) noexcept;
+// Registered kinds; retired enum slots are not reused.
+constexpr std::size_t node_kind_count=80;
 std::string_view kind_id(NodeKind kind) noexcept;
 std::optional<NodeKind> node_kind(std::string_view canonical_id) noexcept;
 enum class AudioSource { SystemOutput = 0, Microphone = 1 };
 enum class MergeMode { Mean = 0, Maximum = 1, RMS = 2 };
 enum class Channel { Left = 0, Right = 1, Merged = 2 };
-enum class WindowFunction { Hann, Hamming, Blackman, Rectangular };
+using WindowFunction=signal_contracts::WindowFunction;
 struct NoParameters { bool operator==(const NoParameters&) const = default; };
 struct AudioSourceParameters { AudioSource source = AudioSource::SystemOutput; bool operator==(const AudioSourceParameters&) const = default; };
 struct MergeParameters { MergeMode merge = MergeMode::RMS; bool operator==(const MergeParameters&) const = default; };
@@ -105,13 +115,18 @@ struct PortDescriptor {
     signal_contracts::Unit unit=signal_contracts::Unit::Unspecified;
 };
 enum class ParameterClassification { Processing, Presentation, ApplicationAdapter, OpaqueExtension };
-enum class ParameterValueKind { Boolean, Integer, Number, String, FrameType, WindowFunction };
+enum class ParameterValueKind { Boolean, Integer, Number, String, FrameType, WindowFunction, NumericArray };
+struct ConfiguredProcessingNode;
+struct NumericParameterBounds {double minimum=0,maximum=0;};
 struct ParameterDescriptor {
     std::string_view key;
     ParameterClassification classification=ParameterClassification::Processing;
     ParameterValueKind value_kind=ParameterValueKind::Number;
     double minimum=0, maximum=0, default_number=0;
     std::string_view default_text;
+    std::span<const float> default_array{};
+    using NumericBoundsQuery=std::optional<NumericParameterBounds> (*)(const ConfiguredProcessingNode&) noexcept;
+    NumericBoundsQuery numeric_bounds=nullptr;
 };
 struct NodeDescriptor {
     NodeKind kind; std::string_view id; NodeRole role;

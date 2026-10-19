@@ -34,6 +34,7 @@ qt_add_resources(visualization visualization_qml PREFIX "/"
     FILES
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/common/GraphPanel.qml"
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/plots2d/Plot2D.qml"
+        "${QT_PRESENTATION_RESOURCE_DIR}/qml/plots2d/Piano.qml"
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/surface3d/SurfaceView.qml"
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/surface3d/SurfaceControls.qml"
         "${QT_PRESENTATION_RESOURCE_DIR}/qml/controls/CompactButton.qml"

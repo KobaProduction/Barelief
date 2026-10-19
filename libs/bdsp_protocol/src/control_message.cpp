@@ -1,3 +1,4 @@
+#include "text_validation.h"
 #include <bdsp_protocol/control_codec.h>
 #include <cstring>
 #include <array>
@@ -8,25 +9,9 @@
 namespace bdsp_protocol {
 namespace {
 bool utf8(std::string_view text) noexcept {
-    for (std::size_t i = 0; i < text.size();) {
-        auto c = static_cast<unsigned char>(text[i++]);
-        if (c == 0) return false;
-        if (c < 0x80) continue;
-        unsigned remaining = 0; std::uint32_t code = 0, minimum = 0;
-        if (c >= 0xc2 && c <= 0xdf) { remaining=1; code=c&31; minimum=0x80; }
-        else if (c >= 0xe0 && c <= 0xef) { remaining=2; code=c&15; minimum=0x800; }
-        else if (c >= 0xf0 && c <= 0xf4) { remaining=3; code=c&7; minimum=0x10000; }
-        else return false;
-        if (remaining > text.size()-i) return false;
-        while (remaining--) {
-            c=static_cast<unsigned char>(text[i++]);
-            if ((c&0xc0)!=0x80) return false;
-            code=(code<<6)|(c&63);
-        }
-        if (code<minimum || code>0x10ffff || (code>=0xd800 && code<=0xdfff)) return false;
-    }
-    return true;
+    return bdsp_protocol::text_detail::utf8_without_nul(text);
 }
+
 struct Validator {
     const ControlCodecLimits& limits;
     ControlStorageRequirements required;
@@ -87,17 +72,23 @@ struct Validator {
             if (!text(node.kind,limits.max_field_string_bytes) || !kind_parameters(node) || !parameters(node.parameters)) return false;
         return true;
     }
-    bool command(const WireCommand& value) noexcept {
-        const auto id=unsigned(value.id);
-        if (id<1 || id>9) return reject();
+    bool command_shape(const WireCommand& value) noexcept {
         const bool prepare=value.id==WireCommandId::prepare;
         const bool apply=value.id==WireCommandId::apply;
         const bool release=value.id==WireCommandId::release;
         const bool set=value.id==WireCommandId::set_parameters;
         const bool persist=value.id==WireCommandId::persist;
-        if (bool(value.processing)!=prepare || bool(value.parameters)!=set ||
-            (!apply && !value.graph_identity.empty()) || (!apply && !release && value.token!=0) ||
-            (!set && (value.node!=-1 || !value.enabled)) || (!persist && value.graph_revision!=0)) return reject();
+        return bool(value.processing)==prepare && bool(value.parameters)==set &&
+            (apply || value.graph_identity.empty()) && (apply || release || value.token==0) &&
+            (set || (value.node==-1 && value.enabled)) && (persist || value.graph_revision==0);
+    }
+    bool command(const WireCommand& value) noexcept {
+        const auto id=unsigned(value.id);
+        if (id<1 || id>9) return reject();
+        const bool prepare=value.id==WireCommandId::prepare;
+        const bool apply=value.id==WireCommandId::apply;
+        const bool set=value.id==WireCommandId::set_parameters;
+        if (!command_shape(value)) return reject();
         if (prepare && !graph(*value.processing)) return false;
         if (apply && !text(value.graph_identity,limits.max_graph_identity_bytes)) return false;
         if (set && !parameters(*value.parameters)) return false;
@@ -111,9 +102,15 @@ struct Validator {
         if (!count(required.capability_kinds,value.node_kinds.size(),limits.max_capability_kinds) ||
             !count(required.receive_types,value.receive_types.size(),limits.max_capability_types) ||
             !count(required.publish_types,value.publish_types.size(),limits.max_capability_types)) return false;
-        for (auto kind : value.node_kinds) if (!text(kind,limits.max_field_string_bytes)) return false;
-        for (auto type : value.receive_types) if (!frame(type)) return false;
-        for (auto type : value.publish_types) if (!frame(type)) return false;
+        return capability_kinds(value.node_kinds) && capability_types(value.receive_types) &&
+            capability_types(value.publish_types);
+    }
+    bool capability_kinds(std::span<const std::string_view> kinds) noexcept {
+        for (auto kind : kinds) if (!text(kind,limits.max_field_string_bytes)) return false;
+        return true;
+    }
+    bool capability_types(std::span<const WireFrameType> types) noexcept {
+        for (auto type : types) if (!frame(type)) return false;
         return true;
     }
     bool reply(const WireReply& value) noexcept {
@@ -200,14 +197,16 @@ template<class T> bool optional_object(ControlArchive& a, unsigned tag, ControlS
     if (a.state.reading) { if (present) value=item; else value.reset(); }
     return true;
 }
+template<class T> bool optional_unsigned_fits(std::uint64_t integer) noexcept {
+    if constexpr (std::is_enum_v<T>) return integer<=std::numeric_limits<std::underlying_type_t<T>>::max();
+    else return integer<=std::numeric_limits<T>::max();
+}
 template<class T> bool optional_unsigned(ControlArchive& a, unsigned tag, std::optional<T>& value) noexcept {
     bool present=value.has_value();
     std::uint64_t integer=present?static_cast<std::uint64_t>(*value):0;
     if (!a.optional_uint_field(tag,integer,present)) return false;
     if (present) {
-        if constexpr (std::is_enum_v<T>) {
-            if (integer>std::numeric_limits<std::underlying_type_t<T>>::max()) return a.state.fail();
-        } else if (integer>std::numeric_limits<T>::max()) return a.state.fail();
+        if (!optional_unsigned_fits<T>(integer)) return a.state.fail();
         if (a.state.reading) value=static_cast<T>(integer);
     } else if (a.state.reading) value.reset();
     return true;
@@ -317,94 +316,36 @@ bool visit_Memory(ControlArchive& a, void* pointer) noexcept {
 
 // Optional scalar presence is separate from its numeric value: zero is data.
 
+template <std::size_t Index, class T>
+bool visit_parameter_alternative(ControlArchive& a, WireParameters& parameters, unsigned& selected,
+                                 ControlSchema schema, bool (*visitor)(ControlArchive&, void*) noexcept) noexcept {
+    bool present=!a.state.reading && parameters.index()==Index;
+    T item{};
+    if (present) item=std::get<Index>(parameters);
+    if (!a.object_field(Index+1,schema,&item,visitor,&present)) return false;
+    if (present) {
+        ++selected;
+        if (a.state.reading) parameters=item;
+    }
+    return true;
+}
+
 bool visit_Parameters(ControlArchive& a, void* pointer) noexcept {
     auto& parameters=*static_cast<WireParameters*>(pointer);
     unsigned selected=0;
-    {
-        bool present=!a.state.reading && parameters.index()==0;
-        WireNoParameters item{};
-        if (present) item=std::get<WireNoParameters>(parameters);
-        if (!a.object_field(1,ControlSchema::NoParameters,&item,visit_NoParameters,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==1;
-        WireAudioSource item{};
-        if (present) item=std::get<WireAudioSource>(parameters);
-        if (!a.object_field(2,ControlSchema::AudioSource,&item,visit_AudioSource,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==2;
-        WireMerge item{};
-        if (present) item=std::get<WireMerge>(parameters);
-        if (!a.object_field(3,ControlSchema::Merge,&item,visit_Merge,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==3;
-        WireGain item{};
-        if (present) item=std::get<WireGain>(parameters);
-        if (!a.object_field(4,ControlSchema::Gain,&item,visit_Gain,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==4;
-        WireMel item{};
-        if (present) item=std::get<WireMel>(parameters);
-        if (!a.object_field(5,ControlSchema::Mel,&item,visit_Mel,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==5;
-        WireHistory item{};
-        if (present) item=std::get<WireHistory>(parameters);
-        if (!a.object_field(6,ControlSchema::History,&item,visit_History,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==6;
-        WireWindow item{};
-        if (present) item=std::get<WireWindow>(parameters);
-        if (!a.object_field(7,ControlSchema::Window,&item,visit_Window,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==7;
-        WireWindowFunction item{};
-        if (present) item=std::get<WireWindowFunction>(parameters);
-        if (!a.object_field(8,ControlSchema::WindowFunction,&item,visit_WindowFunction,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==8;
-        WireTestSignal item{};
-        if (present) item=std::get<WireTestSignal>(parameters);
-        if (!a.object_field(9,ControlSchema::TestSignal,&item,visit_TestSignal,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==9;
-        WireNetwork item{};
-        if (present) item=std::get<WireNetwork>(parameters);
-        if (!a.object_field(10,ControlSchema::Network,&item,visit_Network,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==10;
-        WireRouting item{};
-        if (present) item=std::get<WireRouting>(parameters);
-        if (!a.object_field(11,ControlSchema::Routing,&item,visit_Routing,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    {
-        bool present=!a.state.reading && parameters.index()==11;
-        WireReduction item{};
-        if (present) item=std::get<WireReduction>(parameters);
-        if (!a.object_field(12,ControlSchema::Reduction,&item,visit_Reduction,&present)) return false;
-        if (present) { ++selected; if (a.state.reading) parameters=item; }
-    }
-    return selected==1 || a.state.fail();
+    return visit_parameter_alternative<0,WireNoParameters>(a,parameters,selected,ControlSchema::NoParameters,visit_NoParameters) &&
+        visit_parameter_alternative<1,WireAudioSource>(a,parameters,selected,ControlSchema::AudioSource,visit_AudioSource) &&
+        visit_parameter_alternative<2,WireMerge>(a,parameters,selected,ControlSchema::Merge,visit_Merge) &&
+        visit_parameter_alternative<3,WireGain>(a,parameters,selected,ControlSchema::Gain,visit_Gain) &&
+        visit_parameter_alternative<4,WireMel>(a,parameters,selected,ControlSchema::Mel,visit_Mel) &&
+        visit_parameter_alternative<5,WireHistory>(a,parameters,selected,ControlSchema::History,visit_History) &&
+        visit_parameter_alternative<6,WireWindow>(a,parameters,selected,ControlSchema::Window,visit_Window) &&
+        visit_parameter_alternative<7,WireWindowFunction>(a,parameters,selected,ControlSchema::WindowFunction,visit_WindowFunction) &&
+        visit_parameter_alternative<8,WireTestSignal>(a,parameters,selected,ControlSchema::TestSignal,visit_TestSignal) &&
+        visit_parameter_alternative<9,WireNetwork>(a,parameters,selected,ControlSchema::Network,visit_Network) &&
+        visit_parameter_alternative<10,WireRouting>(a,parameters,selected,ControlSchema::Routing,visit_Routing) &&
+        visit_parameter_alternative<11,WireReduction>(a,parameters,selected,ControlSchema::Reduction,visit_Reduction) &&
+        (selected==1 || a.state.fail());
 }
 bool visit_Node(ControlArchive& a, void* pointer) noexcept {
     auto& v=*static_cast<WireNode*>(pointer);
@@ -535,11 +476,7 @@ bool visit_Reply(ControlArchive& a, void* pointer) noexcept {
         optional_object(a,14,ControlSchema::Capabilities,v.capabilities,visit_Capabilities);
 }
 }
-bool visit_control_message(ControlArchive& a, void* pointer) noexcept {
-    auto& v=*static_cast<WireControlMessage*>(pointer);
-    if (!unsigned_field(a,1,v.schema_version)) return false;
-    if (v.schema_version!=control_schema_version) return a.state.fail(ControlCodecStatus::unsupported_version);
-    if (!a.object_field(2,ControlSchema::SessionIdentity,&v.identity,visit_SessionIdentity)) return false;
+bool visit_control_body(ControlArchive& a, WireControlMessage& v) noexcept {
     bool command_present=!a.state.reading && std::holds_alternative<WireCommand>(v.body);
     bool reply_present=!a.state.reading && !command_present;
     WireCommand command=command_present?std::get<WireCommand>(v.body):WireCommand{};
@@ -548,6 +485,14 @@ bool visit_control_message(ControlArchive& a, void* pointer) noexcept {
         !a.object_field(4,ControlSchema::Reply,&reply,visit_Reply,&reply_present)) return false;
     if (command_present==reply_present) return a.state.fail();
     if (a.state.reading) { if (command_present) v.body=command; else v.body=reply; }
+    return true;
+}
+bool visit_control_message(ControlArchive& a, void* pointer) noexcept {
+    auto& v=*static_cast<WireControlMessage*>(pointer);
+    if (!unsigned_field(a,1,v.schema_version)) return false;
+    if (v.schema_version!=control_schema_version) return a.state.fail(ControlCodecStatus::unsupported_version);
+    if (!a.object_field(2,ControlSchema::SessionIdentity,&v.identity,visit_SessionIdentity)) return false;
+    if (!visit_control_body(a,v)) return false;
     const auto result=validate_control_message(v,a.state.limits);
     return result || a.state.fail(result.status);
 }

@@ -36,3 +36,8 @@ __pycache__/
 
 # Temporary agent notes and evidence; durable work is tracked in GitHub issues.
 /.agent-workspace/
+
+# Local Serena language-server state and generated compilation database.
+/.serena/
+/compile_commands.json
+/.cache/clangd/

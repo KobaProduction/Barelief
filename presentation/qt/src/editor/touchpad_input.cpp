@@ -56,13 +56,7 @@ public:
         target->installEventFilter(this);
         qApp->installNativeEventFilter(this);
         timer.setInterval(8); timer.setTimerType(Qt::PreciseTimer);
-        connect(&timer,&QTimer::timeout,this,[this] {
-            QPointer<Touchpad> alive(this);
-            auto retained=updates;
-            if(!retained) { timer.stop(); return; }
-            const auto result=retained->Update(nullptr);
-            if(alive && !check("Update",result)) timer.stop();
-        });
+        connect(&timer,&QTimer::timeout,this,[this] { update_viewport(); });
         if(target->isVisible()) schedule_setup();
     }
     ~Touchpad() override {
@@ -82,6 +76,10 @@ public:
     }
     bool nativeEventFilter(const QByteArray &,void *message,qintptr *) override {
         const auto *msg=static_cast<MSG *>(message);
+        return pointer_hit_test(msg);
+    }
+private:
+    bool pointer_hit_test(const MSG *msg) {
         if(!viewport || msg->message!=DM_POINTERHITTEST || !target || !target->isVisible()) return false;
         if(msg->hwnd!=hwnd && GetAncestor(msg->hwnd,GA_ROOT)!=hwnd) return false;
         // QCursor converts Windows physical pixels to Qt logical coordinates.
@@ -97,7 +95,13 @@ public:
         }
         return false;
     }
-private:
+    void update_viewport() {
+        QPointer<Touchpad> alive(this);
+        auto retained=updates;
+        if(!retained) { timer.stop(); return; }
+        const auto result=retained->Update(nullptr);
+        if(alive && !check("Update",result)) timer.stop();
+    }
     QPointer<QWidget> target,host;
     std::function<bool(QPoint)> accepts_contact;
     HWND hwnd=nullptr;
@@ -126,6 +130,14 @@ private:
         ++generation; reset_pending=false;
         timer.stop();
         if(handler) handler->owner=nullptr;
+        release_viewport();
+        manager.Reset(); hwnd=nullptr;
+        if(host) host->removeEventFilter(this);
+        host=nullptr;
+        last_scale=1; last_translation={}; pinching=false;
+        if(target) target->setProperty("nativeTouchpadReady",false);
+    }
+    void release_viewport() {
         if(viewport) {
             if(cookie) viewport->RemoveEventHandler(cookie);
             viewport->Stop(); viewport->Abandon();
@@ -134,11 +146,6 @@ private:
         handler=nullptr; cookie=0;
         viewport.Reset(); updates.Reset();
         if(manager && hwnd) manager->Deactivate(hwnd);
-        manager.Reset(); hwnd=nullptr;
-        if(host) host->removeEventFilter(this);
-        host=nullptr;
-        last_scale=1; last_translation={}; pinching=false;
-        if(target) target->setProperty("nativeTouchpadReady",false);
     }
     void setup() {
         if(!target || !target->isVisible()) return;
@@ -149,18 +156,33 @@ private:
         if(hwnd==window && viewport) { resize(); return; }
         close(); hwnd=window; host=current_host;
         host->installEventFilter(this);
-        if(!com_initialized) {
-            const HRESULT result=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
-            com_initialized=SUCCEEDED(result);
-            if(FAILED(result) && result!=RPC_E_CHANGED_MODE) return;
+        if(!initialize_com()) return;
+        const auto result=create_viewport();
+        if(FAILED(result)) {
+            qCWarning(touchpadLog)<<"Native touchpad unavailable; retaining wheel input"<<Qt::hex<<quint32(result);
+            close(); return;
         }
+        target->setProperty("nativeTouchpadReady",true);
+        qCDebug(touchpadLog)<<"Unrailed touchpad viewport ready";
+    }
+    bool initialize_com() {
+        if(com_initialized) return true;
+        const HRESULT result=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+        com_initialized=SUCCEEDED(result);
+        return SUCCEEDED(result) || result==RPC_E_CHANGED_MODE;
+    }
+    HRESULT create_viewport() {
         HRESULT result=CoCreateInstance(__uuidof(DirectManipulationManager),nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&manager));
         if(SUCCEEDED(result)) result=manager->GetUpdateManager(IID_PPV_ARGS(&updates));
         if(SUCCEEDED(result)) result=manager->CreateViewport(nullptr,hwnd,IID_PPV_ARGS(&viewport));
+        if(FAILED(result)) return result;
+        return configure_viewport();
+    }
+    HRESULT configure_viewport() {
         const auto configuration=DIRECTMANIPULATION_CONFIGURATION_INTERACTION |
             DIRECTMANIPULATION_CONFIGURATION_TRANSLATION_X | DIRECTMANIPULATION_CONFIGURATION_TRANSLATION_Y |
             DIRECTMANIPULATION_CONFIGURATION_SCALING;
-        if(SUCCEEDED(result)) result=viewport->ActivateConfiguration(configuration);
+        HRESULT result=viewport->ActivateConfiguration(configuration);
         if(SUCCEEDED(result)) result=viewport->SetViewportOptions(DIRECTMANIPULATION_VIEWPORT_OPTIONS_MANUALUPDATE |
                                                                  DIRECTMANIPULATION_VIEWPORT_OPTIONS_DISABLEPIXELSNAPPING);
         if(SUCCEEDED(result)) {
@@ -173,12 +195,7 @@ private:
         }
         if(SUCCEEDED(result)) result=manager->Activate(hwnd);
         if(SUCCEEDED(result)) result=viewport->Enable();
-        if(FAILED(result)) {
-            qCWarning(touchpadLog)<<"Native touchpad unavailable; retaining wheel input"<<Qt::hex<<quint32(result);
-            close(); return;
-        }
-        target->setProperty("nativeTouchpadReady",true);
-        qCDebug(touchpadLog)<<"Unrailed touchpad viewport ready";
+        return result;
     }
     void resize() {
         RECT size{}; GetClientRect(hwnd,&size);
@@ -206,32 +223,36 @@ private:
         if(now==DIRECTMANIPULATION_RUNNING) timer.start();
         if(now==DIRECTMANIPULATION_READY || now==DIRECTMANIPULATION_INERTIA) {
             timer.stop();
-            if(!reset_pending && (std::abs(last_scale-1)>1e-6 || !last_translation.isNull())) {
-                reset_pending=true;
-                const auto current_generation=generation;
-                QTimer::singleShot(0,this,[this,current_generation] {
-                    if(current_generation!=generation) return;
-                    reset_pending=false; reset();
-                });
-            }
+            schedule_transform_reset();
         }
+    }
+    void schedule_transform_reset() {
+        if(reset_pending || (std::abs(last_scale-1)<=1e-6 && last_translation.isNull())) return;
+        reset_pending=true;
+        const auto current_generation=generation;
+        QTimer::singleShot(0,this,[this,current_generation] {
+            if(current_generation!=generation) return;
+            reset_pending=false; reset();
+        });
     }
     void transform(IDirectManipulationContent *content) {
         float matrix[6]{};
         if(!check("GetContentTransform",content->GetContentTransform(matrix,6))) return;
-        if(!resetting && target && host && std::isfinite(matrix[0]) && matrix[0]>0 &&
-           std::isfinite(matrix[4]) && std::isfinite(matrix[5])) {
-            const double ratio=matrix[0]/last_scale;
-            const QPointF translation(matrix[4]/host->devicePixelRatioF(),matrix[5]/host->devicePixelRatioF());
-            const auto delta=translation-last_translation;
-            last_scale=matrix[0]; last_translation=translation;
-            qCDebug(touchpadLog)<<"transform"<<matrix[0]<<translation<<"delta"<<delta;
-            if(std::abs(matrix[0]-1)>1e-5) pinching=true;
-            // Pinch changes translation too: do not also apply it as a pan.
-            if(pinching) {
-                if(std::abs(ratio-1)>1e-6) send(Qt::ZoomNativeGesture,ratio-1,{});
-            } else if(!delta.isNull()) send(Qt::PanNativeGesture,0,delta);
-        }
+        if(resetting || !target || !host || !std::isfinite(matrix[0]) || matrix[0]<=0 ||
+           !std::isfinite(matrix[4]) || !std::isfinite(matrix[5])) return;
+        apply_transform(matrix);
+    }
+    void apply_transform(const float (&matrix)[6]) {
+        const double ratio=matrix[0]/last_scale;
+        const QPointF translation(matrix[4]/host->devicePixelRatioF(),matrix[5]/host->devicePixelRatioF());
+        const auto delta=translation-last_translation;
+        last_scale=matrix[0]; last_translation=translation;
+        qCDebug(touchpadLog)<<"transform"<<matrix[0]<<translation<<"delta"<<delta;
+        if(std::abs(matrix[0]-1)>1e-5) pinching=true;
+        // Pinch translation must not also pan.
+        if(pinching) {
+            if(std::abs(ratio-1)>1e-6) send(Qt::ZoomNativeGesture,ratio-1,{});
+        } else if(!delta.isNull()) send(Qt::PanNativeGesture,0,delta);
     }
 };
 }

@@ -1,5 +1,7 @@
 #pragma once
 #include "pipeline/engine_models.h"
+#include <domain/graph/admission.h>
+#include <optional>
 #include <QJsonObject>
 #include <QHostAddress>
 #include <functional>
@@ -31,11 +33,30 @@ struct EngineSnapshot {
     std::vector<DeliveredNumericFrame> numeric_frames;
     std::vector<DeliveredNumericHistoryRow> numeric_history_rows;
 };
+struct EngineDiagnostic {
+    domain::ProcessingError error=domain::ProcessingError::None;
+    domain::NodeId node=-1;
+    domain::PortId port=0;
+    std::optional<std::size_t> edge;
+    domain::ProcessingReason reason=domain::ProcessingReason::None;
+    QString parameter;
+    static EngineDiagnostic own(const domain::ProcessingDiagnostic& value) {
+        EngineDiagnostic result;
+        result.error=value.error;result.node=value.node;result.port=value.port;
+        result.edge=value.edge;result.reason=value.reason;
+        // Parameter IDs are bounded labels, never retained borrowed transport text.
+        if(value.parameter.size()<=128)
+            result.parameter=QString::fromUtf8(value.parameter.data(),qsizetype(value.parameter.size()));
+        return result;
+    }
+};
+
 struct EngineReply {
     quint64 request_id = 0;
     bool accepted = false;
     QString error;
     EngineSnapshot snapshot;
+    std::optional<EngineDiagnostic> numeric_diagnostic;
 };
 // Callbacks follow the desktop event-loop delivery contract. Owners destroy
 // endpoints before their callback targets; endpoint destruction cancels delivery.

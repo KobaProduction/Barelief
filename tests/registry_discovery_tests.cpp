@@ -1,3 +1,4 @@
+#include <bdsp_protocol/numeric_data_message.h>
 #include <aggregator/aggregator_client.h>
 #include <aggregator/aggregator_server.h>
 #include <control/numeric_control_server.h>
@@ -14,7 +15,7 @@ static bool wait(std::function<bool()> f){QElapsedTimer t;t.start();while(!f()&&
 int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
 AggregatorServer directory;require(directory.start(0),"directory listen");pipeline::NumericEngine engine;auto server=std::make_unique<pipeline::NumericControlServer>(engine);require(server->listen(QHostAddress::LocalHost,0,true),"numeric endpoint listen");
 const auto id=QUuid::createUuid();AggregatorClient core({id,ComponentType::core,server->port(),321}),observer({QUuid::createUuid(),ComponentType::data_sink,0});
-core.set_capabilities({{"control_version",4},{"data_version",5},{"stream_port",server->port()},{"publisher_incarnation",QString::number(engine.snapshot().epoch)},{"graph_revision","0"},{"streams",QJsonArray{}}});
+core.set_capabilities({{"control_version",4},{"data_version",int(bdsp_protocol::numeric_data::PayloadVersion)},{"stream_port",server->port()},{"publisher_incarnation",QString::number(engine.snapshot().epoch)},{"graph_revision","0"},{"streams",QJsonArray{}}});
 core.connect_to_aggregator_server(QHostAddress::LocalHost,directory.serverPort(),1000);observer.connect_to_aggregator_server(QHostAddress::LocalHost,directory.serverPort(),1000);QString error;
 require(wait([&]{return !observer.resolve_engine(id,&error).isEmpty();}),"canonical endpoint discovery");auto found=observer.resolve_engine(id,&error);require(found["port"].toInt()==server->port(),"endpoint port identity");pipeline::NumericRemoteEndpoint remote(found["address"].toString(),quint16(found["port"].toInt()));remote.connect_remote();require(wait([&]{return remote.snapshot().epoch!=0;}),"discovered numeric CONTROL handshake");
 core.disconnect_from_aggregator_server();server.reset();require(wait([&]{return observer.resolve_engine(id,&error).isEmpty();}),"offline directory endpoint remains available");require(wait([&]{return remote.snapshot().epoch==0;}),"disconnected remote retains active epoch");

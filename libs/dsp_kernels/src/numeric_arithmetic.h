@@ -93,16 +93,21 @@ struct Magnitude {
         for(unsigned i=0;i<word_count;++i){const auto a=std::uint64_t(words[i]);const auto sub=std::uint64_t(b.words[i])+borrow;
             words[i]=std::uint32_t(a-sub);borrow=a<sub;}
     }
+    bool multiply_row(const Magnitude& b,Magnitude& out,unsigned row) const noexcept {
+        std::uint64_t carry=0;
+        for(unsigned column=0;column<word_count;++column) {
+            if(row+column>=word_count) {
+                if(carry || (words[row] && b.words[column]))return false;
+                continue;
+            }
+            const auto sum=std::uint64_t(words[row])*b.words[column]+out.words[row+column]+carry;
+            out.words[row+column]=std::uint32_t(sum);carry=sum>>32;
+        }
+        return !carry;
+    }
     bool multiply(const Magnitude& b) noexcept {
         Magnitude out;
-        for(unsigned i=0;i<word_count;++i){std::uint64_t carry=0;
-            for(unsigned j=0;j<word_count;++j) {
-                if(i+j>=word_count){if(carry || (words[i] && b.words[j]))return false;continue;}
-                const auto sum=std::uint64_t(words[i])*b.words[j]+out.words[i+j]+carry;
-                out.words[i+j]=std::uint32_t(sum);carry=sum>>32;
-            }
-            if(carry)return false;
-        }
+        for(unsigned row=0;row<word_count;++row)if(!multiply_row(b,out,row))return false;
         *this=out;return true;
     }
 };
@@ -122,15 +127,24 @@ inline Decoded decode_ieee(std::uint64_t bits,unsigned eb,unsigned mb) noexcept 
     const int bias=(1<<(eb-1))-1;
     return {{Magnitude::from(mantissa|(exponent?(std::uint64_t{1}<<mb):0)),int(exponent?exponent:1)-bias-int(mb),negative}};
 }
+inline bool combine_binary_magnitudes(Binary& a,const Binary& b,Magnitude& left,Magnitude& right) noexcept {
+    if(a.negative==b.negative)return left.add(right);
+    if(left.compare(right)>=0)left.subtract(right);
+    else {right.subtract(left);left=right;a.negative=b.negative;}
+    return true;
+}
+inline bool align_binary_magnitudes(const Binary& a,const Binary& b,int exponent,
+                                    Magnitude& av,Magnitude& bv) noexcept {
+    return av.left(unsigned(a.exponent2-exponent)) && bv.left(unsigned(b.exponent2-exponent));
+}
+
 inline bool add_binary(Binary& a,const Binary& b) noexcept {
     if(b.magnitude.zero())return true;
     if(a.magnitude.zero()){a=b;return true;}
     const int exponent=std::min(a.exponent2,b.exponent2);
     auto av=a.magnitude,bv=b.magnitude;
-    if(!av.left(unsigned(a.exponent2-exponent)) || !bv.left(unsigned(b.exponent2-exponent)))return false;
-    if(a.negative==b.negative){if(!av.add(bv))return false;}
-    else if(av.compare(bv)>=0)av.subtract(bv);
-    else {bv.subtract(av);av=bv;a.negative=b.negative;}
+    if(!align_binary_magnitudes(a,b,exponent,av,bv))return false;
+    if(!combine_binary_magnitudes(a,b,av,bv))return false;
     a.magnitude=av;a.exponent2=exponent;
     if(av.zero())a.negative=false;
     return true;
@@ -157,6 +171,15 @@ inline bool rounded_shift(Magnitude& value,int shift,bool nearest,bool& rounded)
     value.right(n);
     return !increment || value.add(Magnitude::from(1));
 }
+inline Packed packed_ieee_significand(std::uint64_t sign,std::uint64_t significand,int leading,
+                                    int minimum,int maximum,int bias,unsigned mantissa_bits,bool rounded) noexcept {
+    if(significand>=(std::uint64_t{1}<<(mantissa_bits+1))){significand>>=1;++leading;}
+    if(leading>maximum)return {ArithmeticError::Overflow,0};
+    const bool subnormal=leading<minimum && significand<(std::uint64_t{1}<<mantissa_bits);
+    const auto exponent=subnormal?0:std::uint64_t(std::max(leading,minimum)+bias);
+    const auto bits=sign|(exponent<<mantissa_bits)|(significand&((std::uint64_t{1}<<mantissa_bits)-1));
+    return {ArithmeticError::Ok,bits,rounded,subnormal && rounded};
+}
 inline Packed pack_ieee(const Binary& input,unsigned exponent_bits,unsigned mantissa_bits,bool nearest,bool allow) noexcept {
     const auto sign=std::uint64_t(input.negative)<<(exponent_bits+mantissa_bits);
     if(input.magnitude.zero())return {ArithmeticError::Ok,sign};
@@ -167,13 +190,7 @@ inline Packed pack_ieee(const Binary& input,unsigned exponent_bits,unsigned mant
     auto rounded_value=input.magnitude;bool rounded=false;
     if(!rounded_shift(rounded_value,input.exponent2-quantum,nearest,rounded))return {ArithmeticError::Overflow,0};
     if(rounded && !allow)return {ArithmeticError::Inexact,0};
-    auto significand=rounded_value.low();
-    if(significand>=(std::uint64_t{1}<<(mantissa_bits+1))){significand>>=1;++leading;}
-    if(leading>maximum)return {ArithmeticError::Overflow,0};
-    const bool subnormal=leading<minimum && significand<(std::uint64_t{1}<<mantissa_bits);
-    const auto exponent=subnormal?0:std::uint64_t(std::max(leading,minimum)+bias);
-    const auto bits=sign|(exponent<<mantissa_bits)|(significand&((std::uint64_t{1}<<mantissa_bits)-1));
-    return {ArithmeticError::Ok,bits,rounded,subnormal && rounded};
+    return packed_ieee_significand(sign,rounded_value.low(),leading,minimum,maximum,bias,mantissa_bits,rounded);
 }
 inline Packed pack_integer(Binary value,unsigned bits,bool sign,bool nearest,bool allow) noexcept {
     bool rounded=false;
@@ -194,23 +211,38 @@ inline int compare_ratio(Binary value,const Magnitude& numerator,std::uint64_t d
     value.magnitude.multiply(Magnitude::from(denominator));
     return compare_binary(value,Binary{numerator,numerator_exponent2,false});
 }
+inline std::uint64_t ratio_floor(const Magnitude& numerator,std::uint64_t denominator,bool square,
+                                 int numerator_exponent2,unsigned exponent_bits,unsigned mantissa_bits,
+                                 std::uint64_t high) noexcept {
+    std::uint64_t low=0;
+    while(low<high) {
+        const auto mid=low+(high-low)/2+(high-low)%2;
+        if(compare_ratio(decode_ieee(mid,exponent_bits,mantissa_bits).value,numerator,denominator,square,numerator_exponent2)<=0)
+            low=mid;
+        else high=mid-1;
+    }
+    return low;
+}
+inline std::uint64_t round_ratio(std::uint64_t low,const Magnitude& numerator,std::uint64_t denominator,
+                                 bool square,int numerator_exponent2,unsigned exponent_bits,unsigned mantissa_bits) noexcept {
+    auto midpoint=decode_ieee(low,exponent_bits,mantissa_bits).value;
+    add_binary(midpoint,decode_ieee(low+1,exponent_bits,mantissa_bits).value);
+    --midpoint.exponent2;
+    const auto comparison=compare_ratio(midpoint,numerator,denominator,square,numerator_exponent2);
+    return comparison<0 || (!comparison && (low&1))?low+1:low;
+}
 inline Packed pack_ratio(const Magnitude& numerator,std::uint64_t denominator,bool negative,bool square,
                          bool float32,bool nearest,bool allow,int numerator_exponent2=0,bool float32_population=false) noexcept {
     const unsigned eb=float32?8:11,mb=float32?23:52;
     const auto sign=std::uint64_t(negative)<<(eb+mb);
     if(numerator.zero())return {ArithmeticError::Ok,sign};
     // UInt32 population bound: integer mean/RMS <=2^64, Float32 mean/RMS <=FLT_MAX.
-    std::uint64_t low=0,high=float32_population?(float32?UINT64_C(0x7f7fffff):UINT64_C(0x47efffffe0000000)):
+    const std::uint64_t high=float32_population?(float32?UINT64_C(0x7f7fffff):UINT64_C(0x47efffffe0000000)):
         float32?UINT64_C(0x5f800000):UINT64_C(0x43f0000000000000);
-    while(low<high){const auto mid=low+(high-low)/2+(high-low)%2;
-        if(compare_ratio(decode_ieee(mid,eb,mb).value,numerator,denominator,square,numerator_exponent2)<=0)low=mid;else high=mid-1;}
+    auto low=ratio_floor(numerator,denominator,square,numerator_exponent2,eb,mb,high);
     const auto exact=compare_ratio(decode_ieee(low,eb,mb).value,numerator,denominator,square,numerator_exponent2)==0;
     if(!exact && !allow)return {ArithmeticError::Inexact,0};
-    if(!exact && nearest){auto midpoint=decode_ieee(low,eb,mb).value;
-        add_binary(midpoint,decode_ieee(low+1,eb,mb).value);--midpoint.exponent2;
-        const auto comparison=compare_ratio(midpoint,numerator,denominator,square,numerator_exponent2);
-        if(comparison<0 || (!comparison && (low&1)))++low;
-    }
+    if(!exact && nearest)low=round_ratio(low,numerator,denominator,square,numerator_exponent2,eb,mb);
     const bool subnormal=((low>>mb)&((std::uint64_t{1}<<eb)-1))==0;
     return {ArithmeticError::Ok,sign|low,!exact,!exact && subnormal};
 }

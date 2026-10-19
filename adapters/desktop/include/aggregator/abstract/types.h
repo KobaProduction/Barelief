@@ -2,7 +2,8 @@
 #define AGGREGATOR_ABSTRACT_TYPES_H
 
 #include <cstdint>
-#include <QtNetwork>
+#include <QHostAddress>
+#include <QUuid>
 
 #include "core/network/tcp_packet_socket.h"
 

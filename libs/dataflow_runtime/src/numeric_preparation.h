@@ -1,0 +1,130 @@
+#pragma once
+#include "runtime_internal.h"
+namespace dataflow_runtime {
+using namespace detail;
+using namespace domain;
+using namespace signal_contracts;
+class NumericPreparation {
+    const NumericProcessingGraph& original;
+    const NumericRuntimeProfile& profile;
+    const PreparedGraph* previous;
+    const RuntimeContext* old_context;
+    NumericProcessingGraph evaluated,values_lowered,metadata_lowered,converted,lowered;
+    std::vector<RoutingAlias> aliases,metadata_aliases;
+    const NumericProcessingGraph& g;
+    std::vector<std::size_t> order;
+    ProcessingGraphAdmission admission;
+    NumericRuntimeProfile checked_profile;
+    std::size_t source_bytes=0,alias_bytes=0,metadata_and_plan=0;
+    std::size_t content_outputs=0,content_capacity=0,retained_content_budget=0;
+    std::shared_ptr<PreparedGraph> plan;
+    std::unique_ptr<RuntimeContext> c;
+    Status prepare_definition();
+    Status prepare_execution();
+    Status bind_definition();
+    Status lower_definition();
+    Status prepare_lowered_definition();
+    void append_parameter_aliases();
+    void append_parameter_alias(const Edge&);
+    Status prepare_source_ownership();
+    Status retain_previous_resources();
+    Status prepare_resource_profile();
+    Status prepare_content_resources();
+    Status count_content_outputs();
+    Status admit_definition();
+    Status allocate_bundle();
+    struct NodeFrame {
+        std::size_t configured,position;const ConfiguredProcessingNode& cn;ResolvedProcessingNode& resolved;
+        PlanNode& n;State& state;std::size_t old=absent;
+    };
+    Status prepare_node(std::size_t);
+    Status prepare_node_processing(NodeFrame&);
+    Status prepare_node_header(NodeFrame&);
+    Status prepare_node_buffers(NodeFrame&);
+    Status prepare_node_links(NodeFrame&);
+    Status prepare_node_kernels(NodeFrame&);
+    Status prepare_matrix_operations(NodeFrame&);
+    Status prepare_signal_operations(NodeFrame&);
+    Status prepare_node_operations(NodeFrame&);
+    Status initialize_node(NodeFrame&);
+    Status prepare_frequency_step(NodeFrame&);
+    Status prepare_array_length(NodeFrame&);
+    Status prepare_window_gain(NodeFrame&);
+    Status prepare_metadata_values(NodeFrame&);
+    Status prepare_fill_gain(NodeFrame&);
+    Status prepare_extraction(NodeFrame&);
+    Status prepare_comparison(NodeFrame&);
+    Status prepare_spectrum_peak(NodeFrame&);
+
+    Status prepare_node_parameters(NodeFrame&);
+    Status prepare_input_endpoints(NodeFrame&);
+    Status prepare_output_contracts(NodeFrame&);
+    Status prepare_output_storage(NodeFrame&);
+    Status prepare_constant(NodeFrame&);
+    Status prepare_array_values(NodeFrame&);
+    Status prepare_input_storage(NodeFrame&);
+    Status prepare_selector(NodeFrame&);
+    Status prepare_selector_lane(NodeFrame&,std::size_t);
+    bool selector_ancestry_known(std::size_t)const;
+    Status bind_input_endpoint(PlanNode::ScalarInput&,NodeId);
+    Status prepare_ordinary_parent(NodeFrame&);
+    Status prepare_group_parent(NodeFrame&);
+    Status prepare_paired_parent(NodeFrame&);
+
+    Status prepare_parent(NodeFrame&);
+    Status prepare_node_continuity(NodeFrame&);
+    bool parent_changed(std::size_t,std::size_t)const;
+    void update_selector_continuity(NodeFrame&);
+    void recover_node_clock(NodeFrame&);
+    Status prepare_generator(NodeFrame&);
+    Status prepare_mixer(NodeFrame&);
+    Status prepare_hop(PlanNode&,std::uint32_t);
+    void prepare_mixer_weights(NodeFrame&,const MixerProcessingParameters&);
+    void prepare_mixer_queue(NodeFrame&,std::size_t,const MixerProcessingParameters&);
+    Status prepare_conversion_rows(NodeFrame&);
+    Status prepare_converter(NodeFrame&);
+    Status prepare_packet_gain(NodeFrame&);
+    Status prepare_matrix_window(NodeFrame&);
+    Status prepare_matrix_fft(NodeFrame&);
+    Status prepare_matrix_values(NodeFrame&);
+    Status prepare_operation(NodeFrame&);
+    Status prepare_transform(NodeFrame&);
+    Status prepare_signal_transform(NodeFrame&);
+    Status prepare_spectrum_transform(NodeFrame&);
+    Status prepare_transform_pcm_resampler(NodeFrame&);
+    Status prepare_transform_window(NodeFrame&);
+    Status prepare_transform_window_function(NodeFrame&);
+    Status prepare_transform_bark_weighting(NodeFrame&);
+    Status prepare_transform_stereo_fft(NodeFrame&);
+    Status prepare_transform_mel(NodeFrame&);
+    Status prepare_transform_spectrum_merge(NodeFrame&);
+    Status prepare_transform_spectrum_gain(NodeFrame&);
+    Status prepare_transform_spectrum_amplitude(NodeFrame&);
+
+    Status prepare_source_rows(NodeFrame&);
+    Status prepare_gather(NodeFrame&);
+    Status prepare_gather_storage(NodeFrame&,const NumericGatherRequest&);
+    Status prepare_reduction(NodeFrame&);
+    Status prepare_nodes();
+    void reconcile_clocks();
+    bool clock_precedes(std::size_t,std::size_t)const;
+    bool scalar_clock_matches(const PlanNode&,const ClockContract&)const;
+    void bind_scalar_clock(PlanNode::ScalarInput&);
+    bool selector_clock_matches(const PlanNode&,std::size_t,std::size_t,PortId)const;
+    void retain_selector_clock(PlanNode&,std::size_t);
+    void choose_selector_clock(PlanNode&,std::size_t);
+    void restore_node_clock(PlanNode&);
+    void restore_disconnected_parent(PlanNode&);
+    void update_clock_reset(PlanNode&);
+    Status reconcile_history();
+    void reserve_mixer_destinations();
+    void bind_mixer_destinations();
+    Status check_clock_cycles();
+    void bind_destinations();
+    void bind_destination(std::size_t);
+public:
+    NumericPreparation(const NumericProcessingGraph& graph,const NumericRuntimeProfile& limits,const PreparedGraph* prior,const RuntimeContext* context)
+        :original(graph),profile(limits),previous(prior),old_context(context),g(lowered),checked_profile(limits){}
+    Status build(std::shared_ptr<const PreparedGraph>& result,std::unique_ptr<RuntimeContext>& context);
+};
+}

@@ -6,6 +6,7 @@
 #include <QtNodes/internal/ConnectionIdUtils.hpp>
 #include <QJsonArray>
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <numeric>
 #include <cmath>
@@ -14,15 +15,120 @@
 #include <type_traits>
 #include <QTreeWidget>
 #include "numeric_graph_draft.h"
+#include <core_app/plot_composition.h>
+#include <domain/graph/node_factory.h>
 
 namespace numeric_editor {
+namespace {
+struct FixedViewMode { const char* kind; const char* mode; const char* group; bool audio; };
+constexpr std::array fixed_view_modes{
+    FixedViewMode{"ScalarMetricsView","metrics","Scalar values",false},
+    FixedViewMode{"ScalarSignedBarView","signedbar","Scalar values",false},
+    FixedViewMode{"VectorLineView","line","Vectors",false},
+    FixedViewMode{"VectorPointView","points","Vectors",false},
+    FixedViewMode{"VectorBarView","bars","Vectors",false},
+    FixedViewMode{"VectorPieView","pie","Vectors",false},
+    FixedViewMode{"MatrixImageView","image2d","Matrices",false},
+    FixedViewMode{"MatrixSurfaceView","surface3d","Matrices",false},
+    FixedViewMode{"AudioLineView","line","Signals",true},
+    FixedViewMode{"AudioPointView","points","Signals",true},
+    FixedViewMode{"AudioBarView","bars","Signals",true},
+    FixedViewMode{"AudioPieView","pie","Signals",true},
+    FixedViewMode{"AudioImageView","image2d","Matrices",true},
+    FixedViewMode{"AudioSurfaceView","surface3d","Matrices",true}
+};
+struct OperationGroup { const char* kind; const char* family; const char* operation; };
+constexpr std::array operation_groups{
+    OperationGroup{"Window","Signal processing","Windowing"},
+    OperationGroup{"WindowFunction","Signal processing","Windowing"},
+    OperationGroup{"MatrixWindowFunction","Signal processing","Windowing"},
+    OperationGroup{"WindowGain","Signal processing","Windowing"},
+    OperationGroup{"Fourier","Signal analysis","Fourier transforms"},
+    OperationGroup{"RealFourier","Signal analysis","Fourier transforms"},
+    OperationGroup{"RFFT","Signal analysis","Fourier transforms"},
+    OperationGroup{"MatrixFFT","Signal analysis","Fourier transforms"},
+    OperationGroup{"AmplitudePhase","Signal analysis","Fourier transforms"},
+    OperationGroup{"ComplexPolar","Signal analysis","Fourier transforms"},
+    OperationGroup{"SpectrumMerge","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"SpectrumGain","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"SpectrumAmplitude","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"SpectrumPeak","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"SpectrumProjection","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"FrequencyNormalizer","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"BarkWeighting","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"Mel","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"BroadbandRow","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"BroadbandFeatures","Signal analysis","Spectrum and scaling"},
+    OperationGroup{"PcmResampler","Signal processing","Resampling and timing"},
+    OperationGroup{"SampleRate","Signal processing","Resampling and timing"},
+    OperationGroup{"FrequencyStep","Signal processing","Resampling and timing"},
+    OperationGroup{"MatrixTranspose","Numeric operations","Arrays and matrices"},
+    OperationGroup{"MatrixCenter","Numeric operations","Arrays and matrices"},
+    OperationGroup{"MatrixRow","Numeric operations","Arrays and matrices"},
+    OperationGroup{"ArrayFill","Numeric operations","Arrays and matrices"},
+    OperationGroup{"ArrayMultiply","Numeric operations","Arrays and matrices"},
+    OperationGroup{"ArrayConcat","Numeric operations","Arrays and matrices"},
+    OperationGroup{"ArrayLength","Numeric operations","Arrays and matrices"},
+    OperationGroup{"IndexExtract","Numeric operations","Arrays and matrices"},
+    OperationGroup{"Converter","Numeric operations","Conversion"},
+    OperationGroup{"NoteSpectrum","Music analysis","Features"},
+    OperationGroup{"NoteSalience","Music analysis","Features"},
+    OperationGroup{"MusicalSpectrogram","Music analysis","Features"},
+    OperationGroup{"SpectralQuantize","Music analysis","Features"},
+    OperationGroup{"ScalarReduce","Signal analysis","Measurements"},
+    OperationGroup{"ChannelComparison","Signal analysis","Measurements"},
+    OperationGroup{"Mixer","Signal processing","Mixing"},
+    OperationGroup{"WLEDEncode","Transport","Protocol encoding"}
+};
+QStringList catalog_path(const QString& kind);
+}
+presentation::PlotDescriptor plot_descriptor_for_kind(const QString& kind) {
+    presentation::PlotDescriptor descriptor;
+    const auto fixed=std::find_if(fixed_view_modes.begin(),fixed_view_modes.end(),[&](const auto& item){return kind==item.kind;});
+    if(fixed!=fixed_view_modes.end()){
+        descriptor.modes={QString::fromLatin1(fixed->mode)};
+        descriptor.category_path={"Graphs",fixed->audio?"Audio":"Universal",QString::fromLatin1(fixed->group)};
+        descriptor.audio_scales=fixed->audio;
+        return descriptor;
+    }
+    if(kind=="PianoView") {
+        descriptor.modes=QStringList{QStringLiteral("piano")};
+        descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Audio"),QStringLiteral("Notes")};
+        descriptor.audio_scales=true;
+    } else if(kind=="ScalarView") {
+        descriptor.modes=QStringList{QStringLiteral("metrics"),QStringLiteral("signedbar")};
+        descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Universal"),QStringLiteral("Scalar values")};
+    } else if(kind=="SpectrogramView") {
+        descriptor.modes=QStringList{QStringLiteral("image2d"),QStringLiteral("surface3d")};
+        descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Universal"),QStringLiteral("Matrices")};
+    } else if(QStringList{"FFTView","AudioView","WindowView","WindowedView",
+                          "WindowFunctionView","MelView"}.contains(kind)) {
+        descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Audio"),QStringLiteral("Signals")};
+        descriptor.audio_scales=true;
+    }
+    return descriptor;
+}
+
+QTreeWidgetItem* catalog_parent(QTreeWidget* tree,QMap<QString,QTreeWidgetItem*>& groups,const QStringList& path) {
+    QTreeWidgetItem* parent=nullptr;
+    QString key;
+    for(const auto& name:path){
+        key+="/"+name;
+        if(!groups.contains(key)){
+            auto* item=parent?new QTreeWidgetItem(parent):new QTreeWidgetItem(tree);
+            item->setText(0,ui::text(name.toUtf8().constData()));item->setData(0,Qt::UserRole+1,name);groups[key]=item;
+        }
+        parent=groups[key];
+    }
+    return parent;
+}
 void populate_catalog(QTreeWidget* tree) {
-    tree->clear();QMap<QString,QTreeWidgetItem*> roles,groups;
-    for(const auto& kind:catalog()) {
-        const auto role=category(kind),direction=direction_group(kind),key=role+"/"+direction;
-        if(!roles.contains(role)){auto* item=new QTreeWidgetItem(tree);item->setText(0,ui::text(role.toUtf8().constData()));item->setData(0,Qt::UserRole+1,role);roles[role]=item;}
-        if(!groups.contains(key)){auto* item=new QTreeWidgetItem(roles[role]);item->setText(0,ui::text(direction.toUtf8().constData()));item->setData(0,Qt::UserRole+1,direction);groups[key]=item;}
-        auto* item=new QTreeWidgetItem(groups[key]);item->setText(0,AudioNodeModel(kind).caption());item->setData(0,Qt::UserRole,kind);
+    tree->clear();QMap<QString,QTreeWidgetItem*> groups;
+    const auto available=visible_catalog();
+    for(const auto& kind:available) {
+        const auto path=is_graph_view(kind)?presentation::plot_category_path(plot_descriptor_for_kind(kind)):catalog_path(kind);
+        auto* item=new QTreeWidgetItem(catalog_parent(tree,groups,path));
+        item->setText(0,AudioNodeModel(kind).caption());item->setData(0,Qt::UserRole,kind);
     }
     tree->expandAll();
 }
@@ -44,6 +150,13 @@ QStringList catalog() {
     if(!result.contains("Converter"))result.append("Converter");
     return result;
 }
+QStringList visible_catalog() {
+    auto result=catalog();
+    for(const auto* alias:{"StereoFFT","RFFT","WindowGain","UInt32Constant","ScalarView",
+                            "FFTView","MelView","WindowView","WindowedView","WindowFunctionView",
+                            "AudioView","SpectrogramView"})result.removeAll(alias);
+    return result;
+}
 QString category(const QString& kind) {
     const auto descriptor=node_kind(kind.toStdString());
     const auto role=descriptor?node_role(*descriptor):NodeRole::Processor;
@@ -51,89 +164,29 @@ QString category(const QString& kind) {
 }
 bool is_graph_view(const QString& kind) {return draft_view(kind.toStdString());}
 QString direction_group(const QString& kind) {
-    if(kind=="AudioSource")return "Audio";
-    if(kind=="TestSignal" || kind=="SignalGenerator")return "Generators";
-    if(kind=="NetworkInput" || kind=="WLEDOutput" || kind=="WLEDEncode")return "Transport";
+    if(QStringList{"AudioSource","SpectrumPeak"}.contains(kind))return "Audio";
+    if(QStringList{"TestSignal","SignalGenerator"}.contains(kind))return "Generators";
+    if(QStringList{"Fs","UInt32Constant","Number","ArrayLength","SampleRate","FrequencyStep"}.contains(kind))return "Numeric values";
+    if(QStringList{"NetworkInput","WLEDOutput","WLEDEncode"}.contains(kind))return "Transport";
     if(is_graph_view(kind))return "Graphs";
-    if(kind=="InputSelector" || kind=="Switch" || kind=="Splitter" || kind=="Gate")return "Routing";
-    if(kind=="Spectrogram")return "Accumulation";
-    return "DSP";
+    if(QStringList{"InputSelector","Switch","Splitter","Gate","Reroute"}.contains(kind))return "Routing";
+    if(kind=="Spectrogram" || kind=="NumberAccumulator")return "Accumulation";
+    return "Operations";
 }
 namespace {
-constexpr std::uint32_t channels[]={0,1};
-NumericContract contract(Semantic semantic) {
-    NumericContract c;c.channel_order=std::span(channels).first(1);c.dtype=DType::Float32;
-    c.semantic=semantic;c.clock.domain="local";c.clock.sample_rate=48000;c.clock.tick_seconds={1,48000};
-    if(semantic==Semantic::Scalar)return c;
-    c.shape.rank=Rank::Vector;c.shape.extents[0]={256,256};c.shape.axes[0]=Axis::Sample;
-    if(semantic==Semantic::Window || semantic==Semantic::Windowed)c.shape.extents[0]={4096,4096};
-    if(semantic==Semantic::SpectrumMagnitude){c.shape.axes[0]=Axis::Bin;c.shape.extents[0]={2048,2048};c.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{48000,4096}};}
-    if(semantic==Semantic::MelEnergy){c.shape.axes[0]=Axis::Band;c.shape.extents[0]={50,50};
-        c.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{1,1}};}
-    if(semantic==Semantic::History){c.history_element=Semantic::MelEnergy;c.shape.rank=Rank::Matrix;c.shape.axes={Axis::Time,Axis::Band};c.shape.extents={ExtentBounds{0,400},ExtentBounds{50,50}};
-        c.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
-        c.coordinates[1]=contract(Semantic::MelEnergy).coordinates[0];}
-    return c;
-}
-ProcessingPort port(PortDirection direction,PortId id,const DataContract& c) {
-    ProcessingPort p;p.id=id;p.direction=direction;
-    own_processing_contract(c,limits().frame,limits().max_owned_metadata_bytes,p.contract);return p;
+QStringList catalog_path(const QString& kind) {
+    const auto parent=category(kind);
+    const auto branch=direction_group(kind);
+    if(parent!="Processors" || branch=="Routing" || branch=="Accumulation")return {parent,branch};
+    const auto found=std::find_if(operation_groups.begin(),operation_groups.end(),
+        [&](const auto& group){return kind==group.kind;});
+    if(found==operation_groups.end())return {parent,"Other operations"};
+    return {parent,QString::fromLatin1(found->family),QString::fromLatin1(found->operation)};
 }
 }
 ConfiguredProcessingNode default_node(const QString& name) {
-    ConfiguredProcessingNode n;n.id=0;n.kind=name.toStdString();
-    const auto k=node_kind(n.kind);
-    if(!k && name!="Converter")return n;
-    const auto role=k?node_role(*k):NodeRole::Processor;
-    Semantic in=Semantic::PCM,out=Semantic::PCM;
-    if(name=="MelView" || name=="ScalarReduce" || name=="Spectrogram" || name=="WLED" || name=="WLEDEncode")in=out=Semantic::MelEnergy;
-    if(name=="AudioSource" || name=="TestSignal" || name=="AudioView" || name=="Window")in=out=Semantic::PCM;
-    if(name=="Window"){out=Semantic::Window;}
-    if(name=="WindowFunction"){in=Semantic::Window;out=Semantic::Windowed;}
-    if(name=="StereoFFT"){in=Semantic::Windowed;out=Semantic::SpectrumMagnitude;}
-    if(name=="SpectrumMerge" || name=="SpectrumGain" || name=="BarkWeighting" || name=="FFTView")in=out=Semantic::SpectrumMagnitude;
-    if(name=="Mel"){in=Semantic::SpectrumMagnitude;out=Semantic::MelEnergy;}
-    if(name=="WindowView")in=out=Semantic::Window;
-    if(name=="WindowedView")in=out=Semantic::Windowed;
-    if(name=="SpectrogramView")in=out=Semantic::History;
-    if(name=="ScalarView")in=out=Semantic::Scalar;
-    if(role==NodeRole::Processor)n.parameters=TransformProcessingParameters{};
-    if(role!=NodeRole::Source)n.inputs.push_back(port(PortDirection::Input,0,contract(in)));
-    if(role!=NodeRole::Sink)n.outputs.push_back(port(PortDirection::Output,0,contract(out)));
-    if(name=="SignalGenerator"){n.parameters=SignalGeneratorProcessingParameters{};auto c=contract(Semantic::PCM);c.shape.extents[0]={1,256};n.outputs[0]=port(PortDirection::Output,0,c);}
-    if(name=="SampleClock"){n.inputs.clear();n.outputs.clear();n.parameters=SampleClockProcessingParameters{};}
-    if(name=="Mixer"){n.parameters=MixerProcessingParameters{MixerMode::WeightedMean,{{0,1},{1,1}},100};auto c=contract(Semantic::PCM);c.shape.extents[0]={1,256};n.inputs[0]=port(PortDirection::Input,0,c);n.inputs.push_back(port(PortDirection::Input,1,c));n.outputs[0]=port(PortDirection::Output,0,c);}
-    if(name=="ChannelComparison"){
-        auto pcm=contract(Semantic::PCM);pcm.shape.extents[0]={1,256};n.inputs={port(PortDirection::Input,0,pcm),port(PortDirection::Input,1,pcm)};n.outputs={port(PortDirection::Output,0,contract(Semantic::Scalar))};
-        n.parameters=TransformProcessingParameters{{{"window_samples",NumericLiteral{std::uint64_t{512}}},{"silence_threshold",NumericLiteral{1e-12}}}};
-    }
-    if(name=="IndexExtract"){
-        auto output=contract(Semantic::Scalar);output.channel_order=std::span(channels).first(1);n.outputs[0]=port(PortDirection::Output,0,output);
-        for(const auto* key:{"channel_index","index","column"})std::get<TransformProcessingParameters>(n.parameters).values.push_back({key,NumericLiteral{std::uint64_t{0}}});
-    }
-    if(name=="Window")std::get<TransformProcessingParameters>(n.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{4096}}});
-    if(name=="PcmResampler"){
-        std::get<TransformProcessingParameters>(n.parameters).values.push_back({"output_rate",NumericLiteral{std::uint64_t{48000}}});
-        auto output=contract(Semantic::PCM);output.shape.extents[0]={1,257};n.outputs[0]=port(PortDirection::Output,0,output);
-    }
-    if(name=="Mel")std::get<TransformProcessingParameters>(n.parameters).values.push_back({"bands",NumericLiteral{std::uint64_t{50}}});
-    if(name=="SpectrumMerge" || name=="FFTView" || name=="Mel"){auto mono=contract(Semantic::SpectrumMagnitude);mono.channel_order=std::span(channels).first(1);if(name=="SpectrumMerge")n.outputs[0]=port(PortDirection::Output,0,mono);else n.inputs[0]=port(PortDirection::Input,0,mono);}
-    if(name=="InputSelector"){n.inputs.push_back(port(PortDirection::Input,1,contract(in)));std::get<TransformProcessingParameters>(n.parameters).values.push_back({"selected_input",NumericLiteral{std::int64_t{0}}});}
-    if(name=="Converter")n.parameters=ConverterProcessingParameters{};
-    if(name=="Splitter" || name=="Switch" || name=="Gate"){
-        RouteProcessingParameters p;p.outputs=name=="Gate"?1:2;n.parameters=p;
-        if(p.outputs==2)n.outputs.push_back(port(PortDirection::Output,1,contract(out)));
-    }
-    if(name=="ScalarReduce"){
-        n.parameters=ReduceProcessingParameters{};n.outputs[0]=port(PortDirection::Output,0,contract(Semantic::Scalar));
-    }
-    if(name=="Spectrogram"){
-        n.parameters=HistoryProcessingParameters{400};n.outputs[0]=port(PortDirection::Output,0,contract(Semantic::History));
-        auto count=contract(Semantic::Scalar);count.dtype=DType::UInt64;count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;
-        n.outputs.push_back(port(PortDirection::Output,1,count));
-    }
-    if(name=="WLEDEncode")n.outputs[0]=port(PortDirection::Output,0,StructuredContract{"wled-audio-sync",1,"audio-sync-44-le",{44,44}});
-    if(name=="WLEDOutput")n.inputs[0]=port(PortDirection::Input,0,StructuredContract{"wled-audio-sync",1,"audio-sync-44-le",{44,44}});
-    return n;
+    ConfiguredProcessingNode result;
+    if(!domain::make_processing_node(name.toStdString(),0,limits(),result))return {};
+    return result;
 }
 }

@@ -97,7 +97,7 @@ foreach(part IN ITEMS libs/signal_contracts libs/bdsp_protocol domain applicatio
     adapters/control adapters/esp_idf/stream_adapter adapters/esp_idf/persistence)
     install(DIRECTORY "${sdk_root}/${part}/include/" DESTINATION include)
 endforeach()
-install(FILES "${sdk_root}/adapters/desktop/include/control/numeric_control_session.h" DESTINATION include/control)
+install(FILES "${sdk_root}/adapters/project_storage/include/project_storage/numeric_array_codec.h" DESTINATION include/project_storage)
 install(DIRECTORY "${BDSP_SOURCE_DIR}/include/" DESTINATION include)
 install(FILES "${CMAKE_BINARY_DIR}/sdkconfig" "${CMAKE_BINARY_DIR}/config/sdkconfig.h"
     DESTINATION share/PortableDSP/esp32)

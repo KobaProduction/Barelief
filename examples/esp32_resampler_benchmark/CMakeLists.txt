@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.24)
+if(NOT DEFINED ENV{IDF_PATH})
+    message(FATAL_ERROR "Use the existing configured ESP-IDF environment")
+endif()
+set(COMPONENTS main)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(esp32_resampler_benchmark)

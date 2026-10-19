@@ -28,8 +28,10 @@ struct DocumentLimits {
     std::size_t number_bytes = 64u * 1024u;
     std::size_t key_bytes = 1024;
     std::size_t raw_key_bytes = 6u * 1024u;
-    std::size_t string_bytes = 64u * 1024u;
-    std::size_t raw_string_bytes = 384u * 1024u;
+    // A loaded frequency profile is a bounded JSON string parameter. Keep the
+    // whole-document/decoded/peak ceilings independent of this per-string cap.
+    std::size_t string_bytes = 1024u * 1024u;
+    std::size_t raw_string_bytes = 6u * 1024u * 1024u;
     std::size_t decoded_bytes = 4u * 1024u * 1024u;
     std::size_t edits = 8192;
     std::size_t replacement_bytes = 16u * 1024u * 1024u;

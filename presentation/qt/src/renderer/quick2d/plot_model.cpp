@@ -1,3 +1,4 @@
+#include <visualization/plot_viewport.h>
 #include <visualization/quick2d/plot_model.h>
 #include <visualization/quick/quick_ui.h>
 #include <visualization/ui_text.h>
@@ -31,29 +32,40 @@ public:
         if(size)*size=pixels.size();return pixels;
     }
 };
-QuickPlotWidget::QuickPlotWidget(QWidget* parent):ui::quick::SceneHost(presentation::RenderPreparationPolicy::plot_host,parent),model_(new QuickPlotModel(this)),provider_(new ImageProvider) {
-    // afterRendering runs on the scene renderer thread; sampling never requests
-    // a repaint and therefore cannot manufacture frames for a static graph.
+QuickPlotWidget::QuickPlotWidget(QWidget* parent):QuickPlotWidget(presentation::RenderPreparationPolicy::plot_host,parent) {}
+void QuickPlotWidget::bindNavigation(){
+    connect(model_,&QuickPlotModel::navigationRequested,this,[this](const QString& action,double x,double y,double amount,int axes){
+        const auto state=model_->state();if(state.value("kind")!="vector" && state.value("kind")!="image")return;
+        viewport_=navigatePlotViewport(viewport_,action,x,y,amount,axes,state.value("reverseX").toBool(),state.value("reverseY").toBool()^(state.value("kind")=="vector"));
+        refresh_presentation();
+    });
+}
+void QuickPlotWidget::bindRenderTelemetry(){
     connect(quickWindow(),&QQuickWindow::afterRendering,this,[this]{rendered_frames_.fetch_add(1,std::memory_order_relaxed);},Qt::DirectConnection);
     connect(quickWindow(),&QQuickWindow::beforeSynchronizing,this,[this]{
         synchronized_token_.store(submission_token_.load(std::memory_order_acquire),std::memory_order_release);
     },Qt::DirectConnection);
     connect(quickWindow(),&QQuickWindow::afterRendering,this,[this]{
         const auto token=synchronized_token_.load(std::memory_order_acquire);
-        if(token && reported_token_.exchange(token,std::memory_order_acq_rel)!=token)
-            QMetaObject::invokeMethod(this,[this,token]{frame_completed(token);},Qt::QueuedConnection);
+        if(token && reported_token_.exchange(token,std::memory_order_acq_rel)!=token)QMetaObject::invokeMethod(this,[this,token]{frame_completed(token);},Qt::QueuedConnection);
     },Qt::DirectConnection);
+}
+void QuickPlotWidget::bindFrameRate(){
     fps_clock_.start();fps_timer_.setInterval(500);
     connect(&fps_timer_,&QTimer::timeout,this,[this]{
         const auto frames=rendered_frames_.load(std::memory_order_relaxed);const auto elapsed=fps_clock_.nsecsElapsed();
         fps_clock_.restart();rendered_fps_=elapsed>0?qreal(frames-sampled_frames_)*1e9/qreal(elapsed):0;sampled_frames_=frames;
     });
     fps_timer_.start();
-    engine()->addImageProvider(QStringLiteral("numeric"),provider_);
-    rootContext()->setContextProperty("graphModel",model_);
+}
+void QuickPlotWidget::initializeScene(){
+    engine()->addImageProvider(QStringLiteral("numeric"),provider_);rootContext()->setContextProperty("graphModel",model_);
     setSource(QUrl(QStringLiteral("qrc:/plots2d/Plot2D.qml")));
     connect(&ui::Language::instance(),&ui::Language::changed,this,[this]{refresh_presentation();});
     connect(&ui::Theme::instance(),&ui::Theme::changed,this,[this]{refresh_presentation();});
+}
+QuickPlotWidget::QuickPlotWidget(presentation::PlotHost kind,QWidget* parent):ui::quick::SceneHost(kind,parent),model_(new QuickPlotModel(this)),provider_(new ImageProvider){
+    bindNavigation();bindRenderTelemetry();bindFrameRate();initializeScene();
 }
 QuickPlotWidget::~QuickPlotWidget() {
     // Dispose bindings while their model and shared UI context are alive.

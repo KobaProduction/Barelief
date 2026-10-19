@@ -84,6 +84,7 @@ struct Context {
     bool fail(Status = Status::Malformed) noexcept;
     void *reserve(std::size_t count, std::size_t width, std::size_t alignment) noexcept;
     bool store(std::string_view &, std::size_t maximum, bool binary = false) noexcept;
+    bool store_text_bytes(std::string_view &) noexcept;
 };
 class Archive;
 using Visit = bool (*)(Archive &, void *) noexcept;

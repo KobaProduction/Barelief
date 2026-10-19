@@ -18,6 +18,7 @@ class AbstractTask : public ITask {
     std::mutex _lifecycle_mutex;
     std::function<void(bool, uint64_t, const std::string &)> _lifecycle_handler;
     void _notify(bool ready, uint64_t result, const std::string &error);
+    void _run_task();
     std::mutex _sleep_mutex;
     std::condition_variable _wake;
 protected:

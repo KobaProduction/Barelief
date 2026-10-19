@@ -34,15 +34,34 @@ QJsonObject TestSignalSettings::json() const {
         {"maximum_hz", maximum_hz}, {"amplitude", amplitude},
         {"period_seconds", period_seconds}, {"sweep_depth", sweep_depth}};
 }
+namespace {
+bool finite_test_signal_fields(const QJsonObject& json,const QJsonObject& defaults,QString& error) {
+    for(auto it=defaults.begin();it!=defaults.end();++it) {
+        const auto value=json.value(it.key());
+        if(value.isUndefined() || (value.isDouble() && std::isfinite(value.toDouble())))continue;
+        error="TestSignal parameter must be a finite number: "+it.key();
+        return false;
+    }
+    return true;
+}
+bool valid_test_signal_range(const TestSignalSettings& result) {
+    return result.minimum_hz>=10 && result.maximum_hz>result.minimum_hz
+        && result.amplitude>=0 && result.amplitude<=1
+        && result.period_seconds>=0.1 && result.period_seconds<=3600
+        && result.sweep_depth>=0 && result.sweep_depth<=0.95
+        && result.maximum_hz*(1+result.sweep_depth)<result.sample_rate/2.0;
+}
+}
+static void read_test_signal_shape(const QJsonObject& json,TestSignalSettings& result) {
+    result.minimum_hz=json.value("minimum_hz").toDouble(73);
+    result.maximum_hz=json.value("maximum_hz").toDouble(13901);
+    result.amplitude=json.value("amplitude").toDouble(0.4);
+    result.period_seconds=json.value("period_seconds").toDouble(6);
+    result.sweep_depth=json.value("sweep_depth").toDouble(0.18);
+}
 bool TestSignalSettings::parse(const QJsonObject &json, TestSignalSettings &settings, QString &error) {
     TestSignalSettings result;
-    const auto defaults = result.json();
-    for (auto it = defaults.begin(); it != defaults.end(); ++it) {
-        const auto value = json.value(it.key());
-        if (!value.isUndefined() && (!value.isDouble() || !std::isfinite(value.toDouble()))) {
-            error = "TestSignal parameter must be a finite number: " + it.key(); return false;
-        }
-    }
+    if(!finite_test_signal_fields(json,result.json(),error))return false;
     const auto tones = json.value("tones").toDouble(8);
     const auto rate = json.value("sample_rate").toDouble(48000);
     if (tones != std::floor(tones) || tones < 5 || tones > 10 ||
@@ -50,16 +69,8 @@ bool TestSignalSettings::parse(const QJsonObject &json, TestSignalSettings &sett
         error = "TestSignal requires 5–10 tones and an integer sample rate of 8000–192000 Hz"; return false;
     }
     result.tones = int(tones); result.sample_rate = int(rate);
-    result.minimum_hz = json.value("minimum_hz").toDouble(73);
-    result.maximum_hz = json.value("maximum_hz").toDouble(13901);
-    result.amplitude = json.value("amplitude").toDouble(0.4);
-    result.period_seconds = json.value("period_seconds").toDouble(6);
-    result.sweep_depth = json.value("sweep_depth").toDouble(0.18);
-    if (result.minimum_hz < 10 || result.maximum_hz <= result.minimum_hz ||
-        result.amplitude < 0 || result.amplitude > 1 ||
-        result.period_seconds < 0.1 || result.period_seconds > 3600 ||
-        result.sweep_depth < 0 || result.sweep_depth > 0.95 ||
-        result.maximum_hz * (1 + result.sweep_depth) >= result.sample_rate / 2.0) {
+    read_test_signal_shape(json,result);
+    if (!valid_test_signal_range(result)) {
         error = "Invalid TestSignal range, amplitude or sweep (frequencies must stay below Nyquist)"; return false;
     }
     settings = result; error.clear(); return true;
@@ -128,6 +139,95 @@ class TestSignalSource final : public IAudioSource {
     LifecycleHandler _lifecycle;
     std::atomic<bool> _running{false};
     std::jthread _worker;
+    struct ProducerState {
+        std::array<dsp_kernels::OscillatorParameters,10> tones{};
+        dsp_kernels::OscillatorBank bank;
+        TestSignalSettings settings;
+        std::chrono::steady_clock::time_point origin,deadline;
+        std::int64_t origin_ns=0;
+        std::size_t block=0;
+        std::uint64_t offset=0,sequence=0;
+        AudioFrame frame;
+        bool prepared=false;
+
+        explicit ProducerState(TestSignalSettings initial):settings(initial),origin(std::chrono::steady_clock::now()),deadline(origin) {
+            origin_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(origin.time_since_epoch()).count();
+            block=std::size_t(std::max(1,settings.sample_rate/200));
+            frame.channel_count=1;
+            frame.frame_count=block;
+            frame.samples.resize(block);
+        }
+        std::chrono::nanoseconds elapsed(std::uint64_t samples) const {
+            std::int64_t timestamp=0;
+            if(!test_signal_sample_time_ns(samples,std::uint32_t(settings.sample_rate),origin_ns,timestamp))
+                throw std::overflow_error("TestSignal sample clock exhausted");
+            return std::chrono::nanoseconds(timestamp-origin_ns);
+        }
+    };
+
+    void refresh_tones(ProducerState& state) {
+        const auto& settings=state.settings;
+        for(int tone=0;tone<settings.tones;++tone) {
+            const auto carrier=settings.minimum_hz*std::pow(settings.maximum_hz/settings.minimum_hz,double(tone)/(settings.tones-1));
+            const auto cycle=2*std::numbers::pi*(tone+1)/settings.period_seconds;
+            const auto time=double(state.offset)/settings.sample_rate;
+            state.tones[tone]={std::uint64_t(tone+1),true,carrier*(1+settings.sweep_depth*std::sin(cycle*time)),
+                settings.amplitude/settings.tones*(0.65+0.35*std::sin(cycle*time+tone)),0,0,0};
+        }
+    }
+
+    static void stamp_frame(ProducerState& state) {
+        auto& frame=state.frame;
+        frame.sample_rate=state.settings.sample_rate;
+        frame.sequence=++state.sequence;
+        frame.sample_position=state.offset;
+        frame.timestamp_ns=state.origin_ns+state.elapsed(state.offset).count();
+        frame.discontinuity=state.offset==0;
+    }
+    void produce_frame(ProducerState& state) {
+        {std::lock_guard lock(_settings_mutex);state.settings=_settings;}
+        refresh_tones(state);
+        const auto parameters=std::span(state.tones).first(state.settings.tones);
+        if(!(state.prepared?state.bank.update(parameters):state.bank.prepare(parameters,state.settings.sample_rate)))
+            throw std::runtime_error("TestSignal oscillator admission failed");
+        state.prepared=true;
+        stamp_frame(state);
+        if(!state.bank.render(state.frame.samples))throw std::runtime_error("TestSignal produced nonfinite data");
+        if(state.offset>std::numeric_limits<std::uint64_t>::max()-state.block)
+            throw std::overflow_error("TestSignal sample counter exhausted");
+        state.offset+=state.block;
+    }
+
+    void produce_until_stopped(std::stop_token stop,ProducerDeadlineWait& wait,ProducerState& state) {
+        while(!stop.stop_requested()) {
+            produce_frame(state);
+            if(stop.stop_requested())break;
+            if(_audio)_audio(state.frame);
+            state.deadline=state.origin+state.elapsed(state.offset);
+            wait.until(state.deadline);
+        }
+    }
+
+    void report_failure(const std::exception& error) {
+        const auto message=QString::fromUtf8(error.what());
+        if(_status)_status(false,message);
+        if(_lifecycle)_lifecycle(false,1,message);
+    }
+    void run(std::stop_token stop) {
+        try {
+            ProducerDeadlineWait wait;
+            // Destroy the callback before its referenced wait handles.
+            std::stop_callback cancellation(stop,[&wait]{wait.cancel();});
+            TestSignalSettings initial;
+            {std::lock_guard lock(_settings_mutex);initial=_settings;}
+            ProducerState state(initial);
+            _running=true;
+            if(_lifecycle)_lifecycle(true,0,{});
+            if(_status)_status(true,{});
+            produce_until_stopped(stop,wait,state);
+        } catch(const std::exception& error) {report_failure(error);}
+        _running=false;
+    }
 public:
     ~TestSignalSource() override { stop(); }
     void configure(const QJsonObject &json) override {
@@ -145,59 +245,7 @@ public:
     }
     void start() override {
         stop();
-        _worker = std::jthread([this](std::stop_token stop) {
-            try {
-                ProducerDeadlineWait wait;
-                // Destroy the callback before its referenced wait handles.
-                std::stop_callback cancellation(stop,[&wait]{wait.cancel();});
-                std::array<dsp_kernels::OscillatorParameters,10> tones{};
-                dsp_kernels::OscillatorBank bank;
-                TestSignalSettings settings;
-                {std::lock_guard lock(_settings_mutex);settings=_settings;}
-                const auto origin = std::chrono::steady_clock::now();
-                auto deadline = origin;
-                const auto origin_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(origin.time_since_epoch()).count();
-                const auto elapsed=[&](std::uint64_t samples,int rate) {
-                    std::int64_t timestamp;
-                    if(!test_signal_sample_time_ns(samples,std::uint32_t(rate),origin_ns,timestamp))throw std::overflow_error("TestSignal sample clock exhausted");
-                    return std::chrono::nanoseconds(timestamp-origin_ns);
-                };
-                const auto block = size_t(std::max(1, settings.sample_rate / 200));
-                uint64_t offset = 0, sequence = 0;
-                AudioFrame frame;frame.channel_count=1;frame.frame_count=block;frame.samples.resize(block);
-                bool prepared=false;
-                _running = true;
-                if (_lifecycle) _lifecycle(true, 0, {});
-                if (_status) _status(true, {});
-                while (!stop.stop_requested()) {
-                    {std::lock_guard lock(_settings_mutex);settings=_settings;}
-                    for(int tone=0;tone<settings.tones;++tone) {
-                        const auto carrier=settings.minimum_hz*std::pow(settings.maximum_hz/settings.minimum_hz,double(tone)/(settings.tones-1));
-                        const auto cycle=2*std::numbers::pi*(tone+1)/settings.period_seconds;
-                        const auto time=double(offset)/settings.sample_rate;
-                        tones[tone]={std::uint64_t(tone+1),true,carrier*(1+settings.sweep_depth*std::sin(cycle*time)),
-                            settings.amplitude/settings.tones*(0.65+0.35*std::sin(cycle*time+tone)),0,0,0};
-                    }
-                    const auto parameters=std::span(tones).first(settings.tones);
-                    if(!(prepared?bank.update(parameters):bank.prepare(parameters,settings.sample_rate)))
-                        throw std::runtime_error("TestSignal oscillator admission failed");
-                    prepared=true;
-                    frame.sample_rate=settings.sample_rate;frame.sequence=++sequence;frame.sample_position=offset;
-                    frame.timestamp_ns=origin_ns+elapsed(offset,settings.sample_rate).count();frame.discontinuity=offset==0;
-                    if(!bank.render(frame.samples))throw std::runtime_error("TestSignal produced nonfinite data");
-                    if(offset>std::numeric_limits<std::uint64_t>::max()-block)throw std::overflow_error("TestSignal sample counter exhausted");
-                    offset += block;
-                    if (stop.stop_requested()) break;
-                    if (_audio) _audio(frame);
-                    deadline = origin + elapsed(offset,settings.sample_rate);
-                    wait.until(deadline);
-                }
-            } catch (const std::exception &error) {
-                if (_status) _status(false, QString::fromUtf8(error.what()));
-                if (_lifecycle) _lifecycle(false, 1, QString::fromUtf8(error.what()));
-            }
-            _running = false;
-        });
+        _worker=std::jthread([this](std::stop_token stop){run(stop);});
     }
     void stop() override {
         _worker.request_stop();

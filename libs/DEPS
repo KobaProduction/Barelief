@@ -1,0 +1,7 @@
+# Portable modules never acquire GUI, platform or concrete storage dependencies.
+include_rules = [
+    '-Qt', '-presentation', '-apps', '-desktop', '-pipeline', '-core',
+    '-core_app', '-visualization', '-project_storage', '-aggregator', '-analyzer',
+    '-adapters', '-esp_idf_adapter',
+    '-libs', '-driver', '-freertos', '-lwip', '-pulse', '-wrl',
+]

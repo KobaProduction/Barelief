@@ -70,6 +70,10 @@ QtPacketChannel::QtPacketChannel(QIODevice &device,bdsp_protocol::ByteTransport 
     : QObject(parent),device_(device),transport_(transport),
       incoming_(std::clamp(incoming_budget,std::size_t(1),std::size_t(65539))),
       outgoing_(std::clamp(outgoing_budget,std::size_t(1),std::size_t(70000))),stream_(incoming_,outgoing_) {
+    bind_stream_handlers();
+    bind_device_signals();
+}
+void QtPacketChannel::bind_stream_handlers() {
     stream_.set_packet_handler([](bdsp_protocol::PacketView packet,void *context) {
         auto *self=static_cast<QtPacketChannel *>(context);
         emit self->packetReceived(packet.id,QByteArray(reinterpret_cast<const char *>(packet.payload.data()),qsizetype(packet.payload.size())));
@@ -77,6 +81,8 @@ QtPacketChannel::QtPacketChannel(QIODevice &device,bdsp_protocol::ByteTransport 
     stream_.set_error_handler([](BDSP::parse_packet_status_t status,void *context) {
         emit static_cast<QtPacketChannel *>(context)->parsingError(status);
     },this);
+}
+void QtPacketChannel::bind_device_signals() {
     connect(&device_,&QIODevice::readyRead,this,&QtPacketChannel::receive);
     connect(&device_,&QIODevice::bytesWritten,this,&QtPacketChannel::flush);
     connect(&device_,&QIODevice::aboutToClose,this,&QtPacketChannel::reset);
@@ -92,6 +98,14 @@ QtPacketChannel::QtPacketChannel(QIODevice &device,bdsp_protocol::ByteTransport 
         });
     }
 }
+void QtPacketChannel::discard_retired_bytes(std::span<std::uint8_t> bytes) {
+    // A callback retired this session. Fence the suffix still buffered
+    // by QIODevice as well as the current PacketStream feed chunk.
+    while(device_.bytesAvailable()>0) {
+        const auto discarded=transport_.read(bytes);
+        if(!discarded.transferred)break;
+    }
+}
 void QtPacketChannel::reset() noexcept { ++receive_generation_;stream_.reset(); }
 Status QtPacketChannel::send_packet(quint8 id,const QByteArray &payload) {
     if(transport_.state()!=TransportState::connected) return Status::disconnected;
@@ -102,22 +116,18 @@ Status QtPacketChannel::send_packet(quint8 id,const QByteArray &payload) {
     // queued. A terminal device failure must not claim acceptance to the caller.
     return status==Status::unavailable || status==Status::disconnected?status:Status::ok;
 }
+void QtPacketChannel::feed_received_bytes(std::span<const std::uint8_t> bytes) {
+    const auto status=stream_.feed(bytes);
+    if(status!=Status::ok)emit protocolError(status);
+}
 void QtPacketChannel::receive() {
     std::array<std::uint8_t,4096> bytes;
     while(true) {
         const auto generation=receive_generation_;
         const auto result=transport_.read(bytes);
-        if(result.transferred) {
-            const auto status=stream_.feed(std::span(bytes).first(result.transferred));
-            if(status!=Status::ok)emit protocolError(status);
-        }
+        if(result.transferred)feed_received_bytes(std::span(bytes).first(result.transferred));
         if(generation!=receive_generation_) {
-            // A callback retired this session. Fence the suffix still buffered
-            // by QIODevice as well as the current PacketStream feed chunk.
-            while(device_.bytesAvailable()>0) {
-                const auto discarded=transport_.read(bytes);
-                if(!discarded.transferred)break;
-            }
+            discard_retired_bytes(std::span(bytes));
             break;
         }
         if(result.status==Status::unavailable)emit protocolError(result.status);

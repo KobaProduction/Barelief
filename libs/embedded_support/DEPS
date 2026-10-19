@@ -1,0 +1,4 @@
+include_rules = [
+    '+libs/signal_contracts', '+libs/dsp_kernels', '+libs/bdsp_protocol',
+    '+libs/dataflow_runtime', '+libs/wled_protocol',
+]

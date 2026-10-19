@@ -2,6 +2,131 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>FFT size does not match</source><translation>Размер FFT не совпадает</translation></message>
+    <message><source>Sample rate does not match</source><translation>Частота дискретизации не совпадает</translation></message>
+    <message><source>Spectrum layout does not match</source><translation>Структура спектра не совпадает</translation></message>
+    <message><source>Spectrum representation does not match</source><translation>Представление спектра не совпадает</translation></message>
+    <message><source>Window function does not match</source><translation>Оконная функция не совпадает</translation></message>
+    <message><source>Window coefficient sum does not match</source><translation>Сумма коэффициентов окна не совпадает</translation></message>
+    <message><source>Window coefficient square sum does not match</source><translation>Сумма квадратов коэффициентов окна не совпадает</translation></message>
+    <message><source>Audio frontend does not match</source><translation>Настройки входного аудиотракта не совпадают</translation></message>
+    <message><source>Resampler settings do not match</source><translation>Настройки ресэмплера не совпадают</translation></message>
+    <message><source>Gain count does not match</source><translation>Количество коэффициентов усиления не совпадает</translation></message>
+    <message><source>Gain values must be finite and valid</source><translation>Коэффициенты усиления должны быть конечными и допустимыми</translation></message>
+    <message><source>Profile encoding is invalid</source><translation>Некорректный формат профиля</translation></message>
+    <message><source>Parameter: %1</source><translation>Параметр: %1</translation></message>
+    <message><source>Input contract</source><translation>Входной контракт</translation></message>
+    <message><source>Input spectral representation</source><translation>Спектральное представление входа</translation></message>
+    <message><source>Input representation</source><translation>Представление входа</translation></message>
+    <message><source>Peak weighting</source><translation>Взвешивание пиков</translation></message>
+    <message><source>Power bandwidth, Hz</source><translation>Полоса мощности, Гц</translation></message>
+    <message><source>Input bin centers, Hz (empty: regular grid)</source><translation>Центры входных частотных ячеек, Гц (пусто: равномерная сетка)</translation></message>
+    <message><source>Input value</source><translation>Входное значение</translation></message>
+    <message><source>Squared input value</source><translation>Квадрат входного значения</translation></message>
+    <message><source>PSD</source><translation>Спектральная плотность мощности (PSD)</translation></message>
+    <message><source>Training settings</source><translation>Настройки обучения</translation></message>
+    <message><source>Resampler settings</source><translation>Настройки ресэмплера</translation></message>
+    <message><source>Spectrum peak</source><translation>Пик спектра</translation></message>
+    <message><source>Window coefficient sum</source><translation>Сумма коэффициентов окна</translation></message>
+    <message><source>Window coefficient square sum</source><translation>Сумма квадратов коэффициентов окна</translation></message>
+    <message><source>FFT and window compensation</source><translation>Компенсация FFT и окна</translation></message>
+    <message><source>On</source><translation>Вкл.</translation></message>
+    <message><source>Off</source><translation>Выкл.</translation></message>
+    <message><source>One-sided spectrum (DC separate)</source><translation>Односторонний спектр (DC отдельно)</translation></message>
+    <message><source>FFT magnitude</source><translation>Модуль FFT</translation></message>
+    <message><source>Compensated FFT magnitude</source><translation>Модуль FFT с компенсацией</translation></message>
+    <message><source>Raw magnitude squared</source><translation>Квадрат модуля FFT без компенсации</translation></message>
+    <message><source>Power spectrum</source><translation>Спектр мощности</translation></message>
+    <message><source>Power spectral density (PSD)</source><translation>Спектральная плотность мощности (PSD)</translation></message>
+    <message><source>Edit port contracts…</source><translation>Настроить контракты портов…</translation></message>
+    <message><source>Edit port labels…</source><translation>Изменить подписи портов…</translation></message>
+    <message><source>Port contracts</source><translation>Контракты портов</translation></message>
+    <message><source>Port labels</source><translation>Подписи портов</translation></message>
+    <message><source>Axis Y</source><translation>Ось Y</translation></message>
+    <message><source>Axis X</source><translation>Ось X</translation></message>
+    <message><source>Linear value (Y)</source><translation>Линейное значение (Y)</translation></message>
+    <message><source>0 = auto; -1 = hidden; 1–128 = count (including edges)</source><translation>0 = авто; -1 = скрыть; 1–128 = количество (включая края)</translation></message>
+    <message><source>Y labels</source><translation>Подписи по Y</translation></message>
+    <message><source>X labels</source><translation>Подписи по X</translation></message>
+    <message><source>Horizontal grid lines</source><translation>Горизонтальные линии сетки</translation></message>
+    <message><source>Vertical grid lines</source><translation>Вертикальные линии сетки</translation></message>
+    <message><source>Input dB is not logged again. For conversion to linear, set the reference used by the source.</source><translation>Входные дБ повторно не логарифмируются. Для перевода в линейные значения задайте опорное значение источника.</translation></message>
+    <message><source>dB floor</source><translation>Нижний порог, дБ</translation></message>
+    <message><source>dB reference</source><translation>Опорное значение дБ</translation></message>
+    <message><source>Power / PSD (10 log10)</source><translation>Мощность / PSD (10 log10)</translation></message>
+    <message><source>Amplitude (20 log10)</source><translation>Амплитуда (20 log10)</translation></message>
+    <message><source>Auto (source quantity)</source><translation>Авто (по входным данным)</translation></message>
+    <message><source>dB conversion</source><translation>Преобразование дБ</translation></message>
+    <message><source>Decibels</source><translation>Децибелы</translation></message>
+    <message><source>Linear values</source><translation>Линейные значения</translation></message>
+    <message><source>Source values</source><translation>Как на входе</translation></message>
+    <message><source>Value scale</source><translation>Шкала значений</translation></message>
+    <message><source>Activity floor (input units)</source><translation>Порог активности (единицы входа)</translation></message>
+    <message><source>Save</source><translation>Сохранить</translation></message>
+    <message><source>Save configuration?</source><translation>Сохранить конфигурацию?</translation></message>
+    <message><source>Save the current configuration to %1?</source><translation>Сохранить текущую конфигурацию в файл %1?</translation></message>
+    <message><source>Overwrite configuration?</source><translation>Перезаписать конфигурацию?</translation></message>
+    <message><source>Replace the contents of %1 with the current configuration? This cannot be undone.</source><translation>Заменить содержимое файла %1 текущей конфигурацией? Это действие нельзя отменить.</translation></message>
+    <message><source>Overwrite</source><translation>Перезаписать</translation></message>
+    <message><source>Piano: note activity</source><translation>Пианино: нотная активность</translation></message>
+    <message><source>Piano</source><translation>Пианино</translation></message>
+    <message><source>Note activity</source><translation>Нотная активность</translation></message>
+    <message><source>Waiting for note values</source><translation>Ожидание нотных значений</translation></message>
+    <message><source>Note activity requires finite nonnegative values within MIDI 0–127</source><translation>Нужны конечные неотрицательные значения для нот MIDI 0–127</translation></message>
+    <message><source>Peak: %1 · %2</source><translation>Пик: %1 · %2</translation></message>
+    <message><source> · %1 Hz</source><translation> · %1 Гц</translation></message>
+    <message><source>Broadband row</source><translation>Широкополосный ряд</translation></message>
+    <message><source>Join arrays</source><translation>Соединение массивов</translation></message>
+    <message><source>[Low %1] [Mid %2] [High %3]</source><translation>[НЧ %1] [СЧ %2] [ВЧ %3]</translation></message>
+    <message><source>[Notes %1]</source><translation>[Ноты %1]</translation></message>
+    <message><source>Frequency step</source><translation>Шаг частоты</translation></message>
+    <message><source>Frequency step, Hz</source><translation>Шаг частоты, Гц</translation></message>
+    <message><source>Factor count</source><translation>Множителей</translation></message>
+    <message><source>Factor %1</source><translation>Множитель %1</translation></message>
+    <message><source>Add factor</source><translation>Добавить множитель</translation></message>
+    <message><source>Remove factor</source><translation>Удалить множитель</translation></message>
+    <message><source>Frame input</source><translation>Ведущий вход</translation></message>
+    <message><source>The frame input supplies coordinates and time. Other factors retain their latest values. Auto prefers the input carrying signal coordinates; ties use the first input.</source><translation>Ведущий вход задаёт координаты и время кадров. Остальные множители сохраняют последние значения. Автовыбор предпочитает вход с координатами сигнала; при равенстве используется первый вход.</translation></message>
+    <message><source>Bartlett</source><translation>Барлетта</translation></message>
+    <message><source>Blackman-Harris</source><translation>Блэкмана — Харриса</translation></message>
+    <message><source>Flat top</source><translation>С плоской вершиной</translation></message>
+    <message><source>Pass the input through without processing.</source><translation>Передавать входные данные без обработки.</translation></message>
+    <message><source>Numeric values</source><translation>Числовые значения</translation></message>
+    <message><source>Sampling frequency, Hz</source><translation>Частота дискретизации, Гц</translation></message>
+    <message><source>Integer value</source><translation>Целое число</translation></message>
+    <message><source>Array length</source><translation>Размер массива</translation></message>
+    <message><source>Signal sample rate</source><translation>Частота дискретизации сигнала</translation></message>
+    <message><source>Routing point</source><translation>Точка разводки</translation></message>
+    <message><source>Synchronization</source><translation>Синхронизация</translation></message>
+    <message><source>Synchronization source (-1: inherited)</source><translation>Источник синхронизации (-1: наследовать)</translation></message>
+    <message><source>Synchronization source (-1: internal)</source><translation>Источник синхронизации (-1: внутренний)</translation></message>
+    <message><source>Node %1 (%2): select a synchronization source in block settings</source><translation>Узел %1 (%2): выберите источник синхронизации в настройках блока</translation></message>
+    <message><source>Complex to polar</source><translation>Комплексные числа: модуль и фаза</translation></message>
+    <message><source>Fourier (complex input)</source><translation>Фурье: комплексный вход</translation></message>
+    <message><source>Real Fourier</source><translation>Фурье: вещественный вход</translation></message>
+    <message><source>Real input</source><translation>Действительный вход</translation></message>
+    <message><source>Imaginary input</source><translation>Мнимый вход</translation></message>
+    <message><source>Re: nonzero bins</source><translation>Re: ненулевые частоты</translation></message>
+    <message><source>Im: nonzero bins</source><translation>Im: ненулевые частоты</translation></message>
+    <message><source>DC: real coefficient</source><translation>DC: действительный коэффициент</translation></message>
+    <message><source>DC: imaginary coefficient</source><translation>DC: мнимый коэффициент</translation></message>
+    <message><source>%1 Hz</source><translation>%1 Гц</translation></message>
+    <message><source>Matrix transpose</source><translation>Транспонирование матрицы</translation></message>
+    <message><source>Matrix row centering</source><translation>Центрирование строк</translation></message>
+    <message><source>Centering method</source><translation>Метод центрирования</translation></message>
+    <message><source>Subtract mean</source><translation>Вычесть среднее</translation></message>
+    <message><source>Center between minimum and maximum</source><translation>Центрировать между минимумом и максимумом</translation></message>
+    <message><source>Manual offset</source><translation>Ручное смещение</translation></message>
+    <message><source>Matrix window function</source><translation>Оконная функция матрицы</translation></message>
+    <message><source>Matrix row FFT</source><translation>FFT строк матрицы</translation></message>
+    <message><source>Matrix row selector</source><translation>Выбор строки матрицы</translation></message>
+    <message><source>FFT size, values</source><translation>Размер FFT, значений</translation></message>
+    <message><source>Selected band</source><translation>Выбранная полоса</translation></message>
+    <message><source>Selected row</source><translation>Выбранная строка</translation></message>
+    <message><source>Modulation frequency bin (Z)</source><translation>Бин частоты модуляции (Z)</translation></message>
+    <message><source>Modulation frequency, Hz (Z)</source><translation>Частота модуляции, Гц (Z)</translation></message>
+    <message><source>Source frequency, Hz (X)</source><translation>Исходная частота, Гц (X)</translation></message>
+    <message><source>Mel bands: transpose and row FFT</source><translation>Полосы Mel: транспонирование и FFT строк</translation></message>
     <message><source>Channel comparison</source><translation>Сравнение каналов</translation></message>
     <message><source>Saved outputs: %1</source><translation>Сохранённые выходы: %1</translation></message>
 <message><source>Input timing policy</source><translation>Временная политика входов</translation></message>
@@ -284,6 +409,10 @@ The second column adds an alternative key for the same action.</source>
     <message>
       <source>Maximum</source>
       <translation>Максимум</translation>
+    </message>
+    <message>
+      <source>Supported frequencies change the monitor mode for this session. Maximum follows the current monitor. Custom only limits drawing.</source>
+      <translation>Поддерживаемые частоты переключают режим монитора на время работы приложения. Максимум следует за текущим монитором. Своя частота ограничивает только отрисовку.</translation>
     </message>
     <message>
       <source>Mean</source>
@@ -1347,6 +1476,38 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Remove oscillator</source><translation>Удалить осциллятор</translation></message>
 <message><source>Oscillator ID</source><translation>ID осциллятора</translation></message>
 <message><source>Edit source settings</source><translation>Изменить настройки источника</translation></message>
+<message><source>Values per stream</source><translation>Значений в потоке</translation></message>
+<message><source>Values per stream: %1</source><translation>Значений в потоке: %1</translation></message>
+<message><source>Audio outputs (0: native)</source><translation>Аудиовыходов (0: все каналы устройства)</translation></message>
+<message><source>Spectrum amplitude and phase</source><translation>Амплитуда и фаза спектра</translation></message>
+<message><source>Array size</source><translation>Размер массива</translation></message>
+<message><source>Window gain</source><translation>Коэффициент окна</translation></message>
+<message><source>Re</source><translation>Re</translation></message>
+<message><source>Im</source><translation>Im</translation></message>
+<message><source>DC Re</source><translation>DC Re</translation></message>
+<message><source>DC Im</source><translation>DC Im</translation></message>
+<message><source>Amplitude normalizer</source><translation>Нормализатор амплитуды</translation></message>
+<message><source>Array coefficients</source><translation>Коэффициенты массива</translation></message>
+<message><source>Elementwise correction</source><translation>Поэлементная коррекция</translation></message>
+<message><source>Window power gain</source><translation>Коэффициент мощности окна</translation></message>
+<message><source>Correction coefficients</source><translation>Корректирующие коэффициенты</translation></message>
+<message><source>Corrected values</source><translation>Скорректированные значения</translation></message>
+<message><source>DC Re (zero frequency)</source><translation>DC Re (нулевая частота)</translation></message>
+<message><source>DC Im (zero frequency)</source><translation>DC Im (нулевая частота)</translation></message>
+<message><source>Value exceeds the active execution profile</source><translation>Значение превышает ограничения активного профиля исполнения</translation></message>
+<message><source>Row coordinate (X)</source><translation>Координата строки (X)</translation></message>
+<message><source>Column coordinate (Z)</source><translation>Координата столбца (Z)</translation></message>
+<message><source>Execution profile is unavailable</source><translation>Профиль исполнения недоступен</translation></message>
+<message><source>Native source execution profile is unavailable</source><translation>Профиль исполнения собственного формата источника недоступен</translation></message>
+<message><source>Node %1: native source format exceeds the execution profile</source><translation>Узел %1: собственный формат источника превышает ограничения профиля исполнения</translation></message>
+<message><source>Node %1: unsupported native source format</source><translation>Узел %1: неподдерживаемый собственный формат источника</translation></message>
+<message><source>Node %1: source is missing</source><translation>Узел %1: источник отсутствует</translation></message>
+<message><source>Node %1: invalid native source contract</source><translation>Узел %1: некорректный контракт собственного формата источника</translation></message>
+<message><source>Node %1: connected output %2 is unavailable in the native format</source><translation>Узел %1: подключённый выход %2 недоступен в собственном формате источника</translation></message>
+<message><source>Node %1: native source format is incompatible with the route</source><translation>Узел %1: собственный формат источника несовместим с маршрутом</translation></message>
+<message><source>Peak frequency, Hz</source><translation>Частота пика, Гц</translation></message>
+<message><source>Peak magnitude</source><translation>Величина пика</translation></message>
+<message><source>Note grid unavailable</source><translation>Нотная сетка недоступна</translation></message>
 </context>
     <context><name>Ui</name>
     <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
@@ -1412,7 +1573,14 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Sources</source><translation>Источники</translation></message>
 <message><source>Processors</source><translation>Обработчики</translation></message>
 <message><source>Converter</source><translation>Преобразователь</translation></message>
-<message><source>Spectrogram accumulator</source><translation>Накопитель спектрограммы</translation></message>
+<message><source>Array accumulator</source><translation>Накопитель массивов</translation></message>
+<message><source>Number accumulator</source><translation>Накопитель чисел</translation></message>
+<message><source>History capacity, values</source><translation>Ёмкость истории, значений</translation></message>
+<message><source>Spectrum scaling</source><translation>Масштабирование спектра</translation></message>
+<message><source>Bark weighting</source><translation>Взвешивание по шкале Барка</translation></message>
+<message><source>Numeric converter</source><translation>Преобразователь числовых данных</translation></message>
+<message><source>2D spectrogram</source><translation>Спектрограмма 2D</translation></message>
+<message><source>3D spectrogram</source><translation>Спектрограмма 3D</translation></message>
 <message><source>Edit parameters</source><translation>Изменить параметры</translation></message>
 <message><source>Numeric editor unavailable</source><translation>Числовой редактор недоступен</translation></message>
 <message><source>Legacy draft requires explicit migration</source><translation>Старый черновик требует явной миграции</translation></message>
@@ -1657,6 +1825,22 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Transport</source><translation>Транспорт</translation></message>
 <message><source>Routing</source><translation>Маршрутизация</translation></message>
 <message><source>Accumulation</source><translation>Накопление</translation></message>
+<message><source>Operations</source><translation>Операции</translation></message>
+<message><source>Other operations</source><translation>Прочие операции</translation></message>
+<message><source>Signal processing</source><translation>Обработка сигналов</translation></message>
+<message><source>Signal analysis</source><translation>Анализ сигналов</translation></message>
+<message><source>Numeric operations</source><translation>Числовые операции</translation></message>
+<message><source>Music analysis</source><translation>Музыкальный анализ</translation></message>
+<message><source>Windowing</source><translation>Оконная обработка</translation></message>
+<message><source>Fourier transforms</source><translation>Преобразования Фурье</translation></message>
+<message><source>Spectrum and scaling</source><translation>Спектр и масштабирование</translation></message>
+<message><source>Resampling and timing</source><translation>Ресэмплинг и время</translation></message>
+<message><source>Arrays and matrices</source><translation>Массивы и матрицы</translation></message>
+<message><source>Conversion</source><translation>Преобразование данных</translation></message>
+<message><source>Features</source><translation>Признаки</translation></message>
+<message><source>Measurements</source><translation>Измерения</translation></message>
+<message><source>Mixing</source><translation>Смешивание</translation></message>
+<message><source>Protocol encoding</source><translation>Кодирование протокола</translation></message>
 <message><source>DSP</source><translation>DSP</translation></message>
 <message><source>BDSP input (TCP)</source><translation>Вход BDSP (TCP)</translation></message>
 <message><source>BDSP socket output</source><translation>Выход BDSP через сокет</translation></message>
@@ -1679,6 +1863,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Invalid connection policy</source><translation>Недопустимая политика связи</translation></message>
 <message><source>Range overflow</source><translation>Переполнение диапазона</translation></message>
 <message><source>Precision or value rejected</source><translation>Отказ: точность или значение</translation></message>
+<message><source>Input spectrum must contain finite nonnegative values. Check correction coefficients and array operation.</source><translation>Входной спектр должен содержать конечные неотрицательные значения. Проверьте коэффициенты коррекции и операцию над массивами.</translation></message>
 <message><source>Frame %1; timestamp %2 ticks</source><translation>Кадр %1; метка времени %2 тактов</translation></message>
 <message><source>Diagnostics / display</source><translation>Диагностика / отображение</translation></message>
 <message><source>Exact connection</source><translation>Точная связь</translation></message>
@@ -1692,6 +1877,26 @@ Escape — отмена. Поддерживаются все раскладки.
     <message><source>Minimum frequency, Hz</source><translation>Минимальная частота, Гц</translation></message>
     <message><source>Maximum frequency, Hz</source><translation>Максимальная частота, Гц</translation></message>
     <message><source>Spectrogram graph</source><translation>График спектрограммы</translation></message>
+    <message><source>Audio vector graph</source><translation>Звуковой векторный график</translation></message>
+    <message><source>Audio matrix graph</source><translation>Звуковой матричный график</translation></message>
+    <message><source>Signed scalar bars</source><translation>Знаковые скалярные столбцы</translation></message>
+    <message><source>Line graph</source><translation>Линейный график</translation></message>
+    <message><source>Point graph</source><translation>Точечный график</translation></message>
+    <message><source>Bar graph</source><translation>Столбчатый график</translation></message>
+    <message><source>Pie graph</source><translation>Круговая диаграмма</translation></message>
+    <message><source>Matrix image</source><translation>Матричное изображение</translation></message>
+    <message><source>Matrix surface</source><translation>Матричная поверхность</translation></message>
+    <message><source>Audio line graph</source><translation>Звуковой линейный график</translation></message>
+    <message><source>Audio point graph</source><translation>Звуковой точечный график</translation></message>
+    <message><source>Audio bar graph</source><translation>Звуковой столбчатый график</translation></message>
+    <message><source>Audio pie graph</source><translation>Звуковая круговая диаграмма</translation></message>
+    <message><source>Audio image</source><translation>Звуковое изображение</translation></message>
+    <message><source>Audio surface</source><translation>Звуковая поверхность</translation></message>
+    <message><source>Column axis</source><translation>Ось столбцов</translation></message>
+    <message><source>Row axis</source><translation>Ось строк</translation></message>
+    <message><source>Source coordinates</source><translation>Координаты источника</translation></message>
+    <message><source>Coordinates unavailable</source><translation>Координаты недоступны</translation></message>
+    <message><source>Rows</source><translation>Строки</translation></message>
     <message><source>Not connected</source><translation>Не подключён</translation></message>
 <message><source>Spectrogram data</source><translation>Данные спектрограммы</translation></message>
 
@@ -1842,7 +2047,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Two channels: spectrum mixer</source><translation>Два канала: микшер спектров</translation></message>
 </context>
 <context><name>Ui</name>
-<message><source>Startup: generator, loopback, microphone</source><translation>Стартовый: генератор, loopback, микрофон</translation></message>
+<message><source>Spectrogram: generator, loopback, microphone</source><translation>Спектрограмма: генератор, loopback, микрофон</translation></message>
 <message><source>Stereo: generator, loopback, microphone</source><translation>Стерео: генератор, loopback, микрофон</translation></message>
 <message><source>Stream count</source><translation>Количество потоков</translation></message>
 <message><source>Channels per stream</source><translation>Каналов в потоке</translation></message>
@@ -1851,5 +2056,343 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Stream %1 · Channel %2</source><translation>Поток %1 · Канал %2</translation></message>
 <message><source>Add stream</source><translation>Добавить поток</translation></message>
 <message><source>Remove last stream</source><translation>Удалить последний поток</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Could not change the display refresh rate.</source><translation>Не удалось изменить частоту обновления экрана.</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Music spectrum: RFFT, profiles and note salience</source><translation>Музыкальный спектр: RFFT, профили и нотная активность</translation></message>
+<message><source>Resampler comparison</source><translation>Сравнение ресэмплеров</translation></message>
+<message><source>Frequency statistics and profiles</source><translation>Частотная статистика и профили</translation></message>
+<message><source>Real FFT (complex)</source><translation>Вещественный FFT (комплексный выход)</translation></message>
+<message><source>Spectral projection</source><translation>Спектральная проекция</translation></message>
+<message><source>Frequency profile normalizer</source><translation>Нормализатор частотного профиля</translation></message>
+<message><source>Broadband features</source><translation>Широкополосные признаки</translation></message>
+<message><source>Note salience (experimental)</source><translation>Нотная активность (экспериментальная)</translation></message>
+<message><source>Feature quantization</source><translation>Квантование признаков</translation></message>
+<message><source>Bypass (native sample rate)</source><translation>Без ресэмплинга (исходная Fs)</translation></message>
+<message><source>FIR (full quality)</source><translation>КИХ (полное качество)</translation></message>
+<message><source>Compact FIR</source><translation>Компактный КИХ</translation></message>
+<message><source>IIR (experimental)</source><translation>БИХ (экспериментальный)</translation></message>
+<message><source>Linear (diagnostic, aliasing risk)</source><translation>Линейный (диагностика, риск алиасинга)</translation></message>
+<message><source>Resampling method</source><translation>Метод ресэмплинга</translation></message>
+<message><source>FFT algorithm</source><translation>Алгоритм FFT</translation></message>
+<message><source>Frequency normalization</source><translation>Частотная нормировка</translation></message>
+<message><source>Loaded profile</source><translation>Загруженный профиль</translation></message>
+<message><source>Band statistic</source><translation>Статистика полосы</translation></message>
+<message><source>Sum of bin power</source><translation>Сумма мощности ячеек</translation></message>
+<message><source>Mean bin power</source><translation>Средняя мощность ячеек</translation></message>
+<message><source>Maximum bin power</source><translation>Максимальная мощность ячейки</translation></message>
+<message><source>Positive spectral flux</source><translation>Положительное изменение спектра</translation></message>
+<message><source>Real</source><translation>Действительная часть</translation></message>
+<message><source>Imaginary</source><translation>Мнимая часть</translation></message>
+<message><source>Raw magnitude</source><translation>Модуль FFT без масштабирования</translation></message>
+<message><source>Peak amplitude</source><translation>Пиковая амплитуда</translation></message>
+<message><source>Power</source><translation>Мощность</translation></message>
+<message><source>Amplitude, dB</source><translation>Амплитуда, дБ</translation></message>
+<message><source>Power, dB</source><translation>Мощность, дБ</translation></message>
+<message><source>PSD, dB</source><translation>Спектральная плотность мощности, дБ</translation></message>
+<message><source>Spectral representation</source><translation>Спектральное представление</translation></message>
+<message><source>Load frequency profile</source><translation>Загрузить частотный профиль</translation></message>
+<message><source>Frequency profiles (*.json)</source><translation>Частотные профили (*.json)</translation></message>
+<message><source>Could not read frequency profile</source><translation>Не удалось прочитать частотный профиль</translation></message>
+<message><source>Storage precision</source><translation>Точность хранения</translation></message>
+<message><source>SpeexDSP quality</source><translation>Качество SpeexDSP</translation></message>
+<message><source>Band boundaries, Hz</source><translation>Границы полос, Гц</translation></message>
+<message><source>Manual frequency gain</source><translation>Ручной частотный коэффициент</translation></message>
+<message><source>Per-bin gain curve</source><translation>Кривая коэффициентов по ячейкам</translation></message>
+<message><source>Spectral reference</source><translation>Опорное спектральное значение</translation></message>
+<message><source>Floor, dB</source><translation>Нижний порог, дБ</translation></message>
+<message><source>First note, MIDI</source><translation>Первая нота, MIDI</translation></message>
+<message><source>Note cell count</source><translation>Количество нотных ячеек</translation></message>
+<message><source>A4 tuning, Hz</source><translation>Опорный строй A4, Гц</translation></message>
+<message><source>Harmonic count</source><translation>Количество гармоник</translation></message>
+<message><source>Quantization minimum</source><translation>Минимум квантования</translation></message>
+<message><source>Quantization maximum</source><translation>Максимум квантования</translation></message>
+<message><source>Run comparison</source><translation>Запустить сравнение</translation></message>
+<message><source>Prepare, us</source><translation>Подготовка, мкс</translation></message>
+<message><source>Owned payload, bytes</source><translation>Память объекта и буферов, байт</translation></message>
+<message><source>Content delay, input samples</source><translation>Задержка сигнала, входных отсчётов</translation></message>
+<message><source>frequency dependent</source><translation>зависит от частоты</translation></message>
+<message><source>Silent synthetic input; processing time per 480 input samples. RAM excludes allocator and driver buffers. IIR is experimental; linear downsampling risks aliasing.</source><translation>Синтетический сигнал без звукового вывода; время обработки 480 входных отсчётов. Память не включает накладные расходы аллокатора и драйвера. БИХ экспериментален; линейное понижение Fs создаёт алиасинг.</translation></message>
+<message><source>Note salience, MIDI (X)</source><translation>Нотная активность, MIDI (X)</translation></message>
+<message><source>Note salience, MIDI (Z)</source><translation>Нотная активность, MIDI (Z)</translation></message>
+<message><source>Note salience (Y)</source><translation>Нотная активность (Y)</translation></message>
+<message><source>Quantized code (Y)</source><translation>Код квантования (Y)</translation></message>
+<message><source>Phase, radians (Y)</source><translation>Фаза, радианы (Y)</translation></message>
+<message><source>Power (Y)</source><translation>Мощность (Y)</translation></message>
+<message><source>PSD (Y)</source><translation>Спектральная плотность мощности (Y)</translation></message>
+<message><source>Level, dB (Y)</source><translation>Уровень, дБ (Y)</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Note grid</source><translation>Нотная сетка</translation></message>
+<message><source>MIDI %1 to %2; A4 = %3 Hz; note salience</source><translation>MIDI от %1 до %2; A4 = %3 Гц; нотная активность</translation></message>
+<message><source>Input sample rate, Hz</source><translation>Входная частота дискретизации, Гц</translation></message>
+<message><source>Gain, dB</source><translation>Коэффициент, дБ</translation></message>
+<message><source>Mean spectrum, dB</source><translation>Средний спектр, дБ</translation></message>
+<message><source>Elapsed time, s</source><translation>Прошедшее время, с</translation></message>
+<message><source>Select audio files first</source><translation>Сначала выберите аудиофайлы</translation></message>
+<message><source>Analyzing audio files</source><translation>Анализ аудиофайлов</translation></message>
+<message><source>Analysis complete: %1 s audio / %2 s processing (%3×)</source><translation>Анализ завершён: %1 с аудио / %2 с обработки (%3×)</translation></message>
+<message><source>Analysis cancelled</source><translation>Анализ отменён</translation></message>
+<message><source>Analysis failed</source><translation>Ошибка анализа</translation></message>
+<message><source>Music frequency profile analyzer</source><translation>Анализатор частотного профиля музыки</translation></message>
+<message><source>Add audio files</source><translation>Добавить аудиофайлы</translation></message>
+<message><source>Add folder</source><translation>Добавить папку</translation></message>
+<message><source>Clear files</source><translation>Очистить список файлов</translation></message>
+<message><source>Load profile</source><translation>Загрузить профиль</translation></message>
+<message><source>Save profile</source><translation>Сохранить профиль</translation></message>
+<message><source>Analysis sample rate, Hz</source><translation>Частота дискретизации анализа, Гц</translation></message>
+<message><source>FFT size</source><translation>Размер FFT</translation></message>
+<message><source>Spectrum representation</source><translation>Спектральное представление</translation></message>
+<message><source>Analysis workers</source><translation>Потоки анализа</translation></message>
+<message><source>Hop, samples</source><translation>Шаг окна, отсчёты</translation></message>
+<message><source>Smoothing radius, bins</source><translation>Радиус сглаживания, ячейки</translation></message>
+<message><source>Silence threshold, PCM RMS</source><translation>Порог тишины, RMS PCM</translation></message>
+<message><source>Minimum linear gain</source><translation>Минимальный линейный коэффициент</translation></message>
+<message><source>Maximum linear gain</source><translation>Максимальный линейный коэффициент</translation></message>
+<message><source>Spectrum reference</source><translation>Опорное спектральное значение</translation></message>
+<message><source>Spectrum floor, dB</source><translation>Нижний порог спектра, дБ</translation></message>
+<message><source>Analyze selected files</source><translation>Анализировать выбранные файлы</translation></message>
+<message><source>Cancel analysis</source><translation>Отменить анализ</translation></message>
+<message><source>Files contribute equally after excluding windows with RMS at or below the threshold. All channels are explicitly downmixed to mono; sample-rate conversion uses FIR. The selected file has a full-track preview averaged into at most 512 time bins. This is spectral equalization, not loudness normalization.</source><translation>Файлы вносят равный вклад после исключения окон с RMS не выше порога. Все каналы явно смешиваются в моно; преобразование частоты дискретизации использует КИХ. Предпросмотр выбранного файла охватывает всю композицию и усреднён до 512 временных ячеек. Это выравнивание спектра, а не нормировка громкости.</translation></message>
+<message><source>Mean spectrum</source><translation>Средний спектр</translation></message>
+<message><source>Normalization curve</source><translation>Кривая нормировки</translation></message>
+<message><source>Apply profile to preview</source><translation>Применить профиль к предпросмотру</translation></message>
+<message><source>Full-track spectrogram</source><translation>Спектрограмма всей композиции</translation></message>
+<message><source>Composition</source><translation>Композиция</translation></message>
+<message><source>Active windows</source><translation>Активные окна</translation></message>
+<message><source>Total windows</source><translation>Всего окон</translation></message>
+<message><source>Duration, s</source><translation>Продолжительность, с</translation></message>
+<message><source>Composition statistics</source><translation>Статистика композиций</translation></message>
+<message><source>Select audio files</source><translation>Выбрать аудиофайлы</translation></message>
+<message><source>Audio files (*.wav *.flac *.mp3)</source><translation>Аудиофайлы (*.wav *.flac *.mp3)</translation></message>
+<message><source>Select audio folder</source><translation>Выбрать папку с аудио</translation></message>
+<message><source>Save frequency profile</source><translation>Сохранить частотный профиль</translation></message>
+<message><source>Profile saved</source><translation>Профиль сохранён</translation></message>
+<message><source>Profile loaded</source><translation>Профиль загружен</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>RMS of spectral power</source><translation>RMS спектральной мощности</translation></message>
+<message><source>Loaded profile data (JSON)</source><translation>Данные загруженного профиля (JSON)</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Frequency profile</source><translation>Частотный профиль</translation></message>
+<message><source>Frequency profile attached</source><translation>Частотный профиль прикреплён</translation></message>
+<message><source>No frequency profile attached</source><translation>Частотный профиль не прикреплён</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Buffer size, N</source><translation>Размер буфера, N</translation></message>
+<message><source>FFT size, N</source><translation>Размер преобразования, N</translation></message>
+<message><source>Output sample rate, Fs</source><translation>Выходная частота дискретизации, Fs</translation></message>
+<message><source>Input sample rate, Fs</source><translation>Входная частота дискретизации, Fs</translation></message>
+<message><source>Spectrum axis</source><translation>Частотная ось</translation></message>
+<message><source>Spectral amplitude</source><translation>Амплитуда спектра</translation></message>
+<message><source>First bin index</source><translation>Индекс первой частоты</translation></message>
+<message><source>One-sided amplitude</source><translation>Амплитуда одностороннего спектра</translation></message>
+<message><source>Window coherent gain</source><translation>Когерентное усиление окна</translation></message>
+<message><source>Parameter is supplied by a connection</source><translation>Параметр задаётся подключённым блоком</translation></message>
+<message><source>Elementwise multiplication</source><translation>Поэлементное умножение</translation></message>
+<message><source>First array</source><translation>Первый массив</translation></message>
+<message><source>Second array</source><translation>Второй массив</translation></message>
+<message><source>Product</source><translation>Произведение</translation></message>
+<message><source>Array size, N</source><translation>Размер массива, N</translation></message>
+<message><source>Show DC outputs</source><translation>Показывать выходы DC</translation></message>
+<message><source>Musical spectrogram row</source><translation>Ряд музыкальной спектрограммы</translation></message>
+<message><source>Composite row: low, mid, high, notes</source><translation>Составной ряд: НЧ, СЧ, ВЧ, ноты</translation></message>
+<message><source>Full note-grid agreement, %</source><translation>Попадание в полную нотную сетку, %</translation></message>
+<message><source>Selected note-grid agreement, %</source><translation>Попадание в выбранную нотную сетку, %</translation></message>
+<message><source>Note spectrum</source><translation>Нотный спектр</translation></message>
+<message><source>Last note, MIDI</source><translation>Последняя нота, MIDI</translation></message>
+<message><source>Assessment first note, MIDI</source><translation>Первая нота полной оценочной сетки, MIDI</translation></message>
+<message><source>Assessment last note, MIDI</source><translation>Последняя нота полной оценочной сетки, MIDI</translation></message>
+<message><source>Peak agreement tolerance, cents</source><translation>Допуск попадания пиков, центы</translation></message>
+<message><source>Minimum linear peak level</source><translation>Минимальный линейный уровень пика</translation></message>
+<message><source>Spectral weights (CSV; empty: uniform)</source><translation>Веса спектра (CSV; пусто: равные)</translation></message>
+<message><source>Low range start, Hz</source><translation>Начало диапазона НЧ, Гц</translation></message>
+<message><source>Low range end, Hz</source><translation>Конец диапазона НЧ, Гц</translation></message>
+<message><source>Low output count (0: pass-through)</source><translation>Количество выходов НЧ (0: без усреднения)</translation></message>
+<message><source>Mid range start, Hz</source><translation>Начало диапазона СЧ, Гц</translation></message>
+<message><source>Mid range end, Hz</source><translation>Конец диапазона СЧ, Гц</translation></message>
+<message><source>Mid output count (0: pass-through)</source><translation>Количество выходов СЧ (0: без усреднения)</translation></message>
+<message><source>High range start, Hz</source><translation>Начало диапазона ВЧ, Гц</translation></message>
+<message><source>High range end, Hz</source><translation>Конец диапазона ВЧ, Гц</translation></message>
+<message><source>High output count (0: pass-through)</source><translation>Количество выходов ВЧ (0: без усреднения)</translation></message>
+<message><source>Low range reduction</source><translation>Объединение значений НЧ</translation></message>
+<message><source>Mid range reduction</source><translation>Объединение значений СЧ</translation></message>
+<message><source>High range reduction</source><translation>Объединение значений ВЧ</translation></message>
+<message><source>Pass through bins</source><translation>Передавать частоты без усреднения</translation></message>
+<message><source>Arithmetic mean</source><translation>Среднее арифметическое</translation></message>
+<message><source>RMS of spectral values</source><translation>Среднеквадратическое спектральных значений</translation></message>
+<message><source>Row layout</source><translation>Состав ряда</translation></message>
+<message><source>Low: %1 · Mid: %2 · High: %3 · Notes: %4</source><translation>НЧ: %1 · СЧ: %2 · ВЧ: %3 · Ноты: %4</translation></message>
+<message><source>Row layout unavailable</source><translation>Состав ряда недоступен</translation></message>
+<message><source>[Low %1] [Mid %2] [High %3] [Notes %4]</source><translation>[НЧ %1] [СЧ %2] [ВЧ %3] [Ноты %4]</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Selected track spectrogram</source><translation>Спектрограмма выбранного трека</translation></message>
+<message><source>Building preview: %1</source><translation>Построение спектрограммы: %1</translation></message>
+<message><source>Preview: %1 (%2 s)</source><translation>Спектрограмма: %1 (%2 с)</translation></message>
+<message><source>Select a track to view its spectrogram</source><translation>Выберите трек для просмотра спектрограммы</translation></message>
+<message><source>Preview failed: %1</source><translation>Не удалось построить спектрограмму: %1</translation></message>
+<message><source>DC (0 Hz), mean spectrum: %1</source><translation>DC (0 Гц), средний спектр: %1</translation></message>
+<message><source>Profile saved: %1</source><translation>Профиль сохранён: %1</translation></message>
+<message><source>No completed profile to save</source><translation>Нет готового профиля для сохранения</translation></message>
+<message><source>Analysis is running</source><translation>Выполняется анализ</translation></message>
+<message><source>Mean spectrum of all tracks</source><translation>Средний спектр всех треков</translation></message>
+<message><source>Profile loaded without saved track previews. A new scan will collect all track results; previews currently require the source audio.</source><translation>Профиль загружен без сохранённых спектрограмм треков. Новый прогон соберёт все результаты; пока для предпросмотра нужны исходные аудиофайлы.</translation></message>
+<message><source>Apply band-averaged profile to preview</source><translation>Коррекция предпросмотра по средним коэффициентам полос</translation></message>
+<message><source>Preview correction is approximate: display bands use averaged coefficients. Full-resolution spectrum processing is unchanged.</source><translation>Коррекция предпросмотра приближённая: используются средние коэффициенты полос. Обработка полного спектра использует каждый коэффициент отдельно.</translation></message>
+<message><source>Configure a new scan; previous results remain available.</source><translation>Настройте новый прогон; предыдущие результаты остаются доступны.</translation></message>
+<message><source>Showing completed scan results</source><translation>Показаны результаты готового прогона</translation></message>
+<message><source>Scan settings</source><translation>Настройка сканирования</translation></message>
+<message><source>Scanning</source><translation>Сканирование</translation></message>
+<message><source>Scan results</source><translation>Результаты сканирования</translation></message>
+<message><source>New scan</source><translation>Новый прогон</translation></message>
+<message><source>Back to results</source><translation>Вернуться к результатам</translation></message>
+<message><source>Preview time cells</source><translation>Временные ячейки предпросмотра</translation></message>
+<message><source>Preview frequency cells</source><translation>Частотные ячейки предпросмотра</translation></message>
+<message><source>Preview storage before compression: up to %1 MiB. FFT statistics retain every frequency bin.</source><translation>Предпросмотры до сжатия: до %1 МиБ. Статистика FFT сохраняет все частотные значения.</translation></message>
+<message><source>Completed scan: %1 Hz; FFT %2; %3; %4; hop %5 samples; %6 tracks</source><translation>Готовый прогон: %1 Гц; FFT %2; %3; %4; шаг %5 отсчётов; треков: %6</translation></message>
+<message><source>Selected track mean spectrum</source><translation>Средний спектр выбранного трека</translation></message>
+<message><source>No saved spectrum for this track; start a new scan</source><translation>В профиле нет спектра этого трека; выполните новый прогон</translation></message>
+<message><source>Files contribute equally after excluding windows with RMS at or below the threshold. All channels are explicitly downmixed to mono; sample-rate conversion uses the selected scheme resampler. Each track stores a full-track preview averaged to the configured time and frequency resolution. This is spectral equalization, not loudness normalization.</source><translation>Файлы вносят равный вклад после исключения окон ниже порога RMS. Каналы смешиваются в моно, ресэмплинг использует выбранный метод схемы. Для каждого трека сохраняется спектрограмма с заданным разрешением по времени и частоте. Это выравнивание спектра, а не громкости.</translation></message>
+<message><source>Results use the completed scan settings. Select a track to inspect its saved spectrogram and mean spectrum. New scan opens editable settings for another run. Save profile stores statistics, coefficients and previews; load it to browse without reading audio again.</source><translation>Результаты относятся к настройкам готового прогона. Выберите трек для просмотра его сохранённой спектрограммы и среднего спектра. «Новый прогон» открывает редактируемые настройки. Профиль сохраняет статистику, коэффициенты и предпросмотры: после загрузки аудио не нужно читать повторно.</translation></message>
+<message><source>Array values (CSV or f32le-base64; empty: fill value)</source><translation>Значения массива (CSV или f32le-base64; пусто: заполнение одним значением)</translation></message>
+<message><source>Array operation</source><translation>Операция над массивами</translation></message>
+<message><source>Explicit coefficients: %1</source><translation>Задано коэффициентов: %1</translation></message>
+<message><source>Tools</source><translation>Инструменты</translation></message>
+<message><source>Multiply</source><translation>Умножение</translation></message>
+<message><source>Add</source><translation>Сложение</translation></message>
+<message><source>Elementwise addition</source><translation>Поэлементное сложение</translation></message>
+<message><source>Term %1</source><translation>Слагаемое %1</translation></message>
+<message><source>Sum</source><translation>Сумма</translation></message>
+<message><source>Preserve input floor when adding</source><translation>Сохранять нижний порог входа при сложении</translation></message>
+<message><source>Input floor</source><translation>Нижний порог входа</translation></message>
+<message><source>Coefficients #%1 → spectrum #%2 (%3 Hz, N=%4, %5)</source><translation>Коэффициенты #%1 → спектр #%2 (%3 Гц, N=%4, %5)</translation></message>
+<message><source>The coefficient route is no longer available</source><translation>Маршрут коэффициентов больше недоступен</translation></message>
+<message><source>The coefficient source feeds multiple routes; select an isolated source</source><translation>Источник коэффициентов подключён к нескольким маршрутам; выберите отдельный источник</translation></message>
+<message><source>Profile settings do not match the current spectrum (Fs, FFT, window, representation or resampler)</source><translation>Профиль не соответствует текущему спектру (Fs, FFT, окно, представление или ресэмплер)</translation></message>
+<message><source>The spectral representation changed; select the target again</source><translation>Вид спектра изменился; выберите маршрут заново</translation></message>
+<message><source>Apply frequency profile</source><translation>Применить частотный профиль</translation></message>
+<message><source>Wait for the current scheme update</source><translation>Дождитесь текущего обновления схемы</translation></message>
+<message><source>Coefficient route in the scheme</source><translation>Маршрут коэффициентов в схеме</translation></message>
+<message><source>Read scheme settings</source><translation>Прочитать настройки схемы</translation></message>
+<message><source>The profile supplies linear coefficients that multiply the spectrum. Phase is unchanged. Decibels are a chart display setting only. The current route requires an Array coefficients block and two-input array arithmetic after AmplitudePhase. Resampling uses the selected scheme frontend.</source><translation>Профиль задаёт линейные коэффициенты, на которые умножается спектр. Фаза сохраняется. Децибелы включаются только в настройках отображения графика. Нужны блок «Коэффициенты массива» и операция над двумя массивами после «Амплитуда и фаза спектра», ресэмплинг использует настройки выбранного маршрута схемы.</translation></message>
+<message><source>Mean over positive frequency bins: %1; DC is kept separate</source><translation>Среднее по положительным частотам: %1; DC учитывается отдельно</translation></message>
+<message><source>Linear gain</source><translation>Линейный коэффициент</translation></message>
+<message><source>Corrected mean</source><translation>Среднее после коррекции</translation></message>
+<message><source>Active-window presence, %</source><translation>Встречаемость в активных окнах, %</translation></message>
+<message><source>Presence, %</source><translation>Встречаемость, %</translation></message>
+<message><source>Share of active windows above the spectral floor; equal weight per active file</source><translation>Доля активных окон выше спектрального порога; равный вес каждого активного файла</translation></message>
+<message><source>Frequency statistics</source><translation>Статистика частот</translation></message>
+<message><source>Profile could not be applied</source><translation>Не удалось применить профиль</translation></message>
+<message><source>Profile applied to the scheme; save the project to keep the coefficients</source><translation>Профиль применён к схеме; сохраните проект, чтобы сохранить коэффициенты</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Files in list: %1</source><translation>Файлов в списке: %1</translation></message>
+<message><source>Analyze all listed files</source><translation>Анализировать весь список</translation></message>
+<message><source>%v / %m files (%p%)</source><translation>%v / %m файлов (%p%)</translation></message>
+<message><source>Processed: %1 / %2; contributed to profile: %3; without active windows: %4; failed: %5</source><translation>Обработано: %1 / %2; вошло в профиль: %3; без активных окон: %4; ошибок: %5</translation></message>
+<message><source>Profile contains %1 files; contributed: %2; without active windows: %3. Original failure count was not recorded.</source><translation>В профиле файлов: %1; участвовало: %2; без активных окон: %3. Число ошибок исходного прогона не записано.</translation></message>
+<message><source>Every listed file is analyzed; selection chooses the preview only. Save profile exports coefficients and statistics to JSON without rescanning audio. To transfer them, load the profile, apply it to the selected scheme route, then save the project.</source><translation>Анализируется весь список; выделение выбирает только предпросмотр. «Сохранить профиль» экспортирует коэффициенты и статистику в JSON без повторного анализа аудио. Для переноса загрузите профиль, примените к выбранному маршруту схемы и сохраните проект.</translation></message>
+</context>
+<context><name>Ui</name><message><source>Sample rate: profile %1 Hz; scheme %2 Hz</source><translation>Частота дискретизации: профиль %1 Гц; схема %2 Гц</translation></message><message><source>Resampler: profile %1 (quality %2); scheme %3 (quality %4)</source><translation>Ресэмплер: профиль %1 (качество %2); схема %3 (качество %4)</translation></message></context>
+<context><name>Ui</name>
+<message><source>System refresh rate</source><translation>Системная частота</translation></message>
+<message><source>FFT size: profile %1; scheme %2</source><translation>Размер FFT: профиль %1; схема %2</translation></message>
+<message><source>Window: profile %1; scheme %2</source><translation>Окно: профиль %1; схема %2</translation></message>
+<message><source>Spectrum: profile %1 (compensation %2); scheme %3 (compensation %4)</source><translation>Спектр: профиль %1 (компенсация %2); схема %3 (компенсация %4)</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>First MIDI note</source><translation>Первая нота MIDI</translation></message>
+<message><source>Configuration dependency</source><translation>Конфигурационная зависимость</translation></message>
+<message><source>Invalid configuration connection</source><translation>Неверная конфигурационная связь</translation></message>
+<message><source>Incompatible connection: check dtype, shape, layout, clock and coordinates</source><translation>Несовместимая связь: проверьте тип, форму, размещение данных, часы и координаты</translation></message>
+<message><source>Draft contains a missing endpoint</source><translation>В черновике отсутствует подключённый порт</translation></message>
+<message><source>Analysis service unavailable</source><translation>Служба анализа недоступна</translation></message>
+<message><source>Profile coefficient range does not match the declared array size</source><translation>Диапазон коэффициентов профиля не соответствует заданному размеру массива</translation></message>
+<message><source>Universal</source><translation>Универсальные</translation></message>
+<message><source>Signals</source><translation>Сигналы</translation></message>
+<message><source>Notes</source><translation>Ноты</translation></message>
+<message><source>Matrices</source><translation>Матрицы</translation></message>
+<message><source>Vectors</source><translation>Векторы</translation></message>
+<message><source>Scalar values</source><translation>Скалярные значения</translation></message>
+<message><source>Selected channel</source><translation>Выбранный канал</translation></message>
+<message><source>Array values (CSV; empty: fill value)</source><translation>Значения массива (CSV; пусто: значение заполнения)</translation></message>
+<message><source>Declared audio frontend</source><translation>Явно заданная подготовка аудиосигнала</translation></message>
+<message><source>Include DC</source><translation>Включить постоянную составляющую</translation></message>
+<message><source>Include Nyquist</source><translation>Включить частоту Найквиста</translation></message>
+<message><source>Channel policy</source><translation>Обработка каналов</translation></message>
+<message><source>Analysis interval numerator</source><translation>Числитель интервала анализа</translation></message>
+<message><source>Analysis interval denominator</source><translation>Знаменатель интервала анализа</translation></message>
+<message><source>Resampler quality</source><translation>Качество ресэмплера</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Low</source><translation>НЧ</translation></message>
+<message><source>Mid</source><translation>СЧ</translation></message>
+<message><source>High</source><translation>ВЧ</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Preparation value unavailable</source><translation>Значение для подготовки недоступно</translation></message>
+<message><source>Preparation value type mismatch</source><translation>Несовместимый тип значения для подготовки</translation></message>
+<message><source>Audio frontend settings do not match</source><translation>Настройки подготовки аудиосигнала не совпадают</translation></message>
+<message><source>Node %1, port %2: %3</source><translation>Узел %1, порт %2: %3</translation></message>
+<message><source>Connection #%1</source><translation>Связь №%1</translation></message>
+<message><source>Unsupported version</source><translation>Неподдерживаемая версия</translation></message>
+<message><source>Graph exceeds limits</source><translation>Схема превышает ограничения</translation></message>
+<message><source>Invalid node</source><translation>Неверный узел</translation></message>
+<message><source>Unknown node kind</source><translation>Неизвестный вид узла</translation></message>
+<message><source>Invalid parameters</source><translation>Неверные параметры</translation></message>
+<message><source>Invalid port</source><translation>Неверный порт</translation></message>
+<message><source>Invalid contract</source><translation>Неверный контракт</translation></message>
+<message><source>Multiple connections to one input</source><translation>Несколько связей на одном входе</translation></message>
+<message><source>Missing endpoint</source><translation>Порт связи отсутствует</translation></message>
+<message><source>Graph contains a cycle</source><translation>Схема содержит цикл</translation></message>
+<message><source>Unsupported operation combination</source><translation>Неподдерживаемая комбинация операций</translation></message>
+<message><source>Resource limit exceeded</source><translation>Превышено ограничение ресурсов</translation></message>
+<message><source>Insufficient workspace</source><translation>Недостаточно рабочей памяти</translation></message>
+<message><source>Coordinate (X)</source><translation>Координата (X)</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Select an explicit frame input before applying a profile to multiple factors</source><translation>Перед применением профиля к нескольким множителям явно выберите вход кадров</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Analysis cadence</source><translation>Периодичность анализа</translation></message>
+<message><source>Clear the selected device before changing the capture source</source><translation>Перед сменой источника захвата сбросьте выбранное устройство</translation></message>
+<message><source>Invalid profile settings</source><translation>Некорректные настройки профиля</translation></message>
+<message><source>Invalid profile cadence</source><translation>Некорректная периодичность профиля</translation></message>
+<message><source>Coherent gain, C</source><translation>Когерентный коэффициент, C</translation></message>
+<message><source>Power gain, E</source><translation>Энергетический коэффициент, E</translation></message>
+<message><source>DC layout</source><translation>Наличие постоянной составляющей</translation></message>
+<message><source>Nyquist layout</source><translation>Наличие частоты Найквиста</translation></message>
+<message><source>Resampler design version</source><translation>Версия реализации ресэмплера</translation></message>
+<message><source>Profile frequency grid length</source><translation>Длина частотной сетки профиля</translation></message>
+<message><source>Profile frequency presence</source><translation>Статистика присутствия частот профиля</translation></message>
+<message><source>Invalid profile coefficient</source><translation>Некорректный коэффициент профиля</translation></message>
+<message><source>Mean channels</source><translation>Среднее каналов</translation></message>
+<message><source>Selected channel %1</source><translation>Выбранный канал %1</translation></message>
+<message><source>Included</source><translation>Включено</translation></message>
+<message><source>Excluded</source><translation>Исключено</translation></message>
+<message><source>%1: profile %2; target %3</source><translation>%1: профиль %2; назначение %3</translation></message>
+<message><source>Declared frontend: %1; %2 (quality %3)</source><translation>Заданный входной тракт: %1; %2 (качество %3)</translation></message>
+<message><source>hann</source><translation>Ханна</translation></message>
+<message><source>hamming</source><translation>Хэмминга</translation></message>
+<message><source>blackman</source><translation>Блэкмана</translation></message>
+<message><source>rectangular</source><translation>Прямоугольное</translation></message>
+<message><source>bartlett</source><translation>Бартлетта</translation></message>
+<message><source>blackman_harris</source><translation>Блэкмана — Харриса</translation></message>
+<message><source>flat_top</source><translation>С плоской вершиной</translation></message>
+<message><source>Draft connection has invalid endpoints: %1, output %2 → %3, input %4</source><translation>У связи черновика неверные порты: %1, выход %2 → %3, вход %4</translation></message>
+<message><source>A profile supplies linear coefficients through the declared Fill frontend and the selected array arithmetic input. Phase is unchanged. Decibels only affect chart display. No upstream block changes the declared frontend automatically.</source><translation>Профиль задаёт линейные коэффициенты через объявленные настройки блока заполнения и выбранный вход арифметики массивов. Фаза не меняется. Децибелы относятся только к отображению графика. Предыдущие блоки не меняют объявленные настройки автоматически.</translation></message>
+<message><source>Active files contribute equally to spectral equalization. The declared analyzer frontend chooses mean channels or one selected channel and the resampling policy. Standalone scans use the displayed baseline frontend. Preview cells average the declared time and frequency buckets; they do not represent individual FFT bins.</source><translation>Активные файлы имеют одинаковый вес при спектральной коррекции. Заданные настройки анализатора определяют усреднение каналов или выбор одного канала и метод ресэмплинга. Отдельный анализ использует показанные базовые настройки. Ячейки предпросмотра усредняют заданные интервалы времени и частот, а не показывают отдельные отсчёты FFT.</translation></message>
+<message><source>Preparation value is invalid</source><translation>Значение подготовки некорректно</translation></message>
+<message><source>Preparation value is outside the allowed range</source><translation>Значение подготовки вне допустимого диапазона</translation></message>
+<message><source>Input sample rate, Hz (0: unknown)</source><translation>Входная частота дискретизации, Гц (0: неизвестна)</translation></message>
+<message><source>Fixed sample hop</source><translation>Фиксированный шаг отсчётов</translation></message>
+<message><source>Declared time interval</source><translation>Заданный временной интервал</translation></message>
+<message><source>Fixed hop: %1 samples</source><translation>Фиксированный шаг: %1 отсчётов</translation></message>
+<message><source>Interval: %1/%2 s (fractional sample steps)</source><translation>Интервал: %1/%2 с (дробный шаг отсчётов)</translation></message>
+<message><source>Completed scan: %1 Hz; FFT %2; %3; %4; %5; %6 tracks</source><translation>Анализ завершён: %1 Гц; FFT %2; %3; %4; %5; %6 композиций</translation></message>
 </context>
 </TS>

@@ -69,6 +69,10 @@ Q_SIGNALS:
     void protocolError(signal_contracts::Status status);
     void parsingError(BDSP::parse_packet_status_t status);
 private:
+    void bind_stream_handlers();
+    void bind_device_signals();
+    void discard_retired_bytes(std::span<std::uint8_t> bytes);
+    void feed_received_bytes(std::span<const std::uint8_t> bytes);
     void receive();
     signal_contracts::Status flush();
     QIODevice &device_;

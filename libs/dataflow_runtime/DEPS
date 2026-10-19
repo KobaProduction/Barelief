@@ -1,0 +1,2 @@
+include_rules = ['-bdsp_protocol', '-embedded_support', '-control']
+include_rules += ['+libs/signal_contracts', '+libs/dsp_kernels', '+libs/wled_protocol']

@@ -17,7 +17,8 @@ constexpr Limits desktop_limits() noexcept {
             256,    64,     4096, 32,     {16, 800000, 800000, 65536, 256, 32768}};
 }
 constexpr Limits device_limits() noexcept {
-    return {16384, 16384, 64, 2048, 128, 8, 16, 32, 32, 2, 4, 8, 128, 32, {2, 4096, 32768, 2048, 64, 256}};
+    // Nine nodes admit the explicit Window/N/coefficient/product SDK graph.
+    return {16384, 16384, 64, 2048, 128, 9, 16, 32, 32, 2, 4, 8, 128, 32, {2, 4096, 32768, 2048, 64, 256}};
 }
 enum class Status {
     Ok,

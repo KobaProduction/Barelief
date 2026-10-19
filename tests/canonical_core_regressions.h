@@ -46,7 +46,7 @@ inline void interval_partition_gap_bypass(){const auto expected=partition(4096);
  node(g,2).enabled=false;prepare(e,g,prepared);check(e.apply(std::move(prepared))==Status::ok,"window bypass Apply");check(pcm.send(e,800,c,.75f)==Status::ok&&c.count==2,"bypass keeps schedule");for(std::size_t j=0;j<c.width;++j)check(c.data[2048+j]==0,"bypass typed zeros");
  node(g,2).enabled=true;prepare(e,g,prepared);check(e.apply(std::move(prepared))==Status::ok,"window resume Apply");check(pcm.send(e,800,c,-.125f)==Status::ok&&c.count==3,"resume schedule");for(std::size_t p=0;p<1;++p)for(std::size_t j=0;j<1024;++j)check(c.data[4096+p*1024+j]==(j<224?0.f:-.125f),"resume excludes bypass PCM");
  for(const Ratio bad:{Ratio{0,1},Ratio{1,0},Ratio{2,120},Ratio{1,1001},Ratio{61,1}}){auto invalid=g;invalid.execution_interval=bad;check(e.prepare_numeric(invalid,{profile().admission,profile().resources},prepared)!=Status::ok&&e.running(),"invalid interval cannot replace active graph");}
- auto low=short_window(30);node(low,1).kind="NetworkInput";node(low,1).parameters=EndpointProcessingParameters{};std::array<std::size_t,64> workspace{};ProcessingGraphAdmission admission;const auto p=profile();const auto rejected=admit_processing_graph(low,p.admission,PreparedGraph::numeric_capabilities(p),workspace,admission);check(!rejected&&rejected.node==2,"domain rejects sub-sample Window interval");
+ auto low=short_window(30);node(low,1).kind="NetworkInput";node(low,1).parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{30}}}}};std::array<std::size_t,64> workspace{};ProcessingGraphAdmission admission;const auto p=profile();const auto rejected=admit_processing_graph(low,p.admission,PreparedGraph::numeric_capabilities(p),workspace,admission);check(!rejected&&rejected.node==2,"domain rejects sub-sample Window interval");
 }
 inline NumericProcessingGraph transform_graph(const char* kind,NumericContract input,NumericContract output,NodeId id=5){auto base=oracle_graph();NumericProcessingGraph g;g.graph_id="transform.regression";auto source=node(base,1);source.kind="NetworkInput";source.parameters=EndpointProcessingParameters{};source.outputs[0].contract=own(input);auto transform=node(base,15);transform.id=id;transform.kind=kind;transform.parameters=TransformProcessingParameters{};transform.inputs[0].contract=own(input);transform.outputs[0].contract=own(output);g.nodes={source,transform};g.edges={{1,id,0,0}};return g;}
 inline void merge_metadata_extremes_and_bypass(){auto base=oracle_graph();geometry(base,48000,512,4096);const auto mono=std::get<NumericContract>(node(base,15).outputs[0].contract.view());
@@ -66,12 +66,12 @@ inline void merge_metadata_extremes_and_bypass(){auto base=oracle_graph();geomet
  auto frame=DataFrameView{stamp,NumericView{&mono,std::as_bytes(std::span(values)),std::span(&layout,1),{256,1},{},{}}};check(e.process_numeric_ports(1,frame,{},{collect,nullptr,nullptr,&c})==Status::ok&&c.data[0]==3,"same-contract bypass forwards instead of computes/mutes");
  node(identity,5).enabled=true;prepare(e,identity,prepared);check(e.apply(std::move(prepared))==Status::ok,"gain resume");frame.stamp.sequence=2;check(e.process_numeric_ports(1,frame,{},{collect,nullptr,nullptr,&c})==Status::ok&&c.data[2048]==6,"active Gain computes");
  auto sink=node(base,8);sink.id=8;sink.kind="NetworkOutput";sink.inputs[0].contract=own(mono);sink.outputs.clear();identity.nodes.push_back(sink);identity.edges.push_back({5,8,0,0});prepare(e,identity,prepared);check(e.apply(std::move(prepared))==Status::ok,"downstream error sink Apply");
- values.fill(std::numeric_limits<float>::max());frame.stamp.sequence=3;c.target=8;check(e.process_numeric_ports(1,frame,{},{nullptr,collect,nullptr,&c})==Status::overflow&&c.last==Status::overflow&&!c.available,"downstream sink retains genuine transform error");
+ values.fill(std::numeric_limits<float>::max());frame.stamp.sequence=3;c.target=8;check(e.process_numeric_ports(1,frame,{},{nullptr,collect,nullptr,&c})==Status::overflow&&c.last==Status::unavailable&&!c.available,"executor retains transform error while downstream sink is unavailable");
 }
 inline void normalized_pcm_fft(){auto base=short_window(48000,512,800);const std::array<std::uint32_t,1> channels{0};auto pcm=std::get<NumericContract>(node(base,1).outputs[0].contract.view());pcm.channel_order=channels;pcm.clock.domain="local";auto integer=pcm;integer.dtype=DType::Int16;integer.representation.normalization=Normalization::SignedUnit;integer.representation.alignment=2;pcm.representation.normalization=Normalization::FloatUnit;pcm.unit=NumericUnit::NormalizedAmplitude;
  node(base,1).kind="NetworkInput";node(base,1).parameters=EndpointProcessingParameters{};node(base,1).outputs[0].contract=own(integer);node(base,2).inputs[0].contract=own(pcm);auto window=std::get<NumericContract>(node(base,2).outputs[0].contract.view());window.channel_order=channels;window.clock.domain="local";window.representation.normalization=Normalization::FloatUnit;window.unit=pcm.unit;node(base,2).outputs[0].contract=own(window);
  ConfiguredProcessingNode converter;converter.id=16;converter.kind="Converter";ConversionPolicy policy;policy.scaling.mode=ScaleMode::PcmNormalize;converter.parameters=ConverterProcessingParameters{policy};converter.inputs={{0,PortDirection::Input,own(integer)}};converter.outputs={{0,PortDirection::Output,own(pcm)}};
- auto defaults=oracle_graph();geometry(defaults,48000,512,800);auto function=node(defaults,3);function.inputs[0].contract=own(window);auto windowed=window;windowed.semantic=Semantic::Windowed;function.outputs[0].contract=own(windowed);function.parameters=TransformProcessingParameters{{{"function",std::string("rectangular")}}};auto fft=node(defaults,4);fft.inputs[0].contract=own(windowed);base.nodes.push_back(converter);base.nodes.push_back(function);base.nodes.push_back(fft);base.edges={{1,16,0,0},{16,2,0,0},{2,3,0,0},{3,4,0,0}};
+ auto defaults=oracle_graph();geometry(defaults,48000,512,800);auto fft=node(defaults,4);fft.inputs[0].contract=own(window);base.nodes.push_back(converter);base.nodes.push_back(fft);base.edges={{1,16,0,0},{16,2,0,0},{2,4,0,0}};
  GraphExecutor e(profile());application::PreparedExecution prepared;prepare(e,base,prepared);check(e.apply(std::move(prepared))==Status::ok,"PcmNormalize native FFT pipeline");std::array<std::int16_t,800> samples;samples.fill(-32768);std::array<PlaneLayout,1> planes{{{0,{2,0}}}};FrameStamp stamp;stamp.sequence=1;Collected c;c.target=4;
  check(e.process_numeric_ports(1,{stamp,NumericView{&integer,std::as_bytes(std::span(samples)),planes,{800,1},{},{}}},{},{collect,nullptr,nullptr,&c})==Status::ok&&c.count==1,"normalized PCM FFT emitted");check(std::abs(c.data[0]-1.f)<1e-6,"normalized -1 PCM DC magnitude oracle");
  node(base,4).enabled=false;prepare(e,base,prepared);check(e.apply(std::move(prepared))==Status::ok,"different-contract FFT bypass");stamp.sequence=2;check(e.process_numeric_ports(1,{stamp,NumericView{&integer,std::as_bytes(std::span(samples)),planes,{800,1},{},{}}},{},{collect,nullptr,nullptr,&c})==Status::ok&&c.count==2,"disabled FFT emits typed spectrum");for(std::size_t i=0;i<c.width;++i)check(c.data[2048+i]==0,"different-contract typed spectrum zeros");
@@ -79,7 +79,9 @@ inline void normalized_pcm_fft(){auto base=short_window(48000,512,800);const std
 inline void mel_coordinate_equivalence(){auto defaults=oracle_graph();geometry(defaults,48000,512,4096);const auto input=std::get<NumericContract>(node(defaults,6).inputs[0].contract.view());const auto output=std::get<NumericContract>(node(defaults,6).outputs[0].contract.view());
  std::array<float,256> data;std::array<double,256> frequencies;for(std::size_t i=0;i<data.size();++i){data[i]=float(1+i%13)/17;frequencies[i]=double(i)*48000/512;}PlaneLayout plane{0,{4,0}};
  Collected regular,explicit_result;regular.target=explicit_result.target=5;
- for(unsigned mode=0;mode<2;++mode){auto c=input;if(mode)c.coordinates[0].mode=CoordinateMode::ExplicitFloat64LE;auto g=transform_graph("Mel",c,output);node(g,5).parameters=TransformProcessingParameters{{{"bands",NumericLiteral{std::uint64_t(output.shape.extents[0].maximum)}}}};
+ for(unsigned mode=0;mode<2;++mode){auto c=input;if(mode)c.coordinates[0].mode=CoordinateMode::ExplicitFloat64LE;auto g=transform_graph("Mel",c,output);
+  NumericArray declared;if(mode)for(const auto hz:frequencies)declared.values.push_back(float(hz));
+  node(g,5).parameters=TransformProcessingParameters{{{"bands",NumericLiteral{std::uint64_t(output.shape.extents[0].maximum)}},{"sample_rate",NumericLiteral{std::uint64_t{48000}}},{"bin_hz",NumericLiteral{48000./512.}},{"first_bin",NumericLiteral{std::uint64_t{0}}},{"frequencies_hz",std::move(declared)}}};
   GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"Mel coordinate mode Apply");FrameStamp stamp;stamp.sequence=1;
   NumericView view{&c,std::as_bytes(std::span(data)),std::span(&plane,1),{256,1},{},{}};if(mode)view.coordinates.axes[0]=std::as_bytes(std::span(frequencies));
   auto& result=mode?explicit_result:regular;check(e.process_numeric_ports(1,{stamp,view},{},{collect,nullptr,nullptr,&result})==Status::ok&&result.count==1,"Mel coordinate mode process");
@@ -104,5 +106,50 @@ inline void detached_preparation_ownership(){auto g=oracle_graph();geometry(g,48
  Pcm pcm(g);Collected out;out.target=6;check(pcm.send(e,1600,out)==Status::ok,"detached base accumulation");auto base=e.snapshot_preparation_base();node(g,9).enabled=false;check(e.prepare_numeric_detached(g,{p.admission,p.resources},base,pending)==Status::ok,"owning detached snapshot preparation");check(pcm.send(e,1600,out)==Status::ok,"processing continues after detached snapshot");const auto latest=rows(e);check(e.register_prepared(pending,base)==Status::ok&&e.apply(std::move(pending))==Status::ok&&rows(e)==latest,"detached Apply refreshes latest compatible history");
  auto stale=e.snapshot_preparation_base();application::PreparedExecution old;check(e.prepare_numeric_detached(g,{p.admission,p.resources},stale,old)==Status::ok,"stale candidate prepared");prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"intervening owner Apply");check(e.register_prepared(old,stale)==Status::would_block&&bool(old)&&e.running(),"stale detached base refused without consumption");
 }
-inline void run(){interval_partition_gap_bypass();merge_metadata_extremes_and_bypass();normalized_pcm_fft();mel_coordinate_equivalence();interval_change_retains_history();wide_clock_and_expansion_bounds();detached_preparation_ownership();}
+struct BurstObservation {
+ std::size_t begin=0,count=0;float peak=0;
+ float sample(std::int64_t index)const {
+  static constexpr std::array<float,4> wave{.25f,0,-.25f,0};
+  return index>=std::int64_t(begin)&&index<std::int64_t(begin+96)?wave[std::size_t(index)%4]:0.f;
+ }
+ double expected(std::int64_t window_begin)const {
+  static constexpr std::array<int,4> cosine{1,0,-1,0},sine{0,1,0,-1};double re=0,im=0;
+  for(std::size_t j=0;j<512;++j){const auto value=sample(window_begin+std::int64_t(j));re+=value*cosine[j%4];im-=value*sine[j%4];}
+  return std::hypot(re,im)/512.;
+ }
+ static void output(void* user,const NumericPortFrameView& event){
+  if(event.identity.node!=4)return;
+  auto& self=*static_cast<BurstObservation*>(user);check(event.status==Status::ok&&event.frame.stamp.available,"burst FFT remains available");
+  const auto& view=std::get<NumericView>(event.frame.payload);float value=0;
+  check(load_element(view,{0,128,0},value)==Status::ok,"read12kHz bin from actual FFT");
+  check(event.frame.stamp.has_sample_interval&&event.frame.stamp.sample_count==512,"burst output declares exact512-sample aperture");
+  check(std::abs(value-self.expected(event.frame.stamp.sample_begin))<1e-6,"burst every-window bin matches independent direct DFT");
+  self.peak=std::max(self.peak,value);++self.count;
+ }
+};
+struct BurstStream {
+ const NumericContract& contract;BurstObservation& observation;std::size_t sent=0,sequence=0;std::array<float,256> samples{};std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
+ void send(GraphExecutor& executor,std::size_t count){
+  for(std::size_t i=0;i<count;++i)samples[i]=observation.sample(std::int64_t(sent+i));
+  FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=1;stamp.generation=1;
+  stamp.timestamp_ticks=stamp.sample_begin=std::int64_t(sent);stamp.sample_count=count;stamp.has_sample_interval=true;
+  const DataFrameView frame{stamp,NumericView{&contract,std::as_bytes(std::span(samples)),planes,{count,1},{},{}}};
+  const auto before=allocations;
+  check(executor.process_numeric_ports(1,frame,{},{BurstObservation::output,nullptr,nullptr,&observation})==Status::ok&&allocations==before,"burst partition processing has no allocation");
+  sent+=count;
+ }
+};
+inline void burst_partition(std::size_t begin,std::size_t partition){
+ auto graph=short_window(48000,512,256);graph.execution_interval={1,120};
+ auto templates=oracle_graph();geometry(templates,48000,512,256);graph.nodes.push_back(node(templates,4));graph.edges.push_back({2,4,0,0});
+ GraphExecutor executor(profile());application::PreparedExecution pending;prepare(executor,graph,pending);
+ check(executor.apply(std::move(pending))==Status::ok,"burst explicit mono Window/FFT Apply");
+ auto contract=std::get<NumericContract>(node(graph,1).outputs[0].contract.view());BurstObservation observation{begin};BurstStream stream{contract,observation};
+ while(stream.sent<1600)stream.send(executor,std::min(partition,1600-stream.sent));
+ check(observation.count==4&&observation.peak>.02f,"2ms12kHz burst survives120Hz analysis at every hop phase");
+}
+inline void short_high_frequency_burst(){
+ for(const auto begin:{399u,401u,650u})for(const auto partition:{127u,256u})burst_partition(begin,partition);
+}
+inline void run(){short_high_frequency_burst();interval_partition_gap_bypass();merge_metadata_extremes_and_bypass();normalized_pcm_fft();mel_coordinate_equivalence();interval_change_retains_history();wide_clock_and_expansion_bounds();detached_preparation_ownership();}
 }

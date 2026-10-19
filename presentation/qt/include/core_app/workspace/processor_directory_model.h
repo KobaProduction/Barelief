@@ -21,6 +21,7 @@ signals:
     void selection_requested(const presentation::ProcessorEndpoint &endpoint);
 private:
     void refresh();
+    void merge_registry_endpoint(ProcessorEndpoint endpoint);
     QString _local, _selected;
     std::shared_ptr<ProcessorDiscoveryPort> _discovery;
     ProcessorDiscoverySnapshot _snapshot;

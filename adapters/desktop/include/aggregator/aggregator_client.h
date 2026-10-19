@@ -3,6 +3,9 @@
 
 #include <QObject>
 #include <QHostAddress>
+#include <QJsonObject>
+#include <QMap>
+#include <QTimer>
 #include "core/runtime_state.h"
 
 #include <BDSP/transceivers.h>
@@ -64,7 +67,7 @@ class AggregatorClient final : public QObject {
     QString error() const {
         return _error;
     }
-    void set_capabilities(QJsonObject capabilities);
+    bool set_capabilities(QJsonObject capabilities);
     QMap<QUuid, QJsonObject> capabilities() const {
         return _capabilities;
     }
@@ -139,6 +142,18 @@ class AggregatorClient final : public QObject {
     int32_t _reconnect_interval_ms = aggregator_component::CLIENT_RECONNECT_TIMEOUT_MS;
 
     void _handle_packet(BDSP::packet_context_t &packet_ctx);
+    void _bind_socket_signals();
+    void _on_connected();
+    void _on_disconnected();
+    void _on_socket_error();
+    void _on_timeout();
+    void _handle_capabilities(BDSP::packet_context_t &packet_ctx);
+    void _handle_error(BDSP::packet_context_t &packet_ctx);
+    void _handle_state_change(BDSP::packet_context_t &packet_ctx);
+    void _handle_info_update(BDSP::packet_context_t &packet_ctx);
+    void _record_component_info(const QUuid& uuid,const component_info_t& info);
+    void _record_self_registration(const component_info_t& info);
+    QString _engine_resolution_error(const QUuid& uuid) const;
 
     void _start_reconnecting();
 

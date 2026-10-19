@@ -1,4 +1,6 @@
 #include <dataflow_runtime/runtime.h>
+#include <dsp_kernels/pcm_resampler.h>
+#include <numeric>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -22,7 +24,7 @@ NumericContract vector_contract(std::size_t maximum=256,bool spectral=false,std:
  c.clock={"local",{1,rate},rate};return c;
 }
 ProcessingPort port(PortDirection direction,PortId id,const NumericContract& c){ProcessingPort p;p.id=id;p.direction=direction;require(own_processing_contract(c,frame_limits,65536,p.contract)==Status::ok,"own fixture contract");return p;}
-ConfiguredProcessingNode source(NodeId id,const NumericContract& c){ConfiguredProcessingNode n;n.id=id;n.kind="NetworkInput";n.outputs.push_back(port(PortDirection::Output,0,c));return n;}
+ConfiguredProcessingNode source(NodeId id,const NumericContract& c){ConfiguredProcessingNode n;n.id=id;n.kind="NetworkInput";n.parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{c.clock.sample_rate}}}}};n.outputs.push_back(port(PortDirection::Output,0,c));return n;}
 ConfiguredProcessingNode clock_node(std::uint32_t rate=48000){ConfiguredProcessingNode n;n.id=10;n.kind="SampleClock";n.parameters=SampleClockProcessingParameters{rate,"local"};return n;}
 NumericProcessingGraph generator_graph(){auto c=vector_contract();ConfiguredProcessingNode n;n.id=1;n.kind="SignalGenerator";n.outputs.push_back(port(PortDirection::Output,0,c));n.parameters=SignalGeneratorProcessingParameters{{{77,true,1000,2,0,0,0}}};NumericProcessingGraph g;g.graph_id="single-stream-regression";g.nodes={clock_node(),n};g.configuration_bindings={{10,1}};return g;}
 NumericProcessingGraph mixer_graph(bool spectral=false,MixerMode mode=MixerMode::WeightedSum,std::uint32_t rate=48000){
@@ -48,6 +50,8 @@ void clock(Running& r,FrameStamp s,Observation& o){const auto before=allocations
 void feed(Running& r,const NumericProcessingGraph& g,NodeId id,std::span<const float> data,std::uint64_t sequence,Ratio delay={0,1}){
  const auto& n=*std::find_if(g.nodes.begin(),g.nodes.end(),[&](const auto& v){return v.id==id;});auto c=std::get<NumericContract>(n.outputs[0].contract.view());const PlaneLayout plane{0,{sizeof(float),0}};auto s=tick(std::int64_t((sequence-1)*256),256,sequence);s.latency_seconds=delay;
  std::array<float,512> storage{};require(data.size()<=storage.size(),"bounded fixture ingress");std::copy(data.begin(),data.end(),storage.begin());
+ // PCM sample intervals describe the actual packet, not the spectral cadence.
+ if(c.shape.axes[0]==Axis::Sample)s.sample_count=data.size();
  DataFrameView f{s,NumericView{&c,std::as_bytes(std::span(storage)),std::span(&plane,1),{data.size(),1},{},{}}};const auto before=allocations;
  const auto status=r.plan->process_numeric_ports(id,f,*r.state,{});if(status!=Status::ok)std::fprintf(stderr,"ingress node=%d status=%d actual=%zu sequence=%llu\n",int(id),int(status),data.size(),(unsigned long long)sequence);require(status==Status::ok,"ingress accepted");require(allocations==before,"ingress hot path does not allocate");
 }
@@ -74,6 +78,21 @@ void generator_oracles(){
  envelope.enabled=false;envelope_run.replace(envelope_graph);clock(envelope_run,tick(48,48,2),ramp);
  for(std::size_t i=0;i<48;++i)near(ramp.values[i],double(47-i)/48*std::sin(tau/4+tau*500*(48+i)/48000.),"individual disable release envelope");
  std::puts("single-stream generator numerical/timeline/ID/phase oracles PASS");
+}
+void internal_generator_oracles(){
+ auto g=generator_graph();std::erase_if(g.nodes,[](const auto& n){return n.kind=="SampleClock";});g.configuration_bindings.clear();
+ auto second=node(g,1);second.id=2;g.nodes.push_back(second);g.configuration_bindings={{1,2}};
+ Running r(g);Observation first,other;first.watched=1;other.watched=2;
+ const auto event=tick(0,256,1);const auto before=allocations;
+ require(r.plan->process_clock(1,event,*r.state,{},first.callbacks())==Status::ok,"internal generator timeline drives graph");
+ require(allocations==before,"internal generator timeline remains allocation-free");
+ require(first.calls==1 && first.count==256,"unbound generator emits without separate clock node");
+ for(std::size_t i=0;i<first.count;++i)near(first.values[i],2*std::sin(tau*1000*i/48000.),"internal timeline sine oracle");
+ require(r.plan->process_clock(1,event,*r.state,{},first.callbacks())==Status::would_block,"duplicate internal tick refused");
+ require(r.plan->process_clock(1,tick(256,256,2),*r.state,{},other.callbacks())==Status::ok,"generator sync output drives second generator");
+ require(other.calls==1 && other.count==256,"explicitly synchronized generator receives internal source time");
+ for(std::size_t i=0;i<other.count;++i)near(other.values[i],2*std::sin(tau*1000*(256+i)/48000.),"synchronized generator shares sample positions");
+ require(r.plan->process_clock(2,tick(512,256,3),*r.state,{})==Status::invalid_argument,"bound generator cannot run a second independent schedule");
 }
 
 void mixer_modes(){
@@ -176,7 +195,8 @@ void node_stats_oracles(){
 void resampler_latency(bool spectral){
  auto g=mixer_graph(spectral,MixerMode::WeightedSum,24000);auto input=vector_contract(256,false,48000),pcm=vector_contract(129,false,24000);pcm.shape.extents[0].minimum=1;
  node(g,1).outputs[0]=port(PortDirection::Output,0,input);
- ConfiguredProcessingNode resampler;resampler.id=20;resampler.kind="PcmResampler";resampler.parameters=TransformProcessingParameters{{{"output_rate",NumericLiteral{std::uint64_t(24000)}}}};resampler.inputs={port(PortDirection::Input,0,input)};resampler.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(resampler);g.edges[0].from=20;
+ node(g,1).parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{48000}}}}};
+ ConfiguredProcessingNode resampler;resampler.id=20;resampler.kind="PcmResampler";resampler.parameters=TransformProcessingParameters{{{"input_rate",NumericLiteral{std::uint64_t(48000)}},{"output_rate",NumericLiteral{std::uint64_t(24000)}}}};resampler.inputs={port(PortDirection::Input,0,input)};resampler.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(resampler);g.edges[0].from=20;
  if(!spectral){node(g,2).outputs[0]=port(PortDirection::Output,0,pcm);node(g,3).inputs={port(PortDirection::Input,9,pcm),port(PortDirection::Input,5,pcm)};node(g,3).outputs={port(PortDirection::Output,0,pcm)};}
  else {
   auto window=pcm;window.shape.extents[0]={512,512};auto bins=vector_contract(256,true,24000);bins.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{24000,512}};
@@ -187,7 +207,9 @@ void resampler_latency(bool spectral){
  }
  g.edges.push_back({1,20,0,0});Running r(g);Observation o;std::array<float,256> values{};values.fill(.25f);
  for(std::uint64_t i=0;i<8;++i){feed(r,g,1,values,i+1);clock(r,tick(std::int64_t(i*128),128,i+1),o);}
- require(o.calls>0,"resampled chain produces Mixer output");require(o.stamp.latency_seconds==Ratio{21,16000}&&o.stamp.latency_samples==31,"Resampler algorithmic latency survives PCM/FFT/Mixer in output Fs");
+ const auto delay=dsp_kernels::PcmResampler::geometry(48000,24000,1).delay;
+ const auto common=std::gcd(delay,48000u);
+ require(o.calls>0,"resampled chain produces Mixer output");require(o.stamp.latency_seconds==Ratio{std::int64_t(delay/common),48000/common}&&o.stamp.latency_samples==delay/2,"Resampler algorithmic latency survives PCM/FFT/Mixer in output Fs");
  std::puts(spectral?"Resampler -> Window -> FFT -> spectral Mixer latency PASS":"Resampler -> temporal Mixer latency PASS");
 }
 }
@@ -195,4 +217,4 @@ void* operator new(std::size_t n){++allocations;if(auto* p=std::malloc(n?n:1))re
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
-int main(){generator_oracles();mixer_modes();fifo_rebind_and_latency();spectral_cadence();rejection_preserves_working_graph();node_stats_oracles();resampler_latency(false);resampler_latency(true);std::puts("single-stream runtime regression package PASS");}
+int main(){generator_oracles();internal_generator_oracles();mixer_modes();fifo_rebind_and_latency();spectral_cadence();rejection_preserves_working_graph();node_stats_oracles();resampler_latency(false);resampler_latency(true);std::puts("single-stream runtime regression package PASS");}

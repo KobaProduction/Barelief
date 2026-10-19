@@ -10,11 +10,13 @@ Use the existing verified Python executable (or an identical copy):
 
 ```powershell
 & C:/Python/Python314/python.exe -S tools/control_codegen/run.py --check-tools
-& C:/Python/Python314/python.exe -S tools/control_codegen/run.py --output-dir libs/bdsp_protocol/generated
+& C:/Python/Python314/python.exe -S tools/control_codegen/run.py --schema numeric_control --output-dir libs/bdsp_protocol/generated
 ```
 
 Only the assigned codec owner runs the second command during the implementation
 slot. Schema and options are explicit inputs; unmatched options fail generation.
+The active numeric CONTROL schema is selected by default; `--schema control`
+selects the separate original schema when reproducing its archived outputs.
 Generate twice into distinct scratch directories and compare both `.pb.c` and
 `.pb.h` byte-for-byte before checking them in. Record schema/options/output hashes
 with the codec evidence. The runner suppresses bytecode and uses a temporary

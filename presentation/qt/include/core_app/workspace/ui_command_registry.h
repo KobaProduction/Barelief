@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <functional>
 class QWidget;
+class QMenu;
 namespace presentation {
 enum class UiCommandContext { Workspace, SchemaEditor };
 struct UiCommandDescriptor {
@@ -34,6 +35,13 @@ private:
     QPointer<QWidget> _context_menu;
     std::function<bool()> _workspace_guard;
     bool context_available(UiCommandContext) const;
+    bool workspace_available(bool& owned_popup) const;
+    bool editor_context_available(bool owned_popup) const;
+    void track_focus(QWidget *before,QWidget *after);
+    void configure_action(QAction *item,const UiCommandDescriptor& descriptor);
+    void record_menu_show(QObject *object);
+    void record_menu_hide();
+    void schedule_refresh();
     bool eventFilter(QObject *, QEvent *) override;
 };
 }

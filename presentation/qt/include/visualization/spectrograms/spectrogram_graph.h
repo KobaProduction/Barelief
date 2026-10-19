@@ -6,6 +6,7 @@
 #include <QVector3D>
 #include <QTimer>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QSet>
 #include <QElapsedTimer>
 #include <QPair>
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <limits>
 #include <cstdint>
+#include <optional>
 #include <algorithm>
 #include "visualization/camera_controls.h"
 #include "visualization/numeric_matrix_snapshot.h"
@@ -25,6 +27,7 @@
 class SpectrogramRenderer;
 #include "visualization/spectrogram_axis_metadata.h"
 class QQuickWidget;
+class QKeyEvent;
 class SurfaceQuickItem;
 class SpectrogramGraph : public QWidget {
     Q_OBJECT
@@ -74,6 +77,7 @@ class SpectrogramGraph : public QWidget {
     size_t projected_history_capacity() const noexcept {return _history_capacity;}
     SpectrogramSceneGeometry projected_scene_geometry() const;
     bool set_axis_metadata(const SpectrogramAxisMetadata&);
+    void set_value_scale(const ValueDisplayScale&);
     void set_axis_display_modes(const QString& frequencyMode,const QString& timeMode);
     void set_projection_status(const QString&);
     void set_render_fps(int fps);
@@ -116,6 +120,41 @@ class SpectrogramGraph : public QWidget {
     void hideEvent(QHideEvent *event) override;
 
   private:
+    void refresh_input_state(QEvent* event);
+    bool pointer_event(QEvent* event);
+    bool pointer_press(QEvent* event);
+    bool pointer_move(QEvent* event);
+    bool pointer_release(QEvent* event);
+    bool pointer_camera_move(QEvent* event);
+    void orbit_camera(double pixels);
+    void zoom_camera(double amount);
+    bool camera_gesture(QEvent* event);
+    bool camera_wheel(QEvent* event);
+    std::optional<bool> camera_key(QEvent* event);
+    std::optional<bool> camera_key_binding(QEvent* event,int scan,int identity);
+
+    void create_surface_model();
+    void create_surface_view(const QSize& minimum,const QSize& maximum);
+    bool bind_surface_canvas();
+    void connect_surface_changes();
+    void restore_surface_state();
+    static bool finite_camera_array(const QJsonArray& array,int size);
+    bool restore_camera_pose(const QJsonObject& state);
+    void restore_orbit_state(const QJsonObject& state);
+    void sync_camera_model();
+    void restore_slice_geometry(const QJsonObject& state);
+    void restore_surface_ranges(const QJsonObject& state);
+    void apply_surface_options();
+
+    static bool valid_axis_metadata(const SpectrogramAxisMetadata& value);
+    bool apply_axis_metadata(const SpectrogramAxisMetadata& value);
+    void sync_axis_metadata(bool scaleChanged);
+    void publish_snapshot(size_t length,size_t previousFrames,QPair<float,float> previousRange);
+    bool apply_quick_control(const QString& action,const QVariant& value);
+    bool apply_quick_gradient(const QVariant& value);
+    void set_signal_range(double low,double high,bool automatic);
+    void set_index_range(int axis,double low,double high,bool automatic);
+
     void _move_camera();
     void _camera_changed();
     void _stop_camera();
@@ -161,6 +200,17 @@ class SpectrogramGraph : public QWidget {
     std::uint64_t _history_projection_revision=0;
     AmplitudeRange _amplitude_range;
     bool _observe_amplitude_range();
+    void sync_history_dimensions_to_renderer(size_t capacity,size_t bands);
+    void accept_snapshot(NumericMatrixSnapshot snapshot,size_t length);
+    QPair<double,double> observed_amplitude_bounds() const;
+    void sync_automatic_amplitude_range(bool changed);
+    bool held_camera_action_matches(const QString& action,const QKeyEvent& event) const;
+    bool apply_camera_binding(const QString& action,const QKeyEvent& event,int scan,int identity);
+    std::optional<bool> camera_control_key(QEvent* event,int scan,int identity);
+    std::optional<bool> camera_control_event(QEvent* event);
+    QVariantList horizontal_automatic_ranges(const QJsonArray& ranges) const;
+    void apply_quick_selection(const QVariant& value);
+    void apply_quick_panel_ratio(const QVariant& value);
 };
 
 #endif

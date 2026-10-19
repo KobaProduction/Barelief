@@ -13,16 +13,13 @@ struct NumericDocumentResult {
     QString error, path;
     explicit operator bool() const { return error.isEmpty(); }
 };
-// Cold native-format reconciliation shared by GUI/headless capture adapters.
-// Atomically rebuilds mono source outputs and dependent contracts; no backend I/O.
-bool resolve_numeric_source_format(domain::NumericProcessingGraph&,domain::NodeId,std::uint32_t sample_rate,std::uint32_t outputs,QString* error=nullptr);
 // Known typed snapshots for editor clipboard/undo. Never a whole-project writer.
 NumericDocumentResult encode_numeric_node(const domain::ConfiguredProcessingNode&, QByteArray&);
 NumericDocumentResult decode_numeric_node(QByteArrayView, domain::ConfiguredProcessingNode&);
 NumericDocumentResult encode_numeric_graph(const domain::NumericProcessingGraph&, QByteArray&);
 NumericDocumentResult decode_numeric_graph(QByteArrayView, domain::NumericProcessingGraph&);
-// New editor/preset snapshot boundary: canonical4 or typed QtNodes visual4.
-// On failure out is unchanged. Whole-project scene_graph remains canonical4.
+// Editor/preset snapshot boundary: graph5/processing4, canonical or typed QtNodes.
+// On failure out is unchanged. File schema4 remains a separate storage edition.
 NumericDocumentResult decode_numeric_editor_graph(QByteArrayView, domain::NumericProcessingGraph&);
 // Version1 preset display/workspace snapshot, excluding global preferences and
 // processing. Unknown source fields are not projected; failure keeps out intact.
@@ -44,10 +41,14 @@ NumericDocumentResult read_numeric_draft(const NumericProjectDocument&, domain::
 // A fresh project may have no applied graph. Absence clears out on success;
 // malformed input leaves out unchanged. Loading never performs Apply.
 NumericDocumentResult read_numeric_applied(const NumericProjectDocument&, std::optional<domain::NumericProcessingGraph>&);
-// Only the supported numeric document/graph edition is admitted. Missing scene
+// File schema edition is owned and strictly validated here, independently of
+// the domain graph/processing editions. Missing scene
 // is allowed while composing a fresh document, but has no loadable draft.
 NumericDocumentResult read_project_graph_edition(const NumericProjectDocument&, std::uint32_t&);
 NumericDocumentResult read_numeric_application_settings(const NumericProjectDocument&, QJsonObject&);
+// Read registered serial/route settings without projecting opaque project JSON.
+// Caller supplies its route admission bound; failure leaves out unchanged.
+NumericDocumentResult read_numeric_network_settings(const NumericProjectDocument&, std::size_t maximum_routes, QJsonObject&);
 NumericDocumentResult stage_numeric_draft(const NumericProjectDocument&, const domain::NumericProcessingGraph&, NumericProjectDocument&);
 struct NumericDraftPresentation {
     QJsonObject positions; // Decimal node-ID keys -> {x,y}; known UI projection only.
@@ -71,6 +72,10 @@ NumericDocumentResult stage_numeric_presentation(const NumericProjectDocument&, 
                                                 NumericProjectDocument&);
 NumericDocumentResult load_numeric_project(const QString& path, NumericProjectDocument&, domain::NumericProcessingGraph&);
 // Success alone publishes disk baseline/path. Existing changed/future/ambiguous
-// destination refuses before QSaveFile replacement. Old editions are unsupported.
-NumericDocumentResult save_numeric_project(NumericProjectDocument&, const QString& path = {});
+// destination refuses before QSaveFile replacement unless exact explicit consent
+// is supplied. Candidate editions remain strictly validated.
+// Explicit UI consent applies only to the exact destination bytes shown for confirmation.
+struct NumericSaveConsent {QString path;QByteArray bytes;bool existed=false;};
+NumericDocumentResult inspect_numeric_save_destination(const QString&,NumericSaveConsent&);
+NumericDocumentResult save_numeric_project(NumericProjectDocument&, const QString& path = {},const NumericSaveConsent* consent=nullptr);
 } // namespace desktop

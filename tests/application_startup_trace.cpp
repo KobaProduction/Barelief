@@ -4,6 +4,9 @@
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
 #include <core_app/graph_panel.h>
+#include <core_app/scheme_editor/numeric_editor_model.h>
+#include <visualization/numeric_piano_view.h>
+#include <QEvent>
 #include <core_app/numeric_default_graph.h>
 #include <desktop/numeric_project_document.h>
 #include <pipeline/numeric_engine.h>
@@ -47,6 +50,14 @@
 // Full production composition probe. All writes belong to the evidence directory;
 // physical capture is replaced at its existing adapter injection boundary.
 namespace {
+class PianoPaintWitness final:public QObject {
+public:
+    bool* measuring=nullptr;QHash<QObject*,quint64> counts;
+    bool eventFilter(QObject* object,QEvent* event)override {
+        if(measuring && *measuring && event->type()==QEvent::Paint)++counts[object];
+        return false;
+    }
+};
 QJsonObject processMemory() {
 #ifdef Q_OS_WIN
     using Query=BOOL(WINAPI*)(HANDLE,PPROCESS_MEMORY_COUNTERS,DWORD);
@@ -111,29 +122,6 @@ public:
     }
     QJsonObject report()const{return report_;}
 };
-class Capture final:public pipeline::IAudioSource {
-    pipeline::AudioSourceKind kind_;quint32 lanes_;quint32 rate_;std::unique_ptr<pipeline::IAudioSource> worker_=pipeline::make_test_signal_source();
-    AudioHandler handler_;pipeline::AudioFrame storage_;
-public:
-    Capture(pipeline::AudioSourceKind kind,quint32 lanes,quint32 rate):kind_(kind),lanes_(lanes),rate_(rate){
-        storage_.samples.resize(size_t(rate/200)*lanes);
-        worker_->set_audio_handler([this](const pipeline::AudioFrame& input){
-            storage_.sequence=input.sequence;storage_.timestamp_ns=input.timestamp_ns;storage_.sample_rate=input.sample_rate;
-            storage_.generation=input.generation;storage_.discontinuity=input.discontinuity;storage_.channel_count=lanes_;
-            storage_.frame_count=input.frame_count;storage_.sample_position=input.sample_position;
-            if(storage_.samples.size()!=input.frame_count*lanes_)return;
-            for(quint32 lane=0;lane<lanes_;++lane)for(size_t i=0;i<input.frame_count;++i)storage_.samples[lane*input.frame_count+i]=input.samples[i]*(1.f-.1f*lane);
-            if(handler_)handler_(storage_);
-        });
-    }
-    void configure(const QJsonObject& input)override{auto p=input;p["sample_rate"]=int(rate_);p["tones"]=8;worker_->configure(p);}
-    void start()override{worker_->start();}void stop()override{worker_->stop();}bool is_running()const override{return worker_->is_running();}
-    pipeline::AudioSourceKind source()const override{return kind_;}
-    pipeline::AudioSourceDiagnostics diagnostics()const override{auto d=worker_->diagnostics();d.native_channels=d.delivered_channels=lanes_;return d;}
-    void set_audio_handler(AudioHandler h)override{handler_=std::move(h);}
-    void set_status_handler(StatusHandler h)override{worker_->set_status_handler(std::move(h));}
-    void set_lifecycle_handler(LifecycleHandler h)override{worker_->set_lifecycle_handler(std::move(h));}
-};
 QByteArray read(const QString& path){QFile f(path);return f.open(QIODevice::ReadOnly)?f.readAll():QByteArray{};}
 QJsonObject distribution(std::vector<double> values){
     if(values.empty())return {{"count",0}};
@@ -161,7 +149,7 @@ struct Scene {
     QQuickWindow* window=nullptr;std::atomic<quint64> completed{0};RendererProbeTelemetry renderer;
     Span synchronization,rendering,frame,publishWait;
     std::atomic<quint64> firstPendingPublication{0},publications{0},synchronizedPublications{0};
-    bool chart=false;int node=0;QString dock;
+    bool chart=false,piano=false;int node=0;QString dock;
 };
 bool simpleDocument(const QJsonObject& original,int spectrum,int analysisHz,const QString& style,QJsonObject& result){
     auto graph=numeric_generator_graph();graph.execution_interval={1,std::uint64_t(analysisHz)};
@@ -207,19 +195,21 @@ QJsonArray surfaces(MainWindow* window){
             state["chart"]=QJsonObject{{"value_count",double(chart->value_count())},{"point_count",double(chart->projected_point_count())},{"quick_format_samples",chart->format().samples()},
                 {"peak",chart->peak_value()},{"paint_fps",chart->rendered_fps()},{"style",chart->plot_style()},{"plots",plots}};
         }
+        if(auto* piano=panel->piano_view())state["piano"]=QJsonObject{{"paint_fps",piano->display_fps()},{"value_count",double(piano->value_count())},{"peak",piano->peak_value()}};
         result.append(state);
     }return result;
 }
 }
 int main(int argc,char** argv){
     bool snapshotPool=presentation::RenderPreparationPolicy::snapshot_pool,cameraMotion=false,maximized=false,actualCapture=false;QString meshMode="inline",overlayTarget;QList<int> jointNodes;int sliceMode=-1,focusNode=0;
-    QString source,output,plotStyle="line",graphicsBackend="opengl",plotHost="widget";int fps=0,simpleSpectrum=0,analysisHz=120,previewHz=0,quickSamples=-1,swapInterval=-1,measurementMs=8000;bool hideEditor=false,timePositions=false,workerProbe=false,honorTimers=false,vectorImage=false,suppressPlotPaint=false;
+    QString source,output,plotStyle="line",graphicsBackend="opengl",plotHost="widget",pianoHost="window";int fps=0,simpleSpectrum=0,analysisHz=120,previewHz=0,quickSamples=-1,swapInterval=-1,measurementMs=8000;bool hideEditor=false,timePositions=false,workerProbe=false,honorTimers=false,vectorImage=false,suppressPlotPaint=false;
     for(int i=1;i+1<argc;i+=2){const QString key=QString::fromLocal8Bit(argv[i]),value=QString::fromLocal8Bit(argv[i+1]);
         if(key=="--source")source=value;else if(key=="--output")output=value;else if(key=="--gui-fps")fps=value.toInt();else if(key=="--hide-editor")hideEditor=value.toInt()!=0;else if(key=="--time-positions")timePositions=value.toInt()!=0;
         else if(key=="--simple-spectrum")simpleSpectrum=value.toInt();else if(key=="--analysis-hz")analysisHz=value.toInt();else if(key=="--plot-style")plotStyle=value;
         else if(key=="--worker-probe")workerProbe=value.toInt()!=0;
         else if(key=="--actual-capture"){if(value!="0"&&value!="1")return 2;actualCapture=value=="1";}
         else if(key=="--graphics-backend"){if(value!="opengl"&&value!="d3d11")return 2;graphicsBackend=value;}
+        else if(key=="--piano-host"){if(value!="window"&&value!="widget")return 2;pianoHost=value;}
         else if(key=="--plot-host"){if(value!="window"&&value!="widget")return 2;plotHost=value;}
         else if(key=="--honor-timers")honorTimers=value.toInt()!=0;
         else if(key=="--preview-hz")previewHz=value.toInt();
@@ -240,7 +230,7 @@ int main(int argc,char** argv){
     if((!jointNodes.isEmpty()&&focusNode)||source.isEmpty()||output.isEmpty()||fps<0||fps>240||simpleSpectrum<0||simpleSpectrum>2||analysisHz!=120||previewHz<0||previewHz>240||(quickSamples!=-1&&quickSamples!=0&&quickSamples!=4)||(swapInterval < -1 || swapInterval > 1)||(plotStyle!="line"&&plotStyle!="bars")){std::fprintf(stderr,"Usage: application_startup_trace --source PATH --output FRESH_DIR --gui-fps 0..240 --hide-editor 0|1 [--simple-spectrum 0|1|2 --analysis-hz 120 --plot-style line|bars --preview-hz 0..240 --quick-samples -1|0|4 --swap-interval -1|0|1]\n");return 2;}
     const auto original=read(source);if(original.isEmpty()||QFile::exists(QDir(output).filePath("project.json"))||!QDir().mkpath(output))return 2;
     if(actualCapture&&simpleSpectrum)return 2;
-    auto document=QJsonDocument::fromJson(original).object();if(document.value("schema_version").toInt()!=3)return 2;
+    auto document=QJsonDocument::fromJson(original).object();if(document.value("schema_version").toInt()!=4)return 2;
     if(simpleSpectrum){QJsonObject fixture;if(!simpleDocument(document,simpleSpectrum,analysisHz,plotStyle,fixture))return 2;document=std::move(fixture);}
     auto ui=document["ui"].toObject();
     if(fps){auto rendering=ui["graph_rendering"].toObject();rendering["gui_fps_mode"]="fixed";rendering["gui_target_fps"]=fps;ui["graph_rendering"]=rendering;}
@@ -251,7 +241,7 @@ int main(int argc,char** argv){
     quint32 lanes=1,rate=48000;
     for(const auto& entry:document["pipeline_graph"].toObject()["nodes"].toArray()){
         const auto node=entry.toObject();if(node["kind"]=="AudioSource"){
-            const auto outputs=node["outputs"].toArray();lanes=std::max(lanes,quint32(outputs.size()));
+            const auto outputs=node["outputs"].toArray();quint32 channels=0;for(const auto& port:outputs)if(port.toObject()["id"].toInt()!=65534)++channels;lanes=std::max(lanes,channels);
             if(!outputs.isEmpty())rate=quint32(outputs[0].toObject()["contract"].toObject()["sample_rate"].toInt(48000));
         }
     }
@@ -260,6 +250,7 @@ int main(int argc,char** argv){
     presentation::RenderPreparationPolicy::mesh=meshMode=="worker"?presentation::MeshPreparation::Worker:
         meshMode=="pooled"?presentation::MeshPreparation::Pooled:presentation::MeshPreparation::Inline;
     presentation::RenderPreparationPolicy::plot_host=plotHost=="window"?presentation::PlotHost::NativeWindow:presentation::PlotHost::TextureWidget;
+    presentation::RenderPreparationPolicy::piano_host=pianoHost=="window"?presentation::PlotHost::NativeWindow:presentation::PlotHost::TextureWidget;
     TimerResolutionPolicy timerResolutionPolicy(honorTimers);
     // Match the production entrypoint: configure graphics before QApplication.
     // An explicit diagnostic override below may then restore interval 1 for A/B.
@@ -267,13 +258,31 @@ int main(int argc,char** argv){
     ui::quick::configure();
     if(graphicsBackend=="d3d11")QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
     // Owned-process diagnostic, before any Qt contexts/window surfaces exist.
-    // Applied after product configure(), preserving its MSAA sample request.
-    if(swapInterval>=0){auto format=QSurfaceFormat::defaultFormat();format.setSwapInterval(swapInterval);QSurfaceFormat::setDefaultFormat(format);}
-    CoreApplication app(count,arguments,[lanes,rate,&captureOpens,actualCapture](pipeline::AudioSourceKind kind)->std::unique_ptr<pipeline::IAudioSource>{
+    // Apply overrides before constructing any shared OpenGL/RHI context.
+    if(swapInterval>=0 || quickSamples>=0){auto format=QSurfaceFormat::defaultFormat();
+        if(swapInterval>=0)format.setSwapInterval(swapInterval);
+        if(quickSamples>=0)format.setSamples(quickSamples);
+        QSurfaceFormat::setDefaultFormat(format);
+    }
+    CoreApplication app(count,arguments,[&captureOpens,actualCapture](pipeline::AudioSourceKind kind)->std::unique_ptr<pipeline::IAudioSource>{
         ++captureOpens;
         if(actualCapture)return pipeline::default_audio_source_factory()(kind);
-        return std::make_unique<Capture>(kind,lanes,rate);
+        return std::make_unique<test_fixture::SyntheticCapture>(kind,true);
     });
+    if(!actualCapture)if(auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get())) {
+        QHash<int,QPair<int,int>> formats;
+        for(const auto& entry:document["scene_graph"].toObject()["nodes"].toArray()) {
+            const auto node=entry.toObject();if(node["kind"]!="AudioSource")continue;
+            int kind=0,channels=0,nativeRate=48000;
+            for(const auto& field:node["parameters"].toObject()["values"].toArray())if(field.toObject()["key"]=="source")kind=field.toObject()["value"].toObject()["decimal"].toString().toInt();
+            for(const auto& port:node["outputs"].toArray())if(port.toObject()["id"].toInt()!=65534){++channels;nativeRate=port.toObject()["contract"].toObject()["sample_rate"].toInt(48000);}
+            formats[kind]={nativeRate,channels};
+        }
+        model->set_capture_device_provider([formats](int kind,QString*) {
+            const auto format=formats.value(kind,{48000,1});
+            return QJsonArray{QJsonObject{{"id","synthetic-capture"},{"name","Synthetic capture"},{"is_default",true},{"native_sample_rate",format.first},{"native_channels",format.second}}};
+        });
+    }
     const double constructionMs=(core::perf::now()-constructionStart)/1e6;
     MainWindow* window=nullptr;for(auto* candidate:QApplication::topLevelWidgets())if(auto* w=qobject_cast<MainWindow*>(candidate))window=w;
     if(!window)return 3;
@@ -299,7 +308,7 @@ int main(int argc,char** argv){
                 suppressionWritesOk&=QQmlProperty::write(plot,QStringLiteral("sourceModel"),QVariant::fromValue(static_cast<QObject*>(nullptr)));
             }
     };
-    if(hideEditor)QTimer::singleShot(0,&app,[&]{if(auto* dock=window->workspaceDock("dataFlow"))dock->hide();});
+    if(hideEditor)QTimer::singleShot(0,&app,[&]{if(auto* dock=window->workspaceDock("dataFlowDock"))dock->hide();});
     bool focusNodeApplied=false,jointApplied=false;
     QList<QPointer<WorkspaceDock>> jointDocks;
     const auto arrangeJoint=[&]{
@@ -323,13 +332,14 @@ int main(int argc,char** argv){
             if(key=="rawSamples"||key=="fft"||key=="mel"){selected=dock;break;}
         }
         if(!selected)return false;
+        for(auto* dock:window->workspaceDocks())if(dock->property("graphNode").isValid() && dock!=selected)dock->hide();
         selected->show();selected->raise();return true;
     };
     if(maximized)QTimer::singleShot(1600,&app,[&]{window->showNormal();window->showMaximized();});
     if(focusNode)QTimer::singleShot(1500,&app,[&]{
         focusNodeApplied=focusTarget();
     });
-    bool measuring=false;std::atomic<bool> renderMeasuring{false};Delivery frames,histories,snapshots,previews,renderTicks,spectrumFrames,plotPublications;
+    bool measuring=false;PianoPaintWitness pianoPaints;pianoPaints.measuring=&measuring;std::atomic<bool> renderMeasuring{false};Delivery frames,histories,snapshots,previews,renderTicks,spectrumFrames,plotPublications;
     // Opt-in observer only. The tap is a lossless FIFO witness delivered by
     // engine's 16ms transport drain, NOT an executor-output timestamp probe.
     std::atomic<bool> workerMeasuring{false};Delivery workerTicks,workerTap;
@@ -405,11 +415,11 @@ int main(int argc,char** argv){
         // Applying a real project is asynchronous. Do not profile a temporary
         // startup graph or a tab which the eventual workspace restore replaces.
         if(app.presenter().graph_request_pending() || (focusNode&&!focusTarget())){
-            if(elapsed.elapsed()>12000){std::fprintf(stderr,"Trace target did not settle\n");app.exit(5);return;}
+            if(elapsed.elapsed()-constructionMs>12000){std::fprintf(stderr,"Trace target did not settle\n");app.exit(5);return;}
             measurementStart.start(50);return;
         }
         if(!jointNodes.isEmpty()&&!jointApplied){
-            if(!arrangeJoint()){if(elapsed.elapsed()>12000){app.exit(5);return;}measurementStart.start(50);return;}
+            if(!arrangeJoint()){if(elapsed.elapsed()-constructionMs>12000){app.exit(5);return;}measurementStart.start(50);return;}
             jointApplied=true;measurementStart.start(300);return;
         }
         if(focusNode)focusNodeApplied=true;
@@ -420,6 +430,7 @@ int main(int argc,char** argv){
         // before opening the measurement gate. Core and GUI targets stay intact.
         auto* previewEngine=&app.pipeline();
         QMetaObject::invokeMethod(previewEngine,[&]{appliedPreviewInterval=previewEngine->numeric_preview_interval_ms();},Qt::BlockingQueuedConnection);
+        for(auto* panel:window->findChildren<GraphPanel*>())if(auto* piano=panel->piano_view())piano->installEventFilter(&pianoPaints);
         initialSnapshot=app.presenter().client().snapshot().diagnostics;initialSurfaces=surfaces(window);
         for(auto& [plot,initial]:suppressedPlots)if(plot)initial=plot->paintCount()+plot->property("geometryUpdateCount").toULongLong();
         for(auto* panel:window->findChildren<GraphPanel*>())if(auto* chart=panel->active_chart())if(chart->isVisible())
@@ -431,8 +442,9 @@ int main(int argc,char** argv){
             auto* plotHost=dynamic_cast<QuickPlotWidget*>(quick);
             auto state=std::make_unique<Scene>();state->window=plotHost?plotHost->quickWindow():static_cast<QQuickWidget*>(quick)->quickWindow();auto* target=state.get();
             for(auto* dock:window->workspaceDocks())if(dock->isAncestorOf(quick)){target->node=dock->property("graphNode").toInt();target->dock=dock->objectName();break;}
-            if(auto* chart=dynamic_cast<AbstractChartView*>(quick)){
-                target->chart=true;
+            if(auto* chart=dynamic_cast<QuickPlotWidget*>(quick)){
+                target->chart=dynamic_cast<AbstractChartView*>(quick)!=nullptr;
+                target->piano=dynamic_cast<NumericPianoView*>(quick)!=nullptr;
                 QObject::connect(chart->presentation_model(),&QuickPlotModel::changed,&app,[&,target]{
                     if(!renderMeasuring.load(std::memory_order_relaxed))return;
                     quint64 empty=0;target->firstPendingPublication.compare_exchange_strong(empty,core::perf::now(),std::memory_order_relaxed);
@@ -490,7 +502,7 @@ int main(int argc,char** argv){
             {"chart_scene",scene->chart},{"synchronization",scene->synchronization.json()},{"rendering",scene->rendering.json()},{"frame",scene->frame.json()},
             {"publication_to_sync",scene->publishWait.json()},{"publications",double(scene->publications.load())},{"synchronized_publication_ordinal",double(scene->synchronizedPublications.load())}});
         const auto actual=app._ctx.file_configs.ui.graph_rendering;auto* timer=window->findChild<QTimer*>("numericRenderTimer");
-        const auto* editorDock=window->workspaceDock("dataFlow");
+        const auto* editorDock=window->workspaceDock("dataFlowDock");
         bool positionApplied=!timePositions;
         for(auto* panel:window->findChildren<GraphPanel*>())if(panel->active_spectrogram())
             if(panel->preferences().value("time_axis_mode").toString()=="positions")positionApplied=true;
@@ -507,6 +519,8 @@ int main(int argc,char** argv){
         if(focusNodeApplied)for(auto* dock:window->workspaceDocks())if(dock->property("graphNode").toInt()==focusNode && dock->property("renderExposed").toBool())
             if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))if(auto* chart=panel->active_chart();chart && chart->value_count()>0 && chart->rootObject())
                 for(auto* plot:chart->rootObject()->findChildren<VectorPlotItem*>())focusedVectorPainted|=plot->isVisible()&&(plot->paintCount()>0||plot->property("geometryUpdateCount").toULongLong()>0);
+        bool focusedPianoPainted=false;
+        if(focusNodeApplied)for(auto* dock:window->workspaceDocks())if(dock->property("graphNode").toInt()==focusNode && dock->property("renderExposed").toBool())if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))if(auto* piano=panel->piano_view())focusedPianoPainted=piano->value_count()>0 && std::any_of(scenes.begin(),scenes.end(),[&](const auto& scene){return scene->piano && scene->node==focusNode && scene->completed.load()>0 && scene->publications.load()>0;});
         bool focusedSurfaceRendered=false;
         if(focusNodeApplied)for(auto* dock:window->workspaceDocks())if(dock->property("graphNode").toInt()==focusNode && dock->property("renderExposed").toBool())
             if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))if(auto* surface=panel->active_spectrogram())
@@ -516,7 +530,7 @@ int main(int argc,char** argv){
                     state.value("snapshotRevision").toULongLong()>focusedSurfaceInitialSnapshots;}
         const bool vectorSceneRendered=std::any_of(scenes.cbegin(),scenes.cend(),[](const auto& scene){return scene->chart&&scene->completed.load()>0;});
         const bool sourceValid=simpleSpectrum?(spectrumFrames.count>0&&spectrumPositive&&simplePainted&&captureOpens==0):
-            !jointNodes.isEmpty()?frames.count>0||histories.count>0:focusNode?(focusNodeApplied&&((focusedVectorPainted&&frames.count>0&&plotPublications.count>0)||(focusedSurfaceRendered&&histories.count>0&&histories.ordinal>0))):(histories.count>0&&histories.ordinal>0);
+            !jointNodes.isEmpty()?frames.count>0||histories.count>0:focusNode?(focusNodeApplied&&((focusedVectorPainted&&frames.count>0&&plotPublications.count>0)||(focusedSurfaceRendered&&histories.count>0&&histories.ordinal>0)||(focusedPianoPainted&&frames.count>0))):(histories.count>0&&histories.ordinal>0);
         bool jointRendered=jointNodes.isEmpty();QJsonArray jointReport;
         if(!jointNodes.isEmpty()){jointRendered=jointApplied;
             for(const auto& dock:jointDocks){bool active=dock&&dock->property("renderExposed").toBool();bool progressed=false;
@@ -526,13 +540,16 @@ int main(int argc,char** argv){
                         auto before=initial["surface"].toObject();auto after=QJsonObject::fromVariantMap(surface->axis_layout_telemetry());
                         progressed=after["renderedFrames"].toDouble()>before["renderedFrames"].toDouble() && after["snapshotRevision"].toDouble()>before["snapshotRevision"].toDouble();}}
                 }
+                if(dock)if(auto* panel=qobject_cast<GraphPanel*>(dock->widget()))if(auto* piano=panel->piano_view())progressed=piano->value_count()>0 && std::any_of(scenes.begin(),scenes.end(),[&](const auto& scene){return scene->piano && scene->node==dock->property("graphNode").toInt() && scene->completed.load()>0 && scene->publications.load()>0;});
                 jointReport.append(QJsonObject{{"node",dock?dock->property("graphNode").toInt():0},{"exposed",active},{"progressed",progressed}});jointRendered&=active&&progressed;
             }
         }
-        const bool valid=jointRendered&&firstGraphMs&&sourceValid&&(!(simpleSpectrum||focusNode)||vectorSceneRendered||focusedSurfaceRendered)&&positionApplied&&(!hideEditor||!editorDock||editorDock->isHidden())&&
+        const bool valid=jointRendered&&firstGraphMs&&sourceValid&&(!(simpleSpectrum||focusNode)||vectorSceneRendered||focusedSurfaceRendered||focusedPianoPainted)&&positionApplied&&(!hideEditor||!editorDock||editorDock->isHidden())&&
             sliceApplied&&(!suppressPlotPaint||(suppressionApplied&&suppressedPaintDelta==0&&plotPublications.count>0));
         timerResolutionPolicy.restore();
-        QJsonObject report{{"source",QFileInfo(source).absoluteFilePath()},{"source_sha256",QString::fromLatin1(QCryptographicHash::hash(original,QCryptographicHash::Sha256).toHex())},
+        quint64 pianoPaintCount=0;for(auto count:pianoPaints.counts)pianoPaintCount+=count;
+        quint64 pianoFrames=0,pianoPublications=0;for(const auto& scene:scenes)if(scene->piano){pianoFrames+=scene->completed.load();pianoPublications+=scene->publications.load();}
+        QJsonObject report{{"piano_rendered_frames",double(pianoFrames)},{"piano_frame_hz",pianoFrames/sampleSeconds},{"piano_publication_hz",pianoPublications/sampleSeconds},{"piano_paint_count",double(pianoPaintCount)},{"piano_paint_hz",pianoPaintCount/sampleSeconds},{"focused_piano_painted",focusedPianoPainted},{"source",QFileInfo(source).absoluteFilePath()},{"source_sha256",QString::fromLatin1(QCryptographicHash::hash(original,QCryptographicHash::Sha256).toHex())},
             {"joint_views",jointReport},{"joint_rendered",jointRendered},{"valid_processing_trace",valid},{"source_valid",sourceValid},{"focused_vector_painted",focusedVectorPainted},{"focused_surface_rendered",focusedSurfaceRendered},{"vector_scene_rendered",vectorSceneRendered},
             {"capture_lanes",int(lanes)},{"capture_sample_rate",int(rate)},
             {"actual_capture",actualCapture},{"simple_spectrum",simpleSpectrum},{"analysis_hz_override",simpleSpectrum?analysisHz:0},{"plot_style_override",plotStyle},{"capture_opens",int(captureOpens)},
@@ -542,7 +559,7 @@ int main(int argc,char** argv){
             {"vector_image_override",vectorImage},
             {"quick_samples_override",quickSamples},{"quick_formats_changed",quickFormatsChanged},{"quick_format_set_while_visible",quickFormatSetWhileVisible},
             {"swap_interval_override",swapInterval},{"default_swap_interval",QSurfaceFormat::defaultFormat().swapInterval()},
-            {"graphics_backend_override",graphicsBackend},{"plot_host",plotHost},
+            {"graphics_backend_override",graphicsBackend},{"plot_host",plotHost},{"piano_host",pianoHost},
             {"window_requested_swap_interval",window->windowHandle()?window->windowHandle()->requestedFormat().swapInterval():-99},
             {"window_actual_swap_interval",window->windowHandle()?window->windowHandle()->format().swapInterval():-99},
             {"suppress_plot_paint_override",suppressPlotPaint},{"plot_paint_suppression_applied",suppressionApplied},{"suppressed_plot_paint_delta",double(suppressedPaintDelta)},
@@ -571,6 +588,11 @@ int main(int argc,char** argv){
             {"preview_delivery",previews.json(sampleSeconds)},{"render_timer",renderTicks.json(sampleSeconds)},
             {"initial_engine",initialSnapshot},{"final_engine",app.presenter().client().snapshot().diagnostics},
             {"initial_surfaces",initialSurfaces},{"final_surfaces",surfaces(window)},{"series",series},{"quick_windows",renderers},{"gui_groups_overflow",double(gui_event_profile::overflow)}};
+        // Capture only owned renderer framebuffers, after timing gates close.
+        for(auto* panel:window->findChildren<GraphPanel*>())if(panel->isVisible()){
+            if(auto* piano=panel->piano_view())report["piano_framebuffer_saved"]=piano->grabFramebuffer().save(QDir(output).filePath("piano.png"));
+            if(auto* surface=panel->active_spectrogram())if(auto* host=surface->findChild<QQuickWidget*>("spectrogramQuickView"))report["surface_framebuffer_saved"]=host->grabFramebuffer().save(QDir(output).filePath("surface.png"));
+        }
         QSaveFile file(QDir(output).filePath("summary.json"));if(!file.open(QIODevice::WriteOnly)){app.exit(4);return;}file.write(QJsonDocument(report).toJson());if(!file.commit()){app.exit(4);return;}
         std::printf("Full CoreApplication trace complete: sample %.3fs, GUI timer %.2fHz, history %.2fHz\n",sampleSeconds,renderTicks.count/sampleSeconds,histories.count/sampleSeconds);
         app.exit(valid?0:5);

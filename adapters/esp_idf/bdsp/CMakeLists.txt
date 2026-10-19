@@ -1,4 +1,10 @@
 # Explicit source dependency, pinned by the consuming firmware. No fetch/install.
+# IDF discovers requirements in a separate script without project cache paths.
+# BDSP has no component dependencies; validate its sources in the real pass.
+if(CMAKE_BUILD_EARLY_EXPANSION)
+    idf_component_register()
+    return()
+endif()
 if(NOT BDSP_SOURCE_DIR OR NOT EXISTS "${BDSP_SOURCE_DIR}/include/BDSP/types.h")
     message(FATAL_ERROR "BDSP_SOURCE_DIR must point to BDSP commit 2c68056dfaeffba2f34fc64eee9bc9e331e83c7c")
 endif()

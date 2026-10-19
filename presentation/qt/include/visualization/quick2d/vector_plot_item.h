@@ -3,6 +3,7 @@
 #include <QVariantMap>
 #include <QVector>
 #include <QPolygonF>
+#include <QPainterPath>
 #include <QPointer>
 #include <atomic>
 
@@ -14,10 +15,10 @@ class VectorPlotItem : public QQuickPaintedItem {
     Q_PROPERTY(QVariantMap presentation READ presentation WRITE setPresentation NOTIFY presentationChanged)
     Q_PROPERTY(QObject* sourceModel READ sourceModel WRITE setSourceModel NOTIFY sourceModelChanged)
     Q_PROPERTY(QVariantMap colors READ colors WRITE setColors NOTIFY colorsChanged)
-    Q_PROPERTY(quint64 paintCount READ paintCount)
-    Q_PROPERTY(quint64 consumedPresentationCount READ consumedPresentationCount)
-    Q_PROPERTY(int paintEngineType READ paintEngineType)
-    Q_PROPERTY(int paintSamples READ paintSamples)
+    Q_PROPERTY(quint64 paintCount READ paintCount NOTIFY telemetryChanged)
+    Q_PROPERTY(quint64 consumedPresentationCount READ consumedPresentationCount NOTIFY telemetryChanged)
+    Q_PROPERTY(int paintEngineType READ paintEngineType NOTIFY telemetryChanged)
+    Q_PROPERTY(int paintSamples READ paintSamples NOTIFY telemetryChanged)
     Q_PROPERTY(qreal pieRadius READ pieRadius WRITE setPieRadius NOTIFY pieRadiusChanged)
     Q_PROPERTY(qreal pieLabelWidth READ pieLabelWidth WRITE setPieLabelWidth NOTIFY pieLabelWidthChanged)
     Q_PROPERTY(QVariantList pieLabels READ pieLabels WRITE setPieLabels NOTIFY pieLabelsChanged)
@@ -48,6 +49,7 @@ signals:
     void pieRadiusChanged();
     void pieLabelWidthChanged();
     void pieLabelsChanged();
+    void telemetryChanged();
 protected:
     void itemChange(ItemChange change,const ItemChangeData& data) override;
     void geometryChange(const QRectF& next,const QRectF& previous) override;
@@ -56,6 +58,22 @@ protected:
     QPointer<QuickPlotModel> source_model_;
     QMetaObject::Connection source_changed_,source_destroyed_;
     void syncSourceModel();
+    void consumePresentation();
+    void readPoints(const QVariant& value);
+    void readTicks(const QVariantMap& value);
+    void readSlices(const QVariant& value);
+    void recordPaintEngine(QPainter* painter);
+    QColor pieColor(qsizetype index) const;
+    void paintPie(QPainter* painter);
+    void paintPieLeaders(QPainter* painter,const QPointF& center);
+    void paintGrid(QPainter* painter);
+    QRectF barRectangle(qsizetype index) const;
+    QPainterPath seriesPath() const;
+    void addBarSeries(QPainterPath&) const;
+    void addPointSeries(QPainterPath&) const;
+    void addLineSeries(QPainterPath&) const;
+    void paintCartesian(QPainter* painter);
+
     void applyPresentation(const QVariantMap& value,bool typed);
     QPolygonF points_;
     QVariant x_tick_source_,y_tick_source_;
@@ -79,14 +97,16 @@ protected:
 // The pie renderer retains the painter adapter above.
 class VectorGeometryItem : public VectorPlotItem {
     Q_OBJECT
-    Q_PROPERTY(quint64 geometryUpdateCount READ geometryUpdateCount)
-    Q_PROPERTY(int geometryVertexCount READ geometryVertexCount)
-    Q_PROPERTY(bool geometryVerticesFinite READ geometryVerticesFinite)
+    Q_PROPERTY(quint64 geometryUpdateCount READ geometryUpdateCount NOTIFY geometryTelemetryChanged)
+    Q_PROPERTY(int geometryVertexCount READ geometryVertexCount NOTIFY geometryTelemetryChanged)
+    Q_PROPERTY(bool geometryVerticesFinite READ geometryVerticesFinite NOTIFY geometryTelemetryChanged)
 public:
     explicit VectorGeometryItem(QQuickItem* parent=nullptr);
     quint64 geometryUpdateCount() const {return geometry_updates_.load();}
     int geometryVertexCount() const {return geometry_vertices_.load();}
     bool geometryVerticesFinite() const {return geometry_finite_.load();}
+signals:
+    void geometryTelemetryChanged();
 protected:
     QSGNode* updatePaintNode(QSGNode* oldNode,UpdatePaintNodeData*) override;
 private:

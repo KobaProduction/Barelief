@@ -1,0 +1,4 @@
+include_rules = [
+    '-domain', '-application', '-dataflow_runtime', '-dsp_kernels',
+    '-bdsp_protocol', '-embedded_support', '-control',
+]

@@ -1,0 +1,1 @@
+include_rules = ['-domain/music', '-domain/processing_contracts.h', '-domain/graph/node_factory.h']

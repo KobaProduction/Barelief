@@ -12,10 +12,8 @@ public:
         auto stroke=DefaultConnectionPainter::getPainterStroke(wire);
         const auto* model=dynamic_cast<const NumericEditorGraphModel*>(&wire.graphModel());
         if(model && !wire.connectionState().requiresPort() && model->connection_visual_state(wire.connectionId())){
-            QPainterPath curve(wire.out());const auto controls=wire.pointsC1C2();curve.cubicTo(controls.first,controls.second,wire.in());
-            const auto state=model->connection_visual_state(wire.connectionId());auto font=QApplication::font();font.setPointSizeF(8);const QFontMetricsF metrics(font);const auto point=curve.pointAtPercent(.5);
-            const auto text=ui::text(state==1?"↔ Convert":state==2?"! Risk":"× Error");const auto width=metrics.horizontalAdvance(text)+10;
-            stroke.addRect(QRectF(point.x()-width/2,point.y()-metrics.height()/2-2,width,metrics.height()+4));
+            const auto text=badge_text(model->connection_visual_state(wire.connectionId()));
+            stroke.addRect(badge_bounds(connection_curve(wire).pointAtPercent(.5),text));
         }
         return stroke;
     }
@@ -23,16 +21,37 @@ public:
         const auto* model=dynamic_cast<const NumericEditorGraphModel*>(&wire.graphModel());
         if(!model || wire.connectionState().requiresPort() || wire.connectionState().frozen()){DefaultConnectionPainter::paint(painter,wire);return;}
         const int state=model->connection_visual_state(wire.connectionId());
-        const auto palette=QApplication::palette();const auto controls=wire.pointsC1C2();QPainterPath path(wire.out());path.cubicTo(controls.first,controls.second,wire.in());
+        const auto path=connection_curve(wire);
         painter->save();painter->setRenderHint(QPainter::Antialiasing);painter->setBrush(Qt::NoBrush);
-        if(wire.isSelected() || wire.connectionState().hovered()) {QPen halo(palette.color(QPalette::Highlight),6);halo.setCosmetic(true);painter->setPen(halo);painter->drawPath(path);}
-        QPen pen(palette.color(state==1?QPalette::Link:QPalette::Text),state?2.5:1.8);pen.setCosmetic(true);
-        if(state==1)pen.setStyle(Qt::DashLine);else if(state==2)pen.setStyle(Qt::DashDotLine);else if(state==3)pen.setStyle(Qt::DotLine);painter->setPen(pen);painter->drawPath(path);
-        if(state){const auto mid=path.pointAtPercent(.5);auto font=QApplication::font();font.setPointSizeF(8);painter->setFont(font);
-            const auto text=ui::text(state==1?"↔ Convert":state==2?"! Risk":"× Error");const QFontMetricsF metrics(font);
-            const QRectF box(mid.x()-metrics.horizontalAdvance(text)/2-5,mid.y()-metrics.height()/2-2,metrics.horizontalAdvance(text)+10,metrics.height()+4);
-            painter->setPen(QPen(palette.color(QPalette::Text),1));painter->setBrush(palette.color(QPalette::Base));painter->drawRoundedRect(box,3,3);painter->drawText(box,Qt::AlignCenter,text);
-        }
+        if(wire.isSelected() || wire.connectionState().hovered())paint_halo(*painter,path);
+        painter->setPen(connection_pen(state));painter->drawPath(path);
+        if(state)paint_badge(*painter,path.pointAtPercent(.5),state);
         painter->restore();
+    }
+private:
+    static QPainterPath connection_curve(const QtNodes::ConnectionGraphicsObject& wire) {
+        const auto controls=wire.pointsC1C2();
+        QPainterPath path(wire.out());path.cubicTo(controls.first,controls.second,wire.in());return path;
+    }
+    static QFont badge_font() {auto font=QApplication::font();font.setPointSizeF(8);return font;}
+    static QString badge_text(int state) {return ui::text(state==1?"↔ Convert":state==2?"! Risk":"× Error");}
+    static QRectF badge_bounds(const QPointF& point,const QString& text) {
+        const QFontMetricsF metrics(badge_font());const auto width=metrics.horizontalAdvance(text)+10;
+        return {point.x()-width/2,point.y()-metrics.height()/2-2,width,metrics.height()+4};
+    }
+    static QPen connection_pen(int state) {
+        QPen pen(QApplication::palette().color(state==1?QPalette::Link:QPalette::Text),state?2.5:1.8);pen.setCosmetic(true);
+        if(state==1)pen.setStyle(Qt::DashLine);
+        else if(state==2)pen.setStyle(Qt::DashDotLine);
+        else if(state==3)pen.setStyle(Qt::DotLine);
+        return pen;
+    }
+    static void paint_halo(QPainter& painter,const QPainterPath& path) {
+        QPen pen(QApplication::palette().color(QPalette::Highlight),6);pen.setCosmetic(true);painter.setPen(pen);painter.drawPath(path);
+    }
+    static void paint_badge(QPainter& painter,const QPointF& point,int state) {
+        const auto text=badge_text(state);const auto box=badge_bounds(point,text);const auto palette=QApplication::palette();
+        painter.setFont(badge_font());painter.setPen(QPen(palette.color(QPalette::Text),1));painter.setBrush(palette.color(QPalette::Base));
+        painter.drawRoundedRect(box,3,3);painter.drawText(box,Qt::AlignCenter,text);
     }
 };

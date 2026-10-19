@@ -1,3 +1,4 @@
+#include <bdsp_protocol/numeric_data_message.h>
 #include "numeric_transport_fixture.h"
 #include <control/numeric_routing_adapter.h>
 #include <control/numeric_desktop_host.h>
@@ -7,9 +8,9 @@
 #include <cstdio>
 using namespace transport_fixture;
 static QJsonObject advertised(NumericEngine& e,quint16 port,const char* graphId){
-    return {{"control_version",4},{"data_version",5},{"stream_port",int(port)},
+    return {{"control_version",4},{"data_version",int(bdsp_protocol::numeric_data::PayloadVersion)},{"stream_port",int(port)},
         {"publisher_incarnation",QString::number(e.snapshot().epoch)},{"graph_revision",QString::number(e.snapshot().graph_revision)},
-        {"streams",QJsonArray{QJsonObject{{"id","relay"},{"graph_id",graphId},{"node_id",1},{"direction","input"},{"port_index",0},{"payload_version",5}}}}};
+        {"streams",QJsonArray{QJsonObject{{"id","relay"},{"graph_id",graphId},{"node_id",1},{"direction","input"},{"port_index",0},{"payload_version",int(bdsp_protocol::numeric_data::PayloadVersion)}}}}};
 }
 static QJsonObject binding(QUuid provider){return {{"network",QJsonObject{{"routes",QJsonArray{QJsonObject{{"node_id",0},{"provider_uuid",provider.toString(QUuid::WithoutBraces)},{"stream_id","relay"},
     // An offline UUID must never fall through to this otherwise valid direct route.

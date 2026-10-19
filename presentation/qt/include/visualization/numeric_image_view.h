@@ -1,5 +1,6 @@
 #pragma once
 #include <visualization/spectrogram_axis_metadata.h>
+#include <visualization/numeric_plot_limits.h>
 #include <visualization/numeric_matrix_snapshot.h>
 #include <visualization/amplitude_range.h>
 #include <visualization/axis_tick_labels.h>
@@ -23,27 +24,19 @@ public:
         set_snapshot(NumericMatrixSnapshot::take(rows),age_order);
     }
     void set_snapshot(NumericMatrixSnapshot snapshot,bool age_order=false) {
-        if(!snapshot.empty() && (snapshot.size()>16384 || snapshot.front().size()>4096))snapshot.clear();
+        if(!snapshot.empty() && !presentation::NumericPlotLimits::accepts(snapshot.size(),snapshot.front().size()))snapshot.clear();
         data_=std::move(snapshot);age_order_=age_order;
-        if(automatic_ && !data_.empty()) {
-            double low=0,high=0;
-            for(size_t row=0;row<data_.size();++row)for(size_t column=0;column<data_[row].size();++column) {
-                const float value=data_[row][column];low=std::min(low,double(value));high=std::max(high,double(value));
-            }
-            amplitude_.observe(low,high,AmplitudeRange::now(),interval_);
-        }
+        observe_amplitude();
         rebuild();refresh_presentation();
     }
     const void* projection_storage_identity() const noexcept {return data_.storage_identity();}
     bool set_axis_metadata(const SpectrogramAxisMetadata& metadata) {
-        if(metadata.ages.size()>16384 || metadata.row_indices.size()>16384 || metadata.columns.size()>4096)return false;
-        for(double value:metadata.ages)if(!std::isfinite(value))return false;
-        for(double value:metadata.columns)if(!std::isfinite(value))return false;
-        for(double value:metadata.row_indices)if(!std::isfinite(value))return false;
-        const bool changed=source_axes_!=metadata;
-        if(!changed)return true;
-        source_axes_=metadata;axes_=metadata.displayed(frequency_mode_,time_mode_);refresh_presentation();
-        if(changed)emit axis_metadata_changed();return true;
+        if(!valid_axis_metadata(metadata))return false;
+        if(source_axes_==metadata)return true;
+        const bool scaleChanged=source_axes_.value_scale!=metadata.value_scale;
+        source_axes_=metadata;axes_=metadata.displayed(frequency_mode_,time_mode_);
+        if(scaleChanged){amplitude_.reset();set_snapshot(data_,age_order_);}else refresh_presentation();
+        emit axis_metadata_changed();return true;
     }
     void set_axis_display_modes(const QString& frequencyMode,const QString& timeMode) {
         frequency_mode_=frequencyMode=="positions"?"positions":"coordinates";
@@ -82,20 +75,61 @@ protected:
     }
     void refresh_presentation() override {
         if(!rendering_enabled_)return;
-        const auto title=[](const QString& key){auto text=ui::text(key.toUtf8().constData());for(const auto* suffix:{" (X)"," (Y)"," (Z)"})if(text.endsWith(suffix)){text.chop(4);break;}return text;};
-        const size_t columns=data_.empty()?0:data_.front().size(),rows=data_.size();
-        const bool integralRows=time_mode_=="positions" || (!axes_.time_coordinates && (axes_.age_axis || axes_.ages.empty()));
-        const auto rowPlacement=[&](double f){return integralRows && rows>1?std::round(f*double(rows-1))/double(rows-1):f;};
-        const auto yt=quickPlotTicks(height()-86,font(),precision_,[&](double f){const double index=(reverse_rows_?1-f:f)*double(rows?rows-1:0);return axes_.age(age_order_?double(rows?rows-1:0)-index:index);},false,int(std::min(size_t{32},rows?rows-1:0)),rowPlacement);
+        const auto yt=row_ticks();
         const double left=quickPlotLeftMargin(yt,font(),width());
-        const auto columnPlacement=[&](double f){return !axes_.column_coordinates && columns>1?std::round(f*double(columns-1))/double(columns-1):f;};
-        const auto xt=quickPlotTicks(width()-left-22,font(),precision_,[&](double f){return axes_.column((reverse_columns_?1-f:f)*double(columns?columns-1:0));},true,int(std::min(size_t{32},columns?columns-1:0)),columnPlacement);
+        const auto xt=column_ticks(left);
         setProperty("columnAxisSections",xt.size()-1);setProperty("timeAxisSections",yt.size()-1);
-        publish({{"kind","image"},{"available",!pixels_.isNull()},{"title",status_},{"xTicks",xt},{"yTicks",yt},
-            {"xTitle",title(axes_.column_title_key)},{"yTitle",title(axes_.time_title_key)},
+        publish({{"viewLeft",viewport_.left()},{"viewTop",viewport_.top()},{"viewWidth",viewport_.width()},{"viewHeight",viewport_.height()},{"kind","image"},{"available",!pixels_.isNull()},{"title",status_},{"xTicks",xt},{"yTicks",yt},{"xGrid",quickPlotGrid(xt,grid_x_)},{"yGrid",quickPlotGrid(yt,grid_y_)},
+            {"xTitle",axis_title(axes_.column_title_key)},{"yTitle",axis_title(axes_.time_title_key)},
             {"plotLeft",left},{"reverseX",reverse_columns_},{"reverseY",reverse_rows_}});
     }
 private:
+    static bool valid_axis_metadata(const SpectrogramAxisMetadata& metadata) {
+        if(metadata.ages.size()>presentation::NumericPlotLimits::rows || metadata.row_indices.size()>presentation::NumericPlotLimits::rows || metadata.columns.size()>presentation::NumericPlotLimits::columns)return false;
+        const auto finite=[](double value){return std::isfinite(value);};
+        return std::all_of(metadata.ages.begin(),metadata.ages.end(),finite) && std::all_of(metadata.columns.begin(),metadata.columns.end(),finite) && std::all_of(metadata.row_indices.begin(),metadata.row_indices.end(),finite);
+    }
+    void observe_amplitude() {
+        if(!automatic_ || data_.empty())return;
+        double low=0,high=0;
+        for(size_t row=0;row<data_.size();++row)for(size_t column=0;column<data_[row].size();++column) {
+            const double value=axes_.value_scale.map(data_[row][column]);
+            low=std::min(low,value);high=std::max(high,value);
+        }
+        amplitude_.observe(low,high,AmplitudeRange::now(),interval_);
+    }
+    static QString axis_title(const QString& key) {
+        auto text=ui::text(key.toUtf8().constData());
+        for(const auto* suffix:{" (X)"," (Y)"," (Z)"})if(text.endsWith(suffix)){text.chop(4);break;}
+        return text;
+    }
+    QVariantList row_ticks() const {
+        const auto last=data_.empty()?0:data_.size()-1;
+        const bool integral=time_mode_=="positions" || (!axes_.time_coordinates && (axes_.age_axis || axes_.ages.empty()));
+        const auto placement=[&](double f){return viewport_.height()==1 && integral && last?std::round(f*double(last))/double(last):f;};
+        const auto coordinate=[&](double f) {
+            const double index=(viewport_.top()+(reverse_rows_?1-f:f)*viewport_.height())*double(last);
+            return axes_.age(age_order_?double(last)-index:index);
+        };
+        return quickPlotTicks(height()-86,font(),precision_,coordinate,false,int(std::min(size_t{32},last)),placement,labels_y_);
+    }
+    QVariantList column_ticks(double left) const {
+        const auto columns=data_.empty()?0:data_.front().size();
+        const auto last=columns?columns-1:0;
+        const auto placement=[&](double f){return viewport_.width()==1 && !axes_.column_coordinates && last?std::round(f*double(last))/double(last):f;};
+        const auto coordinate=[&](double f){return axes_.column((viewport_.left()+(reverse_columns_?1-f:f)*viewport_.width())*double(last));};
+        return quickPlotTicks(width()-left-22,font(),precision_,coordinate,true,int(std::min(size_t{32},last)),placement,labels_x_);
+    }
+    static QRgb pixel(double fraction,const QColor& base,const QColor& accent) {
+        return qRgb(qRound(base.red()+(accent.red()-base.red())*fraction),qRound(base.green()+(accent.green()-base.green())*fraction),qRound(base.blue()+(accent.blue()-base.blue())*fraction));
+    }
+    void fill_pixel_row(int row,const std::pair<double,double>& bounds,const QColor& base,const QColor& accent) {
+        auto* scan=reinterpret_cast<QRgb*>(pixels_.scanLine(row));
+        for(int column=0;column<pixels_.width();++column) {
+            const double fraction=std::clamp((axes_.value_scale.map(data_[row][column])-bounds.first)/std::max(1e-300,bounds.second-bounds.first),0.,1.);
+            scan[column]=pixel(fraction,base,accent);
+        }
+    }
     void rebuild() {
         if(data_.empty() || data_.front().empty()){pixels_={};publish_image(pixels_);return;}
         pixels_=QImage(int(data_.front().size()),int(data_.size()),QImage::Format_RGB32);
@@ -104,14 +138,7 @@ private:
         const auto colors=ui::Theme::instance().palette();
         const auto bounds=y_range();
         const auto base=colors.color(QPalette::Active,QPalette::Base),accent=colors.color(QPalette::Active,QPalette::Highlight);
-        for(int row=0;row<pixels_.height();++row) {
-            auto* scan=reinterpret_cast<QRgb*>(pixels_.scanLine(row));
-            for(int column=0;column<pixels_.width();++column) {
-                const double fraction=std::clamp((double(data_[row][column])-bounds.first)/std::max(1e-300,bounds.second-bounds.first),0.,1.);
-                scan[column]=qRgb(qRound(base.red()+(accent.red()-base.red())*fraction),
-                    qRound(base.green()+(accent.green()-base.green())*fraction),qRound(base.blue()+(accent.blue()-base.blue())*fraction));
-            }
-        }
+        for(int row=0;row<pixels_.height();++row)fill_pixel_row(row,bounds,base,accent);
         publish_image(pixels_);
     }
     NumericMatrixSnapshot data_;

@@ -5,6 +5,8 @@
 namespace dsp_kernels {
 Backend compiled_backend() noexcept { return Backend::Ansi; }
 namespace detail {
+bool transform_rfft_quarter(float* scratch, std::size_t n, bool) { return transform(scratch,n,true); }
+bool transform_rfft_half(float* scratch, std::size_t n, bool radix4, bool) { return transform(scratch,n,radix4); }
 bool transform(float *scratch, std::size_t n, bool radix4) {
     if (radix4)
         return dsps_fft4r_fc32_ansi_(scratch, n, dsps_fft4r_w_table_fc32, dsps_fft4r_w_table_size) == ESP_OK &&

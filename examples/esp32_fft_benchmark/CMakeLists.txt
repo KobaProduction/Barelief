@@ -1,0 +1,23 @@
+cmake_minimum_required(VERSION 3.24)
+option(FFT_STAGE_PROFILE "Collect FFT stage cycle counters" OFF)
+option(FFT_MEMORY_ONLY "Run memory and numerical diagnostics without timing sweep" OFF)
+set(PORTABLE_SDK_ESP_DSP ON)
+set(PORTABLE_SDK_MAX_FFT_SIZE 4096)
+if(NOT DEFINED ENV{IDF_PATH})
+    message(FATAL_ERROR "Use an existing configured ESP-IDF environment")
+endif()
+if(NOT EXISTS "${ESP_DSP_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "Provide an existing ESP-DSP component through ESP_DSP_SOURCE_DIR")
+endif()
+set(EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_LIST_DIR}/../../adapters/esp_idf/bdsp"
+    "${CMAKE_CURRENT_LIST_DIR}/../../adapters/esp_idf/portable_sdk"
+    "${ESP_DSP_SOURCE_DIR}")
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+idf_build_set_property(PORTABLE_SDK_ESP_DSP "${PORTABLE_SDK_ESP_DSP}")
+set(COMPONENTS main)
+project(esp32_fft_benchmark)
+if(FFT_STAGE_PROFILE)
+    idf_component_get_property(fft_sdk_lib portable_sdk COMPONENT_LIB)
+    target_compile_definitions(${fft_sdk_lib} PRIVATE DSP_FFT_PROFILE=1)
+endif()

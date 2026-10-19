@@ -28,6 +28,7 @@
 #include <QThread>
 #include <QTimer>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -107,13 +108,8 @@ int main(int argc,char** argv){
         dockHost.setAttribute(Qt::WA_ShowWithoutActivating);dockHost.setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);dockHost.resize(900,650);
         GraphPanel panel("nativeAxes",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","surface3d"}},nullptr);
         panel.setAttribute(Qt::WA_ShowWithoutActivating);panel.setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);panel.resize(1280,800);
-        bool boundTime=false,boundFrequency=false;
-        for(const auto& binding:graph.configuration_bindings)if(binding.to==8){
-            boundTime|=binding.input==domain::ConfigurationRole::SampleClock;
-            boundFrequency|=binding.input==domain::ConfigurationRole::FrequencyGrid;
-        }
-        require(boundTime&&boundFrequency,"native fixture requires explicit applied axis associations");
-        panel.set_axis_permissions({boundTime,boundFrequency});
+        require(std::none_of(graph.configuration_bindings.begin(),graph.configuration_bindings.end(),[](const auto& binding){return binding.to==8;}),"default spectrogram has no coordinate authorization wires");
+        panel.set_axis_permissions({true,true});
         auto* surface=panel.active_spectrogram();require(surface,"native 3D surface");surface->set_y_range(0,2);
         auto options=surface->surface_settings();options["axis_grid"]=true;options["floor_grid"]=true;options["shadows"]=false;surface->set_surface_settings(options);
         require(adapter.accept_history_snapshot(frame,ordinal,filled)==Status::ok&&adapter.render(history,0,panel.render_target(true))==Status::ok,"actual source projection");frame={};

@@ -2,6 +2,8 @@
 #include <application/graph_lifecycle.h>
 #include <signal_contracts/numeric_frame_gather.h>
 #include <dsp_kernels/kernel_support.h>
+#include <dsp_kernels/prepared_resampler.h>
+#include <dsp_kernels/frequency_profile.h>
 
 namespace dataflow_runtime {
 using signal_contracts::Status;
@@ -22,6 +24,11 @@ struct NumericRuntimeProfile {
     std::uint64_t (*monotonic_nanoseconds)(void*) noexcept=nullptr;
     void* measurement_clock=nullptr;
     std::size_t max_windows_per_ingress=1024,max_callback_deliveries_per_ingress=65536;
+    // Musical interpretation is opt-in; generic numeric and signal operations are independent.
+    bool music_enabled=false;
+    const dsp_kernels::ResamplerBackendFactory* resampler_backend=nullptr;
+    bool experimental_resampling_enabled=false;
+    domain::PreparationValueProvider preparation_values;
 };
 struct NumericPortFrameView {
     std::string_view graph_id;
@@ -51,6 +58,7 @@ struct NumericRuntimeCallbacks {
     void* user=nullptr;
 };
 class PreparedGraph;
+class NumericPreparation;
 class RuntimeContext final:public application::RuntimeContext {
 public:
     RuntimeContext();~RuntimeContext();
@@ -58,7 +66,7 @@ public:
     RuntimeContext(RuntimeContext&&) noexcept;RuntimeContext& operator=(RuntimeContext&&) noexcept;
 private:
     struct Impl;std::unique_ptr<Impl> impl_;
-    friend class PreparedGraph;friend class GraphExecutor;
+    friend class PreparedGraph;friend class GraphExecutor;friend class NumericPreparation;
 };
 class PreparedGraph final:public application::PreparedPlan {
 public:
@@ -102,7 +110,7 @@ private:
     void refresh_state(RuntimeContext&,const PreparedGraph&,const RuntimeContext&) const noexcept;
     Status process_numeric_impl(domain::NodeId,const signal_contracts::DataFrameView&,RuntimeContext&,DeliveryStamp,
         NumericRuntimeCallbacks,const signal_contracts::OwnedDataFrame*,std::optional<std::uint64_t>,std::shared_ptr<const void>,std::optional<std::uint64_t>,domain::PortId=0) const noexcept;
-    friend class GraphExecutor;
+    friend class GraphExecutor;friend class NumericPreparation;
 };
 // One executor. All control and processing calls require serialized owner access.
 class GraphExecutor final:public application::NumericGraphPreparationPort,public application::GraphRuntimePort {
@@ -140,6 +148,7 @@ public:
     const RuntimeContext* context() const noexcept {return context_.get();}
     RuntimeContext* context() noexcept {return context_.get();}
 private:
+    bool retained_streams_fit(const PreparedGraph&,const RuntimeContext&) const noexcept;
     NumericRuntimeProfile numeric_profile_;
     std::shared_ptr<const PreparedGraph> plan_;
     std::unique_ptr<RuntimeContext> context_;

@@ -7,27 +7,28 @@ void AbstractTask::start() {
     if (_thread.joinable()) _thread.join();
     _running = true;
     try {
-        _thread = std::thread([this]() {
-            uint64_t result = 0;
-            std::string message;
-            try {
-                result = _before_run_task();
-                if (!result && _running.load()) {
-                    _notify(true, 0, {});
-                    result = _task();
-                }
-            } catch (const std::exception &error) { result = 1; message = error.what(); }
-            catch (...) { result = 1; message = "Unknown worker exception"; }
-            try { _after_close_task(); }
-            catch (const std::exception &error) { result = 1; message = error.what(); }
-            catch (...) { result = 1; message = "Unknown cleanup exception"; }
-            _running = false;
-            _notify(false, result, message);
-        });
+        _thread = std::thread([this] { _run_task(); });
     } catch (...) {
         _running = false;
         throw;
     }
+}
+void AbstractTask::_run_task() {
+    uint64_t result = 0;
+    std::string message;
+    try {
+        result = _before_run_task();
+        if (!result && _running.load()) {
+            _notify(true, 0, {});
+            result = _task();
+        }
+    } catch (const std::exception &error) { result = 1; message = error.what(); }
+    catch (...) { result = 1; message = "Unknown worker exception"; }
+    try { _after_close_task(); }
+    catch (const std::exception &error) { result = 1; message = error.what(); }
+    catch (...) { result = 1; message = "Unknown cleanup exception"; }
+    _running = false;
+    _notify(false, result, message);
 }
 void AbstractTask::stop() {
     _running = false;

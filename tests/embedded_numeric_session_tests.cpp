@@ -52,7 +52,7 @@ void scenario() {
     constexpr std::array<std::uint32_t,1> channels{42};NumericContract contract;contract.dtype=DType::UInt64;contract.channel_order=channels;
     contract.representation.encoding=StorageEncoding::FixedLittleEndian;
     es::NumericSessionBinding binding;binding.binding={{1,1},{"graph",2,nd::Direction::Input,0},"exact64",contract,{},ValueDomain::FiniteOnly};
-    binding.negotiated=nd::negotiate(5,5,1,1);binding.nonce=13;binding.session=17;binding.revision=19;binding.publisher_epoch=23;
+    binding.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion,1,1);binding.nonce=13;binding.session=17;binding.revision=19;binding.publisher_epoch=23;
     Storage ps,ss;Transport a,b;a.peer=&b;b.peer=&a;
     {
         auto passive=binding;auto tagged=contract;tagged.semantic=Semantic::History;passive.binding.contract=tagged;
@@ -78,7 +78,7 @@ void scenario() {
     message.kind=nd::Kind::Unavailable;message.stamp.available=false;message.numeric={};
     CHECK(publisher.publish(message)==Status::ok);transfer(publisher,subscriber,a,b);CHECK(captured.markers==1);
     a.connected=false;CHECK(publisher.poll(a)==Status::disconnected && publisher.state()==es::SessionState::failed);
-    auto invalid=binding;invalid.negotiated=nd::negotiate(5,4,1,1);es::NumericSession refused(es::Role::publisher,invalid,ps.view(),nd::device_block_limits());
+    auto invalid=binding;invalid.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion-1,1,1);es::NumericSession refused(es::Role::publisher,invalid,ps.view(),nd::device_block_limits());
     CHECK(refused.begin()!=Status::ok);invalid=binding;invalid.negotiated.features=0;
     es::NumericSession zero(es::Role::subscriber,invalid,ss.view(),nd::device_block_limits());CHECK(zero.begin()!=Status::ok);
     invalid=binding;std::get<NumericContract>(invalid.binding.contract).representation.encoding=StorageEncoding::Native;
@@ -105,7 +105,7 @@ void external_session() {
     c.semantic=Semantic::Numeric;c.shape.rank=Rank::Vector;c.shape.axes={Axis::Declared,Axis::None};
     c.shape.extents={ExtentBounds{128,128},ExtentBounds{1,1}};c.channel_order=channels;c.representation.encoding=StorageEncoding::FixedLittleEndian;
     es::NumericSessionBinding binding;binding.binding={{1,1},{"graph",2,nd::Direction::Input,0},"exact64",c,{},ValueDomain::FiniteOnly};
-    binding.negotiated=nd::negotiate(5,5,1,1);binding.nonce=13;binding.session=17;binding.revision=19;binding.publisher_epoch=23;
+    binding.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion,1,1);binding.nonce=13;binding.session=17;binding.revision=19;binding.publisher_epoch=23;
     Storage ps,ss;auto pb=ps.view(),sb=ss.view();pb.packet_in=pb.packet_out=pb.read={};sb.packet_in=sb.packet_out=sb.read={};pb.assembly={};
     PacketQueue queue;es::NumericSession publisher(es::Role::publisher,binding,pb,nd::device_block_limits(),PacketQueue::send,&queue,64);
     es::NumericSession subscriber(es::Role::subscriber,binding,sb,nd::device_block_limits(),PacketQueue::send,&queue,64);

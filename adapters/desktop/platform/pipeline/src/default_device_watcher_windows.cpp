@@ -59,6 +59,16 @@ struct WindowsDefaultDeviceWatcher::Impl {
     IMMDeviceEnumerator *enumerator = nullptr;
     Notifications *notifications = nullptr;
     std::wstring id;
+    void install_specific_notifications(EDataFlow flow,std::atomic<bool>& changed,bool follow_default) {
+        auto *specific=new Notifications(flow,id,changed,follow_default);
+        const auto registration=enumerator->RegisterEndpointNotificationCallback(specific);
+        if(FAILED(registration)){specific->Release();check(registration,"Watch capture endpoint");}
+        notifications->deactivate();
+        enumerator->UnregisterEndpointNotificationCallback(notifications);
+        notifications->drain();
+        notifications->Release();
+        notifications=specific;
+    }
     ~Impl() {
         if (notifications) {
             notifications->deactivate();
@@ -93,14 +103,7 @@ WindowsDefaultDeviceWatcher::WindowsDefaultDeviceWatcher(bool loopback, std::ato
     const std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> endpoint_id(id, &CoTaskMemFree);
     _impl->id = endpoint_id.get();
     // The default listener remains registered until the endpoint-specific one is installed.
-    auto *specific = new Notifications(flow, _impl->id, changed, follow_default);
-    const auto registration = _impl->enumerator->RegisterEndpointNotificationCallback(specific);
-    if (FAILED(registration)) { specific->Release(); check(registration, "Watch capture endpoint"); }
-    _impl->notifications->deactivate();
-    _impl->enumerator->UnregisterEndpointNotificationCallback(_impl->notifications);
-    _impl->notifications->drain();
-    _impl->notifications->Release();
-    _impl->notifications = specific;
+    _impl->install_specific_notifications(flow,changed,follow_default);
 }
 WindowsDefaultDeviceWatcher::~WindowsDefaultDeviceWatcher() = default;
 const std::wstring &WindowsDefaultDeviceWatcher::device_id() const { return _impl->id; }

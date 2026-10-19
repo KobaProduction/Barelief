@@ -32,14 +32,26 @@ protected:
         publish({{"showSliceLabels",labels_visible_},{"kind","pie"},{"slices",slices},{"title",!valid_?detail:status_.isEmpty()?detail:status_},{"available",!slices_.empty()}});
     }
 private:
+    bool accumulate_values(){
+        for(float value:values_){
+            if(!std::isfinite(value)||value<0){valid_=false;error_="Pie charts require finite nonnegative values";return false;}
+            sum_+=double(value);
+        }
+        return true;
+    }
+    void append_remainder(size_t individual){
+        if(values_.size()<=individual)return;
+        double other=0;
+        for(size_t i=individual;i<values_.size();++i)other+=double(values_[i]);
+        slices_.push_back(other);
+    }
     void rebuild(){
         slices_.clear();sum_=0;valid_=true;error_.clear();
-        for(float value:values_){if(!std::isfinite(value)||value<0){valid_=false;error_="Pie charts require finite nonnegative values";return;}sum_+=double(value);}
-        if(values_.empty())return;
+        if(!accumulate_values() || values_.empty())return;
         if(sum_==0){error_="All values are zero";return;}
         const size_t individual=std::min(values_.size(),size_t{63});
         for(size_t i=0;i<individual;++i)slices_.push_back(values_[i]);
-        if(values_.size()>individual){double other=0;for(size_t i=individual;i<values_.size();++i)other+=double(values_[i]);slices_.push_back(other);}
+        append_remainder(individual);
     }
     std::vector<float> values_;
     std::vector<double> slices_;

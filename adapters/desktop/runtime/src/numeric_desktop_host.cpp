@@ -25,6 +25,10 @@ struct NumericDesktopHost::Impl {
  // GUI leases cannot exhaust the engine's128-slot arena and starve network
  // peers while drawing is paused. Preserve newest data and terminal markers.
  NumericDeliveryMailbox<DeliveredNumericFrame,32> frames;
+ // Only endpoint service ages grow with subscription metadata, never frame
+ // ownership. Prefer endpoints least recently offered to the GUI when a
+ // producing cohort exceeds the fixed 32 owning slots.
+ std::vector<std::uint64_t> preview_service_age;std::uint64_t preview_service_serial=0;
  NumericDeliveryMailbox<DeliveredNumericHistoryRow,8> histories;
  struct HistorySnapshot {DeliveredNumericFrame frame;std::uint64_t ordinal,filled_count;bool explicit_history=true;};
  NumericDeliveryMailbox<HistorySnapshot,8> history_snapshots;
@@ -46,6 +50,7 @@ struct NumericDesktopHost::Impl {
   if(value.epoch!=cache.epoch||value.graph_revision!=cache.graph_revision||
       (value.statuses.value("analyzer").state==State::Stopped&&cache.statuses.value("analyzer").state!=State::Stopped)){
    ++data_generation;frames.clear();histories.clear();history_snapshots.clear();history_resync=false;
+   std::fill(preview_service_age.begin(),preview_service_age.end(),0);preview_service_serial=0;
   }cache=std::move(value);
  }
  void publish(EngineSnapshot value){delivery_mode=endpoint->port_delivery_mode();std::lock_guard lock(mutex);update_cache_locked(std::move(value));schedule_locked();}
@@ -55,96 +60,224 @@ struct NumericDesktopHost::Impl {
   // submit reserves a completion slot before dispatch. Accepted request IDs are
   // never evicted, and internal transport requests do not consume GUI slots.
   replies.push(std::move(value));schedule_locked();}
+ std::size_t selected_index(const EndpointIdentity& id) const {
+  const auto at=std::lower_bound(selected.begin(),selected.end(),id);
+  return at!=selected.end()&&*at==id?std::size_t(at-selected.begin()):selected.size();
+ }
+ void coalesce_preview(const EndpointIdentity& endpoint) {
+  const auto count=frames.size();
+  for(std::size_t i=0;i<count;++i){auto previous=frames.pop();
+   if(previous&&(!previous->context||previous->context->endpoint!=endpoint))frames.push(std::move(*previous));}
+ }
+ bool reserve_preview_slot(std::size_t incoming) {
+  if(frames.size()!=32)return true;
+  std::size_t victim=0;std::uint64_t newest=0;
+  for(std::size_t i=0;i<32;++i){auto previous=frames.pop();
+   const auto index=previous&&previous->context?selected_index(previous->context->endpoint):selected.size();
+   const auto age=index<preview_service_age.size()?preview_service_age[index]:UINT64_MAX;
+   if(age>=newest){newest=age;victim=i;}if(previous)frames.push(std::move(*previous));}
+  if(preview_service_age[incoming]>=newest)return false;
+  for(std::size_t i=0;i<32;++i){auto previous=frames.pop();if(previous&&i!=victim)frames.push(std::move(*previous));}
+  return true;
+ }
  void publish(DeliveredNumericFrame value){std::lock_guard lock(mutex);
-  // Each selected endpoint retains its newest frame. A fast port cannot evict
-  // the other previews merely because the GUI event loop is paused.
-  const auto count=frames.size();for(std::size_t i=0;i<count;++i){auto previous=frames.pop();
-   if(previous&&(!previous->context||!value.context||previous->context->endpoint!=value.context->endpoint))frames.push(std::move(*previous));}
-  if(frames.size()==32)frames.pop();frames.push(std::move(value));schedule_locked();}
+  if(!value.context)return;
+  const auto incoming=selected_index(value.context->endpoint);if(incoming==selected.size())return;
+  // Coalesce a represented endpoint to its newest value. Wider cohorts share
+  // the same 32 leases: replace the most recently serviced queued endpoint
+  // only for one which has waited longer. Fixed topology order cannot starve
+  // the first or last ports across successive GUI drains.
+  coalesce_preview(value.context->endpoint);
+  if(!reserve_preview_slot(incoming))return;
+  frames.push(std::move(value));schedule_locked();}
  void publish(DeliveredNumericHistoryRow value){std::lock_guard lock(mutex);if(histories.size()==8){histories.pop();history_resync=true;}histories.push(std::move(value));schedule_locked();}
  void publish_history_snapshot(DeliveredNumericFrame value,std::uint64_t ordinal,std::uint64_t filled_count){std::lock_guard lock(mutex);if(history_snapshots.size()==8)history_snapshots.pop();history_snapshots.push({std::move(value),ordinal,filled_count});schedule_locked();}
  // One worker job and one coalesced pending resync, irrespective of GUI rate.
  // Only owning frames cross back; borrowed processing views stay in query_numeric.
  void query_local_snapshots(std::shared_ptr<LocalSnapshotQuery> query){
-  QMetaObject::invokeMethod(worker,[this,query=std::move(query)]{
-   bool cancelled=false;
-   for(std::size_t batch=0;batch<8&&query->next<query->endpoints.size();++batch){
-    {std::lock_guard lock(mutex);if(retired||query->generation!=data_generation){cancelled=true;break;}}
-    const auto& selectedEndpoint=query->endpoints[query->next++];
+  QMetaObject::invokeMethod(worker,[this,query=std::move(query)]{run_local_snapshot_batch(query);},Qt::QueuedConnection);
+ }
+ bool collect_local_snapshot(LocalSnapshotQuery& query) {
+    const auto& selectedEndpoint=query.endpoints[query.next];
     DeliveredNumericFrame full;std::uint64_t ordinal=0,filled_count=0;bool explicit_history=false;
     const auto status=local->query_numeric(selectedEndpoint,full,&ordinal,&filled_count,&explicit_history);
-    if(status==signal_contracts::Status::ok||status==signal_contracts::Status::unavailable){
-     std::lock_guard lock(mutex);if(retired||query->generation!=data_generation){cancelled=true;break;}
-     history_snapshots.push({std::move(full),ordinal,filled_count,explicit_history});schedule_locked();
+    if(status!=signal_contracts::Status::ok&&status!=signal_contracts::Status::unavailable)return true;
+    std::lock_guard lock(mutex);
+    if(retired||query.generation!=data_generation)return false;
+    if(!history_snapshots.push({std::move(full),ordinal,filled_count,explicit_history}))return false;
+    schedule_locked();
+    return true;
+ }
+ void run_local_snapshot_batch(std::shared_ptr<LocalSnapshotQuery> query) {
+   bool cancelled=false;
+   for(std::size_t batch=0;batch<8&&query->next<query->endpoints.size();++batch){
+    {std::lock_guard lock(mutex);
+     if(retired||query->generation!=data_generation){cancelled=true;break;}
+     if(history_snapshots.size()==8)break;
     }
+    if(!collect_local_snapshot(*query)){
+     std::lock_guard lock(mutex);
+     cancelled=retired||query->generation!=data_generation;
+     break;
+    }
+    ++query->next;
    }
    std::lock_guard lock(mutex);
    if(cancelled)query->next=query->endpoints.size();
    local_query=query;local_query_ready=true;
    if(!retired)schedule_locked();
-  },Qt::QueuedConnection);
  }
- void drain(){QPointer<NumericDesktopHost> guard(&owner);auto snapshotCallback=snapshot_handler;auto replyCallback=reply_handler;auto frameCallback=frame_handler;auto historyCallback=history_handler;
-  auto historySnapshotCallback=history_snapshot_handler;const auto historySnapshotVersion=history_snapshot_generation;
-  const auto snapshotVersion=snapshot_generation,replyVersion=reply_generation,frameVersion=frame_generation,historyVersion=history_generation;
-  EngineSnapshot state;{std::lock_guard lock(mutex);pending=false;state=cache;}if(snapshotCallback&&snapshotVersion==snapshot_generation)snapshotCallback(state);if(!guard)return;
-  std::uint64_t resumeGeneration;bool resume=false;std::vector<EndpointIdentity> endpoints;
-  {std::lock_guard lock(mutex);resumeGeneration=data_generation;if(history_resync&&!resync_inflight){resume=true;history_resync=false;histories.clear();resync_inflight=true;if(local)endpoints=selected;}}
-  if(resumed_generation!=resumeGeneration){resumed_generation=resumeGeneration;resumed_ordinals.clear();}
-  auto restore=[&](HistorySnapshot snapshot){
-   {std::lock_guard lock(mutex);if(resumeGeneration!=data_generation||snapshot.frame.delivery.epoch!=cache.epoch||snapshot.frame.delivery.graph_revision!=cache.graph_revision||cache.statuses.value("analyzer").state==State::Stopped)return;}
-   if(!snapshot.frame.context||!snapshot.frame.frame)return;
-   const auto value=snapshot.frame.frame.view();
-   const auto* numeric=std::get_if<signal_contracts::NumericView>(&value.payload);
-   // A cold query also returns ordinary scalars/vectors/matrices. Only an
-   // explicit ring payload enters the history snapshot presentation path.
-   if(!snapshot.explicit_history && (!numeric || !numeric->ring.capacity)){
-    if(frameCallback&&frameVersion==frame_generation)frameCallback(std::move(snapshot.frame));
-    return;
-   }
-   const auto stamp=value.stamp;
-   auto found=std::find_if(resumed_ordinals.begin(),resumed_ordinals.end(),[&](const auto& item){return item.endpoint==snapshot.frame.context->endpoint;});
-   if(found!=resumed_ordinals.end()&&found->producer_epoch==stamp.producer_epoch&&found->generation==stamp.generation&&!stamp.discontinuity&&snapshot.ordinal<found->ordinal)return;
-   ResumeBaseline baseline{snapshot.frame.context->endpoint,snapshot.ordinal,stamp.producer_epoch,stamp.generation};
-   if(found==resumed_ordinals.end())resumed_ordinals.push_back(std::move(baseline));else *found=std::move(baseline);
-   if(historySnapshotCallback&&historySnapshotVersion==history_snapshot_generation)historySnapshotCallback(std::move(snapshot.frame),snapshot.ordinal,snapshot.filled_count);
-  };
-  if(resume&&local)query_local_snapshots(std::make_shared<LocalSnapshotQuery>(LocalSnapshotQuery{std::move(endpoints),resumeGeneration}));
-  else if(resume){call([this]{const auto id=endpoint->submit(EngineCommand{});std::lock_guard lock(mutex);resync_request=id;if(!id)resync_inflight=false;});}
-  for(std::size_t i=0;i<8;++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}if(!full)break;restore(std::move(*full));if(!guard)return;}
-  for(std::size_t i=0;i<128;++i){std::optional<EngineReply> reply;std::optional<DeliveredNumericFrame> frame;std::optional<DeliveredNumericHistoryRow> history;std::uint64_t generation;
-   {std::lock_guard lock(mutex);reply=replies.pop();frame=frames.pop();history=histories.pop();generation=data_generation;if(reply){--outstanding;reply->snapshot=cache;}}
-   if(!reply&&!frame&&!history)break;if(reply&&replyCallback&&replyVersion==reply_generation)replyCallback(std::move(*reply));if(!guard)return;
-   auto current=[&](DeliveryStamp delivery){std::lock_guard lock(mutex);return generation==data_generation&&delivery.epoch==cache.epoch&&delivery.graph_revision==cache.graph_revision&&cache.statuses.value("analyzer").state!=State::Stopped;};
-   if(frame&&frameCallback&&frameVersion==frame_generation&&current(frame->delivery))frameCallback(std::move(*frame));if(!guard)return;
-   if(history&&historyCallback&&historyVersion==history_generation&&current(history->compact.delivery)){
-    auto prior=std::find_if(resumed_ordinals.begin(),resumed_ordinals.end(),[&](const auto& item){return history->compact.context&&item.endpoint==history->compact.context->endpoint;});
-    bool changed=history->event!=NumericHistoryEvent::Row;
-    if(prior!=resumed_ordinals.end()&&history->compact.frame){const auto stamp=history->compact.frame.view().stamp;changed|=stamp.producer_epoch!=prior->producer_epoch||stamp.generation!=prior->generation||stamp.discontinuity;}
-    if(changed&&prior!=resumed_ordinals.end()){resumed_ordinals.erase(prior);prior=resumed_ordinals.end();}
-    if(history->event!=NumericHistoryEvent::Row||prior==resumed_ordinals.end()||history->accepted_row_ordinal>prior->ordinal)historyCallback(std::move(*history));
-   }if(!guard)return;}
-  // A worker batch cannot overwrite other selected endpoints while the GUI is
-  // paused. Advance only after this bounded owning batch has been consumed.
+ struct DrainHandlers {
+  std::function<void(EngineSnapshot)> snapshot;
+  std::function<void(EngineReply)> reply;
+  std::function<void(DeliveredNumericFrame)> frame;
+  std::function<void(DeliveredNumericHistoryRow)> history;
+  std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)> history_snapshot;
+  std::uint64_t snapshot_version,reply_version,frame_version,history_version,history_snapshot_version;
+ };
+ DrainHandlers capture_handlers() const {
+  return {snapshot_handler,reply_handler,frame_handler,history_handler,history_snapshot_handler,
+          snapshot_generation,reply_generation,frame_generation,history_generation,history_snapshot_generation};
+ }
+ bool current_delivery(std::uint64_t generation,DeliveryStamp delivery) const {
+  std::lock_guard lock(mutex);
+  return generation==data_generation&&delivery.epoch==cache.epoch&&
+         delivery.graph_revision==cache.graph_revision&&cache.statuses.value("analyzer").state!=State::Stopped;
+ }
+ bool current_history_snapshot(std::uint64_t generation,const HistorySnapshot& snapshot) const {
+  std::lock_guard lock(mutex);
+  return generation==data_generation&&snapshot.frame.delivery.epoch==cache.epoch&&
+         snapshot.frame.delivery.graph_revision==cache.graph_revision&&cache.statuses.value("analyzer").state!=State::Stopped;
+ }
+ void restore_history_snapshot(HistorySnapshot snapshot,std::uint64_t generation,const DrainHandlers& handlers) {
+  if(!current_history_snapshot(generation,snapshot)||!snapshot.frame.context||!snapshot.frame.frame)return;
+  const auto value=snapshot.frame.frame.view();
+  const auto* numeric=std::get_if<signal_contracts::NumericView>(&value.payload);
+  if(!snapshot.explicit_history && (!numeric || !numeric->ring.capacity)){
+   if(handlers.frame&&handlers.frame_version==frame_generation)handlers.frame(std::move(snapshot.frame));
+   return;
+  }
+  const auto stamp=value.stamp;
+  auto found=std::find_if(resumed_ordinals.begin(),resumed_ordinals.end(),[&](const auto& item){return item.endpoint==snapshot.frame.context->endpoint;});
+  if(found!=resumed_ordinals.end()&&found->producer_epoch==stamp.producer_epoch&&found->generation==stamp.generation&&
+     !stamp.discontinuity&&snapshot.ordinal<found->ordinal)return;
+  ResumeBaseline baseline{snapshot.frame.context->endpoint,snapshot.ordinal,stamp.producer_epoch,stamp.generation};
+  if(found==resumed_ordinals.end())resumed_ordinals.push_back(std::move(baseline));else *found=std::move(baseline);
+  if(handlers.history_snapshot&&handlers.history_snapshot_version==history_snapshot_generation)
+   handlers.history_snapshot(std::move(snapshot.frame),snapshot.ordinal,snapshot.filled_count);
+ }
+ void begin_history_resync(std::uint64_t& generation,bool& resume,std::vector<EndpointIdentity>& endpoints) {
+  std::lock_guard lock(mutex);generation=data_generation;
+  if(history_resync&&!resync_inflight){resume=true;history_resync=false;histories.clear();resync_inflight=true;
+   if(local)endpoints=selected;}
+ }
+ void request_history_resync(bool resume,std::vector<EndpointIdentity> endpoints,std::uint64_t generation) {
+  if(resume&&local)query_local_snapshots(std::make_shared<LocalSnapshotQuery>(LocalSnapshotQuery{std::move(endpoints),generation}));
+  else if(resume)call([this]{const auto id=endpoint->submit(EngineCommand{});std::lock_guard lock(mutex);
+   resync_request=id;if(!id)resync_inflight=false;});
+ }
+ struct DeliveryBatch {
+  std::optional<EngineReply> reply;
+  std::optional<DeliveredNumericFrame> frame;
+  std::optional<DeliveredNumericHistoryRow> history;
+  std::uint64_t generation=0;
+ };
+ void mark_preview_serviced(const DeliveredNumericFrame& frame) {
+  if(!frame.context||frame.delivery.epoch!=cache.epoch||frame.delivery.graph_revision!=cache.graph_revision)return;
+  const auto at=std::lower_bound(selected.begin(),selected.end(),frame.context->endpoint);
+  if(at==selected.end()||*at!=frame.context->endpoint)return;
+  if(preview_service_serial==UINT64_MAX){std::fill(preview_service_age.begin(),preview_service_age.end(),0);preview_service_serial=0;}
+  preview_service_age[std::size_t(at-selected.begin())]=++preview_service_serial;
+ }
+ DeliveryBatch pop_delivery_batch() {
+  std::lock_guard lock(mutex);DeliveryBatch batch;
+  batch.reply=replies.pop();batch.frame=frames.pop();batch.history=histories.pop();batch.generation=data_generation;
+  if(batch.reply){--outstanding;batch.reply->snapshot=cache;}
+  if(batch.frame)mark_preview_serviced(*batch.frame);
+  return batch;
+ }
+ void deliver_history_row(DeliveredNumericHistoryRow history,const DrainHandlers& handlers) {
+  auto prior=std::find_if(resumed_ordinals.begin(),resumed_ordinals.end(),[&](const auto& item){return history.compact.context&&item.endpoint==history.compact.context->endpoint;});
+  bool changed=history.event!=NumericHistoryEvent::Row;
+  if(prior!=resumed_ordinals.end()&&history.compact.frame){const auto stamp=history.compact.frame.view().stamp;
+   changed|=stamp.producer_epoch!=prior->producer_epoch||stamp.generation!=prior->generation||stamp.discontinuity;}
+  if(changed&&prior!=resumed_ordinals.end()){resumed_ordinals.erase(prior);prior=resumed_ordinals.end();}
+  if(history.event!=NumericHistoryEvent::Row||prior==resumed_ordinals.end()||history.accepted_row_ordinal>prior->ordinal)
+   handlers.history(std::move(history));
+ }
+ bool deliver_batch(DeliveryBatch batch,const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard) {
+  if(batch.reply&&handlers.reply&&handlers.reply_version==reply_generation)handlers.reply(std::move(*batch.reply));
+  if(!guard)return false;
+  if(batch.frame&&handlers.frame&&handlers.frame_version==frame_generation&&current_delivery(batch.generation,batch.frame->delivery))
+   handlers.frame(std::move(*batch.frame));
+  if(!guard)return false;
+  if(batch.history&&handlers.history&&handlers.history_version==history_generation&&
+     current_delivery(batch.generation,batch.history->compact.delivery))deliver_history_row(std::move(*batch.history),handlers);
+  return bool(guard);
+ }
+ void continue_local_query() {
   std::shared_ptr<LocalSnapshotQuery> continuation;
   {std::lock_guard lock(mutex);if(local_query_ready){local_query_ready=false;
     if(local_query->next==local_query->endpoints.size()){local_query.reset();resync_inflight=false;if(history_resync)schedule_locked();}
     else continuation=local_query;}}
   if(continuation)query_local_snapshots(std::move(continuation));
  }
+ void drain(){QPointer<NumericDesktopHost> guard(&owner);const auto handlers=capture_handlers();
+  EngineSnapshot state;{std::lock_guard lock(mutex);pending=false;state=cache;}
+  if(handlers.snapshot&&handlers.snapshot_version==snapshot_generation)handlers.snapshot(state);if(!guard)return;
+  std::uint64_t resumeGeneration;bool resume=false;std::vector<EndpointIdentity> endpoints;
+  begin_history_resync(resumeGeneration,resume,endpoints);
+  if(resumed_generation!=resumeGeneration){resumed_generation=resumeGeneration;resumed_ordinals.clear();}
+  request_history_resync(resume,std::move(endpoints),resumeGeneration);
+  for(std::size_t i=0;i<8;++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}
+   if(!full)break;restore_history_snapshot(std::move(*full),resumeGeneration,handlers);if(!guard)return;}
+  for(std::size_t i=0;i<128;++i){auto batch=pop_delivery_batch();
+   if(!batch.reply&&!batch.frame&&!batch.history)break;
+   if(!deliver_batch(std::move(batch),handlers,guard))return;}
+  // A worker batch cannot overwrite other selected endpoints while the GUI is
+  // paused. Advance only after this bounded owning batch has been consumed.
+  continue_local_query();
+ }
+ void initialize_remote(QString host,quint16 port,const std::optional<desktop::SerialEndpoint>& serial) {
+  if(serial)endpoint=std::make_unique<NumericRemoteEndpoint>(*serial);
+  else endpoint=std::make_unique<NumericRemoteEndpoint>(std::move(host),port);
+  static_cast<NumericRemoteEndpoint*>(endpoint.get())->set_numeric_history_snapshot_handler(
+   [this](auto frame,std::uint64_t ordinal,std::uint64_t filled_count){publish_history_snapshot(std::move(frame),ordinal,filled_count);});
+ }
+ void initialize_local(AudioSourceFactory factory) {
+  auto engine=std::make_unique<NumericEngine>(std::move(factory));local=engine.get();
+  registry=std::make_unique<AggregatorClient>(AggregatorClientConfig{QUuid::createUuid(),ComponentType::data_sink,0});
+  auto next_routing=std::make_unique<NumericRoutingAdapter>(*engine,registry.get());
+  routing=next_routing.get();auto* routes=routing;
+  engine->set_adapter_handlers(std::move(next_routing),
+   {[routes](const QJsonObject& graph,QString* error){return routes->validate_graph_routes(graph,error);},
+    [routes](const QJsonObject& graph){routes->configure_graph_routes(graph);},
+    [routes](const QJsonObject& config,QString* error){return routes->configure(config,error);},
+    [routes]{return routes->diagnostics().value("error").toString();}});
+  endpoint=std::move(engine);
+ }
+ void bind_endpoint_handlers() {
+  endpoint->set_snapshot_handler([this](auto value){publish(std::move(value));});
+  endpoint->set_reply_handler([this](auto value){publish(std::move(value));});
+  endpoint->set_numeric_frame_handler([this](auto value){publish(std::move(value));});
+  endpoint->set_numeric_history_handler([this](auto value){publish(std::move(value));});
+  publish(endpoint->snapshot());
+ }
+ bool subscribe_frames(std::vector<EndpointIdentity> endpoints,QString& error) {
+  {std::lock_guard lock(mutex);if(selected==endpoints)return true;}
+  if(!endpoint->subscribe_numeric_frames(endpoints,&error))return false;
+  std::lock_guard lock(mutex);
+  selected=std::move(endpoints);preview_service_age.assign(selected.size(),0);preview_service_serial=0;
+  ++data_generation;frames.clear();histories.clear();history_snapshots.clear();history_resync=!selected.empty();
+  schedule_locked();return true;
+ }
  ~Impl(){ {std::lock_guard lock(mutex);retired=true;}call([this]{server.reset();endpoint.reset();registry.reset();routing=nullptr;local=nullptr;});thread.quit();thread.wait();}
 };
 NumericDesktopHost::NumericDesktopHost(AudioSourceFactory factory,QString host,quint16 port,std::optional<desktop::SerialEndpoint> serial,QObject* parent):QObject(parent),impl_(std::make_unique<Impl>(*this)){
  impl_->call([&,factory=std::move(factory),host=std::move(host),serial=std::move(serial)]()mutable{
-  if(!host.isEmpty()) {if(serial)impl_->endpoint=std::make_unique<NumericRemoteEndpoint>(*serial);else impl_->endpoint=std::make_unique<NumericRemoteEndpoint>(host,port);
-   static_cast<NumericRemoteEndpoint*>(impl_->endpoint.get())->set_numeric_history_snapshot_handler([this](auto frame,std::uint64_t ordinal,std::uint64_t filled_count){impl_->publish_history_snapshot(std::move(frame),ordinal,filled_count);});}
-  else{auto engine=std::make_unique<NumericEngine>(std::move(factory));impl_->local=engine.get();
-   impl_->registry=std::make_unique<AggregatorClient>(AggregatorClientConfig{QUuid::createUuid(),ComponentType::data_sink,0});
-   auto routing=std::make_unique<NumericRoutingAdapter>(*engine,impl_->registry.get());impl_->routing=routing.get();auto* r=routing.get();
-   engine->set_adapter_handlers(std::move(routing),{[r](const QJsonObject& g,QString* e){return r->validate_graph_routes(g,e);},[r](const QJsonObject& g){r->configure_graph_routes(g);},[r](const QJsonObject& c,QString* e){return r->configure(c,e);},[r]{return r->diagnostics().value("error").toString();}});
-   impl_->endpoint=std::move(engine);}
-  impl_->endpoint->set_snapshot_handler([this](auto v){impl_->publish(std::move(v));});impl_->endpoint->set_reply_handler([this](auto v){impl_->publish(std::move(v));});
-  impl_->endpoint->set_numeric_frame_handler([this](auto v){impl_->publish(std::move(v));});impl_->endpoint->set_numeric_history_handler([this](auto v){impl_->publish(std::move(v));});impl_->publish(impl_->endpoint->snapshot());
+  if(!host.isEmpty())impl_->initialize_remote(std::move(host),port,serial);
+  else impl_->initialize_local(std::move(factory));
+  impl_->bind_endpoint_handlers();
  });
 }
 NumericDesktopHost::~NumericDesktopHost()=default;
@@ -176,11 +309,8 @@ void NumericDesktopHost::disconnect_remote(){impl_->call([&]{impl_->endpoint->di
 EnginePort::PortDeliveryMode NumericDesktopHost::port_delivery_mode()const noexcept{return impl_->delivery_mode.load();}
 bool NumericDesktopHost::subscribe_numeric_frames(std::vector<EndpointIdentity> endpoints,QString* error){
  std::sort(endpoints.begin(),endpoints.end());endpoints.erase(std::unique(endpoints.begin(),endpoints.end()),endpoints.end());
- bool ok=false;QString e;impl_->call([&]{
-  {std::lock_guard lock(impl_->mutex);if(impl_->selected==endpoints){ok=true;return;}}
-  ok=impl_->endpoint->subscribe_numeric_frames(endpoints,&e);
-  if(ok){std::lock_guard lock(impl_->mutex);impl_->selected=std::move(endpoints);++impl_->data_generation;impl_->frames.clear();impl_->histories.clear();impl_->history_snapshots.clear();impl_->history_resync=!impl_->selected.empty();impl_->schedule_locked();}
- });if(error)*error=e;return ok;
+ bool ok=false;QString e;impl_->call([&]{ok=impl_->subscribe_frames(std::move(endpoints),e);});
+ if(error)*error=e;return ok;
 }
 void NumericDesktopHost::configure_registry(QHostAddress address,quint16 port,int timeout){impl_->call([&]{if(impl_->registry)impl_->registry->connect_to_aggregator_server(address,port,timeout);});}
 void NumericDesktopHost::disconnect_registry(){impl_->call([&]{if(impl_->registry)impl_->registry->disconnect_from_aggregator_server();});}

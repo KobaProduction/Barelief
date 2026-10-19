@@ -1,6 +1,7 @@
 #include <dataflow_runtime/runtime.h>
 #include <application/processing_control.h>
 #include <dsp_kernels/numeric_convert.h>
+#include "numeric_test_builders.h"
 #include <array>
 #include <algorithm>
 #include <bit>
@@ -21,18 +22,22 @@ void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 namespace {
 #define CHECK(x) do{if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);++failures;}}while(false)
+void fixture_check(bool yes,const char* reason){if(!yes){std::printf("FAIL fixture: %s\n",reason);++failures;}}
 constexpr std::array<std::uint32_t,1> channels{42};
 const FrameLimits limits{8,32768,65536,8192,256,8192};
 NumericRuntimeProfile profile(){return {{32,64,8,16,256,65536,limits},{{1048576,1048576,1048576,65536},0,4194304},{4096,8,65536,65536,65536},{true,true,true}};}
 NumericContract vector(DType dt){NumericContract c;c.dtype=dt;c.semantic=Semantic::MelEnergy;c.quantity=Quantity::MelEnergy;
  c.shape.rank=Rank::Vector;c.shape.axes={Axis::Band,Axis::None};c.shape.extents={ExtentBounds{2,2},ExtentBounds{1,1}};
  c.channel_order=channels;c.clock={"numeric.source",{1,1},48000};return c;}
-OwnedProcessingContract own(const NumericContract& c){OwnedProcessingContract o;CHECK(own_processing_contract(c,limits,65536,o)==Status::ok);return o;}
-ProcessingPort port(PortId id,PortDirection d,const NumericContract& c){return {id,d,own(c)};}
-ConfiguredProcessingNode node(NodeId id,const char* kind,const NumericContract* in,const NumericContract* out){ConfiguredProcessingNode n;n.id=id;n.kind=kind;
- if(in)n.inputs.push_back(port(0,PortDirection::Input,*in));
- if(out)n.outputs.push_back(port(0,PortDirection::Output,*out));
- return n;}
+OwnedProcessingContract own(const NumericContract& c){
+ return numeric_test_builders::contract(c,limits,65536,fixture_check,"own scenario contract");}
+ProcessingPort port(PortId id,PortDirection d,const NumericContract& c){
+ return numeric_test_builders::port(id,d,own(c));}
+ConfiguredProcessingNode node(NodeId id,const char* kind,const NumericContract* in,const NumericContract* out){
+ std::vector<ProcessingPort> inputs,outputs;
+ if(in)inputs.push_back(port(0,PortDirection::Input,*in));
+ if(out)outputs.push_back(port(0,PortDirection::Output,*out));
+ return numeric_test_builders::node(id,kind,EndpointProcessingParameters{},std::move(inputs),std::move(outputs));}
 NumericProcessingGraph graph(bool open=true,DType input=DType::UInt64,DType output=DType::Int64){auto u=vector(input),s=vector(output),h=s;
  h.semantic=Semantic::History;h.history_element=s.semantic;h.shape.rank=Rank::Matrix;h.shape.axes={Axis::Time,Axis::Band};h.shape.extents={ExtentBounds{0,3},s.shape.extents[0]};
  NumericContract count;count.dtype=DType::UInt64;count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;count.channel_order=std::span(channels).first(1);count.clock=s.clock;
@@ -64,7 +69,8 @@ DataFrameView frame(const NumericContract& c,std::array<std::byte,32>& b,std::ui
  MutableNumericView m{&c,b,std::span(pl).first(1),{2,1},{},{}};const auto base=(std::uint64_t{1}<<54)+sequence*10;
  CHECK(store_element(m,{0,0,0},base)==Status::ok);CHECK(store_element(m,{0,1,0},base+1)==Status::ok);
 
- FrameStamp s;s.sequence=sequence;s.source_sequence=sequence;s.producer_epoch=17;s.generation=4;s.timestamp_ticks=-123;s.stream_id="original";return {s,m.view()};}
+ FrameStamp s;s.sequence=sequence;s.source_sequence=sequence;s.producer_epoch=17;s.generation=4;s.timestamp_ticks=-123;s.stream_id="original";
+ return numeric_test_builders::frame(s,c,b,std::span(pl).first(1),{2,1});}
 void scenario(){auto p=profile();GraphExecutor executor(p);application::PreparedExecution pending;auto g=graph();
  CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);if(!pending)return;
  CHECK(executor.apply(std::move(pending))==Status::ok);CHECK(executor.plan()->numeric_definition()!=nullptr);
@@ -132,13 +138,15 @@ NumericProcessingGraph dsp_graph(){NumericContract pcm;pcm.dtype=DType::Float32;
  NumericProcessingGraph g;g.graph_id="typed.dsp";g.execution_interval={1,60};g.nodes.push_back(node(1,"TestSignal",nullptr,&pcm));
  auto transform=[&](NodeId id,const char* kind,const NumericContract& from,const NumericContract& to){auto n=node(id,kind,&from,&to);n.parameters=TransformProcessingParameters{};return n;};
  auto window=transform(2,"Window",pcm,win);std::get<TransformProcessingParameters>(window.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{512}}});g.nodes.push_back(std::move(window));
- g.nodes.push_back(transform(3,"WindowFunction",win,windowed));g.nodes.push_back(transform(4,"StereoFFT",windowed,spectrum));g.nodes.push_back(transform(5,"BarkWeighting",spectrum,spectrum));
+ ConfiguredProcessingNode length;length.id=20;length.kind="ArrayLength";length.parameters=TransformProcessingParameters{};length.inputs={port(0,PortDirection::Input,win)};OwnedProcessingContract size;CHECK(numeric_metadata_output_contract(win,false,size)==Status::ok);length.outputs={{0,PortDirection::Output,size}};
+ auto function=transform(3,"WindowFunction",win,windowed);function.inputs={{0,PortDirection::Input,size}};std::get<TransformProcessingParameters>(function.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{512}}});OwnedProcessingContract coefficients;CHECK(array_generator_output_contract(function,std::get<NumericContract>(size.view()),coefficients)==Status::ok);function.outputs={{0,PortDirection::Output,coefficients}};g.nodes.push_back(function);auto product=transform(21,"ArrayMultiply",win,win);product.inputs.push_back({1,PortDirection::Input,coefficients});
+ windowed=win;g.nodes.push_back(transform(4,"StereoFFT",windowed,spectrum));g.nodes.push_back(transform(5,"BarkWeighting",spectrum,spectrum));
  g.nodes.push_back(transform(6,"SpectrumGain",spectrum,mono));g.nodes.push_back(transform(7,"SpectrumGain",mono,mono));
  auto bands=transform(8,"Mel",mono,mel);std::get<TransformProcessingParameters>(bands.parameters).values.push_back({"bands",NumericLiteral{std::uint64_t{8}}});g.nodes.push_back(std::move(bands));
  auto acc=node(9,"Spectrogram",&mel,&hist);acc.parameters=HistoryProcessingParameters{3};acc.outputs.push_back(port(1,PortDirection::Output,count));g.nodes.push_back(std::move(acc));
  g.nodes.push_back(node(10,"SpectrogramView",&hist,nullptr));g.nodes.push_back(node(11,"NetworkOutput",&count,nullptr));
  for(NodeId id=1;id<10;++id)g.edges.push_back({id,id+1,0,0});
- g.edges.push_back({9,11,1,0});return g;
+ g.edges.push_back({9,11,1,0});std::erase_if(g.edges,[](const auto& e){return e.to==3 || e.from==3;});g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
 }
 struct DspCapture{std::size_t windows=0,rows=0;std::uint64_t count=0,ordinal=0;std::int64_t timestamp=0;float first=0;bool changed=false;};
 void dsp_output(void* p,const NumericPortFrameView& f){auto& c=*static_cast<DspCapture*>(p);CHECK(f.status==Status::ok);
@@ -512,6 +520,7 @@ void pcm_resampler_full_chain(){
    port.contract=own(c);
  }
  auto convert=node(12,"PcmResampler",&input,&resampled);TransformProcessingParameters parameters;
+ parameters.values.push_back({"input_rate",NumericLiteral{std::uint64_t{input.clock.sample_rate}}});
  parameters.values.push_back({"output_rate",NumericLiteral{std::uint64_t{16000}}});convert.parameters=parameters;g.nodes.push_back(convert);
  g.edges[0]={1,12,0,0};g.edges.push_back({12,2,0,0});
  auto p=profile();GraphExecutor executor(p);application::PreparedExecution prepared;
@@ -538,17 +547,18 @@ void pcm_resampler_scenario(){
  auto out=in;out.clock.sample_rate=16000;out.clock.tick_seconds={1,16000};out.shape.extents[0]={1,7};
  NumericProcessingGraph g;g.graph_id="resampler.oracle";g.nodes.push_back(node(1,"NetworkInput",nullptr,&in));
  auto resampler=node(2,"PcmResampler",&in,&out);TransformProcessingParameters parameters;
+ parameters.values.push_back({"input_rate",NumericLiteral{std::uint64_t{in.clock.sample_rate}}});
  parameters.values.push_back({"output_rate",NumericLiteral{std::uint64_t{16000}}});resampler.parameters=parameters;g.nodes.push_back(resampler);
  g.nodes.push_back(node(3,"NetworkOutput",&out,nullptr));g.edges={{1,2,0,0},{2,3,0,0}};
  auto p=profile();GraphExecutor executor(p);application::PreparedExecution prepared;
  CHECK(executor.prepare_numeric(g,{p.admission,p.resources},prepared)==Status::ok);if(!prepared)return;
  CHECK(executor.apply(std::move(prepared))==Status::ok);
- struct Seen{std::size_t frames=0,markers=0,samples=0;std::uint64_t sequence=0;std::int64_t ticks=0;bool discontinuity=false,require_zero=false;} seen;
+ struct Seen{std::size_t frames=0,markers=0,samples=0;std::uint64_t sequence=0;std::int64_t ticks=0;bool discontinuity=false,require_zero=false;std::uint32_t rate=16000;} seen;
  auto observe=[](void* user,const NumericPortFrameView& event){auto& seen=*static_cast<Seen*>(user);
    CHECK(event.frame.stamp.sequence>seen.sequence);seen.sequence=event.frame.stamp.sequence;
    CHECK(event.frame.stamp.source_sequence>0);seen.ticks=event.frame.stamp.timestamp_ticks;seen.discontinuity=event.frame.stamp.discontinuity;
    CHECK(validate_view(event.frame,limits)==(event.frame.stamp.available?Status::ok:Status::unavailable));
-   const auto& value=std::get<NumericView>(event.frame.payload);CHECK(value.contract->clock.sample_rate==16000);
+   const auto& value=std::get<NumericView>(event.frame.payload);CHECK(value.contract->clock.sample_rate==seen.rate);
    if(event.frame.stamp.available){++seen.frames;seen.samples+=value.actual[0];
      if(seen.require_zero)for(std::size_t plane=0;plane<value.planes.size();++plane)for(std::size_t i=0;i<value.actual[0];++i){float x=1;CHECK(load_element(value,{plane,i,0},x)==Status::ok && x==0);}
    }else ++seen.markers;
@@ -575,18 +585,27 @@ void pcm_resampler_scenario(){
  }
  CHECK(copied.ticks==seen.ticks && copied.samples==seen.samples);
  send(1,false);CHECK(seen.markers==1 && seen.ticks==1);
- send(1);CHECK(seen.frames==3 && seen.ticks==1 && seen.discontinuity);
+ // Resume at input tick5: ceil(5*16000/48000)=2. Tick2 requires
+ // input tick6; emitting tick1 here would invent a sample before recovery.
+ send(1);CHECK(seen.frames==2 && seen.ticks==1);
+ send(1);CHECK(seen.frames==3 && seen.ticks==2 && seen.discontinuity);
  stamp.timestamp_ticks=480;send(1);CHECK(seen.frames==4 && seen.ticks==160 && seen.discontinuity);
- ++stamp.producer_epoch;send(1);CHECK(seen.frames==5 && seen.discontinuity);
+ // A new epoch begins at481: its first valid output is ceil(481/3)=161,
+ // requiring input483. Two single-sample packets must neither emit early
+ // nor lose that first sample once the exact output-grid point arrives.
+ ++stamp.producer_epoch;send(1);CHECK(seen.frames==4 && seen.ticks==160);
+ send(1);CHECK(seen.frames==4 && seen.ticks==160);
+ send(1);CHECK(seen.frames==5 && seen.ticks==161 && seen.discontinuity);
  // An unchanged Apply must retain fractional phase and FIR state, without allocations on the next ingress.
  application::PreparedExecution retained;CHECK(executor.prepare_numeric(g,{p.admission,p.resources},retained)==Status::ok);
  CHECK(executor.apply(std::move(retained))==Status::ok);const auto frames=seen.frames;send(1);CHECK(seen.frames==frames);
  const auto markers=seen.markers;values[0]=std::numeric_limits<float>::quiet_NaN();send(1,true,Status::overflow);
  CHECK(seen.markers==markers+1);values[0]=.25f;send(1);CHECK(seen.discontinuity);
- // A bypass across distinct sample clocks produces typed zeros on the output grid.
+ // Bypass changes the prepared downstream grid to the native input contract.
  g.nodes[1].enabled=false;application::PreparedExecution bypass;
+ NumericProcessingGraph evaluated,executable;CHECK(bool(resolve_numeric_parameter_bindings(g,p.admission,evaluated,executable,2)));g=std::move(evaluated);
  CHECK(executor.prepare_numeric(g,{p.admission,p.resources},bypass)==Status::ok);CHECK(executor.apply(std::move(bypass))==Status::ok);
- seen.require_zero=true;send(16);CHECK(seen.frames>frames);
+ seen.sequence=0;seen.rate=48000;send(16);CHECK(seen.frames>frames);
 }
 
 // The same primitive frame reaches every presentation kind. In particular an
@@ -644,7 +663,7 @@ void index_extractors() {
   alignas(16) std::array<std::byte,96> bytes{};MutableNumericView data{&input,std::span(bytes).first(4*columns*width),std::span(planes).first(1),{2,columns},{},{}};
   const std::uint64_t bits=type.type==DType::Float32?std::bit_cast<std::uint32_t>(7.25f):type.type==DType::Float64?std::bit_cast<std::uint64_t>(7.25):type.type==DType::UInt64?UINT64_MAX:71;
   CHECK(store_bits(data,{0,1,columns-1},type.type,bits)==Status::ok);CHECK(store_bits(data,{0,0,0},type.type,1)==Status::ok);
-  struct Seen{std::uint64_t bits;std::array<unsigned,12> counts{};} seen{bits};NumericRuntimeCallbacks callbacks;callbacks.user=&seen;
+  struct Seen{std::uint64_t bits;std::array<unsigned,12> counts{};unsigned producer_refusals=0,unavailable_sinks=0;} seen{bits};NumericRuntimeCallbacks callbacks;callbacks.user=&seen;
   callbacks.sink_input=[](void* opaque,const NumericPortFrameView& frame){auto& seen=*static_cast<Seen*>(opaque);const auto id=frame.identity.port;CHECK(frame.identity.node==4 && id<seen.counts.size());if(id>=seen.counts.size())return;++seen.counts[id];
    if(id==11){CHECK(frame.status==Status::unavailable&&!frame.frame.stamp.available);return;}
    CHECK(frame.status==Status::ok&&validate_view(frame.frame,limits)==Status::ok);const auto& value=std::get<NumericView>(frame.frame.payload);std::uint64_t bits=0;CHECK(load_bits(value,{},value.contract->dtype,bits)==Status::ok);CHECK(bits==(id==3?seen.bits:id==7?1:0));};
@@ -670,10 +689,23 @@ void index_extractors() {
   }
   // An admitted variable extent can shrink below the chosen index. The
   // extractor must publish refusal, never read the previous buffer contents.
-  data.actual[0]=1;stamp.sequence=4;callbacks.sink_input=[](void*,const NumericPortFrameView& frame){if(frame.identity.port==3)CHECK(frame.status==Status::invalid_argument&&!frame.frame.stamp.available);};
+  data.actual[0]=1;stamp.sequence=4;
+  callbacks.output=[](void* opaque,const NumericPortFrameView& frame){if(frame.identity.node==2 && frame.identity.port==0){CHECK(frame.status==Status::invalid_argument&&!frame.frame.stamp.available);++static_cast<Seen*>(opaque)->producer_refusals;}};
+  callbacks.sink_input=[](void* opaque,const NumericPortFrameView& frame){if(frame.identity.port==3){CHECK(frame.status==Status::unavailable&&!frame.frame.stamp.available);++static_cast<Seen*>(opaque)->unavailable_sinks;}};
   const auto beforeShort=allocations;CHECK(executor.process_numeric_ports(1,{stamp,data.view()},{},callbacks)==Status::invalid_argument);CHECK(allocations==beforeShort);
+  CHECK(seen.producer_refusals==1 && seen.unavailable_sinks==1);
  }
 }
 #include "numeric_dsp_stage_oracle.h"
-int main(){index_extractors();primitive_views();fixed_pcm_history_resize();pcm_resampler_scenario();pcm_resampler_full_chain();dtype_edge_policy_scenario();dtype_edge_geometries();scenario();dtype_routes();float_dsp_scenario();float_dsp_scenario(true);numeric_full_chain_oracle();numeric_full_chain_oracle(true);control_scenario();merge_scenario();local_history_conversion();external_history_ownership();whole_history_kernel();local_history_coordinates();resource_dimensions();route_fanout_identity();std::printf("failures=%d\n",failures);return failures?1:0;}
+void pcm_resampler_identity_bypass(){
+ auto input=vector(DType::Float32);input.semantic=Semantic::PCM;input.quantity=Quantity::Amplitude;input.unit=NumericUnit::Values;input.shape.axes={Axis::Sample,Axis::None};input.shape.extents={ExtentBounds{1,16},ExtentBounds{1,1}};input.clock={"native",{1,48000},48000};
+ auto resampler=node(2,"PcmResampler",&input,&input);resampler.enabled=false;resampler.parameters=TransformProcessingParameters{{{"input_rate",NumericLiteral{std::uint64_t{input.clock.sample_rate}}},{"output_rate",NumericLiteral{std::uint64_t{36000}}},{"mode",std::string{"existing_fir"}}}};
+ NumericProcessingGraph graph;graph.graph_id="resampler.identity-bypass";graph.nodes={node(1,"NetworkInput",nullptr,&input),resampler};graph.edges={{1,2,0,0}};
+ std::shared_ptr<const PreparedGraph> prepared;std::unique_ptr<RuntimeContext> state;CHECK(PreparedGraph::prepare_numeric(graph,profile(),prepared,state)==Status::ok);if(!prepared)return;
+ struct Seen{unsigned frames=0;std::array<float,16> expected{};static void output(void* user,const NumericPortFrameView& event){if(event.identity.node!=2 || !event.frame.stamp.available)return;auto& seen=*static_cast<Seen*>(user);++seen.frames;const auto& view=std::get<NumericView>(event.frame.payload);CHECK(view.contract->clock.sample_rate==48000 && view.actual[0]==16 && event.frame.stamp.timestamp_ticks==64);for(unsigned i=0;i<16;++i){float x=0;CHECK(load_element(view,{0,i,0},x)==Status::ok && x==seen.expected[i]);}}} seen;
+ for(unsigned i=0;i<16;++i)for(unsigned tone=1;tone<=5;++tone)seen.expected[i]+=.02f*std::cos(float(i*tone)*.2f);
+ const PlaneLayout plane{0,{4,0}};NumericView values{&input,std::as_bytes(std::span(seen.expected)),std::span(&plane,1),{16,1},{},{}};FrameStamp stamp;stamp.available=true;stamp.sequence=stamp.source_sequence=1;stamp.producer_epoch=1;stamp.timestamp_ticks=64;stamp.has_sample_interval=true;stamp.sample_begin=64;stamp.sample_count=16;
+ const auto before=allocations;CHECK(prepared->process_numeric_ports(1,{stamp,values},*state,{},NumericRuntimeCallbacks{Seen::output,nullptr,nullptr,&seen})==Status::ok);CHECK(seen.frames==1 && allocations==before);
+}
+int main(){pcm_resampler_identity_bypass();index_extractors();primitive_views();fixed_pcm_history_resize();pcm_resampler_scenario();pcm_resampler_full_chain();dtype_edge_policy_scenario();dtype_edge_geometries();scenario();dtype_routes();float_dsp_scenario();float_dsp_scenario(true);numeric_full_chain_oracle();numeric_full_chain_oracle(true);control_scenario();merge_scenario();local_history_conversion();external_history_ownership();whole_history_kernel();local_history_coordinates();resource_dimensions();route_fanout_identity();std::printf("failures=%d\n",failures);return failures?1:0;}
 

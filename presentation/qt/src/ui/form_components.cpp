@@ -29,10 +29,7 @@ FieldRow::FieldRow(const QString &key, QWidget *editor, QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(4);
-    ui::bind(_label, "text", key);
-    auto *focusTarget = editor->focusProxy() ? editor->focusProxy() : editor;
-    _label->setBuddy(focusTarget);
-    _label->setWordWrap(true);
+    auto *focusTarget = setupLabel(key, editor);
     _line->addWidget(_label);
     _line->addWidget(editor, 1);
     layout->addLayout(_line);
@@ -41,6 +38,16 @@ FieldRow::FieldRow(const QString &key, QWidget *editor, QWidget *parent)
     _help->hide();
     layout->addWidget(_help);
     layout->addWidget(_error);
+    setupAccessibility(focusTarget);
+}
+QWidget *FieldRow::setupLabel(const QString &key, QWidget *editor) {
+    ui::bind(_label, "text", key);
+    auto *focusTarget = editor->focusProxy() ? editor->focusProxy() : editor;
+    _label->setBuddy(focusTarget);
+    _label->setWordWrap(true);
+    return focusTarget;
+}
+void FieldRow::setupAccessibility(QWidget *focusTarget) {
     auto updateAccessibility = [this, focusTarget] {
         _editor->setAccessibleName(_label->text());
         focusTarget->setAccessibleName(_label->text());

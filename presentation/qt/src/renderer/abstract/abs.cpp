@@ -4,6 +4,7 @@
 #include <visualization/ui_text.h>
 #include <QPaintEvent>
 #include <algorithm>
+#include <utility>
 #include <cmath>
 AbstractChartView::AbstractChartView():_frame_pump([this](auto token){
     mark_submission(token);publish_presentation();_on_chart_updated();
@@ -30,24 +31,29 @@ void AbstractChartView::set_render_visible(bool visible) {
 float AbstractChartView::peak_value() const {float peak=0;for(float value:_data)peak=std::max(peak,std::abs(value));return peak;}
 void AbstractChartView::update(const std::vector<float>& data) {
     core::perf::Scope trace(core::perf::Stage::ChartData);
-    if(data.size()>1048576){_data.clear();_refresh_x_range();_need_update=true;_schedule_dirty_presentation();return;}
+    if(data.size()>1048576){_source_data.clear();_data.clear();_refresh_x_range();_need_update=true;_schedule_dirty_presentation();return;}
+    _source_data=data;
     const auto previousX=x_range(),previousY=y_range();
+    map_source_data(data);
+    _refresh_x_range();
+    observe_amplitude_range();
+    if(previousX!=x_range()||previousY!=y_range())_need_update=true;
+    _schedule_dirty_presentation();
+}
+void AbstractChartView::map_source_data(const std::vector<float>& data){
     if(data.size()!=_data.size()){_need_update=true;_data.resize(data.size());_on_updated_data_size(data.size());}
     for(size_t i=0;i<data.size();++i){
-        const float value=std::isfinite(data[i])?data[i]:0;
+        const float value=float(_value_scale.map(data[i]));
         if(_data[i]!=value)_need_update=true;
         _data[i]=value;
     }
-    _refresh_x_range();
-    if(_auto_resizing&&!_data.empty()) {
-        const auto [low,high]=std::minmax_element(_data.begin(),_data.end());
-        if(!_auto_gain){_last_min_value=std::min(_last_min_value,double(*low));_last_max_value=std::max(_last_max_value,double(*high));}
-        else if(_amplitude_range.observe(*low,*high,AmplitudeRange::now(),_auto_range_interval,_gain_min_min,_gain_min_max)){
-            const auto bounds=_amplitude_range.range();_last_min_value=bounds.first;_last_max_value=bounds.second;
-        }
-    }
-    if(previousX!=x_range()||previousY!=y_range())_need_update=true;
-    _schedule_dirty_presentation();
+}
+void AbstractChartView::observe_amplitude_range(){
+    if(!_auto_resizing||_data.empty())return;
+    const auto [low,high]=std::minmax_element(_data.begin(),_data.end());
+    if(!_auto_gain){_last_min_value=std::min(_last_min_value,double(*low));_last_max_value=std::max(_last_max_value,double(*high));return;}
+    if(!_amplitude_range.observe(*low,*high,AmplitudeRange::now(),_auto_range_interval,_gain_min_min,_gain_min_max))return;
+    const auto bounds=_amplitude_range.range();_last_min_value=bounds.first;_last_max_value=bounds.second;
 }
 void AbstractChartView::_schedule_dirty_presentation(){
     if(_need_update)_frame_pump.request();
@@ -58,12 +64,11 @@ void AbstractChartView::set_range(qreal minimum,qreal maximum){if(!std::isfinite
 void AbstractChartView::set_x_range(bool automatic,qreal minimum,qreal maximum){if(!std::isfinite(minimum)||!std::isfinite(maximum)||minimum>=maximum)return;_automatic_x_range=automatic;_manual_x_min=minimum;_manual_x_max=maximum;_refresh_x_range();refresh_presentation();}
 void AbstractChartView::_refresh_x_range(){
     _x_min=_manual_x_min;_x_max=_manual_x_max;
-    if(_automatic_x_range){_x_min=0;_x_max=std::max(qreal(1),_x_step()*qreal(_data.empty()?0:_data.size()-1));
-        if(_x_coordinates.size()==_data.size()&&!_x_coordinates.empty()){
-            _x_min=_x_coordinates.front()-(_scalar_mode&&_data.size()==1?1:0);
-            _x_max=_data.size()>1?_x_coordinates.back():_x_coordinates.front()+(_scalar_mode?0:1);
-        }
-    }
+    if(!_automatic_x_range)return;
+    _x_min=0;_x_max=std::max(qreal(1),_x_step()*qreal(_data.empty()?0:_data.size()-1));
+    if(_x_coordinates.size()!=_data.size()||_x_coordinates.empty())return;
+    _x_min=_x_coordinates.front()-(_scalar_mode&&_data.size()==1?1:0);
+    _x_max=_data.size()>1?_x_coordinates.back():_x_coordinates.front()+(_scalar_mode?0:1);
 }
 bool AbstractChartView::set_x_coordinates(const std::vector<double>& values){
     if(values.size()>1048576)return false;
@@ -73,33 +78,45 @@ bool AbstractChartView::set_x_coordinates(const std::vector<double>& values){
 }
 void AbstractChartView::set_axis_precision(int precision){_axis_precision=std::clamp(precision,0,8);refresh_presentation();}
 void AbstractChartView::_update_chart_data(){
-    _points.clear();const size_t count=_data.size();
+    _points.clear();
     const size_t buckets=size_t(std::clamp(width()-100,1,2048));
-    // Decimate only the visible x interval (and one neighbour for clipping).
-    size_t begin=0,end=count;
-    if(!_automatic_x_range&&count){while(begin<count&&projected_x_coordinate(begin)<_x_min)++begin;if(begin)--begin;
-        end=begin;while(end<count&&projected_x_coordinate(end)<=_x_max)++end;if(end<count)++end;}
+    const auto [begin,end]=visible_data_interval();
     if(end<=begin)return;
+    if(_plot_style=="bars"){append_bar_points(begin,end);return;}
+    append_line_points(begin,end,buckets);
+}
+std::pair<size_t,size_t> AbstractChartView::visible_data_interval() const {
+    // Include one neighbour on each side for clipping.
+    const size_t count=_data.size();
+    size_t begin=0,end=count;
+    const auto [xMin,xMax]=visible_x_range();
+    if((!_automatic_x_range || viewport_.width()<1)&&count){while(begin<count&&projected_x_coordinate(begin)<xMin)++begin;if(begin)--begin;
+        end=begin;while(end<count&&projected_x_coordinate(end)<=xMax)++end;if(end<count)++end;}
+    return {begin,end};
+}
+void AbstractChartView::append_projected_point(size_t index){
+    _points.append({projected_x_coordinate(index),_data[index]});
+}
+void AbstractChartView::append_bar_points(size_t begin,size_t end){
     const size_t visible=end-begin;
-    auto append=[&](size_t i){_points.append({projected_x_coordinate(i),_data[i]});};
-    if(_plot_style=="bars"){
-        // A logical pixel may contain several physical pixels. Preserve every
-        // bin when the display can resolve it instead of reducing a HiDPI FFT
-        // to the same number of columns as a DPR1 viewport.
-        const auto physicalColumns=size_t(std::clamp((double(width())-_cached_plot_left-22)*devicePixelRatioF(),1.,2048.));
-        if(visible<=physicalColumns){for(size_t i=begin;i<end;++i)append(i);return;}
-        // A signed vector can have both a peak and a trough in one screen
-        // column. Retain both extrema at their actual supplied coordinates;
-        // max-absolute alone would silently erase the other polarity.
-        const size_t columns=std::max(size_t{1},physicalColumns/2);
-        for(size_t bucket=0;bucket<columns;++bucket){const auto first=begin+bucket*visible/columns,last=begin+(bucket+1)*visible/columns;
-            const auto [low,high]=std::minmax_element(_data.begin()+first,_data.begin()+last);
-            const auto a=size_t(low-_data.begin()),b=size_t(high-_data.begin());
-            append(std::min(a,b));if(a!=b)append(std::max(a,b));}
-    }else if(visible<=2*buckets){for(size_t i=begin;i<end;++i)append(i);}
-    else {append(begin);for(size_t bucket=0;bucket<buckets;++bucket){const auto first=begin+bucket*visible/buckets,last=begin+(bucket+1)*visible/buckets;
+    // Use physical columns so HiDPI displays retain resolvable bins.
+    const auto physicalColumns=size_t(std::clamp((double(width())-_cached_plot_left-22)*devicePixelRatioF(),1.,2048.));
+    if(visible<=physicalColumns){for(size_t i=begin;i<end;++i)append_projected_point(i);return;}
+    // Keep both polarities at their supplied coordinates.
+    const size_t columns=std::max(size_t{1},physicalColumns/2);
+    for(size_t bucket=0;bucket<columns;++bucket){const auto first=begin+bucket*visible/columns,last=begin+(bucket+1)*visible/columns;
+        const auto [low,high]=std::minmax_element(_data.begin()+first,_data.begin()+last);
+        const auto a=size_t(low-_data.begin()),b=size_t(high-_data.begin());
+        append_projected_point(std::min(a,b));if(a!=b)append_projected_point(std::max(a,b));}
+}
+void AbstractChartView::append_line_points(size_t begin,size_t end,size_t buckets){
+    const size_t visible=end-begin;
+    if(visible<=2*buckets){for(size_t i=begin;i<end;++i)append_projected_point(i);return;}
+    append_projected_point(begin);
+    for(size_t bucket=0;bucket<buckets;++bucket){const auto first=begin+bucket*visible/buckets,last=begin+(bucket+1)*visible/buckets;
         auto [lo,hi]=std::minmax_element(_data.begin()+first,_data.begin()+last);const auto a=size_t(lo-_data.begin()),b=size_t(hi-_data.begin());
-        append(std::min(a,b));if(a!=b)append(std::max(a,b));}append(end-1);}
+        append_projected_point(std::min(a,b));if(a!=b)append_projected_point(std::max(a,b));}
+    append_projected_point(end-1);
 }
 void AbstractChartView::refresh_presentation(){
     _need_update=true;_frame_pump.request();
@@ -107,20 +124,31 @@ void AbstractChartView::refresh_presentation(){
 void AbstractChartView::publish_presentation(){
     if(!rendering_enabled_)return;
     core::perf::Scope trace(core::perf::Stage::ChartGeometry);
-    const double spanX=std::max(1e-300,double(_x_max-_x_min)),spanY=std::max(1e-300,double(_last_max_value-_last_min_value));
-    const QVariantList signature{width(),height(),_scalar_mode,_axis_precision,_reverse_x,_reverse_y,_x_min,_x_max,_last_min_value,_last_max_value,font(),ui::Language::instance().code()};
-    if(signature!=_axis_signature){
-        _axis_signature=signature;
-        _cached_y_ticks=quickPlotTicks(height()-(_scalar_mode?128:86),font(),_axis_precision,[this](double f){return _last_min_value+(_last_max_value-_last_min_value)*(_reverse_y?f:1-f);},false);
-        _cached_plot_left=quickPlotLeftMargin(_cached_y_ticks,font(),width());
-        _cached_x_ticks=quickPlotTicks(width()-_cached_plot_left-22,font(),_axis_precision,[this](double f){return _x_min+(_x_max-_x_min)*(_reverse_x?1-f:f);},true);
-    }
-    _update_chart_data();QPolygonF points;points.reserve(_points.size());
-    for(auto point:_points){double x=(point.x()-_x_min)/spanX,y=(point.y()-_last_min_value)/spanY;
-        points.append(QPointF(_reverse_x?1-x:x,_reverse_y?y:1-y));}
-    presentation_model()->publishVector({{"kind","vector"},{"style",_plot_style},{"xTicks",_cached_x_ticks},{"yTicks",_cached_y_ticks},{"xTitle",_x_title},{"yTitle",_y_title},{"title",_title},
-        {"lineWidth",_line_width},{"pointSize",_point_size},{"barWidth",_bar_width},{"plotLeft",_cached_plot_left},{"scalar",_scalar_mode},{"exact",_scalar_text},{"scalarAvailable",_scalar_available},{"baseline",_reverse_y?(0-_last_min_value)/spanY:1-(0-_last_min_value)/spanY}},std::move(points));
+    const auto [xMin,xMax]=visible_x_range();
+    const auto [yMin,yMax]=visible_y_range();
+    const double spanX=std::max(1e-300,double(xMax-xMin)),spanY=std::max(1e-300,double(yMax-yMin));
+    update_axis_ticks(xMin,xMax,yMin,yMax);
+    _update_chart_data();
+    presentation_model()->publishVector(vector_presentation(yMin,spanY),normalized_points(xMin,yMin,spanX,spanY));
     _need_update=false;
+}
+void AbstractChartView::update_axis_ticks(qreal xMin,qreal xMax,qreal yMin,qreal yMax){
+    const QVariantList signature{width(),height(),_scalar_mode,_axis_precision,grid_x_,grid_y_,labels_x_,labels_y_,_reverse_x,_reverse_y,xMin,xMax,yMin,yMax,font(),ui::Language::instance().code()};
+    if(signature==_axis_signature)return;
+    _axis_signature=signature;
+    _cached_y_ticks=quickPlotTicks(height()-(_scalar_mode?128:86),font(),_axis_precision,[=,this](double f){return yMin+(yMax-yMin)*(_reverse_y?f:1-f);},false,32,{},labels_y_);
+    _cached_plot_left=quickPlotLeftMargin(_cached_y_ticks,font(),width());
+    _cached_x_ticks=quickPlotTicks(width()-_cached_plot_left-22,font(),_axis_precision,[=,this](double f){return xMin+(xMax-xMin)*(_reverse_x?1-f:f);},true,32,{},labels_x_);
+}
+QPolygonF AbstractChartView::normalized_points(qreal xMin,qreal yMin,double spanX,double spanY) const {
+    QPolygonF points;points.reserve(_points.size());
+    for(const auto& point:std::as_const(_points)){double x=(point.x()-xMin)/spanX,y=(point.y()-yMin)/spanY;
+        points.append(QPointF(_reverse_x?1-x:x,_reverse_y?y:1-y));}
+    return points;
+}
+QVariantMap AbstractChartView::vector_presentation(double yMin,double spanY) const {
+    return {{"reverseX",_reverse_x},{"reverseY",_reverse_y},{"kind","vector"},{"style",_plot_style},{"xTicks",_cached_x_ticks},{"yTicks",_cached_y_ticks},{"xGrid",quickPlotGrid(_cached_x_ticks,grid_x_)},{"yGrid",quickPlotGrid(_cached_y_ticks,grid_y_)},{"xTitle",_x_title},{"yTitle",_y_title},{"title",_title},
+        {"lineWidth",_line_width},{"pointSize",_point_size},{"barWidth",_bar_width},{"plotLeft",_cached_plot_left},{"scalar",_scalar_mode},{"exact",_scalar_text},{"scalarAvailable",_scalar_available},{"baseline",_bar_baseline_minimum?(_reverse_y?0.:1.):(_reverse_y?(0-yMin)/spanY:1-(0-yMin)/spanY)}};
 }
 void AbstractChartView::paintEvent(QPaintEvent* event){
     if(!_render_visible)return;

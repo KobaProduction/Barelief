@@ -1,3 +1,4 @@
+#include "text_validation.h"
 #include <bdsp_protocol/numeric_data_message.h>
 namespace bdsp_protocol::numeric_data {
 using namespace signal_contracts;
@@ -37,13 +38,19 @@ SYMBOLS(Semantic, semantics, {Semantic::Scalar, 1}, {Semantic::PCM, 2}, {Semanti
         {Semantic::Windowed, 4}, {Semantic::SpectrumMagnitude, 5}, {Semantic::MelEnergy, 6},
         {Semantic::History, 7}, {Semantic::Numeric, 8})
 SYMBOLS(Axis, axes, {Axis::None, 0}, {Axis::Sample, 1}, {Axis::Bin, 2}, {Axis::Band, 3}, {Axis::Time, 4},
-        {Axis::Declared, 5})
+        {Axis::Declared, 5}, {Axis::Component, 6})
 SYMBOLS(Quantity, quantities, {Quantity::Unspecified, 0}, {Quantity::Amplitude, 1},
         {Quantity::SpectrumMagnitude, 2}, {Quantity::MelEnergy, 3}, {Quantity::FilledFrameCount, 4},
-        {Quantity::Packet, 5})
+        {Quantity::Packet, 5}, {Quantity::SpectrumComplex, 6}, {Quantity::SpectrumReal, 7},
+        {Quantity::SpectrumImaginary, 8}, {Quantity::SpectrumPhase, 9}, {Quantity::SpectrumPeakAmplitude, 10},
+        {Quantity::SpectrumPower, 11}, {Quantity::SpectrumPsd, 12}, {Quantity::SpectrumAmplitudeDb, 13},
+        {Quantity::SpectrumPowerDb, 14}, {Quantity::SpectrumPsdDb, 15}, {Quantity::BroadbandEnergy, 16},
+        {Quantity::BroadbandPower, 17}, {Quantity::BroadbandRms, 18}, {Quantity::BroadbandMaximum, 19},
+        {Quantity::SpectralFlux, 20}, {Quantity::NoteSalience, 21})
 SYMBOLS(NumericUnit, units, {NumericUnit::Unspecified, 0}, {NumericUnit::NormalizedAmplitude, 1},
         {NumericUnit::RawAmplitude, 2}, {NumericUnit::Frames, 3}, {NumericUnit::Hertz, 4},
-        {NumericUnit::Seconds, 5}, {NumericUnit::Values, 6})
+        {NumericUnit::Seconds, 5}, {NumericUnit::Values, 6}, {NumericUnit::Radians, 7},
+        {NumericUnit::SquaredAmplitude, 8}, {NumericUnit::SquaredAmplitudePerHertz, 9}, {NumericUnit::Decibels, 10})
 SYMBOLS(StorageEncoding, encodings, {StorageEncoding::FixedLittleEndian, 1},
         {StorageEncoding::FixedBigEndian, 2}, {StorageEncoding::PackedSigned24LE, 3},
         {StorageEncoding::PackedSigned24BE, 4})
@@ -77,228 +84,225 @@ signal_contracts::DataFrameView Message::frame_view() const noexcept {
     return {stamp, StructuredView{&std::get<StructuredContract>(contract), structured}};
 }
 namespace {
-bool text_valid(std::string_view s, std::size_t limit, bool empty = false) noexcept {
-    if ((s.empty() && !empty) || s.size() > limit)
-        return false;
-    // Strict UTF-8 (no overlong, surrogates, NUL, or out-of-range code points).
-    for (std::size_t i = 0; i < s.size();) {
-        auto c = static_cast<unsigned char>(s[i++]);
-        if (!c)
-            return false;
-        if (c < 128)
-            continue;
-        unsigned n = 0;
-        std::uint32_t value = 0, minimum = 0;
-        if (c >= 194 && c <= 223) {
-            n = 1;
-            value = c & 31;
-            minimum = 128;
-        } else if (c >= 224 && c <= 239) {
-            n = 2;
-            value = c & 15;
-            minimum = 2048;
-        } else if (c >= 240 && c <= 244) {
-            n = 3;
-            value = c & 7;
-            minimum = 65536;
-        } else
-            return false;
-        if (n > s.size() - i)
-            return false;
-        while (n--) {
-            auto t = static_cast<unsigned char>(s[i++]);
-            if ((t & 192) != 128)
-                return false;
-            value = (value << 6) | (t & 63);
-        }
-        if (value < minimum || value > 1114111 || (value >= 55296 && value <= 57343))
-            return false;
+bool text_valid(std::string_view text,std::size_t limit,bool empty=false) noexcept {
+    return (empty || !text.empty()) && text.size()<=limit && text_detail::utf8_without_nul(text);
+}
+Status limits_status(const Limits& l) noexcept {
+    if(l.frame.max_elements>800000 || l.frame.max_payload_bytes>800000 ||
+        l.frame.max_metadata_bytes>65536 || l.frame.max_string_bytes>256 ||
+        l.frame.max_coordinate_bytes>32768 || l.text_bytes>65536 || l.extension_bytes>4096 ||
+        l.history_rows>2000 || l.identity_bytes>256)return Status::exhausted;
+    if(!l.message_bytes || l.message_bytes>900000 || l.frame.max_planes>16)return Status::invalid_argument;
+    return Status::ok;
+}
+Status envelope_status(const Message& m,const Limits& l) noexcept {
+    if(!text_valid(m.endpoint.graph,l.identity_bytes) || m.endpoint.node<0 ||
+        (m.endpoint.direction!=Direction::Input && m.endpoint.direction!=Direction::Output) ||
+        !m.envelope.nonce || !m.envelope.session || !m.envelope.delivery_sequence ||
+        !text_valid(m.stamp.stream_id,l.identity_bytes) ||
+        (m.values!=ValueDomain::FiniteOnly && m.values!=ValueDomain::AnyIeee))return Status::invalid_argument;
+    return Status::ok;
+}
+bool valid_kind(Kind kind) noexcept {
+    return kind==Kind::Frame || kind==Kind::HistoryRow || kind==Kind::Snapshot ||
+        kind==Kind::Query || kind==Kind::Empty || kind==Kind::Reset || kind==Kind::Unavailable;
+}
+std::uint32_t extension_length(std::span<const std::byte> bytes,std::size_t at) noexcept {
+    std::uint32_t size=0;
+    for(unsigned i=0;i<4;++i)size|=std::uint32_t(std::to_integer<unsigned>(bytes[at+2+i]))<<(8*i);
+    return size;
+}
+unsigned extension_tag(std::span<const std::byte> bytes,std::size_t at) noexcept {
+    return std::to_integer<unsigned>(bytes[at]) | (std::to_integer<unsigned>(bytes[at+1])<<8);
+}
+bool repeated_extension_tag(std::span<const std::byte> bytes,std::size_t end,unsigned tag) noexcept {
+    for(std::size_t prior=0;prior<end;) {
+        if(extension_tag(bytes,prior)==tag)return true;
+        prior+=6+extension_length(bytes,prior);
     }
-    return true;
+    return false;
+}
+Status extensions_status(std::span<const std::byte> bytes,std::size_t limit) noexcept {
+    if(bytes.size()>limit)return Status::exhausted;
+    for(std::size_t at=0;at<bytes.size();) {
+        if(bytes.size()-at<6)return Status::malformed;
+        const auto tag=extension_tag(bytes,at);
+        const auto size=extension_length(bytes,at);
+        if(tag<1024 || (tag&32768) || repeated_extension_tag(bytes,at,tag))return Status::malformed;
+        at+=6;
+        if(size>bytes.size()-at)return Status::malformed;
+        at+=size;
+    }
+    return Status::ok;
+}
+bool contract_text_valid(const NumericContract& n,const Limits& l) noexcept {
+    auto known=[](auto value){std::uint8_t id=0;return symbol_id(value,id);};
+    bool valid=known(n.dtype) && known(n.shape.rank) && known(n.semantic) && known(n.history_element) &&
+        known(n.quantity) && known(n.unit) && known(n.representation.encoding) &&
+        known(n.representation.placement) && known(n.representation.layout) &&
+        known(n.representation.normalization);
+    for(unsigned axis=0;axis<2;++axis)
+        valid=valid && known(n.shape.axes[axis]) && known(n.coordinates[axis].mode) &&
+            known(n.coordinates[axis].unit);
+    return valid && text_valid(n.clock.domain,l.frame.max_string_bytes,true) && n.representation.alignment<=8;
+}
+Status structured_status(const Message& m,const Limits& l,const NumericContract* numeric) noexcept {
+    if(numeric)return m.structured.empty()?Status::ok:Status::invalid_argument;
+    const auto& structured=std::get<StructuredContract>(m.contract);
+    if(!text_valid(structured.schema,l.frame.max_string_bytes) ||
+        !text_valid(structured.encoding,l.frame.max_string_bytes))return Status::invalid_argument;
+    if(structured.schema=="wled-audio-sync" && (structured.version!=1 ||
+        structured.encoding!="audio-sync-44-le" || structured.payload_bytes.minimum!=44 ||
+        structured.payload_bytes.maximum!=44))return Status::incompatible_contract;
+    if(m.kind!=Kind::Frame && m.kind!=Kind::Unavailable)return Status::incompatible_contract;
+    if(!m.numeric.storage.empty() || !m.numeric.planes.empty() ||
+        !m.numeric.ring.silence_mask.empty() || !m.numeric.coordinates.axes[0].empty() ||
+        !m.numeric.coordinates.axes[1].empty())return Status::invalid_argument;
+    return Status::ok;
+}
+Status availability_status(const Message& m) noexcept {
+    if(m.kind!=Kind::Unavailable)return m.stamp.available?Status::ok:Status::invalid_argument;
+    if(m.stamp.available || !m.numeric.storage.empty() || !m.structured.empty() ||
+        !m.numeric.planes.empty() || m.numeric.ring.capacity || m.numeric.ring.oldest ||
+        !m.numeric.ring.silence_mask.empty() || !m.numeric.coordinates.axes[0].empty() ||
+        !m.numeric.coordinates.axes[1].empty() || m.numeric.semantic_silence)return Status::invalid_argument;
+    return Status::ok;
+}
+bool marker_kind(Kind kind) noexcept {
+    return kind==Kind::Query || kind==Kind::Empty || kind==Kind::Reset;
+}
+Status marker_status(const Message& m,const NumericContract* numeric) noexcept {
+    if(!numeric || (numeric->shape.rank!=Rank::Matrix && numeric->shape.rank!=Rank::Vector) || !m.numeric.storage.empty() ||
+        !m.numeric.planes.empty() || m.numeric.ring.capacity || m.numeric.ring.oldest ||
+        m.numeric.semantic_silence || !m.numeric.ring.silence_mask.empty() ||
+        !m.numeric.coordinates.axes[0].empty() || !m.numeric.coordinates.axes[1].empty() ||
+        (m.kind==Kind::Query && !m.envelope.request))return Status::invalid_argument;
+    return Status::ok;
+}
+Status numeric_frame_status(const Message& m,const Limits& l,const NumericContract& numeric) noexcept {
+    for(const auto& plane:m.numeric.planes)
+        if(plane.offset%numeric.representation.alignment ||
+            plane.stride_bytes[0]%numeric.representation.alignment ||
+            plane.stride_bytes[1]%numeric.representation.alignment)return Status::invalid_argument;
+    auto relaxed=numeric;
+    relaxed.representation.alignment=1;
+    auto frame=m.frame_view();
+    auto& view=std::get<NumericView>(frame.payload);
+    view.contract=&relaxed;
+    if(const auto status=validate_view(frame,l.frame);status!=Status::ok)return status;
+    return validate_values(view,m.values,l.frame);
+}
+Status payload_status(const Message& m,const Limits& l,const NumericContract* numeric) noexcept {
+    if(marker_kind(m.kind))return marker_status(m,numeric);
+    if(m.kind==Kind::Unavailable)return Status::ok;
+    if(numeric)return numeric_frame_status(m,l,*numeric);
+    return validate_view(m.frame_view(),l.frame);
+}
+Status history_status(const Message& m,const Limits& l,const NumericContract* numeric) noexcept {
+    if(!numeric || (m.kind!=Kind::Snapshot && !marker_kind(m.kind) &&
+        !(m.kind==Kind::Unavailable && m.history.capacity)))return Status::ok;
+    if(numeric->shape.rank!=Rank::Matrix && numeric->shape.rank!=Rank::Vector)return Status::incompatible_contract;
+    if(!l.history_rows || numeric->shape.extents[0].maximum>l.history_rows)return Status::exhausted;
+    if(m.history.capacity!=numeric->shape.extents[0].maximum ||
+        m.history.filled>m.history.capacity || m.history.ordinal<m.history.filled)return Status::invalid_argument;
+    if(m.kind==Kind::Snapshot && (m.numeric.actual[0]!=m.history.capacity ||
+        m.history.filled>m.numeric.actual[0] || m.numeric.ring.capacity!=m.history.capacity))return Status::invalid_argument;
+    if((m.kind==Kind::Empty || m.kind==Kind::Reset) && m.history.filled)return Status::invalid_argument;
+    return Status::ok;
+}
+NumericContract history_row_contract(const NumericContract& history) {
+    auto row=history;
+    row.semantic=history.history_element;
+    row.history_element=Semantic::Numeric;
+    if(history.shape.rank==Rank::Matrix){
+        row.shape={Rank::Vector,{history.shape.axes[1],Axis::None},{history.shape.extents[1],ExtentBounds{}}};
+        row.coordinates={history.coordinates[1],AxisCoordinates{}};
+    }else{
+        row.shape={Rank::Scalar,{Axis::None,Axis::None},{ExtentBounds{},ExtentBounds{}}};
+        row.coordinates={AxisCoordinates{},AxisCoordinates{}};
+    }
+    return row;
+}
+bool history_row_bounds_valid(const Message& m,const Limits& l,const NumericContract& history) noexcept {
+    return contract_text_valid(history,l) && (history.shape.rank==Rank::Matrix || history.shape.rank==Rank::Vector) && l.history_rows &&
+        m.history.capacity==history.shape.extents[0].maximum && m.history.capacity<=l.history_rows &&
+        m.history.filled && m.history.filled<=m.history.capacity && m.history.ordinal>=m.history.filled;
+}
+Status history_row_payload_status(const Message& message,const Limits& limits,
+                                  const NumericContract& contract) noexcept {
+    std::size_t width=0;
+    const auto status=storage_width(contract,width);
+    if(status!=Status::ok)return status;
+    if(message.numeric.actual[0]>limits.frame.max_payload_bytes/width/contract.channel_order.size() ||
+       message.numeric.storage.size()!=message.numeric.actual[0]*width*contract.channel_order.size())
+        return Status::invalid_argument;
+    return Status::ok;
+}
+
+Status history_row_status(const Message& m,const Limits& l,const NumericContract* numeric) noexcept {
+    if(!numeric || (numeric->shape.rank!=Rank::Vector && numeric->shape.rank!=Rank::Scalar) || m.numeric.ring.capacity ||
+       m.numeric.ring.oldest || !m.numeric.ring.silence_mask.empty())return Status::incompatible_contract;
+    if(const auto status=validate_contract(DataContract{m.history_contract},l.frame);status!=Status::ok)return status;
+    const auto& history=m.history_contract;
+    if(!history_row_bounds_valid(m,l,history))return Status::invalid_argument;
+    if(!same_physical_contract(DataContract{history_row_contract(history)},m.contract))
+        return Status::incompatible_contract;
+    return history_row_payload_status(m,l,*numeric);
+}
+Status history_metadata_status(const Message& m,const Limits& l,const NumericContract* numeric) noexcept {
+    if(const auto status=history_status(m,l,numeric);status!=Status::ok)return status;
+    if(m.kind==Kind::HistoryRow)return history_row_status(m,l,numeric);
+    if((m.kind==Kind::Frame || (m.kind==Kind::Unavailable && !m.history.capacity)) &&
+        (m.history.filled || m.history.capacity || m.history.ordinal))return Status::invalid_argument;
+    if(m.kind==Kind::Frame && m.numeric.ring.capacity)return Status::incompatible_contract;
+    if(!m.history_contract.channel_order.empty())return Status::invalid_argument;
+    return Status::ok;
+}
+Status header_envelope_status(const Message& message,const Limits& limits) noexcept {
+    const auto budget=limits_status(limits);
+    if(budget!=Status::ok)return budget;
+    const auto envelope=envelope_status(message,limits);
+    if(envelope!=Status::ok)return envelope;
+    if(!valid_kind(message.kind))return Status::invalid_argument;
+    if((message.kind==Kind::Query || message.kind==Kind::Snapshot) &&
+       !message.envelope.request)return Status::invalid_argument;
+    return extensions_status(message.extensions,limits.extension_bytes);
+}
+
+Status header_contract_status(const Message& m,const Limits& l) noexcept {
+    const auto header=header_envelope_status(m,l);
+    if(header!=Status::ok)return header;
+    const auto contract=validate_contract(m.contract,l.frame);
+    if(contract!=Status::ok)return contract;
+    const auto* numeric=std::get_if<NumericContract>(&m.contract);
+    if(m.kind==Kind::Snapshot && (!numeric || (numeric->shape.rank!=Rank::Matrix && numeric->shape.rank!=Rank::Vector)))
+        return Status::incompatible_contract;
+    if(numeric && !contract_text_valid(*numeric,l))return Status::invalid_argument;
+    return Status::ok;
 }
 } // namespace
-signal_contracts::Status validate(const Message &m, const Limits &l) noexcept {
+static signal_contracts::Status validate_data_body(const Message& message,const Limits& limits,
+    const signal_contracts::NumericContract* numeric) noexcept {
+    using signal_contracts::Status;
+    const auto structured=structured_status(message,limits,numeric);
+    if(structured!=Status::ok)return structured;
+    const auto available=availability_status(message);
+    if(available!=Status::ok)return available;
+    const auto payload=payload_status(message,limits,numeric);
+    if(payload!=Status::ok)return payload;
+    return history_metadata_status(message,limits,numeric);
+}
+
+signal_contracts::Status validate(const Message& m,const Limits& l) noexcept {
     using namespace signal_contracts;
-    if (!m.stamp.latency_seconds.denominator || m.stamp.latency_seconds.numerator<0)
-        return Status::invalid_argument;
-    if (bool(m.reference.binding) != bool(m.reference.contract))
-        return Status::invalid_argument;
-    if (l.frame.max_elements > 800000 || l.frame.max_payload_bytes > 800000 ||
-        l.frame.max_metadata_bytes > 65536 || l.frame.max_string_bytes > 256 ||
-        l.frame.max_coordinate_bytes > 32768 || l.text_bytes > 65536 || l.extension_bytes > 4096 ||
-        l.history_rows > 2000 || l.identity_bytes > 256)
-        return Status::exhausted;
-    if (!l.message_bytes || l.message_bytes > 900000 || l.frame.max_planes > 16 ||
-        !text_valid(m.endpoint.graph, l.identity_bytes) || m.endpoint.node < 0 ||
-        (m.endpoint.direction != Direction::Input && m.endpoint.direction != Direction::Output) ||
-        !m.envelope.nonce || !m.envelope.session || !m.envelope.delivery_sequence ||
-        !text_valid(m.stamp.stream_id, l.identity_bytes) ||
-        (m.values != ValueDomain::FiniteOnly && m.values != ValueDomain::AnyIeee))
-        return Status::invalid_argument;
-    if (m.kind != Kind::Frame && m.kind != Kind::HistoryRow && m.kind != Kind::Snapshot &&
-        m.kind != Kind::Query && m.kind != Kind::Empty && m.kind != Kind::Reset &&
-        m.kind != Kind::Unavailable)
-        return Status::invalid_argument;
-    if ((m.kind == Kind::Query || m.kind == Kind::Snapshot) && !m.envelope.request)
-        return Status::invalid_argument;
-    if (m.extensions.size() > l.extension_bytes)
-        return Status::exhausted;
-    for (std::size_t at = 0; at < m.extensions.size();) {
-        if (m.extensions.size() - at < 6)
-            return Status::malformed;
-        const auto *b = m.extensions.data() + at;
-        auto tag = std::to_integer<unsigned>(b[0]) | (std::to_integer<unsigned>(b[1]) << 8);
-        std::uint32_t size = 0;
-        for (unsigned i = 0; i < 4; ++i)
-            size |= std::uint32_t(std::to_integer<unsigned>(b[2 + i])) << (8 * i);
-        if (tag < 1024 || (tag & 32768))
-            return Status::malformed;
-        for (std::size_t prior = 0; prior < at;) {
-            auto previous = std::to_integer<unsigned>(m.extensions[prior]) |
-                            (std::to_integer<unsigned>(m.extensions[prior + 1]) << 8);
-            if (previous == tag)
-                return Status::malformed;
-            std::uint32_t length = 0;
-            for (unsigned i = 0; i < 4; ++i)
-                length |= std::uint32_t(std::to_integer<unsigned>(m.extensions[prior + 2 + i])) << (8 * i);
-            prior += 6 + length;
-        }
-        at += 6;
-        if (size > m.extensions.size() - at)
-            return Status::malformed;
-        at += size;
-    }
-    auto s = validate_contract(m.contract, l.frame);
-    if (s != Status::ok)
-        return s;
-    const auto *c = std::get_if<NumericContract>(&m.contract);
-    // Ring snapshots are explicit wire operations; passive semantic tags do not select them.
-    if (m.kind == Kind::Snapshot && (!c || c->shape.rank != Rank::Matrix))
-        return Status::incompatible_contract;
-    auto contract_text = [&](const NumericContract &n) {
-        auto known = [](auto value) {
-            std::uint8_t id = 0;
-            return symbol_id(value, id);
-        };
-        bool valid = known(n.dtype) && known(n.shape.rank) && known(n.semantic) && known(n.history_element) &&
-                     known(n.quantity) && known(n.unit) && known(n.representation.encoding) &&
-                     known(n.representation.placement) && known(n.representation.layout) &&
-                     known(n.representation.normalization);
-        for (unsigned axis = 0; axis < 2; ++axis)
-            valid = valid && known(n.shape.axes[axis]) && known(n.coordinates[axis].mode) &&
-                    known(n.coordinates[axis].unit);
-        return valid && text_valid(n.clock.domain, l.frame.max_string_bytes, true) &&
-               n.representation.alignment <= 8;
-    };
-    if (c && !contract_text(*c))
-        return Status::invalid_argument;
-    if (!c) {
-        const auto &t = std::get<StructuredContract>(m.contract);
-        if (!text_valid(t.schema, l.frame.max_string_bytes) ||
-            !text_valid(t.encoding, l.frame.max_string_bytes))
-            return Status::invalid_argument;
-        if (t.schema == "wled-audio-sync" && (t.version != 1 || t.encoding != "audio-sync-44-le" ||
-                                              t.payload_bytes.minimum != 44 || t.payload_bytes.maximum != 44))
-            return Status::incompatible_contract;
-        if (m.kind != Kind::Frame && m.kind != Kind::Unavailable)
-            return Status::incompatible_contract;
-        if (!m.numeric.storage.empty() || !m.numeric.planes.empty() || !m.numeric.ring.silence_mask.empty() ||
-            !m.numeric.coordinates.axes[0].empty() || !m.numeric.coordinates.axes[1].empty())
-            return Status::invalid_argument;
-    } else if (!m.structured.empty())
-        return Status::invalid_argument;
-    if (m.kind == Kind::Unavailable) {
-        if (m.stamp.available || !m.numeric.storage.empty() || !m.structured.empty() ||
-            !m.numeric.planes.empty() || m.numeric.ring.capacity || m.numeric.ring.oldest ||
-            !m.numeric.ring.silence_mask.empty() || !m.numeric.coordinates.axes[0].empty() ||
-            !m.numeric.coordinates.axes[1].empty() || m.numeric.semantic_silence)
-            return Status::invalid_argument;
-    } else if (!m.stamp.available)
-        return Status::invalid_argument;
-    const bool marker = m.kind == Kind::Query || m.kind == Kind::Empty || m.kind == Kind::Reset;
-    if (marker) {
-        if (!c || c->shape.rank != Rank::Matrix || !m.numeric.storage.empty() ||
-            !m.numeric.planes.empty() || m.numeric.ring.capacity || m.numeric.ring.oldest ||
-            m.numeric.semantic_silence || !m.numeric.ring.silence_mask.empty() ||
-            !m.numeric.coordinates.axes[0].empty() || !m.numeric.coordinates.axes[1].empty() ||
-            (m.kind == Kind::Query && !m.envelope.request))
-            return Status::invalid_argument;
-    } else if (m.kind != Kind::Unavailable) {
-        if (c) {
-            // Absolute wire address need not align. Validate declared offset/stride alignment
-            // separately, then use alignment1 ONLY on this temporary read-only wire view.
-            for (const auto &p : m.numeric.planes)
-                if (p.offset % c->representation.alignment ||
-                    p.stride_bytes[0] % c->representation.alignment ||
-                    p.stride_bytes[1] % c->representation.alignment)
-                    return Status::invalid_argument;
-            auto relaxed = *c;
-            relaxed.representation.alignment = 1;
-            auto f = m.frame_view();
-            auto &v = std::get<NumericView>(f.payload);
-            v.contract = &relaxed;
-            s = validate_view(f, l.frame);
-            if (s != Status::ok)
-                return s;
-            s = validate_values(v, m.values, l.frame);
-            if (s != Status::ok)
-                return s;
-        } else {
-            s = validate_view(m.frame_view(), l.frame);
-            if (s != Status::ok)
-                return s;
-        }
-    }
-    if (c && (m.kind == Kind::Snapshot || marker || (m.kind == Kind::Unavailable && m.history.capacity))) {
-        if(c->shape.rank!=Rank::Matrix)return Status::incompatible_contract;
-        if (m.kind != Kind::Snapshot && !marker && m.kind != Kind::Unavailable)
-            return Status::incompatible_contract;
-        if (!l.history_rows || c->shape.extents[0].maximum > l.history_rows)
-            return Status::exhausted;
-        if (m.history.capacity != c->shape.extents[0].maximum || m.history.filled > m.history.capacity ||
-            m.history.ordinal < m.history.filled)
-            return Status::invalid_argument;
-        if (m.kind == Kind::Snapshot &&
-            (m.numeric.actual[0] != m.history.capacity || m.history.filled > m.numeric.actual[0] || m.numeric.ring.capacity != m.history.capacity))
-            return Status::invalid_argument;
-        if ((m.kind == Kind::Empty || m.kind == Kind::Reset) && m.history.filled)
-            return Status::invalid_argument;
-    }
-    if (m.kind == Kind::HistoryRow) {
-        if (!c || c->shape.rank != Rank::Vector || m.numeric.ring.capacity || m.numeric.ring.oldest ||
-            !m.numeric.ring.silence_mask.empty())
-            return Status::incompatible_contract;
-        s = validate_contract(DataContract{m.history_contract}, l.frame);
-        if (s != Status::ok)
-            return s;
-        const auto &h = m.history_contract;
-        if (!contract_text(h) || h.shape.rank != Rank::Matrix || !l.history_rows ||
-            m.history.capacity != h.shape.extents[0].maximum || m.history.capacity > l.history_rows ||
-            !m.history.filled || m.history.filled > m.history.capacity ||
-            m.history.ordinal < m.history.filled)
-            return Status::invalid_argument;
-        auto row = h;
-        row.semantic = h.history_element;
-        row.history_element = Semantic::Numeric;
-        row.shape.rank = Rank::Vector;
-        row.shape.axes = {h.shape.axes[1], Axis::None};
-        row.shape.extents = {h.shape.extents[1], ExtentBounds{}};
-        row.coordinates = {h.coordinates[1], AxisCoordinates{}};
-        if (!same_physical_contract(DataContract{row}, m.contract))
-            return Status::incompatible_contract;
-        std::size_t width = 0;
-        s = storage_width(*c, width);
-        if (s != Status::ok)
-            return s;
-        if (m.numeric.actual[0] > l.frame.max_payload_bytes / width / c->channel_order.size() ||
-            m.numeric.storage.size() != m.numeric.actual[0] * width * c->channel_order.size())
-            return Status::invalid_argument;
-    } else if ((m.kind == Kind::Frame || (m.kind == Kind::Unavailable && !m.history.capacity)) && (m.history.filled || m.history.capacity || m.history.ordinal))
-        return Status::invalid_argument;
-    if(m.kind==Kind::Frame && m.numeric.ring.capacity)return Status::incompatible_contract;
-    if (m.kind != Kind::HistoryRow && !m.history_contract.channel_order.empty())
-        return Status::invalid_argument;
-    if (!marker && m.kind != Kind::Unavailable && !m.stamp.sequence)
+    if(!m.stamp.latency_seconds.denominator || m.stamp.latency_seconds.numerator<0 ||
+       bool(m.reference.binding)!=bool(m.reference.contract))return Status::invalid_argument;
+    const auto header=header_contract_status(m,l);
+    if(header!=Status::ok)return header;
+    const auto* numeric=std::get_if<NumericContract>(&m.contract);
+    const auto body=validate_data_body(m,l,numeric);
+    if(body!=Status::ok)return body;
+    if(!marker_kind(m.kind) && m.kind!=Kind::Unavailable && !m.stamp.sequence)
         return Status::invalid_argument;
     return Status::ok;
 }

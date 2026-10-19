@@ -26,7 +26,9 @@ struct FrameStamp {
     std::int64_t sample_begin=0;
     std::uint64_t sample_count=0,latency_samples=0;
     bool has_sample_interval=false;
-    Ratio latency_seconds{0,1}; // Canonical exact content delay; samples is diagnostic.
+    Ratio latency_seconds{0,1}; // Exact rational nominal content delay; samples is diagnostic.
+    // A scalar nominal delay cannot describe nonlinear-phase processing.
+    bool frequency_dependent_latency=false;
 };
 struct DataFrameView { FrameStamp stamp; std::variant<NumericView,StructuredView> payload; };
 struct ElementIndex { std::size_t plane=0,row=0,column=0; };
@@ -40,15 +42,21 @@ Status history_row(const NumericView&,std::size_t row,NumericView& out,NumericCo
 Status load_bits(const NumericView&,ElementIndex,DType,std::uint64_t& out) noexcept;
 Status store_bits(MutableNumericView&,ElementIndex,DType,std::uint64_t bits) noexcept;
 Status fill_silence(MutableNumericView&,const FrameLimits&) noexcept;
-template<class T> constexpr DType dtype_of() {
+template<class T> constexpr DType signed_integer_dtype() {
     if constexpr(std::is_same_v<T,std::int8_t>)return DType::Int8;
-    else if constexpr(std::is_same_v<T,std::uint8_t>)return DType::UInt8;
     else if constexpr(std::is_same_v<T,std::int16_t>)return DType::Int16;
-    else if constexpr(std::is_same_v<T,std::uint16_t>)return DType::UInt16;
     else if constexpr(std::is_same_v<T,std::int32_t>)return DType::Int32;
+    else {static_assert(std::is_same_v<T,std::int64_t>);return DType::Int64;}
+}
+template<class T> constexpr DType unsigned_integer_dtype() {
+    if constexpr(std::is_same_v<T,std::uint8_t>)return DType::UInt8;
+    else if constexpr(std::is_same_v<T,std::uint16_t>)return DType::UInt16;
     else if constexpr(std::is_same_v<T,std::uint32_t>)return DType::UInt32;
-    else if constexpr(std::is_same_v<T,std::int64_t>)return DType::Int64;
-    else if constexpr(std::is_same_v<T,std::uint64_t>)return DType::UInt64;
+    else {static_assert(std::is_same_v<T,std::uint64_t>);return DType::UInt64;}
+}
+template<class T> constexpr DType dtype_of() {
+    if constexpr(std::is_integral_v<T> && std::is_signed_v<T>)return signed_integer_dtype<T>();
+    else if constexpr(std::is_integral_v<T>)return unsigned_integer_dtype<T>();
     else if constexpr(std::is_same_v<T,float>)return DType::Float32;
     else {static_assert(std::is_same_v<T,double>);return DType::Float64;}
 }
@@ -85,6 +93,7 @@ private:
     std::size_t mask_offset_=0,mask_size_=0;
     std::array<std::size_t,2> coordinate_offsets_{},coordinate_sizes_{};
     friend Status retain_frame(const DataFrameView&,const FrameLimits&,BufferPool&,BufferPool&,OwnedDataFrame&) noexcept;
+    friend struct FrameRetention;
 };
 Status retention_requirements(const DataFrameView&,const FrameLimits&,RetentionRequirements&) noexcept;
 // Explicit snapshot operation; not a full-history-copy canonical processing callback.

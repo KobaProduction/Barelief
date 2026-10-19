@@ -66,18 +66,24 @@ struct SlowGuiEvent { uint64_t duration; int type; std::array<char, 64> receiver
 inline std::array<SlowGuiEvent, 16> slow_gui_events{};
 inline size_t slow_gui_event_count = 0;
 inline uint64_t now() noexcept { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-inline void record(Stage stage,uint64_t start,uint64_t duration) noexcept {
-    if (!enabled.load(std::memory_order_relaxed)) return;
+inline void record_counter(Stage stage,uint64_t duration) noexcept {
     auto &counter=counters[static_cast<size_t>(stage)];
     counter.count.fetch_add(1,std::memory_order_relaxed);counter.total.fetch_add(duration,std::memory_order_relaxed);
     auto previous=counter.maximum.load(std::memory_order_relaxed);
     while(duration>previous && !counter.maximum.compare_exchange_weak(previous,duration,std::memory_order_relaxed)) {}
     counter.histogram[std::min<size_t>(duration/bin_ns,histogram_bins-1)].fetch_add(1,std::memory_order_relaxed);
+}
+inline void record_event(Stage stage,uint64_t start,uint64_t duration) noexcept {
     const auto index=event_count.fetch_add(1,std::memory_order_relaxed);
     if(index>=event_capacity) return; // Never grow or overwrite live trace storage.
     auto &event=events[index];event.stage=stage;event.start=start;event.duration=duration;
     thread_local const auto thread=static_cast<uint32_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     event.thread=thread;event.ready.store(true,std::memory_order_release);
+}
+inline void record(Stage stage,uint64_t start,uint64_t duration) noexcept {
+    if (!enabled.load(std::memory_order_relaxed)) return;
+    record_counter(stage,duration);
+    record_event(stage,start,duration);
 }
 inline void duration(Stage stage,uint64_t value) noexcept { record(stage,now()-value,value); }
 class Scope {

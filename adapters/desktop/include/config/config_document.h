@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <utility>
 #include <config/config_migration.h>
 namespace configuration {
 struct Result {
@@ -19,46 +20,41 @@ inline QJsonObject overlay(QJsonObject original, const QJsonObject &updates) {
                                  : it.value();
     return original;
 }
-inline Result resolve(QJsonObject document, const QString &preset = {}) {
-    Result result;
-    result.document = document;
-    const auto classification=classify_document(document);
-    if(!classification){result.error=classification.error;return result;}
-    auto check_graph=[&] {
-        result.error=check_version(result.graph,"version",2);
-        if(result.error.isEmpty())result.error=check_version(result.graph,"processing_version",1);
-    };
-    if (preset.isEmpty()) {
-        if (document.value("nodes").isArray()) {
-            result.graph = document;
-            check_graph();
-            return result;
-        }
-        const auto key = document.contains("pipeline_graph") ? "pipeline_graph" : "scene_graph";
-        if (!document.value(key).isObject())
-            result.error = "Configuration has no object processing graph";
-        else
-            result.graph = document.value(key).toObject();
-        if(result.error.isEmpty())check_graph();
-        return result;
+inline void check_resolved_graph(Result& result) {
+    result.error=check_version(result.graph,"version",2);
+    if(result.error.isEmpty())result.error=check_version(result.graph,"processing_version",1);
+}
+inline void resolve_default_graph(Result& result) {
+    const auto& document=result.document;
+    if(document.value("nodes").isArray())result.graph=document;
+    else {
+        const auto key=document.contains("pipeline_graph")?"pipeline_graph":"scene_graph";
+        if(!document.value(key).isObject())result.error="Configuration has no object processing graph";
+        else result.graph=document.value(key).toObject();
     }
+    if(result.error.isEmpty())check_resolved_graph(result);
+}
+inline std::pair<QJsonObject,int> find_preset_field(const QJsonArray& presets,const QString& preset,const char* field) {
+    QJsonObject selected;
+    int matches=0;
+    for(const auto& value:presets) {
+        if(value.toObject().value(field).toString()!=preset)continue;
+        selected=value.toObject();
+        ++matches;
+    }
+    return {selected,matches};
+}
+inline std::pair<QJsonObject,int> find_preset(const QJsonArray& presets,const QString& preset) {
+    // IDs take precedence over names; duplicate IDs are also rejected.
+    auto selected=find_preset_field(presets,preset,"id");
+    return selected.second?selected:find_preset_field(presets,preset,"name");
+}
+inline void resolve_preset_graph(Result& result,const QString& preset) {
+    const auto& document=result.document;
     const auto presets = document.contains("presets")
                              ? document.value("presets").toArray()
                              : document.value("ui").toObject().value("pipeline_presets").toArray();
-    QJsonObject selected;
-    int matches = 0;
-    // IDs take precedence over names; duplicate IDs are also rejected.
-    for (const auto &value : presets)
-        if (value.toObject().value("id").toString() == preset) {
-            selected = value.toObject();
-            ++matches;
-        }
-    if (!matches)
-        for (const auto &value : presets)
-            if (value.toObject().value("name").toString() == preset) {
-                selected = value.toObject();
-                ++matches;
-            }
+    const auto [selected,matches]=find_preset(presets,preset);
     if (matches != 1)
         result.error = matches ? "Preset selection is ambiguous: " + preset : "Preset not found: " + preset;
     else if (!selected.value("graph").isObject())
@@ -66,8 +62,16 @@ inline Result resolve(QJsonObject document, const QString &preset = {}) {
     else {
         result.graph = selected.value("graph").toObject();
         result.preset_id = selected.value("id").toString();
-        check_graph();
+        check_resolved_graph(result);
     }
+}
+inline Result resolve(QJsonObject document, const QString &preset = {}) {
+    Result result;
+    result.document=std::move(document);
+    const auto classification=classify_document(result.document);
+    if(!classification){result.error=classification.error;return result;}
+    if(preset.isEmpty())resolve_default_graph(result);
+    else resolve_preset_graph(result,preset);
     return result;
 }
 // Calculate only edits relative to a parsed snapshot. Unchanged defaults do not

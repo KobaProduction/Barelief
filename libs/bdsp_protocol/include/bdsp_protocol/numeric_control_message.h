@@ -1,5 +1,6 @@
 #pragma once
 #include <bdsp_protocol/numeric_control_limits.h>
+#include <bdsp_protocol/version_admission.h>
 #include <bdsp_protocol/numeric_data_message.h>
 #include <domain/processing_contracts.h>
 #include <optional>
@@ -50,9 +51,23 @@ struct Node {
     std::span<const Port> inputs, outputs;
     bool enabled = true;
 };
+// External envelope editions stay at the transport boundary; wire field IDs remain stable.
+struct GraphVersions {
+    std::uint32_t document=document_version, graph=domain::ProcessingVersions{}.graph,
+        processing=domain::ProcessingVersions{}.processing, control=control_version, data=processing_data_version;
+};
+inline signal_contracts::Status graph_versions_supported(const GraphVersions& value) noexcept {
+    const domain::ProcessingVersions processing{value.graph,value.processing};
+    if(domain::processing_versions_supported(processing)!=signal_contracts::Status::ok ||
+       processing_boundary_version_supported(ProcessingBoundary::Document,value.document)!=signal_contracts::Status::ok ||
+       processing_boundary_version_supported(ProcessingBoundary::Control,value.control)!=signal_contracts::Status::ok ||
+       processing_boundary_version_supported(ProcessingBoundary::Data,value.data)!=signal_contracts::Status::ok)return signal_contracts::Status::unsupported_version;
+    return signal_contracts::Status::ok;
+}
+
 struct Graph {
     std::string_view graph_id;
-    domain::ProcessingVersions versions;
+    GraphVersions versions;
     std::span<const Node> nodes;
     std::span<const domain::Edge> edges;
     signal_contracts::Ratio execution_interval{1,120};
@@ -79,7 +94,7 @@ struct CapabilityRow {
     Resources resources;
 };
 struct Capabilities {
-    std::uint32_t control_version = 4, data_version = 5, codec_mask = 3;
+    std::uint32_t control_version = SchemaVersion, data_version = numeric_data::PayloadVersion, codec_mask = 3;
     std::span<const CapabilityRow> rows;
     Resources maximum;
 };
@@ -90,6 +105,7 @@ struct Diagnostic {
     std::optional<std::uint16_t> port;
     std::optional<std::uint64_t> edge;
     std::string_view parameter;
+    domain::ProcessingReason reason=domain::ProcessingReason::None;
 };
 struct State {
     Lifecycle lifecycle = Lifecycle::Empty;

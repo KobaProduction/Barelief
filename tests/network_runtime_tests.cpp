@@ -8,13 +8,15 @@
 using namespace transport_fixture;
 static void pcm_delivery_gap(){
     auto recipient=numeric_default_graph();recipient.graph_id="pcm-gap-target";
-    std::erase_if(recipient.nodes,[](const auto& n){return n.id>=8 && n.id!=15;});
-    std::erase_if(recipient.edges,[](const auto& e){return (e.from>=8 && e.from!=15)||(e.to>=8 && e.to!=15);});
+    const auto retained=[](domain::NodeId id){return id<=7||id==15||id==1000||id==1001;};
+    std::erase_if(recipient.nodes,[&](const auto& n){return !retained(n.id);});
+    std::erase_if(recipient.edges,[&](const auto& e){return !retained(e.from)||!retained(e.to);});
     // Configuration wires are graph topology too: remove the view bindings
     // together with the views, while retaining the processing-chain bindings.
-    std::erase_if(recipient.configuration_bindings,[](const auto& binding){return (binding.from>=8 && binding.from!=15)||(binding.to>=8 && binding.to!=15);});
+    std::erase_if(recipient.configuration_bindings,[&](const auto& binding){return !retained(binding.from)||!retained(binding.to);});
     recipient.nodes.front().kind="NetworkInput";
     recipient.nodes.front().parameters=domain::EndpointProcessingParameters{};
+    require(recipient.nodes.front().outputs.size()==2&&domain::data_outputs(recipient.nodes.front()).size()==1&&recipient.nodes.front().outputs.back().id==domain::sample_rate_output,"PCM routing preserves one data stream and explicit Fs auxiliary");
     const auto pcm_owner=recipient.nodes.front().outputs[0].contract;
     auto producer=graph("pcm-gap-source");
     producer.nodes[0].outputs[0].contract=pcm_owner;producer.nodes[1].inputs[0].contract=pcm_owner;

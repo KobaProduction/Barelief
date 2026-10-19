@@ -1,5 +1,6 @@
 #include "dsp_core/dsp.h"
 #include <dsp_kernels/pcm_resampler.h>
+#include <dsp_kernels/weighted_mix.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -53,7 +54,7 @@ static void finite_fft_oracles() {
     PlaneLayout layout{0,{sizeof(float),0}};
     NumericView in{&a,std::as_bytes(std::span(input)),std::span(&layout,1),{n,1},{},{}};
     MutableNumericView out{&b,std::as_writable_bytes(std::span(typed)),std::span(&layout,1),{n/2,1},{},{}};
-    dsp_core::FFT fft;check(fft.prepare(n),"extreme FFT prepare");
+    dsp_core::MagnitudeSpectrum fft;check(fft.prepare(n),"extreme FFT prepare");
     for(int mode=0;mode<3;++mode){input.fill(0);const float maximum=std::numeric_limits<float>::max();
         if(mode==0)input[0]=maximum;else for(std::size_t i=0;i<n;++i)input[i]=mode==1?maximum:(i%2?-maximum:maximum);
         check(fft.process(input,plain)&&fft.process_plane(in,out,0)==Status::ok,"finite high-range FFT rejected");
@@ -182,7 +183,25 @@ static void pcm_resampler_oracles() {
     check(stereo.process(channels,4,4,result,5,written) && written==4 && result[0]==1 && result[5]==-1 && result[8]==-4,"resampler channel isolation");
 }
 
-int main() { pcm_resampler_oracles();finite_fft_oracles();mel_magnitude_oracle();mel_frequency_and_gain_oracles();
+static void weighted_share_oracles() {
+    const std::array huge{std::numeric_limits<double>::max(),std::numeric_limits<double>::max()};
+    check(dsp_kernels::normalized_weight_fraction(huge,0)==.5 && dsp_kernels::normalized_weight_fraction(huge,1)==.5,"huge finite weights must retain equal shares");
+    const std::array zero{0.,0.};check(dsp_kernels::normalized_weight_fraction(zero,0)==0.,"zero weights must have zero share");
+    const std::array negative{-1.,2.};check(!dsp_kernels::normalized_weight_fraction(negative,0),"negative fraction weights must be rejected");
+    check(!dsp_kernels::normalized_weight_fraction(huge,2),"out-of-range fraction index must be rejected");
+}
+static void weighted_mix_oracles() {
+    using dsp_kernels::WeightedMixAccumulator;using dsp_kernels::WeightedMixOperation;
+    WeightedMixAccumulator population;population.add_weighted(-4.,.5);population.add_weighted(2.,1.);
+    check(population.value(WeightedMixOperation::Sum)==0.,"weighted cancellation changed");
+    check(population.value(WeightedMixOperation::Mean)==0.,"weighted mean changed");
+    check(population.value(WeightedMixOperation::MaximumAbsolute)==-2.,"equal maxima must preserve first signed contribution");
+    check(population.value(WeightedMixOperation::Rms,.75)==std::sqrt(8.),"scaled weighted RMS changed");
+    population.reset_sum();population.add_normalized(-4.,.25);population.add_normalized(2.,.5);
+    check(population.amplitude_scale()==4. && population.value(WeightedMixOperation::Mean)==0.,"normalized clock population changed raw amplitude scale");
+    WeightedMixAccumulator empty;check(empty.value(WeightedMixOperation::Mean)==0. && empty.value(WeightedMixOperation::Rms)==0.,"zero weight population must publish zero");
+}
+int main() { weighted_share_oracles();weighted_mix_oracles();pcm_resampler_oracles();finite_fft_oracles();mel_magnitude_oracle();mel_frequency_and_gain_oracles();
 #ifdef DSP_KERNELS_WRAP_ALLOCATOR
     // Verify the C linker guard itself before relying on a zero count.
     void *(*volatile probe)(std::size_t) = std::malloc;
@@ -196,7 +215,7 @@ int main() { pcm_resampler_oracles();finite_fft_oracles();mel_magnitude_oracle()
     // Eight changing silent tones, both FFT radices, every supported profile.
     for (std::size_t n = 512; n <= dsp_core::max_fft_samples; n *= 2) {
         dsp_core::StereoProcessor stereo;
-        dsp_core::FFT reference;
+        dsp_core::MagnitudeSpectrum reference;
         dsp_core::MelFilterBank mel;
         check(stereo.prepare(n, 48000, 50) && reference.prepare(n, (n & 0x55555555) != 0) &&
                   mel.prepare(n / 2, 48000, 50), "prepare failed");
@@ -230,16 +249,16 @@ int main() { pcm_resampler_oracles();finite_fft_oracles();mel_magnitude_oracle()
             check(left == expected_left && right == expected_right && sl == expected_sl && sr == expected_sr &&
                       ml == expected_ml && mr == expected_mr, "stereo numerical order or channel behavior changed");
             check(stereo.workspace_bytes() == workspace, "workspace changed during processing");
-            // FFT magnitude and Hartley routes and Mel-only route remain allocation-free.
+            // Explicit magnitude and Mel-only operations remain allocation-free.
             watching = true;
-            const bool extra = reference.process(left, sl, true) && stereo.process_mel(sl, sr, ml, mr);
+            const bool extra = reference.process(left, sl) && stereo.process_mel(sl, sr, ml, mr);
             watching = false;
-            check(extra && allocations == 0, "Hartley or Mel-only kernel allocated");
+            check(extra && allocations == 0, "Magnitude or Mel-only kernel allocated");
         }
         std::fill(weights.begin(), weights.end(), std::numeric_limits<float>::infinity());
         check(stereo.process(left, right, win, weights, sl, sr, ml, mr), "nonfinite weight process failed");
         check(std::all_of(sl.begin(), sl.end(), [](float x) { return x == 0; }) &&
                   std::all_of(sr.begin(), sr.end(), [](float x) { return x == 0; }), "nonfinite spectra sanitization changed");
     }
-    std::cout << "Full stereo/FFT/Hartley/Mel characterization and allocation guard passed\n";
+    std::cout << "Full spectrum/Mel characterization and allocation guard passed\n";
 }

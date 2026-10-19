@@ -9,6 +9,7 @@ using Status=signal_contracts::Status;
 struct NumericRuntimeLimits {
     domain::ProcessingAdmissionLimits admission;
     domain::ProcessingResourceProfile resources;
+    domain::PreparationValueProvider preparation_values;
 };
 bool same_numeric_processing_graph(const domain::NumericProcessingGraph&,const domain::NumericProcessingGraph&) noexcept;
 struct MemoryRequirements {

@@ -10,6 +10,7 @@
 #include <QMap>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace configuration {
 struct MigrationResult {
@@ -43,6 +44,87 @@ inline QString active_path(const QString &explicit_path={}) {
 }
 
 // JSON format mapping only; no domain validation, runtime or application effects.
+inline MigrationResult migration_error(MigrationResult result,const QString& message,const QString& path={}) {
+    result.error=message;result.error_path=path;return result;
+}
+inline bool map_legacy_nodes(QJsonArray& nodes,QMap<int,QString>& kinds,int& next,MigrationResult& result) {
+    for(int i=0;i<nodes.size();++i) {
+        auto node=nodes[i].toObject();const auto id=node.value("id");
+        const double value=id.toDouble(-1);
+        if(!id.isDouble() || value<0 || value>=std::numeric_limits<int>::max()-3 ||
+           std::floor(value)!=value || kinds.contains(int(value))) {
+            result=migration_error(result,"Invalid legacy node ID or ID space exhausted","nodes/id");return false;
+        }
+        next=std::max(next,int(value)+1);auto presentation=node["internal-data"].toObject();
+        if(presentation["model-name"]=="SurfaceView")presentation["model-name"]="SpectrogramView";
+        kinds[int(value)]=presentation["model-name"].toString();node["internal-data"]=presentation;nodes[i]=node;
+    }
+    return true;
+}
+inline int append_legacy_node(QJsonArray& nodes,int& next,const QString& kind,const QJsonObject& near) {
+    const int id=next++;nodes.append(QJsonObject{{"id",id},{"position",near.value("position").toObject()},
+        {"internal-data",QJsonObject{{"model-name",kind}}}});return id;
+}
+inline QJsonObject legacy_edge(int from,int to) {
+    return {{"outNodeId",from},{"inNodeId",to},{"outPortIndex",0},{"inPortIndex",0}};
+}
+inline bool valid_legacy_edge_ids(const QJsonObject& edge,const QMap<int,QString>& kinds) {
+    const auto from=edge.value("outNodeId"),to=edge.value("inNodeId");
+    const double source=from.toDouble(-1),target=to.toDouble(-1);
+    return from.isDouble() && to.isDouble() && source>=0 && target>=0 &&
+        source<=std::numeric_limits<int>::max() && target<=std::numeric_limits<int>::max() &&
+        std::floor(source)==source && std::floor(target)==target &&
+        kinds.contains(int(source)) && kinds.contains(int(target));
+}
+inline QJsonObject legacy_node_near(const QJsonArray& nodes,const QJsonValue& id) {
+    for(const auto& node:nodes)if(node.toObject().value("id")==id)return node.toObject();
+    return {};
+}
+inline bool rewrite_legacy_capture_edges(QJsonArray& nodes,QJsonArray& edges,const QMap<int,QString>& kinds,
+                                         int& next,MigrationResult& result) {
+    const auto original=edges;
+    for(int i=0;i<original.size();++i) {
+        auto edge=original[i].toObject();const auto from=edge["outNodeId"],to=edge["inNodeId"];
+        if(!valid_legacy_edge_ids(edge,kinds)) {
+            result=migration_error(result,"Invalid legacy edge identity","connections");return false;
+        }
+        const int source=int(from.toDouble()),target=int(to.toDouble());
+        if(kinds.value(target)!="StereoFFT" ||
+           (kinds.value(source)!="AudioSource" && kinds.value(source)!="TestSignal"))continue;
+        if(edge["outPortIndex"]!=0 || edge["inPortIndex"]!=0){
+            result=migration_error(result,"Unsupported legacy edge port","connections");return false;
+        }
+        const auto near=legacy_node_near(nodes,to);
+        const int window=append_legacy_node(nodes,next,"Window",near);
+        const int function=append_legacy_node(nodes,next,"WindowFunction",near);
+        edge["inNodeId"]=window;edges[i]=edge;
+        edges.append(legacy_edge(window,function));edges.append(legacy_edge(function,target));
+    }
+    return true;
+}
+inline void append_legacy_bark_nodes(QJsonArray& nodes,QJsonArray& edges,const QMap<int,QString>& kinds,int& next) {
+    for(auto it=kinds.cbegin();it!=kinds.cend();++it)if(it.value()=="StereoFFT") {
+        const int bark=append_legacy_node(nodes,next,"BarkWeighting",{});
+        for(int i=0;i<edges.size();++i){auto edge=edges[i].toObject();if(edge["outNodeId"]==it.key()){edge["outNodeId"]=bark;edges[i]=edge;}}
+        edges.append(legacy_edge(it.key(),bark));
+    }
+}
+inline MigrationResult migrate_legacy_graph(const QJsonObject& raw,MigrationResult result,const QString& marker) {
+    if(raw.contains(marker))return migration_error(result,"Migration extension collision",marker);
+    if(!raw.value("nodes").isArray() || !raw.value("connections").isArray())
+        return migration_error(result,"Legacy graph arrays missing","nodes/connections");
+    auto nodes=raw["nodes"].toArray();auto edges=raw["connections"].toArray();
+    QMap<int,QString> kinds;int next=0;
+    if(!map_legacy_nodes(nodes,kinds,next,result))return result;
+    if(qint64(next)+qint64(edges.size())*2+kinds.size()>=std::numeric_limits<int>::max())
+        return migration_error(result,"Legacy node ID space exhausted","nodes/id");
+    if(!rewrite_legacy_capture_edges(nodes,edges,kinds,next,result))return result;
+    append_legacy_bark_nodes(nodes,edges,kinds,next);
+    auto mapped=raw;mapped["version"]=2;mapped["nodes"]=nodes;mapped["connections"]=edges;
+    if(!mapped.contains("processing_version"))mapped["processing_version"]=1;
+    result.document=mapped;result.document[marker]=QJsonObject{{"source",raw},{"mapped",mapped}};
+    return result;
+}
 inline MigrationResult migrate_graph(const QJsonObject &raw,int target=2) {
     MigrationResult r;r.document=raw;r.target_version=target;
     r.error=check_version(raw,"version",2);r.error_path="version";
@@ -50,7 +132,7 @@ inline MigrationResult migrate_graph(const QJsonObject &raw,int target=2) {
     if(!r)return r;
     r.source_version=2; // Historical unversioned graph is the existing v2 shape.
     if(raw.contains("version"))version_number(raw["version"],r.source_version);
-    if(target!=1 && target!=2){r.error="Unsupported target graph version";return r;}
+    if(target!=1 && target!=2)return migration_error(r,"Unsupported target graph version");
     if(r.source_version==target)return r;
     const QString marker="_configuration_graph_migration";
     if(target==1) {
@@ -58,60 +140,68 @@ inline MigrationResult migrate_graph(const QJsonObject &raw,int target=2) {
         if(record.value("source").isObject() && record.value("mapped")==current) {
             r.document=record.value("source").toObject();return r;
         }
-        r.error="Unsupported or lossy graph downgrade";r.error_path=marker;return r;
+        return migration_error(r,"Unsupported or lossy graph downgrade",marker);
     }
-    if(raw.contains(marker)){r.error="Migration extension collision";r.error_path=marker;return r;}
-    if(!raw.value("nodes").isArray() || !raw.value("connections").isArray()) {
-        r.error="Legacy graph arrays missing";r.error_path="nodes/connections";return r;
-    }
-    auto nodes=raw["nodes"].toArray();auto edges=raw["connections"].toArray();
-    QMap<int,QString> kinds;int next=0;
-    for(int i=0;i<nodes.size();++i) {
-        auto n=nodes[i].toObject();const auto id=n.value("id");
-        // Node zero is valid; version_number intentionally is not reused.
-        const double d=id.toDouble(-1);
-        if(!id.isDouble() || d<0 || d>=std::numeric_limits<int>::max()-3 || std::floor(d)!=d || kinds.contains(int(d))) {
-            r.error="Invalid legacy node ID or ID space exhausted";r.error_path="nodes/id";return r;
-        }
-        next=std::max(next,int(d)+1);auto p=n["internal-data"].toObject();
-        if(p["model-name"]=="SurfaceView")p["model-name"]="SpectrogramView";
-        kinds[int(d)]=p["model-name"].toString();n["internal-data"]=p;nodes[i]=n;
-    }
-    const auto old_edges=edges;
-    auto add=[&](const QString &kind,const QJsonObject &near) {
-        const int id=next++;nodes.append(QJsonObject{{"id",id},{"position",near.value("position").toObject()},
-            {"internal-data",QJsonObject{{"model-name",kind}}}});return id;
-    };
-    auto edge=[](int from,int to){return QJsonObject{{"outNodeId",from},{"inNodeId",to},{"outPortIndex",0},{"inPortIndex",0}};};
-    // Check worst-case added nodes before assigning a single ID.
-    if(qint64(next)+qint64(edges.size())*2+kinds.size()>=std::numeric_limits<int>::max()) {
-        r.error="Legacy node ID space exhausted";r.error_path="nodes/id";return r;
-    }
-    for(int i=0;i<old_edges.size();++i) {
-        auto e=old_edges[i].toObject();const auto f=e["outNodeId"],t=e["inNodeId"];
-        const double fd=f.toDouble(-1),td=t.toDouble(-1);
-        if(!f.isDouble() || !t.isDouble() || fd<0 || td<0 || fd>std::numeric_limits<int>::max() || td>std::numeric_limits<int>::max() ||
-           std::floor(fd)!=fd || std::floor(td)!=td || !kinds.contains(int(fd)) || !kinds.contains(int(td))) {
-            r.error="Invalid legacy edge identity";r.error_path="connections";return r;
-        }
-        if(kinds[int(td)]!="StereoFFT" || (kinds[int(fd)]!="AudioSource" && kinds[int(fd)]!="TestSignal"))continue;
-        if(e["outPortIndex"]!=0 || e["inPortIndex"]!=0){r.error="Unsupported legacy edge port";r.error_path="connections";return r;}
-        QJsonObject near;for(const auto &n:nodes)if(n.toObject()["id"]==t)near=n.toObject();
-        const int w=add("Window",near),h=add("WindowFunction",near);
-        e["inNodeId"]=w;edges[i]=e;edges.append(edge(w,h));edges.append(edge(h,int(td)));
-    }
-    for(auto it=kinds.begin();it!=kinds.end();++it)if(it.value()=="StereoFFT") {
-        const int bark=add("BarkWeighting",{});
-        for(int i=0;i<edges.size();++i){auto e=edges[i].toObject();if(e["outNodeId"]==it.key()){e["outNodeId"]=bark;edges[i]=e;}}
-        edges.append(edge(it.key(),bark));
-    }
-    auto mapped=raw;mapped["version"]=2;mapped["nodes"]=nodes;mapped["connections"]=edges;
-    // The recorded output includes every field introduced by this step. A
-    // missing legacy processing version is restored by the exact inverse.
-    if(!mapped.contains("processing_version"))mapped["processing_version"]=1;
-    r.document=mapped;r.document[marker]=QJsonObject{{"source",raw},{"mapped",mapped}};return r;
+    return migrate_legacy_graph(raw,std::move(r),marker);
 }
 
+inline bool migrate_graph_value(QJsonValue& value,const QString& path,int target,MigrationResult& result) {
+    if(!value.isObject())return true; // Malformed draft/value remains opaque until explicitly replaced.
+    auto graph=value.toObject();auto mapped=migrate_graph(graph,target);
+    if(!mapped){result=migration_error(result,mapped.error,path+"/"+mapped.error_path);return false;}
+    graph=mapped.document;
+    if(target==2 && !graph.contains("processing_version"))graph["processing_version"]=1;
+    value=graph;return true;
+}
+inline bool migrate_preset_array(QJsonArray& presets,const QString& path,int target,MigrationResult& result) {
+    for(int i=0;i<presets.size();++i){
+        auto preset=presets[i].toObject();if(!preset.contains("graph"))continue;
+        QJsonValue graph=preset.value("graph");
+        if(!migrate_graph_value(graph,path+"/"+QString::number(i)+"/graph",target,result))return false;
+        preset["graph"]=graph;presets[i]=preset;
+    }
+    return true;
+}
+inline bool migrate_graph_members(QJsonObject& object,const QString& path,int target,MigrationResult& result) {
+    for(const auto& key:QStringList{"pipeline_graph","scene_graph"})if(object.contains(key)) {
+        QJsonValue graph=object.value(key);
+        if(!migrate_graph_value(graph,path+key,target,result))return false;
+        object[key]=graph;
+    }
+    return true;
+}
+inline bool migrate_named_presets(QJsonObject& object,const QString& field,const QString& path,
+                                  int target,MigrationResult& result) {
+    if(!object.value(field).isArray())return true;
+    auto presets=object.value(field).toArray();
+    if(!migrate_preset_array(presets,path,target,result))return false;
+    object[field]=presets;return true;
+}
+inline bool migrate_device_documents(QJsonObject& candidate,int target,MigrationResult& result) {
+    if(!candidate.value("devices").isObject())return true;
+    auto devices=candidate.value("devices").toObject();
+    for(auto it=devices.begin();it!=devices.end();++it) {
+        if(!it.value().isObject())continue;
+        auto device=it.value().toObject();const auto path="devices/"+it.key()+"/";
+        if(!migrate_graph_members(device,path,target,result) ||
+           !migrate_named_presets(device,"presets",path+"presets",target,result))return false;
+        it.value()=device;
+    }
+    candidate["devices"]=devices;return true;
+}
+inline bool migrate_project_graphs(QJsonObject& candidate,const QJsonObject& raw,int target,MigrationResult& result) {
+    if(raw.value("nodes").isArray()) {
+        candidate.remove("nodes");candidate.remove("connections");candidate.remove("version");candidate.remove("processing_version");
+        candidate["pipeline_graph"]=raw;candidate["scene_graph"]=raw;
+    } else if(!raw.contains("pipeline_graph") && raw.value("scene_graph").isObject())
+        candidate["pipeline_graph"]=raw.value("scene_graph");
+    if(!migrate_graph_members(candidate,{},target,result) ||
+       !migrate_named_presets(candidate,"presets","presets",target,result))return false;
+    auto ui=candidate.value("ui").toObject();
+    if(!migrate_named_presets(ui,"pipeline_presets","ui/pipeline_presets",target,result))return false;
+    if(candidate.value("ui").toObject().value("pipeline_presets").isArray())candidate["ui"]=ui;
+    return migrate_device_documents(candidate,target,result);
+}
 inline MigrationResult migrate(const QJsonObject &raw,int target_schema=1,int target_graph=2) {
     auto r=classify_document(raw);r.target_version=target_schema;if(!r)return r;
     if(target_schema!=0 && target_schema!=1){r.error="Unsupported target schema";return r;}
@@ -124,46 +214,7 @@ inline MigrationResult migrate(const QJsonObject &raw,int target_schema=1,int ta
         r.error="Unsupported or lossy project downgrade";r.error_path=marker;return r;
     }
     auto candidate=raw;
-    const bool standalone=raw.value("nodes").isArray();
-    if(standalone) {
-        candidate.remove("nodes");candidate.remove("connections");candidate.remove("version");candidate.remove("processing_version");
-        candidate["pipeline_graph"]=raw;candidate["scene_graph"]=raw;
-    } else if(!raw.contains("pipeline_graph") && raw.value("scene_graph").isObject())candidate["pipeline_graph"]=raw["scene_graph"];
-    auto map_graph=[&](QJsonValue &value,const QString &path)->bool {
-        if(!value.isObject())return true; // Malformed draft/value remains opaque until explicitly replaced.
-        auto g=value.toObject();auto mapped=migrate_graph(g,target_graph);
-        if(!mapped){r.error=mapped.error;r.error_path=path+"/"+mapped.error_path;return false;}
-        g=mapped.document;
-        if(target_graph==2 && !g.contains("processing_version"))g["processing_version"]=1;
-        value=g;return true;
-    };
-    for(const auto &key:QStringList{"pipeline_graph","scene_graph"})if(candidate.contains(key)) {
-        QJsonValue v=candidate[key];if(!map_graph(v,key))return r;candidate[key]=v;
-    }
-    auto map_presets=[&](QJsonArray &presets,const QString &path)->bool {
-        for(int i=0;i<presets.size();++i){auto p=presets[i].toObject();if(!p.contains("graph"))continue;
-            QJsonValue v=p["graph"];if(!map_graph(v,path+"/"+QString::number(i)+"/graph"))return false;p["graph"]=v;presets[i]=p;}return true;
-    };
-    if(candidate.value("presets").isArray()){auto a=candidate.value("presets").toArray();if(!map_presets(a,"presets"))return r;candidate["presets"]=a;}
-    auto ui=candidate.value("ui").toObject();
-    if(ui.value("pipeline_presets").isArray()){auto a=ui.value("pipeline_presets").toArray();if(!map_presets(a,"ui/pipeline_presets"))return r;ui["pipeline_presets"]=a;candidate["ui"]=ui;}
-    if(candidate.value("devices").isObject()) {
-        auto devices=candidate.value("devices").toObject();
-        for(auto it=devices.begin();it!=devices.end();++it) {
-            if(!it.value().isObject())continue;
-            auto device=it.value().toObject();
-            for(const auto &key:QStringList{"pipeline_graph","scene_graph"})if(device.contains(key)) {
-                QJsonValue v=device[key];if(!map_graph(v,"devices/"+it.key()+"/"+key))return r;device[key]=v;
-            }
-            if(device.value("presets").isArray()) {
-                auto presets=device.value("presets").toArray();
-                if(!map_presets(presets,"devices/"+it.key()+"/presets"))return r;
-                device["presets"]=presets;
-            }
-            it.value()=device;
-        }
-        candidate["devices"]=devices;
-    }
+    if(!migrate_project_graphs(candidate,raw,target_graph,r))return r;
     if(target_schema==0){r.document=candidate;return r;}
     candidate["schema_version"]=1;
     if(r.source_version==0) {
@@ -188,20 +239,26 @@ struct SaveResult {
     QString error;
     explicit operator bool() const {return error.isEmpty();}
 };
-inline SaveResult save_atomic(const QString &path,const QJsonObject &document) {
-    const auto mapped=migrate(document);if(!mapped)return {mapped.error_path+": "+mapped.error};
-    // A supported candidate must not overwrite a future/malformed source file.
-    if(QFileInfo::exists(path)) {
-        QFile source(path);if(!source.open(QIODevice::ReadOnly))return {source.errorString()};
-        QJsonParseError parse;const auto old=QJsonDocument::fromJson(source.readAll(),&parse);
-        if(parse.error!=QJsonParseError::NoError || !old.isObject())return {"Source configuration is malformed"};
-        const auto old_mapped=migrate(old.object());if(!old_mapped)return {old_mapped.error};
-    }
+inline SaveResult validate_existing_source(const QString& path) {
+    if(!QFileInfo::exists(path))return {};
+    QFile source(path);if(!source.open(QIODevice::ReadOnly))return {source.errorString()};
+    QJsonParseError parse;const auto old=QJsonDocument::fromJson(source.readAll(),&parse);
+    if(parse.error!=QJsonParseError::NoError || !old.isObject())return {"Source configuration is malformed"};
+    const auto mapped=migrate(old.object());if(!mapped)return {mapped.error};
+    return {};
+}
+inline SaveResult write_atomic_document(const QString& path,const QJsonObject& document) {
     const auto dir=QFileInfo(path).absoluteDir();if(!dir.exists() && !dir.mkpath("."))return {"Could not create configuration directory"};
     QSaveFile file(path);file.setDirectWriteFallback(false);
     if(!file.open(QIODevice::WriteOnly))return {file.errorString()};
-    const auto bytes=QJsonDocument(mapped.document).toJson();
+    const auto bytes=QJsonDocument(document).toJson();
     if(file.write(bytes)!=bytes.size()){file.cancelWriting();return {file.errorString()};}
     if(!file.commit())return {file.errorString()};return {};
+}
+inline SaveResult save_atomic(const QString &path,const QJsonObject &document) {
+    const auto mapped=migrate(document);if(!mapped)return {mapped.error_path+": "+mapped.error};
+    // A supported candidate must not overwrite a future/malformed source file.
+    const auto source=validate_existing_source(path);if(!source)return source;
+    return write_atomic_document(path,mapped.document);
 }
 } // namespace configuration

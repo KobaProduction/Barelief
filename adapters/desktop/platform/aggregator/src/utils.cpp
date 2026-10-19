@@ -1,4 +1,5 @@
 #include "aggregator/utils.h"
+#include <QRandomGenerator>
 
 namespace aggregator_utils {
     QString component_state_to_string(ComponentState state) {
@@ -42,21 +43,16 @@ namespace aggregator_utils {
 
     QString format_component_info(const QUuid &uuid, ComponentType type, ComponentState state) {
         return QString("UUID: %1, type: %2, state: %3")
-                .arg(uuid.toString())
-                .arg(component_type_to_string(type))
-                .arg(component_state_to_string(state));
+                .arg(uuid.toString(),component_type_to_string(type),component_state_to_string(state));
     }
 
     QString format_component_state_change(const QUuid &uuid, ComponentState new_state) {
         return QString("UUID: %1, state: %2")
-                .arg(uuid.toString())
-                .arg(component_state_to_string(new_state));
+                .arg(uuid.toString(),component_state_to_string(new_state));
     }
 
     QString format_component_registration(const QUuid &uuid, ComponentType type, const QString &address) {
         return QString("UUID: %1, type: %2, %3")
-                .arg(uuid.toString())
-                .arg(component_type_to_string(type))
-                .arg(address);
+                .arg(uuid.toString(),component_type_to_string(type),address);
     }
 } // namespace aggregator_utils

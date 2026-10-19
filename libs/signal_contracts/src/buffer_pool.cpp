@@ -2,6 +2,58 @@
 #include <cstring>
 #include <limits>
 namespace signal_contracts {
+namespace {
+bool add_count(std::size_t& count,std::size_t amount) noexcept {
+    if(amount>std::numeric_limits<std::size_t>::max()-count)return false;
+    count+=amount;return true;
+}
+Status retained_size(const FrameView& frame,const HistoryView& history,std::size_t& count,std::size_t& bytes) noexcept {
+    const auto maximum=std::numeric_limits<std::size_t>::max();
+    if(!add_count(count,frame.left.size()) || !add_count(count,frame.right.size()) || !add_count(count,frame.values.size()))return Status::overflow;
+    if(history.bands && history.frames>maximum/history.bands)return Status::overflow;
+    if(!add_count(count,history.frames*history.bands) || frame.packet.size()>maximum-frame.metadata.stream_id.size())return Status::overflow;
+    const auto tail=frame.metadata.stream_id.size()+frame.packet.size();
+    if(count>(maximum-tail)/sizeof(float))return Status::overflow;
+    bytes=count*sizeof(float)+tail;return Status::ok;
+}
+struct RetainedWriter {
+    std::span<std::byte> bytes;
+    std::size_t offset=0;
+    std::span<const float> floats(std::span<const float> source) noexcept {
+        auto* result=reinterpret_cast<float*>(bytes.data()+offset);
+        if(!source.empty())std::memcpy(result,source.data(),source.size_bytes());
+        offset+=source.size_bytes();return {result,source.size()};
+    }
+    HistoryView history(const HistoryView& source) noexcept {
+        if(!source.frames)return {};
+        const auto start=offset;
+        for(std::size_t row=0;row<source.frames;++row)floats(source.row(row));
+        return {std::span<const float>(reinterpret_cast<const float*>(bytes.data()+start),source.frames*source.bands),source.bands,source.frames,source.frames,0};
+    }
+    void tail(const FrameView& source,FrameView& destination) noexcept {
+        if(!source.packet.empty())std::memcpy(bytes.data()+offset,source.packet.data(),source.packet.size());
+        destination.packet={reinterpret_cast<const std::uint8_t*>(bytes.data()+offset),source.packet.size()};offset+=source.packet.size();
+        if(!source.metadata.stream_id.empty())std::memcpy(bytes.data()+offset,source.metadata.stream_id.data(),source.metadata.stream_id.size());
+        destination.metadata.stream_id={reinterpret_cast<const char*>(bytes.data()+offset),source.metadata.stream_id.size()};
+    }
+};
+Status copy_retained_payload(const FrameView& source,const HistoryView& history,std::size_t count,RetainedFrame& destination) noexcept {
+    auto bytes=destination.buffer.bytes();
+    if(count && reinterpret_cast<std::uintptr_t>(bytes.data())%alignof(float))return Status::invalid_argument;
+    destination.view=source;RetainedWriter writer{bytes};
+    destination.view.left=writer.floats(source.left);
+    destination.view.right=writer.floats(source.right);
+    destination.view.values=writer.floats(source.values);
+    // Retained history stores logical rows contiguously; capacity remains semantic metadata.
+    destination.view.history=writer.history(history);writer.tail(source,destination.view);return Status::ok;
+}
+struct RetentionPlan {HistoryView history;std::size_t samples=0,bytes=0;};
+Status plan_retention(const FrameView& frame,RetentionPlan& plan) noexcept {
+    const auto status=validate(frame);if(status!=Status::ok && status!=Status::unavailable)return status;
+    plan.history=frame.type==FrameType::History && frame.metadata.available?frame.history:HistoryView{};
+    return retained_size(frame,plan.history,plan.samples,plan.bytes);
+}
+}
 BufferHandle::BufferHandle(const BufferHandle &other) noexcept :pool_(other.pool_),index_(other.index_),size_(other.size_) {
     if(pool_)pool_->slots_[index_].references.fetch_add(1,std::memory_order_relaxed);
 }
@@ -31,34 +83,10 @@ std::size_t BufferPool::in_use() const noexcept {
     std::size_t used=0;for(auto &s:slots_) used+=s.references.load(std::memory_order_relaxed)!=0;return used;
 }
 Status retain(const FrameView &f, BufferPool &pool, RetainedFrame &out) noexcept {
-    auto status=validate(f); if(status!=Status::ok && status!=Status::unavailable)return status;
-    const HistoryView history=f.type==FrameType::History && f.metadata.available?f.history:HistoryView{};
-    std::size_t count=0;
-    auto add=[&](std::size_t n){if(n>(std::numeric_limits<std::size_t>::max()-count))return false;count+=n;return true;};
-    if(!add(f.left.size()) || !add(f.right.size()) || !add(f.values.size()) ||
-       (history.bands && history.frames>std::numeric_limits<std::size_t>::max()/history.bands) ||
-       !add(history.frames*history.bands) || f.packet.size()>std::numeric_limits<std::size_t>::max()-f.metadata.stream_id.size() ||
-       count>(std::numeric_limits<std::size_t>::max()-f.metadata.stream_id.size()-f.packet.size())/sizeof(float))return Status::overflow;
-    RetainedFrame x;status=pool.acquire(count*sizeof(float)+f.metadata.stream_id.size()+f.packet.size(),x.buffer);
+    RetentionPlan plan;auto status=plan_retention(f,plan);if(status!=Status::ok)return status;
+    RetainedFrame x;status=pool.acquire(plan.bytes,x.buffer);
     if(status!=Status::ok)return status;
-    auto bytes=x.buffer.bytes();
-    if(count && reinterpret_cast<std::uintptr_t>(bytes.data())%alignof(float))return Status::invalid_argument;
-    x.view=f;std::size_t offset=0;
-    auto copy=[&](std::span<const float> source){
-        auto *ptr=reinterpret_cast<float *>(bytes.data()+offset); if(!source.empty())std::memcpy(ptr,source.data(),source.size_bytes());
-        offset+=source.size_bytes();return std::span<const float>(ptr,source.size());};
-    x.view.left=copy(f.left);x.view.right=copy(f.right);x.view.values=copy(f.values);
-    x.view.history={};
-    if(history.frames) {
-        const auto start=offset;for(std::size_t i=0;i<history.frames;++i)copy(history.row(i));
-        x.view.history={std::span<const float>(reinterpret_cast<const float *>(bytes.data()+start),history.frames*history.bands),
-            history.bands,history.frames,history.frames,0};
-    }
-    // Retained history stores logical rows contiguously; capacity remains semantic metadata.
-    if(!f.packet.empty())std::memcpy(bytes.data()+offset,f.packet.data(),f.packet.size());
-    x.view.packet={reinterpret_cast<const std::uint8_t *>(bytes.data()+offset),f.packet.size()};offset+=f.packet.size();
-    if(!f.metadata.stream_id.empty())std::memcpy(bytes.data()+offset,f.metadata.stream_id.data(),f.metadata.stream_id.size());
-    x.view.metadata.stream_id={reinterpret_cast<const char *>(bytes.data()+offset),f.metadata.stream_id.size()};
+    status=copy_retained_payload(f,plan.history,plan.samples,x);if(status!=Status::ok)return status;
     out=std::move(x);return Status::ok;
 }
 }

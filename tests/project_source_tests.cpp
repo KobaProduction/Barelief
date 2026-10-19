@@ -26,7 +26,11 @@ void operator delete(void* p,std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
 void operator delete(void* p,const std::nothrow_t&) noexcept { std::free(p); }
 void operator delete[](void* p,const std::nothrow_t&) noexcept { std::free(p); }
-#define CHECK(x) do { if (!(x)) { std::printf("FAIL line %d: %s\n", __LINE__, #x); return false; } } while (false)
+static bool expect_condition(bool valid,int line,const char* expression) {
+    if(!valid)std::printf("FAIL line %d: %s\n",line,expression);
+    return valid;
+}
+#define CHECK(x) if(!::expect_condition(bool(x),__LINE__,#x)) return false
 static NodeHandle member(const OwnedProjectSource& s, NodeHandle p, std::string_view k) {
     NodeHandle h; (void)find_unique_member(s, p, k, h); return h;
 }
@@ -221,8 +225,35 @@ static bool fixed_width_boundaries_and_batch_refusal() {
     DocumentEdit malformed{EditKind::Insert,{},b,{0,1},"[]","3"}; CHECK(stage_project_edits(s,std::span(&malformed,1),c).code==Error::InvalidHandle);
     return true;
 }
+static bool bounded_profile_strings() {
+    constexpr std::size_t profile_limit=1024u*1024u;
+    OwnedProjectSource source,candidate;
+    const std::string decoded(profile_limit,'p');
+    const std::string exact="\""+decoded+"\"";
+    CHECK(parse_project_source(exact,source));
+    CHECK(node(source,source.root()).decoded==decoded);
+    const auto baseline=source.root();
+    const std::string oversized="\""+decoded+"p\"";
+    CHECK(parse_project_source(oversized,source).code==Error::TextLimit);
+    CHECK(source.root()==baseline); CHECK(source.bytes()==exact);
+    // Maximum JSON escaping must fit too; raw and decoded ceilings differ.
+    std::string escaped; escaped.reserve(6u*profile_limit+2u); escaped+='"';
+    for(std::size_t i=0;i<profile_limit;++i) escaped+="\\u0070";
+    escaped+='"';
+    CHECK(parse_project_source(escaped,candidate));
+    CHECK(node(candidate,candidate.root()).decoded==decoded);
+    CHECK(candidate.bytes()==escaped);
+    OwnedProjectSource project,updated;
+    CHECK(parse_project_source(R"({"profile_json":"","future":1e9999})",project));
+    const auto profile=member(project,project.root(),"profile_json");
+    DocumentEdit edit{EditKind::Replace,profile,{},{},"\"\"",exact};
+    CHECK(stage_project_edits(project,std::span(&edit,1),updated));
+    CHECK(node(updated,member(updated,updated.root(),"profile_json")).decoded==decoded);
+    CHECK(node(updated,member(updated,updated.root(),"future")).raw=="1e9999");
+    return true;
+}
 int main() {
-    const std::array tests={ownership_and_lexemes,grammar_and_unicode,duplicates_and_integers,patch_and_moves,structural_edit_cases,limits_and_rollback,allocation_and_peak,boundaries_and_opaque_policy,fixed_width_boundaries_and_batch_refusal};
+    const std::array tests={ownership_and_lexemes,grammar_and_unicode,duplicates_and_integers,patch_and_moves,structural_edit_cases,limits_and_rollback,allocation_and_peak,boundaries_and_opaque_policy,fixed_width_boundaries_and_batch_refusal,bounded_profile_strings};
     int failed=0; for(std::size_t i=0;i<tests.size();++i) { bool ok=tests[i](); std::printf("case %zu %s\n",i+1,ok?"PASS":"FAIL"); failed+=!ok; }
     std::printf("project_source: %zu cases, %d failures\n",tests.size(),failed); return failed?1:0;
 }

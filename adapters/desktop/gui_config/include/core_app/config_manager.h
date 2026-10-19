@@ -3,6 +3,7 @@
 
 #include "core_app/types.h"
 #include <desktop/numeric_project_document.h>
+#include <QByteArray>
 
 class ConfigManager {
   public:
@@ -16,6 +17,9 @@ class ConfigManager {
     // Does not extract/stage a draft or change the applied graph.
     bool saveNumericPreferences(desktop::NumericProjectDocument&, const FileSaveApplicationConfig&,
                                 QString *error = nullptr) const;
+    // Workspace-only recovery when the protected project cannot be loaded.
+    bool loadWorkspaceRecovery(FileSaveApplicationConfig&,QString* error=nullptr) const;
+    bool saveWorkspaceRecovery(const FileSaveApplicationConfig&,QString* error=nullptr) const;
     bool saveNumeric(desktop::NumericProjectDocument&, const domain::NumericProcessingGraph&,
                      QString *error = nullptr) const;
     bool saveNumeric(desktop::NumericProjectDocument&, const domain::NumericProcessingGraph&,
@@ -38,6 +42,8 @@ class ConfigManager {
 
     static void _save_aggregator_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config);
     static void _save_ui_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config);
+    static void merge_recovery_presentation(FileSaveApplicationConfig& config,const QJsonObject& checked);
+    static QByteArray encode_recovery_presentation(const FileSaveApplicationConfig& config);
     static void _save_wled_ar_server_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config);
 };
 

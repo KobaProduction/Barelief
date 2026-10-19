@@ -1,0 +1,4 @@
+include_rules = [
+    '-Qt', '-desktop', '-pipeline', '-presentation', '-core_app',
+    '-adapters/desktop', '-apps', '-visualization',
+]

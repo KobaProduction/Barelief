@@ -15,7 +15,7 @@ int main() {
         for (bool radix4 : {false, true}) {
             require((radix4 ? dsps_fft4r_init_fc32(nullptr, 16) : dsps_fft2r_init_fc32(nullptr, 16)) == ESP_OK,
                     "External small-table initialization failed");
-            dsp_core::FFT small, rejected;
+            dsp_core::MagnitudeSpectrum small, rejected;
             require(small.prepare(16, radix4), "Compatible external table rejected");
             const auto *table = radix4 ? dsps_fft4r_w_table_fc32 : dsps_fft_w_table_fc32;
             const auto table_size = radix4 ? dsps_fft4r_w_table_size : dsps_fft_w_table_size;

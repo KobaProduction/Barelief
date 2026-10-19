@@ -172,6 +172,22 @@ private:
     ProcessingReply result(SessionIdentity, CommandHeader, ControlError = ControlError::none,
                            Status = Status::ok) const;
     ProcessingReply prepare(SessionIdentity, CommandHeader, const ProcessingDTO&);
+    ProcessingReply prepare_transaction(SessionIdentity,CommandHeader,const ProcessingDTO&,
+                                        std::uint64_t now);
+    void install_prepared(SessionIdentity,std::string_view,std::uint64_t now);
+    ProcessingReply prepared_reply(SessionIdentity,CommandHeader) const;
+    void commit_candidate() noexcept;
+    bool command_busy(SessionIdentity,const ProcessingCommand&) const noexcept;
+    ProcessingReply replay_reply(SessionIdentity,CommandHeader,const ProcessingCommand&,const ControlSessionSlot&) const;
+    ProcessingReply unbounded_reply(SessionIdentity,CommandHeader,const ProcessingCommand&) const;
+    std::optional<ProcessingReply> submission_preflight(SessionIdentity,CommandHeader,const ProcessingCommand&,const ControlSessionSlot&) const;
+    ProcessingReply submit_staged(SessionIdentity,CommandHeader,const ProcessingCommand&,ControlSessionSlot&,std::uint64_t,SessionIdentity);
+    std::optional<ProcessingReply> mutation_gate(SessionIdentity,CommandHeader,const ProcessingCommand&,std::uint64_t,SessionIdentity) const;
+    ProcessingReply dispatch_mutation(SessionIdentity,CommandHeader,const ProcessingCommand&);
+    ProcessingReply apply_candidate(SessionIdentity,CommandHeader,const ApplyProcessing&);
+    ProcessingReply release_candidate(SessionIdentity,CommandHeader,const ReleasePrepared&);
+    ProcessingReply set_parameters(SessionIdentity,CommandHeader,const SetNumericProcessingParameters&);
+    ProcessingReply persist(SessionIdentity,CommandHeader,const ExplicitPersist&);
     ProcessingReply lifecycle_result(SessionIdentity, CommandHeader, const LifecycleResult&) const;
     ProcessingReply dispatch(SessionIdentity, CommandHeader, const ProcessingCommand&,
                              std::uint64_t expired_token, SessionIdentity expired_owner);

@@ -1,3 +1,4 @@
+#include <core_app/plot_composition.h>
 #include "ui_audit_recorder.h"
 #include <core_app/graph_panel.h>
 #include <visualization/charts/line.h>
@@ -114,9 +115,9 @@ void audit_graphs(Recorder& recorder) {
     }
     const QString originalTheme=ui::Theme::instance().code(),originalLanguage=ui::Language::instance().code();
     ui::Language::instance().set("en");
-    GraphPanel vector("auditVector",new LineChartView,{{"kind","FFTView"}},nullptr);
-    GraphPanel matrix("auditMatrix",new LineChartView,{{"kind","SpectrogramView"}},nullptr);
-    GraphPanel metrics("auditMetrics",new LineChartView,{{"kind","ScalarView"}},nullptr);
+    GraphPanel vector("auditVector",new LineChartView,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
+    GraphPanel matrix("auditMatrix",new LineChartView,{{"kind","SpectrogramView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},false}));
+    GraphPanel metrics("auditMetrics",new LineChartView,{{"kind","ScalarView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"metrics","signedbar"},{},false}));
     int modesVisited=0;
     for(auto* panel:{&vector,&matrix,&metrics}) {
         QQuickWidget* controls=nullptr;
@@ -411,7 +412,7 @@ void audit_graphs(Recorder& recorder) {
 
     // Exercise hit testing, popup lifecycle and actual TextInput validation, not handlers.
     ui::Language::instance().set("en");
-    GraphPanel input("auditInput",new LineChartView,{{"kind","FFTView"}},nullptr);
+    GraphPanel input("auditInput",new LineChartView,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
     QQuickWidget* inputHost=nullptr;
     if(prepare(input,recorder,"graphs.input",inputHost)) {
         auto* root=inputHost->rootObject();

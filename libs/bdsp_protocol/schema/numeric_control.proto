@@ -182,6 +182,7 @@ message Diagnostic {
   optional uint32 port = 2;
   optional uint64 edge = 3;
   optional string parameter = 4;
+  optional uint32 reason = 5;
 }
 message State {
   optional uint32 lifecycle = 1;

@@ -26,80 +26,106 @@ void SurfaceOverlayItem::setSourceModel(QObject* source){
     }else setCommands({});
     emit sourceModelChanged();
 }
+QBrush SurfaceOverlayItem::decodeBrush(const QVariantMap& brush){
+    if(brush.value("none").toBool())return QBrush(Qt::NoBrush);
+    if(!brush.contains("stops"))return QBrush(QColor(brush.value("color").toString()));
+    QLinearGradient gradient(brush.value("start").toPointF(),brush.value("end").toPointF());
+    const auto stops=brush.value("stops").toList();
+    for(const auto& stop:stops){
+        const auto value=stop.toMap();gradient.setColorAt(value.value("position").toDouble(),QColor(value.value("color").toString()));
+    }
+    return QBrush(gradient);
+}
+QFont SurfaceOverlayItem::decodeFont(const QVariantMap& value){
+    QFont font(value.value("font").toString());
+    font.setPixelSize(std::max(1,value.value("fontPixels").toInt()));font.setBold(value.value("fontBold").toBool());
+    return font;
+}
+QPainterPath SurfaceOverlayItem::decodePath(const QString& kind,const QVariantMap& value,const QRectF& rect){
+    QPainterPath path;
+    if(kind=="rect")path.addRect(rect);
+    else if(kind=="roundedRect")path.addRoundedRect(rect,value.value("radiusX").toDouble(),value.value("radiusY").toDouble());
+    else if(kind=="ellipse")path.addEllipse(rect);
+    else if(kind=="line" || kind=="polygon")appendPointPath(path,kind,value);
+    return path;
+}
+void SurfaceOverlayItem::appendPointPath(QPainterPath& path,const QString& kind,const QVariantMap& value){
+    const auto points=value.value("points").toList();
+    if(points.size()<2)return;
+    path.moveTo(points[0].toDouble(),points[1].toDouble());
+    for(qsizetype index=2;index+1<points.size();index+=2)
+        path.lineTo(points[index].toDouble(),points[index+1].toDouble());
+    if(kind=="polygon")path.closeSubpath();
+}
+void SurfaceOverlayItem::decodeGeometry(Command& command,const QVariantMap& value){
+    const auto kind=value.value("kind").toString();command.isText=kind=="text";
+    if(!command.isText){command.path=decodePath(kind,value,command.rect);command.bounds=command.path.boundingRect();return;}
+    command.text=value.value("text").toString();command.flags=value.value("flags").toInt();command.baseline=value.value("baseline").toBool();
+    const QFontMetricsF metrics(command.font);
+    command.bounds=command.baseline?metrics.boundingRect(command.text).translated(command.rect.topLeft()):metrics.boundingRect(command.rect,command.flags,command.text);
+}
+QRectF SurfaceOverlayItem::strokeBounds(const Command& command){
+    QPainterPathStroker stroker;stroker.setWidth(std::max(1.,command.pen.widthF()));
+    stroker.setCapStyle(command.pen.capStyle());stroker.setJoinStyle(command.pen.joinStyle());stroker.setMiterLimit(command.pen.miterLimit());
+    return command.transform.map(stroker.createStroke(command.path)).boundingRect();
+}
+
 SurfaceOverlayItem::Command SurfaceOverlayItem::decode(const QVariantMap& value){
-    Command c;
-    c.pen=QPen(QColor(value.value("pen").toString()),value.value("penWidth").toDouble());
-    if(value.value("noPen").toBool())c.pen=Qt::NoPen;
-    const auto brush=value.value("brush").toMap();
-    if(!brush.value("none").toBool()){
-        if(brush.contains("stops")){
-            QLinearGradient gradient(brush.value("start").toPointF(),brush.value("end").toPointF());
-            for(const auto& stop:brush.value("stops").toList()){
-                const auto s=stop.toMap();gradient.setColorAt(s.value("position").toDouble(),QColor(s.value("color").toString()));
-            }
-            c.brush=gradient;
-        }else c.brush=QColor(brush.value("color").toString());
-    }else c.brush=Qt::NoBrush;
-    c.font=QFont(value.value("font").toString());
-    c.font.setPixelSize(std::max(1,value.value("fontPixels").toInt()));c.font.setBold(value.value("fontBold").toBool());
-    const auto t=value.value("transform").toList();
-    if(t.size()==6)c.transform=QTransform(t[0].toDouble(),t[1].toDouble(),t[2].toDouble(),t[3].toDouble(),t[4].toDouble(),t[5].toDouble());
-    c.clip=value.value("clip").toRectF();
-    c.rect={value.value("x").toDouble(),value.value("y").toDouble(),value.value("width").toDouble(),value.value("height").toDouble()};
-    const auto kind=value.value("kind").toString();
-    c.isText=kind=="text";
-    if(c.isText){
-        c.text=value.value("text").toString();c.flags=value.value("flags").toInt();c.baseline=value.value("baseline").toBool();
-        const QFontMetricsF metrics(c.font);
-        c.bounds=c.baseline?metrics.boundingRect(c.text).translated(c.rect.topLeft()):metrics.boundingRect(c.rect,c.flags,c.text);
-    }else{
-        if(kind=="rect")c.path.addRect(c.rect);
-        else if(kind=="roundedRect")c.path.addRoundedRect(c.rect,value.value("radiusX").toDouble(),value.value("radiusY").toDouble());
-        else if(kind=="ellipse")c.path.addEllipse(c.rect);
-        else if(kind=="line" || kind=="polygon"){
-            const auto points=value.value("points").toList();
-            if(points.size()>=2){c.path.moveTo(points[0].toDouble(),points[1].toDouble());
-                for(qsizetype i=2;i+1<points.size();i+=2)c.path.lineTo(points[i].toDouble(),points[i+1].toDouble());
-                if(kind=="polygon")c.path.closeSubpath();}
-        }
-        c.bounds=c.path.boundingRect();
-    }
-    c.bounds=c.transform.mapRect(c.bounds);
-    if(!c.isText && c.pen.style()!=Qt::NoPen){
-        QPainterPathStroker stroker;stroker.setWidth(std::max(1.,c.pen.widthF()));
-        stroker.setCapStyle(c.pen.capStyle());stroker.setJoinStyle(c.pen.joinStyle());stroker.setMiterLimit(c.pen.miterLimit());
-        c.bounds=c.bounds.united(c.transform.map(stroker.createStroke(c.path)).boundingRect());
-    }
-    c.bounds=c.bounds.adjusted(-4,-4,4,4);
-    if(!c.clip.isEmpty())c.bounds=c.bounds.intersected(c.clip.adjusted(-1,-1,1,1));
-    return c;
+    Command command;
+    command.pen=QPen(QColor(value.value("pen").toString()),value.value("penWidth").toDouble());
+    if(value.value("noPen").toBool())command.pen=Qt::NoPen;
+    command.brush=decodeBrush(value.value("brush").toMap());command.font=decodeFont(value);
+    command.transform=decodeTransform(value);
+    command.clip=value.value("clip").toRectF();
+    command.rect={value.value("x").toDouble(),value.value("y").toDouble(),value.value("width").toDouble(),value.value("height").toDouble()};
+    decodeGeometry(command,value);completeBounds(command);
+    return command;
+}
+QTransform SurfaceOverlayItem::decodeTransform(const QVariantMap& value){
+    const auto transform=value.value("transform").toList();
+    if(transform.size()!=6)return {};
+    return QTransform(transform[0].toDouble(),transform[1].toDouble(),transform[2].toDouble(),
+                      transform[3].toDouble(),transform[4].toDouble(),transform[5].toDouble());
+}
+void SurfaceOverlayItem::completeBounds(Command& command){
+    command.bounds=command.transform.mapRect(command.bounds);
+    if(!command.isText && command.pen.style()!=Qt::NoPen)
+        command.bounds=command.bounds.united(strokeBounds(command));
+    command.bounds=command.bounds.adjusted(-4,-4,4,4);
+    if(!command.clip.isEmpty())command.bounds=command.bounds.intersected(command.clip.adjusted(-1,-1,1,1));
+}
+void SurfaceOverlayItem::appendCommand(std::vector<Command>& next,QRectF& damage,
+                                       const QVariantList& commands,qsizetype index){
+    const bool changed=index>=commands_.size() || commands[index]!=commands_[index];
+    next.push_back(changed?decode(commands[index].toMap()):decoded_[size_t(index)]);
+    if(!changed)return;
+    damage=damage.united(next.back().bounds);
+    if(size_t(index)<decoded_.size())damage=damage.united(decoded_[size_t(index)].bounds);
 }
 void SurfaceOverlayItem::setCommands(const QVariantList& commands){
     if(commands_==commands)return;
     std::vector<Command> next;next.reserve(size_t(commands.size()));
     QRectF damage;
-    for(qsizetype i=0;i<commands.size();++i){
-        const bool changed=i>=commands_.size() || commands[i]!=commands_[i];
-        next.push_back(changed?decode(commands[i].toMap()):decoded_[size_t(i)]);
-        if(changed){damage=damage.united(next.back().bounds);if(size_t(i)<decoded_.size())damage=damage.united(decoded_[size_t(i)].bounds);}
-    }
+    for(qsizetype i=0;i<commands.size();++i)appendCommand(next,damage,commands,i);
     for(size_t i=size_t(commands.size());i<decoded_.size();++i)damage=damage.united(decoded_[i].bounds);
     commands_=commands;decoded_=std::move(next);
     if(!damage.isEmpty())update(damage.toAlignedRect());
     emit commandsChanged();
 }
+void SurfaceOverlayItem::paintCommand(QPainter* painter,const Command& command){
+    painter->save();
+    // Preserve QQuickPaintedItem's damage clip when applying the display list.
+    if(!command.clip.isEmpty())painter->setClipRect(command.clip,Qt::IntersectClip);
+    painter->setWorldTransform(command.transform,true);painter->setPen(command.pen);painter->setBrush(command.brush);
+    if(command.isText){painter->setFont(command.font);if(command.baseline)painter->drawText(command.rect.topLeft(),command.text);else painter->drawText(command.rect,command.flags,command.text);}
+    else painter->drawPath(command.path);
+    painter->restore();
+}
+
 void SurfaceOverlayItem::paint(QPainter* painter){
     core::perf::Scope trace(core::perf::Stage::QuickSurfaceOverlayPaint);
     paint_engine_type_.store(painter->paintEngine()?int(painter->paintEngine()->type()):-1,std::memory_order_relaxed);
+    QMetaObject::invokeMethod(this,[this]{emit paintTelemetryChanged();},Qt::QueuedConnection);
     const auto damage=painter->hasClipping()?painter->clipBoundingRect():boundingRect();
-    for(const auto& c:decoded_){
-        if(!c.bounds.intersects(damage))continue;
-        painter->save();
-        // Keep QQuickPaintedItem's damage clip while applying display-list clips.
-        if(!c.clip.isEmpty())painter->setClipRect(c.clip,Qt::IntersectClip);
-        painter->setWorldTransform(c.transform,true);painter->setPen(c.pen);painter->setBrush(c.brush);
-        if(c.isText){painter->setFont(c.font);if(c.baseline)painter->drawText(c.rect.topLeft(),c.text);else painter->drawText(c.rect,c.flags,c.text);}
-        else painter->drawPath(c.path);
-        painter->restore();
-    }
+    for(const auto& command:decoded_)if(command.bounds.intersects(damage))paintCommand(painter,command);
 }

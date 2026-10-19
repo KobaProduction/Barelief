@@ -38,9 +38,8 @@ WledPacket make_bins(std::span<const float> bins, float peak_hz, float magnitude
 // Size bound ensures float coordinates are exactly representable enough to
 // clamp/cast to size_t safely, including on 32-bit embedded targets.
 constexpr std::size_t max_indexable_mel_values = (std::size_t{1} << 24) - 1;
-Status map_mel(std::span<const float> mel, float gain, std::array<float, bin_count>& bins, bool strict) noexcept {
-    std::array<float, formatted_mel_count> formatted{};
-    if (mel.size() > max_indexable_mel_values) return Status::LimitExceeded;
+Status interpolate_mel(std::span<const float> mel, float gain,
+    std::array<float, formatted_mel_count>& formatted, bool strict) noexcept {
     for (std::size_t i = 0; i < formatted.size() && !mel.empty(); ++i) {
         const float centre = std::clamp(float(i+1) * float(mel.size()+1) / 51 - 1, 0.f, float(mel.size()-1));
         const auto lo = std::size_t(centre), hi = std::min(lo+1, mel.size()-1);
@@ -50,6 +49,10 @@ Status map_mel(std::span<const float> mel, float gain, std::array<float, bin_cou
         if ((strict || finite_operands) && (!std::isfinite(interpolated) || !std::isfinite(formatted[i])))
             return Status::NonFiniteResult;
     }
+    return Status::Ok;
+}
+Status aggregate_mel(std::span<const float> formatted,
+    std::array<float, bin_count>& bins, bool strict) noexcept {
     for (std::size_t i = 0; i < bins.size(); ++i) {
         const int begin = int(float(i)*42.f/16), end = int(float(i+1)*42.f/16);
         for (int j = begin; j < end; ++j) {
@@ -62,6 +65,31 @@ Status map_mel(std::span<const float> mel, float gain, std::array<float, bin_cou
         bins[i] /= float(end-begin);
     }
     return Status::Ok;
+}
+Status map_mel(std::span<const float> mel, float gain, std::array<float, bin_count>& bins, bool strict) noexcept {
+    if (mel.size() > max_indexable_mel_values) return Status::LimitExceeded;
+    std::array<float, formatted_mel_count> formatted{};
+    const auto status = interpolate_mel(mel, gain, formatted, strict);
+    return status == Status::Ok ? aggregate_mel(formatted, bins, strict) : status;
+}
+Status validate_mel_input(std::span<const float> mel, float peak_hz, float magnitude,
+    float gain, Limits limits) noexcept {
+    if (mel.empty()) return Status::InvalidArgument;
+    if (mel.size() > limits.max_mel_values || mel.size() > max_indexable_mel_values) return Status::LimitExceeded;
+    if (!std::isfinite(peak_hz) || !std::isfinite(magnitude) || !std::isfinite(gain)) return Status::NonFiniteInput;
+    if (peak_hz < 0 || magnitude < 0 || gain < 0 || gain > 100) return Status::InvalidArgument;
+    for (float value : mel) if (!std::isfinite(value)) return Status::NonFiniteInput;
+    return Status::Ok;
+}
+bool finite_packet_scalars(const DecodedPacket& packet) noexcept {
+    return std::isfinite(packet.sample_raw) && std::isfinite(packet.sample_smoothed) &&
+        std::isfinite(packet.magnitude) && std::isfinite(packet.peak_hz);
+}
+void decode_packet_fields(std::span<const std::uint8_t> source, DecodedPacket& packet) noexcept {
+    std::copy_n(source.begin()+6, 2, packet.pressure.begin());
+    packet.sample_peak = source[16]; packet.counter = source[counter_offset];
+    std::copy_n(source.begin()+18, bin_count, packet.bins.begin());
+    packet.zero_crossing_count = std::uint16_t(std::uint16_t(source[34]) | (std::uint16_t(source[35]) << 8));
 }
 }
 Result encode_bins(std::span<const float> bins, float peak_hz, float magnitude,
@@ -77,11 +105,8 @@ Result encode_mel(std::span<const float> mel, float peak_hz, float magnitude,
     float gain, std::uint8_t counter, std::span<std::uint8_t> destination, Limits limits) noexcept {
     const auto boundary = encode_boundary(destination, limits);
     if (boundary != Status::Ok) return result(boundary);
-    if (mel.empty()) return result(Status::InvalidArgument);
-    if (mel.size() > limits.max_mel_values || mel.size() > max_indexable_mel_values) return result(Status::LimitExceeded);
-    if (!std::isfinite(peak_hz) || !std::isfinite(magnitude) || !std::isfinite(gain)) return result(Status::NonFiniteInput);
-    if (peak_hz < 0 || magnitude < 0 || gain < 0 || gain > 100) return result(Status::InvalidArgument);
-    for (float value : mel) if (!std::isfinite(value)) return result(Status::NonFiniteInput);
+    const auto input_status = validate_mel_input(mel, peak_hz, magnitude, gain, limits);
+    if (input_status != Status::Ok) return result(input_status);
     std::array<float, bin_count> bins{};
     const auto mapped = map_mel(mel, gain, bins, true);
     if (mapped != Status::Ok) return result(mapped);
@@ -90,21 +115,23 @@ Result encode_mel(std::span<const float> mel, float peak_hz, float magnitude,
 Result silence(std::uint8_t counter, std::span<std::uint8_t> destination, Limits limits) noexcept {
     return encode_bins({}, 0, 0, counter, destination, limits);
 }
+static Status decode_header_status(std::span<const std::uint8_t> source, Limits limits) noexcept {
+    if(limits.max_packet_bytes<packet_size)return Status::LimitExceeded;
+    if(source.size()!=packet_size)return Status::InvalidSize;
+    constexpr std::array<std::uint8_t,6> header{'0','0','0','0','2',0};
+    if(!std::equal(header.begin(),header.end(),source.begin()))return Status::InvalidHeader;
+    return Status::Ok;
+}
+
 Result decode(std::span<const std::uint8_t> source, DecodedPacket& output, Limits limits) noexcept {
-    if (limits.max_packet_bytes < packet_size) return result(Status::LimitExceeded);
-    if (source.size() != packet_size) return result(Status::InvalidSize);
-    constexpr std::array<std::uint8_t, 6> header{'0','0','0','0','2',0};
-    if (!std::equal(header.begin(), header.end(), source.begin())) return result(Status::InvalidHeader);
+    const auto header_status=decode_header_status(source,limits);
+    if(header_status!=Status::Ok)return result(header_status);
     DecodedPacket decoded{};
-    decoded.sample_raw = get_float(source, 8); decoded.sample_smoothed = get_float(source, 12);
-    decoded.magnitude = get_float(source, 36); decoded.peak_hz = get_float(source, 40);
-    if (!std::isfinite(decoded.sample_raw) || !std::isfinite(decoded.sample_smoothed) ||
-        !std::isfinite(decoded.magnitude) || !std::isfinite(decoded.peak_hz)) return result(Status::NonFiniteInput);
-    std::copy_n(source.begin()+6, 2, decoded.pressure.begin());
-    decoded.sample_peak = source[16]; decoded.counter = source[counter_offset];
-    std::copy_n(source.begin()+18, bin_count, decoded.bins.begin());
-    decoded.zero_crossing_count = std::uint16_t(std::uint16_t(source[34]) | (std::uint16_t(source[35]) << 8));
-    output = decoded;
+    decoded.sample_raw=get_float(source,8);decoded.sample_smoothed=get_float(source,12);
+    decoded.magnitude=get_float(source,36);decoded.peak_hz=get_float(source,40);
+    if(!finite_packet_scalars(decoded))return result(Status::NonFiniteInput);
+    decode_packet_fields(source,decoded);
+    output=decoded;
     return result(Status::Ok);
 }
 Status validate_packet(std::span<const std::uint8_t> source, Limits limits) noexcept {

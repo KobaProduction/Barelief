@@ -86,10 +86,10 @@ inline void physical_output(void* user,const NumericPortFrameView& frame){auto& 
  }
 }
 inline void physical_grid_matrix(){for(std::size_t fs:{44100u,48000u,96000u})for(std::size_t n:{512u,4096u}){
- auto g=oracle_graph();geometry(g,fs,n,317);std::erase_if(g.nodes,[](const auto& node){return node.id!=1&&node.id!=2&&node.id!=3&&node.id!=4&&node.id!=6&&node.id!=10&&node.id!=11;});
- node(g,1).kind="NetworkInput";node(g,1).parameters=EndpointProcessingParameters{};node(g,3).parameters=TransformProcessingParameters{{{"function",std::string("rectangular")}}};
+ auto g=oracle_graph();geometry(g,fs,n,317);std::erase_if(g.nodes,[](const auto& node){return node.id!=1&&node.id!=2&&node.id!=4&&node.id!=6&&node.id!=10&&node.id!=11;});
+ node(g,1).kind="NetworkInput";node(g,1).parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{fs}}}}};
  node(g,6).inputs[0].contract=node(g,4).outputs[0].contract;
- g.edges={{1,2,0,0},{2,3,0,0},{3,4,0,0},{4,6,0,0},{4,10,0,0},{6,11,0,0}};
+ g.edges={{1,2,0,0},{2,4,0,0},{4,6,0,0},{4,10,0,0},{6,11,0,0}};
  g.configuration_bindings={{4,10,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid},{6,11,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};
  check(has_configuration_binding(g,10,ConfigurationRole::FrequencyGrid)&&has_configuration_binding(g,11,ConfigurationRole::FrequencyGrid),"matrix views explicit frequency association");
  GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"physical matrix Apply");Feed feed(g);PhysicalObservation out{fs,n};
@@ -108,9 +108,8 @@ inline void stereo_output(void* user,const NumericPortFrameView& frame){auto& ou
 }
 inline void stereo_windows_and_mix(){auto g=aligned_fixture(2);
  auto add_branch=[&](std::size_t aperture,NodeId offset,NodeId from,PortId port){auto branch=oracle_graph();geometry(branch,48000,aperture,317);
-  node(branch,3).parameters=TransformProcessingParameters{{{"function",std::string("rectangular")}}};
-  for(NodeId id:{2,3,4}){auto copy=node(branch,id);copy.id+=offset;g.nodes.push_back(std::move(copy));}
-  g.edges.push_back({from,2+offset,port,0});g.edges.push_back({2+offset,3+offset,0,0});g.edges.push_back({3+offset,4+offset,0,0});};
+  for(NodeId id:{2,4}){auto copy=node(branch,id);copy.id+=offset;g.nodes.push_back(std::move(copy));}
+  g.edges.push_back({from,2+offset,port,0});g.edges.push_back({2+offset,4+offset,0,0});};
  add_branch(4096,0,20,0);add_branch(512,100,1,0);add_branch(512,400,1,1);
  GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"paired512 mixed4096 Apply");Feed feed(g);StereoObservation out;
  std::int64_t begin=0;unsigned packet=0;

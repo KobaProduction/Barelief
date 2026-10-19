@@ -1,6 +1,8 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
 namespace signal_contracts {
+inline constexpr std::size_t max_oscillators=128;
 struct OscillatorParameters {
     std::uint64_t id=1;
     bool enabled=true;

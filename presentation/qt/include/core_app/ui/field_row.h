@@ -15,6 +15,8 @@ class FieldRow final : public QWidget {
     [[nodiscard]] QLabel *label() const { return _label; }
     [[nodiscard]] QWidget *editor() const { return _editor; }
   private:
+    QWidget *setupLabel(const QString &key, QWidget *editor);
+    void setupAccessibility(QWidget *focus_target);
     QLabel *_label;
     QWidget *_editor;
     QLabel *_help;

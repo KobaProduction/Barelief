@@ -1,3 +1,4 @@
+#include <bdsp_protocol/numeric_data_message.h>
 #include <QQuickWidget>
 #include <QQuickItem>
 #include "numeric_gui_fixture.h"
@@ -148,17 +149,53 @@ int main() {
         auto* guiMode=settings->findChild<QComboBox*>("guiFpsMode");auto* guiRate=settings->findChild<QSpinBox*>("guiTargetFps");
         check(renderTimer && renderTimer->isActive() && renderTimer->timerType()==Qt::PreciseTimer && guiMode && guiRate,"Numeric rendering must use the global cadence and a precise timer");
         const auto rateGraph=fixture.editor->document();const auto rateRevision=app.presenter().client().snapshot().graph_revision;
-        const auto rateUndo=fixture.editor->history().index();const int previousMode=guiMode->currentIndex(),previousRate=guiRate->value();
-        for(const int hz:{30,100,120}){
+        const auto rateUndo=fixture.editor->history().index();const auto previousCadence=app._ctx.file_configs.ui.graph_rendering;
+        SettingsWidget::DisplayRates simulatedDisplay{{60,120,165,165},165};std::vector<double> modeRequests;bool rejectMode=false;
+        const auto simulatedProvider=[&](QScreen*){return simulatedDisplay;};
+        settings->set_display_current_rate_provider([&](QScreen*){return simulatedDisplay.current;});
+        settings->set_display_rate_provider(simulatedProvider);
+        window->set_display_refresh_rate_provider([&](QScreen*){return simulatedDisplay.current;});
+        settings->set_display_mode_requester([&](QScreen*,double rate){modeRequests.push_back(rate);if(rejectMode)return false;simulatedDisplay.current=rate>0?rate:*std::max_element(simulatedDisplay.supported.begin(),simulatedDisplay.supported.end());return true;});
+        check(guiMode->count()==6 && guiMode->findData(-2)>=0 && guiMode->findData(0)>=0 &&
+              guiMode->findData(-1)>=0 && guiMode->findData(30)<0 && guiMode->findData(100)<0 &&
+              guiMode->findData(170)<0 && guiMode->findData(165)>0,
+              "Cadence choices must contain System, Maximum, Custom and only distinct supported screen modes");
+        check(guiMode->currentData().toInt()==0 && guiMode->currentText()==ui::text("Maximum") && guiMode->findText(ui::text("Screen refresh rate"))<0 && guiRate->value()==165 && renderTimer->interval()==qMax(1,1000/165),"Default cadence must select Maximum and use the actual OS screen rate");
+        check(guiRate->suffix().isEmpty() && guiRate->prefix().isEmpty() && guiRate->text()=="165","Editable cadence must contain only a number");
+        int removedCadenceRows=0;
+        const auto cadenceRowsConnection=QObject::connect(guiMode->model(),&QAbstractItemModel::rowsRemoved,settings,[&removedCadenceRows]{++removedCadenceRows;});
+        for(const int hz:{60,120,165}){
             guiMode->setCurrentIndex(guiMode->findData(hz));
             check(renderTimer->interval()==qMax(1,1000/hz),"Fixed global cadence did not reach the numeric projection scheduler");
+            check(app._ctx.file_configs.ui.graph_rendering["gui_fps_mode"]=="display" && app._ctx.file_configs.ui.graph_rendering["gui_target_fps"].toInt()==hz && modeRequests.back()==hz && simulatedDisplay.current==hz,"Supported dropdown choice must request an OS mode and persist its selected rate");
         }
-        guiMode->setCurrentIndex(6);guiRate->setValue(137);
-        check(renderTimer->interval()==qMax(1,1000/137),"Custom global cadence did not reach the numeric projection scheduler");
-        guiMode->setCurrentIndex(0);
-        const int screenRate=SurfaceSettings::renderFps(app.presenter().state().file_configs.ui.graph_rendering,window->screen()?window->screen()->refreshRate():60.);
-        check(renderTimer->interval()==qMax(1,1000/screenRate),"Screen cadence did not reach numeric rendering");
-        guiRate->setValue(previousRate);guiMode->setCurrentIndex(previousMode);
+        const auto beforeFailedMode=app._ctx.file_configs.ui.graph_rendering;rejectMode=true;guiMode->setCurrentIndex(guiMode->findData(120));rejectMode=false;
+        check(app._ctx.file_configs.ui.graph_rendering==beforeFailedMode && guiMode->currentData().toInt()==165 && renderTimer->interval()==qMax(1,1000/165),"Rejected display switch must preserve the previous preference, selection and actual cadence");
+        const auto requestsBeforeCustom=modeRequests.size();
+        guiMode->setCurrentIndex(guiMode->findData(-1));guiRate->setValue(120);
+        check(renderTimer->interval()==qMax(1,1000/120) && guiMode->currentData().toInt()==-1,"Manual and dropdown cadence must share the same application path");
+        guiRate->setValue(170);
+        check(renderTimer->interval()==qMax(1,1000/170),"Custom global cadence did not reach the numeric projection scheduler");
+        check(modeRequests.size()==requestsBeforeCustom,"Manual GUI cadence must not request an unsupported OS display mode");
+        check(removedCadenceRows==0,"Selecting a cadence must not rebuild the active popup model synchronously");
+        QObject::disconnect(cadenceRowsConnection);
+        simulatedDisplay={{60,144},144};settings->set_display_rate_provider(simulatedProvider);
+        check(guiMode->findData(165)<0 && guiMode->findData(144)>0 && guiMode->findData(170)<0 && guiMode->currentData().toInt()==-1 && guiRate->value()==170 && renderTimer->interval()==qMax(1,1000/170),"Screen changes must rebuild choices and preserve an explicit custom override");
+        guiMode->setCurrentIndex(guiMode->findData(0));
+        const int screenRate=SurfaceSettings::renderFps(app.presenter().state().file_configs.ui.graph_rendering,settings->display_refresh_rate());
+        check(modeRequests.back()==0 && app._ctx.file_configs.ui.graph_rendering["gui_fps_mode"]=="maximum" && guiRate->value()==screenRate && renderTimer->interval()==qMax(1,1000/screenRate),"Maximum must request the current monitor's fastest mode and use its actual cadence");
+        simulatedDisplay={{60,165,360},360};settings->set_display_rate_provider(simulatedProvider);
+        check(guiMode->currentData().toInt()==0 && guiRate->value()==360 && renderTimer->interval()==qMax(1,1000/360) && guiMode->findData(360)>0,"Screen cadence above 240 Hz must preserve the current physical refresh rate");
+        guiMode->setCurrentIndex(guiMode->findData(360));
+        check(guiRate->maximum()==1000 && guiRate->minimum()==1 && guiRate->value()==360 && renderTimer->interval()==qMax(1,1000/360),"Supported 360 Hz dropdown selection was silently capped");
+        for(auto* panel:window->findChildren<GraphPanel*>())check(panel->render_fps()==360,"Renderer cadence above 240 Hz was silently capped");
+        auto restoredCadence=app._ctx.file_configs.ui.graph_rendering;restoredCadence["gui_fps_mode"]="fixed";restoredCadence["gui_target_fps"]=170;app._ctx.file_configs.ui.graph_rendering=restoredCadence;
+        settings->refresh_graph_preferences();settings->surface_settings_changed();
+        check(guiMode->currentData().toInt()==-1 && guiRate->value()==170 && renderTimer->interval()==qMax(1,1000/170),"Reloaded explicit fixed override must synchronize the existing cadence controls");
+        auto unavailableDisplayRate=app._ctx.file_configs.ui.graph_rendering;unavailableDisplayRate["gui_fps_mode"]="display";unavailableDisplayRate["gui_target_fps"]=240;app._ctx.file_configs.ui.graph_rendering=unavailableDisplayRate;
+        settings->refresh_graph_preferences();settings->surface_settings_changed();
+        check(guiMode->currentData().toInt()==0 && guiRate->value()==360 && renderTimer->interval()==qMax(1,1000/360),"A physical rate unavailable on the current monitor must display its Maximum fallback, not a manual cadence");
+        app._ctx.file_configs.ui.graph_rendering=previousCadence;settings->set_display_mode_requester({});settings->set_display_current_rate_provider({});settings->set_display_rate_provider({});window->set_display_refresh_rate_provider({});settings->refresh_graph_preferences();settings->surface_settings_changed();
         check(fixture.editor->document()==rateGraph && app.presenter().client().snapshot().graph_revision==rateRevision && fixture.editor->history().index()==rateUndo,"GUI render cadence changed analysis graph/revision/Undo");
         settings->select_section(SettingsWidget::Graphs);
         auto *tabs = settings->findChild<QTabWidget *>("settingsSections");
@@ -183,50 +220,16 @@ int main() {
                   !settings->findChild<QComboBox *>("surface_gradient") &&
                   !settings->findChild<QComboBox *>("surface_y_range_mode"),
               "Per-graph settings remain in global form");
-        auto *graphViews = settings->findChild<QGroupBox *>("graphViewsSettings");
-        check(graphViews, "Graph views settings section missing");
-        QList<QAction *> restoredGraphActions;
-        for (auto *box : graphViews->findChildren<QCheckBox *>())
-            for (auto *dock : window->workspaceDocks())
-                if (dock->toggleViewAction()->text() == box->text()) {
-                    restoredGraphActions.append(dock->toggleViewAction());
-                    break;
-                }
-        {
-            QAction first("First graph");
-            first.setCheckable(true);
-            first.setChecked(true);
-            auto *second = new QAction("Second graph");
-            second->setCheckable(true);
-            int triggers = 0;
-            QObject::connect(&first, &QAction::triggered, settings, [&] { ++triggers; });
-            settings->set_graph_actions({&first, second, &first, nullptr});
-            auto boxes = graphViews->findChildren<QCheckBox *>();
-            check(boxes.size() == 2, "Graph actions are not deduplicated");
-            auto *firstBox = graphViews->findChild<QCheckBox *>("graphViewToggle0");
-            check(firstBox && firstBox->isChecked(), "Dock action checked state not synchronized");
-            firstBox->setChecked(false);
-            check(!first.isChecked() && triggers == 1, "Graph checkbox did not activate canonical action exactly once");
-            first.setText("Renamed graph");
-            first.setChecked(true);
-            first.setEnabled(false);
-            check(firstBox->text() == "Renamed graph" && firstBox->isChecked() && !firstBox->isEnabled(),
-                  "Graph captions/checks/enabled state stale");
-            delete second;
-            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-            check(graphViews->findChildren<QCheckBox *>().size() == 1, "Destroyed action left an orphan graph toggle");
-            settings->set_graph_actions({&first});
-            settings->set_graph_actions({&first});
-            firstBox = graphViews->findChild<QCheckBox *>("graphViewToggle0");
-            first.setEnabled(true);
-            firstBox->setChecked(false);
-            check(triggers == 2, "Refreshing graph actions duplicated activation connections");
-            settings->set_graph_actions({});
-            check(graphViews->findChildren<QCheckBox *>().isEmpty() &&
-                      !graphViews->findChild<QLabel *>("emptyGraphViews")->isHidden(),
-                  "Clearing graph list left stale widgets");
-        }
-        settings->set_graph_actions(restoredGraphActions);
+        check(!settings->findChild<QGroupBox *>("graphViewsSettings") &&
+                  !settings->findChild<QCheckBox *>("graphViewToggle0"),
+              "Project graph visibility controls remain in global Graphs settings");
+        for (const auto* name : {"showRawSamples", "showWindowSignal", "showWindowedSignal",
+                                 "showWindowFunction", "showFFT", "showMel", "showSpectrogram"})
+            check(!settings->findChild<QCheckBox *>(name),
+                  "Project graph visibility control remains in global General settings");
+        auto* spectrogramDock=window->workspaceDock("spectrogramDock");
+        check(spectrogramDock && spectrogramDock->toggleViewAction()->isCheckable(),
+              "Workspace graph visibility action disappeared with Settings controls");
         auto *precision = settings->findChild<QSlider *>("surface_axis_precision");
         check(precision && precision->minimum() == 0 && precision->maximum() == 8,
               "Global axis precision slider missing");
@@ -746,7 +749,7 @@ int main() {
             check(endpoint.listen(QHostAddress::LocalHost, 0), "External processor fixture listen");
             const auto uuid = QUuid::createUuid();
             AggregatorClient processor({uuid, ComponentType::core, endpoint.port()});
-            processor.set_capabilities({{"control_version",4},{"data_version",5},{"stream_port",endpoint.port()},
+            processor.set_capabilities({{"control_version",4},{"data_version",int(bdsp_protocol::numeric_data::PayloadVersion)},{"stream_port",endpoint.port()},
                 {"publisher_incarnation",QString::number(external.snapshot().epoch)},
                 {"graph_revision",QString::number(external.snapshot().graph_revision)},{"streams",QJsonArray{}}});
             processor.connect_to_aggregator_server(QHostAddress::LocalHost, directory.serverPort(), 1000);

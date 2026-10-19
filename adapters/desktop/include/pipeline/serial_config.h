@@ -13,21 +13,21 @@ struct SerialBinding {
     QString error;
     explicit operator bool() const {return error.isEmpty();}
 };
-inline SerialBinding read_serial_binding(const QJsonObject &config) {
-    SerialBinding result;
-    const auto network=config.value("network").toObject();
-    if(!network.contains("serial")) return result;
-    result.configured=true;
-    if(!network.value("serial").isObject()) {result.error="network.serial must be an object";return result;}
-    const auto serial=network.value("serial").toObject();
+inline bool valid_serial_fields(const QJsonObject& serial,const QJsonValue& port,double baud,const QJsonValue& node) {
+    return port.isString() && !port.toString().trimmed().isEmpty()
+        && (!serial.contains("baud_rate") || serial.value("baud_rate").isDouble())
+        && std::isfinite(baud) && baud>0 && baud<=std::numeric_limits<qint32>::max()
+        && std::floor(baud)==baud
+        && (node.isUndefined() || (node.isDouble() && std::isfinite(node.toDouble())
+            && node.toDouble()>=0 && node.toDouble()<std::numeric_limits<int>::max()
+            && std::floor(node.toDouble())==node.toDouble()));
+}
+inline SerialBinding parse_serial_binding(const QJsonObject& serial) {
+    SerialBinding result;result.configured=true;
     const auto port=serial.value("port_name");
     const auto baud=serial.value("baud_rate").toDouble(115200);
     const auto node=serial.value("input_node");
-    if(!port.isString() || port.toString().trimmed().isEmpty() ||
-       (serial.contains("baud_rate") && !serial.value("baud_rate").isDouble()) ||
-       !std::isfinite(baud) || baud<=0 || baud>std::numeric_limits<qint32>::max() || std::floor(baud)!=baud ||
-       (!node.isUndefined() && (!node.isDouble() || !std::isfinite(node.toDouble()) || node.toDouble()<0 ||
-       node.toDouble()>=std::numeric_limits<int>::max() || std::floor(node.toDouble())!=node.toDouble()))) {
+    if(!valid_serial_fields(serial,port,baud,node)) {
         result.error="network.serial requires explicit port_name and positive integer baud_rate";
         return result;
     }
@@ -35,21 +35,35 @@ inline SerialBinding read_serial_binding(const QJsonObject &config) {
     result.input_node=node.toInt();
     return result;
 }
+inline SerialBinding read_serial_binding(const QJsonObject &config) {
+    const auto network=config.value("network").toObject();
+    if(!network.contains("serial"))return {};
+    if(!network.value("serial").isObject()){
+        SerialBinding result;result.configured=true;result.error="network.serial must be an object";return result;
+    }
+    return parse_serial_binding(network.value("serial").toObject());
+}
 inline void add_serial_options(QCommandLineParser &parser) {
     parser.addOption({"serial-port","Explicit canonical numeric UART processing endpoint","name"});
     parser.addOption({"serial-baud","UART baud rate (default 115200)","baud"});
     parser.addOption({"serial-input-node","Existing NetworkInput node ID for UART stream","id"});
 }
+inline bool apply_serial_integer_option(const QCommandLineParser& parser,const char* option,const char* key,
+                                        QJsonObject& serial,QString& error,bool& changed) {
+    if(!parser.isSet(option))return true;
+    bool valid=false;
+    const auto value=parser.value(option).toInt(&valid);
+    if(!valid){error=QStringLiteral("Invalid --%1: expected an integer").arg(option);return false;}
+    serial[key]=value;
+    changed=true;
+    return true;
+}
 // Apply CLI overrides only to the runtime config copy. Never rewrite user JSON.
 inline bool apply_serial_options(const QCommandLineParser &parser,QJsonObject &config,QString &error) {
     auto network=config.value("network").toObject();auto serial=network.value("serial").toObject();
     bool changed=false;
-    for(const auto &[option,key]:{std::pair{"serial-baud","baud_rate"},std::pair{"serial-input-node","input_node"}}) {
-        if(!parser.isSet(option)) continue;
-        bool valid=false;const auto value=parser.value(option).toInt(&valid);
-        if(!valid) {error=QStringLiteral("Invalid --%1: expected an integer").arg(option);return false;}
-        serial[key]=value;changed=true;
-    }
+    if(!apply_serial_integer_option(parser,"serial-baud","baud_rate",serial,error,changed))return false;
+    if(!apply_serial_integer_option(parser,"serial-input-node","input_node",serial,error,changed))return false;
     if(parser.isSet("serial-port")) {serial["port_name"]=parser.value("serial-port");changed=true;}
     if(changed) {network["serial"]=serial;config["network"]=network;}
     const auto binding=read_serial_binding(config);error=binding.error;return bool(binding);

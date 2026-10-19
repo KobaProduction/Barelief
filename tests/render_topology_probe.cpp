@@ -140,7 +140,7 @@ QJsonObject run(ProbeApplication& app,const QString& topology,int fps,int durati
     }
     QList<QMetaObject::Connection> connections;
     std::array<double,Samples> samples{};
-    dsp_core::FFT fft;
+    dsp_core::MagnitudeSpectrum fft;
     std::vector<float> pcm, coefficients;
     if constexpr(plotCount==1){
         require(fft.prepare(Samples*2),"FFT preparation failed");
@@ -231,7 +231,7 @@ QJsonObject run(ProbeApplication& app,const QString& topology,int fps,int durati
         const auto now=clock.nsecsElapsed();const auto start=core::perf::now();
         if constexpr(plotCount==1){
             for(size_t i=0;i<pcm.size();++i){double value=0;for(int tone=1;tone<=8;++tone)value+=.08*std::sin(tone*i*.05+now/1e9*(.6+.1*tone));pcm[i]=float(value);}
-            require(fft.process(pcm,coefficients,false),"FFT processing failed");
+            require(fft.process(pcm,coefficients),"FFT processing failed");
             // Display a fixed amplitude range [0, .1] using the common normalized mapping.
             for(size_t i=0;i<samples.size();++i)samples[i]=20.*coefficients[i]-1.;
         }else{

@@ -11,6 +11,7 @@ namespace pipeline {
 // Cold platform adaptation before Apply. Changes a candidate atomically, using
 // actual native endpoint formats and the common downstream contract resolver.
 bool resolve_native_capture_graph(domain::NumericProcessingGraph&,
+    const domain::ProcessingAdmissionLimits& admission,
     const std::map<domain::NodeId,QString>& devices={},QString* error=nullptr);
 // Desktop resources surround the same portable executor and application service.
 // Capture callbacks process synchronously; GUI delivery contains bounded owners.

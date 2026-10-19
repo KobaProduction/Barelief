@@ -36,28 +36,39 @@ bool Theme::set(const QString &code) {
     if(code=="system") _system_scheme=hints->colorScheme();
     _applying=false;applyPalette();return true;
 }
-void Theme::applyPalette() {
-    const bool dark=_code=="dark" || (_code=="system" && (_system_scheme==Qt::ColorScheme::Dark ||
-        (_system_scheme==Qt::ColorScheme::Unknown && _system.color(QPalette::Window).lightness()<128)));
-    QPalette p=qApp->style()->standardPalette();
-    const QColor window=dark ? QColor("#25282d") : QColor("#f4f5f7"),base=dark ? QColor("#191c20") : QColor(Qt::white),
-        text=dark ? QColor("#e7eaf0") : QColor("#20242a"),mid=dark ? QColor("#646a74") : QColor("#a6adb8"),
-        secondary=dark ? QColor("#9da5b2") : QColor("#596372");
+namespace {
+void set_active_palette_roles(QPalette& p,bool dark,const QColor& window,const QColor& base,const QColor& text,
+                              const QColor& mid,const QColor& secondary) {
     p.setColor(QPalette::Window,window);p.setColor(QPalette::Base,base);p.setColor(QPalette::Button,window);
-    p.setColor(QPalette::AlternateBase,dark ? QColor("#30343b") : QColor("#e9ecf0"));
+    p.setColor(QPalette::AlternateBase,dark ? QColor(0x30,0x34,0x3b) : QColor(0xe9,0xec,0xf0));
     for(auto role:{QPalette::WindowText,QPalette::Text,QPalette::ButtonText,QPalette::ToolTipText}) p.setColor(role,text);
     p.setColor(QPalette::PlaceholderText,secondary);p.setColor(QPalette::ToolTipBase,base);
-    p.setColor(QPalette::Highlight,QColor("#397dcc"));p.setColor(QPalette::HighlightedText,Qt::white);
-    p.setColor(QPalette::Mid,mid);p.setColor(QPalette::Midlight,dark ? QColor("#484e58") : QColor("#ccd1d9"));
-    p.setColor(QPalette::Dark,dark ? QColor("#121519") : QColor("#727984"));
-    p.setColor(QPalette::Light,dark ? QColor("#555c68") : QColor(Qt::white));p.setColor(QPalette::Shadow,dark ? Qt::black : QColor("#424954"));
-    p.setColor(QPalette::BrightText,Qt::white);p.setColor(QPalette::Link,QColor("#6f42c1"));p.setColor(QPalette::LinkVisited,QColor("#59329f"));
+    p.setColor(QPalette::Highlight,QColor(0x39,0x7d,0xcc));p.setColor(QPalette::HighlightedText,Qt::white);
+    p.setColor(QPalette::Mid,mid);p.setColor(QPalette::Midlight,dark ? QColor(0x48,0x4e,0x58) : QColor(0xcc,0xd1,0xd9));
+    p.setColor(QPalette::Dark,dark ? QColor(0x12,0x15,0x19) : QColor(0x72,0x79,0x84));
+    p.setColor(QPalette::Light,dark ? QColor(0x55,0x5c,0x68) : QColor(Qt::white));p.setColor(QPalette::Shadow,dark ? Qt::black : QColor(0x42,0x49,0x54));
+    p.setColor(QPalette::BrightText,Qt::white);p.setColor(QPalette::Link,QColor(0x6f,0x42,0xc1));p.setColor(QPalette::LinkVisited,QColor(0x59,0x32,0x9f));
+}
+void set_disabled_palette_roles(QPalette& p,const QColor& secondary,const QColor& mid,const QColor& text) {
     for(auto role:{QPalette::WindowText,QPalette::Text,QPalette::ButtonText,QPalette::PlaceholderText}) p.setColor(QPalette::Disabled,role,secondary);
     p.setColor(QPalette::Disabled,QPalette::Highlight,mid);p.setColor(QPalette::Disabled,QPalette::HighlightedText,text);
-    QApplication::setPalette(p);
+}
+QPalette theme_palette(QPalette p,bool dark) {
+    const QColor window=dark ? QColor(0x25,0x28,0x2d) : QColor(0xf4,0xf5,0xf7),base=dark ? QColor(0x19,0x1c,0x20) : QColor(Qt::white),
+        text=dark ? QColor(0xe7,0xea,0xf0) : QColor(0x20,0x24,0x2a),mid=dark ? QColor(0x64,0x6a,0x74) : QColor(0xa6,0xad,0xb8),
+        secondary=dark ? QColor(0x9d,0xa5,0xb2) : QColor(0x59,0x63,0x72);
+    set_active_palette_roles(p,dark,window,base,text,mid,secondary);
+    set_disabled_palette_roles(p,secondary,mid,text);
+    return p;
+}
+QString theme_style_sheet(const QPalette& p) {
+    const auto window=p.color(QPalette::Window);
+    const auto text=p.color(QPalette::Text);
+    const auto mid=p.color(QPalette::Mid);
+    const auto secondary=p.color(QPalette::PlaceholderText);
     // Standard controls are drawn by Fusion from the inherited palette. Only
     // application navigation and dock chrome need centralized extra styling.
-    qApp->setStyleSheet(QStringLiteral(
+    return QStringLiteral(
         "QAbstractButton[compactControl=\"true\"] { background: %1; color: %2; border: 1px solid %3; border-radius: 3px; padding: 1px 6px; }"
         "QAbstractButton[compactControl=\"true\"]:hover { border-color: %5; background: %4; }"
         "QAbstractButton[compactControl=\"true\"]:checked, QAbstractButton[compactControl=\"true\"]:pressed { background: %4; }"
@@ -75,7 +86,15 @@ void Theme::applyPalette() {
         "QToolButton[menuControl=\"true\"] { padding-right: 18px; }"
         "QToolButton[menuControl=\"true\"]::menu-indicator { subcontrol-origin: padding; subcontrol-position: center right; right: 5px; width: 7px; height: 7px; }"
         "QStatusBar::item { border: none; }")
-        .arg(window.name(),text.name(),mid.name(),p.color(QPalette::AlternateBase).name(),p.color(QPalette::Highlight).name(),secondary.name()));
+        .arg(window.name(),text.name(),mid.name(),p.color(QPalette::AlternateBase).name(),p.color(QPalette::Highlight).name(),secondary.name());
+}
+}
+void Theme::applyPalette() {
+    const bool dark=_code=="dark" || (_code=="system" && (_system_scheme==Qt::ColorScheme::Dark ||
+        (_system_scheme==Qt::ColorScheme::Unknown && _system.color(QPalette::Window).lightness()<128)));
+    const auto palette=theme_palette(qApp->style()->standardPalette(),dark);
+    QApplication::setPalette(palette);
+    qApp->setStyleSheet(theme_style_sheet(palette));
     emit changed();
 }
 

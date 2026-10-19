@@ -5,6 +5,9 @@
 #include <visualization/ui_text.h>
 #include <visualization/numeric_image_view.h>
 #include <visualization/numeric_pie_view.h>
+#include <visualization/numeric_piano_view.h>
+#include <QDir>
+#include <QFontDatabase>
 #include <visualization/numeric_metrics_view.h>
 #include <visualization/spectrograms/spectrogram_graph.h>
 #include <visualization/render_preparation_policy.h>
@@ -14,6 +17,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <array>
+#include <dataflow_runtime/runtime.h>
 #include <cstdio>
 using namespace signal_contracts;
 namespace {
@@ -150,7 +154,8 @@ void scalar_timed_readout() {
     CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);CHECK(metrics.exact_value(0)=="9007199254741132");
     CHECK(metrics.input_count()==1 && metrics.metrics_model()->rowCount()==1); // exact current value, no graph-owned history
     LineChartView chart;SpectrogramGraph surface;NumericImageView image;NumericPieView pie;
-    CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,nullptr,true})==Status::incompatible_contract);
+    CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,nullptr,true})==Status::ok);
+    CHECK(chart.scalar_readout_enabled() && chart.scalar_readout_text()=="9007199254741132");
     CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::incompatible_contract);
     CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,&image})==Status::incompatible_contract);
     CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,nullptr,&pie})==Status::incompatible_contract);
@@ -181,7 +186,8 @@ void universal_numeric_ranks() {
         CHECK(adapter.accept(frame)==Status::ok);
         const auto vectorStatus=rank==Rank::Vector?Status::ok:Status::incompatible_contract;
         const auto matrixStatus=rank==Rank::Matrix?Status::ok:Status::incompatible_contract;
-        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,&exact,true})==vectorStatus);
+        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&chart,nullptr,&exact,true})==(rank==Rank::Matrix?Status::incompatible_contract:Status::ok));
+        if(rank==Rank::Scalar)CHECK(chart.scalar_readout_enabled() && chart.scalar_readout_text()=="1");
         CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,nullptr,nullptr,true,nullptr,&pie})==vectorStatus);
         CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{nullptr,&surface,nullptr,true,&image})==matrixStatus);
         if(rank==Rank::Vector){CHECK(chart.value_count()==values.size());CHECK(pie.slice_count()==values.size());}
@@ -216,6 +222,59 @@ void universal_numeric_ranks() {
     CHECK(surface.projected_axis_metadata().age(0)==7 && surface.projected_axis_metadata().age(1)==5);
     CHECK(image.row_coordinate(0)==5 && image.row_coordinate(1)==7);
 }
+void temporal_matrix_axes() {
+    Storage storage;presentation::NumericViewAdapter adapter({1,{4,4,256,{true,16}},{true,16}});
+    SpectrogramGraph surface;NumericImageView image;
+    NumericContract contract;contract.channel_order=channels;contract.semantic=Semantic::SpectrumMagnitude;
+    contract.shape={Rank::Matrix,{Axis::Band,Axis::Bin},{ExtentBounds{2,2},ExtentBounds{3,3}}};
+    const std::array<float,6> values{1,2,3,11,12,13};const std::array<PlaneLayout,1> planes{{{0,{12,4}}}};
+    render_fixture::Target target{nullptr,&surface,nullptr,true,&image};
+    target.plot_presentation.row_title="Band (X)";target.plot_presentation.row_index_title="Band (X)";
+    target.plot_presentation.column_title="Modulation frequency bin (Z)";target.plot_presentation.column_index_title="Modulation frequency bin (Z)";
+    const auto deliver=[&](std::uint64_t sequence,std::span<const std::byte> band_coordinates={},std::span<const std::byte> bin_coordinates={}) {
+        auto ctx=context(contract,35);CHECK(adapter.bind(ctx->endpoint)==Status::ok);
+        NumericView numeric{&contract,std::as_bytes(std::span(values)),planes,{2,3}};
+        numeric.coordinates.axes[0]=band_coordinates;numeric.coordinates.axes[1]=bin_coordinates;
+        FrameStamp stamp;stamp.sequence=sequence;pipeline::DeliveredNumericFrame event;
+        CHECK(pipeline::retain_numeric_delivery(ctx,{1,1},{stamp,numeric},Status::ok,limits,storage.p,storage.m,event)==Status::ok);
+        CHECK(adapter.accept(event)==Status::ok);CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+        return ctx;
+    };
+    deliver(1);
+    CHECK(surface.projected_axis_metadata().time_title_key=="Band (X)");
+    CHECK(surface.projected_axis_metadata().column_title_key=="Modulation frequency bin (Z)");
+    CHECK(!surface.projected_axis_metadata().age_axis);
+    float value=0;
+    CHECK(surface.projected_history_sample(0,2,value) && value==3);
+    CHECK(surface.projected_history_sample(1,0,value) && value==11);
+    CHECK(image.matrix_sample(1,2,value) && value==13);
+    CHECK(image.row_coordinate(0)==0 && image.row_coordinate(1)==1);
+    contract.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{70,1},{25,1}};
+    contract.coordinates[1]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{120,512}};
+    target.plot_presentation.row_title="Source frequency, Hz (X)";target.plot_presentation.column_title="Modulation frequency, Hz (Z)";
+    deliver(2);
+    CHECK(surface.projected_axis_metadata().time_title_key=="Source frequency, Hz (X)");
+    CHECK(surface.projected_axis_metadata().column_title_key=="Modulation frequency, Hz (Z)");
+    CHECK(surface.projected_axis_metadata().age(0)==95 && surface.projected_axis_metadata().age(1)==70);
+    CHECK(image.row_coordinate(0)==70 && image.row_coordinate(1)==95);
+    CHECK(surface.projected_axis_metadata().column(2)==240./512.);
+    const auto positions=surface.projected_axis_metadata().displayed("positions","positions");
+    CHECK(positions.time_title_key=="Band (X)" && positions.column_title_key=="Modulation frequency bin (Z)");
+    target.axes={false,false};deliver(3);
+    CHECK(surface.projected_axis_metadata().time_title_key=="Band (X)" && surface.projected_axis_metadata().column_title_key=="Modulation frequency bin (Z)");
+    CHECK(!surface.projected_axis_metadata().time_coordinates && !surface.projected_axis_metadata().column_coordinates);
+    target.axes={true,true};
+    contract.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz};
+    contract.coordinates[1]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz};
+    std::array<std::byte,16> band_coordinates{};std::array<std::byte,24> bin_coordinates{};
+    const auto encode=[](std::span<std::byte> bytes,std::size_t index,double value){const auto bits=std::bit_cast<std::uint64_t>(value);for(unsigned byte=0;byte<8;++byte)bytes[index*8+byte]=std::byte((bits>>(byte*8))&255);};
+    encode(band_coordinates,0,70);encode(band_coordinates,1,95);for(std::size_t bin=0;bin<3;++bin)encode(bin_coordinates,bin,double(bin)*.25);
+    const auto ctx=deliver(4,band_coordinates,bin_coordinates);
+    CHECK(surface.projected_axis_metadata().column(2)==.5 && image.row_coordinate(1)==95);
+    pipeline::DeliveredNumericFrame unavailable{ctx,{1,1},{},Status::unavailable};
+    CHECK(adapter.accept(unavailable)==Status::unavailable && adapter.render(ctx->endpoint,0,target)==Status::unavailable);
+    CHECK(surface.projected_history_frames()==0 && image.value_count()==0);
+}
 void vector_coordinate_axes() {
     Storage storage;
     NumericContract contract;contract.dtype=DType::Float32;contract.semantic=Semantic::Numeric;
@@ -224,6 +283,9 @@ void vector_coordinate_axes() {
     contract.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{50,1},{10,1}};
     presentation::NumericViewAdapter adapter({4,{3,3,128,{true,3}},{true,128}});
     FreqChartView frequency;LineChartView line;
+    const auto render_index=[&](const auto& ctx,AbstractChartView* chart){
+        render_fixture::Target target{chart,nullptr,nullptr,true};target.axes={};return adapter.render(ctx->endpoint,0,target);
+    };
     auto deliver=[&](NumericContract c,int node,std::span<const std::byte> coordinate_bytes={}) {
         auto ctx=context(c,node);CHECK(adapter.bind(ctx->endpoint)==Status::ok);
         const std::array<float,3> values{.03f,.2f,.1f};
@@ -233,30 +295,44 @@ void vector_coordinate_axes() {
         pipeline::DeliveredNumericFrame event;
         CHECK(pipeline::retain_numeric_delivery(ctx,{1,1},{stamp,numeric},Status::ok,limits,storage.p,storage.m,event)==Status::ok);
         CHECK(adapter.accept(event)==Status::ok);
-        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&frequency,nullptr,nullptr,true})==Status::ok);
-        CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&line,nullptr,nullptr,true})==Status::ok);
+        CHECK(render_index(ctx,&frequency)==Status::ok);
+        CHECK(render_index(ctx,&line)==Status::ok);
+        render_fixture::Target fixture{&frequency,nullptr,nullptr,true};
+        auto explicitTarget=static_cast<presentation::NumericRenderTarget>(fixture);
+        explicitTarget.frequency_grid={true,10,1,"Frequency bin (X)","Frequency, Hz (X)"};
+        CHECK(adapter.render(ctx->endpoint,0,explicitTarget)==Status::ok);
+        CHECK(frequency.x_title()=="Frequency, Hz (X)" && frequency.projected_x_coordinate(0)==10 && frequency.projected_x_coordinate(2)==30);
+        explicitTarget.frequency_grid.step=20;
+        CHECK(adapter.render(ctx->endpoint,0,explicitTarget)==Status::ok && frequency.projected_x_coordinate(0)==20 && frequency.projected_x_coordinate(2)==60);
+        explicitTarget.frequency_grid.step=0;
+        CHECK(adapter.render(ctx->endpoint,0,explicitTarget)==Status::ok && frequency.projected_x_coordinate(0)==0 && frequency.projected_x_coordinate(2)==2 && frequency.x_title()=="Frequency bin (X)");
+        CHECK(render_index(ctx,&frequency)==Status::ok);
         if(c.coordinates[0].unit==NumericUnit::Hertz){
             render_fixture::Target unbound{&line,nullptr,nullptr,true};unbound.axes={};
             CHECK(adapter.render(ctx->endpoint,0,unbound)==Status::ok);
-            CHECK(line.x_title()==(c.shape.axes[0]==Axis::Band?"Band (X)":"Frequency bin (X)"));
+            CHECK(line.x_title()=="Value index (X)");
             CHECK(line.projected_x_coordinate(0)==0 && line.projected_x_coordinate(2)==2);
             // Binding changes are presentation-only: the same owning frame is
             // immediately reusable, with no data or coordinate mutation.
-            CHECK(adapter.render(ctx->endpoint,0,render_fixture::Target{&line,nullptr,nullptr,true})==Status::ok);
+            CHECK(render_index(ctx,&line)==Status::ok);
         }
+        return ctx;
     };
 
-    deliver(contract,10);
+    const auto regularContext=deliver(contract,10);
     for(AbstractChartView* chart:{static_cast<AbstractChartView*>(&frequency),static_cast<AbstractChartView*>(&line)}) {
-        CHECK(chart->x_range().first==50 && chart->x_range().second==70);
-        CHECK(chart->x_title()=="Frequency, Hz (X)");
-        CHECK(chart->projected_x_coordinate(0)==50 && chart->projected_x_coordinate(2)==70);
+        CHECK(chart->x_range().first==0 && chart->x_range().second==2);
+        CHECK(chart->x_title()=="Value index (X)");
+        CHECK(chart->projected_x_coordinate(0)==0 && chart->projected_x_coordinate(2)==2);
     }
+    render_fixture::Target coordinatesTarget{&frequency,nullptr,nullptr,true};
+    coordinatesTarget.plot_presentation.vector_x_title="Coordinate (X)";
+    CHECK(adapter.render(regularContext->endpoint,0,coordinatesTarget)==Status::ok);
+    CHECK(frequency.x_title()=="Coordinate (X)" && frequency.projected_x_coordinate(0)==50 && frequency.projected_x_coordinate(2)==70);
     contract.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{701,10},{1,20}};
     deliver(contract,13);
-    CHECK(std::abs(frequency.x_range().first-70.1)<1e-10 &&
-          std::abs(frequency.x_range().second-70.2)<1e-10);
-    CHECK(frequency.projected_x_coordinate(1)>70.1 && frequency.projected_x_coordinate(1)<70.2);
+    CHECK(frequency.x_range().first==0 && frequency.x_range().second==2);
+    CHECK(frequency.projected_x_coordinate(1)==1);
     std::array<std::byte,24> coordinates{};
     const std::array<double,3> hz{70,95,180};
     for(size_t i=0;i<hz.size();++i) {
@@ -264,14 +340,17 @@ void vector_coordinate_axes() {
         for(unsigned byte=0;byte<8;++byte)coordinates[i*8+byte]=std::byte((bits>>(byte*8))&255);
     }
     contract.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz};
-    deliver(contract,11,coordinates);
-    CHECK(frequency.x_range().first==70 && frequency.x_range().second==180);
-    CHECK(line.projected_x_coordinate(1)==95 && frequency.projected_x_coordinate(1)==95);
+    const auto explicitContext=deliver(contract,11,coordinates);
+    CHECK(frequency.x_range().first==0 && frequency.x_range().second==2);
+    CHECK(line.projected_x_coordinate(1)==1 && frequency.projected_x_coordinate(1)==1);
+    CHECK(adapter.render(explicitContext->endpoint,0,coordinatesTarget)==Status::ok);
+    CHECK(frequency.projected_x_coordinate(0)==70 && frequency.projected_x_coordinate(1)==95 && frequency.projected_x_coordinate(2)==180);
+    CHECK(render_index(explicitContext,&frequency)==Status::ok);
     frequency.resize(400,240);line.resize(400,240);frequency.show();line.show();
     const auto hasCentre=[](AbstractChartView& view) {
         const auto points=view.projected_points();
         return std::any_of(points.begin(),points.end(),[](auto point){
-            return point.x()==95 && std::abs(point.y()-.2)<1e-6;
+            return point.x()==1 && std::abs(point.y()-.2)<1e-6;
         });
     };
     QElapsedTimer timer;timer.start();
@@ -283,13 +362,80 @@ void vector_coordinate_axes() {
 
     contract.semantic=Semantic::MelEnergy;contract.shape.axes[0]=Axis::Band;contract.coordinates[0]={};
     deliver(contract,12);
-    CHECK(frequency.x_title()=="Band (X)");
-    CHECK(line.x_title()=="Band (X)");
+    CHECK(frequency.x_title()=="Value index (X)");
+    CHECK(line.x_title()=="Value index (X)");
     CHECK(frequency.x_range().first==0 && frequency.x_range().second==2);
     CHECK(line.projected_x_coordinate(2)==2);
     // The axis is structural; descriptive tags cannot relabel identical geometry.
     contract.semantic=Semantic::Numeric;deliver(contract,12);
-    CHECK(frequency.x_title()=="Band (X)" && line.x_title()=="Band (X)");
+    CHECK(frequency.x_title()=="Value index (X)" && line.x_title()=="Value index (X)");
+}
+void fft_product_and_phase_axes() {
+    using namespace domain;using namespace dataflow_runtime;
+    constexpr FrameLimits frameLimits{1,32768,262144,16384,256,32768};
+    const ProcessingAdmissionLimits admission{32,64,16,16,256,65536,frameLimits};
+    NumericRuntimeProfile profile{admission,{{4194304,4194304,4194304,131072},0,16777216},{32768,1,262144,262144,262144},{true,true,true}};profile.music_enabled=true;
+    auto own=[&](const NumericContract& c){OwnedProcessingContract out;CHECK(own_processing_contract(c,frameLimits,65536,out)==Status::ok);return out;};
+    FreqChartView magnitude,phase;
+    presentation::NumericViewAdapter adapter({4,{4,1024,32768,{true,4096}},{true,1024}});
+    // Same endpoints and actual renderer instances survive a new Fs/N contract.
+    for(const auto [size,rate]:{std::pair{512u,48000u},std::pair{1024u,32000u}}) {
+        NumericContract input;input.channel_order=channels;input.dtype=DType::Float32;input.representation.alignment=alignof(float);
+        input.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{size,size},ExtentBounds{}}};input.clock={"axis-fixture",{1,rate},rate};
+        ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={{0,PortDirection::Output,own(input)}};
+        ConfiguredProcessingNode fft;fft.id=3;fft.kind="RealFourier";fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t(size)}}}};fft.inputs={{0,PortDirection::Input,own(input)}};
+        std::array<OwnedProcessingContract,4> coefficients;CHECK(fourier_output_contracts(fft,input,coefficients)==Status::ok);
+        for(PortId id=0;id<4;++id)fft.outputs.push_back({id,PortDirection::Output,coefficients[id]});
+        ConfiguredProcessingNode polar;polar.id=4;polar.kind="AmplitudePhase";polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t(size)}},{"sample_rate",NumericLiteral{std::uint64_t(rate)}}}};
+        polar.inputs={{0,PortDirection::Input,coefficients[0]},{1,PortDirection::Input,coefficients[1]}};
+        std::array<OwnedProcessingContract,2> projected;CHECK(amplitude_phase_output_contracts(polar,std::get<NumericContract>(coefficients[0].view()),projected)==Status::ok);
+        polar.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]}};
+        const auto amplitudeContract=std::get<NumericContract>(projected[0].view()),phaseContract=std::get<NumericContract>(projected[1].view());
+        CHECK(phaseContract.coordinates==amplitudeContract.coordinates && phaseContract.unit==NumericUnit::Radians);
+        auto gains=amplitudeContract;gains.quantity=Quantity::Unspecified;gains.unit=NumericUnit::Values;gains.coordinates={};gains.clock={};
+        ConfiguredProcessingNode gainSource;gainSource.id=2;gainSource.kind="NetworkInput";gainSource.outputs={{0,PortDirection::Output,own(gains)}};
+        ConfiguredProcessingNode product;product.id=5;product.kind="ArrayMultiply";product.parameters=TransformProcessingParameters{};
+        product.inputs={{0,PortDirection::Input,projected[0]},{1,PortDirection::Input,own(gains)}};product.outputs={{0,PortDirection::Output,projected[0]}};
+        NumericProcessingGraph graph;graph.graph_id="fft-axis-pipeline";graph.nodes={source,gainSource,fft,polar,product};
+        graph.edges={{1,3,0,0},{3,4,0,0},{3,4,1,1},{4,5,0,0},{2,5,0,1}};
+        std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;CHECK(PreparedGraph::prepare_numeric(graph,profile,plan,state)==Status::ok);if(!plan)return;
+        struct Observation {
+            const FrameLimits& limits;
+            struct Arena {
+                alignas(64) std::array<std::byte,65536> payload{},metadata{};
+                std::array<BufferSlot,8> payloadSlots{},metadataSlots{};
+                BufferPool p{payload,payloadSlots,8192},m{metadata,metadataSlots,8192};
+            };
+            std::shared_ptr<Arena> arena=std::make_shared<Arena>();
+            pipeline::DeliveredNumericFrame spectrum,phase;
+            static void output(void* self,const NumericPortFrameView& event){
+                auto& o=*static_cast<Observation*>(self);const bool isPhase=event.identity.node==4 && event.identity.port==1;
+                if(!event.frame.stamp.available || (!isPhase && event.identity.node!=5))return;
+                auto context=std::make_shared<pipeline::NumericDeliveryContext>();context->endpoint={"fft-axis-pipeline",event.identity.node,PortDirection::Output,event.identity.port};
+                context->retention_owner=o.arena;
+                CHECK(own_processing_contract(*std::get<NumericView>(event.frame.payload).contract,o.limits,65536,context->contract)==Status::ok);
+                CHECK(pipeline::retain_numeric_delivery(context,{1,1},event.frame,event.status,o.limits,o.arena->p,o.arena->m,isPhase?o.phase:o.spectrum)==Status::ok);
+            }
+        } observed{frameLimits};
+        NumericRuntimeCallbacks callbacks{Observation::output,nullptr,nullptr,&observed};
+        std::vector<float> samples(size),weights(size/2,1.f);
+        for(std::size_t t=0;t<size;++t)for(unsigned tone=1;tone<=5;++tone)samples[t]+=.05f*std::cos(6.283185307179586*double(tone*7)*double(t)/size);
+        const PlaneLayout planeLayout{0,{sizeof(float),0}};FrameStamp stamp;stamp.sequence=size;stamp.producer_epoch=1;stamp.has_sample_interval=true;stamp.sample_count=size;
+        NumericView weightView{&gains,std::as_bytes(std::span(weights)),std::span(&planeLayout,1),{size/2,1},{},{}};
+        CHECK(plan->process_numeric_ports(2,{stamp,weightView},*state,{},callbacks)==Status::ok);
+        NumericView sampleView{&input,std::as_bytes(std::span(samples)),std::span(&planeLayout,1),{size,1},{},{}};
+        CHECK(plan->process_numeric_ports(1,{stamp,sampleView},*state,{},callbacks)==Status::ok);
+        for(const auto pair:{std::pair{&observed.spectrum,&magnitude},std::pair{&observed.phase,&phase}}){
+            CHECK(pair.first->context);if(!pair.first->context)continue;
+            const auto endpoint=pair.first->context->endpoint;CHECK(adapter.bind(endpoint)==Status::ok);CHECK(adapter.accept(*pair.first)==Status::ok);
+            render_fixture::Target target{pair.second,nullptr,nullptr,true};target.axes={};target.plot_presentation.vector_x_title="Frequency bin (X)";
+            CHECK(adapter.render(endpoint,0,target)==Status::ok);
+            CHECK(pair.second->x_title()=="Frequency bin (X)");
+            CHECK(pair.second->projected_x_coordinate(0)==0);
+            CHECK(pair.second->projected_x_coordinate(size/2-1)==double(size/2-1));
+            CHECK(pair.second->x_range().first==0 && pair.second->x_range().second==double(size/2-1));
+        }
+    }
 }
 void actual_scene_aspect_projection() {
     SpectrogramGraph surface;
@@ -487,9 +633,11 @@ void cold_history_resynchronization() {
     const auto* reused_storage=reusable[0].data();trail.render_snapshot_into(reusable);
     CHECK(reusable==rows && reusable[0].data()==reused_storage);
     const auto axes=trail.render_axes();CHECK(axes.seconds && axes.ages==std::vector<double>({0,.25,.5}));
-    CHECK(axes.column_axis==pipeline::HistoryColumnAxis::Hertz && axes.columns==std::vector<double>({70,95}));
+    CHECK(axes.column_coordinates && axes.column_unit==NumericUnit::Hertz && axes.columns==std::vector<double>({70,95}));
     presentation::NumericViewAdapter adapter({1,{3,2,56,{true,2}},{true,128}});adapter.bind(ctx->endpoint);
     SpectrogramGraph surface;QLabel label;render_fixture::Target target{nullptr,&surface,&label,false};
+    target.plot_presentation.column_title="Frequency, Hz (Z)";target.plot_presentation.column_index_title="Frequency bin (Z)";
+    target.plot_presentation.row_title="Time delay, seconds (X)";target.plot_presentation.row_index_title="Temporal frame (X)";
     CHECK(adapter.accept_history_snapshot(snapshot,80,3)==Status::ok);CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
     CHECK(surface.projected_history_frames()==0);target.visible=true;
     CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);float sample=0;
@@ -561,12 +709,139 @@ void recycled_snapshot_leases() {
     CHECK(pool.fill([](auto& rows){rows={{std::numeric_limits<float>::infinity()}};}).empty());
     CHECK(pool.fill([](auto& rows){rows.clear();}).empty());
 }
+void piano_projection(){
+    Storage storage;NumericContract contract;contract.dtype=DType::Float32;contract.channel_order=channels;contract.unit=NumericUnit::Values;
+    contract.shape={Rank::Vector,{Axis::Band,Axis::None},{ExtentBounds{13,13},ExtentBounds{}}};contract.representation.alignment=alignof(float);contract.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz};
+    auto ctx=context(contract,25);std::array<float,13> values{};values[9]=1;values[1]=.5f;std::array<double,13> hz{};for(unsigned i=0;i<13;++i)hz[i]=442.*std::pow(2.,(double(i)+60-69)/12);
+    const PlaneLayout plane{0,{4,0}};NumericView view{&contract,std::as_bytes(std::span(values)),{&plane,1},{13,1},{},{}};view.coordinates.axes[0]=std::as_bytes(std::span(hz));
+    FrameStamp stamp;stamp.sequence=1;stamp.producer_epoch=9;pipeline::DeliveredNumericFrame frame;
+    CHECK(pipeline::retain_numeric_delivery(ctx,{1,1},{stamp,view},Status::ok,limits,storage.p,storage.m,frame)==Status::ok);
+    presentation::NumericViewAdapter adapter({4,{3,2,56,{true,2}},{true,128}});CHECK(adapter.bind(ctx->endpoint)==Status::ok);
+    NumericPianoView piano;piano.resize(900,300);piano.set_first_midi(60);
+    presentation::NumericPianoPort port;port.set_values=[&](const auto& v){return piano.set_values(v);};port.set_frequencies=[&](const auto& v){return piano.set_frequencies(v);};port.caption=[&](const char* key,QStringList args,bool,bool){auto text=*key?ui::text(key):QString{};for(const auto& a:args)text=text.arg(a);piano.set_projection_status(text);};
+    presentation::NumericRenderTarget target;target.visible=true;target.axes={true,true};target.piano=&port;target.presentation.piano_frequency_coordinates=true;
+    CHECK(adapter.accept(frame)==Status::ok && adapter.render(ctx->endpoint,0,target)==Status::ok);
+    CHECK(piano.value_count()==13 && piano.note_value(69)==1 && piano.note_value(61)==.5f && piano.note_name(69)=="A4");
+    CHECK(piano.key_rect(61).height()<piano.key_rect(60).height() && piano.key_rect(61).width()<piano.key_rect(60).width());
+    piano.show();
+    const auto snapshot=[&]{
+        QElapsedTimer deadline;deadline.start();
+        while(piano.presentation_model()->state().value("pianoRevision").toULongLong()!=piano.presentation_revision() && deadline.elapsed()<1000){QCoreApplication::processEvents();QThread::msleep(1);}
+        CHECK(piano.presentation_model()->state().value("pianoRevision").toULongLong()==piano.presentation_revision());
+        const auto image=piano.grabFramebuffer();QCoreApplication::processEvents();return image;
+    };
+    CHECK(!snapshot().isNull());
+    const auto unchangedRevision=piano.presentation_revision();unsigned duplicatePublications=0;
+    const auto duplicateConnection=QObject::connect(piano.presentation_model(),&QuickPlotModel::changed,&piano,[&]{++duplicatePublications;});
+    for(unsigned repeat=0;repeat<200;++repeat){CHECK(piano.set_values(std::vector<float>(values.begin(),values.end())));CHECK(piano.set_frequencies(std::vector<double>(hz.begin(),hz.end())));}
+    QCoreApplication::processEvents();
+    CHECK(piano.presentation_revision()==unchangedRevision && duplicatePublications==0);
+    QObject::disconnect(duplicateConnection);
+    const auto oldTheme=ui::Theme::instance().code(),oldLanguage=ui::Language::instance().code();
+    for(const auto* language:{"en","ru"})for(const auto* theme:{"light","dark"}){
+        ui::Language::instance().set(language);ui::Theme::instance().set(theme);QCoreApplication::processEvents();
+        const auto image=snapshot();const auto path=QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QString("../../.agent-workspace/blocks17-piano-%1-%2.png").arg(language,theme));CHECK(!image.isNull() && image.save(path));
+        const auto lit=piano.key_rect(69).center().toPoint(),unlit=piano.key_rect(67).center().toPoint();CHECK(image.pixelColor(lit)!=image.pixelColor(unlit));
+        const QRect activityArea(12,40,piano.width()-24,piano.height()-80);
+        CHECK(piano.set_values(std::vector<float>(13,0)));
+        const auto silence=snapshot();
+        CHECK(piano.set_values(std::vector<float>(13,1e-12f)));
+        const auto floor=snapshot();
+        CHECK(piano.peak_value()==1e-12f && piano.note_value(69)==1e-12f);
+        CHECK(floor.copy(activityArea)==silence.copy(activityArea));
+        std::vector<float> quiet(13,1e-12f);quiet[9]=1e-10f;
+        CHECK(piano.set_values(quiet));CHECK(snapshot().copy(activityArea)==silence.copy(activityArea));
+        quiet[9]=1e-4f;CHECK(piano.set_values(quiet));
+        CHECK(snapshot().pixelColor(lit)!=silence.pixelColor(lit));
+        piano.set_activity_floor(1e-3);
+        CHECK(snapshot().copy(activityArea)==silence.copy(activityArea));
+        CHECK(piano.note_value(69)==1e-4f);piano.set_activity_floor(1e-9);
+        // A normal signal still lights its actual key; silence clears it again.
+        CHECK(piano.set_values(std::vector<float>(values.begin(),values.end())));
+        CHECK(snapshot().pixelColor(lit)!=silence.pixelColor(lit));
+        CHECK(piano.set_values(std::vector<float>(13,0)));
+        CHECK(snapshot().copy(activityArea)==silence.copy(activityArea));
+        CHECK(piano.set_values(std::vector<float>(values.begin(),values.end())));
+
+    }
+    snapshot();piano.set_render_visible(false);
+    const auto hiddenPublished=piano.presentation_model()->state().value("pianoRevision");
+    for(unsigned update=1;update<=100;++update){std::vector<float> latest(13,0);latest[9]=float(update)/100;CHECK(piano.set_values(latest));}
+    QCoreApplication::processEvents();
+    CHECK(piano.presentation_model()->state().value("pianoRevision")==hiddenPublished && piano.note_value(69)==1);
+    piano.set_render_visible(true);CHECK(!snapshot().isNull());
+    CHECK(piano.presentation_model()->state().value("levels").toList().value(9).toDouble()==1);
+    ui::Theme::instance().set(oldTheme);ui::Language::instance().set(oldLanguage);
+    piano.set_first_midi(70);CHECK(piano.value_count()==0);piano.set_first_midi(60);CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+    auto unavailable=frame;unavailable.status=Status::unavailable;CHECK(adapter.accept(unavailable)==Status::unavailable);CHECK(adapter.render(ctx->endpoint,0,target)==Status::unavailable && piano.value_count()==0);
+    CHECK(!piano.set_values({-1}) && piano.value_count()==0);
+}
+void value_scale_metadata() {
+    for(const auto quantity:{Quantity::SpectrumMagnitude,Quantity::SpectrumPeakAmplitude,Quantity::SpectrumPower,Quantity::SpectrumPsd,Quantity::SpectrumAmplitudeDb,Quantity::SpectrumPowerDb,Quantity::SpectrumPsdDb}){
+        Storage storage;NumericContract contract;contract.dtype=DType::Float64;contract.channel_order=channels;contract.quantity=quantity;
+        const bool db=quantity==Quantity::SpectrumAmplitudeDb || quantity==Quantity::SpectrumPowerDb || quantity==Quantity::SpectrumPsdDb;
+        const bool power=quantity==Quantity::SpectrumPower || quantity==Quantity::SpectrumPsd || quantity==Quantity::SpectrumPowerDb || quantity==Quantity::SpectrumPsdDb;
+        contract.unit=db?NumericUnit::Decibels:power?NumericUnit::SquaredAmplitude:NumericUnit::RawAmplitude;
+        contract.shape={Rank::Vector,{Axis::Bin,Axis::None},{ExtentBounds{3,3},ExtentBounds{}}};
+        auto ctx=context(contract,120);presentation::NumericViewAdapter adapter({1,{3,2,56,{true,2}},{true,128}});CHECK(adapter.bind(ctx->endpoint)==Status::ok);
+        std::array<double,3> values{1,.1,.01};const PlaneLayout plane{0,{8,0}};NumericView view{&contract,std::as_bytes(std::span(values)),std::span(&plane,1),{3,1}};
+        FrameStamp stamp;stamp.sequence=1;pipeline::DeliveredNumericFrame frame;
+        CHECK(pipeline::retain_numeric_delivery(ctx,{1,1},{stamp,view},Status::ok,limits,storage.p,storage.m,frame)==Status::ok);
+        LineChartView chart;render_fixture::Target target{&chart,nullptr,nullptr,true};
+        CHECK(adapter.accept(frame)==Status::ok);CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+        CHECK(!chart.value_scale().source_decibels && chart.value_scale().factor==20);
+        target.plot_presentation.value_scale.source_decibels=db;
+        target.plot_presentation.value_scale.factor=power?10:20;
+        CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+        CHECK(chart.value_scale().source_decibels==db && chart.value_scale().factor==(power?10:20));
+    }
+}
+NumericContract generic_negative_history_contract(){
+    NumericContract contract;contract.dtype=DType::Float32;contract.channel_order=channels;
+    contract.semantic=Semantic::History;contract.history_element=Semantic::Numeric;
+    contract.shape={Rank::Matrix,{Axis::Time,Axis::Declared},{ExtentBounds{2,2},ExtentBounds{2,2}}};
+    contract.coordinates[1]={CoordinateMode::Regular,NumericUnit::Radians,{-3,1},{2,1}};
+    return contract;
+}
+pipeline::DeliveredNumericFrame generic_negative_history_frame(Storage& storage){
+    const auto contract=generic_negative_history_contract();auto ctx=context(contract,87);
+    const std::array<float,4> values{1,2,3,4};const std::array<PlaneLayout,1> planes{{{0,{8,4}}}};
+    pipeline::DeliveredNumericFrame frame{ctx,{1,1},{},Status::ok};
+    CHECK(retain_frame({{},NumericView{&contract,std::as_bytes(std::span(values)),planes,{2,2}}},limits,storage.p,storage.m,frame.frame)==Status::ok);
+    return frame;
+}
+void generic_history_coordinate_mapping(presentation::NumericViewAdapter& adapter,render_fixture::Target& target,const pipeline::EndpointIdentity& endpoint,SpectrogramGraph& surface){
+    CHECK(adapter.render(endpoint,0,target)==Status::ok);
+    CHECK(surface.projected_axis_metadata().column_title_key=="Column coordinate (Z)" && surface.projected_axis_metadata().columns==std::vector<double>({-3,-1}));
+}
+void generic_history_index_mapping(presentation::NumericViewAdapter& adapter,render_fixture::Target& target,const pipeline::EndpointIdentity& endpoint,SpectrogramGraph& surface){
+    target.axes={};CHECK(adapter.render(endpoint,0,target)==Status::ok);
+    CHECK(surface.projected_axis_metadata().column_title_key=="Column index (Z)" && surface.projected_axis_metadata().columns==std::vector<double>({0,1}));
+}
+void accept_generic_history(presentation::NumericViewAdapter& adapter,const pipeline::DeliveredNumericFrame& frame){
+    CHECK(adapter.bind(frame.context->endpoint)==Status::ok);
+    CHECK(adapter.accept_history_snapshot(frame,2,2)==Status::ok);
+}
+void generic_negative_history_coordinates(){
+    Storage storage;auto frame=generic_negative_history_frame(storage);
+    presentation::NumericViewAdapter adapter({1,{2,2,56,{true,2}},{true,128}});accept_generic_history(adapter,frame);
+    SpectrogramGraph surface;NumericImageView image;render_fixture::Target target{nullptr,&surface,nullptr,true,&image};
+    generic_history_coordinate_mapping(adapter,target,frame.context->endpoint,surface);
+    CHECK(image.source_axis_metadata().column_title_key=="Column coordinate (Z)" && image.source_axis_metadata().columns==std::vector<double>({-3,-1}));
+    generic_history_index_mapping(adapter,target,frame.context->endpoint,surface);
+}
 int main(int argc,char** argv) {
     recycled_snapshot_leases();
     QApplication app(argc,argv);ui::Language::instance().set("en");
+#ifdef Q_OS_WIN
+    QFontDatabase::addApplicationFont(QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"));app.setFont(QFont("Segoe UI",9));
+#endif
+    generic_negative_history_coordinates();
+    value_scale_metadata();
+    piano_projection();
     for(bool pooled:{false,true}) {
         presentation::RenderPreparationPolicy::snapshot_pool=pooled;
-        universal_numeric_ranks();hidden_scalar_and_contract_transition();hidden_history_and_markers();cold_history_resynchronization();shared_matrix_ownership();atomic_pause_snapshot();vector_coordinate_axes();actual_scene_aspect_projection();scalar_timed_readout();fixed_capacity_history_and_resize();
+        universal_numeric_ranks();temporal_matrix_axes();hidden_scalar_and_contract_transition();hidden_history_and_markers();cold_history_resynchronization();shared_matrix_ownership();atomic_pause_snapshot();vector_coordinate_axes();fft_product_and_phase_axes();actual_scene_aspect_projection();scalar_timed_readout();fixed_capacity_history_and_resize();
     }
     std::printf("numeric view adapter regressions: %d failures\n",failures);return failures?1:0;
 }

@@ -9,6 +9,9 @@
 #include <QJsonArray>
 
 #include <QDir>
+#include <QSettings>
+#include <QFileInfo>
+#include <QCryptographicHash>
 #include <utility>
 
 namespace {
@@ -68,14 +71,87 @@ bool ConfigManager::saveNumericPreferences(desktop::NumericProjectDocument& docu
     return static_cast<bool>(result);
 }
 
+namespace {
+constexpr qsizetype workspace_recovery_limit=4*1024*1024;
+QByteArray project_identity(const QString& path){QFile file(path);if(!file.open(QIODevice::ReadOnly) || file.size()>16777216)return {};return QCryptographicHash::hash(file.readAll(),QCryptographicHash::Sha256);}
+
+bool recovery_matches_project(QSettings& settings,const QString& project_path) {
+    return settings.status()==QSettings::NoError && settings.value("version").toInt()==1
+        && settings.value("project_sha256").toByteArray()==project_identity(project_path);
+}
+
+QJsonObject recovery_presentation(const QJsonObject& ui) {
+    QJsonObject presentation{{"version",1}};
+    for(const auto* key:{"workspace","graph_views","graph_rendering","show_raw_samples","show_amplitudes","show_test_amplitudes","show_spectrogram","show_window_signal","show_windowed_signal","show_window_function","show_data_flow"}){
+        if(ui.contains(key))presentation[key]=ui.value(key);
+    }
+    return presentation;
+}
+
+bool recovery_file_is_writable(QSettings& settings,const QString& path,QString* error) {
+    if(settings.status()==QSettings::NoError && (!QFileInfo::exists(path) || settings.value("version").toInt()==1))return true;
+    if(error)*error="Unsupported workspace recovery file";
+    return false;
+}
+
+desktop::NumericDocumentResult stage_numeric_candidate(
+    const desktop::NumericProjectDocument& document,
+    const domain::NumericProcessingGraph& graph,
+    const desktop::NumericDraftPresentation& presentation,
+    desktop::NumericProjectDocument& candidate) {
+    auto result=desktop::stage_numeric_draft(document,graph,candidate);
+    const bool has_presentation=!presentation.positions.isEmpty()
+        || !presentation.node_presentations.isEmpty()
+        || !presentation.node_adapters.isEmpty()
+        || !presentation.editor_view.isEmpty()
+        || !presentation.application_settings.isEmpty()
+        || presentation.applied_graph;
+    if(result && has_presentation){
+        result=desktop::stage_numeric_presentation(candidate,presentation,candidate);
+    }
+    return result;
+}
+}
+bool ConfigManager::loadWorkspaceRecovery(FileSaveApplicationConfig& config,QString* error) const {
+    const auto path=_config_path+".workspace.ini";
+    if(!QFileInfo::exists(path))return false;
+    if(QFileInfo(path).size()>workspace_recovery_limit){if(error)*error="Workspace recovery limit";return false;}
+    QSettings settings(path,QSettings::IniFormat);settings.setFallbacksEnabled(false);settings.sync();
+    if(!recovery_matches_project(settings,_config_path)){if(error)*error="Workspace recovery is incompatible with the project";return false;}
+    QJsonObject checked;const auto result=desktop::decode_numeric_preset_presentation(settings.value("presentation").toByteArray(),checked);
+    if(!result){if(error)*error=result.error;return false;}
+    merge_recovery_presentation(config,checked);return true;
+}
+void ConfigManager::merge_recovery_presentation(FileSaveApplicationConfig& config,const QJsonObject& checked) {
+    QJsonObject existing;_save_ui_config(existing,config);auto ui=existing.value("ui").toObject();
+    for(auto it=checked.begin();it!=checked.end();++it)if(it.key()!="version")ui[it.key()]=it.value();
+    auto candidate=config;_parse_ui_config(QJsonObject{{"ui",ui}},candidate);config=std::move(candidate);
+}
+QByteArray ConfigManager::encode_recovery_presentation(const FileSaveApplicationConfig& config) {
+    QJsonObject current;_save_ui_config(current,config);
+    const auto presentation=recovery_presentation(current.value("ui").toObject());
+    return QJsonDocument(presentation).toJson(QJsonDocument::Compact);
+}
+bool ConfigManager::saveWorkspaceRecovery(const FileSaveApplicationConfig& config,QString* error) const {
+    const auto path=_config_path+".workspace.ini";
+    if(QFileInfo(path).size()>workspace_recovery_limit){if(error)*error="Workspace recovery limit";return false;}
+    QSettings settings(path,QSettings::IniFormat);settings.setFallbacksEnabled(false);settings.setAtomicSyncRequired(true);settings.sync();
+    if(!recovery_file_is_writable(settings,path,error))return false;
+    const auto bytes=encode_recovery_presentation(config);QJsonObject checked;
+    const auto result=desktop::decode_numeric_preset_presentation(bytes,checked);
+    if(!result || bytes.size()>workspace_recovery_limit){if(error)*error=result.error.isEmpty()?QStringLiteral("Workspace recovery limit"):result.error;return false;}
+    settings.setValue("version",1);settings.setValue("project_sha256",project_identity(_config_path));settings.setValue("presentation",bytes);settings.sync();
+    if(settings.status()!=QSettings::NoError){if(error)*error="Could not save workspace recovery: "+path;return false;}
+    return true;
+}
+
 bool ConfigManager::saveNumeric(desktop::NumericProjectDocument& document,const domain::NumericProcessingGraph& graph,QString* error) const {
     return saveNumeric(document,graph,desktop::NumericDraftPresentation{},error);
 }
 
 bool ConfigManager::saveNumeric(desktop::NumericProjectDocument& document,const domain::NumericProcessingGraph& graph,const desktop::NumericDraftPresentation& presentation,QString* error) const {
     desktop::NumericProjectDocument candidate;
-    auto result=desktop::stage_numeric_draft(document,graph,candidate);
-    if(result && (!presentation.positions.isEmpty() || !presentation.node_presentations.isEmpty() || !presentation.node_adapters.isEmpty() || !presentation.editor_view.isEmpty() || !presentation.application_settings.isEmpty() || presentation.applied_graph))result=desktop::stage_numeric_presentation(candidate,presentation,candidate);
+    auto result=stage_numeric_candidate(document,graph,presentation,candidate);
     if(result)result=desktop::save_numeric_project(candidate,_config_path);
     if(error)*error=result.path.isEmpty()?result.error:result.path+": "+result.error;
     if(result)document=std::move(candidate);
@@ -89,8 +165,7 @@ bool ConfigManager::saveNumericAs(desktop::NumericProjectDocument& document,cons
 bool ConfigManager::saveNumericAs(desktop::NumericProjectDocument& document,const domain::NumericProcessingGraph& graph,const desktop::NumericDraftPresentation& presentation,const QString& path,QString* error) {
     if(path.trimmed().isEmpty()){if(error)*error="Configuration path is empty";return false;}
     desktop::NumericProjectDocument candidate;
-    auto result=desktop::stage_numeric_draft(document,graph,candidate);
-    if(result && (!presentation.positions.isEmpty() || !presentation.node_presentations.isEmpty() || !presentation.node_adapters.isEmpty() || !presentation.editor_view.isEmpty() || !presentation.application_settings.isEmpty() || presentation.applied_graph))result=desktop::stage_numeric_presentation(candidate,presentation,candidate);
+    auto result=stage_numeric_candidate(document,graph,presentation,candidate);
     if(result)result=desktop::save_numeric_project(candidate,desktop::numeric_project_path(path));
     if(error)*error=result.path.isEmpty()?result.error:result.path+": "+result.error;
     if(result){_config_path=candidate.active_path;document=std::move(candidate);}
@@ -120,45 +195,69 @@ auto ConfigManager::_parse_core_config(const QJsonObject &json_obj, FileSaveAppl
                                                       : SpectrumMerge::Energy;
 }
 
-void ConfigManager::_parse_ui_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) {
-    const UIApplicationConfig default_;
-
-    if (not json_obj.contains("ui"))
-        return;
-    const QJsonObject ui_obj = json_obj["ui"].toObject();
-    config.ui.move_to_primary_screen_on_start =
-        ui_obj.value("move_to_primary_screen_on_start").toBool(default_.move_to_primary_screen_on_start);
-    config.ui.autosave_enabled = ui_obj.value("autosave_enabled").toBool(default_.autosave_enabled);
-
-    config.ui.show_raw_samples = ui_obj.value("show_raw_samples").toBool(default_.show_raw_samples);
-    config.ui.show_window_signal =
-        ui_obj.value("show_window_signal").toBool(default_.show_window_signal);
-    config.ui.show_windowed_signal =
-        ui_obj.value("show_windowed_signal").toBool(default_.show_windowed_signal);
-    config.ui.show_window_function = ui_obj.value("show_window_function").toBool(default_.show_window_function);
-    config.ui.show_amplitudes = ui_obj.value("show_amplitudes").toBool(default_.show_amplitudes);
-    config.ui.show_test_amplitudes = ui_obj.value("show_test_amplitudes").toBool(default_.show_test_amplitudes);
-    config.ui.show_spectrogram = ui_obj.value("show_spectrogram").toBool(default_.show_spectrogram);
-    config.ui.workspace = ui_obj.value("workspace").toObject();
-    config.ui.language = ui_obj.value("language").toString("ru");
-    if (config.ui.language != "ru" && config.ui.language != "en")
-        config.ui.language = "ru";
-    config.ui.theme = ui_obj.value("theme").toString("system");
-    if (config.ui.theme != "dark" && config.ui.theme != "light")
-        config.ui.theme = "system";
-    config.ui.graph_views = ui_obj.value("graph_views").toObject();
-    config.ui.graph_rendering = ui_obj.value("graph_rendering").toObject();
-    config.ui.pipeline_auto_apply = ui_obj.value("pipeline_auto_apply").toBool(true);
-    config.ui.show_fps = ui_obj.value("show_fps").toBool(true);
-    config.ui.pipeline_presets = ui_obj.value("pipeline_presets").toArray();
-    config.ui.editor_view = ui_obj.value("editor_view").toObject();
-    config.ui.show_data_flow = ui_obj.value("show_data_flow").toBool(true);
-    config.ui.camera = ui_obj.value("camera").toObject();
-    config.ui.camera_controls = CameraControls::normalized(ui_obj.value("camera_controls").toObject());
-    const auto ratio = ui_obj.value("spectrogram_side_panel_ratio").toDouble(0.25);
-    config.ui.spectrogram_side_panel_ratio = ratio >= 0.01 && ratio <= 0.99 ? static_cast<float>(ratio) : 0.25f;
+namespace {
+void parse_ui_visibility(const QJsonObject& value,UIApplicationConfig& config) {
+    const UIApplicationConfig defaults;
+    config.show_raw_samples=value.value("show_raw_samples").toBool(defaults.show_raw_samples);
+    config.show_window_signal=value.value("show_window_signal").toBool(defaults.show_window_signal);
+    config.show_windowed_signal=value.value("show_windowed_signal").toBool(defaults.show_windowed_signal);
+    config.show_window_function=value.value("show_window_function").toBool(defaults.show_window_function);
+    config.show_amplitudes=value.value("show_amplitudes").toBool(defaults.show_amplitudes);
+    config.show_test_amplitudes=value.value("show_test_amplitudes").toBool(defaults.show_test_amplitudes);
+    config.show_spectrogram=value.value("show_spectrogram").toBool(defaults.show_spectrogram);
+    config.show_data_flow=value.value("show_data_flow").toBool(true);
+    config.show_fps=value.value("show_fps").toBool(true);
 }
-
+void parse_ui_preferences(const QJsonObject& value,UIApplicationConfig& config) {
+    const UIApplicationConfig defaults;
+    config.move_to_primary_screen_on_start=value.value("move_to_primary_screen_on_start").toBool(defaults.move_to_primary_screen_on_start);
+    config.autosave_enabled=value.value("autosave_enabled").toBool(defaults.autosave_enabled);
+    config.language=value.value("language").toString("ru");
+    if(config.language!="ru" && config.language!="en")config.language="ru";
+    config.theme=value.value("theme").toString("system");
+    if(config.theme!="dark" && config.theme!="light")config.theme="system";
+    config.pipeline_auto_apply=value.value("pipeline_auto_apply").toBool(true);
+}
+void parse_ui_workspace(const QJsonObject& value,UIApplicationConfig& config) {
+    config.workspace=value.value("workspace").toObject();
+    config.graph_views=value.value("graph_views").toObject();
+    config.graph_rendering=value.value("graph_rendering").toObject();
+    config.pipeline_presets=value.value("pipeline_presets").toArray();
+    config.editor_view=value.value("editor_view").toObject();
+    config.camera=value.value("camera").toObject();
+    config.camera_controls=CameraControls::normalized(value.value("camera_controls").toObject());
+    const auto ratio=value.value("spectrogram_side_panel_ratio").toDouble(.25);
+    config.spectrogram_side_panel_ratio=ratio>=.01 && ratio<=.99?static_cast<float>(ratio):.25f;
+}
+void save_ui_visibility(QJsonObject& value,const UIApplicationConfig& config) {
+    value["show_raw_samples"]=config.show_raw_samples;
+    value["show_window_signal"]=config.show_window_signal;
+    value["show_windowed_signal"]=config.show_windowed_signal;
+    value["show_window_function"]=config.show_window_function;
+    value["show_amplitudes"]=config.show_amplitudes;
+    value["show_test_amplitudes"]=config.show_test_amplitudes;
+    value["show_spectrogram"]=config.show_spectrogram;
+    value["show_data_flow"]=config.show_data_flow;
+    value["show_fps"]=config.show_fps;
+}
+void save_ui_preferences(QJsonObject& value,const UIApplicationConfig& config) {
+    value["move_to_primary_screen_on_start"]=config.move_to_primary_screen_on_start;
+    value["autosave_enabled"]=config.autosave_enabled;
+    value["language"]=config.language;value["theme"]=config.theme;
+    value["pipeline_auto_apply"]=config.pipeline_auto_apply;
+}
+void save_ui_workspace(QJsonObject& value,const UIApplicationConfig& config) {
+    value["workspace"]=config.workspace;value["graph_views"]=config.graph_views;
+    value["graph_rendering"]=config.graph_rendering;value["pipeline_presets"]=config.pipeline_presets;
+    value["editor_view"]=config.editor_view;value["camera"]=config.camera;
+    value["camera_controls"]=config.camera_controls;value["spectrogram_side_panel_ratio"]=config.spectrogram_side_panel_ratio;
+}
+}
+void ConfigManager::_parse_ui_config(const QJsonObject& json_obj,FileSaveApplicationConfig& config) {
+    if(!json_obj.contains("ui"))return;
+    const auto value=json_obj.value("ui").toObject();
+    parse_ui_visibility(value,config.ui);parse_ui_preferences(value,config.ui);parse_ui_workspace(value,config.ui);
+}
 void ConfigManager::_save_aggregator_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config) {
     QJsonObject agg_obj;
     agg_obj["run_loopback"] = config.core.run_loopback;
@@ -171,34 +270,11 @@ void ConfigManager::_save_aggregator_config(QJsonObject &json_obj, const FileSav
     json_obj["core"] = agg_obj;
 }
 
-void ConfigManager::_save_ui_config(QJsonObject &json_obj, const FileSaveApplicationConfig &config) {
-    QJsonObject ui_obj;
-    ui_obj["move_to_primary_screen_on_start"] = config.ui.move_to_primary_screen_on_start;
-    ui_obj["autosave_enabled"] = config.ui.autosave_enabled;
-    ui_obj["show_raw_samples"] = config.ui.show_raw_samples;
-    ui_obj["show_window_signal"] = config.ui.show_window_signal;
-    ui_obj["show_windowed_signal"] = config.ui.show_windowed_signal;
-    ui_obj["show_window_function"] = config.ui.show_window_function;
-    ui_obj["show_raw_samples"] = config.ui.show_raw_samples;
-    ui_obj["show_amplitudes"] = config.ui.show_amplitudes;
-    ui_obj["show_test_amplitudes"] = config.ui.show_test_amplitudes;
-    ui_obj["show_spectrogram"] = config.ui.show_spectrogram;
-    ui_obj["workspace"] = config.ui.workspace;
-    ui_obj["language"] = config.ui.language;
-    ui_obj["theme"] = config.ui.theme;
-    ui_obj["graph_views"] = config.ui.graph_views;
-    ui_obj["graph_rendering"] = config.ui.graph_rendering;
-    ui_obj["pipeline_auto_apply"] = config.ui.pipeline_auto_apply;
-    ui_obj["show_fps"] = config.ui.show_fps;
-    ui_obj["pipeline_presets"] = config.ui.pipeline_presets;
-    ui_obj["editor_view"] = config.ui.editor_view;
-    ui_obj["show_data_flow"] = config.ui.show_data_flow;
-    ui_obj["camera"] = config.ui.camera;
-    ui_obj["camera_controls"] = config.ui.camera_controls;
-    ui_obj["spectrogram_side_panel_ratio"] = config.ui.spectrogram_side_panel_ratio;
-    json_obj["ui"] = ui_obj;
+void ConfigManager::_save_ui_config(QJsonObject& json_obj,const FileSaveApplicationConfig& config) {
+    QJsonObject value;
+    save_ui_visibility(value,config.ui);save_ui_preferences(value,config.ui);save_ui_workspace(value,config.ui);
+    json_obj["ui"]=value;
 }
-
 void ConfigManager::_parse_wled_ar_server_config(const QJsonObject &json_obj, FileSaveApplicationConfig &config) {
     const WLEDARServerConfig default_;
 

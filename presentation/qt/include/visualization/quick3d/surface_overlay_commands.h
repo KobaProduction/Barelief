@@ -47,7 +47,9 @@ private:
     static QVariantMap brush(const QBrush& value){
         QVariantMap result{{"color",value.color().name(QColor::HexArgb)},{"none",value.style()==Qt::NoBrush}};
         if(const auto* gradient=value.gradient()){
-            QVariantList stops;for(const auto& stop:gradient->stops())stops.append(QVariantMap{{"position",stop.first},{"color",stop.second.name(QColor::HexArgb)}});
+            QVariantList stops;const auto gradient_stops=gradient->stops();
+            for(const auto& stop:gradient_stops)
+                stops.append(QVariantMap{{"position",stop.first},{"color",stop.second.name(QColor::HexArgb)}});
             result["stops"]=stops;
             if(gradient->type()==QGradient::LinearGradient){const auto* linear=static_cast<const QLinearGradient*>(gradient);result["start"]=linear->start();result["end"]=linear->finalStop();}
         }return result;

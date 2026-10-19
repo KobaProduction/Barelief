@@ -1,12 +1,26 @@
 param(
-    [string]$BinaryDirectory = 'build-gui/bin',
+    [ValidateSet('release', 'debug')]
+    [string]$Preset = 'release',
     [string[]]$Executables = @('core_app.exe', 'pipeline_cli.exe', 'aggregator_server_app.exe', 'aggregator_client_app.exe'),
-    [string]$Objdump = 'C:/Qt/Tools/mingw1310_64/bin/objdump.exe'
+    [string]$Objdump = $env:OBJDUMP
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
-$taskBinaryDirectory = [IO.Path]::GetFullPath((Join-Path $taskRoot $BinaryDirectory))
-if (-not (Test-Path -LiteralPath $Objdump -PathType Leaf)) { throw "Missing import inspection tool: $Objdump" }
+$taskBuildDirectory = Join-Path $taskRoot "cmake-build-$Preset"
+$taskBinaryDirectory = Join-Path $taskBuildDirectory 'bin'
+if (-not $Objdump) {
+    $taskCache = Join-Path $taskBuildDirectory 'CMakeCache.txt'
+    if (Test-Path -LiteralPath $taskCache -PathType Leaf) {
+        foreach ($taskLine in Get-Content -LiteralPath $taskCache) {
+            if ($taskLine -match '^CMAKE_OBJDUMP:[^=]*=(.*)$') {
+                if ($Matches[1] -notmatch '-NOTFOUND$') { $Objdump = $Matches[1] }
+                break
+            }
+        }
+    }
+    if (-not $Objdump) { $Objdump = 'objdump' }
+}
+$taskInspectionTool = (Get-Command $Objdump -CommandType Application -ErrorAction Stop).Source
 $taskQueue = [Collections.Generic.Queue[string]]::new()
 $taskVisited = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($taskExecutable in $Executables) {
@@ -22,7 +36,7 @@ $taskRequiresGui = $false
 while ($taskQueue.Count) {
     $taskPath = $taskQueue.Dequeue()
     if (-not $taskVisited.Add($taskPath)) { continue }
-    $taskImports = & $Objdump -p $taskPath
+    $taskImports = & $taskInspectionTool -p $taskPath
     if ($LASTEXITCODE -ne 0) { throw "Cannot inspect PE imports: $taskPath" }
     foreach ($taskLine in $taskImports) {
         if ($taskLine -notmatch 'DLL Name:\s*(\S+)') { continue }

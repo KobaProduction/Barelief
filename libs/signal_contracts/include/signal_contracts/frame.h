@@ -8,7 +8,7 @@ namespace signal_contracts {
 // Stable wire identifiers: 0..6 use BDSP payload v2, Scalar/Packet require v3.
 enum class FrameType { PCM=0, Window=1, Windowed=2, StereoSpectrum=3, Spectrum=4, Mel=5, History=6, Scalar=7, WledPacket=8 };
 enum class DataShape { Scalar, Vector, Matrix, Packet, Unknown };
-enum class Quantity { Unspecified, Amplitude, SpectrumMagnitude, MelEnergy, FilledFrameCount, Packet };
+enum class Quantity { Unspecified, Amplitude, SpectrumMagnitude, MelEnergy, FilledFrameCount, Packet, SpectrumComplex, SpectrumReal, SpectrumImaginary, SpectrumPhase, SpectrumPeakAmplitude, SpectrumPower, SpectrumPsd, SpectrumAmplitudeDb, SpectrumPowerDb, SpectrumPsdDb, BroadbandEnergy, BroadbandPower, BroadbandRms, BroadbandMaximum, SpectralFlux, NoteSalience };
 enum class Unit { Unspecified, NormalizedAmplitude, Frames, Bytes };
 struct FrameDescriptor {
     FrameType type;

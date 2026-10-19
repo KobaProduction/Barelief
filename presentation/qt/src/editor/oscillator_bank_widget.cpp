@@ -24,8 +24,17 @@ OscillatorBankWidget::OscillatorBankWidget(NodeParameterModel* source,QWidget* p
     horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     setMinimumWidth(0);setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);setMaximumHeight(310);
     const QStringList suffixes{"frequency_hz","amplitude","phase_radians","attack_seconds","release_seconds"};
-    for(int row=0;row<rowCount();++row){
-        const auto prefix=QString("oscillator%1").arg(row);
+    for(int row=0;row<rowCount();++row)setupRow(row,model,suffixes);
+    resizeRowsToContents();
+    connect(model.data(),&NodeParameterModel::editStateChanged,this,[this]{resizeRowsToContents();});
+}
+void OscillatorBankWidget::setupRow(int row,QPointer<NodeParameterModel> model,const QStringList& suffixes) {
+    const auto prefix=QString("oscillator%1").arg(row);
+    setupRowControls(row,model,prefix);
+    for(int column=0;column<suffixes.size();++column)
+        setupValueCell(row,column,model,prefix+suffixes[column]);
+}
+void OscillatorBankWidget::setupRowControls(int row,QPointer<NodeParameterModel> model,const QString& prefix) {
         auto* id=new QLabel(this);id->setObjectName(prefix+"Id");
         setCellWidget(row,0,id);
         auto* enabled=new QCheckBox(this);enabled->setObjectName(prefix+"Enabled");setCellWidget(row,1,enabled);
@@ -41,8 +50,8 @@ OscillatorBankWidget::OscillatorBankWidget(NodeParameterModel* source,QWidget* p
             const auto* f=model->field(prefix+"Remove");remove->setEnabled(f && (!f->available || f->available()));
         };
         connect(model.data(),&NodeParameterModel::valuesChanged,this,refreshRow);refreshRow();
-        for(int column=0;column<suffixes.size();++column){
-            const auto key=prefix+suffixes[column];
+}
+void OscillatorBankWidget::setupValueCell(int row,int column,QPointer<NodeParameterModel> model,const QString& key) {
             auto* box=new QWidget(this);auto* layout=new QVBoxLayout(box);layout->setContentsMargins(2,2,2,2);
             auto* edit=new QLineEdit(box);edit->setObjectName(key);
             auto* type=new QComboBox(box);type->addItems({"int64","uint64","float32","float64"});type->setCurrentIndex(3);type->hide();
@@ -58,8 +67,4 @@ OscillatorBankWidget::OscillatorBankWidget(NodeParameterModel* source,QWidget* p
             connect(model.data(),&NodeParameterModel::valuesChanged,box,refresh);
             connect(model.data(),&NodeParameterModel::editStateChanged,box,[key,refresh](const QString& changed){if(changed==key)refresh();});
             connect(&ui::Language::instance(),&ui::Language::changed,box,refresh);refresh();
-        }
-    }
-    resizeRowsToContents();
-    connect(model.data(),&NodeParameterModel::editStateChanged,this,[this]{resizeRowsToContents();});
 }

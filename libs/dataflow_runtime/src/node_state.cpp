@@ -20,7 +20,7 @@ void stamp_state(State& state,const FrameStamp& stamp) noexcept {
     else {std::copy(stamp.stream_id.begin(),stamp.stream_id.end(),state.stream_storage.begin());
         state.numeric_stamp.stream_id={state.stream_storage.data(),stamp.stream_id.size()};}
 }
-std::size_t index(const std::vector<PlanNode>& nodes,NodeId id) noexcept {
+std::size_t index(std::span<const PlanNode> nodes,NodeId id) noexcept {
     for(std::size_t i=0;i<nodes.size();++i)if(nodes[i].node.id==id)return i;
     return absent;
 }

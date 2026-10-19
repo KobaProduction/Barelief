@@ -14,6 +14,49 @@ static QString save_preset(gui_fixture::App& app,const QString& name){gui_fixtur
 static QList<WorkspaceDock*> dynamic_docks(MainWindow* window){QList<WorkspaceDock*> result;for(auto* dock:window->workspaceDocks())if(dock->objectName().startsWith("nodeView_"))result.append(dock);return result;}
 static QRect area_rect(MainWindow* window,WorkspaceDock* dock){auto* area=dock->dockAreaWidget();gui_fixture::check(area,"dock area missing");return {area->mapTo(window,QPoint()),area->size()};}
 static QStringList open_tabs(WorkspaceDock* dock){QStringList names;for(auto* peer:dock->dockAreaWidget()->dockWidgets())if(!peer->isClosed())names.append(peer->objectName());names.sort();return names;}
+static GraphPanel* fixed_plot(gui_fixture::App& app,const char* id){
+    auto* dock=app.dock(QString::fromLatin1(id)+"Dock");
+    auto* panel=dock?qobject_cast<GraphPanel*>(dock->widget()):nullptr;
+    gui_fixture::check(panel,"fixed graph panel missing");return panel;
+}
+static void check_fixed_audio_plots(gui_fixture::App& app){
+    for(const auto* id:{"fft","mel"}){
+        auto* panel=fixed_plot(app,id);
+        gui_fixture::check(panel->audio_scales() && panel->modes().contains("line"),"fixed audio descriptor missing");
+        const auto prefs=app.application->_ctx.file_configs.ui.graph_views.value(QString::fromLatin1(id)).toObject();
+        gui_fixture::check(prefs.value("plot_specialization")=="audio" && prefs.value("plot_modes").isArray(),"fixed descriptor not saved");
+    }
+}
+static void make_fixed_preset_malformed(gui_fixture::App& app,const QString& id){
+    auto& presets=app.application->_ctx.file_configs.ui.pipeline_presets;
+    for(int i=0;i<presets.size();++i)if(presets[i].toObject()["id"]==id){
+        auto preset=presets[i].toObject();auto snapshot=preset["presentation"].toObject();
+        auto views=snapshot["graph_views"].toObject();auto fft=views["fft"].toObject();
+        fft["plot_modes"]=QJsonArray{"unsupported-mode"};fft["plot_specialization"]="generic";
+        fft["unknown_extension"]=17;views["fft"]=fft;snapshot["graph_views"]=views;
+        preset["presentation"]=snapshot;presets[i]=preset;
+    }
+}
+static void remove_fixed_descriptor_from_preset(gui_fixture::App& app,const QString& id){
+    auto& presets=app.application->_ctx.file_configs.ui.pipeline_presets;
+    for(int i=0;i<presets.size();++i)if(presets[i].toObject()["id"]==id){
+        auto preset=presets[i].toObject();auto snapshot=preset["presentation"].toObject();
+        auto views=snapshot["graph_views"].toObject();
+        for(const auto* key:{"fft","mel"}){
+            auto prefs=views[key].toObject();
+            prefs.remove("plot_modes");prefs.remove("plot_category_path");prefs.remove("plot_specialization");
+            views[key]=prefs;
+        }
+        snapshot["graph_views"]=views;preset["presentation"]=snapshot;presets[i]=preset;
+    }
+}
+static void check_malformed_fixed_restore(gui_fixture::App& app){
+    auto& views=app.application->_ctx.file_configs.ui.graph_views;
+    gui_fixture::check(fixed_plot(app,"fft")->modes().contains("line") && !fixed_plot(app,"fft")->audio_scales(),
+        "malformed fixed descriptor did not fall back safely");
+    gui_fixture::check(fixed_plot(app,"mel")->audio_scales() && views["fft"].toObject()["unknown_extension"].toInt()==17 &&
+        views["fft"].toObject()["plot_modes"].toArray().at(0)=="line", "fixed descriptor restore lost Mel audio, mode fallback, or unknown field");
+}
 struct Topology {QStringList tabs;QString active;double leftShare;QRect floating;};
 static Topology topology(MainWindow* window,WorkspaceDock* first,WorkspaceDock* neighbor,WorkspaceDock* external){
     using namespace gui_fixture;check(first->dockAreaWidget()!=neighbor->dockAreaWidget(),"split areas merged");
@@ -27,6 +70,7 @@ static bool close_rect(const QRect& a,const QRect& b,int tolerance=12){return st
 static QByteArray initial_session(){
         using namespace gui_fixture;
         App app;app.apply();auto& ui=app.application->_ctx.file_configs.ui;
+        check_fixed_audio_plots(app);
         const auto revision=app.presenter().client().snapshot().graph_revision;
         const auto theme=ui.theme;const auto language=ui.language;
         for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))dock->toggleView(false);
@@ -73,9 +117,13 @@ static QByteArray initial_session(){
         check(wait([&]{return first->dockAreaWidget()->currentDockWidget()==inactive && area_rect(app.window,first).bottom()<area_rect(app.window,neighbor).top();}) && close_rect(external->floatingDockContainer()->frameGeometry(),bGeometry),"B saved topology restoration");
         ui.graph_rendering={{"version",1},{"defaults",QJsonObject{{"brightness",1.8}}}};
         model->setNodeData(1,QtNodes::NodeRole::Position,QPointF(777,888));
+        make_fixed_preset_malformed(app,zero);
+        remove_fixed_descriptor_from_preset(app,one);
         check(app.editor->load_preset(zero),"load zero");
+        check_malformed_fixed_restore(app);
         check(wait([&]{for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock")&&!dock->isClosed())return false;return true;}),"zero preset retained graphs");
         check(app.editor->load_preset(one),"load one");first=app.window->workspaceDock(firstName);check(first&&!first->isClosed(),"one preset lost representation");
+        check_fixed_audio_plots(app);
         int open=0;for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock")&&!dock->isClosed())++open;
         check(open==1,"one preset inherited other open tabs");
         check(model->nodeData(1,QtNodes::NodeRole::Position).toPointF()==QPointF(42,73),"preset coordinates inherited previous positions");
@@ -106,6 +154,13 @@ static QByteArray initial_session(){
         const auto failedPath=app.directory.filePath("invalid.json");QFile failed(failedPath);check(failed.open(QIODevice::WriteOnly),"invalid fixture");failed.write("{ broken");failed.close();emit app.window->open_configuration_requested(failedPath);
         check(app.window->isVisible()&&!app.window->statusBar()->currentMessage().isEmpty(),"malformed Open changed window or omitted error");
         check(app.presenter().client().snapshot().graph_revision==revision,"save/open changed processing");
+        auto* liveDock=app.window->workspaceDock(firstName);auto* livePanel=liveDock?qobject_cast<GraphPanel*>(liveDock->widget()):nullptr;
+        check(livePanel,"live descriptor panel missing");
+        auto livePrefs=ui.graph_views.value(firstKey).toObject();
+        livePrefs["plot_modes"]=QJsonArray{"points"};livePrefs["plot_specialization"]="generic";
+        ui.graph_views[firstKey]=livePrefs;app.apply();
+        check(wait([&]{return liveDock->widget()==livePanel && livePanel->modes()==QStringList{"points"} && !livePanel->audio_scales();}),
+            "same-kind saved descriptor did not refresh live panel");
         QFile retained(QString::fromLocal8Bit(app.path));check(retained.open(QIODevice::ReadOnly),"restart source read");return retained.readAll();
 }
 int main(int argc,char** argv){

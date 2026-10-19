@@ -17,23 +17,27 @@ public:
     explicit SceneAspectControl(QWidget* parent=nullptr):QWidget(parent) {
         auto* form=new QFormLayout(this);form->setContentsMargins(0,0,0,0);
         form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+        build_editors();
+        add_row(*form,"Scene proportions",mode);add_row(*form,"Time width / height",time);add_row(*form,"Band depth / height",band);
+        bind_changes();set_options({});
+    }
+private:
+    void build_editors() {
         mode=new QComboBox(this);mode->setObjectName("surface_scene_aspect_mode");
         ui::items(mode,{"Fixed scene proportions","Proportions from sample counts"});
         mode->setMinimumWidth(0);mode->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         mode->setMinimumContentsLength(8);
         time=number("surface_scene_time_aspect");band=number("surface_scene_band_aspect");
-        const auto row=[&](const char* title,QWidget* editor) {
-            auto* label=ui::make<QLabel>(title,this);label->setWordWrap(true);
-            form->addRow(label,editor);
-        };
-        row("Scene proportions",mode);
-        row("Time width / height",time);
-        row("Band depth / height",band);
+    }
+    void add_row(QFormLayout& form,const char* title,QWidget* editor) {
+        auto* label=ui::make<QLabel>(title,this);label->setWordWrap(true);form.addRow(label,editor);
+    }
+    void bind_changes() {
         connect(mode,&QComboBox::currentIndexChanged,this,[this]{syncEnabled();if(changed)changed();});
         for(auto* spin:{time,band})
             connect(spin,&QDoubleSpinBox::valueChanged,this,[this]{if(changed)changed();});
-        set_options({});
     }
+public:
     void set_options(const QJsonObject& raw) {
         const auto value=SurfaceSettings::normalized(raw);
         const QSignalBlocker m(mode),t(time),b(band);

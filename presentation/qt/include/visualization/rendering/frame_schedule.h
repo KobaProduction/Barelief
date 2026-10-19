@@ -15,7 +15,7 @@ public:
         visible_=visible;dirty_|=pending_!=0;pending_=0;deadline_=0;
     }
     void setRate(int fps) noexcept {
-        const auto rate=std::clamp(fps,1,240);
+        const auto rate=std::clamp(fps,1,1000);
         const auto period=(1000000000ULL+rate-1)/rate;
         if(period_!=period){period_=period;deadline_=0;}
     }

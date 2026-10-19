@@ -65,8 +65,7 @@ public:
     template<class Fill> NumericMatrixSnapshot fill(Fill&& fill) {
         for(auto& slot:slots_) {
             if(slot && slot.use_count()!=1)continue;
-            if(!slot){slot=std::make_shared<NumericMatrixSnapshot::Matrix>();++allocations;}
-            else ++reuses;
+            prepare_slot(slot);
             fill(*slot);
             NumericMatrixSnapshot result;
             if(NumericMatrixSnapshot::valid(*slot))result.storage_=slot;
@@ -82,5 +81,9 @@ public:
     static inline std::uint64_t allocations=0,reuses=0,fallbacks=0;
     void clear() noexcept {for(auto& slot:slots_)slot.reset();}
 private:
+    static void prepare_slot(std::shared_ptr<NumericMatrixSnapshot::Matrix>& slot) {
+        if(slot){++reuses;return;}
+        slot=std::make_shared<NumericMatrixSnapshot::Matrix>();++allocations;
+    }
     std::array<std::shared_ptr<NumericMatrixSnapshot::Matrix>,3> slots_;
 };
