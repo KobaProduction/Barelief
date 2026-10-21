@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "synthetic_engine_provider.h"
 #include <core_app/gui_presenter.h>
 #include <core_app/scheme_editor/editor_widget.h>
@@ -48,7 +49,13 @@ static void camera_resize_restore(SchemeEditorWidget& editor,QtNodes::GraphicsVi
 static void held_keyboard_navigation(QtNodes::GraphicsView* view,const auto& center,const auto& near,const auto& key) {
         view->setFocus(Qt::OtherFocusReason);const auto beforeHeld=center();key(QEvent::KeyPress,Qt::Key_W);require(near(beforeHeld,2),"WASD press jumps in chunks");QTest::qWait(70);const auto held=center();require(held.y()<beforeHeld.y()-5,"Held W did not pan");key(QEvent::KeyRelease,Qt::Key_W,0,true);QTest::qWait(35);require(center().y()<held.y()-3,"Autorepeat release stopped held key");key(QEvent::KeyRelease,Qt::Key_W);const auto released=center();QTest::qWait(45);require(near(released,2),"Key release fails to stop pan");
         const auto diagonalStart=center();key(QEvent::KeyPress,Qt::Key_W);key(QEvent::KeyPress,Qt::Key_D);QTest::qWait(65);key(QEvent::KeyRelease,Qt::Key_W);key(QEvent::KeyRelease,Qt::Key_D);const auto delta=center()-diagonalStart;require(delta.x()>5 && delta.y()<-5 && std::abs(delta.x()/delta.y())>.6 && std::abs(delta.x()/delta.y())<1.5,"Diagonal pan not normalized");
-        const auto physicalStart=center();key(QEvent::KeyPress,0x0426,17);QTest::qWait(65);key(QEvent::KeyRelease,0x0426,17);require(center().y()<physicalStart.y()-5,"Physical W under RU layout does not pan");
+        constexpr quint32 physicalW=
+#ifdef Q_OS_LINUX
+            25;
+#else
+            17;
+#endif
+        const auto physicalStart=center();key(QEvent::KeyPress,0x0426,physicalW);QTest::qWait(65);key(QEvent::KeyRelease,0x0426,physicalW);require(center().y()<physicalStart.y()-5,"Physical W under RU layout does not pan");
 }
 
 static void canvas_input_navigation(SchemeEditorWidget& editor,QtNodes::GraphicsView* view,QLineEdit* text,const auto& center,const auto& near) {
@@ -151,7 +158,7 @@ static void inspector_camera_stability(SchemeEditorWidget& editor,QtNodes::Graph
 }
 
 int main(int argc,char** argv){
-    if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen")return 2;
+    if(!test_fixture::isolated_gui_platform())return 2;
     QApplication app(argc,argv);
     try{
         GuiState state;state.file_configs.ui.autosave_enabled=false;state.file_configs.ui.pipeline_auto_apply=false;state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));

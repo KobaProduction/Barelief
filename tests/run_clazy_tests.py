@@ -20,7 +20,7 @@ class ClazyGateTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         environment = mock.patch.dict(os.environ, {"QUALITY_FULL": "0",
                                                    "QUALITY_PROGRESS_FILE": str(self.root / "progress.jsonl")})
         environment.start()

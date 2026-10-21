@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include <QAction>
 #include <QComboBox>
 #include <QElapsedTimer>
@@ -389,7 +390,7 @@ int main(int argc, char **argv) {
     const bool selector_mode = QByteArray(argv[1]) == "--physical-selector";
     const bool require_nonzero = QByteArray(argv[1]) != "--physical";
     try {
-        require(qEnvironmentVariable("QT_QPA_PLATFORM") == "offscreen", "isolated offscreen required");
+        require(test_fixture::isolated_gui_platform(), "isolated offscreen required");
         QTemporaryDir directory;
         require(directory.isValid(), "temporary directory");
         auto path = directory.filePath("project.json").toLocal8Bit();

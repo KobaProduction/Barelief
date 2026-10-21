@@ -12,6 +12,8 @@
 #include <QStackedWidget>
 #include <QLabel>
 #include <QListWidget>
+#include <QLineEdit>
+#include <QFileInfo>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -44,7 +46,14 @@ static void drive_save_dialog(QWidget* widget,bool& confirmed,bool& submitted,QE
                         if(auto* yes=box->button(QMessageBox::Yes)){confirmed=true;yes->click();}else box->reject();
                     }else if(auto* chooser=qobject_cast<QFileDialog*>(widget);chooser&&chooser->isVisible()){
                         if(deadline.elapsed()>5000){chooser->reject();return;}
-                        if(!submitted){submitted=true;chooser->selectFile(uiPath);QMetaObject::invokeMethod(chooser,"accept",Qt::QueuedConnection);}
+                        if(!submitted){
+                            chooser->selectFile(uiPath);
+                            // selectFile does not replace an already focused filename editor.
+                            auto* filename=chooser->findChild<QLineEdit*>("fileNameEdit");
+                            if(!filename)return;
+                            filename->setText(QFileInfo(uiPath).fileName());submitted=true;
+                            QMetaObject::invokeMethod(chooser,"accept",Qt::QueuedConnection);
+                        }
                     }}
 
 static int save_profile_dialog(core_app::MusicAnalysisDialog& dialog,const QTemporaryDir& directory,const char* theme) {
@@ -55,7 +64,12 @@ static int save_profile_dialog(core_app::MusicAnalysisDialog& dialog,const QTemp
                 const auto topLevels=QApplication::topLevelWidgets();for(auto* widget:topLevels){drive_save_dialog(widget,confirmed,submitted,deadline,uiPath);
                 }
             });driver.start(10);dialog.findChild<QPushButton*>("musicSaveProfile")->click();driver.stop();
-            if(!QFile::exists(uiPath+".json") || (attempt==1&&!confirmed))return failure(19,__LINE__);
+            if(!QFile::exists(uiPath+".json") || (attempt==1&&!confirmed)) {
+                std::cerr<<"Save profile dialog attempt="<<attempt<<" submitted="<<submitted<<" confirmed="<<confirmed
+                         <<" expected="<<qPrintable(uiPath+".json")<<" suffix_file="<<QFile::exists(uiPath+".json")
+                         <<" bare_file="<<QFile::exists(uiPath)<<'\n';
+                return failure(19,__LINE__);
+            }
         }
 return 0;
 }

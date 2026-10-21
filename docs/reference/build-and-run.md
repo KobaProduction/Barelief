@@ -162,6 +162,49 @@ QML-импорты и включает необходимые модули. Дл
 Создание архивов и установка выполняются только по отдельному запросу владельца.
 Проверка сборки приложения не означает приёмку install/upgrade/uninstall.
 
+### Linux и WSL
+
+Для Ubuntu 24.04 CI использует Qt 6.10.2, Ninja, CMake 3.30+ и GCC.
+Помимо development-пакетов OpenGL, PulseAudio, XKB и zlib, для упаковки нужны
+`patchelf` и `dpkg-dev`; для изолированных GUI-проверок — `xvfb`, `xauth`,
+`openbox`, шрифты DejaVu и XCB runtime dependencies. Список пакетов закреплён
+в [workflow](../../.github/workflows/windows.yml).
+
+В WSL используйте отдельную Linux-копию исходников: Windows и Linux не должны
+делить CMake cache или каталог сборки. Задайте `QT_ROOT` для Linux Qt и выполните
+`cmake --preset release`, затем `cmake --build --preset release`. Desktop FFT
+capacity в preset равна 16384; `BUILD_GUI=OFF` отключает только GUI.
+
+Тесты по умолчанию используют `offscreen`. Для оконных сценариев Linux задайте
+`-DBARELIEF_TEST_QPA_PLATFORM=xcb` при configure и запускайте CTest через
+`xvfb-run --auto-servernum` с отдельным Openbox. Тестовый guard разрешает X11
+только при `BARELIEF_TEST_VIRTUAL_DISPLAY=1` и локальном номере дисплея не меньше
+99; обычный WSLg `:0` не подходит. После создания QApplication проверяется также
+фактически выбранная платформа Qt. Используются виртуальные аудиоустройства;
+тестовые сигналы не воспроизводятся через динамики.
+
+Linux GUI упаковывается командой:
+
+```sh
+cpack -G DEB --config cmake-build-release/CPackConfig.cmake -B cmake-build-release/packages
+```
+
+Пакет размещает приложение и Qt runtime под `/opt/barelief`. QML imports
+определяются `qmlimportscanner`; необходимые модули и зависимости их plugins
+попадают в пакет с относительными runtime paths. Отсутствующие необязательные
+платформенные стили Qt не считаются обязательными imports. Системные зависимости
+DEB вычисляются `dpkg-shlibdeps`, включая зависимости XCB plugins.
+
+`scripts/verify-linux-package.py PACKAGE --evidence-dir DIRECTORY` запускается
+в отдельном Xvfb с тем же явным guard. Он распаковывает DEB во временный каталог,
+проверяет ELF dependencies без окружения Qt SDK, запускает упакованный GUI
+с отдельным синтетическим консольным ядром и каноническим проектом
+`tests/fixtures/linux-package.json` (восемь меняющихся тонов без аудиовыхода).
+Счётчики обычных кадров, строк History и её snapshots сохраняются отдельно;
+приёмка требует начатого sample и доставки хотя бы по одному из этих путей.
+Это проверка извлечённого runtime; она не подтверждает upgrade/uninstall,
+физические устройства или производительность нативной отрисовки.
+
 Оформление About, разделение лицензий и ограниченная проверка GitHub Releases
 адаптированы по подходу RedmiBook Manager. Автоматическая проверка раз в сутки,
 каналы prerelease, загрузка/запуск установщика и подписание релизов в Barelief

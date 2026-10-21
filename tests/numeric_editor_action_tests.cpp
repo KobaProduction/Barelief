@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "synthetic_capture.h"
 #include "editor_ui_test_fixture.h"
 #include <core_app/core_application.h>
@@ -257,7 +258,7 @@ static void run_action_oracles(CoreApplication& app){
     verify_stereo_example(context,initialRevision,applied);
 }
 int main(int argc,char** argv){
-    if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen")return 2;
+    if(!test_fixture::isolated_gui_platform())return 2;
     try{
         QTemporaryDir temporary;require(temporary.isValid(),"Temporary directory missing");
         const auto path=temporary.filePath("project.json");

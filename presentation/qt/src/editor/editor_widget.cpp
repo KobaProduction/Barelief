@@ -560,9 +560,13 @@ class ProfiledGraphicsView final : public GraphicsView {
         GraphicsView::focusOutEvent(event);
     }
     static int physical_pan_key(const QKeyEvent *event) {
-#ifdef Q_OS_WIN
-        // Set-1 physical scan codes, independent of the active Windows layout.
-        switch(event->nativeScanCode()) {
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+        // Linux XKB keycodes have an offset of eight from the physical codes.
+        auto scan=event->nativeScanCode();
+#ifdef Q_OS_LINUX
+        scan-=8;
+#endif
+        switch(scan) {
         case 0x11: return Qt::Key_W;
         case 0x1e: return Qt::Key_A;
         case 0x1f: return Qt::Key_S;

@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
@@ -56,7 +57,7 @@ static void unchanged_graph_and_autosave(CoreApplication& app,const pipeline::En
 
 }
 int main(int argc,char** argv){
-    if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen")return 2;
+    if(!test_fixture::isolated_gui_platform())return 2;
     try{
         QTemporaryDir temporary;require(temporary.isValid(),"Temporary fixture directory missing");const auto path=temporary.filePath("settings.json");
         domain::NumericProcessingGraph graph;graph.graph_id="main";desktop::NumericDraftPresentation presentation;

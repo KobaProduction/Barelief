@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include <QQuickItem>
 #include "synthetic_engine_provider.h"
 #include "numeric_gui_fixture.h"
@@ -405,7 +406,7 @@ int main(int argc, char **argv) {
         auto state = fixture();
         const auto mode = app.arguments().value(1);
         if(mode=="chrome") state.file_configs.ui.show_fps=true;
-        require(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen","isolated offscreen fixture only");
+        require(test_fixture::isolated_gui_platform(),"isolated offscreen fixture only");
         GuiPresenter presenter(state,test_fixture::synthetic_engine_provider(false));presenter.initialize();
         require(gui_fixture::wait([&]{return presenter.client().snapshot().epoch!=0;}),"initial snapshot");
         presenter.apply_pipeline_graph(state.file_configs.scene_graph);

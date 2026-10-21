@@ -1,0 +1,4538 @@
+{
+  "schema_version": 4,
+  "scene_graph": {
+    "configuration_bindings": [],
+    "connections": [
+      {
+        "conversion": 0,
+        "in_id": 2,
+        "in_index": 0,
+        "out_id": 1,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 1000,
+        "in_index": 0,
+        "out_id": 2,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 3,
+        "in_index": 0,
+        "out_id": 1000,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 1001,
+        "in_index": 0,
+        "out_id": 2,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 1001,
+        "in_index": 1,
+        "out_id": 3,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 4,
+        "in_index": 0,
+        "out_id": 1001,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 15,
+        "in_index": 0,
+        "out_id": 4,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 6,
+        "in_index": 0,
+        "out_id": 15,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 7,
+        "in_index": 0,
+        "out_id": 6,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 8,
+        "in_index": 0,
+        "out_id": 7,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 9,
+        "in_index": 0,
+        "out_id": 1,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 10,
+        "in_index": 0,
+        "out_id": 15,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 11,
+        "in_index": 0,
+        "out_id": 6,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 12,
+        "in_index": 0,
+        "out_id": 7,
+        "out_index": 1
+      },
+      {
+        "conversion": 0,
+        "in_id": 1003,
+        "in_index": 0,
+        "out_id": 1,
+        "out_index": 65534
+      },
+      {
+        "conversion": 0,
+        "in_id": 1003,
+        "in_index": 65533,
+        "out_id": 1000,
+        "out_index": 0
+      },
+      {
+        "conversion": 0,
+        "in_id": 10,
+        "in_index": 65526,
+        "out_id": 1003,
+        "out_index": 0
+      }
+    ],
+    "execution_interval": {
+      "denominator": {
+        "decimal": "120",
+        "dtype": "uint64"
+      },
+      "numerator": {
+        "decimal": "1",
+        "dtype": "int64"
+      }
+    },
+    "graph_id": "main",
+    "nodes": [
+      {
+        "enabled": true,
+        "id": 1,
+        "inputs": [],
+        "kind": "AudioSource",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "PCM",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "256",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "256",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 65534
+          }
+        ],
+        "parameters": {
+          "type": "endpoint",
+          "values": [
+            {
+              "key": "sample_rate",
+              "value": {
+                "decimal": "48000",
+                "dtype": "uint64"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 2,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "PCM",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "256",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "256",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "configuration",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 0,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "120",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 65531
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "configuration",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 0,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "120",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 65533
+          }
+        ],
+        "kind": "Window",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Window",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": [
+            {
+              "key": "size",
+              "value": {
+                "decimal": "4096",
+                "dtype": "uint64"
+              }
+            },
+            {
+              "key": "input_rate",
+              "value": {
+                "decimal": "48000",
+                "dtype": "uint64"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 1000,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Window",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "ArrayLength",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": []
+        }
+      },
+      {
+        "enabled": true,
+        "id": 3,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "WindowFunction",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Numeric",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float64",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 65529
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float64",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 65527
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": [
+            {
+              "key": "size",
+              "value": {
+                "decimal": "4096",
+                "dtype": "uint64"
+              }
+            },
+            {
+              "key": "function",
+              "value": "hann"
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 1001,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Window",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Numeric",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 1
+          }
+        ],
+        "kind": "ArrayMultiply",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Window",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": []
+        }
+      },
+      {
+        "enabled": true,
+        "id": 4,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Window",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "StereoFFT",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "Regular",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "48000",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "SpectrumMagnitude",
+              "shape": {
+                "axes": [
+                  "Bin",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": []
+        }
+      },
+      {
+        "enabled": true,
+        "id": 15,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "Regular",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "48000",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "SpectrumMagnitude",
+              "shape": {
+                "axes": [
+                  "Bin",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "BarkWeighting",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "Regular",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "48000",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "SpectrumMagnitude",
+              "shape": {
+                "axes": [
+                  "Bin",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": [
+            {
+              "key": "sample_rate",
+              "value": {
+                "decimal": "48000",
+                "dtype": "uint64"
+              }
+            },
+            {
+              "key": "bin_hz",
+              "value": {
+                "bits": "4027700000000000",
+                "dtype": "float64"
+              }
+            },
+            {
+              "key": "first_bin",
+              "value": {
+                "decimal": "0",
+                "dtype": "uint64"
+              }
+            },
+            {
+              "key": "frequencies_hz",
+              "value": {
+                "type": "numeric_array",
+                "values": "f32le-base64:"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 6,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "Regular",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "48000",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "SpectrumMagnitude",
+              "shape": {
+                "axes": [
+                  "Bin",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "Mel",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "MelEnergy",
+              "shape": {
+                "axes": [
+                  "Band",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": [
+            {
+              "key": "sample_rate",
+              "value": {
+                "decimal": "48000",
+                "dtype": "uint64"
+              }
+            },
+            {
+              "key": "bin_hz",
+              "value": {
+                "bits": "4027700000000000",
+                "dtype": "float64"
+              }
+            },
+            {
+              "key": "first_bin",
+              "value": {
+                "decimal": "0",
+                "dtype": "uint64"
+              }
+            },
+            {
+              "key": "frequencies_hz",
+              "value": {
+                "type": "numeric_array",
+                "values": "f32le-base64:"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 7,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "MelEnergy",
+              "shape": {
+                "axes": [
+                  "Band",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "Spectrogram",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Seconds"
+                },
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "MelEnergy",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "History",
+              "shape": {
+                "axes": [
+                  "Time",
+                  "Band"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "400",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "0",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Matrix"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt64",
+              "history_element": "Numeric",
+              "quantity": "FilledFrameCount",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Frames"
+            },
+            "id": 1
+          }
+        ],
+        "parameters": {
+          "capacity": {
+            "decimal": "400",
+            "dtype": "uint64"
+          },
+          "type": "history"
+        }
+      },
+      {
+        "enabled": true,
+        "id": 8,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Seconds"
+                },
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "MelEnergy",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "History",
+              "shape": {
+                "axes": [
+                  "Time",
+                  "Band"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "400",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "0",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Matrix"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "AudioSurfaceView",
+        "outputs": [],
+        "parameters": {
+          "type": "endpoint",
+          "values": []
+        }
+      },
+      {
+        "enabled": true,
+        "id": 9,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "PCM",
+              "shape": {
+                "axes": [
+                  "Sample",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "256",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "256",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "configuration",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float64",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 0,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "120",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 65526
+          }
+        ],
+        "kind": "AudioLineView",
+        "outputs": [],
+        "parameters": {
+          "type": "endpoint",
+          "values": [
+            {
+              "key": "bin_hz",
+              "value": {
+                "bits": "0000000000000000",
+                "dtype": "float64"
+              }
+            },
+            {
+              "key": "first_bin",
+              "value": {
+                "decimal": "0",
+                "dtype": "uint64"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 10,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "Regular",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "4096",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "48000",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "SpectrumMagnitude",
+              "shape": {
+                "axes": [
+                  "Bin",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "2048",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float64",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 65526
+          }
+        ],
+        "kind": "AudioLineView",
+        "outputs": [],
+        "parameters": {
+          "type": "endpoint",
+          "values": [
+            {
+              "key": "bin_hz",
+              "value": {
+                "bits": "4027700000000000",
+                "dtype": "float64"
+              }
+            },
+            {
+              "key": "first_bin",
+              "value": {
+                "decimal": "0",
+                "dtype": "uint64"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 11,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "ExplicitFloat64LE",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "1",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Hertz"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "1",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "MelEnergy",
+              "shape": {
+                "axes": [
+                  "Band",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "50",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Vector"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Unspecified"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "configuration",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float64",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 0,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "120",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 65526
+          }
+        ],
+        "kind": "AudioLineView",
+        "outputs": [],
+        "parameters": {
+          "type": "endpoint",
+          "values": [
+            {
+              "key": "bin_hz",
+              "value": {
+                "bits": "0000000000000000",
+                "dtype": "float64"
+              }
+            },
+            {
+              "key": "first_bin",
+              "value": {
+                "decimal": "0",
+                "dtype": "uint64"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "enabled": true,
+        "id": 12,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt64",
+              "history_element": "Numeric",
+              "quantity": "FilledFrameCount",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Frames"
+            },
+            "id": 0
+          }
+        ],
+        "kind": "ScalarMetricsView",
+        "outputs": [],
+        "parameters": {
+          "type": "endpoint",
+          "values": []
+        }
+      },
+      {
+        "enabled": true,
+        "id": 1003,
+        "inputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 0
+          },
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "UInt32",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "4",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Values"
+            },
+            "id": 65533
+          }
+        ],
+        "kind": "FrequencyStep",
+        "outputs": [
+          {
+            "contract": {
+              "channel_order": [
+                0
+              ],
+              "clock_domain": "local",
+              "coordinates": [
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                },
+                {
+                  "mode": "None",
+                  "origin": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "step": {
+                    "denominator": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "numerator": {
+                      "decimal": "0",
+                      "dtype": "int64"
+                    }
+                  },
+                  "unit": "Unspecified"
+                }
+              ],
+              "dtype": "Float64",
+              "history_element": "Numeric",
+              "quantity": "Unspecified",
+              "representation": {
+                "alignment": {
+                  "decimal": "8",
+                  "dtype": "uint64"
+                },
+                "encoding": "Native",
+                "layout": "Planar",
+                "normalization": "None",
+                "placement": "LeastSignificant",
+                "valid_bits": 0
+              },
+              "sample_rate": 48000,
+              "semantic": "Scalar",
+              "shape": {
+                "axes": [
+                  "None",
+                  "None"
+                ],
+                "extents": [
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  },
+                  {
+                    "maximum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    },
+                    "minimum": {
+                      "decimal": "1",
+                      "dtype": "uint64"
+                    }
+                  }
+                ],
+                "rank": "Scalar"
+              },
+              "tick_seconds": {
+                "denominator": {
+                  "decimal": "48000",
+                  "dtype": "uint64"
+                },
+                "numerator": {
+                  "decimal": "1",
+                  "dtype": "int64"
+                }
+              },
+              "type": "numeric",
+              "unit": "Hertz"
+            },
+            "id": 0
+          }
+        ],
+        "parameters": {
+          "type": "transform",
+          "values": []
+        }
+      }
+    ],
+    "processing_version": 4,
+    "version": 5
+  },
+  "ui": {
+    "autosave_enabled": false,
+    "show_amplitudes": true,
+    "show_raw_samples": true,
+    "show_spectrogram": true
+  }
+}

@@ -41,7 +41,10 @@ jobs:
       - name: Install compiler only when missing
         run: |
           python "$IDF_PATH/tools/idf_tools.py" install xtensa-esp-elf
-          compiler_bin=$(find "$IDF_TOOLS_PATH/tools/xtensa-esp-elf" -type d -name bin -print -quit)
+          compiler=$(find "$IDF_TOOLS_PATH/tools/xtensa-esp-elf" -type f -path "*/bin/xtensa-esp-elf-g++" -print -quit)
+          test -n "$compiler"
+          "$compiler" --version
+          compiler_bin=$(dirname "$compiler")
           test -n "$compiler_bin"
           echo "ESP32_TOOLCHAIN_DIR=$(dirname "$compiler_bin")" >> "$GITHUB_ENV"
       - name: Runner unit checks

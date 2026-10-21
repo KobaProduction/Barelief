@@ -893,7 +893,18 @@ class ExampleAutosaveProbe {
         return desktop::load_numeric_project(path,saved,disk)&&desktop::read_numeric_application_settings(saved,settings)&&
                settings["ui"].toObject()[key]==expected;
     }
+    bool flush_disabled_presentation() {
+        auto* editor=window->data_flow_editor();
+        if(!editor || autosave->isChecked())return false;
+        const auto revision=presenter.client().snapshot().graph_revision;
+        // Consume the editor's deferred presentation save while persistence is
+        // still disabled, so enabling autosave tests only the preference write.
+        editor->flush_presentation();
+        return app._ctx.editor_draft_modified && !QFile::exists(path) &&
+               presenter.client().snapshot().graph_revision==revision && !presenter.graph_request_pending();
+    }
     bool preferences() {
+        if(!flush_disabled_presentation())return failure("preferences.flush_disabled");
         autosave->setChecked(true);
         // Enabling autosave persists preferences, retaining document draft/applied snapshots.
         if(!wait([&]{return preference_saved(QStringLiteral("autosave_enabled"),true);},5000)) {

@@ -33,7 +33,7 @@ jobs:
           $toolchain = Join-Path (Split-Path (Split-Path $env:QT_ROOT_DIR)) 'Tools/mingw1310_64/bin'
           $toolchain >> $env:GITHUB_PATH
           $env:PATH = "$toolchain;$env:PATH"
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe" -DBUILD_TESTING=ON
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe" -DPORTABLE_DSP_MAX_FFT_SIZE=16384 -DBUILD_TESTING=ON
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --parallel 4
@@ -69,7 +69,7 @@ jobs:
       - name: System dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb xauth openbox fonts-dejavu-core zlib1g-dev libpulse-dev pulseaudio pulseaudio-utils libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+          sudo apt-get install -y xvfb xauth openbox fonts-dejavu-core patchelf dpkg-dev zlib1g-dev libpulse-dev pulseaudio pulseaudio-utils libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
       - name: Select supported Python for aqtinstall
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
@@ -90,7 +90,7 @@ jobs:
       - name: Configure
         run: |
           set -o pipefail
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DPORTABLE_DSP_MAX_FFT_SIZE=16384 -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DBARELIEF_TEST_QPA_PLATFORM=xcb -DPORTABLE_DSP_MAX_FFT_SIZE=16384 -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
       - name: Build
         run: |
           set -o pipefail
@@ -105,6 +105,13 @@ jobs:
           test -n "$package"
           dpkg-deb --info "$package"
           dpkg-deb --contents "$package" | grep -E '/bin/Barelief$'
+      - name: Verify packaged Linux runtime
+        if: matrix.gui == 'ON'
+        env:
+          BARELIEF_TEST_VIRTUAL_DISPLAY: '1'
+        run: |
+          package=$(find packages -maxdepth 1 -type f -name '*.deb' -print -quit)
+          xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24 +extension GLX' python scripts/verify-linux-package.py "$package" --evidence-dir build/package-verification
       - name: Upload Linux installer
         if: matrix.gui == 'ON'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -125,6 +132,7 @@ jobs:
       - name: Test GUI using virtual X11 display
         if: matrix.gui == 'ON'
         env:
+          BARELIEF_TEST_VIRTUAL_DISPLAY: '1'
           QT_QPA_PLATFORM: xcb
           QSG_RHI_BACKEND: opengl
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -172,4 +180,5 @@ jobs:
             linux-package.log
             linux-test.log
             build/Testing/Temporary/LastTest.log
+            build/package-verification/
           if-no-files-found: warn

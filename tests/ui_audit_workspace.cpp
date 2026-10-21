@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "ui_audit_recorder.h"
 #include "workspace_drag_fixture.h"
 #include <FloatingDockContainer.h>
@@ -640,7 +641,7 @@ WorkspaceDock* make_workspace_dock(WorkspaceWindow& host,auto& id,auto& title) {
     }
 
 void audit_workspace(Recorder& recorder) {
-    if (QGuiApplication::platformName() != QStringLiteral("offscreen")) {
+    if (!test_fixture::isolated_gui_platform()) {
         recorder.coverage("workspace", "not_covered", "Workspace probe requires the offscreen platform; no desktop input is permitted.");
         return;
     }

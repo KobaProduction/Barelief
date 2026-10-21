@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "synthetic_capture.h"
 #include "editor_ui_test_fixture.h"
 #include <core_app/core_application.h>
@@ -193,7 +194,7 @@ static void run_action_scenario(CoreApplication& app,const domain::NumericProces
     verify_floating_editor(window,editor,scene,external);
 }
 int main(int argc,char** argv){
-    if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen"){
+    if(!test_fixture::isolated_gui_platform()){
         std::fprintf(stderr,"This fixture requires explicit QT_QPA_PLATFORM=offscreen\n");
         return 2;
     }
@@ -207,7 +208,7 @@ int main(int argc,char** argv){
         char executable[]="numeric_graph_action_tests",option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
         CoreApplication app(count,arguments,test_fixture::synthetic_capture_factory(false));
-        require(QGuiApplication::platformName()=="offscreen","This fixture must only run with offscreen platform");
+        require(test_fixture::isolated_gui_platform(),"This fixture must only run with offscreen platform");
         run_action_scenario(app,graph);
         std::puts("actual graph QAction: saved unapplied sinks/source/processors, repeated tabs/here/window/split, endpoint bindings and floating editor scope PASS");
         return 0;

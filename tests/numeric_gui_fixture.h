@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #pragma once
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
@@ -68,7 +69,7 @@ struct App {
         }
     }
     void write_project(const QJsonObject& ui,const QByteArray& stored) {
-        check(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen","only isolated offscreen fixture is supported");
+        check(test_fixture::isolated_gui_platform(),"only isolated offscreen fixture is supported");
         check(directory.isValid(),"temporary fixture directory");
         path=directory.filePath("project.json").toLocal8Bit();
         if(stored.isEmpty())save(QString::fromLocal8Bit(path),graph,ui);

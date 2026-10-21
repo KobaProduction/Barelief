@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "core_app/workspace/workspace_window.h"
 #include <DockAreaWidget.h>
 #include <DockAreaTitleBar.h>
@@ -155,7 +156,7 @@ static void start_tab_drag(ads::CDockWidgetTab& tab,QPoint local) {
     settle();
 }
 static void check_drag_cancellation(WorkspaceScenario& s) {
-    if(QGuiApplication::platformName()!="offscreen") return;
+    if(!test_fixture::isolated_gui_platform()) return;
     // Exercise ADS's actual tab drag delegate, not a product mouse handler.
     auto* tab=s.a->tabWidget();
     auto* originalArea=s.a->dockAreaWidget();

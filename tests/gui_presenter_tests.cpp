@@ -64,7 +64,11 @@ static void verify_device_switching(GuiState& state,const std::shared_ptr<Numeri
  require(local->previewHz==120,"reactivated endpoint lost preview cadence");
 }
 static void gui_cli_cases() {
- QTemporaryDir directory;require(directory.isValid(),"CLI isolation");const auto executable=QCoreApplication::applicationDirPath()+"/Barelief.exe";
+ QTemporaryDir directory;require(directory.isValid(),"CLI isolation");const auto executable=QCoreApplication::applicationDirPath()+"/Barelief"
+#ifdef Q_OS_WIN
+ +QStringLiteral(".exe")
+#endif
+ ;
  auto cli=[&](QStringList args,int code,QByteArray expected,bool error){QProcess p;p.setWorkingDirectory(directory.path());p.start(executable,args);require(p.waitForStarted(3000),"GUI CLI start");if(!p.waitForFinished(3000)){p.kill();p.waitForFinished();throw std::runtime_error("GUI CLI blocked");}require(p.exitStatus()==QProcess::NormalExit&&p.exitCode()==code,"GUI CLI exit");require((error?p.readAllStandardError():p.readAllStandardOutput()).contains(expected),"GUI CLI diagnostic");require(!QFile::exists(directory.filePath("config.json")),"GUI CLI creates config");};
  cli({"--help"},0,"--remote-host",false);cli({"--version"},0,"1.0.0",false);cli({"--remote-port","invalid"},2,"Invalid --remote-port",true);cli({"--remote-port","65536"},2,"Invalid --remote-port",true);cli({"--unknown-option"},2,"Unknown option",true);
 }

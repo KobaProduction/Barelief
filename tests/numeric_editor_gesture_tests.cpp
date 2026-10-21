@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "synthetic_capture.h"
 #include "editor_ui_test_fixture.h"
 #include <core_app/core_application.h>
@@ -134,7 +135,7 @@ public:
 };
 
 static int run_layout_reload(char** argv){
-    require(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen","Layout probe requires offscreen");
+    require(test_fixture::isolated_gui_platform(),"Layout probe requires offscreen");
     auto encoded=QByteArray(argv[2]);
     char name[]="numeric_editor_gesture_tests",option[]="--config";
     char* arguments[]={name,option,encoded.data(),nullptr};int count=3;
@@ -434,7 +435,7 @@ static void run_gesture_scenario(CoreApplication& app,QTemporaryDir& temporary){
     observe_continuous_source(scenario);
 }
 int main(int argc,char** argv) {
-    if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen")return 2;
+    if(!test_fixture::isolated_gui_platform())return 2;
 #ifdef Q_OS_WIN
     qputenv("QT_QPA_FONTDIR",(qEnvironmentVariable("WINDIR","C:/Windows")+"/Fonts").toUtf8());
 #endif

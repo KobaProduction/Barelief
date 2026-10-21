@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include <core_app/plot_composition.h>
 #include "ui_audit_recorder.h"
 #include <core_app/graph_panel.h>
@@ -532,7 +533,7 @@ audit_metrics_and_inputs(recorder,vector,matrix,metrics,originalTheme,originalLa
 }
 
 void audit_graphs(Recorder& recorder) {
-    if(QGuiApplication::platformName()!=QStringLiteral("offscreen")) {
+    if(!test_fixture::isolated_gui_platform()) {
         recorder.coverage("graphs","not_covered","Graph probe requires the isolated offscreen platform.");
         return;
     }

@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "ui_audit_recorder.h"
 #include <barelief/quick/quick_ui.h>
 #include <QApplication>
@@ -139,7 +140,7 @@ bool Recorder::save(const QString& group) const {
 }
 }
 int main(int argc,char** argv){
-    if(argc!=3||qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen"){
+    if(argc!=3||!test_fixture::isolated_gui_platform()){
         std::fprintf(stderr,"usage: QT_QPA_PLATFORM=offscreen ui_transition_audit artifact-directory workspace|graphs|application\n");return 2;
     }
     const QString directory=QString::fromLocal8Bit(argv[1]),group=QString::fromLocal8Bit(argv[2]);

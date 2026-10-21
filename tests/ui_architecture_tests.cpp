@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include <core_app/workspace/ui_command_registry.h>
 #include <core_app/workspace/processor_directory_model.h>
 #include <core_app/ui/field_row.h>
@@ -24,6 +25,15 @@ void check(bool condition, const char *message) {
     if (!condition) { std::fprintf(stderr, "FAIL %s\n", message); ++failures; }
 }
 void settle() { QCoreApplication::processEvents(); }
+bool focus_widget(QWidget& window,QWidget* target) {
+    // X11 window mapping and activation are asynchronous. Drive the requested
+    // fixture focus until the public application state confirms ownership.
+    return QTest::qWaitFor([&]{
+        if(!window.isActiveWindow())window.activateWindow();
+        target->setFocus(Qt::OtherFocusReason);
+        return window.isActiveWindow() && QApplication::focusWidget()==target;
+    },1000);
+}
 class FakeDiscovery final : public presentation::ProcessorDiscoveryPort {
 public:
     presentation::ProcessorDiscoverySnapshot current;
@@ -71,14 +81,14 @@ void discovery() {
 void modeless_commands(QWidget& host,presentation::UiCommandRegistry& registry,int& undos) {
     QDialog dialog(&host); auto *dialogLayout = new QVBoxLayout(&dialog);
     auto *dialogText = new QLineEdit(&dialog); dialogLayout->addWidget(dialogText);
-    dialog.show(); dialog.activateWindow(); dialogText->setFocus(); settle(); registry.refresh();
-    check(QApplication::focusWidget()==dialogText,"command fixture has actual modeless dialog text focus");
+    dialog.show(); const bool focused=focus_widget(dialog,dialogText); registry.refresh();
+    check(focused && QApplication::focusWidget()==dialogText,"command fixture has actual modeless dialog text focus");
     check(!registry.execute("schemaUndo") && undos == 2, "modeless settings dialog excludes schema history");
     dialog.close(); host.close();
 }
 void text_command_exclusion(QWidget& host,QLineEdit* text,presentation::UiCommandRegistry& registry,QAction* action,QMenu& menu,int& undos) {
-    host.activateWindow(); text->setFocus(); settle(); registry.refresh();
-    check(QApplication::focusWidget()==text,"command fixture has actual text focus after menu dismissal");
+    const bool focused=focus_widget(host,text); registry.refresh();
+    check(focused && QApplication::focusWidget()==text,"command fixture has actual text focus after menu dismissal");
     check(!action->isEnabled() && !registry.execute("schemaUndo") && undos == 2, "text editing excludes schema undo");
     menu.popup(text->mapToGlobal(QPoint(0, 0))); settle(); registry.refresh();
     check(!action->isEnabled(), "menu opened from text retains text editing context");
@@ -97,8 +107,8 @@ void commands() {
         UiCommandContext::SchemaEditor, [&] { ++undos; }, [&] { return available; }});
     check(registry.register_command({"schemaUndo", "Redo", {}, UiCommandContext::Workspace, {}}) == action,
           "command registration reuses canonical action");
-    host.show(); host.activateWindow(); editor->setFocus(); settle(); registry.refresh();
-    check(QApplication::focusWidget()==editor,"command fixture has actual editor focus");
+    host.show(); const bool focused=focus_widget(host,editor); registry.refresh();
+    check(focused && QApplication::focusWidget()==editor,"command fixture has actual editor focus");
     check(registry.can_execute("schemaUndo") && action->isEnabled(), "schema history available in editor");
     action->trigger(); check(undos == 1, "canonical action dispatches command");
     QMenu menu(&host); menu.addAction(action);
@@ -108,7 +118,7 @@ void commands() {
     check(undos == 2, "menu dismissal retains editor origin during action dispatch");
     settle();
     text_command_exclusion(host,text,registry,action,menu,undos);
-    host.activateWindow(); editor->setFocus(); settle(); available = false; registry.refresh();
+    check(focus_widget(host,editor),"availability fixture has actual editor focus"); available = false; registry.refresh();
     check(!action->isEnabled() && !registry.execute("schemaUndo"), "history availability shared with action");
     available = true; belongs = false; registry.refresh();
     check(!registry.execute("schemaUndo"), "other workspace context cannot execute schema history");
@@ -173,6 +183,6 @@ void parameters() {
 }
 }
 int main(int argc, char **argv) {
-    QApplication app(argc, argv); discovery(); commands(); components_and_sections(); parameters();
+    QApplication app(argc, argv); if(!test_fixture::isolated_gui_platform())return 2; discovery(); commands(); components_and_sections(); parameters();
     std::printf("UI architecture: %d failures\n", failures); return failures ? 1 : 0;
 }

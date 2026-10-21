@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "test_assertions.h"
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
@@ -648,7 +649,7 @@ static int music_window_workflow(CoreApplication& app,const QTemporaryDir& direc
 return 0;
 }
 int main(int argc,char** argv) {
-    CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+    CHECK(test_fixture::isolated_gui_platform());
     QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
     QString export_path,image_dir;unsigned native_rate=48000;
     if(const auto result=parse_options(argc,argv,native_rate,export_path,image_dir))return result;

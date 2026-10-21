@@ -22,6 +22,8 @@ if(UNIX AND NOT APPLE AND BUILD_GUI)
     set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "libpulse0, libgl1, libxkbcommon0, libxcb1")
+    # Resolve system requirements of all bundled executables and Qt plugins.
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 endif()
 if(WIN32 AND BUILD_GUI)
     set(CPACK_GENERATOR "ZIP;NSIS")

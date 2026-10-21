@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
 #include <core_app/graph_panel.h>
@@ -217,7 +218,7 @@ void vector_delivery_queue(CoreApplication& app,MainWindow& window,const domain:
 }
 }
 int main(int argc,char** argv){
-    if(qEnvironmentVariable("QT_QPA_PLATFORM")!="offscreen")return 2;
+    if(!test_fixture::isolated_gui_platform())return 2;
     try {
         QTemporaryDir temporary;require(temporary.isValid(),"isolated config directory");
         auto graph=numeric_default_graph();auto document=workflow_document(graph);

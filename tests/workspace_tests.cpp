@@ -67,6 +67,35 @@ static Topology topology(MainWindow* window,WorkspaceDock* first,WorkspaceDock* 
     return {open_tabs(first),active->objectName(),double(left.width())/(left.width()+right.width()),external->floatingDockContainer()->frameGeometry()};
 }
 static bool close_rect(const QRect& a,const QRect& b,int tolerance=12){return std::abs(a.x()-b.x())<=tolerance && std::abs(a.y()-b.y())<=tolerance && std::abs(a.width()-b.width())<=tolerance && std::abs(a.height()-b.height())<=tolerance;}
+static void refresh_live_descriptor(gui_fixture::App& app,WorkspaceDock* dock,GraphPanel* original,const QString& key) {
+    using namespace gui_fixture;
+    auto& ui=app.application->_ctx.file_configs.ui;
+    auto preferences=ui.graph_views.value(key).toObject();
+    preferences["plot_modes"]=QJsonArray{"points"};preferences["plot_specialization"]="generic";
+    preferences["minimum_x"]=120;preferences["maximum_x"]=480;preferences["reverse_x"]=false;
+    ui.graph_views[key]=preferences;
+    const auto before=app.presenter().client().snapshot();
+    // Exercise the existing presentation subscription with the authoritative
+    // graph; an identical processing Apply intentionally publishes no graph change.
+    const QPointer<GraphPanel> panel=original;
+    emit app.presenter().active_graph_changed(before.graph);
+    const bool refreshed=wait([&]{
+        if(!panel || dock->widget()!=panel)return false;
+        const auto* chart=panel->active_chart();
+        return panel->modes()==QStringList{"line"} && panel->audio_scales() && chart &&
+               chart->x_range().first==120 && chart->x_range().second==480 && !chart->reverse_x();
+    });
+    if(!refreshed && panel){
+        const auto* chart=panel->active_chart();
+        qWarning()<<"Live descriptor refresh"<<"same panel"<<(dock->widget()==panel)<<"modes"<<panel->modes()
+                  <<"audio"<<panel->audio_scales()<<"chart"<<bool(chart)<<"preferences"<<ui.graph_views.value(key);
+        if(chart)qWarning()<<"Live descriptor range"<<chart->x_range().first<<chart->x_range().second<<chart->reverse_x();
+    }
+    check(refreshed,"fixed view descriptor changed or applicable saved range did not refresh live panel");
+    const auto after=app.presenter().client().snapshot();
+    check(after.epoch==before.epoch && after.graph_revision==before.graph_revision && !app.presenter().graph_request_pending(),
+          "presentation refresh changed processing");
+}
 static void workspace_persistence(gui_fixture::App& app,const QString& several,const QJsonObject& severalPresentation,quint64 revision,const QString& firstName,const QString& firstKey) {
 using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
         const auto before=app.editor->document();const auto beforeDocks=app.window->workspaceDocks().size();
@@ -89,14 +118,7 @@ using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
         check(app.presenter().client().snapshot().graph_revision==revision,"save/open changed processing");
         auto* liveDock=app.window->workspaceDock(firstName);auto* livePanel=liveDock?qobject_cast<GraphPanel*>(liveDock->widget()):nullptr;
         check(livePanel,"live descriptor panel missing");
-        auto livePrefs=ui.graph_views.value(firstKey).toObject();
-        livePrefs["plot_modes"]=QJsonArray{"points"};livePrefs["plot_specialization"]="generic";
-        livePrefs["minimum_x"]=120;livePrefs["maximum_x"]=480;livePrefs["reverse_x"]=false;
-        ui.graph_views[firstKey]=livePrefs;app.apply();
-        check(wait([&]{auto* chart=livePanel->active_chart();
-            return liveDock->widget()==livePanel && livePanel->modes()==QStringList{"line"} && livePanel->audio_scales() &&
-                chart && chart->x_range().first==120 && chart->x_range().second==480 && !chart->reverse_x();}),
-            "fixed view descriptor changed or applicable saved range did not refresh live panel");
+        refresh_live_descriptor(app,liveDock,livePanel,firstKey);
 }
 
 static void preset_matrix_restore(gui_fixture::App& app,const QString& zero,const QString& one,const QString& several,const QJsonObject& severalPresentation,const QString& firstName,const QString& externalName,const QString& neighborName,const QString& inactiveName,quint64 revision,const QString& theme,const QString& language) {

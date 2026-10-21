@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include <desktop/numeric_source_format.h>
 #include "synthetic_capture.h"
 #include "test_assertions.h"
@@ -304,7 +305,7 @@ static int file_copy_modes(auto& argv,auto& path,auto& original,auto& originalBy
 }
 
 static int scenario_file_copy(char** argv,const QString& path) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         const auto original=QString::fromLocal8Bit(argv[2]);const auto originalBytes=read(original);
         CHECK(!originalBytes.isEmpty());QFile copy(path);CHECK(copy.open(QIODevice::WriteOnly));CHECK(copy.write(originalBytes)==originalBytes.size());copy.close();
         auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
@@ -340,7 +341,7 @@ const QByteArray rejected=R"({"schema_version":4,"scene_graph":{"version":5,"pro
         return workspace_acceptance_ini(next);
 }
 static int scenario_workspace_persistence(int argc,char** argv,const QString& path,const QString& next) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");QCoreApplication controller(argc,argv);
+        CHECK(test_fixture::isolated_gui_platform());QCoreApplication controller(argc,argv);
         auto graph=native_mono_example(numeric_startup_graph());graph.execution_interval={1,10};
         // Keep the complete, coherently derived startup analysis fixture.
         domain::NumericProcessingGraph evaluated,executable;CHECK(domain::resolve_numeric_parameter_bindings(graph,numeric_editor::limits(),evaluated,executable,2));graph=std::move(evaluated);
@@ -423,7 +424,7 @@ if(invalid){if(const int failure=workspace_acceptance_import_recovery(app,window
         return workspace_acceptance_ready_phase(app,phase,source,window,editor,model,dockFor,invalid,flow);
 }
 static int scenario_workspace_phase(char** argv) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");const QByteArray phase=argv[2];const QString source=QString::fromLocal8Bit(argv[3]);
+        CHECK(test_fixture::isolated_gui_platform());const QByteArray phase=argv[2];const QString source=QString::fromLocal8Bit(argv[3]);
         auto encoded=source.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
         CoreApplication app(count,arguments,test_fixture::synthetic_capture_factory());install_synthetic_capture_discovery(app);std::fprintf(stderr,"WORKSPACE %s constructed\n",phase.constData());
         MainWindow* window=nullptr;for(const auto items_6=QApplication::topLevelWidgets();auto* widget:items_6)if(auto* candidate=qobject_cast<MainWindow*>(widget))window=candidate;CHECK(window);window->show();
@@ -475,7 +476,7 @@ const auto tap=app.pipeline().subscribe_numeric_tap({{"main",23,domain::PortDire
 
 }
 static int scenario_matrix_bypass(const QString& path) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         auto graph=numeric_generator_graph();
         const auto retained=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.id==7;});
         CHECK(retained!=graph.nodes.end());const auto history=retained->outputs[0].contract;
@@ -903,7 +904,7 @@ return 0;
 }
 
 static int scenario_temporal_fft(char** argv,const QString& path,const QString& next) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         for(unsigned rate:{44100u,48000u}) { if(const int failure=validate_temporal_rate(rate);failure)return failure; }
         {
             auto mismatched=numeric_temporal_fft_graph();
@@ -1130,7 +1131,7 @@ static int scenario_current_examples(const QString& path,const QString& next) {
     }
 
 static int scenario_verify_project(char** argv,const QString& path) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         const QString source=QString::fromLocal8Bit(argv[2]);const auto original=read(source);
         CHECK(!original.isEmpty() && QFile::copy(source,path));
         auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
@@ -1201,7 +1202,7 @@ const auto stored_presets=app._ctx.file_configs.ui.pipeline_presets;
         return startup_menu_routes(app,window,model,path,original_file,old_builtin,stored_presets);
 }
 static int scenario_startup_menu(char** argv,const QString& path) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         const bool old_builtin=QByteArray(argv[1])=="--startup-menu-old";
         desktop::NumericProjectDocument fixture;
         desktop::NumericDraftPresentation display;
@@ -1236,7 +1237,7 @@ static int startup_selector_fixture(auto& path,auto& original){
 return 0;
 }
 static int scenario_startup_selector(char** argv,const QString& path) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         const bool unavailable=QByteArray(argv[1])=="--startup-selector-unavailable";
         QByteArray original;
         if(unavailable){if(const int failure=startup_selector_fixture(path,original);failure)return failure;}
@@ -1329,7 +1330,7 @@ auto inspect=[&](const char* label){ return inspect_shipped_example(label,editor
 
 static int scenario_shipped_examples(char** argv,const QString& path) {
         const bool gui_workflow=QByteArray(argv[1])=="--shipped-examples-ui";
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
         CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));

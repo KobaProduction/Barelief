@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "numeric_render_fixture.h"
 #include "numeric_gui_fixture.h"
 #include <core_app/numeric_view_adapter.h>
@@ -35,7 +36,7 @@ int main(int argc,char** argv) {
     QApplication application(argc,argv);
     try {
         using namespace gui_fixture;
-        check(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen","isolated offscreen test required");
+        check(test_fixture::isolated_gui_platform(),"isolated offscreen test required");
         const auto graph=numeric_test_graph();auto ctx=context(graph,8,domain::PortDirection::Input);
         presentation::NumericViewAdapter adapter({4,{400,50,1048576,{true,32768}},{true,32768}});check(adapter.bind(ctx->endpoint)==signal_contracts::Status::ok,"bind History input");
         SpectrogramGraph surface;QLabel label;

@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "test_assertions.h"
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
@@ -219,7 +220,7 @@ static int validate_recovery(CoreApplication& app,const domain::NumericProcessin
         return 0;}
 
 static int recover_project(char** argv) {
-        CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+        CHECK(test_fixture::isolated_gui_platform());
         QTemporaryDir temp;CHECK(temp.isValid());const auto copy=temp.filePath("project.json");
         CHECK(QFile::copy(QString::fromLocal8Bit(argv[2]),copy));
         desktop::NumericProjectDocument expected_document;domain::NumericProcessingGraph expected_graph;
@@ -244,7 +245,7 @@ int main(int argc,char** argv) {
     if(argc==3 && QByteArray(argv[1])=="--verify-recovery") {
         return recover_project(argv);
     }
-    CHECK(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen");
+    CHECK(test_fixture::isolated_gui_platform());
     QTemporaryDir temp;CHECK(temp.isValid());const auto path=temp.filePath("project.json");
     desktop::NumericDraftPresentation presentation;
     presentation.application_settings={{"ui",QJsonObject{{"autosave_enabled",false},{"graph_rendering",QJsonObject{{"gui_fps_mode","maximum"}}}}}};

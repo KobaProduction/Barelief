@@ -18,6 +18,10 @@ load_workspace_dependency()
 set_target_properties(qtadvanceddocking-qt6 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+if(UNIX AND NOT APPLE)
+    # This replaceable shared library resolves the Qt runtime installed beside it.
+    set_property(TARGET qtadvanceddocking-qt6 PROPERTY INSTALL_RPATH "$ORIGIN")
+endif()
 add_library(qt_workspace STATIC
     ${CMAKE_SOURCE_DIR}/presentation/qt/include/core_app/workspace/workspace_window.h
     ${CMAKE_SOURCE_DIR}/presentation/qt/src/workspace/workspace_window.cpp)

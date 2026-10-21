@@ -100,7 +100,7 @@ class CommandDispatchTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.owner = self.root / "owner.cpp"
         self.owner.write_text('#include "inline.hpp"')
         entries = [{"directory": str(self.root), "file": str(self.owner),

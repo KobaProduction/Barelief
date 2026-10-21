@@ -1,3 +1,4 @@
+#include "isolated_gui_platform.h"
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
@@ -15,7 +16,7 @@
 static void require(bool b,const char*m){if(!b)throw std::runtime_error(m);}
 static QByteArray read(const QString&path){QFile f(path);require(f.open(QIODevice::ReadOnly),"read shutdown file");return f.readAll();}
 static void shutdown_child(char** argv) {
-  require(qEnvironmentVariable("QT_QPA_PLATFORM")=="offscreen","isolated offscreen only");
+  require(test_fixture::isolated_gui_platform(),"isolated offscreen only");
   QByteArray path=argv[2];char name[]="shutdown-child",option[]="--config";char* args[]{name,option,path.data(),nullptr};int count=3;
   try{CoreApplication app(count,args,test_fixture::synthetic_capture_factory(false));
    MainWindow* window=nullptr;const auto topLevels=QApplication::topLevelWidgets();for(auto*w:topLevels)if(auto* m=qobject_cast<MainWindow*>(w))window=m;

@@ -28,7 +28,8 @@ jobs:
         run: python scripts/vendor/chromium_checkdeps/checkdeps.py --root .
       - name: Boundary regression checks
         run: python tests/checkdeps_tests.py
-      - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
+      - id: qt
+        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
         with:
           version: '6.10.2'
           arch: win64_mingw
@@ -47,17 +48,17 @@ jobs:
       - name: clang-tidy
         run: python -m pre_commit run clang-tidy --all-files --hook-stage pre-push
       - name: Clazy
-        if: success() || failure()
+        if: ${{ always() && steps.qt.outcome == 'success' }}
         shell: pwsh
         run: |
           $qtInstall = Split-Path (Split-Path $env:QT_ROOT_DIR)
           $env:CLAZY_STANDALONE = Join-Path $qtInstall 'Tools/QtCreator/bin/clang/bin/clazy-standalone.exe'
           python -m pre_commit run clazy --all-files --hook-stage pre-push
       - name: clang-tidy tests (opt-in separate result)
-        if: ${{ (success() || failure()) && github.event_name == 'workflow_dispatch' && inputs.test_lint }}
+        if: ${{ always() && steps.qt.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.test_lint }}
         run: python -m pre_commit run clang-tidy-tests --all-files --hook-stage manual
       - name: Clazy tests (opt-in separate result)
-        if: ${{ (success() || failure()) && github.event_name == 'workflow_dispatch' && inputs.test_lint }}
+        if: ${{ always() && steps.qt.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.test_lint }}
         shell: pwsh
         run: |
           $qtInstall = Split-Path (Split-Path $env:QT_ROOT_DIR)
