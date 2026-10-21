@@ -179,8 +179,16 @@
 
 - Используйте стандартный `pre-commit` с `.pre-commit-config.yaml`, установленный
   для стадии `pre-push`. Проверка настроена только для C++.
-- C++ проверяет clang-tidy: максимум 20 операторов и cognitive complexity 15,
-  настройки в `.clang-tidy`. Для корректных include/defines предварительно
+- Production C++ проверяет clang-tidy: максимум 20 операторов и cognitive
+  complexity 15, настройки в `.clang-tidy`. Отдельный ручной прогон тестов
+  применяет к сценариям `tests/**/*_tests.cpp` и явно зарегистрированным тестовым
+  scenario/benchmark drivers пределы 60 операторов и complexity 25. Все тестовые
+  заголовки, builders, oracle и остальные C++ файлы сохраняют строгие 20/15;
+  `tests/sdk_consumer/main.cpp` относится к строгой группе. Реестр drivers
+  хранится в runner; правила выбора конфигурации описаны в
+  `docs/reference/code-quality.md`. Макросы учитываются линтером; `CHECK`
+  передаёт результат обычной функции отчёта без скрытой логики сценария.
+  Для корректных include/defines предварительно
   подготовьте `cmake-build-release/compile_commands.json` через release preset.
   Число физических строк не ограничивается. Python и QML в эту проверку не входят.
 - Декомпозируйте по ответственности. Не обходите пределы сжатием строк,

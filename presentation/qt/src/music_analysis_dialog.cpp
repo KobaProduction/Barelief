@@ -134,22 +134,30 @@ struct MusicAnalysisDialog::State {
         const auto path=preview_requested;auto stop=preview_cancel;
         preview_future=std::async(std::launch::async,[path,opt,stop,service=services.preview]{return service(path,opt,*stop);});
     }
+    bool restore_cached_preview(const QString& path){
+        for(const auto& cached:document.previews)if(cached.source==path && cached.rows){
+            stop_preview();preview=cached;update_preview();return true;
+        }
+        return false;
+    }
     void request_preview(const QString& path){
         if(!has_profile || future.valid() || mode!=Mode::Results || path.isEmpty())return;
         show_track_mean(path);
-        for(const auto& cached:document.previews)if(cached.source==path && cached.rows){stop_preview();preview=cached;update_preview();return;}
+        if(restore_cached_preview(path))return;
         if(!preview_future.valid() && preview.source==path && preview.rows)return;
         preview_requested=path;preview_pending=true;preview_cancel->store(true);preview={};update_preview();
         if(!preview_future.valid())launch_preview();preview_timer->start(30);
     }
-    void poll_preview(){
-        if(preview_future.valid() && preview_future.wait_for(std::chrono::seconds(0))==std::future_status::ready){
-            auto result=preview_future.get();
+    void accept_preview_result(PreviewResult result){
             if(!preview_pending){
                 if(result.success)preview=std::move(result.preview);
                 else if(!result.cancelled)preview_title->setText(ui::text("Preview failed: %1").arg(result.error));
                 if(result.success)update_preview();
             }
+    }
+    void poll_preview(){
+        if(preview_future.valid() && preview_future.wait_for(std::chrono::seconds(0))==std::future_status::ready){
+            accept_preview_result(preview_future.get());
         }
         if(!preview_future.valid()){
             if(preview_pending){launch_preview();update_preview();}
@@ -351,12 +359,16 @@ struct MusicAnalysisDialog::State {
     void build_profile_storage_actions(){
         load=button("Load profile","musicLoadProfile",owner);save=button("Save profile","musicSaveProfile",owner);header->addWidget(load);header->addWidget(save);
     }
+    void build_fft_size(){
+        auto& s=*this;auto* dialog=owner;
+    s.size=new QComboBox(dialog);for(std::size_t n=512;n<=dsp_kernels::max_fft_samples;n*=2)s.size->addItem(QString::number(n));s.size->setCurrentText("4096");s.size->setObjectName("musicFftSize");left->addRow(label("FFT size",dialog),s.size);
+
+    }
     void build_analysis_forms(){
         auto& s=*this;auto* dialog=owner;
     auto* settings=new QHBoxLayout;left=new QFormLayout;right=new QFormLayout;settings->addLayout(left);settings->addLayout(right);layout->addLayout(settings);
     s.rate=new QComboBox(dialog);s.rate->addItems({"32768","32000","44100","48000"});s.rate->setEditable(true);s.rate->setObjectName("musicSampleRate");left->addRow(label("Analysis sample rate, Hz",dialog),s.rate);
-    s.size=new QComboBox(dialog);for(std::size_t n=512;n<=dsp_kernels::max_fft_samples;n*=2)s.size->addItem(QString::number(n));s.size->setCurrentText("4096");s.size->setObjectName("musicFftSize");left->addRow(label("FFT size",dialog),s.size);
-
+    build_fft_size();
     }
     void build_spectrum(){
         auto& s=*this;auto* dialog=owner;
@@ -456,11 +468,16 @@ struct MusicAnalysisDialog::State {
     s.status=new QLabel(dialog);s.status->setObjectName("musicStatus");s.status->setWordWrap(true);s.status->setTextInteractionFlags(Qt::TextSelectableByMouse);root->addWidget(s.status);s.timer=new QTimer(dialog);s.preview_timer=new QTimer(dialog);s.set_busy(false);s.update_preview();
 
     }
+    void configure_new_scan(){
+        stop_preview();profile_load_diagnostic.reset();applied_status=false;set_mode(State::Mode::Setup);
+        progress->setRange(0,std::max(1,files->count()));progress->setValue(0);
+        status->setText(ui::text("Configure a new scan; previous results remain available."));
+    }
     void build_preview_events(){
         auto& s=*this;auto* dialog=owner;
     QObject::connect(s.preview_timer,&QTimer::timeout,dialog,[&s]{s.poll_preview();});
     QObject::connect(s.result_files,&QListWidget::currentTextChanged,dialog,[&s](const QString& path){s.request_preview(path);});
-    QObject::connect(s.new_scan,&QPushButton::clicked,dialog,[&s]{s.stop_preview();s.profile_load_diagnostic.reset();s.applied_status=false;s.set_mode(State::Mode::Setup);s.progress->setRange(0,std::max(1,s.files->count()));s.progress->setValue(0);s.status->setText(ui::text("Configure a new scan; previous results remain available."));});
+    QObject::connect(s.new_scan,&QPushButton::clicked,dialog,[&s]{s.configure_new_scan();});
     QObject::connect(s.show_results,&QPushButton::clicked,dialog,[&s]{s.profile_load_diagnostic.reset();s.set_mode(State::Mode::Results);s.status->setText(ui::text("Showing completed scan results"));});
     QObject::connect(s.preview_rows,&QSpinBox::valueChanged,dialog,[&s]{s.update_memory();});QObject::connect(s.preview_bands,&QSpinBox::valueChanged,dialog,[&s]{s.update_memory();});
 
@@ -480,10 +497,13 @@ struct MusicAnalysisDialog::State {
     QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{auto path=QFileDialog::getExistingDirectory(dialog,ui::text("Select audio folder"));if(!path.isEmpty())s.append(s.services.scan?s.services.scan(path,true):QStringList{});});QObject::connect(s.clear,&QPushButton::clicked,s.files,&QListWidget::clear);
 
     }
+    void update_fft_geometry(const QString& text){
+        hop->setMaximum(text.toInt());smooth->setMaximum(text.toInt()/2);update_memory();
+    }
     void build_processing_events(){
         auto& s=*this;auto* dialog=owner;
     QObject::connect(s.run,&QPushButton::clicked,dialog,[&s]{s.start();});QObject::connect(s.cancel,&QPushButton::clicked,dialog,[&s]{s.cancelled->store(true);});QObject::connect(s.timer,&QTimer::timeout,dialog,[&s]{s.poll();});QObject::connect(s.normalized,&QCheckBox::toggled,dialog,[&s]{s.update_preview();});
-    QObject::connect(s.size,&QComboBox::currentTextChanged,dialog,[&s](const QString& text){s.hop->setMaximum(text.toInt());s.smooth->setMaximum(text.toInt()/2);s.update_memory();});
+    QObject::connect(s.size,&QComboBox::currentTextChanged,dialog,[&s](const QString& text){s.update_fft_geometry(text);});
     QObject::connect(s.target,&QComboBox::currentIndexChanged,dialog,[&s]{if(s.mode!=State::Mode::Results)s.select_target();else s.set_mode(s.mode);});QObject::connect(s.reload_targets,&QPushButton::clicked,dialog,[&s]{s.refresh_targets();});
 
     }
@@ -496,11 +516,36 @@ struct MusicAnalysisDialog::State {
         else s.status->setText(ui::text("Profile applied to the scheme; save the project to keep the coefficients"));});
 
     }
+    void choose_profile_save(){
+        QFileDialog chooser(owner,ui::text("Save frequency profile"),profile_path,"JSON (*.json)");
+        chooser.setAcceptMode(QFileDialog::AcceptSave);chooser.setDefaultSuffix("json");
+        if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;
+        const auto path=chooser.selectedFiles().value(0);QString error;
+        if(!owner->save_profile_to(path,error))status->setText(error);
+        else {profile_path=path;status->setText(ui::text("Profile saved: %1").arg(path));}
+    }
+    void choose_profile_load(){
+        const auto path=QFileDialog::getOpenFileName(owner,ui::text("Load frequency profile"),{},"JSON (*.json)");
+        if(path.isEmpty())return;
+        QString error;if(!owner->load_profile_from(path,error))status->setText(error);
+    }
     void build_storage_events(){
-        auto& s=*this;auto* dialog=owner;
-    QObject::connect(s.save,&QPushButton::clicked,dialog,[&s,dialog]{QFileDialog chooser(dialog,ui::text("Save frequency profile"),s.profile_path,"JSON (*.json)");chooser.setAcceptMode(QFileDialog::AcceptSave);chooser.setDefaultSuffix("json");if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;const auto path=chooser.selectedFiles().value(0);QString error;if(!dialog->save_profile_to(path,error))s.status->setText(error);else{s.profile_path=path;s.status->setText(ui::text("Profile saved: %1").arg(path));}});
-    QObject::connect(s.load,&QPushButton::clicked,dialog,[&s,dialog]{auto path=QFileDialog::getOpenFileName(dialog,ui::text("Load frequency profile"),{},"JSON (*.json)");if(path.isEmpty())return;QString error;if(!dialog->load_profile_from(path,error))s.status->setText(error);});
-
+        QObject::connect(save,&QPushButton::clicked,owner,[this]{choose_profile_save();});
+        QObject::connect(load,&QPushButton::clicked,owner,[this]{choose_profile_load();});
+    }
+    void build_content(){
+    build_shell();
+    build_files();
+    build_analysis_forms();
+    build_spectrum();
+    build_processing();
+    build_preview_resolution();
+    build_training();
+    build_progress();
+    build_routes();
+    build_plots();
+    build_statistics();
+    build_summaries();
     }
     void build_language_events(){
         QObject::connect(&ui::Language::instance(),&ui::Language::changed,owner,[this]{refresh_language();});
@@ -508,11 +553,15 @@ struct MusicAnalysisDialog::State {
     void refresh_language(){
         auto& s=*this;
         s.update_file_count();s.set_mode(s.mode);s.progress->setFormat(ui::text("%v / %m files (%p%)"));
+        refresh_control_labels();
+        refresh_plot_labels();refresh_spectrum_labels();refresh_table_labels();refresh();
+    }
+    void refresh_control_labels(){
+        auto& s=*this;
         s.cadence->setItemText(0,ui::text("Fixed sample hop"));s.cadence->setItemText(1,ui::text("Declared time interval"));
         for(std::size_t i=0;i<s.targets.size();++i)s.target->setItemText(int(i),frequency_profile_target_caption(s.targets[i]));
         if(s.applied_status)s.status->setText(ui::text("Profile applied to the scheme; save the project to keep the coefficients"));
         if(s.profile_load_diagnostic)s.status->setText(profile_read_issue_text(*s.profile_load_diagnostic));
-        refresh_plot_labels();refresh_spectrum_labels();refresh_table_labels();refresh();
     }
     void refresh_plot_labels(){
         auto& s=*this;
@@ -530,18 +579,7 @@ struct MusicAnalysisDialog::State {
 
 };
 MusicAnalysisDialog::MusicAnalysisDialog(QWidget* parent):QDialog(parent),state_(std::make_unique<State>(this)) {
-    state_->build_shell();
-    state_->build_files();
-    state_->build_analysis_forms();
-    state_->build_spectrum();
-    state_->build_processing();
-    state_->build_preview_resolution();
-    state_->build_training();
-    state_->build_progress();
-    state_->build_routes();
-    state_->build_plots();
-    state_->build_statistics();
-    state_->build_summaries();
+    state_->build_content();
     state_->build_preview_events();
     state_->build_selection_events();
     state_->build_file_events();

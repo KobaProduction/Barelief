@@ -3,6 +3,7 @@
 #include "numeric_preview_cadence_fixture.h"
 #include <control/numeric_desktop_host.h>
 #include <core_app/numeric_default_graph.h>
+#include <domain/graph/node_factory.h>
 #include <bit>
 #include <set>
 #include <cstdio>
@@ -47,39 +48,9 @@ static void event_preview_pending_and_reentrancy(){
  settle(20);
  require(maxDepth==1&&reentrantCalls==1&&latest==41,"reentrant preview bypassed flush or subscription fence");
 }
-static void ordinary_matrix_query(bool remote,Semantic tag){
- std::fprintf(stderr,"ordinary Matrix case remote=%d tag=%d\n",int(remote),int(tag));
- auto c=contract(6);c.semantic=tag;c.history_element=Semantic::Numeric;
- c.shape={Rank::Matrix,{Axis::Declared,Axis::Declared},{ExtentBounds{2,2},ExtentBounds{3,3}}};
- const auto limits=bdsp_protocol::numeric_control::desktop_limits().frame;
- domain::OwnedProcessingContract owner;require(domain::own_processing_contract(c,limits,16384,owner)==Status::ok,"ordinary Matrix contract");
- auto g=graph("matrix.query");g.nodes[0].outputs[0].contract=owner;g.nodes[1].inputs[0].contract=owner;
- NumericDesktopHost producer;{Replies replies(producer);replies.accepted(apply(g));}
- std::unique_ptr<NumericDesktopHost> receiver;
- if(remote){require(producer.listen(QHostAddress::LocalHost,0),"Matrix query server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"Matrix query connected");}
- auto& host=remote?*receiver:producer;const auto endpoint=sink(g);size_t frames=0,history=0,deliveries=0;Status lastStatus=Status::unavailable;DeliveredNumericFrame latest;
- host.set_numeric_frame_handler([&](const auto& value){++deliveries;lastStatus=value.status;if(value.frame && value.status==Status::ok){latest=value;++frames;}});
- host.set_numeric_history_handler([&](const auto&){++history;});
- host.set_numeric_history_snapshot_handler([&](const auto&,auto,auto){++history;});
- require(host.subscribe_numeric_frames({endpoint}),"ordinary Matrix subscription");
- // A successful subscribe call only queues the remote binding. Await the real
- // ACK/query completion boundary before sending the single loss-sensitive frame.
- if(remote){Replies ready(host);ready.accepted(command(EngineCommand::Snapshot));}
- settle();
- std::array<std::uint64_t,6> values{9007199254740993ULL,2,3,4,5,UINT64_MAX};PlaneLayout plane{0,{24,8}};
- FrameStamp stamp;stamp.producer_epoch=731;stamp.generation=1;stamp.sequence=stamp.source_sequence=1;
- require(producer.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,3}}})==Status::ok,"ordinary Matrix feed");
- if(!wait([&]{return frames>0;})){
-  DeliveredNumericFrame cached;const auto queried=producer.query_numeric(endpoint,cached);const auto local=producer.snapshot(),visible=host.snapshot();
-  std::fprintf(stderr,"Matrix live failed remote=%d tag=%d callbacks=%zu history=%zu status=%d query=%d cached=%d producerState=%d visibleState=%d epoch=%llu/%llu revision=%llu/%llu warning=%s\n",int(remote),int(tag),deliveries,history,int(lastStatus),int(queried),int(bool(cached.frame)),int(local.statuses.value("analyzer").state),int(visible.statuses.value("analyzer").state),(unsigned long long)local.epoch,(unsigned long long)visible.epoch,(unsigned long long)local.graph_revision,(unsigned long long)visible.graph_revision,qPrintable(host.network_warning()));
-  throw std::runtime_error("ordinary Matrix live delivery");
- }const auto before=frames;
- host.request_numeric_snapshots();require(wait([&]{return frames>before;}),"ordinary Matrix cold query response");
- require(history==0,"passive tag or Matrix rank triggered History path");
- const auto numeric=std::get<NumericView>(latest.frame.view().payload);require(!numeric.ring.capacity && numeric.actual[0]==2 && numeric.actual[1]==3,"ordinary Matrix geometry changed");
- for(size_t row=0;row<2;++row)for(size_t col=0;col<3;++col){std::uint64_t exact=0;require(load_element(numeric,{0,row,col},exact)==Status::ok && exact==values[row*3+col],"ordinary Matrix query lost exact bits");}
-
- if(remote){
+static void matrix_lineage_transition(NumericDesktopHost& producer,NumericDesktopHost& host,
+ const NumericContract& c,const FrameLimits& limits,const std::array<std::uint64_t,6>& values,
+ const PlaneLayout& plane,FrameStamp stamp,std::size_t& frames,std::size_t& history) {
   // The same physical Matrix endpoint may carry an explicit ring and later a
   // dense current value. Retirement must reflect the latest accepted lineage.
   auto arena=std::make_shared<remote_numeric::Arena>(limits);OwnedDataFrame ring;
@@ -92,7 +63,102 @@ static void ordinary_matrix_query(bool remote,Semantic tag){
   require(wait([&]{return frames>beforeDense;}),"Matrix dense transition missing");settle();
   const auto beforeRetire=history;host.disconnect_remote();settle();
   require(history==beforeRetire,"remote retirement invented History after dense Matrix transition");
+}
+static domain::NumericProcessingGraph slow_history_graph() {
+ auto g=graph("slow.history",2);auto h=contract(2);h.semantic=Semantic::History;h.history_element=Semantic::Numeric;
+ h.shape={Rank::Matrix,{Axis::Time,Axis::Declared},{ExtentBounds{0,16},ExtentBounds{2,2}}};
+ auto count=contract();count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;
+ const auto own=[](const NumericContract& c){domain::OwnedProcessingContract result;
+  require(domain::own_processing_contract(c,bdsp_protocol::numeric_control::desktop_limits().frame,16384,result)==Status::ok,"slow History contract");return result;};
+ domain::ConfiguredProcessingNode history;history.id=2;history.kind="Spectrogram";history.parameters=domain::HistoryProcessingParameters{16};
+ history.inputs=g.nodes[1].inputs;history.outputs={{0,domain::PortDirection::Output,own(h)},{1,domain::PortDirection::Output,own(count)}};
+ g.nodes[1].inputs[0].contract=history.outputs[0].contract;g.nodes.push_back(std::move(history));g.edges={{0,2,0,0},{2,1,0,0}};
+ return g;
+}
+static void produce_history(NumericEngine& engine,std::uint64_t epoch,std::uint64_t& sequence,
+ std::atomic_bool& stop,std::atomic_bool& bad_feed) {auto c=contract(2);PlaneLayout plane{0,{8,0}};FrameStamp stamp;stamp.producer_epoch=epoch;stamp.generation=1;
+  auto deadline=std::chrono::steady_clock::now();
+  while(!stop.load()){++sequence;std::array<std::uint64_t,2> values{sequence,sequence+1};stamp.sequence=stamp.source_sequence=sequence;
+   if(engine.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,1}}})!=Status::ok)bad_feed=true;
+   deadline+=std::chrono::milliseconds(2);while(!stop.load()&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
+  }
+}
+static domain::NumericProcessingGraph resume_graph(const domain::ProcessingAdmissionLimits& admission) {
+auto defaults=numeric_default_graph();auto history=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==7;}),output=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==8;});
+ history.parameters=domain::HistoryProcessingParameters{64};
+ require(bool(domain::derive_processing_node_contracts(history,admission)),"resume History contract derivation");
+ output.inputs[0].contract=history.outputs[0].contract;
+ domain::ConfiguredProcessingNode input;input.id=1;input.kind="NetworkInput";input.outputs.push_back({0,domain::PortDirection::Output,history.inputs[0].contract});domain::NumericProcessingGraph g;g.graph_id="main";g.nodes={input,history,output};g.edges={{1,7,0,0},{7,8,0,0}};
+ return g;
+}
+template<class Process>
+static void resume_provider_boundaries(NumericDesktopHost& host,DeliveredNumericFrame& full,
+ std::uint64_t& fullOrdinal,std::uint64_t& fullFilled,std::uint64_t& row,FrameStamp& compactStamp,
+ std::uint64_t& generation,std::uint64_t& producerEpoch,bool& discontinuity,std::uint64_t& lastSequence,const Process& process) {
+ // Provider incarnations change source sequence, not compatible History's
+ // accepted-row ordinal. Keep an independent reference of all accepted values.
+ std::vector<float> expected;for(int value=1;value<=81;++value)expected.push_back(float(value));
+ std::uint64_t expectedOrdinal=81;
+ for(int boundary=0;boundary<3;++boundary){
+  row=0;if(boundary==1)++generation;if(boundary==2)++producerEpoch;
+  discontinuity=boundary==0;const auto sourceSequence=boundary?1:lastSequence+1;
+  process(sourceSequence);expected.push_back(float(sourceSequence));++expectedOrdinal;discontinuity=false;
+  require(wait([&]{return row==expectedOrdinal;}),"compatible boundary compact row lost after resync baseline");
+  require(compactStamp.discontinuity&&compactStamp.producer_epoch==producerEpoch&&compactStamp.generation==generation,"compact boundary provenance/discontinuity lost");
+  process(sourceSequence+1);expected.push_back(float(sourceSequence+1));++expectedOrdinal;
+  require(wait([&]{return row==expectedOrdinal;}),"post-boundary compact ordinal continuity lost");
+  require(!compactStamp.discontinuity,"boundary flag leaked into next compatible row");
+  full={};fullOrdinal=0;host.request_numeric_snapshots();
+  require(wait([&]{return full.frame&&fullOrdinal==expectedOrdinal;}),"compatible boundary authoritative snapshot missing");
+  require(fullFilled==64,"provider boundary reset compatible History occupancy");
+  const auto snapshot=std::get<NumericView>(full.frame.view().payload);require(snapshot.actual[0]==64,"provider boundary changed capacity");
+  for(std::size_t index=0;index<64;++index){float actual=0;require(load_element(snapshot,{0,index,0},actual)==Status::ok&&actual==expected[expected.size()-64+index],"provider boundary mutated retained History values/order");}
+  const auto stamp=full.frame.view().stamp;require(stamp.producer_epoch==producerEpoch&&stamp.generation==generation,"cold boundary snapshot provenance changed");
  }
+}
+static void verify_ordinary_matrix_query(NumericDesktopHost& host,std::size_t& frames,const std::size_t& history,const EndpointIdentity& endpoint,const DeliveredNumericFrame& latest,const std::array<std::uint64_t,6>& values) {
+ const auto before=frames;
+ host.request_numeric_snapshots();require(wait([&]{return frames>before;}),"ordinary Matrix cold query response");
+ require(history==0,"passive tag or Matrix rank triggered History path");
+ const auto numeric=std::get<NumericView>(latest.frame.view().payload);require(!numeric.ring.capacity && numeric.actual[0]==2 && numeric.actual[1]==3,"ordinary Matrix geometry changed");
+ for(size_t row=0;row<2;++row)for(size_t col=0;col<3;++col){std::uint64_t exact=0;require(load_element(numeric,{0,row,col},exact)==Status::ok && exact==values[row*3+col],"ordinary Matrix query lost exact bits");}
+
+}
+static void observe_ordinary_matrix(NumericDesktopHost& host,DeliveredNumericFrame& latest,std::size_t& frames,std::size_t& history,std::size_t& deliveries,Status& lastStatus) {
+ host.set_numeric_frame_handler([&](const auto& value){++deliveries;lastStatus=value.status;if(value.frame && value.status==Status::ok){latest=value;++frames;}});
+ host.set_numeric_history_handler([&](const auto&){++history;});
+ host.set_numeric_history_snapshot_handler([&](const auto&,auto,auto){++history;});
+
+}
+static void ordinary_matrix_query(bool remote,Semantic tag){
+ std::fprintf(stderr,"ordinary Matrix case remote=%d tag=%d\n",int(remote),int(tag));
+ auto c=contract(6);c.semantic=tag;c.history_element=Semantic::Numeric;
+ c.shape={Rank::Matrix,{Axis::Declared,Axis::Declared},{ExtentBounds{2,2},ExtentBounds{3,3}}};
+ const auto limits=bdsp_protocol::numeric_control::desktop_limits().frame;
+ domain::OwnedProcessingContract owner;require(domain::own_processing_contract(c,limits,16384,owner)==Status::ok,"ordinary Matrix contract");
+ auto g=graph("matrix.query");g.nodes[0].outputs[0].contract=owner;g.nodes[1].inputs[0].contract=owner;
+ NumericDesktopHost producer;{Replies replies(producer);replies.accepted(apply(g));}
+ std::unique_ptr<NumericDesktopHost> receiver;
+ if(remote){require(producer.listen(QHostAddress::LocalHost,0),"Matrix query server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"Matrix query connected");}
+ auto& host=remote?*receiver:producer;const auto endpoint=sink(g);size_t frames=0,history=0,deliveries=0;Status lastStatus=Status::unavailable;DeliveredNumericFrame latest;
+ observe_ordinary_matrix(host,latest,frames,history,deliveries,lastStatus);
+ require(host.subscribe_numeric_frames({endpoint}),"ordinary Matrix subscription");
+ // A successful subscribe call only queues the remote binding. Await the real
+ // ACK/query completion boundary before sending the single loss-sensitive frame.
+ if(remote){Replies ready(host);ready.accepted(command(EngineCommand::Snapshot));}
+ settle();
+ std::array<std::uint64_t,6> values{9007199254740993ULL,2,3,4,5,UINT64_MAX};PlaneLayout plane{0,{24,8}};
+ FrameStamp stamp;stamp.producer_epoch=731;stamp.generation=1;stamp.sequence=stamp.source_sequence=1;
+ require(producer.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,3}}})==Status::ok,"ordinary Matrix feed");
+ if(!wait([&]{return frames>0;})){
+  DeliveredNumericFrame cached;const auto queried=producer.query_numeric(endpoint,cached);const auto local=producer.snapshot(),visible=host.snapshot();
+  std::fprintf(stderr,"Matrix live failed remote=%d tag=%d callbacks=%zu history=%zu status=%d query=%d cached=%d producerState=%d visibleState=%d epoch=%llu/%llu revision=%llu/%llu warning=%s\n",int(remote),int(tag),deliveries,history,int(lastStatus),int(queried),int(bool(cached.frame)),int(local.statuses.value("analyzer").state),int(visible.statuses.value("analyzer").state),(unsigned long long)local.epoch,(unsigned long long)visible.epoch,(unsigned long long)local.graph_revision,(unsigned long long)visible.graph_revision,qPrintable(host.network_warning()));
+  throw std::runtime_error("ordinary Matrix live delivery");
+ }
+ verify_ordinary_matrix_query(host,frames,history,endpoint,latest,values);
+
+ if(remote)matrix_lineage_transition(producer,host,c,limits,values,plane,stamp,frames,history);
+
 }
 static void owning_history_ingress(){
  auto c=contract(2);c.semantic=Semantic::History;c.history_element=Semantic::Numeric;
@@ -191,14 +257,7 @@ static void asynchronous_snapshot_query(){
  require(callbacks==0,"retired async snapshot delivered after unsubscribe");
 }
 static void slow_history_preview_preserves_taps(){
- auto g=graph("slow.history",2);auto h=contract(2);h.semantic=Semantic::History;h.history_element=Semantic::Numeric;
- h.shape={Rank::Matrix,{Axis::Time,Axis::Declared},{ExtentBounds{0,16},ExtentBounds{2,2}}};
- auto count=contract();count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;
- const auto own=[](const NumericContract& c){domain::OwnedProcessingContract result;
-  require(domain::own_processing_contract(c,bdsp_protocol::numeric_control::desktop_limits().frame,16384,result)==Status::ok,"slow History contract");return result;};
- domain::ConfiguredProcessingNode history;history.id=2;history.kind="Spectrogram";history.parameters=domain::HistoryProcessingParameters{16};
- history.inputs=g.nodes[1].inputs;history.outputs={{0,domain::PortDirection::Output,own(h)},{1,domain::PortDirection::Output,own(count)}};
- g.nodes[1].inputs[0].contract=history.outputs[0].contract;g.nodes.push_back(std::move(history));g.edges={{0,2,0,0},{2,1,0,0}};
+ auto g=slow_history_graph();
  NumericEngine engine;{Replies replies(engine);replies.accepted(apply(g));}
  require(engine.subscribe_numeric_frames({sink(g)}),"slow History GUI subscription");engine.set_numeric_preview_cadence_hz(1);
  std::uint64_t sequence=0,tap_rows=0;bool bad=false,preview_overflow=false;
@@ -208,12 +267,7 @@ static void slow_history_preview_preserves_taps(){
   if(row.event==NumericHistoryEvent::Row){++tap_rows;bad|=!row.compact.frame||row.accepted_row_ordinal!=tap_rows;}
  });require(tap!=0,"slow History tap subscription");
  std::atomic_bool stop{false},bad_feed{false};const auto epoch=engine.snapshot().epoch;
- std::thread producer([&]{auto c=contract(2);PlaneLayout plane{0,{8,0}};FrameStamp stamp;stamp.producer_epoch=epoch;stamp.generation=1;
-  auto deadline=std::chrono::steady_clock::now();
-  while(!stop.load()){++sequence;std::array<std::uint64_t,2> values{sequence,sequence+1};stamp.sequence=stamp.source_sequence=sequence;
-   if(engine.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,1}}})!=Status::ok)bad_feed=true;
-   deadline+=std::chrono::milliseconds(2);while(!stop.load()&&std::chrono::steady_clock::now()<deadline)std::this_thread::yield();
-  }});
+ std::thread producer([&]{produce_history(engine,epoch,sequence,stop,bad_feed);});
  settle(600);stop=true;producer.join();settle(40);
  require(sequence>160,"slow History fixture did not exceed GUI arena capacity");
  require(!bad_feed&&!bad&&tap_rows==sequence,"slow GUI History owners starved loss-sensitive tap arena");
@@ -264,51 +318,19 @@ static void evicted_endpoint_gap(){NumericEngine engine;auto [g,selected]=fanout
  feed(engine,1,1,1);require(engine.subscribe_numeric_frames({selected.front()}),"eviction selected endpoint");feed(engine,1,2,2);
  require(wait([&]{return delivered;}),"evicted endpoint fresh delivery");require(!gap,"GUI preview eviction mutated signal discontinuity");
 }
-static void all_selected_ports(bool remote){std::fprintf(stderr,"phase selected begin remote=%d\n",int(remote));NumericDesktopHost producer;auto [g,selected]=fanout_graph();
- {Replies replies(producer);replies.accepted(apply(g));}std::unique_ptr<NumericDesktopHost> receiver;
- if(remote){require(producer.listen(QHostAddress::LocalHost,0),"selected ports actual server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"selected ports remote connected");}
- auto& host=remote?*receiver:producer;require(host.subscribe_numeric_frames(selected),"all selected ports subscription");
- std::map<domain::NodeId,std::uint64_t> latest;std::set<domain::NodeId> overflow_gaps;std::map<domain::NodeId,DeliveredNumericFrame> rendererOwners;host.set_numeric_frame_handler([&](const DeliveredNumericFrame& f){if(f.context&&f.frame&&f.frame.view().stamp.available){latest[f.context->endpoint.node]=value(f);rendererOwners[f.context->endpoint.node]=f;if(f.frame.view().stamp.discontinuity)overflow_gaps.insert(f.context->endpoint.node);}});
- std::uint64_t sequence=0;
- // CONTROL State is not DATA subscription readiness. Establish every real
- // owning callback before pausing the GUI, without any extra observer tap.
- if(remote&&!wait([&]{feed(*producer.local_engine(),1,++sequence,0);return latest.size()==24;})){
-  const auto state=host.snapshot();std::fprintf(stderr,"remote baseline observed=%zu epoch=%llu revision=%llu analyzer=%d warning=%s\n",latest.size(),(unsigned long long)state.epoch,(unsigned long long)state.graph_revision,int(state.statuses.value("analyzer").state),host.network_warning().toUtf8().constData());for(const auto& [node,last]:latest)std::fprintf(stderr,"node=%u value=%llu\n",unsigned(node),(unsigned long long)last);throw std::runtime_error("remote selected ports baseline delivery");}
- std::fprintf(stderr,"phase selected baseline remote=%d\n",int(remote));overflow_gaps.clear();auto burst=[&]{std::fprintf(stderr,"phase selected burst enter\n");for(std::uint64_t i=1;i<=20;++i)feed(*producer.local_engine(),1,++sequence,i);std::fprintf(stderr,"phase selected burst done\n");};if(remote)require(QMetaObject::invokeMethod(producer.local_engine(),burst,Qt::BlockingQueuedConnection),"bounded worker burst admission");else burst();QThread::msleep(40);
- const auto allLatest=[&](std::uint64_t expected){return latest.size()==24&&std::all_of(latest.begin(),latest.end(),[&](const auto& entry){return entry.second==expected;});};
- if(remote){std::fprintf(stderr,"phase selected settling\n");settle(1000);require(latest.size()==24,"FIFO overload lost endpoint bindings");for(const auto& [node,last]:latest)require(last<=20,"FIFO overload fabricated future data");}
- else require(wait([&]{return allLatest(20);}),"local preview lost newest selected ports");
- std::fprintf(stderr,"phase selected fresh21 remote=%d\n",int(remote));feed(*producer.local_engine(),1,++sequence,21);require(wait([&]{return allLatest(21);}),"renderer owners exhausted receiver arena");if(remote)require(!overflow_gaps.empty(),"loss-sensitive FIFO overload omitted recovery gap");
- std::fprintf(stderr,"phase selected complete remote=%d\n",int(remote));
-}
-static void all_selected_cold_matrices(){
- auto g=matrix_query_graph();auto sink_node=g.nodes[1];g.nodes.resize(1);g.edges.clear();std::vector<EndpointIdentity> selected;
- for(int i=0;i<24;++i){sink_node.id=100+i;g.nodes.push_back(sink_node);g.edges.push_back({0,sink_node.id,0,0});selected.push_back({g.graph_id,sink_node.id,domain::PortDirection::Input,0});}
- NumericDesktopHost host;{Replies replies(host);replies.accepted(apply(g));}
- require(host.subscribe_numeric_frames(selected),"cold Matrix fanout subscription");feed_query_matrix(host,g);settle();
- for(const auto& endpoint:selected){DeliveredNumericFrame cached;require(host.query_numeric(endpoint,cached)==Status::ok&&value(cached)==41,"cold Matrix fanout query precondition");}
- std::set<domain::NodeId> restored;host.set_numeric_frame_handler([&](const auto& f){if(f.context&&f.frame&&value(f)==41)restored.insert(f.context->endpoint.node);});
- host.request_numeric_snapshots();require(wait([&]{return restored.size()==24;}),"bounded cold query batches evicted selected Matrix endpoints");
-}
-static void history_resume(bool remote){auto defaults=numeric_default_graph();auto history=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==7;}),output=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==8;});
- auto c=std::get<NumericContract>(history.inputs[0].contract.view());auto hc=std::get<NumericContract>(history.outputs[0].contract.view());hc.shape.extents[0].maximum=64;
- domain::OwnedProcessingContract owned;require(domain::own_processing_contract(hc,bdsp_protocol::numeric_control::desktop_limits().frame,16384,owned)==Status::ok,"resume History geometry");history.outputs[0].contract=owned;output.inputs[0].contract=owned;history.parameters=domain::HistoryProcessingParameters{64};
- domain::ConfiguredProcessingNode input;input.id=1;input.kind="NetworkInput";input.outputs.push_back({0,domain::PortDirection::Output,history.inputs[0].contract});domain::NumericProcessingGraph g;g.graph_id="main";g.nodes={input,history,output};g.edges={{1,7,0,0},{7,8,0,0}};
- NumericDesktopHost producer;{Replies replies(producer);replies.accepted(apply(g));}std::unique_ptr<NumericDesktopHost> receiver;
- if(remote){require(producer.listen(QHostAddress::LocalHost,0),"resume actual server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"resume remote connected");}
- auto& host=remote?*receiver:producer;const EndpointIdentity selected{"main",8,domain::PortDirection::Input,0};require(host.subscribe_numeric_frames({selected}),"resume subscription");
- DeliveredNumericFrame full;signal_contracts::FrameStamp compactStamp;std::uint64_t row=0,fullOrdinal=0,fullFilled=0;host.set_numeric_history_snapshot_handler([&](auto f,std::uint64_t ordinal,std::uint64_t filled_count){if(f.context&&f.context->endpoint==selected){full=std::move(f);fullOrdinal=ordinal;fullFilled=filled_count;}});host.set_numeric_history_handler([&](auto r){if(r.compact.context&&r.compact.context->endpoint==selected){row=r.accepted_row_ordinal;compactStamp=r.compact.frame.view().stamp;compactStamp.stream_id={};}});
- std::uint64_t producerEpoch=701,generation=9;bool discontinuity=false;
- std::uint64_t lastSequence=0;
- std::array<std::byte,50*8> frequencyBytes{};
- for(std::size_t band=0;band<50;++band){const auto bits=std::bit_cast<std::uint64_t>(double(band+1)*100.);for(std::size_t byte=0;byte<8;++byte)frequencyBytes[band*8+byte]=std::byte((bits>>(byte*8))&255);}
- std::array<float,50> values{};PlaneLayout plane{0,{4,0}};auto process=[&](std::uint64_t sequence){lastSequence=sequence;values.fill(float(sequence));FrameStamp stamp;stamp.producer_epoch=producerEpoch;stamp.generation=generation;stamp.discontinuity=discontinuity;stamp.sequence=stamp.source_sequence=sequence;stamp.timestamp_ticks=sequence;const auto status=producer.feed_numeric(1,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{50,1},{},CoordinateView{{std::span<const std::byte>(frequencyBytes),{}}}}});if(status!=Status::ok)std::fprintf(stderr,"resume ingress remote=%d sequence=%llu producer=%llu generation=%llu discontinuity=%d status=%d\n",int(remote),(unsigned long long)sequence,(unsigned long long)producerEpoch,(unsigned long long)generation,int(discontinuity),int(status));require(status==Status::ok,"resume ingress");};
+static void resume_ingress(std::uint64_t sequence,std::uint64_t& lastSequence,auto& values,std::uint64_t producerEpoch,std::uint64_t generation,bool discontinuity,NumericDesktopHost& producer,const NumericContract& c,const PlaneLayout& plane,const auto& frequencyBytes,bool remote) {
+lastSequence=sequence;values.fill(float(sequence));FrameStamp stamp;stamp.producer_epoch=producerEpoch;stamp.generation=generation;stamp.discontinuity=discontinuity;stamp.sequence=stamp.source_sequence=sequence;stamp.timestamp_ticks=sequence;const auto status=producer.feed_numeric(1,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{50,1},{},CoordinateView{{std::span<const std::byte>(frequencyBytes),{}}}}});if(status!=Status::ok)std::fprintf(stderr,"resume ingress remote=%d sequence=%llu producer=%llu generation=%llu discontinuity=%d status=%d\n",int(remote),(unsigned long long)sequence,(unsigned long long)producerEpoch,(unsigned long long)generation,int(discontinuity),int(status));require(status==Status::ok,"resume ingress");}
+
+static void resume_warm_history(const auto& process,std::uint64_t& row,DeliveredNumericFrame& full,std::uint64_t& fullOrdinal,std::uint64_t& fullFilled,bool remote) {
  process(1);require(wait([&]{return row==1||fullOrdinal==1;}),"resume initial delivery");full={};fullOrdinal=row=0;
  for(std::uint64_t i=2;i<=80;++i){process(i);QThread::msleep(3);}QThread::msleep(40);
  require(wait([&]{return bool(full.frame)&&fullOrdinal==80;}),"GUI History overflow did not restore authoritative full snapshot");auto view=std::get<NumericView>(full.frame.view().payload);float first=0,last=0;const auto firstStatus=load_element(view,{0,0,0},first),lastStatus=load_element(view,{0,63,0},last);
  if(fullOrdinal!=80||view.actual[0]!=64||first!=17||last!=80)std::fprintf(stderr,"remote=%d full ordinal=%llu rows=%llu first=%f last=%f\n",int(remote),(unsigned long long)fullOrdinal,(unsigned long long)view.actual[0],first,last);
  require(fullOrdinal==80&&fullFilled==64&&view.actual[0]==64&&firstStatus==Status::ok&&first==17&&lastStatus==Status::ok&&last==80,"resume lost History ring rows");require(full.frame.view().stamp.producer_epoch==701,"resume changed producer");
  process(81);require(wait([&]{return row==81;}),"compact History did not continue after resync");
+}
+
+static void resume_capacity_changes(auto& g,const NumericContract& hc,NumericDesktopHost& producer,NumericDesktopHost& host,const EndpointIdentity& selected,DeliveredNumericFrame& full,std::uint64_t& fullOrdinal,std::uint64_t& fullFilled) {
  // A full 64-row buffer expanded at ordinal81 has64 real rows, not81.
  // Exercise the actual local/remote cold bridge, including wire metadata.
  auto resize=[&](std::uint64_t capacity){
@@ -323,33 +345,68 @@ static void history_resume(bool remote){auto defaults=numeric_default_graph();au
   full={};fullOrdinal=fullFilled=0;require(host.subscribe_numeric_frames({selected}),"resize cold subscription");
   require(wait([&]{return full.frame && fullOrdinal==81;}),"resize full snapshot absent");
  };
- resize(96);view=std::get<NumericView>(full.frame.view().payload);
+ resize(96);auto view=std::get<NumericView>(full.frame.view().payload);
  require(view.actual[0]==96 && fullFilled==64,"expanded snapshot fabricated occupancy from capacity or ordinal");
  float padding=1,retainedFirst=0,retainedLast=0;
  require(load_element(view,{0,0,0},padding)==Status::ok && padding==0 &&
          load_element(view,{0,32,0},retainedFirst)==Status::ok && retainedFirst==18 &&
          load_element(view,{0,95,0},retainedLast)==Status::ok && retainedLast==81,"resize snapshot lost fresh suffix or zero padding");
  resize(64);require(fullFilled==64,"shrink snapshot occupancy");
- // Provider incarnations change source sequence, not compatible History's
- // accepted-row ordinal. Keep an independent reference of all accepted values.
- std::vector<float> expected;for(int value=1;value<=81;++value)expected.push_back(float(value));
- std::uint64_t expectedOrdinal=81;
- for(int boundary=0;boundary<3;++boundary){
-  row=0;if(boundary==1)++generation;if(boundary==2)++producerEpoch;
-  discontinuity=boundary==0;const auto sourceSequence=boundary?1:lastSequence+1;
-  process(sourceSequence);expected.push_back(float(sourceSequence));++expectedOrdinal;discontinuity=false;
-  require(wait([&]{return row==expectedOrdinal;}),"compatible boundary compact row lost after resync baseline");
-  require(compactStamp.discontinuity&&compactStamp.producer_epoch==producerEpoch&&compactStamp.generation==generation,"compact boundary provenance/discontinuity lost");
-  process(sourceSequence+1);expected.push_back(float(sourceSequence+1));++expectedOrdinal;
-  require(wait([&]{return row==expectedOrdinal;}),"post-boundary compact ordinal continuity lost");
-  require(!compactStamp.discontinuity,"boundary flag leaked into next compatible row");
-  full={};fullOrdinal=0;host.request_numeric_snapshots();
-  require(wait([&]{return full.frame&&fullOrdinal==expectedOrdinal;}),"compatible boundary authoritative snapshot missing");
-  require(fullFilled==64,"provider boundary reset compatible History occupancy");
-  const auto snapshot=std::get<NumericView>(full.frame.view().payload);require(snapshot.actual[0]==64,"provider boundary changed capacity");
-  for(std::size_t index=0;index<64;++index){float actual=0;require(load_element(snapshot,{0,index,0},actual)==Status::ok&&actual==expected[expected.size()-64+index],"provider boundary mutated retained History values/order");}
-  const auto stamp=full.frame.view().stamp;require(stamp.producer_epoch==producerEpoch&&stamp.generation==generation,"cold boundary snapshot provenance changed");
- }
+}
+
+static void selected_port_burst(NumericDesktopHost& producer,std::uint64_t& sequence) {
+std::fprintf(stderr,"phase selected burst enter\n");for(std::uint64_t i=1;i<=20;++i)feed(*producer.local_engine(),1,++sequence,i);std::fprintf(stderr,"phase selected burst done\n");}
+static void selected_port_frame(const auto& f,auto& latest,auto& retained,auto& overflow_gaps) {
+if(f.context&&f.frame&&f.frame.view().stamp.available){latest[f.context->endpoint.node]=value(f);retained[f.context->endpoint.node]=f;if(f.frame.view().stamp.discontinuity)overflow_gaps.insert(f.context->endpoint.node);}
+}
+
+static void verify_selected_port_recovery(bool remote,NumericDesktopHost& producer,NumericDesktopHost& host,const std::map<domain::NodeId,std::uint64_t>& latest,const std::set<domain::NodeId>& overflow_gaps,std::uint64_t& sequence) {
+ const auto allLatest=[&](std::uint64_t expected){return latest.size()==24&&std::all_of(latest.begin(),latest.end(),[&](const auto& entry){return entry.second==expected;});};
+ if(remote){std::fprintf(stderr,"phase selected settling\n");settle(1000);require(latest.size()==24,"FIFO overload lost endpoint bindings");for(const auto& [node,last]:latest)require(last<=20,"FIFO overload fabricated future data");}
+ else require(wait([&]{return allLatest(20);}),"local preview lost newest selected ports");
+ std::fprintf(stderr,"phase selected fresh21 remote=%d\n",int(remote));feed(*producer.local_engine(),1,++sequence,21);require(wait([&]{return allLatest(21);}),"renderer owners exhausted receiver arena");if(remote)require(!overflow_gaps.empty(),"loss-sensitive FIFO overload omitted recovery gap");
+ std::fprintf(stderr,"phase selected complete remote=%d\n",int(remote));
+}
+static void all_selected_ports(bool remote){std::fprintf(stderr,"phase selected begin remote=%d\n",int(remote));NumericDesktopHost producer;auto [g,selected]=fanout_graph();
+ {Replies replies(producer);replies.accepted(apply(g));}std::unique_ptr<NumericDesktopHost> receiver;
+ if(remote){require(producer.listen(QHostAddress::LocalHost,0),"selected ports actual server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"selected ports remote connected");}
+ auto& host=remote?*receiver:producer;require(host.subscribe_numeric_frames(selected),"all selected ports subscription");
+ std::map<domain::NodeId,std::uint64_t> latest;std::set<domain::NodeId> overflow_gaps;std::map<domain::NodeId,DeliveredNumericFrame> rendererOwners;host.set_numeric_frame_handler([&](const DeliveredNumericFrame& f){selected_port_frame(f,latest,rendererOwners,overflow_gaps);});
+ std::uint64_t sequence=0;
+ // CONTROL State is not DATA subscription readiness. Establish every real
+ // owning callback before pausing the GUI, without any extra observer tap.
+ if(remote&&!wait([&]{feed(*producer.local_engine(),1,++sequence,0);return latest.size()==24;})){
+  const auto state=host.snapshot();std::fprintf(stderr,"remote baseline observed=%zu epoch=%llu revision=%llu analyzer=%d warning=%s\n",latest.size(),(unsigned long long)state.epoch,(unsigned long long)state.graph_revision,int(state.statuses.value("analyzer").state),host.network_warning().toUtf8().constData());for(const auto& [node,last]:latest)std::fprintf(stderr,"node=%u value=%llu\n",unsigned(node),(unsigned long long)last);throw std::runtime_error("remote selected ports baseline delivery");}
+ std::fprintf(stderr,"phase selected baseline remote=%d\n",int(remote));overflow_gaps.clear();auto burst=[&]{selected_port_burst(producer,sequence);};if(remote)require(QMetaObject::invokeMethod(producer.local_engine(),burst,Qt::BlockingQueuedConnection),"bounded worker burst admission");else burst();QThread::msleep(40);
+ verify_selected_port_recovery(remote,producer,host,latest,overflow_gaps,sequence);
+}
+static void all_selected_cold_matrices(){
+ auto g=matrix_query_graph();auto sink_node=g.nodes[1];g.nodes.resize(1);g.edges.clear();std::vector<EndpointIdentity> selected;
+ for(int i=0;i<24;++i){sink_node.id=100+i;g.nodes.push_back(sink_node);g.edges.push_back({0,sink_node.id,0,0});selected.push_back({g.graph_id,sink_node.id,domain::PortDirection::Input,0});}
+ NumericDesktopHost host;{Replies replies(host);replies.accepted(apply(g));}
+ require(host.subscribe_numeric_frames(selected),"cold Matrix fanout subscription");feed_query_matrix(host,g);settle();
+ for(const auto& endpoint:selected){DeliveredNumericFrame cached;require(host.query_numeric(endpoint,cached)==Status::ok&&value(cached)==41,"cold Matrix fanout query precondition");}
+ std::set<domain::NodeId> restored;host.set_numeric_frame_handler([&](const auto& f){if(f.context&&f.frame&&value(f)==41)restored.insert(f.context->endpoint.node);});
+ host.request_numeric_snapshots();require(wait([&]{return restored.size()==24;}),"bounded cold query batches evicted selected Matrix endpoints");
+}
+static void history_resume(bool remote){NumericDesktopHost producer;
+ const auto capabilities=producer.local_engine()->capabilities();require(capabilities.numeric.has_value(),"resume numeric profile");
+ auto g=resume_graph(capabilities.numeric->runtime.admission);
+ const auto inputOwner=g.nodes[1].inputs[0].contract;const auto historyOwner=g.nodes[1].outputs[0].contract;
+ auto c=std::get<NumericContract>(inputOwner.view());auto hc=std::get<NumericContract>(historyOwner.view());
+ {Replies replies(producer);replies.accepted(apply(g));}std::unique_ptr<NumericDesktopHost> receiver;
+ if(remote){require(producer.listen(QHostAddress::LocalHost,0),"resume actual server");receiver=std::make_unique<NumericDesktopHost>(AudioSourceFactory{},"127.0.0.1",producer.server_port());receiver->connect_remote();require(wait([&]{return receiver->snapshot().graph_revision==producer.snapshot().graph_revision;}),"resume remote connected");}
+ auto& host=remote?*receiver:producer;const EndpointIdentity selected{"main",8,domain::PortDirection::Input,0};require(host.subscribe_numeric_frames({selected}),"resume subscription");
+ DeliveredNumericFrame full;signal_contracts::FrameStamp compactStamp;std::uint64_t row=0,fullOrdinal=0,fullFilled=0;host.set_numeric_history_snapshot_handler([&](auto f,std::uint64_t ordinal,std::uint64_t filled_count){if(f.context&&f.context->endpoint==selected){full=std::move(f);fullOrdinal=ordinal;fullFilled=filled_count;}});host.set_numeric_history_handler([&](auto r){if(r.compact.context&&r.compact.context->endpoint==selected){row=r.accepted_row_ordinal;compactStamp=r.compact.frame.view().stamp;compactStamp.stream_id={};}});
+ std::uint64_t producerEpoch=701,generation=9;bool discontinuity=false;
+ std::uint64_t lastSequence=0;
+ std::array<std::byte,50*8> frequencyBytes{};
+ for(std::size_t band=0;band<50;++band){const auto bits=std::bit_cast<std::uint64_t>(double(band+1)*100.);for(std::size_t byte=0;byte<8;++byte)frequencyBytes[band*8+byte]=std::byte((bits>>(byte*8))&255);}
+ std::array<float,50> values{};PlaneLayout plane{0,{4,0}};auto process=[&](std::uint64_t sequence){resume_ingress(sequence,lastSequence,values,producerEpoch,generation,discontinuity,producer,c,plane,frequencyBytes,remote);};
+ resume_warm_history(process,row,full,fullOrdinal,fullFilled,remote);
+ resume_capacity_changes(g,hc,producer,host,selected,full,fullOrdinal,fullFilled);
+ resume_provider_boundaries(host,full,fullOrdinal,fullFilled,row,compactStamp,generation,producerEpoch,discontinuity,lastSequence,process);
+
 
 }
 static void active_remote_rebind(){NumericDesktopHost producer;auto g=graph();g.nodes.clear();g.edges.clear();std::vector<EndpointIdentity> selected;

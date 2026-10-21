@@ -422,19 +422,7 @@ std::optional<Status> publish_wled_ready() noexcept {
 
         return {};
     }
-    std::optional<Status> process_history() noexcept {
-        const auto appended=append_history(n,state,current,limits);
-        if(appended.status!=Status::ok){
-            if(appended.reject)return reject(appended.status);
-            result=downstream_status=appended.status;return {};
-        }
-        if(!callbacks.history)return {};
-        NumericGatherOutput compact;
-        const auto& history=std::get<NumericContract>(n.numeric_outputs[0]);
-        if(history.shape.rank==Rank::Matrix){
-            status=gather(n,state,state.numeric_frames[0],compact);
-            if(status!=Status::ok)return reject(status);
-        }else{
+    void compact_scalar_history(const NumericContract& history,NumericGatherOutput& compact) noexcept {
             compact.frame={state.numeric_frames[0].stamp,
                 n.node.enabled?current.payload:zero_value(n.numeric_input,state.numeric_zero)};
             const auto capacity=state.numeric_outputs[0].actual[0];
@@ -447,6 +435,24 @@ std::optional<Status> publish_wled_ready() noexcept {
             compact.row.time_axis=history.coordinates[0];
             const auto time=std::get<NumericView>(state.numeric_frames[0].payload).coordinates.axes[0];
             if(!time.empty())compact.row.time_coordinate=time.subspan((capacity-1)*sizeof(double),sizeof(double));
+    }
+    std::optional<Status> process_history() noexcept {
+        const auto appended=append_history(n,state,current,limits);
+        if(appended.status!=Status::ok){
+            if(appended.reject)return reject(appended.status);
+            result=downstream_status=appended.status;return {};
+        }
+        if(!callbacks.history)return {};
+        return deliver_history();
+    }
+    std::optional<Status> deliver_history() noexcept {
+        NumericGatherOutput compact;
+        const auto& history=std::get<NumericContract>(n.numeric_outputs[0]);
+        if(history.shape.rank==Rank::Matrix){
+            status=gather(n,state,state.numeric_frames[0],compact);
+            if(status!=Status::ok)return reject(status);
+        }else{
+            compact_scalar_history(history,compact);
         }
         const auto capacity=state.numeric_outputs[0].actual[0];
         port_delivery.history({NumericHistoryEventKind::Row,

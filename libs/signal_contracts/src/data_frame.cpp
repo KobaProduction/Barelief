@@ -47,14 +47,19 @@ namespace signal_contracts {
             if((r==0 && (i.row || i.column)) || (r==1 && (i.row>=v.actual[0] || i.column)) || (r==2 && (i.row>=v.actual[0] || i.column>=v.actual[1])))return Status::invalid_argument;
             return Status::ok;
         }
+        Status history_silence(const NumericView& v,std::size_t logical,bool& silent) {
+            if(v.ring.silence_mask.empty())return Status::ok;
+            const auto flag=v.ring.silence_mask[logical];
+            if(flag!=std::byte{0} && flag!=std::byte{1})return Status::malformed;
+            silent=silent || flag!=std::byte{0};
+            return Status::ok;
+        }
         Status physical_row(const NumericView& v,std::size_t logical,std::size_t r,std::size_t& row,bool& silent) {
             row=logical;
             silent=v.semantic_silence;
             if(v.ring.capacity){if((r!=1 && r!=2) || (r==1 && v.contract->semantic!=Semantic::History) || !v.ring.capacity || v.actual[0]>v.ring.capacity || v.ring.oldest>=v.ring.capacity || (!v.ring.silence_mask.empty() && v.ring.silence_mask.size()<v.actual[0]))return Status::invalid_argument;
-                if(!v.ring.silence_mask.empty()){
-                    if(v.ring.silence_mask[logical]!=std::byte{0} && v.ring.silence_mask[logical]!=std::byte{1})return Status::malformed;
-                    silent=silent || v.ring.silence_mask[logical]!=std::byte{0};
-                }
+                const auto status=history_silence(v,logical,silent);
+                if(status!=Status::ok)return status;
                 row=v.ring.oldest;
                 const auto tail=v.ring.capacity-row;
                 row=logical>=tail?logical-tail:row+logical;
@@ -449,7 +454,7 @@ static Status validate_history_row_source(const NumericView& view,std::size_t ro
     }
     struct FrameRetention {
         const DataFrameView& source;const FrameLimits& limits;BufferPool& payload;BufferPool& metadata;
-        RetentionRequirements requirements;MetaPlan plan;OwnedDataFrame candidate;
+        RetentionRequirements requirements{};MetaPlan plan{};OwnedDataFrame candidate{};
         std::span<const std::byte> input() const {
             if(const auto* numeric=std::get_if<NumericView>(&source.payload))return numeric->storage;
             return std::get<StructuredView>(source.payload).bytes;

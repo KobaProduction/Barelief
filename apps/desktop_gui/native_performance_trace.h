@@ -572,6 +572,9 @@ class Trace final:public QObject {
         const auto widgets=app_.topLevelWidgets();
         for(auto* widget:widgets)if(auto* main=qobject_cast<MainWindow*>(widget)){window_=main;break;}
     }
+    void recordSetupScreen(){
+        screenJson_={{"name",screen_->name()},{"geometry",rectJson(screen_->geometry())},{"available_geometry",rectJson(screen_->availableGeometry())}};
+    }
     void setup(){
         milestone("setup_begin",mainElapsedMs());
         locateMainWindow();
@@ -580,7 +583,7 @@ class Trace final:public QObject {
         if(!window_||!mapped_){qCritical("Trace requires mapped foreground monitor and main window");finish();return;}
         activation_["passive_observer"]=passive;
         if(!passive)activateWindow();
-        screenJson_={{"name",screen_->name()},{"geometry",rectJson(screen_->geometry())},{"available_geometry",rectJson(screen_->availableGeometry())}};
+        recordSetupScreen();
         setupObservationTimer();
         milestone("setup_complete",mainElapsedMs());scheduleSample();
     }

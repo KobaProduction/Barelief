@@ -46,6 +46,8 @@ private:
     };
     std::optional<signal_contracts::Status> accept_frame_for_state(const Key&,State&,
         const pipeline::DeliveredNumericFrame&);
+    std::optional<signal_contracts::Status> accept_available_frame(const Key&,State&,
+        const pipeline::DeliveredNumericFrame&,bool changed);
     bool reset_frame_state(State&,const pipeline::DeliveredNumericFrame&);
     bool stale_frame_sequence(const State&,const pipeline::DeliveredNumericFrame&,bool changed) const;
     signal_contracts::Status validate_scalar_frame(const Key&,State&,const signal_contracts::NumericView&);

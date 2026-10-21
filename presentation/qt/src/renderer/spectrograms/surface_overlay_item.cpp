@@ -102,12 +102,17 @@ void SurfaceOverlayItem::appendCommand(std::vector<Command>& next,QRectF& damage
     damage=damage.united(next.back().bounds);
     if(size_t(index)<decoded_.size())damage=damage.united(decoded_[size_t(index)].bounds);
 }
+QRectF SurfaceOverlayItem::removedCommandBounds(qsizetype count) const {
+    QRectF damage;
+    for(size_t index=size_t(count);index<decoded_.size();++index)damage=damage.united(decoded_[index].bounds);
+    return damage;
+}
 void SurfaceOverlayItem::setCommands(const QVariantList& commands){
     if(commands_==commands)return;
     std::vector<Command> next;next.reserve(size_t(commands.size()));
     QRectF damage;
     for(qsizetype i=0;i<commands.size();++i)appendCommand(next,damage,commands,i);
-    for(size_t i=size_t(commands.size());i<decoded_.size();++i)damage=damage.united(decoded_[i].bounds);
+    damage=damage.united(removedCommandBounds(commands.size()));
     commands_=commands;decoded_=std::move(next);
     if(!damage.isEmpty())update(damage.toAlignedRect());
     emit commandsChanged();

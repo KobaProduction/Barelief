@@ -1,4 +1,5 @@
 #include <pipeline/numeric_projection.h>
+#include "test_assertions.h"
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -14,7 +15,7 @@ void operator delete[](void* p) noexcept {std::free(p);}
 void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 namespace { int failures=0, checks=0;
-#define CHECK(x) do { ++checks; if(!(x)){std::printf("FAIL %d: %s\n",__LINE__,#x);++failures;} } while(false)
+#define CHECK(x) (++checks, test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures))
 constexpr FrameLimits limits{4,4096,32768,8192,128,4096};
 const std::array<std::uint32_t,1> channels{31};
 struct Pools {

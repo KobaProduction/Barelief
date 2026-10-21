@@ -128,6 +128,35 @@ void structured() {
     auto d=c;d.version=3;require(!same_contract(DataContract{c},DataContract{d}));
     NumericLiteral exact=std::uint64_t{18446744073709551615ULL};require(std::get<std::uint64_t>(exact)==UINT64_MAX);
 }
+void unavailable_retention(BufferPool& alias_pool,BufferPool& other,OwnedDataFrame& failed,NumericContract& c,MutableNumericView& count){
+    auto unavailable=DataFrameView{{},StructuredView{}};StructuredContract packet{"custom",1,"bytes",{2,2}};
+    unavailable.stamp.available=false;unavailable.payload=StructuredView{&packet,{}};
+    require(validate_view(unavailable,limits)==Status::unavailable);
+    require(retain_frame(unavailable,limits,alias_pool,other,failed)==Status::ok && validate_view(failed.view(),limits)==Status::unavailable);
+    auto structured=std::get<StructuredView>(failed.view().payload);require(structured.contract->schema=="custom");
+    alignas(16) std::array<std::byte,2048> rollback_payload{},rollback_meta{};
+    std::array<BufferSlot,1> rp{},rm{};BufferPool rollback_pool(rollback_payload,rp,2048),full_meta(rollback_meta,rm,2048);
+    BufferHandle occupied;require(full_meta.acquire(1,occupied)==Status::ok);OwnedDataFrame rejected;
+    require(retain_frame(unavailable,limits,rollback_pool,full_meta,rejected)==Status::exhausted && rollback_pool.in_use()==0 && full_meta.in_use()==1 && !rejected);
+    occupied.reset();alignas(16) std::array<std::byte,2049> unaligned{};BufferPool badmeta{std::span(unaligned).subspan(1),rm,2048};
+    c=base(DType::UInt64);count.contract=&c;
+    require(retain_frame({{},count.view()},limits,rollback_pool,badmeta,rejected)==Status::invalid_argument && rollback_pool.in_use()==0 && badmeta.in_use()==0);
+}
+void filled_count_and_alias_failures(NumericContract& c,std::span<std::byte> data,MutableNumericView& v,PlaneLayout& plane,
+                                    std::span<std::byte> storage,std::span<std::byte> meta){
+    c.quantity=Quantity::FilledFrameCount;require(validate_contract(DataContract{c},limits)==Status::incompatible_contract);
+    c=base(DType::UInt64);c.quantity=Quantity::FilledFrameCount;c.unit=NumericUnit::Frames;require(validate_contract(DataContract{c},limits)==Status::ok);
+    PlaneLayout scalar{};MutableNumericView count{&c,data,std::span(&scalar,1),{1,1},{},{}};
+    require(store_element(count,{},UINT64_MAX)==Status::ok);std::uint64_t exact=0;require(load_element(count.view(),{},exact)==Status::ok && exact==UINT64_MAX);
+    c.representation.valid_bits=255;require(load_element(count.view(),{},exact)==Status::incompatible_contract && exact==UINT64_MAX);
+    c=base(DType::UInt8,Rank::Vector);c.shape.extents[0]={1,64};plane={0,{1,0}};
+    auto alias=v;alias.contract=&c;alias.planes=std::span(&plane,1);alias.actual={64,1};alias.coordinates={};alias.storage=storage;
+    std::array<BufferSlot,1> other_slot{};BufferPool other(meta,other_slot,2048);OwnedDataFrame failed;
+    // Pool storage aliases donor even though its slot is currently occupied: use a free new slot table.
+    std::array<BufferSlot,1> alias_slots{};BufferPool alias_pool(storage,alias_slots,2048);
+    require(retain_frame({{},alias.view()},limits,alias_pool,other,failed)==Status::invalid_argument && !failed && alias_pool.in_use()==0 && other.in_use()==0);
+    unavailable_retention(alias_pool,other,failed,c,count);
+}
 void metadata_and_failures() {
     auto c=base(DType::Float64,Rank::Vector);c.shape.extents[0]={1,2};
     std::array<std::uint32_t,1> order{71};std::string clock="owned-clock",stream="owned-stream";
@@ -146,29 +175,7 @@ void metadata_and_failures() {
     require(n.coordinates.axes[0][6]==std::byte{0xe0}); // IEEE .5 LE exact owned bits
     RetentionRequirements requirement{777,777,777};auto tiny=limits;tiny.max_metadata_bytes=1;
     require(validate_view(f,tiny)!=Status::ok && retention_requirements(f,tiny,requirement)!=Status::ok && requirement.payload_bytes==777);
-    c.quantity=Quantity::FilledFrameCount;require(validate_contract(DataContract{c},limits)==Status::incompatible_contract);
-    c=base(DType::UInt64);c.quantity=Quantity::FilledFrameCount;c.unit=NumericUnit::Frames;require(validate_contract(DataContract{c},limits)==Status::ok);
-    PlaneLayout scalar{};MutableNumericView count{&c,data,std::span(&scalar,1),{1,1},{},{}};
-    require(store_element(count,{},UINT64_MAX)==Status::ok);std::uint64_t exact=0;require(load_element(count.view(),{},exact)==Status::ok && exact==UINT64_MAX);
-    c.representation.valid_bits=255;require(load_element(count.view(),{},exact)==Status::incompatible_contract && exact==UINT64_MAX);
-    c=base(DType::UInt8,Rank::Vector);c.shape.extents[0]={1,64};plane={0,{1,0}};
-    auto alias=v;alias.contract=&c;alias.planes=std::span(&plane,1);alias.actual={64,1};alias.coordinates={};alias.storage=storage;
-    std::array<BufferSlot,1> other_slot{};BufferPool other(meta,other_slot,2048);OwnedDataFrame failed;
-    // Pool storage aliases donor even though its slot is currently occupied: use a free new slot table.
-    std::array<BufferSlot,1> alias_slots{};BufferPool alias_pool(storage,alias_slots,2048);
-    require(retain_frame({{},alias.view()},limits,alias_pool,other,failed)==Status::invalid_argument && !failed && alias_pool.in_use()==0 && other.in_use()==0);
-    auto unavailable=DataFrameView{{},StructuredView{}};StructuredContract packet{"custom",1,"bytes",{2,2}};
-    unavailable.stamp.available=false;unavailable.payload=StructuredView{&packet,{}};
-    require(validate_view(unavailable,limits)==Status::unavailable);
-    require(retain_frame(unavailable,limits,alias_pool,other,failed)==Status::ok && validate_view(failed.view(),limits)==Status::unavailable);
-    auto structured=std::get<StructuredView>(failed.view().payload);require(structured.contract->schema=="custom");
-    alignas(16) std::array<std::byte,2048> rollback_payload{},rollback_meta{};
-    std::array<BufferSlot,1> rp{},rm{};BufferPool rollback_pool(rollback_payload,rp,2048),full_meta(rollback_meta,rm,2048);
-    BufferHandle occupied;require(full_meta.acquire(1,occupied)==Status::ok);OwnedDataFrame rejected;
-    require(retain_frame(unavailable,limits,rollback_pool,full_meta,rejected)==Status::exhausted && rollback_pool.in_use()==0 && full_meta.in_use()==1 && !rejected);
-    occupied.reset();alignas(16) std::array<std::byte,2049> unaligned{};BufferPool badmeta{std::span(unaligned).subspan(1),rm,2048};
-    c=base(DType::UInt64);count.contract=&c;
-    require(retain_frame({{},count.view()},limits,rollback_pool,badmeta,rejected)==Status::invalid_argument && rollback_pool.in_use()==0 && badmeta.in_use()==0);
+    filled_count_and_alias_failures(c,data,v,plane,storage,meta);
 
 }
 void per_plane_history() {

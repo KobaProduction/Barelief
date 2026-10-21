@@ -26,7 +26,7 @@ QJsonObject example_view_preferences(const NumericExampleGraph& example,const QS
         if(node==example.graph.nodes.end())continue;
         const auto key=view_key(device,graph,id);
         QJsonObject view{{"node",id},{"device",device},{"graph",graph},
-            {"kind",QString::fromStdString(node->kind)},{"instance",0},
+            {"kind",QString::fromStdString(node->kind)},{"instance",0},{"open",true},
             {"plot_sections",sections_for(example,id)}};
         const auto descriptor=presentation::plot_descriptor_preferences(
             presentation::PlotDescriptor{{"image2d","surface3d"},{"Graphs","Audio","Signals"},true});

@@ -21,9 +21,15 @@ bool NumericPreparation::scalar_clock_matches(const PlanNode& source,const Clock
 }
 void NumericPreparation::bind_scalar_clock(PlanNode::ScalarInput& input){
     input.clock=absent;input.clock_known=false;const auto& declared=std::get<NumericContract>(input.contract).clock;
-    for(std::size_t source=0;source<plan->impl_->nodes.size();++source)if(scalar_clock_matches(plan->impl_->nodes[source],declared)&&clock_precedes(source,input.clock)){input.clock=source;input.clock_known=true;}
+    choose_scalar_clock(input,declared);
     if(input.clock!=absent)return;
     for(std::size_t source=0;source<plan->impl_->nodes.size();++source)if(plan->impl_->nodes[source].operation==ProcessingOperation::Source&&clock_precedes(source,input.clock))input.clock=source;
+}
+void NumericPreparation::choose_scalar_clock(PlanNode::ScalarInput& input,const ClockContract& declared){
+    for(std::size_t source=0;source<plan->impl_->nodes.size();++source)
+        if(scalar_clock_matches(plan->impl_->nodes[source],declared)&&clock_precedes(source,input.clock)){
+            input.clock=source;input.clock_known=true;
+        }
 }
 bool NumericPreparation::selector_clock_matches(const PlanNode& selector,std::size_t position,std::size_t candidate,PortId port)const {
     if(candidate==absent||candidate==position||port>=plan->impl_->nodes[candidate].numeric_outputs.size())return false;
@@ -63,18 +69,21 @@ void NumericPreparation::restore_disconnected_parent(PlanNode& node){
     }else node.clock=absent;
 }
 void NumericPreparation::update_clock_reset(PlanNode& node){
-    if(!previous)return;const auto old=index(previous->impl_->nodes,node.node.id);if(old==absent)return;
+    if(!previous)return;
+    const auto old=index(previous->impl_->nodes,node.node.id);if(old==absent)return;
     const auto prior=previous->impl_->nodes[old].clock;node.clock_reset=(node.clock==absent)!=(prior==absent);
     if(!node.clock_reset&&node.clock!=absent)node.clock_reset=clock_owner_changed(plan->impl_->nodes[node.clock],previous->impl_->nodes[prior]);
     if(node.clock_reset)node.reset=true;
 }
 void NumericPreparation::reconcile_clocks(){
-    for(std::size_t position=0;position<plan->impl_->nodes.size();++position){auto& node=plan->impl_->nodes[position];
-        if(node.operation==ProcessingOperation::Clock)continue;
-        if(node.scalar_view())for(auto& input:node.endpoint_plan->inputs)if(input.parent==absent)bind_scalar_clock(input);
-        if(node.operation==ProcessingOperation::InputSelector&&node.parent==absent)choose_selector_clock(node,position);
-        restore_node_clock(node);restore_disconnected_parent(node);update_clock_reset(node);
-    }
+    for(std::size_t position=0;position<plan->impl_->nodes.size();++position)reconcile_node_clock(position);
+}
+void NumericPreparation::reconcile_node_clock(std::size_t position){
+    auto& node=plan->impl_->nodes[position];
+    if(node.operation==ProcessingOperation::Clock)return;
+    if(node.scalar_view())for(auto& input:node.endpoint_plan->inputs)if(input.parent==absent)bind_scalar_clock(input);
+    if(node.operation==ProcessingOperation::InputSelector&&node.parent==absent)choose_selector_clock(node,position);
+    restore_node_clock(node);restore_disconnected_parent(node);update_clock_reset(node);
 }
 namespace {
 ContentToken output_token(const PlanNode* node,std::size_t output) {
@@ -103,10 +112,14 @@ class ContentAccounting {
         if(std::find(allocated.begin(),allocated.end(),&token)==allocated.end() && !numeric_add(retired,bytes))return Status::overflow;
         return Status::ok;
     }
+    Status retain_outputs(std::span<const PlanNode> nodes) {
+        for(const auto& node:nodes)for(const auto& token:node.output_content){const auto status=retain(token);if(status!=Status::ok)return status;}
+        return Status::ok;
+    }
 public:
     ContentAccounting(std::span<const ContentLineage* const> created,std::size_t maximum):allocated(created),capacity(maximum){unique.reserve(capacity);}
     Status measure(std::span<const PlanNode> nodes,std::size_t& owned,std::size_t& retired,std::size_t& count) {
-        for(const auto& node:nodes)for(const auto& token:node.output_content){const auto status=retain(token);if(status!=Status::ok)return status;}
+        {const auto status=retain_outputs(nodes);if(status!=Status::ok)return status;}
         {const auto status=expand();if(status!=Status::ok)return status;}
         for(const auto* token:unique){const auto status=charge(*token,owned,retired);if(status!=Status::ok)return status;}
         count=unique.size();return Status::ok;
@@ -147,18 +160,21 @@ class ContentPreparation {
         const auto found=std::find_if(bindings.begin(),bindings.end(),[=](const auto& input){return input.port==lane;});
         return found==bindings.end()?nullptr:&*found;
     }
+    void append_bound_inputs(PortId output,std::vector<ContentContribution>& result) const {
+        const auto& bindings=node->endpoint_plan->inputs;result.reserve(bindings.size());
+        if(node->operation==ProcessingOperation::InputSelector || node->operation==ProcessingOperation::Switch){
+            if(const auto* input=projected_input(output))result.push_back(contribution(input->port,input->parent,input->parent_port,output));
+            return;
+        }
+        for(const auto& input:bindings)result.push_back(contribution(input.port,input.parent,input.parent_port,output));
+    }
     std::vector<ContentContribution> inputs(PortId output) const {
         std::vector<ContentContribution> result;
         if(current.inputs.empty())return result;
         if(!node->endpoint_plan || node->endpoint_plan->inputs.empty()){
             result.reserve(1);result.push_back(contribution(current.inputs.front().id,node->parent,node->parent_port,output));return result;
         }
-        const auto& bindings=node->endpoint_plan->inputs;result.reserve(bindings.size());
-        if(node->operation==ProcessingOperation::InputSelector || node->operation==ProcessingOperation::Switch){
-            if(const auto* input=projected_input(output))result.push_back(contribution(input->port,input->parent,input->parent_port,output));
-            return result;
-        }
-        for(const auto& input:bindings)result.push_back(contribution(input.port,input.parent,input.parent_port,output));
+        append_bound_inputs(output,result);
         return result;
     }
     ContentToken build_output(PortId output) {
@@ -215,12 +231,15 @@ void NumericPreparation::reserve_mixer_destinations(){
         plan->impl_->nodes[parent].mixer_destinations.reserve(count);}
 }
 void NumericPreparation::bind_mixer_destinations(){
-    for(std::size_t m=0;m<plan->impl_->nodes.size();++m){const auto& mixer=plan->impl_->nodes[m];if(mixer.operation!=ProcessingOperation::Mixer && mixer.operation!=ProcessingOperation::ChannelComparison)continue;
+    for(std::size_t m=0;m<plan->impl_->nodes.size();++m)bind_mixer_inputs(m);
+}
+void NumericPreparation::bind_mixer_inputs(std::size_t m){
+        const auto& mixer=plan->impl_->nodes[m];if(mixer.operation!=ProcessingOperation::Mixer && mixer.operation!=ProcessingOperation::ChannelComparison)return;
         const auto anchor=std::find_if(mixer.endpoint_plan->inputs.begin(),mixer.endpoint_plan->inputs.end(),[](const auto& input){return input.parent!=absent;});
         for(std::size_t q=0;q<mixer.endpoint_plan->inputs.size();++q){const auto& input=mixer.endpoint_plan->inputs[q];
             if(input.parent!=absent)plan->impl_->nodes[input.parent].mixer_destinations.push_back({m,q,input.parent_port});
             else if(aligned_operation(mixer,*plan->impl_->numeric_graph)&&anchor!=mixer.endpoint_plan->inputs.end())
-                plan->impl_->nodes[anchor->parent].mixer_destinations.push_back({m,q,anchor->parent_port});}}
+                plan->impl_->nodes[anchor->parent].mixer_destinations.push_back({m,q,anchor->parent_port});}
 }
 Status NumericPreparation::check_clock_cycles(){
     // Retained clock edges participate in the same event schedule and cannot form a cycle.
@@ -232,12 +251,16 @@ Status NumericPreparation::check_clock_cycles(){
 void NumericPreparation::bind_destination(std::size_t i){
     const auto& n=plan->impl_->nodes[i];const auto parent=n.parent!=absent?n.parent:n.numeric_clock_parent;
     if((n.operation==ProcessingOperation::InputSelector || n.operation==ProcessingOperation::Switch || n.operation==ProcessingOperation::WLEDEncoder || paired_processing(n.operation))&&n.endpoint_plan){
-        for(std::size_t lane=0;lane<n.endpoint_plan->inputs.size();++lane){const auto& input=n.endpoint_plan->inputs[lane];
-            if(input.parent!=absent)plan->impl_->nodes[input.parent].selector_destinations.push_back({i,lane,input.parent_port});}
-        if(n.parent==absent&&parent!=absent)plan->impl_->nodes[parent].selector_destinations.push_back({i,0,n.parent_port});
+        bind_selector_destinations(i,parent);
     }else if(parent!=absent)plan->impl_->nodes[parent].children.push_back(i);
     if(n.operation==ProcessingOperation::History)clear_node_state(n,c->impl_->states[i]);
     c->impl_->states[i].pending_discontinuity=n.reset;
+}
+void NumericPreparation::bind_selector_destinations(std::size_t i,std::size_t parent){
+    const auto& n=plan->impl_->nodes[i];
+    for(std::size_t lane=0;lane<n.endpoint_plan->inputs.size();++lane){const auto& input=n.endpoint_plan->inputs[lane];
+        if(input.parent!=absent)plan->impl_->nodes[input.parent].selector_destinations.push_back({i,lane,input.parent_port});}
+    if(n.parent==absent&&parent!=absent)plan->impl_->nodes[parent].selector_destinations.push_back({i,0,n.parent_port});
 }
 void NumericPreparation::bind_destinations(){
     for(std::size_t i=0;i<plan->impl_->nodes.size();++i)bind_destination(i);

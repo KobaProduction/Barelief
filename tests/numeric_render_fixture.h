@@ -33,17 +33,25 @@ struct Target {
     }
     Target(AbstractChartView* chart=nullptr,SpectrogramGraph* surface=nullptr,QLabel* caption=nullptr,bool exposed=false,
            NumericImageView* image=nullptr,NumericPieView* pie=nullptr,NumericMetricsView* metrics=nullptr):visible(exposed) {
-        if(chart) {
-            chartEnabled=true;
+        bind_chart(chart);bind_surface(surface);bind_image(image);
+        bind_pie(pie);bind_metrics(metrics);bind_caption(caption);
+    }
+    void bind_chart_value_scale(AbstractChartView* chart){
             chartPort.set_value_source=[chart](bool db,int factor){auto scale=chart->value_scale();scale.source_decibels=db;scale.factor=factor;chart->set_value_scale(scale);};
+    }
+    void bind_chart(AbstractChartView* chart) {
+        if(!chart)return;
+            chartEnabled=true;
+            bind_chart_value_scale(chart);
             chartPort.update=[chart](const auto& values){chart->update(values);};
             chartPort.set_scalar_readout=[chart](const auto& value,bool scalar,bool available){chart->set_scalar_readout(value,scalar,available);};
             chartPort.scalar_readout_enabled=[chart]{return chart->scalar_readout_enabled();};
             chartPort.set_x_coordinates=[chart](const auto& values){return chart->set_x_coordinates(values);};
             chartPort.set_axis_title_keys=[chart](const auto& x,const auto& y){chart->set_axis_titles(ui::text(x.toUtf8().constData()),ui::text(y.toUtf8().constData()));};
             chartPort.caption=[chart](const char* source,QStringList args,bool loss,bool unavailable){chart->set_projection_status(text(source,args,loss,unavailable));};
-        }
-        if(surface) {
+            }
+    void bind_surface(SpectrogramGraph* surface) {
+        if(!surface)return;
             surfaceEnabled=true;
             surfacePort.update_frame_history=[surface](const auto& values){surface->update_frame_history(values);};
             surfacePort.paused=[surface]{return surface->paused();};
@@ -51,33 +59,37 @@ struct Target {
             surfacePort.set_axis_metadata=[surface](const auto& axes){return surface->set_axis_metadata(axes);};
             surfacePort.update_snapshot=[surface](auto snapshot){surface->update_snapshot(std::move(snapshot));};
             surfacePort.caption=[surface](const char* source,QStringList args,bool loss,bool unavailable){surface->set_projection_status(text(source,args,loss,unavailable));};
-        }
-        if(image) {
+            }
+    void bind_image(NumericImageView* image) {
+        if(!image)return;
             imageEnabled=true;
             imagePort.set_matrix=[image](const auto& values){image->set_matrix(values);};
             imagePort.set_axis_metadata=[image](const auto& axes){return image->set_axis_metadata(axes);};
             imagePort.set_snapshot=[image](auto snapshot,bool temporal){image->set_snapshot(std::move(snapshot),temporal);};
             imagePort.caption=[image](const char* source,QStringList args,bool loss,bool unavailable){image->set_projection_status(text(source,args,loss,unavailable));};
-        }
-        if(pie) {
+            }
+    void bind_pie(NumericPieView* pie) {
+        if(!pie)return;
             pieEnabled=true;
             piePort.set_values=[pie](const auto& values){return pie->set_values(values);};
             piePort.caption=[pie](const char* source,QStringList args,bool loss,bool unavailable){pie->set_projection_status(text(source,args,loss,unavailable));};
-        }
-        if(metrics) {
+            }
+    void bind_metrics(NumericMetricsView* metrics) {
+        if(!metrics)return;
             metricsEnabled=true;
             metricsPort.clear_values=[metrics]{metrics->clear_values();};
             metricsPort.set_unavailable=[metrics](quint16 port){metrics->set_unavailable(port);};
             metricsPort.set_value=[metrics](quint16 port,const auto& value){metrics->set_value(port,value);};
-        }
-        if(caption) {
+            }
+    void bind_caption(QLabel* caption) {
+        if(!caption)return;
             captionEnabled=true;
             captionPort.caption=[caption](const char* source,QStringList args,bool loss,bool unavailable){
                 caption->setProperty("numericCaptionLoss",loss);caption->setProperty("numericCaptionUnavailable",unavailable);
                 caption->setText(text(source,args,loss,unavailable));
             };
-        }
-    }
+            }
+
     operator presentation::NumericRenderTarget() {
         return {chartEnabled?&chartPort:nullptr,surfaceEnabled?&surfacePort:nullptr,captionEnabled?&captionPort:nullptr,visible,
             imageEnabled?&imagePort:nullptr,pieEnabled?&piePort:nullptr,metricsEnabled?&metricsPort:nullptr,axes,nullptr,frequency_grid,plot_presentation};

@@ -94,6 +94,26 @@ bool recovery_file_is_writable(QSettings& settings,const QString& path,QString* 
     return false;
 }
 
+bool recovery_failure(QString* error,const QString& message) {
+    if(error)*error=message;
+    return false;
+}
+bool validate_recovery_presentation(const QByteArray& bytes,QJsonObject& checked,QString* error) {
+    const auto result=desktop::decode_numeric_preset_presentation(bytes,checked);
+    if(!result || bytes.size()>workspace_recovery_limit)
+        return recovery_failure(error,result.error.isEmpty()?QStringLiteral("Workspace recovery limit"):result.error);
+    return true;
+}
+bool read_recovery_presentation(QSettings& settings,const QString& project_path,QJsonObject& checked,QString* error) {
+    if(!recovery_matches_project(settings,project_path))return recovery_failure(error,"Workspace recovery is incompatible with the project");
+    const auto result=desktop::decode_numeric_preset_presentation(settings.value("presentation").toByteArray(),checked);
+    return result?true:recovery_failure(error,result.error);
+}
+bool write_recovery_presentation(QSettings& settings,const QString& project_path,const QString& path,const QByteArray& bytes,QString* error) {
+    settings.setValue("version",1);settings.setValue("project_sha256",project_identity(project_path));settings.setValue("presentation",bytes);settings.sync();
+    if(settings.status()!=QSettings::NoError)return recovery_failure(error,"Could not save workspace recovery: "+path);
+    return true;
+}
 desktop::NumericDocumentResult stage_numeric_candidate(
     const desktop::NumericProjectDocument& document,
     const domain::NumericProcessingGraph& graph,
@@ -115,11 +135,10 @@ desktop::NumericDocumentResult stage_numeric_candidate(
 bool ConfigManager::loadWorkspaceRecovery(FileSaveApplicationConfig& config,QString* error) const {
     const auto path=_config_path+".workspace.ini";
     if(!QFileInfo::exists(path))return false;
-    if(QFileInfo(path).size()>workspace_recovery_limit){if(error)*error="Workspace recovery limit";return false;}
+    if(QFileInfo(path).size()>workspace_recovery_limit)return recovery_failure(error,"Workspace recovery limit");
     QSettings settings(path,QSettings::IniFormat);settings.setFallbacksEnabled(false);settings.sync();
-    if(!recovery_matches_project(settings,_config_path)){if(error)*error="Workspace recovery is incompatible with the project";return false;}
-    QJsonObject checked;const auto result=desktop::decode_numeric_preset_presentation(settings.value("presentation").toByteArray(),checked);
-    if(!result){if(error)*error=result.error;return false;}
+    QJsonObject checked;
+    if(!read_recovery_presentation(settings,_config_path,checked,error))return false;
     merge_recovery_presentation(config,checked);return true;
 }
 void ConfigManager::merge_recovery_presentation(FileSaveApplicationConfig& config,const QJsonObject& checked) {
@@ -134,15 +153,12 @@ QByteArray ConfigManager::encode_recovery_presentation(const FileSaveApplication
 }
 bool ConfigManager::saveWorkspaceRecovery(const FileSaveApplicationConfig& config,QString* error) const {
     const auto path=_config_path+".workspace.ini";
-    if(QFileInfo(path).size()>workspace_recovery_limit){if(error)*error="Workspace recovery limit";return false;}
+    if(QFileInfo(path).size()>workspace_recovery_limit)return recovery_failure(error,"Workspace recovery limit");
     QSettings settings(path,QSettings::IniFormat);settings.setFallbacksEnabled(false);settings.setAtomicSyncRequired(true);settings.sync();
     if(!recovery_file_is_writable(settings,path,error))return false;
     const auto bytes=encode_recovery_presentation(config);QJsonObject checked;
-    const auto result=desktop::decode_numeric_preset_presentation(bytes,checked);
-    if(!result || bytes.size()>workspace_recovery_limit){if(error)*error=result.error.isEmpty()?QStringLiteral("Workspace recovery limit"):result.error;return false;}
-    settings.setValue("version",1);settings.setValue("project_sha256",project_identity(_config_path));settings.setValue("presentation",bytes);settings.sync();
-    if(settings.status()!=QSettings::NoError){if(error)*error="Could not save workspace recovery: "+path;return false;}
-    return true;
+    if(!validate_recovery_presentation(bytes,checked,error))return false;
+    return write_recovery_presentation(settings,_config_path,path,bytes,error);
 }
 
 bool ConfigManager::saveNumeric(desktop::NumericProjectDocument& document,const domain::NumericProcessingGraph& graph,QString* error) const {

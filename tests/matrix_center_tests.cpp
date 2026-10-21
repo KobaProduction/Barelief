@@ -156,6 +156,22 @@ NumericProcessingGraph history_graph(){
     return numeric_test_builders::graph("center-history",{1,120},{source,retained,center},
         {numeric_test_builders::edge(1,0,2,0),numeric_test_builders::edge(2,0,3,0)});
 }
+void verify_centered_ring(const Probe& probe){
+    for(std::size_t row=0;row<3;++row){const std::array<float,4> expected{-4.25f,-3.25f,2.75f,4.75f};
+        for(std::size_t column=0;column<4;++column)require(probe.values[row*4+column]==expected[column],"wrapped History centered in logical order");
+        double time=0;std::memcpy(&time,probe.coordinates[0].data()+row*8,8);require(std::abs(time-double(row+2)/120.)<1e-12,"logical ring Time coordinates preserved");}
+}
+template<class Event> void masked_center_changes(domain::NumericProcessingGraph& graph,Running& running,Probe& probe,const Event& event,DataFrameView& snapshot,std::uint64_t& filled,std::uint64_t& ordinal){
+    graph.nodes[2].enabled=true;const auto retained=graph.nodes[1].outputs[0].contract;
+    ConfiguredProcessingNode gate;gate.id=4;gate.kind="Gate";gate.parameters=RouteProcessingParameters{1,0,false,1};
+    gate.inputs={{0,PortDirection::Input,retained}};gate.outputs={{0,PortDirection::Output,retained}};
+    graph.nodes.push_back(gate);graph.edges={{1,2},{2,4},{4,3}};running.replace(graph);event(7);
+    for(std::size_t index=0;index<12;++index)require(probe.values[index]==0,"center honors ring silence masks");
+    require(running.plan->history(2,0,*running.context,snapshot,&filled,&ordinal)==Status::ok && filled==3 && ordinal==8,"route change preserves and advances History");
+    graph.nodes[2].enabled=false;running.replace(graph);event(8);
+    require(probe.available && probe.ring_capacity==0,"disabled masked center publishes ordinary available matrix");
+    for(std::size_t index=0;index<12;++index)require(probe.values[index]==0,"disabled center materialization honors ring masks");
+}
 void history_ring_and_compatible_changes(){
     auto graph=history_graph();const auto centered_owner=graph.nodes[2].outputs[0].contract;
     const auto declared=std::get<NumericContract>(centered_owner.view());
@@ -167,9 +183,7 @@ void history_ring_and_compatible_changes(){
         const auto frame=numeric_test_builders::frame(stamp,input,std::as_bytes(std::span(values)),planes,{4,1});const auto before=allocations;
         require(running.plan->process_numeric_ports(1,frame,*running.context,{},probe.callbacks())==Status::ok,"retained ring centers successfully");require(allocations==before,"ring centering never allocates");};
     for(std::size_t ordinal=0;ordinal<5;++ordinal)event(ordinal);
-    for(std::size_t row=0;row<3;++row){const std::array<float,4> expected{-4.25f,-3.25f,2.75f,4.75f};
-        for(std::size_t column=0;column<4;++column)require(probe.values[row*4+column]==expected[column],"wrapped History centered in logical order");
-        double time=0;std::memcpy(&time,probe.coordinates[0].data()+row*8,8);require(std::abs(time-double(row+2)/120.)<1e-12,"logical ring Time coordinates preserved");}
+    verify_centered_ring(probe);
     DataFrameView snapshot;std::uint64_t filled=0,ordinal=0;
     require(running.plan->history(2,0,*running.context,snapshot,&filled,&ordinal)==Status::ok && filled==3 && ordinal==5,"History full before center edit");
     graph.nodes[2].parameters=parameters(1);running.replace(graph);
@@ -181,15 +195,7 @@ void history_ring_and_compatible_changes(){
     require(running.plan->history(2,0,*running.context,snapshot)==Status::ok,"parent History remains available after center bypass");
     const auto& bypass_source=std::get<NumericView>(snapshot.payload);
     require(probe.coordinate_bytes[0]==bypass_source.coordinates.axes[0].size() && std::equal(bypass_source.coordinates.axes[0].begin(),bypass_source.coordinates.axes[0].end(),probe.coordinates[0].begin()),"center bypass preserves logical ring coordinates");
-    graph.nodes[2].enabled=true;const auto retained=graph.nodes[1].outputs[0].contract;
-    ConfiguredProcessingNode gate;gate.id=4;gate.kind="Gate";gate.parameters=RouteProcessingParameters{1,0,false,1};
-    gate.inputs={{0,PortDirection::Input,retained}};gate.outputs={{0,PortDirection::Output,retained}};
-    graph.nodes.push_back(gate);graph.edges={{1,2},{2,4},{4,3}};running.replace(graph);event(7);
-    for(std::size_t index=0;index<12;++index)require(probe.values[index]==0,"center honors ring silence masks");
-    require(running.plan->history(2,0,*running.context,snapshot,&filled,&ordinal)==Status::ok && filled==3 && ordinal==8,"route change preserves and advances History");
-    graph.nodes[2].enabled=false;running.replace(graph);event(8);
-    require(probe.available && probe.ring_capacity==0,"disabled masked center publishes ordinary available matrix");
-    for(std::size_t index=0;index<12;++index)require(probe.values[index]==0,"disabled center materialization honors ring masks");
+    masked_center_changes(graph,running,probe,event,snapshot,filled,ordinal);
 }
 void window_ring_bypass(){
     auto graph=history_graph();const auto history=graph.nodes[1].outputs[0].contract;

@@ -53,13 +53,8 @@ void native_probe(){
     require(supported_screen_refresh_rates(embedded).supported.empty(),"embedded-zero device is refused");
 #endif
 }
-void session_tests(){
-    std::map<std::wstring,DisplayModeSnapshot> displays{{L"A",{2560,1440,32,0,false,60}},{L"B",{1920,1080,32,0,false,75}}};
-    std::vector<std::pair<std::wstring,double>> applied;bool reject=false;unsigned enumerations=0;
-    DisplayModeApi fake{
-        [&](std::wstring_view device)->std::optional<DisplayModeSnapshot>{const auto it=displays.find(std::wstring(device));return it==displays.end()?std::nullopt:std::optional{it->second};},
-        [&](std::wstring_view device){++enumerations;std::vector<DisplayModeSnapshot> result;const auto it=displays.find(std::wstring(device));if(it!=displays.end())for(const double rate:device==L"A"?std::vector<double>{60,120,165}:std::vector<double>{75,144}){auto mode=it->second;mode.refresh_rate=rate;result.push_back(mode);}return result;},
-        [&](std::wstring_view device,double rate){applied.emplace_back(device,rate);if(reject)return false;displays.at(std::wstring(device)).refresh_rate=rate;return true;}};
+void session_selection(DisplayModeApi& fake,std::map<std::wstring,DisplayModeSnapshot>& displays,
+ std::vector<std::pair<std::wstring,double>>& applied,unsigned& enumerations) {
     {
         DisplayRefreshSession session(fake);
         require(session.select_maximum(L"A") && displays[L"A"].refresh_rate==165,"Maximum applies the highest supported mode through the injected boundary");
@@ -75,7 +70,9 @@ void session_tests(){
         require(session.select_maximum(L"A") && session.release(L"A") && session.select_maximum(L"B"),"monitor transfer restores the previous monitor before applying the next");
         require(displays[L"A"].refresh_rate==60 && displays[L"B"].refresh_rate==144,"monitor sessions remain independent");
     }
-    require(displays[L"B"].refresh_rate==75,"teardown restores the second monitor's original mode");
+}
+void session_restore_failures(DisplayModeApi& fake,std::map<std::wstring,DisplayModeSnapshot>& displays,
+ std::vector<std::pair<std::wstring,double>>& applied,bool& reject) {
     {
         DisplayRefreshSession session(fake);reject=true;const auto before=applied.size();
         require(!session.select_maximum(L"A") && displays[L"A"].refresh_rate==60,"rejected OS switch reports failure without changing current mode");
@@ -90,18 +87,10 @@ void session_tests(){
         require(session.select_maximum(L"A"),"prepare detached display fixture");displays.erase(L"A");
         const auto beforeDetached=applied.size();require(!session.release(L"A") && applied.size()==beforeDetached,"detached or temporarily unavailable display retains a retryable claim without targeting another monitor");
         require(!session.select_maximum(L"") && !session.select(L"missing",60),"mode mutation requires a known named monitor");
-    }
-}
-void verification_failure_tests(){
-    DisplayModeSnapshot actual{2560,1440,32,0,false,60};
-    unsigned missing_reads=0,missing_after_apply=0;bool reject_restore=false,external_change=false;
-    std::vector<double> applied;
-    DisplayModeApi fake{
-        [&](std::wstring_view)->std::optional<DisplayModeSnapshot>{if(missing_reads){--missing_reads;return {};}return actual;},
-        [&](std::wstring_view){auto a=actual,b=actual,c=actual;a.refresh_rate=60;b.refresh_rate=120;c.refresh_rate=165;return std::vector{a,b,c};},
-        [&](std::wstring_view,double rate){applied.push_back(rate);if(reject_restore && rate==60)return false;actual.refresh_rate=external_change && rate==165?120:rate;if(rate==165)missing_reads=missing_after_apply;return true;}};
-    {
-        DisplayRefreshSession session(fake);missing_after_apply=1;
+    }}
+void uncertain_readback(DisplayRefreshSession& session,DisplayModeSnapshot& actual,
+ unsigned& missing_reads,unsigned& missing_after_apply,std::vector<double>& applied) {
+missing_after_apply=1;
         require(!session.select_maximum(L"A") && actual.refresh_rate==60 && applied==std::vector<double>{165,60},"unavailable post-apply query rolls back before reporting failure");
         const auto calls=applied.size();session.restore_all();require(applied.size()==calls,"confirmed rollback leaves no new restoration claim");
         missing_after_apply=2;
@@ -115,6 +104,9 @@ void verification_failure_tests(){
         missing_after_apply=2;require(!session.select(L"A",165),"prepare external change during pending reconciliation");
         actual.refresh_rate=120;const auto beforeExternal=applied.size();
         require(session.reconcile(L"A") && applied.size()==beforeExternal && actual.refresh_rate==120,"deferred reconciliation preserves an intervening external mode");
+}
+void failed_rollback(DisplayRefreshSession& session,DisplayModeSnapshot& actual,unsigned& missing_reads,
+ unsigned& missing_after_apply,std::vector<double>& applied,bool& reject_restore,bool& external_change) {
         actual.refresh_rate=60;
         missing_after_apply=1;reject_restore=true;
         require(!session.select_maximum(L"A") && actual.refresh_rate==165,"failed rollback reports failure and retains the changed mode's claim");
@@ -125,7 +117,29 @@ void verification_failure_tests(){
         require(session.release(L"A") && actual.refresh_rate==60,"rollback of a later request preserves the first original mode");
         missing_after_apply=0;external_change=true;const auto before=applied.size();
         require(!session.select(L"A",165) && actual.refresh_rate==120,"unexpected valid readback reports failure");
-        session.restore_all();require(applied.size()==before+1 && actual.refresh_rate==120,"an intervening external mode is never rolled back or claimed");
+        session.restore_all();require(applied.size()==before+1 && actual.refresh_rate==120,"an intervening external mode is never rolled back or claimed");}
+void session_tests(){
+    std::map<std::wstring,DisplayModeSnapshot> displays{{L"A",{2560,1440,32,0,false,60}},{L"B",{1920,1080,32,0,false,75}}};
+    std::vector<std::pair<std::wstring,double>> applied;bool reject=false;unsigned enumerations=0;
+    DisplayModeApi fake{
+        [&](std::wstring_view device)->std::optional<DisplayModeSnapshot>{const auto it=displays.find(std::wstring(device));return it==displays.end()?std::nullopt:std::optional{it->second};},
+        [&](std::wstring_view device){++enumerations;std::vector<DisplayModeSnapshot> result;const auto it=displays.find(std::wstring(device));if(it!=displays.end())for(const double rate:device==L"A"?std::vector<double>{60,120,165}:std::vector<double>{75,144}){auto mode=it->second;mode.refresh_rate=rate;result.push_back(mode);}return result;},
+        [&](std::wstring_view device,double rate){applied.emplace_back(device,rate);if(reject)return false;displays.at(std::wstring(device)).refresh_rate=rate;return true;}};
+    session_selection(fake,displays,applied,enumerations);
+    require(displays[L"B"].refresh_rate==75,"teardown restores the second monitor's original mode");
+    session_restore_failures(fake,displays,applied,reject);
+}
+void verification_failure_tests(){
+    DisplayModeSnapshot actual{2560,1440,32,0,false,60};
+    unsigned missing_reads=0,missing_after_apply=0;bool reject_restore=false,external_change=false;
+    std::vector<double> applied;
+    DisplayModeApi fake{
+        [&](std::wstring_view)->std::optional<DisplayModeSnapshot>{if(missing_reads){--missing_reads;return {};}return actual;},
+        [&](std::wstring_view){auto a=actual,b=actual,c=actual;a.refresh_rate=60;b.refresh_rate=120;c.refresh_rate=165;return std::vector{a,b,c};},
+        [&](std::wstring_view,double rate){applied.push_back(rate);if(reject_restore && rate==60)return false;actual.refresh_rate=external_change && rate==165?120:rate;if(rate==165)missing_reads=missing_after_apply;return true;}};
+    {
+        DisplayRefreshSession session(fake);uncertain_readback(session,actual,missing_reads,missing_after_apply,applied);
+        failed_rollback(session,actual,missing_reads,missing_after_apply,applied,reject_restore,external_change);
     }
     require(display_device_for_monitor(0).empty(),"invalid native monitor does not resolve to a different display");
 }

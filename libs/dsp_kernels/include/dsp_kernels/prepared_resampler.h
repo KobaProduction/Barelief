@@ -81,6 +81,7 @@ private:
     };
     bool prepare_mode(const ResamplerBackendFactory*);
     void design_iir() noexcept;
+    bool process_non_fir(ProcessBuffers&) noexcept;
     bool process_fir(ProcessBuffers&) noexcept;
     bool process_backend(ProcessBuffers&) noexcept;
     bool process_identity(ProcessBuffers&) noexcept;

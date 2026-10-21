@@ -13,6 +13,7 @@
 #include <bit>
 #include <charconv>
 #include <limits>
+#include <optional>
 #include <type_traits>
 #include <cmath>
 #include <algorithm>
@@ -364,23 +365,23 @@ template<> void decode(Mapper& m,Handle h,ProcessingParameterValue& v) {
     else if(k==NodeKind::Object && is_numeric_array(m,h))decode_numeric_array(m,h,v);
     else {NumericLiteral x;decode(m,h,x);v=x;}
 }
+bool read_parameter_array_payload(Mapper& m,ProcessingParameter& v) {
+    const auto kind=domain::node_kind(m.kind);
+    const auto* descriptor=kind?parameter_descriptor(*kind,v.key):nullptr;
+    const auto value=member(*m.source,m.handle,"value");
+    if(!descriptor || descriptor->value_kind!=ParameterValueKind::NumericArray
+        || node(*m.source,value).kind!=NodeKind::String)return false;
+    std::string payload;m.field("value",payload);
+    if(!*m.result)return true;
+    NumericArray decoded;
+    if(!std::string_view(payload).starts_with("f32le-base64:")
+        || parse_numeric_array(payload,decoded)!=Status::ok) {m.fail("Invalid numeric array payload");return true;}
+    v.value=std::move(decoded);
+    return true;
+}
 void map(Mapper& m,ProcessingParameter& v) {
     FIELD(key);
-    if(m.reading()) {
-        const auto kind=domain::node_kind(m.kind);
-        const auto* descriptor=kind?parameter_descriptor(*kind,v.key):nullptr;
-        const auto value=member(*m.source,m.handle,"value");
-        if(descriptor && descriptor->value_kind==ParameterValueKind::NumericArray
-            && node(*m.source,value).kind==NodeKind::String) {
-            std::string payload;m.field("value",payload);
-            if(!*m.result)return;
-            NumericArray decoded;
-            if(!std::string_view(payload).starts_with("f32le-base64:")
-                || parse_numeric_array(payload,decoded)!=Status::ok) {m.fail("Invalid numeric array payload");return;}
-            v.value=std::move(decoded);
-            return;
-        }
-    }
+    if(m.reading() && read_parameter_array_payload(m,v))return;
     FIELD(value);
 }
 bool registered(std::string_view kind,std::string_view key) {
@@ -845,21 +846,30 @@ bool parameter_value_matches_kind(const ProcessingParameterValue& value,Paramete
     }
     return false;
 }
-NumericDocumentResult check_registered_parameter_types(const NumericProcessingGraph& graph,const QString& path) {
-    for(const auto& configured:graph.nodes) {
-        const auto kind=domain::node_kind(configured.kind);
-        if(!kind)continue;
+const std::vector<ProcessingParameter>* node_parameter_values(const ConfiguredProcessingNode& configured) {
         const auto* endpoint=std::get_if<EndpointProcessingParameters>(&configured.parameters);
         const auto* transform=std::get_if<TransformProcessingParameters>(&configured.parameters);
-        if(!endpoint && !transform)continue;
-        const auto& values=endpoint?endpoint->values:transform->values;
-        for(const auto& parameter:values) {
+        if(!endpoint && !transform)return nullptr;
+        return endpoint?&endpoint->values:&transform->values;
+}
+NumericDocumentResult check_node_parameter_types(const ConfiguredProcessingNode& configured,const QString& path) {
+        const auto kind=domain::node_kind(configured.kind);
+        if(!kind)return {};
+        const auto* values=node_parameter_values(configured);
+        if(!values)return {};
+        for(const auto& parameter:*values) {
             const auto* descriptor=parameter_descriptor(*kind,parameter.key);
             if(!descriptor || descriptor->classification!=ParameterClassification::Processing)continue;
             if(!parameter_value_matches_kind(parameter.value,descriptor->value_kind))
                 return failure("Parameter value type does not match registered descriptor",
                     path+".nodes."+QString::number(configured.id)+".parameters."+text(parameter.key));
         }
+    return {};
+}
+NumericDocumentResult check_registered_parameter_types(const NumericProcessingGraph& graph,const QString& path) {
+    for(const auto& configured:graph.nodes){
+        const auto result=check_node_parameter_types(configured,path);
+        if(!result)return result;
     }
     return {};
 }
@@ -1305,10 +1315,9 @@ QByteArray merge_embedded_node(std::string_view before,std::string_view after,Nu
     const auto quoted=QJsonDocument(QJsonArray{QString::fromUtf8(retained)}).toJson(QJsonDocument::Compact);
     return quoted.mid(1,quoted.size()-2);
 }
-QByteArray merge(const Source& old,Handle old_h,const Source& fresh,Handle new_h,
-                 std::string_view context,NumericDocumentResult& result,std::string kind,bool preserve_equal,std::string_view display_scope) {
+std::optional<QByteArray> merge_numeric_array_payload(const Source& old,Handle old_h,const Source& fresh,Handle new_h,
+                                                    std::string_view context) {
     const auto a=node(old,old_h),b=node(fresh,new_h);
-    if(preserve_equal && same_settings_projection(old,old_h,fresh,new_h))return bytes(a.raw);
     if(context=="value" && a.kind==NodeKind::String && a.decoded.starts_with("f32le-base64:")
         && b.kind==NodeKind::Object) {
         const auto type=node(fresh,member(fresh,new_h,"type"));
@@ -1318,6 +1327,17 @@ QByteArray merge(const Source& old,Handle old_h,const Source& fresh,Handle new_h
             return quoted.mid(1,quoted.size()-2);
         }
     }
+    return {};
+}
+std::optional<QByteArray> retained_merge_value(const Source& old,Handle old_h,const Source& fresh,Handle new_h,
+        std::string_view context,bool preserve_equal) {
+    if(preserve_equal && same_settings_projection(old,old_h,fresh,new_h))return bytes(node(old,old_h).raw);
+    return merge_numeric_array_payload(old,old_h,fresh,new_h,context);
+}
+QByteArray merge(const Source& old,Handle old_h,const Source& fresh,Handle new_h,
+                 std::string_view context,NumericDocumentResult& result,std::string kind,bool preserve_equal,std::string_view display_scope) {
+    const auto a=node(old,old_h),b=node(fresh,new_h);
+    if(const auto retained=retained_merge_value(old,old_h,fresh,new_h,context,preserve_equal))return *retained;
     if(a.kind!=b.kind)return bytes(b.raw);
     if(preserve_equal && context=="numeric_processing" && b.kind==NodeKind::String)
         return merge_embedded_node(a.decoded,b.decoded,result);
@@ -1803,15 +1823,19 @@ NumericDocumentResult project_serial_name(const Source& source,Handle serial,QJs
         return failure("Expected serial port name","network.serial.port_name");
     candidate["port_name"]=text(port.decoded);return {};
 }
+NumericDocumentResult project_serial_fields(const Source& source,Handle serial,QJsonObject& candidate) {
+    auto result=project_serial_name(source,serial,candidate);if(!result)return result;
+    result=project_network_integer(source,serial,"baud_rate",1,std::numeric_limits<qint32>::max(),candidate);
+    if(result)result=project_network_integer(source,serial,"input_node",0,std::numeric_limits<int>::max()-1,candidate);
+    return result;
+}
 NumericDocumentResult project_network_serial(const Source& source,Handle network,QJsonObject& out) {
     const auto serial=member(source,network,"serial");
     if(!serial.source)return {};
     auto result=object_keys(source,serial,{"port_name","baud_rate","input_node"},"network.serial");
     if(!result)return result;
     QJsonObject candidate;
-    result=project_serial_name(source,serial,candidate);if(!result)return result;
-    result=project_network_integer(source,serial,"baud_rate",1,std::numeric_limits<qint32>::max(),candidate);
-    if(result)result=project_network_integer(source,serial,"input_node",0,std::numeric_limits<int>::max()-1,candidate);
+    result=project_serial_fields(source,serial,candidate);
     if(result)out["serial"]=candidate;
     return result;
 }

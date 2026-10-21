@@ -62,7 +62,7 @@ static GuiState fixture() {
     state.file_configs.scene_graph=gui_fixture::encoded(configured);
     state.file_configs.pipeline_graph=state.file_configs.scene_graph;
     state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto& kind:numeric_editor::catalog())state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     auto model=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);
     require(model->set_numeric_graph(configured),"canonical model fixture");state.data_flow_graph=model;
     return state;
@@ -88,30 +88,23 @@ static void inspector_selection(GuiPresenter &presenter) {
     }
     auto *handle = splitter->handle(2);
     QTest::mouseClick(handle, Qt::LeftButton); settle();
-    require(splitter->sizes()[2] == 0, "Divider click did not collapse inspector");
+    require(splitter->sizes().at(2) == 0, "Divider click did not collapse inspector");
     const auto collapsed = splitter->sizes();
     scene->clearSelection(); scene->nodeGraphicsObject(10)->setSelected(true); emit scene->nodeSelected(10); settle();
     require(splitter->sizes() == collapsed, "Node selection reopened collapsed inspector");
     QTest::mouseClick(handle, Qt::LeftButton); settle();
-    require(std::abs(splitter->sizes()[2] - widths[2]) <= 2, "Divider click did not restore inspector width");
+    require(std::abs(splitter->sizes().at(2) - widths[2]) <= 2, "Divider click did not restore inspector width");
     scene->clearSelection(); settle();
     require(editor.findChild<QLabel *>("pipelineInspectorPlaceholder"), "Deselecting lost inspector placeholder");
     splitter->setSizes({170, 740, 165}); settle();
-    const int narrow_width = splitter->sizes()[2];
+    const int narrow_width = splitter->sizes().at(2);
     QTest::mouseClick(handle, Qt::LeftButton); settle();
     QTest::mouseClick(handle, Qt::LeftButton); settle();
-    require(std::abs(splitter->sizes()[2] - narrow_width) <= 2, "Narrow inspector width was replaced by a fixed minimum");
+    require(std::abs(splitter->sizes().at(2) - narrow_width) <= 2, "Narrow inspector width was replaced by a fixed minimum");
 }
 
-static void narrow_controls(GuiPresenter &presenter) {
-    SchemeEditorWidget editor(presenter);
-    editor.resize(800, 420); editor.show(); settle();
-    auto *splitter = editor.findChild<QSplitter *>("pipelineSplitter");
-    auto *scene = editor.findChild<QtNodes::DataFlowGraphicsScene *>();
-    auto *inspector = editor.findChild<QScrollArea *>("pipelineInspector");
-    for(const auto *theme : {"light","dark"}) {
-    ui::Theme::instance().set(QString::fromLatin1(theme));
-    for (const auto &node : presenter.state().file_configs.scene_graph.value("nodes").toArray()) {
+static void narrow_node_controls(const QJsonValue& node,SchemeEditorWidget& editor,QtNodes::DataFlowGraphicsScene* scene,QSplitter* splitter,QScrollArea* inspector) {
+
         const auto id=QtNodes::NodeId(node.toObject().value("id").toInt());
         scene->clearSelection(); scene->nodeGraphicsObject(id)->setSelected(true); emit scene->nodeSelected(id);
         splitter->setSizes({140, 475, 165}); settle();
@@ -120,13 +113,13 @@ static void narrow_controls(GuiPresenter &presenter) {
         const QRect title_bounds(title->mapTo(inspector->widget(),QPoint()),title->size());
         if(title_bounds.right()>=inspector->viewport()->width()) {
             qWarning()<<"Narrow title"<<id<<title->text()<<title_bounds<<"viewport"<<inspector->viewport()->size()<<"contents"<<inspector->widget()->size()<<"minimum"<<inspector->widget()->minimumSizeHint();
-            for(auto* child:inspector->widget()->findChildren<QWidget*>())
+            for(const auto children=inspector->widget()->findChildren<QWidget*>();auto* child:children)
                 if(child->isVisible())qWarning()<<"Narrow minimum"<<child->metaObject()->className()<<child->objectName()<<child->size()<<child->minimumSize()<<child->minimumSizeHint()<<child->sizePolicy();
         }
         require(title_bounds.right()<inspector->viewport()->width(),"Inspector title exceeds narrow viewport");
         auto *parameters = inspector->widget()->findChild<QWidget *>("numericNodeParameters");
         require(parameters, "Inspector parameters absent");
-        for (auto *control : parameters->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) {
+        for (const auto controls=parameters->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly);auto *control:controls) {
             if (!control->isVisible()) continue;
             if(!parameters->rect().contains(control->geometry()))
                 qWarning()<<"Parameter bounds"<<id<<control->metaObject()->className()<<control->objectName()<<control->geometry()<<parameters->rect();
@@ -136,30 +129,16 @@ static void narrow_controls(GuiPresenter &presenter) {
             {
                 qWarning() << "Node" << id << control->objectName() << bounds << "viewport" << inspector->viewport()->size()
                            << "contents" << inspector->widget()->size();
-                for (auto *child : inspector->widget()->findChildren<QWidget *>(QString(),Qt::FindDirectChildrenOnly))
+                for (const auto children=inspector->widget()->findChildren<QWidget *>(QString(),Qt::FindDirectChildrenOnly);auto *child:children)
                     qWarning() << child->objectName() << child->minimumSize() << child->minimumSizeHint() << child->sizePolicy();
             }
             require(bounds.right() < inspector->viewport()->width(), "Narrow inspector control exceeds viewport");
         }
-    }
-    }
+
 }
 
-static void dataflow_footer(GuiPresenter &presenter) {
-    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
-    const auto menuFont = menu_row_fixture_font();
-    window.setFont(menuFont);
-    // The window was polished before the offscreen font was registered. Apply
-    // the owned row's font explicitly, as in the save-status persistence fixture.
-    set_menu_row_fixture_font(window.menuBar(), menuFont);
-    // Finish initial engine snapshot/navigation delivery before the user closes
-    // graph areas. Otherwise the bootstrap migration legitimately opens them.
-    settle();
-    auto *flow = window.workspaceDock("dataFlowDock");
-    require(flow, "Data Flow dock absent");
-    for (auto *dock : window.workspaceDocks()) if (dock != flow) dock->toggleView(false);
-    window.resize(800, 600); window.show(); settle();
-    for (const auto size : {QSize(800,600), QSize(1200,760), QSize(800,600)}) {
+static void footer_at_size(MainWindow& window,WorkspaceDock* flow,const QSize& size) {
+
         window.resize(size); settle();
         // Disk status shares the menu row; ADS starts directly below that row.
         const int upperChromeBottom = window.menuBar()->geometry().bottom();
@@ -177,7 +156,7 @@ static void dataflow_footer(GuiPresenter &presenter) {
         require(window.menuBar()->geometry().contains(statusBounds), "Persistent save status escapes menu row");
         require(navigation && statusBounds.width() > 0 && statusBounds.right() < rectInWindow(navigation).left(),
                 "Persistent save status overlaps right navigation controls");
-        for (auto *action : window.menuBar()->actions()) {
+        for (const auto actions=window.menuBar()->actions();auto *action:actions) {
             if (!action->isVisible()) continue;
             const auto bounds = window.menuBar()->actionGeometry(action).translated(window.menuBar()->pos());
             require(statusBounds.left() > bounds.right(), "Persistent save status overlaps menu actions");
@@ -188,7 +167,7 @@ static void dataflow_footer(GuiPresenter &presenter) {
         if (rectInWindow(flow).top() > upperChromeBottom+2)
         {
             qWarning() << "flow" << rectInWindow(flow) << "menu" << window.menuBar()->geometry() << "footer" << window.statusBar()->geometry();
-            for (auto *dock : window.workspaceDocks()) qWarning() << dock->objectName() << dock->isHidden() << rectInWindow(dock);
+            for (const auto docks=window.workspaceDocks();auto *dock:docks) qWarning() << dock->objectName() << dock->isHidden() << rectInWindow(dock);
         }
         require(rectInWindow(flow).top() > upperChromeBottom && rectInWindow(flow).top() <= upperChromeBottom+2,
                 "Only Data Flow retained an empty upper dock area");
@@ -197,89 +176,19 @@ static void dataflow_footer(GuiPresenter &presenter) {
             const QRect bounds(control->mapTo(&window,QPoint()),control->size());
             require(window.menuBar()->geometry().contains(bounds), "Navigation control escapes upper bar");
         }
-    }
-    window.close();
-}
-
-static void restored_startup(GuiPresenter &presenter) {
-    // Restore a saved tabbed workspace before the first event loop, as the
-    // desktop entrypoint does, then close and restore its resulting layout.
-    for (int pass = 0; pass < 4; ++pass) {
-        MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
-        auto *fft = window.workspaceDock("fftDock");
-        auto *mel = window.workspaceDock("melDock");
-        require(fft && mel, "Saved workspace graph docks absent");
-        if (pass == 0) presenter.initialize();
-        window.show();
-        QTest::qWait(250); // Includes deferred dock animation deletion.
-        require(window.isVisible(), "Restored workspace did not remain open");
-        window.close();
-        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-    }
-}
-
-static void compact_chrome(GuiPresenter &presenter) {
-    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph); window.resize(1000,700); window.show(); presenter.initialize(); settle();
-    for(const auto *theme:{"dark","light"}) {
-        ui::Theme::instance().set(QString::fromLatin1(theme)); settle();
-        for(const auto size:{QSize(800,600),QSize(1200,760)}) {
-        window.resize(size); settle();
-        for(const auto *id:{"pipelinePresets","pipelineToggle","themeMenuButton","engineSelectorButton"}) {
-            auto *button=window.findChild<QToolButton *>(id);
-            require(button && button->height()==24 && button->property("compactControl").toBool(),"Navigation button does not share compact chrome");
-            const QRect bounds(button->mapTo(&window,QPoint()),button->size());
-            require(window.menuBar()->geometry().contains(bounds),"Navigation button is outside upper bar");
-            if(button->menu()) require(button->property("menuControl").toBool(),"Menu button is missing shared arrow chrome");
-            require(button->styleSheet().isEmpty(),"Navigation button has a private style override");
-        }
-        }
-        auto *fps=window.findChild<QLabel *>("renderStatus");
-        require(!fps,"Main window still shows aggregate FPS");
-        require(!window.statusBar()->isVisible(),"Empty footer still takes workspace height");
-    }
-    auto *editor=window.findChild<SchemeEditorWidget *>();
-    const auto before=window.workspaceDocks();emit editor->graph_open_requested(8,0);settle();
-    WorkspaceDock* surface=nullptr;for(auto* dock:window.workspaceDocks())if(!before.contains(dock))surface=dock;
-    require(surface && surface->isFloating() && surface->floatingDockContainer(),"external graph container");
-    auto* renderer=surface->widget();surface->findChild<QAction*>("graphPlacement")->menu()->actions()[1]->trigger();settle();
-    require(!surface->isFloating() && surface->widget()==renderer,"return recreates renderer");window.close();surface->close();
 
 }
 
-static void scoped_windows(GuiPresenter &presenter) {
-    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);window.resize(1500,900);window.show();settle();
-    auto* editor=window.findChild<SchemeEditorWidget*>();auto* flow=window.workspaceDock("dataFlowDock");
-    for(auto* dock:window.workspaceDocks())if(dock!=flow)dock->toggleView(false);
-    emit editor->graph_view_requested(10);settle();
-    for(auto* dock:window.workspaceDocks())if(dock!=flow)require(dock->isClosed(),"zero slots created graph on focus");
-    QList<WorkspaceDock*> created;
-    for(const auto spec:{std::pair{10,2},std::pair{11,2},std::pair{10,0},std::pair{8,0}}){
+static void open_scoped_view(MainWindow& window,SchemeEditorWidget* editor,const std::pair<int,int>& spec,QList<WorkspaceDock*>& created) {
         const auto before=window.workspaceDocks();QList<WorkspaceDock*> closed;
         for(auto* dock:before)if(dock->isClosed() && dock->property("graphNode").isValid() && dock->property("graphNode").toInt()==spec.first)closed.append(dock);
         emit editor->graph_open_requested(spec.first,spec.second);settle();
-        WorkspaceDock* added=nullptr;for(auto* dock:window.workspaceDocks())if(!before.contains(dock))added=dock;
+        WorkspaceDock* added=nullptr;for(const auto docks=window.workspaceDocks();auto* dock:docks)if(!before.contains(dock))added=dock;
         if(!added)for(auto* dock:closed)if(!dock->isClosed())added=dock;
         require(added && !added->isClosed(),"explicit open creates or reopens closed instance");created.append(added);
-    }
-    require(created[0]->widget()!=created[2]->widget() && created[2]->isFloating() && created[3]->isFloating(),"independent internal/external views");
-    auto* position=window.findChild<QComboBox*>("dataFlowPosition");require(position,"flow position selector");
-    for(int value:{1,2,3,0}){position->setCurrentIndex(value);settle();for(auto* dock:created)if(!dock->isFloating())require(!rectInWindow(flow).intersects(rectInWindow(dock)),"flow overlaps internal graph");}
-    created[0]->toggleView(false);created[0]->toggleView(true);settle();require(!created[0]->isClosed(),"hide/reopen instance");
-    window.close();for(auto* dock:window.workspaceDocks())dock->close();
 }
 
-static void graph_docking(GuiPresenter &presenter) {
-    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
-    window.resize(1200,850); window.show(); presenter.initialize(); QTest::qWait(100);
-    auto *flow=window.workspaceDock("dataFlowDock");
-    auto *fft=window.workspaceDock("fftDock");
-    auto *mel=window.workspaceDock("melDock");
-    auto *editor=window.findChild<SchemeEditorWidget *>();
-    require(flow && fft && mel && editor,"Placement fixture missing");
-    require(flow->headerControls()==editor->toolbar() && flow->dockAreaWidget()->titleBar()->isAncestorOf(editor->toolbar()),"Data Flow toolbar retained separate row");
-    require(flow->headerControls()->findChild<QDoubleSpinBox *>("pipelineZoom"),"Header zoom absent");
-    auto *canvas=editor->findChild<QGraphicsView *>();
-    editor->center_action()->trigger(); settle();
+static void isolated_canvas_input(QGraphicsView* canvas) {
     const auto beforePan=canvas->mapToScene(canvas->viewport()->rect().center());
     const auto beforeTransform=canvas->transform();
     const auto pointer=QPointF(canvas->viewport()->rect().center());
@@ -330,6 +239,119 @@ static void graph_docking(GuiPresenter &presenter) {
     QApplication::sendEvent(canvas->viewport(),&momentum);
     require(QLineF(stoppedCenter,canvas->mapToScene(canvas->viewport()->rect().center())).length()<1,
             "Touchpad momentum continued panning after release");
+}
+
+static void narrow_controls(GuiPresenter &presenter) {
+    // The offscreen QPA does not discover the native Windows font.
+    QApplication::setFont(menu_row_fixture_font());
+    SchemeEditorWidget editor(presenter);
+    editor.resize(800, 420); editor.show(); settle();
+    auto *splitter = editor.findChild<QSplitter *>("pipelineSplitter");
+    auto *scene = editor.findChild<QtNodes::DataFlowGraphicsScene *>();
+    auto *inspector = editor.findChild<QScrollArea *>("pipelineInspector");
+    for(const auto *theme : {"light","dark"}) {
+    ui::Theme::instance().set(QString::fromLatin1(theme));
+    for (const auto nodes=presenter.state().file_configs.scene_graph.value("nodes").toArray();const auto &node:nodes) {
+        narrow_node_controls(node,editor,scene,splitter,inspector);
+    }
+    }
+}
+
+static void dataflow_footer(GuiPresenter &presenter) {
+    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
+    const auto menuFont = menu_row_fixture_font();
+    window.setFont(menuFont);
+    // The window was polished before the offscreen font was registered. Apply
+    // the owned row's font explicitly, as in the save-status persistence fixture.
+    set_menu_row_fixture_font(window.menuBar(), menuFont);
+    // Finish initial engine snapshot/navigation delivery before the user closes
+    // graph areas. Otherwise the bootstrap migration legitimately opens them.
+    settle();
+    auto *flow = window.workspaceDock("dataFlowDock");
+    require(flow, "Data Flow dock absent");
+    for (const auto docks=window.workspaceDocks();auto *dock:docks) if (dock != flow) dock->toggleView(false);
+    window.resize(800, 600); window.show(); settle();
+    for (const auto size : {QSize(800,600), QSize(1200,760), QSize(800,600)}) {
+        footer_at_size(window,flow,size);
+    }
+    window.close();
+}
+
+static void restored_startup(GuiPresenter &presenter) {
+    // Restore a saved tabbed workspace before the first event loop, as the
+    // desktop entrypoint does, then close and restore its resulting layout.
+    for (int pass = 0; pass < 4; ++pass) {
+        MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
+        auto *fft = window.workspaceDock("fftDock");
+        auto *mel = window.workspaceDock("melDock");
+        require(fft && mel, "Saved workspace graph docks absent");
+        if (pass == 0) presenter.initialize();
+        window.show();
+        QTest::qWait(250); // Includes deferred dock animation deletion.
+        require(window.isVisible(), "Restored workspace did not remain open");
+        window.close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+}
+
+static void compact_chrome(GuiPresenter &presenter) {
+    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph); window.resize(1000,700); window.show(); presenter.initialize(); settle();
+    for(const auto *theme:{"dark","light"}) {
+        ui::Theme::instance().set(QString::fromLatin1(theme)); settle();
+        for(const auto size:{QSize(800,600),QSize(1200,760)}) {
+        window.resize(size); settle();
+        for(const auto *id:{"pipelinePresets","pipelineToggle","themeMenuButton","engineSelectorButton"}) {
+            auto *button=window.findChild<QToolButton *>(id);
+            require(button && button->height()==24 && button->property("compactControl").toBool(),"Navigation button does not share compact chrome");
+            const QRect bounds(button->mapTo(&window,QPoint()),button->size());
+            require(window.menuBar()->geometry().contains(bounds),"Navigation button is outside upper bar");
+            if(button->menu()) require(button->property("menuControl").toBool(),"Menu button is missing shared arrow chrome");
+            require(button->styleSheet().isEmpty(),"Navigation button has a private style override");
+        }
+        }
+        auto *fps=window.findChild<QLabel *>("renderStatus");
+        require(!fps,"Main window still shows aggregate FPS");
+        require(!window.statusBar()->isVisible(),"Empty footer still takes workspace height");
+    }
+    auto *editor=window.findChild<SchemeEditorWidget *>();
+    const auto before=window.workspaceDocks();emit editor->graph_open_requested(8,0);settle();
+    WorkspaceDock* surface=nullptr;for(const auto docks=window.workspaceDocks();auto* dock:docks)if(!before.contains(dock))surface=dock;
+    require(surface && surface->isFloating() && surface->floatingDockContainer(),"external graph container");
+    auto* renderer=surface->widget();surface->findChild<QAction*>("graphPlacement")->menu()->actions()[1]->trigger();settle();
+    require(!surface->isFloating() && surface->widget()==renderer,"return recreates renderer");window.close();surface->close();
+
+}
+
+static void scoped_windows(GuiPresenter &presenter) {
+    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);window.resize(1500,900);window.show();settle();
+    auto* editor=window.findChild<SchemeEditorWidget*>();auto* flow=window.workspaceDock("dataFlowDock");
+    for(const auto docks=window.workspaceDocks();auto* dock:docks)if(dock!=flow)dock->toggleView(false);
+    emit editor->graph_view_requested(10);settle();
+    for(const auto docks=window.workspaceDocks();auto* dock:docks)if(dock!=flow)require(dock->isClosed(),"zero slots created graph on focus");
+    QList<WorkspaceDock*> created;
+    for(const auto spec:{std::pair{10,2},std::pair{11,2},std::pair{10,0},std::pair{8,0}}){
+        open_scoped_view(window,editor,spec,created);
+    }
+    require(created[0]->widget()!=created[2]->widget() && created[2]->isFloating() && created[3]->isFloating(),"independent internal/external views");
+    auto* position=window.findChild<QComboBox*>("dataFlowPosition");require(position,"flow position selector");
+    for(int value:{1,2,3,0}){position->setCurrentIndex(value);settle();for(const auto docks=created;auto* dock:docks)if(!dock->isFloating())require(!rectInWindow(flow).intersects(rectInWindow(dock)),"flow overlaps internal graph");}
+    created[0]->toggleView(false);created[0]->toggleView(true);settle();require(!created[0]->isClosed(),"hide/reopen instance");
+    window.close();for(const auto docks=window.workspaceDocks();auto* dock:docks)dock->close();
+}
+
+static void graph_docking(GuiPresenter &presenter) {
+    MainWindow window(presenter);emit presenter.active_graph_changed(presenter.client().snapshot().graph);
+    window.resize(1200,850); window.show(); presenter.initialize(); QTest::qWait(100);
+    auto *flow=window.workspaceDock("dataFlowDock");
+    auto *fft=window.workspaceDock("fftDock");
+    auto *mel=window.workspaceDock("melDock");
+    auto *editor=window.findChild<SchemeEditorWidget *>();
+    require(flow && fft && mel && editor,"Placement fixture missing");
+    require(flow->headerControls()==editor->toolbar() && flow->dockAreaWidget()->titleBar()->isAncestorOf(editor->toolbar()),"Data Flow toolbar retained separate row");
+    require(flow->headerControls()->findChild<QDoubleSpinBox *>("pipelineZoom"),"Header zoom absent");
+    auto *canvas=editor->findChild<QGraphicsView *>();
+    editor->center_action()->trigger(); settle();
+    isolated_canvas_input(canvas);
     const auto revision=presenter.client().snapshot().graph_revision;
     auto* surface=window.workspaceDock("spectrogramDock");auto* content=surface->widget();
     for(int i=0;i<3;++i){surface->setAutoHide(true,ads::SideBarRight);settle();require(surface->isAutoHide(),"sidebar pin failed");surface->setAutoHide(false);surface->raise();settle();require(surface->widget()==content,"pin recreated renderer");}
@@ -373,7 +395,7 @@ static void chart_fill(GuiPresenter &presenter) {
     flow->toggleView(false);checkFill();flow->toggleView(true);checkFill();
     const auto state=window.saveState(1);require(window.restoreState(state,1),"chart restore");fft->raise();checkFill();
     fft->setFloating(true);checkFill();window.tabifyDockWidget(mel,fft);fft->raise();checkFill();
-    window.close();for(auto *dock:window.workspaceDocks())dock->close();
+    window.close();for(const auto docks=window.workspaceDocks();auto *dock:docks)dock->close();
 }
 
 int main(int argc, char **argv) {

@@ -314,6 +314,13 @@ static bool prepare_rfft_storage(detail::FftStorage& scratch,detail::FftStorage&
     if(!twiddles.resize(n/2+2) || !mixed_storage.resize(mixed?n:0))return false;
     return true;
 }
+void PreparedRfft::publish_configuration(std::size_t n,bool radix4,bool mixed,Split split) noexcept {
+    radix4_ = radix4;
+    mixed_radix_ = mixed;
+    split_ = split;
+    samples_ = n;
+
+}
 bool PreparedRfft::prepare(std::size_t n, bool radix4, Split split, const Options* options) {
     samples_ = 0;
     platform_optimizations_ = !options || options->platform_optimizations;
@@ -326,10 +333,7 @@ bool PreparedRfft::prepare(std::size_t n, bool radix4, Split split, const Option
     // the first quadrant; the mixed-radix butterfly uses the same symmetry.
     if(!prepare_rfft_storage(scratch_,twiddles_,mixed_,n,mixed))return false;
     if(!prepare_twiddles(n,packed,mixed,split))return false;
-    radix4_ = radix4;
-    mixed_radix_ = mixed;
-    split_ = split;
-    samples_ = n;
+    publish_configuration(n,radix4,mixed,split);
     return true;
 }
 bool PreparedRfft::prepare_twiddles(std::size_t n,std::size_t packed,bool mixed,Split split) noexcept {

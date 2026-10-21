@@ -149,6 +149,10 @@ class AggregatorClient final : public QObject {
     void _on_timeout();
     void _handle_capabilities(BDSP::packet_context_t &packet_ctx);
     void _handle_error(BDSP::packet_context_t &packet_ctx);
+    void _record_component_state(const QUuid&,ComponentState);
+    void _restore_registration_retry_policy();
+    void _record_decoded_info(const component_update_full_packet_t&);
+    QJsonObject _resolved_engine_metadata(const QUuid&) const;
     void _handle_state_change(BDSP::packet_context_t &packet_ctx);
     void _handle_info_update(BDSP::packet_context_t &packet_ctx);
     void _record_component_info(const QUuid& uuid,const component_info_t& info);

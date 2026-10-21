@@ -41,12 +41,14 @@ class NumericPreparation {
     Status prepare_node_processing(NodeFrame&);
     Status prepare_node_header(NodeFrame&);
     Status prepare_node_buffers(NodeFrame&);
+    Status prepare_node_outputs(NodeFrame&);
     Status prepare_node_links(NodeFrame&);
     Status prepare_node_kernels(NodeFrame&);
     Status prepare_matrix_operations(NodeFrame&);
     Status prepare_signal_operations(NodeFrame&);
     Status prepare_node_operations(NodeFrame&);
     Status initialize_node(NodeFrame&);
+    Status initialize_node_input(NodeFrame&);
     Status prepare_frequency_step(NodeFrame&);
     Status prepare_array_length(NodeFrame&);
     Status prepare_window_gain(NodeFrame&);
@@ -64,12 +66,14 @@ class NumericPreparation {
     Status prepare_array_values(NodeFrame&);
     Status prepare_input_storage(NodeFrame&);
     Status prepare_selector(NodeFrame&);
+    Status prepare_selector_channels(NodeFrame&);
     Status prepare_selector_lane(NodeFrame&,std::size_t);
     bool selector_ancestry_known(std::size_t)const;
     Status bind_input_endpoint(PlanNode::ScalarInput&,NodeId);
     Status prepare_ordinary_parent(NodeFrame&);
     Status prepare_group_parent(NodeFrame&);
     Status prepare_paired_parent(NodeFrame&);
+    void select_parent(PlanNode&,const PlanNode::ScalarInput&);
 
     Status prepare_parent(NodeFrame&);
     Status prepare_node_continuity(NodeFrame&);
@@ -78,6 +82,7 @@ class NumericPreparation {
     void recover_node_clock(NodeFrame&);
     Status prepare_generator(NodeFrame&);
     Status prepare_mixer(NodeFrame&);
+    Status prepare_mixer_storage(NodeFrame&,const MixerProcessingParameters&);
     Status prepare_hop(PlanNode&,std::uint32_t);
     void prepare_mixer_weights(NodeFrame&,const MixerProcessingParameters&);
     void prepare_mixer_queue(NodeFrame&,std::size_t,const MixerProcessingParameters&);
@@ -94,6 +99,7 @@ class NumericPreparation {
     Status prepare_transform_pcm_resampler(NodeFrame&);
     Status prepare_transform_window(NodeFrame&);
     Status prepare_transform_window_function(NodeFrame&);
+    Status prepare_window_coefficients(NodeFrame&,std::size_t);
     Status prepare_transform_bark_weighting(NodeFrame&);
     Status prepare_transform_stereo_fft(NodeFrame&);
     Status prepare_transform_mel(NodeFrame&);
@@ -107,9 +113,11 @@ class NumericPreparation {
     Status prepare_reduction(NodeFrame&);
     Status prepare_nodes();
     void reconcile_clocks();
+    void reconcile_node_clock(std::size_t);
     bool clock_precedes(std::size_t,std::size_t)const;
     bool scalar_clock_matches(const PlanNode&,const ClockContract&)const;
     void bind_scalar_clock(PlanNode::ScalarInput&);
+    void choose_scalar_clock(PlanNode::ScalarInput&,const ClockContract&);
     bool selector_clock_matches(const PlanNode&,std::size_t,std::size_t,PortId)const;
     void retain_selector_clock(PlanNode&,std::size_t);
     void choose_selector_clock(PlanNode&,std::size_t);
@@ -119,9 +127,11 @@ class NumericPreparation {
     Status reconcile_history();
     void reserve_mixer_destinations();
     void bind_mixer_destinations();
+    void bind_mixer_inputs(std::size_t);
     Status check_clock_cycles();
     void bind_destinations();
     void bind_destination(std::size_t);
+    void bind_selector_destinations(std::size_t,std::size_t);
 public:
     NumericPreparation(const NumericProcessingGraph& graph,const NumericRuntimeProfile& limits,const PreparedGraph* prior,const RuntimeContext* context)
         :original(graph),profile(limits),previous(prior),old_context(context),g(lowered),checked_profile(limits){}

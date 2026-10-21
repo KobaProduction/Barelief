@@ -183,6 +183,9 @@ void AggregatorClient::_handle_state_change(BDSP::packet_context_t &packet_conte
     const auto uuid = QUuid::fromBytes(&uuid_bytes);
     if (uuid == _cfg.uuid)
         return;
+    _record_component_state(uuid,new_state);
+}
+void AggregatorClient::_record_component_state(const QUuid& uuid,ComponentState new_state) {
     if (_components.contains(uuid))
         _components[uuid].state = new_state;
     qCInfo(aggregator_client, "Component state change: %s",
@@ -208,14 +211,17 @@ void AggregatorClient::_record_component_info(const QUuid &uuid, const component
     emit capabilities_changed(uuid, metadata);
 }
 
-void AggregatorClient::_record_self_registration(const component_info_t &info) {
-    if (info.state < ComponentState::registered || _is_registered)
-        return;
-    _is_registered = true;
+void AggregatorClient::_restore_registration_retry_policy() {
     if (_waiting_for_first_registration) {
         _reconnect_tries = _saved_reconnect_tries;
         _waiting_for_first_registration = false;
     }
+}
+void AggregatorClient::_record_self_registration(const component_info_t &info) {
+    if (info.state < ComponentState::registered || _is_registered)
+        return;
+    _is_registered = true;
+    _restore_registration_retry_policy();
     _current_reconnect_attempt = 0;
     _reconnect_timer.stop();
     _timeout_timer.stop();
@@ -237,6 +243,9 @@ void AggregatorClient::_handle_info_update(BDSP::packet_context_t &packet_contex
     if (!aggregator_wire::decode(
             QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded))
         return;
+    _record_decoded_info(decoded);
+}
+void AggregatorClient::_record_decoded_info(const component_update_full_packet_t& decoded) {
     const auto [uuid_raw, type, address_raw, component_server_port, state] = decoded;
     const QUuid uuid = QUuid::fromBytes(&uuid_raw);
     const component_info_t info{
@@ -324,6 +333,13 @@ QJsonObject AggregatorClient::resolve_engine(const QUuid &uuid, QString *error) 
             *error = failure;
         return {};
     }
+    auto result=_resolved_engine_metadata(uuid);
+    if (error)
+        error->clear();
+    return result;
+}
+
+QJsonObject AggregatorClient::_resolved_engine_metadata(const QUuid& uuid) const {
     const auto info = _components.value(uuid);
     auto result = _capabilities.value(uuid);
     result["uuid"] = uuid.toString();
@@ -334,8 +350,6 @@ QJsonObject AggregatorClient::resolve_engine(const QUuid &uuid, QString *error) 
     result["state"] = int(info.state);
     result["registry_available"] = true;
     result["control_available"] = true;
-    if (error)
-        error->clear();
     return result;
 }
 

@@ -75,13 +75,16 @@ Status publish_product(OperationKernelState& kernel,const PlanNode& node,State& 
     stamp.stream_id={kernel.data_stream.data(),kernel.stream_size};kernel.product_pending=false;
     state.numeric_frames[0]={stamp,output.view()};return Status::ok;
 }
-}
-Status accept_array_product(OperationKernelState& kernel,const PlanNode& node,State& state,std::size_t lane,const DataFrameView& frame,const FrameLimits& limits) noexcept {
-    const auto valid=validate_product_lane(kernel,lane,frame,limits);if(valid!=Status::ok)return valid;
-    if(!node.node.enabled){if(lane!=kernel.frame_input)return Status::would_block;state.numeric_frames[0]=frame;return Status::ok;}
+Status accept_enabled_product(OperationKernelState& kernel,const PlanNode& node,State& state,std::size_t lane,const DataFrameView& frame) noexcept {
     const auto& source=std::get<NumericView>(frame.payload);
     const auto loaded=load_product_lane(kernel,lane,source);if(loaded!=Status::ok)return loaded;
     if(lane==kernel.frame_input){const auto retained=retain_product_frame(kernel,state,frame,source);if(retained!=Status::ok)return retained;}
     return publish_product(kernel,node,state);
+}
+}
+Status accept_array_product(OperationKernelState& kernel,const PlanNode& node,State& state,std::size_t lane,const DataFrameView& frame,const FrameLimits& limits) noexcept {
+    const auto valid=validate_product_lane(kernel,lane,frame,limits);if(valid!=Status::ok)return valid;
+    if(!node.node.enabled){if(lane!=kernel.frame_input)return Status::would_block;state.numeric_frames[0]=frame;return Status::ok;}
+    return accept_enabled_product(kernel,node,state,lane,frame);
 }
 }

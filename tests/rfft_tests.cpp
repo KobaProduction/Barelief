@@ -1,3 +1,4 @@
+#include "rfft_numerical_oracle.h"
 #include "dsp_kernels/dsp.h"
 #include "../libs/dsp_kernels/src/backend.h"
 #include "../libs/dsp_kernels/src/rfft_split.h"
@@ -29,77 +30,12 @@ void require(bool condition, const char* message) {
 void near(double actual, double expected, double absolute, double relative, const char* message) {
     require(std::abs(actual - expected) <= absolute + relative * std::abs(expected), message);
 }
-// Independent O(N^2) DFT; double rotations avoid millions of transcendental
-// evaluations but retain direct time-domain summation, with no FFT algorithm.
-std::vector<double> direct_dft(std::span<const float> input) {
-    const auto n = input.size();
-    std::vector<double> result(n + 2);
-    for (std::size_t k = 0; k <= n / 2; ++k) {
-        const double angle = -2 * std::numbers::pi * double(k) / double(n);
-        const double wr = std::cos(angle), wi = std::sin(angle);
-        double re = 0, im = 0, cosine = 1, sine = 0;
-        for (const double sample : input) {
-            re += sample * cosine;
-            im += sample * sine;
-            const auto next = cosine * wr - sine * wi;
-            sine = sine * wr + cosine * wi;
-            cosine = next;
-        }
-        result[2 * k] = re;
-        result[2 * k + 1] = im;
-    }
-    return result;
-}
-std::vector<float> signal(std::size_t n) {
-    std::vector<float> input(n);
-    constexpr std::array<double, 7> frequencies{3, 11.25, 23, 41.5, 67, 89.75, 111};
-    for (std::size_t i = 0; i < n; ++i) {
-        double value = .17 + (i % 2 ? -.11 : .11);
-        for (std::size_t tone = 0; tone < frequencies.size(); ++tone)
-            value += (.25 / double(tone + 1)) * std::cos(2 * std::numbers::pi * frequencies[tone] * double(i) / double(n) + .13 * tone);
-        input[i] = float(value);
-    }
-    return input;
-}
-double expected_projection(dsp_kernels::SpectrumProjection kind, double re, double im, double sided,
-    const dsp_kernels::WindowScaling& scaling, double rate) {
-    using enum dsp_kernels::SpectrumProjection;
-    const auto magnitude = std::hypot(re, im), squared = re * re + im * im;
-    const auto amplitude = sided * magnitude / scaling.sum;
-    const auto power = sided * squared / (scaling.sum * scaling.sum);
-    const auto psd = sided * squared / (rate * scaling.sum_squares);
-    switch (kind) {
-    case Real: return re;
-    case Imaginary: return im;
-    case Phase: return magnitude == 0 ? 0 : std::atan2(im, re);
-    case Magnitude: return magnitude;
-    case PeakAmplitude: return amplitude;
-    case Power: return power;
-    case Psd: return psd;
-    }
-    return 0;
-}
-void numerical_case(std::size_t n, dsp_kernels::WindowFunction window) {
+using rfft_test_oracle::direct_dft;
+using rfft_test_oracle::signal;
+using rfft_test_oracle::expected_projection;
+void verify_fused_reconstruction(std::span<const float> input,std::vector<float>& raw,std::span<const double> oracle) {
     using namespace dsp_kernels;
-    auto input = signal(n);
-    std::vector<float> coefficients(n);
-    dsp_kernels::window(coefficients, window);
-    const auto scaling = window_scaling(coefficients);
-    require(scaling.has_value(), "Finite window rejected");
-    double sum = 0, squares = 0;
-    for (std::size_t i = 0; i < n; ++i) {
-        const double angle = 2 * std::numbers::pi * double(i) / double(n - 1);
-        const double exact = window == WindowFunction::Rectangular ? 1 : window == WindowFunction::Hann ? .5 - .5 * std::cos(angle) :
-            window == WindowFunction::Hamming ? .54 - .46 * std::cos(angle) : .42 - .5 * std::cos(angle) + .08 * std::cos(2 * angle);
-        sum += exact;
-        squares += exact * exact;
-        input[i] *= coefficients[i];
-    }
-    near(scaling->sum, sum, .0005, 1e-6, "Window sum differs from symmetric formula");
-    near(scaling->sum_squares, squares, .0005, 1e-6, "Window squares differ from symmetric formula");
-    near(scaling->coherent_gain(), sum / double(n), 1e-7, 1e-6, "Coherent gain wrong");
-    const auto oracle = direct_dft(input);
-    std::vector<float> raw(n + 2), radix2(n + 2), projected(n / 2 + 1);
+    const auto n=input.size();
     if(n>=16 && ((n/2)&0x55555555)==0) {
         const auto h=n/4;
         detail::FftStorage packed(n), twiddles(n/2+2);
@@ -120,6 +56,10 @@ void numerical_case(std::size_t n, dsp_kernels::WindowFunction window) {
         require(allocations==0,"Fused reconstruction allocates");
         for(std::size_t k=0;k<n+2;++k) near(raw[k],oracle[k],.0003,5e-6,"Fused reconstruction differs from DFT");
     }
+}
+void verify_full_fft_routes(std::span<const float> input,std::vector<float>& raw,std::span<const double> oracle) {
+    using namespace dsp_kernels;
+    const auto n=input.size();
     for (bool radix4 : {false, true}) {
         if (radix4 && (n & 0x55555555) == 0) continue;
         FFT full;
@@ -132,10 +72,46 @@ void numerical_case(std::size_t n, dsp_kernels::WindowFunction window) {
         for (std::size_t i = 0; i < raw.size(); ++i)
             near(raw[i], oracle[i], .0003, 5e-6, "Raw full FFT differs from DFT");
     }
-    double maximum_error = 0;
-    for (bool radix4 : {false, true})
-    for (auto split : {PreparedRfft::Split::Scalar, PreparedRfft::Split::Automatic})
-    for (bool platform : {false,true}) {
+}
+void verify_projections(std::span<const float> input,const std::vector<float>& raw,std::vector<float>& projected,
+    const dsp_kernels::WindowScaling& scaling) {
+    using namespace dsp_kernels;
+    const auto n=input.size();
+    const auto preserved = raw;
+    for (const auto kind : {SpectrumProjection::Real, SpectrumProjection::Imaginary, SpectrumProjection::Phase,
+            SpectrumProjection::Magnitude, SpectrumProjection::PeakAmplitude, SpectrumProjection::Power,
+            SpectrumProjection::Psd}) {
+        PreparedSpectrumProjection projector;
+        require(projector.prepare(n, 32768, scaling, {kind,kind!=SpectrumProjection::Magnitude}), "Projection prepare failed");
+        allocations = 0;
+        watch_allocations = true;
+        const bool projected_ok = projector.process(raw, projected);
+        watch_allocations = false;
+        require(projected_ok && allocations == 0 && raw == preserved, "Projection fails, allocates or mutates raw DFT");
+        for (std::size_t k = 0; k < projected.size(); ++k) {
+            const double expected = expected_projection(kind, raw[2 * k], raw[2 * k + 1],
+                k == 0 || k == n / 2 ? 1 : 2, scaling, 32768);
+            near(projected[k], expected, 1e-5, 2e-6, "Projection formula/reference incorrect");
+        }
+        if (kind == SpectrumProjection::Psd) {
+            double integrated = 0, windowed_squares = 0;
+            for (const auto value : projected) integrated += value * (32768. / double(n));
+            for (const double value : input) windowed_squares += value * value;
+            near(integrated, windowed_squares / scaling.sum_squares, 1e-7, 3e-6, "PSD Parseval identity failed");
+        }
+    }
+}
+struct NumericalRoute {
+    std::size_t n;
+    std::span<const float> input;
+    std::span<const double> oracle;
+    const dsp_kernels::WindowScaling& scaling;
+    std::vector<float>& raw;
+    std::vector<float>& radix2;
+    std::vector<float>& projected;
+    double maximum_error=0;
+    void process(bool radix4,dsp_kernels::PreparedRfft::Split split,bool platform) {
+        using namespace dsp_kernels;
         PreparedRfft rfft;
         const PreparedRfft::Options options{platform};
         require(rfft.prepare(n, radix4, split, &options), "RFFT prepare failed");
@@ -154,33 +130,40 @@ void numerical_case(std::size_t n, dsp_kernels::WindowFunction window) {
             if (radix4) near(raw[i], radix2[i], .0003, 5e-6, "Radix-4 differs from radix-2");
         }
         if (!radix4) radix2 = raw;
-        const auto preserved = raw;
-        for (const auto kind : {SpectrumProjection::Real, SpectrumProjection::Imaginary, SpectrumProjection::Phase,
-                SpectrumProjection::Magnitude, SpectrumProjection::PeakAmplitude, SpectrumProjection::Power,
-                SpectrumProjection::Psd}) {
-            PreparedSpectrumProjection projector;
-            require(projector.prepare(n, 32768, *scaling, {kind,kind!=SpectrumProjection::Magnitude}), "Projection prepare failed");
-            allocations = 0;
-            watch_allocations = true;
-            const bool projected_ok = projector.process(raw, projected);
-            watch_allocations = false;
-            require(projected_ok && allocations == 0 && raw == preserved, "Projection fails, allocates or mutates raw DFT");
-            for (std::size_t k = 0; k < projected.size(); ++k) {
-                const double expected = expected_projection(kind, raw[2 * k], raw[2 * k + 1],
-                    k == 0 || k == n / 2 ? 1 : 2, *scaling, 32768);
-                near(projected[k], expected, 1e-5, 2e-6, "Projection formula/reference incorrect");
-            }
-            if (kind == SpectrumProjection::Psd) {
-                double integrated = 0, windowed_squares = 0;
-                for (const auto value : projected) integrated += value * (32768. / double(n));
-                for (const double value : input) windowed_squares += value * value;
-                near(integrated, windowed_squares / scaling->sum_squares, 1e-7, 3e-6, "PSD Parseval identity failed");
-            }
-        }
+        verify_projections(input,raw,projected,scaling);
     std::cout << "resource N=" << n << " radix=" << (radix4 ? 4 : 2) << " split=" << rfft.split_implementation()
         << " workspace_bytes=" << workspace << '\n';
     }
-    std::cout << "oracle N=" << n << " window=" << unsigned(window) << " max_abs_error=" << maximum_error << '\n';
+};
+void numerical_case(std::size_t n, dsp_kernels::WindowFunction window) {
+    using namespace dsp_kernels;
+    auto input = signal(n);
+    std::vector<float> coefficients(n);
+    dsp_kernels::window(coefficients, window);
+    const auto scaling = window_scaling(coefficients);
+    require(scaling.has_value(), "Finite window rejected");
+    double sum = 0, squares = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double angle = 2 * std::numbers::pi * double(i) / double(n - 1);
+        const double exact = window == WindowFunction::Rectangular ? 1 : window == WindowFunction::Hann ? .5 - .5 * std::cos(angle) :
+            window == WindowFunction::Hamming ? .54 - .46 * std::cos(angle) : .42 - .5 * std::cos(angle) + .08 * std::cos(2 * angle);
+        sum += exact;
+        squares += exact * exact;
+        input[i] *= coefficients[i];
+    }
+    near(scaling->sum, sum, .0005, 1e-6, "Window sum differs from symmetric formula");
+    near(scaling->sum_squares, squares, .0005, 1e-6, "Window squares differ from symmetric formula");
+    near(scaling->coherent_gain(), sum / double(n), 1e-7, 1e-6, "Coherent gain wrong");
+    const auto oracle = direct_dft(input);
+
+    std::vector<float> raw(n+2),radix2(n+2),projected(n/2+1);
+    verify_fused_reconstruction(input,raw,oracle);
+    verify_full_fft_routes(input,raw,oracle);
+    NumericalRoute route{n,input,oracle,*scaling,raw,radix2,projected};
+    for(bool radix4:{false,true})
+        for(auto split:{PreparedRfft::Split::Scalar,PreparedRfft::Split::Automatic})
+            for(bool platform:{false,true})route.process(radix4,split,platform);
+    std::cout << "oracle N=" << n << " window=" << unsigned(window) << " max_abs_error=" << route.maximum_error << '\n';
 }
 void edge_cases(std::size_t n) {
     using namespace dsp_kernels;
@@ -241,12 +224,7 @@ constexpr std::array projection_kinds{
     dsp_kernels::SpectrumProjection::PeakAmplitude, dsp_kernels::SpectrumProjection::Power,
     dsp_kernels::SpectrumProjection::Psd};
 constexpr std::array projection_names{"real", "imaginary", "phase", "magnitude", "peak_amplitude", "power", "psd"};
-void projection_extremes(std::size_t n) {
-    using namespace dsp_kernels;
-    std::vector<float> raw(n + 2), output(n / 2 + 1), expected(n / 2 + 1);
-    const WindowScaling scaling{n, double(n), double(n)};
-    constexpr double rate = 32768, reference = .3, floor = -100;
-    for (unsigned frame = 0; frame < 3; ++frame) {
+void fill_extreme_projection(std::size_t n,unsigned frame,std::vector<float>& raw) {
         for (std::size_t k = 0; k <= n / 2; ++k) {
             const float magnitude = frame == 0 ? (k % 2 ? std::numeric_limits<float>::denorm_min() : std::numeric_limits<float>::min()) :
                 frame == 1 ? (k % 2 ? std::numeric_limits<float>::max() : std::numeric_limits<float>::max() / 4) :
@@ -254,8 +232,12 @@ void projection_extremes(std::size_t n) {
             raw[2 * k] = magnitude;
             raw[2 * k + 1] = k == 0 || k == n / 2 ? 0 : -magnitude;
         }
-        const auto original = raw;
-        for (const auto kind : projection_kinds) {
+}
+void verify_extreme_projection(std::size_t n,dsp_kernels::SpectrumProjection kind,std::vector<float>& raw,
+    std::vector<float>& output,std::vector<float>& expected,const std::vector<float>& original,
+    const dsp_kernels::WindowScaling& scaling) {
+    using namespace dsp_kernels;
+    constexpr double rate=32768;
             PreparedSpectrumProjection projection;
             require(projection.prepare(n, rate, scaling, {kind,kind!=SpectrumProjection::Magnitude}), "Extreme projection prepare failed");
             bool representable = true;
@@ -277,7 +259,15 @@ void projection_extremes(std::size_t n) {
             raw.back() = std::numeric_limits<float>::quiet_NaN();
             require(!projection.process(raw, output) && output == preserved, "Projection late NaN is not atomic");
             raw.back() = original.back();
-        }
+}
+void projection_extremes(std::size_t n) {
+    std::vector<float> raw(n+2),output(n/2+1),expected(n/2+1);
+    const dsp_kernels::WindowScaling scaling{n,double(n),double(n)};
+    for(unsigned frame=0;frame<3;++frame) {
+        fill_extreme_projection(n,frame,raw);
+        const auto original=raw;
+        for(const auto kind:projection_kinds)
+            verify_extreme_projection(n,kind,raw,output,expected,original,scaling);
     }
 }
 void projection_benchmark(std::size_t n) {
@@ -373,15 +363,16 @@ void allocation_failure_cases() {
         std::fill(output.begin(),output.end(),19.f);
     }
 }
-void raw_benchmark() {
-    using namespace dsp_kernels;
-    constexpr std::size_t n = 4096, routes = 6, frames = 8, batches = 240, batch = 32;
-    if (n > max_fft_samples) return;
-    std::array<FFT, 2> full;
-    std::array<PreparedRfft, 4> real;
-    std::array<std::vector<float>, frames> input, oracle;
-    std::array<std::vector<float>, routes> output;
-    std::array<std::array<double, batches>, routes> elapsed{};
+struct RawBenchmark {
+    static constexpr std::size_t n=4096,routes=6,frames=8,batches=240,batch=32;
+    std::array<dsp_kernels::FFT,2> full;
+    std::array<dsp_kernels::PreparedRfft,4> real;
+    std::array<std::vector<float>,frames> input,oracle;
+    std::array<std::vector<float>,routes> output;
+    std::array<std::array<double,batches>,routes> elapsed{};
+    double max_error=0;
+    void prepare() {
+        using namespace dsp_kernels;
     std::vector<float> coefficients(n);
     window(coefficients, WindowFunction::Hann);
     for (std::size_t f = 0; f < frames; ++f) {
@@ -395,12 +386,13 @@ void raw_benchmark() {
     for (std::size_t i = 0; i < real.size(); ++i)
         require(real[i].prepare(n, i >= 2, i % 2 ? PreparedRfft::Split::Automatic : PreparedRfft::Split::Scalar), "Raw RFFT prepare failed");
     for (std::size_t f = 0; f < frames; ++f) require(full[0].process(input[f], oracle[f]), "Raw oracle failed");
-    const auto call = [&](std::size_t route, std::size_t frame) {
+    }
+    void call(std::size_t route,std::size_t frame) {
         const bool ok = route < 2 ? full[route].process(input[frame], output[route])
             : real[route - 2].process(input[frame], output[route]);
         require(ok, "Raw benchmark transform failed");
-    };
-    double max_error = 0;
+    }
+    void verify_and_warm() {
     for (std::size_t route = 0; route < routes; ++route) {
         for (std::size_t f = 0; f < frames; ++f) {
             call(route, f);
@@ -411,6 +403,8 @@ void raw_benchmark() {
         }
         for (std::size_t warm = 0; warm < 64; ++warm) call(route, warm % frames);
     }
+    }
+    void measure() {
     allocations = 0;
     watch_allocations = true;
     for (std::size_t b = 0; b < batches; ++b) for (std::size_t order = 0; order < routes; ++order) {
@@ -421,6 +415,8 @@ void raw_benchmark() {
     }
     watch_allocations = false;
     require(allocations == 0, "Raw benchmark allocates");
+    }
+    void report() {
     constexpr std::array names{"CFFT-radix2", "CFFT-radix4", "RFFT-radix2-scalar", "RFFT-radix2-auto", "RFFT-radix4-scalar", "RFFT-radix4-auto"};
     for (std::size_t route = 0; route < routes; ++route) {
         auto& values = elapsed[route];
@@ -431,7 +427,15 @@ void raw_benchmark() {
             << " workspace_bytes=" << (route < 2 ? full[route].workspace_bytes() : real[route-2].workspace_bytes())
             << " allocations=" << allocations << " transforms=" << batches*batch << '\n';
     }
-    std::cout << "raw_route_max_abs_difference=" << max_error << '\n';
+    std::cout << "raw_route_max_abs_difference=" << max_error << '\n';    }
+};
+void raw_benchmark() {
+    if(RawBenchmark::n>dsp_kernels::max_fft_samples)return;
+    RawBenchmark benchmark;
+    benchmark.prepare();
+    benchmark.verify_and_warm();
+    benchmark.measure();
+    benchmark.report();
 }
 
 }

@@ -64,11 +64,17 @@ QJsonObject NumericEditorGraphModel::save() const {
     save_document_metadata(result);
     return result;
 }
+QJsonObject NumericEditorGraphModel::document_connection(QJsonObject edge) const {
+    const auto id=QtNodes::fromJson(edge);
+    if(auto binding=configuration_binding(id))edge["configuration"]=int(binding->input);
+    else edge["conversion"]=int(connection_policy(id));
+    return edge;
+}
 void NumericEditorGraphModel::save_document_connections(QJsonObject& result) const {
     std::vector<QJsonObject> connections;
     const auto saved_connections=result.value("connections").toArray();
     for(const auto value:saved_connections){
-        auto edge=value.toObject();const auto id=QtNodes::fromJson(edge);if(auto binding=configuration_binding(id))edge["configuration"]=int(binding->input);else edge["conversion"]=int(connection_policy(id));connections.push_back(edge);
+        connections.push_back(document_connection(value.toObject()));
     }
     const auto key=[](const QJsonObject& value){const auto e=QtNodes::fromJson(value);return std::tuple{e.outNodeId,e.outPortIndex,e.inNodeId,e.inPortIndex};};
     std::sort(connections.begin(),connections.end(),[&](const auto& a,const auto& b){return key(a)<key(b);});

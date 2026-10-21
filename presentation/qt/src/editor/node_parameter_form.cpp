@@ -291,12 +291,15 @@ void NodeParameterForm::appendField(QVBoxLayout* root,QMap<int,QVBoxLayout*>& se
     }
     bindRow(row,std::move(control),show,field);
 }
+void NodeParameterForm::appendComposite(QVBoxLayout* root) {
+    if(!_inline_form && !_contracts_only && _composite_factory)if(auto* composite=_composite_factory(_model,this))root->addWidget(composite);
+}
 void NodeParameterForm::rebuild() {
     clearRows();if(!_model)return;
     auto* root=new QVBoxLayout(this);root->setContentsMargins(0,0,0,0);root->setSpacing(6);
     addBypass(root);
     auto* placement=createPlacement();
-    if(!_inline_form && !_contracts_only && _composite_factory)if(auto* composite=_composite_factory(_model,this))root->addWidget(composite);
+    appendComposite(root);
     appendFields(root,placement);
     if(placement)root->addWidget(placement);
     if(!_inline_form)root->addStretch(1);

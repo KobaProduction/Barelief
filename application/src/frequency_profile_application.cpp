@@ -45,7 +45,7 @@ bool flag(const ConfiguredProcessingNode& node,std::string_view key,bool fallbac
     if(const auto* boolean=std::get_if<bool>(&value))return *boolean;
     return fallback;
 }
-bool declared_frontend(const ConfiguredProcessingNode& fill,ProfileRoute& route) {
+bool declared_frontend_geometry(const ConfiguredProcessingNode& fill,ProfileRoute& route) {
     if(!flag(fill,"frontend_declared"))return false;
     auto& frontend=route.frontend;
     std::uint64_t fft=0,channel=0;
@@ -56,6 +56,11 @@ bool declared_frontend(const ConfiguredProcessingNode& fill,ProfileRoute& route)
         !integer(fill,"channel_index",0,65535,channel))return false;
     frontend.fft_size=std::size_t(fft);
     frontend.channel_index=std::uint32_t(channel);
+    return true;
+}
+bool declared_frontend(const ConfiguredProcessingNode& fill,ProfileRoute& route) {
+    if(!declared_frontend_geometry(fill,route))return false;
+    auto& frontend=route.frontend;
     frontend.include_dc=flag(fill,"include_dc",true);
     frontend.include_nyquist=flag(fill,"include_nyquist",true);
     frontend.normalize=flag(fill,"normalize",true);
@@ -99,26 +104,31 @@ const Edge* frame_edge(const NumericProcessingGraph& graph,const ConfiguredProce
     }
     return found;
 }
+void publish_route(const ProfileRoute& declared,const Edge& coefficient_edge,const ConfiguredProcessingNode& multiply,const Edge& frame,std::vector<ProfileRoute>& routes) {
+    auto route=declared;
+    route.arithmetic=multiply.id;
+    route.coefficient_output=coefficient_edge.output_port;
+    route.coefficient_input=coefficient_edge.input_port;
+    route.frame_source=frame.from;
+    route.frame_output=frame.output_port;
+    route.frame_input=frame.input_port;
+    routes.push_back(std::move(route));
+}
+void append_route(const NumericProcessingGraph& graph,const ProfileRoute& declared,const Edge& coefficient_edge,
+    std::vector<ProfileRoute>& routes) {
+    const auto* multiply=find_node(graph,coefficient_edge.to);
+    if(!multiply || multiply->kind!="ArrayMultiply" || !has_port(multiply->inputs,coefficient_edge.input_port))return;
+    const auto* frame=frame_edge(graph,*multiply,coefficient_edge.input_port);
+    const auto* source=frame?find_node(graph,frame->from):nullptr;
+    if(!source || !has_port(source->outputs,frame->output_port))return;
+    publish_route(declared,coefficient_edge,*multiply,*frame,routes);
+}
 void append_routes(const NumericProcessingGraph& graph,const ProfileRoute& declared,
     std::vector<ProfileRoute>& routes) {
     const auto* fill=find_node(graph,declared.coefficients);
     if(!fill)return;
-    for(const auto& coefficient_edge:graph.edges)if(coefficient_edge.from==fill->id &&
-        has_port(fill->outputs,coefficient_edge.output_port)) {
-        const auto* multiply=find_node(graph,coefficient_edge.to);
-        if(!multiply || multiply->kind!="ArrayMultiply" || !has_port(multiply->inputs,coefficient_edge.input_port))continue;
-        const auto* frame=frame_edge(graph,*multiply,coefficient_edge.input_port);
-        const auto* source=frame?find_node(graph,frame->from):nullptr;
-        if(!source || !has_port(source->outputs,frame->output_port))continue;
-        auto route=declared;
-        route.arithmetic=multiply->id;
-        route.coefficient_output=coefficient_edge.output_port;
-        route.coefficient_input=coefficient_edge.input_port;
-        route.frame_source=frame->from;
-        route.frame_output=frame->output_port;
-        route.frame_input=frame->input_port;
-        routes.push_back(std::move(route));
-    }
+    for(const auto& edge:graph.edges)if(edge.from==fill->id && has_port(fill->outputs,edge.output_port))
+        append_route(graph,declared,edge,routes);
 }
 bool same_endpoints(const ProfileRoute& left,const ProfileRoute& right) {
     return left.graph_id==right.graph_id && left.coefficients==right.coefficients &&
@@ -153,6 +163,30 @@ std::vector<ProfileRoute> frequency_profile_routes(const NumericProcessingGraph&
     return routes;
 }
 
+namespace {
+bool validate_profile_application(const NumericProcessingGraph& graph,const ProfileRoute& route,
+    std::span<const float> gains,const ProfileMatcher& matcher,ProfileApplyResult& result) {
+    if(shared_coefficients(graph,route)){result.refusal=ProfileApplyRefusal::SharedCoefficients;return false;}
+    result.mismatches=matcher.mismatches(route,gains);
+    if(!result.mismatches.empty()){result.refusal=ProfileApplyRefusal::ProfileMismatch;return false;}
+    if(route.gain_first_bin>gains.size() ||
+        route.gain_count>gains.size()-route.gain_first_bin){
+        result.refusal=ProfileApplyRefusal::CoefficientRange;
+        return false;
+    }
+    return true;
+}
+void install_profile_coefficients(const NumericProcessingGraph& graph,const ProfileRoute& route,
+    std::span<const float> gains,ProfileApplyResult& result) {
+    result.coefficients=*find_node(graph,route.coefficients);
+    result.arithmetic=*find_node(graph,route.arithmetic);
+    std::vector<float> values(gains.begin()+route.gain_first_bin,
+        gains.begin()+route.gain_first_bin+route.gain_count);
+    put(result.coefficients,"values",NumericArray{std::move(values)});
+    put(result.arithmetic,"operation",std::string{"multiply"});
+    put(result.arithmetic,"frame_input",NumericLiteral{std::int64_t(route.frame_input)});
+}
+}
 ProfileApplyResult apply_frequency_profile(const NumericProcessingGraph& graph,const ProfileRoute& selected,
     std::span<const float> gains,const ProfileMatcher& matcher) {
     ProfileApplyResult result;
@@ -163,21 +197,8 @@ ProfileApplyResult apply_frequency_profile(const NumericProcessingGraph& graph,c
     });
     if(found==routes.end()){result.refusal=ProfileApplyRefusal::RouteUnavailable;return result;}
     result.expected_frontend=found->frontend;
-    if(shared_coefficients(graph,*found)){result.refusal=ProfileApplyRefusal::SharedCoefficients;return result;}
-    result.mismatches=matcher.mismatches(*found,gains);
-    if(!result.mismatches.empty()){result.refusal=ProfileApplyRefusal::ProfileMismatch;return result;}
-    if(found->gain_first_bin>gains.size() ||
-        found->gain_count>gains.size()-found->gain_first_bin){
-        result.refusal=ProfileApplyRefusal::CoefficientRange;
-        return result;
-    }
-    result.coefficients=*find_node(graph,found->coefficients);
-    result.arithmetic=*find_node(graph,found->arithmetic);
-    std::vector<float> values(gains.begin()+found->gain_first_bin,
-        gains.begin()+found->gain_first_bin+found->gain_count);
-    put(result.coefficients,"values",NumericArray{std::move(values)});
-    put(result.arithmetic,"operation",std::string{"multiply"});
-    put(result.arithmetic,"frame_input",NumericLiteral{std::int64_t(found->frame_input)});
+    if(!validate_profile_application(graph,*found,gains,matcher,result))return result;
+    install_profile_coefficients(graph,*found,gains,result);
     return result;
 }
 }

@@ -53,16 +53,19 @@ bool representation_matches(const ConfiguredProcessingNode& n,const NumericContr
     if(representation=="peak_amplitude")return input.quantity==Quantity::SpectrumPeakAmplitude && input.unit==NumericUnit::RawAmplitude;
     return false;
 }
+bool profile_spectrum_geometry(const NumericContract& input,double fft,double fs,double first,bool half,bool dc,bool nyquist) {
+    const auto size=static_cast<std::uint64_t>(fft);if(size&(size-1))return false;
+    const auto count=half?size/2+std::uint64_t(dc)-std::uint64_t(!nyquist):size-1+std::uint64_t(dc);
+    if(first!=(dc?0:1) || input.shape.extents[0]!=ExtentBounds{count,count})return false;
+    return (!input.clock.sample_rate || input.clock.sample_rate==std::uint64_t(fs)) && grid_matches(input,std::uint64_t(fs),size,std::uint64_t(first));
+}
 bool profile_geometry(const ConfiguredProcessingNode& n,const NumericContract& input) {
     double fft=0,fs=0,first=0;bool half=false,dc=false,nyquist=false;
     if(!number(n,"fft_size",fft) || !number(n,"sample_rate",fs) || !number(n,"first_bin",first))return false;
     if(!flag(n,"positive_half",half) || !flag(n,"include_dc",dc) || !flag(n,"include_nyquist",nyquist))return false;
     if(fft<2 || fft>UINT32_MAX || std::floor(fft)!=fft || fs<=0 || fs>UINT32_MAX || std::floor(fs)!=fs)return false;
     if(first<0 || std::floor(first)!=first || first>fft)return false;
-    const auto size=static_cast<std::uint64_t>(fft);if(size&(size-1))return false;
-    const auto count=half?size/2+std::uint64_t(dc)-std::uint64_t(!nyquist):size-1+std::uint64_t(dc);
-    if(first!=(dc?0:1) || input.shape.extents[0]!=ExtentBounds{count,count})return false;
-    return (!input.clock.sample_rate || input.clock.sample_rate==std::uint64_t(fs)) && grid_matches(input,std::uint64_t(fs),size,std::uint64_t(first));
+    return profile_spectrum_geometry(input,fft,fs,first,half,dc,nyquist);
 }
 }
 namespace {
@@ -118,17 +121,22 @@ ProcessingDiagnostic profile_gains_diagnostic(const ConfiguredProcessingNode& no
     return {};
 }
 }
+namespace {
+ProcessingDiagnostic configured_profile_diagnostic(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {
+    auto diagnostic=profile_frontend_diagnostic(node);if(!diagnostic)return diagnostic;
+    diagnostic=profile_geometry_diagnostic(node,input);if(!diagnostic)return diagnostic;
+    diagnostic=profile_window_diagnostic(node);if(!diagnostic)return diagnostic;
+    if(!representation_matches(node,input))return profile_issue(node,ProcessingReason::SpectrumRepresentation,"representation");
+    return profile_gains_diagnostic(node,input);
+}
+}
 ProcessingDiagnostic frequency_normalizer_diagnostic(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {
     const auto mode=text(node,"mode");double gain=0;
     if(mode!="off" && mode!="manual" && mode!="profile")return profile_issue(node,ProcessingReason::Frontend,"mode",ProcessingError::InvalidParameters);
     if(!number(node,"manual_gain",gain) || gain<0)return profile_issue(node,ProcessingReason::GainValue,"manual_gain",ProcessingError::InvalidParameters);
     if(!normalizer_input_supported(input))return profile_issue(node,ProcessingReason::SpectrumLayout,"input");
     if(mode!="profile")return {};
-    auto diagnostic=profile_frontend_diagnostic(node);if(!diagnostic)return diagnostic;
-    diagnostic=profile_geometry_diagnostic(node,input);if(!diagnostic)return diagnostic;
-    diagnostic=profile_window_diagnostic(node);if(!diagnostic)return diagnostic;
-    if(!representation_matches(node,input))return profile_issue(node,ProcessingReason::SpectrumRepresentation,"representation");
-    return profile_gains_diagnostic(node,input);
+    return configured_profile_diagnostic(node,input);
 }
 
 Status validate_frequency_normalizer(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {

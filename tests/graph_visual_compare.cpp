@@ -39,12 +39,12 @@ QImage capture(QWidget* widget){
     auto image=widget->grab().toImage();
     QPainter painter(&image);
 #ifdef NUMERIC_QML
-    for(auto* child:widget->findChildren<QQuickWidget*>())if(child->isVisible()){
+    for(const auto children=widget->findChildren<QQuickWidget*>();auto* child:children)if(child->isVisible()){
         const auto pixels=child->grabFramebuffer();check(!pixels.isNull(),"Quick framebuffer missing");
         painter.drawImage(QRect(child->mapTo(widget,QPoint()),child->size()),pixels);
     }
 #else
-    for(auto* child:widget->findChildren<QOpenGLWidget*>())if(child->isVisible()){
+    for(const auto children=widget->findChildren<QOpenGLWidget*>();auto* child:children)if(child->isVisible()){
         const auto pixels=child->grabFramebuffer();check(!pixels.isNull(),"OpenGL framebuffer missing");
         painter.drawImage(QRect(child->mapTo(widget,QPoint()),child->size()),pixels);
     }
@@ -65,7 +65,7 @@ void collectQuick(QQuickItem* item,QJsonArray& controls,QQuickWidget* host,Graph
             {"fontHeight",QFontMetricsF(font).height()},{"textWidth",QFontMetricsF(font).horizontalAdvance(text)},
             {"implicitWidth",item->implicitWidth()},{"implicitHeight",item->implicitHeight()}});
     }
-    for(auto* child:item->childItems())collectQuick(child,controls,host,panel);
+    for(const auto children=item->childItems();auto* child:children)collectQuick(child,controls,host,panel);
 }
 #endif
 QJsonObject inspect(GraphPanel& panel,const QString& mode){
@@ -76,9 +76,9 @@ QJsonObject inspect(GraphPanel& panel,const QString& mode){
     QRectF plot(renderer->mapTo(&panel,QPoint()),renderer->size());
     QJsonArray controls,errors;
 #ifdef NUMERIC_QML
-    for(auto* host:panel.findChildren<QQuickWidget*>())if(host->isVisible()){
+    for(const auto hosts=panel.findChildren<QQuickWidget*>();auto* host:hosts)if(host->isVisible()){
         check(host->status()==QQuickWidget::Ready,"QML scene not Ready");
-        for(const auto& error:host->property("qmlErrors").toStringList())errors.append(error);
+        for(const auto qmlErrors=host->property("qmlErrors").toStringList();const auto& error:qmlErrors)errors.append(error);
         collectQuick(host->rootObject(),controls,host,panel);
     }
     if(mode=="surface3d"){
@@ -88,7 +88,7 @@ QJsonObject inspect(GraphPanel& panel,const QString& mode){
         plot=QRectF(QPointF(host->mapTo(&panel,QPoint()))+item->mapToScene(QPointF()),QSizeF(item->width(),item->height()));
     }
 #else
-    for(auto* widget:panel.findChildren<QWidget*>())if(widget->isVisible()){
+    for(const auto widgets=panel.findChildren<QWidget*>();auto* widget:widgets)if(widget->isVisible()){
         QString text;
         if(auto* combo=qobject_cast<QComboBox*>(widget))text=combo->currentText();
         else if(auto* label=qobject_cast<QLabel*>(widget))text=label->text();
@@ -113,79 +113,183 @@ QJsonObject inspect(GraphPanel& panel,const QString& mode){
     return result;
 }
 }
-int main(int argc,char** argv){
+namespace {
+void populate_renderer(GraphPanel &panel, const QString &mode, std::vector<float> &tones,
+                       std::vector<std::vector<float>> &history) {
+    for (size_t i = 0; i < tones.size(); ++i)
+        for (int tone = 0; tone < 8; ++tone)
+            tones[i] += float(.08 * std::sin((tone + 1) * i * .05));
+    for (size_t t = 0; t < history.size(); ++t)
+        for (size_t b = 0; b < 50; ++b)
+            history[t][b] = float(.2 + .8 * std::abs(std::sin(t * .09 + b * .13)));
+    if (mode == "surface3d") {
+        auto *view = panel.active_spectrogram();
+        check(view, "surface absent");
+        view->set_y_range(0, 1.2);
+        view->set_history_dimensions(80, 50);
+        view->update_frame_history(history);
+        SpectrogramAxisMetadata axes;
+        axes.age_axis = true;
+        axes.time_coordinates = true;
+        axes.column_coordinates = true;
+        for (int i = 0; i < 50; ++i)
+            axes.columns.push_back(50. + i * 160.);
+        for (int i = 0; i < 80; ++i)
+            axes.ages.push_back(i * .02);
+        view->set_axis_metadata(axes);
+    } else if (mode == "image2d")
+        panel.image_view()->set_matrix(history);
+    else if (mode == "pie")
+        panel.pie_view()->set_values({1, 2, 3, 4, 5, 6, 7, 8});
+    else if (mode == "metrics") {
+        panel.metrics_view()->set_inputs({{0, "Уровень сигнала"}, {1, "Точное целое значение"}});
+        panel.metrics_view()->set_value(0, "0.314159");
+        panel.metrics_view()->set_value(1, "18446744073709551615");
+    } else {
+        panel.active_chart()->set_auto_resizing(false);
+        panel.active_chart()->set_range(-1, 1);
+        panel.active_chart()->update(tones);
+    }
+}
+void capture_popup(GraphPanel &panel, QJsonObject &report, const QDir &artifacts, const QString &name) {
+    // Open the actual display-mode popup through its public UI object.
+#ifdef NUMERIC_QML
+    auto *settings = panel.findChild<QQuickWidget *>("numericGraphSettings");
+    auto *combo = settings->rootObject()->findChild<QObject *>("numericDisplayMode");
+    check(combo, "QML mode combo absent");
+    auto *popup = combo->property("popup").value<QObject *>();
+    check(popup, "QML mode popup absent");
+    if (combo->property("enabled").toBool()) {
+        auto *comboItem = qobject_cast<QQuickItem *>(combo);
+        check(comboItem, "QML combo is not a visual item");
+        QTest::mouseClick(settings, Qt::LeftButton, Qt::NoModifier,
+                          comboItem->mapToScene(QPointF(comboItem->width() / 2, comboItem->height() / 2)).toPoint());
+        QElapsedTimer opening;
+        opening.start();
+        while (!popup->property("opened").toBool() && opening.elapsed() < 3000)
+            settle(10);
+        check(popup->property("opened").toBool(), "QML menu never fully opened");
+        settle(100);
+        report["popupOpen"] = true;
+        auto *content = popup->property("contentItem").value<QQuickItem *>();
+        check(content && content->parentItem(), "QML popup visual item absent");
+        auto *popupItem = content->parentItem();
+        const QRectF bounds(popupItem->mapToScene(QPointF()), QSizeF(popupItem->width(), popupItem->height()));
+        const auto pixels = settings->grabFramebuffer();
+        const auto visible = bounds.intersected(QRectF(settings->rect()));
+        report["popup"] = QJsonObject{{"bounds", rect(bounds.translated(settings->mapTo(&panel, QPoint())))},
+                                      {"visibleBounds", rect(visible.translated(settings->mapTo(&panel, QPoint())))},
+                                      {"rows", combo->property("count").toInt()},
+                                      {"font", combo->property("font").value<QFont>().toString()}};
+        const int rows = combo->property("count").toInt();
+        const auto selected =
+            content->mapToScene(QPointF(4, (combo->property("currentIndex").toInt() + .5) * content->height() / rows));
+        const auto background = pixels.pixelColor(int(selected.x() * pixels.width() / settings->width()),
+                                                  int(selected.y() * pixels.height() / settings->height()));
+        auto popupReport = report["popup"].toObject();
+        popupReport["selectedBackground"] = background.name();
+        popupReport["themeHighlight"] =
+            ui::Theme::instance().palette().color(QPalette::Active, QPalette::Highlight).name();
+        report["popup"] = popupReport;
+        check(pixels
+                  .copy(QRect(int(visible.x() * pixels.width() / settings->width()),
+                              int(visible.y() * pixels.height() / settings->height()),
+                              int(visible.width() * pixels.width() / settings->width()),
+                              int(visible.height() * pixels.height() / settings->height())))
+                  .save(artifacts.filePath(name + "-menu.png")),
+              "save QML popup framebuffer");
+        QMetaObject::invokeMethod(popup, "close");
+    }
+#else
+    QComboBox *combo = nullptr;
+    for (auto *candidate : panel.findChildren<QComboBox *>("numericDisplayMode"))
+        if (candidate->isVisible())
+            combo = candidate;
+    check(combo, "visible Widgets mode combo absent");
+    if (combo->isEnabled()) {
+        auto *popup = combo->view()->window();
+        popup->setAttribute(Qt::WA_ShowWithoutActivating);
+        popup->setWindowFlag(Qt::WindowDoesNotAcceptFocus, true);
+        combo->showPopup();
+        settle(100);
+        check(popup->isVisible(), "Widgets popup not open");
+        report["popupOpen"] = true;
+        report["popup"] =
+            QJsonObject{{"bounds", rect(QRectF(panel.mapFromGlobal(popup->mapToGlobal(QPoint())), popup->size()))},
+                        {"rows", combo->count()},
+                        {"font", combo->font().toString()}};
+        check(popup->grab().save(artifacts.filePath(name + "-menu.png")), "save Widgets popup framebuffer");
+        combo->hidePopup();
+    }
+#endif
+}
+void capture_case(const QDir &artifacts, QJsonArray &cases, const char *theme, QSize size, const char *rawMode) {
+    const QString mode = QString::fromLatin1(rawMode), kind = mode == "metrics" ? "ScalarView"
+                                                              : (mode == "surface3d" || mode == "image2d")
+                                                                  ? "SpectrogramView"
+                                                                  : "FFTView";
+    ui::Theme::instance().set(theme);
+    GraphPanel panel("visualCompare", new LineChartView, {{"kind", kind}, {"display_mode", mode}}, nullptr);
+    panel.setAttribute(Qt::WA_ShowWithoutActivating);
+    panel.setWindowFlag(Qt::WindowDoesNotAcceptFocus, true);
+    panel.resize(size);
+    std::vector<float> tones(256);
+    std::vector<std::vector<float>> history(80, std::vector<float>(50));
+    populate_renderer(panel, mode, tones, history);
+    panel.show();
+    settle();
+    if (mode == "surface3d") {
+        QElapsedTimer deadline;
+        deadline.start();
+        while (!panel.active_spectrogram()->axis_layout_telemetry().value("paintCount").toULongLong() &&
+               deadline.elapsed() < 5000)
+            settle(20);
+        check(panel.active_spectrogram()->axis_layout_telemetry().value("paintCount").toULongLong() > 0,
+              "native surface never rendered");
+    }
+    const auto name = QString("%1-%2-%3").arg(theme).arg(size.width()).arg(mode);
+    auto report = inspect(panel, mode);
+    report["case"] = name;
+    report["theme"] = theme;
+    check(capture(&panel).save(artifacts.filePath(name + ".png")), "save panel framebuffer");
+    capture_popup(panel, report, artifacts, name);
+    cases.append(report);
+    panel.hide();
+}
+void capture_cases(const QDir &artifacts, QJsonArray &cases) {
+    for (const auto *theme : {"dark", "light"})
+        for (const auto size : {QSize(1280, 800), QSize(650, 600)})
+            for (const auto *mode : {"line", "points", "bars", "pie", "image2d", "metrics", "surface3d"})
+                capture_case(artifacts, cases, theme, size, mode);
+}
+} // namespace
+int main(int argc, char **argv) {
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 #ifdef NUMERIC_QML
     ui::quick::configure();
 #endif
-    QApplication app(argc,argv);
-    QTimer safety;QObject::connect(&safety,&QTimer::timeout,[]{std::_Exit(3);});safety.start(55000);
-    try{
-        check(argc==2,"provide artifact directory");QDir artifacts(QString::fromLocal8Bit(argv[1]));check(artifacts.mkpath("."),"artifact directory");
+    QApplication app(argc, argv);
+    QTimer safety;
+    QObject::connect(&safety, &QTimer::timeout, [] { std::_Exit(3); });
+    safety.start(55000);
+    try {
+        check(argc == 2, "provide artifact directory");
+        QDir artifacts(QString::fromLocal8Bit(argv[1]));
+        check(artifacts.mkpath("."), "artifact directory");
         ui::Language::instance().set("ru");
         QJsonArray cases;
-        for(const auto* theme:{"dark","light"})for(const auto size:{QSize(1280,800),QSize(650,600)})for(const auto* rawMode:{"line","points","bars","pie","image2d","metrics","surface3d"}){
-            const QString mode=QString::fromLatin1(rawMode),kind=mode=="metrics"?"ScalarView":(mode=="surface3d"||mode=="image2d")?"SpectrogramView":"FFTView";
-            ui::Theme::instance().set(theme);
-            GraphPanel panel("visualCompare",new LineChartView,{{"kind",kind},{"display_mode",mode}},nullptr);
-            panel.setAttribute(Qt::WA_ShowWithoutActivating);panel.setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);panel.resize(size);
-            std::vector<float> tones(256);std::vector<std::vector<float>> history(80,std::vector<float>(50));
-            for(size_t i=0;i<tones.size();++i)for(int tone=0;tone<8;++tone)tones[i]+=float(.08*std::sin((tone+1)*i*.05));
-            for(size_t t=0;t<history.size();++t)for(size_t b=0;b<50;++b)history[t][b]=float(.2+.8*std::abs(std::sin(t*.09+b*.13)));
-            if(mode=="surface3d"){
-                auto* view=panel.active_spectrogram();check(view,"surface absent");view->set_y_range(0,1.2);view->set_history_dimensions(80,50);view->update_frame_history(history);
-                SpectrogramAxisMetadata axes;axes.age_axis=true;axes.time_coordinates=true;axes.column_coordinates=true;
-                for(int i=0;i<50;++i)axes.columns.push_back(50.+i*160.);for(int i=0;i<80;++i)axes.ages.push_back(i*.02);view->set_axis_metadata(axes);
-            }else if(mode=="image2d")panel.image_view()->set_matrix(history);
-            else if(mode=="pie")panel.pie_view()->set_values({1,2,3,4,5,6,7,8});
-            else if(mode=="metrics"){panel.metrics_view()->set_inputs({{0,"Уровень сигнала"},{1,"Точное целое значение"}});panel.metrics_view()->set_value(0,"0.314159");panel.metrics_view()->set_value(1,"18446744073709551615");}
-            else {panel.active_chart()->set_auto_resizing(false);panel.active_chart()->set_range(-1,1);panel.active_chart()->update(tones);}
-            panel.show();settle();
-            if(mode=="surface3d"){
-                QElapsedTimer deadline;deadline.start();
-                while(!panel.active_spectrogram()->axis_layout_telemetry().value("paintCount").toULongLong() && deadline.elapsed()<5000)settle(20);
-                check(panel.active_spectrogram()->axis_layout_telemetry().value("paintCount").toULongLong()>0,"native surface never rendered");
-            }
-            const auto name=QString("%1-%2-%3").arg(theme).arg(size.width()).arg(mode);
-            auto report=inspect(panel,mode);report["case"]=name;report["theme"]=theme;
-            check(capture(&panel).save(artifacts.filePath(name+".png")),"save panel framebuffer");
-            // Open the actual display-mode popup through its public UI object.
-#ifdef NUMERIC_QML
-            auto* settings=panel.findChild<QQuickWidget*>("numericGraphSettings");
-            auto* combo=settings->rootObject()->findChild<QObject*>("numericDisplayMode");check(combo,"QML mode combo absent");
-            auto* popup=combo->property("popup").value<QObject*>();check(popup,"QML mode popup absent");
-            if(combo->property("enabled").toBool()){
-                auto* comboItem=qobject_cast<QQuickItem*>(combo);check(comboItem,"QML combo is not a visual item");
-                QTest::mouseClick(settings,Qt::LeftButton,Qt::NoModifier,comboItem->mapToScene(QPointF(comboItem->width()/2,comboItem->height()/2)).toPoint());
-                QElapsedTimer opening;opening.start();
-                while(!popup->property("opened").toBool() && opening.elapsed()<3000)settle(10);
-                check(popup->property("opened").toBool(),"QML menu never fully opened");settle(100);report["popupOpen"]=true;
-                auto* content=popup->property("contentItem").value<QQuickItem*>();check(content && content->parentItem(),"QML popup visual item absent");
-                auto* popupItem=content->parentItem();const QRectF bounds(popupItem->mapToScene(QPointF()),QSizeF(popupItem->width(),popupItem->height()));
-                const auto pixels=settings->grabFramebuffer();const auto visible=bounds.intersected(QRectF(settings->rect()));
-                report["popup"]=QJsonObject{{"bounds",rect(bounds.translated(settings->mapTo(&panel,QPoint())))},{"visibleBounds",rect(visible.translated(settings->mapTo(&panel,QPoint())))},{"rows",combo->property("count").toInt()},{"font",combo->property("font").value<QFont>().toString()}};
-                const int rows=combo->property("count").toInt();
-                const auto selected=content->mapToScene(QPointF(4,(combo->property("currentIndex").toInt()+.5)*content->height()/rows));
-                const auto background=pixels.pixelColor(int(selected.x()*pixels.width()/settings->width()),int(selected.y()*pixels.height()/settings->height()));
-                auto popupReport=report["popup"].toObject();
-                popupReport["selectedBackground"]=background.name();
-                popupReport["themeHighlight"]=ui::Theme::instance().palette().color(QPalette::Active,QPalette::Highlight).name();
-                report["popup"]=popupReport;
-                check(pixels.copy(QRect(int(visible.x()*pixels.width()/settings->width()),int(visible.y()*pixels.height()/settings->height()),int(visible.width()*pixels.width()/settings->width()),int(visible.height()*pixels.height()/settings->height()))).save(artifacts.filePath(name+"-menu.png")),"save QML popup framebuffer");QMetaObject::invokeMethod(popup,"close");
-            }
-#else
-            QComboBox* combo=nullptr;for(auto* candidate:panel.findChildren<QComboBox*>("numericDisplayMode"))if(candidate->isVisible())combo=candidate;
-            check(combo,"visible Widgets mode combo absent");
-            if(combo->isEnabled()){
-                auto* popup=combo->view()->window();popup->setAttribute(Qt::WA_ShowWithoutActivating);popup->setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);
-                combo->showPopup();settle(100);check(popup->isVisible(),"Widgets popup not open");report["popupOpen"]=true;
-                report["popup"]=QJsonObject{{"bounds",rect(QRectF(panel.mapFromGlobal(popup->mapToGlobal(QPoint())),popup->size()))},{"rows",combo->count()},{"font",combo->font().toString()}};
-                check(popup->grab().save(artifacts.filePath(name+"-menu.png")),"save Widgets popup framebuffer");combo->hidePopup();
-            }
-#endif
-            cases.append(report);panel.hide();
-        }
-        QFile file(artifacts.filePath("manifest.json"));check(file.open(QIODevice::WriteOnly),"manifest output");file.write(QJsonDocument(QJsonObject{{"cases",cases},{"qtVersion",qVersion()},{"font",app.font().toString()},{"platform",app.platformName()}}).toJson());
-        std::printf("Captured %lld graph cases, actual menus and layout telemetry\n",(long long)cases.size());return 0;
-    }catch(const std::exception& error){std::fprintf(stderr,"visual comparison capture FAIL: %s\n",error.what());return 1;}
+        capture_cases(artifacts, cases);
+        QFile file(artifacts.filePath("manifest.json"));
+        check(file.open(QIODevice::WriteOnly), "manifest output");
+        file.write(QJsonDocument(QJsonObject{{"cases", cases},
+                                             {"qtVersion", qVersion()},
+                                             {"font", app.font().toString()},
+                                             {"platform", app.platformName()}})
+                       .toJson());
+        std::printf("Captured %lld graph cases, actual menus and layout telemetry\n", (long long)cases.size());
+        return 0;
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "visual comparison capture FAIL: %s\n", error.what());
+        return 1;
+    }
 }

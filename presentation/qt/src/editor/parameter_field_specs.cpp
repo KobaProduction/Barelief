@@ -97,6 +97,26 @@ ParameterChoices spectrum_representation_choices(const QString& kind) {
 }
 }
 
+namespace {
+ParameterChoices representation_parameter_choices(const QString& kind,const QString& key) {
+    if(key=="input_representation") {
+        if(kind=="BroadbandRow" || kind=="NoteSpectrum")
+            return {{"linear","magnitude","peak_amplitude","power","psd"},{"Linear values","Raw magnitude","Peak amplitude","Power","PSD"}};
+        if(kind=="MusicalSpectrogram" || kind=="NoteSalience")
+            return {{"magnitude","peak_amplitude","power","psd"},{"Raw magnitude","Peak amplitude","Power","PSD"}};
+    }
+    if(key=="representation")return spectrum_representation_choices(kind);
+    return {};
+}
+ParameterChoices generic_parameter_choices(const QString& key) {
+    if(key=="peak_weight")return {{"value","squared_value"},{"Input value","Squared input value"}};
+    if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top"}};
+    if(key=="radix")return {{"radix2","radix4"},{"Radix 2","Radix 4"}};
+    if(key.endsWith("_reduction"))return {{"pass_through","mean","rms","weighted_mean","maximum"},{"Pass through bins","Arithmetic mean","RMS of spectral values","Weighted mean","Maximum"}};
+    if(key=="channel_policy")return {{"mean","select"},{"Mean","Selected channel"}};
+    return {};
+}
+}
 ParameterChoices parameter_choices(const QString& kind,const QString& key) {
     static const QMap<QString,ParameterChoices> specs{
       {"FrequencyNormalizer/mode",{{"off","manual","profile"},{"Off","Manual","Loaded profile"}}},
@@ -108,18 +128,7 @@ ParameterChoices parameter_choices(const QString& kind,const QString& key) {
     };
     if((kind=="PcmResampler" && key=="mode") || key=="resampler_mode")return resampler_choices();
     if(specs.contains(kind+"/"+key))return specs.value(kind+"/"+key);
-    if(key=="input_representation") {
-        if(kind=="BroadbandRow" || kind=="NoteSpectrum")
-            return {{"linear","magnitude","peak_amplitude","power","psd"},{"Linear values","Raw magnitude","Peak amplitude","Power","PSD"}};
-        if(kind=="MusicalSpectrogram" || kind=="NoteSalience")
-            return {{"magnitude","peak_amplitude","power","psd"},{"Raw magnitude","Peak amplitude","Power","PSD"}};
-    }
-    if(key=="peak_weight")return {{"value","squared_value"},{"Input value","Squared input value"}};
-    if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top"}};
-    if(key=="radix")return {{"radix2","radix4"},{"Radix 2","Radix 4"}};
-    if(key=="representation")return spectrum_representation_choices(kind);
-    if(key.endsWith("_reduction"))return {{"pass_through","mean","rms","weighted_mean","maximum"},{"Pass through bins","Arithmetic mean","RMS of spectral values","Weighted mean","Maximum"}};
-    if(key=="channel_policy")return {{"mean","select"},{"Mean","Selected channel"}};
-    return {};
+    const auto representation=representation_parameter_choices(kind,key);
+    return representation.values.empty()?generic_parameter_choices(key):representation;
 }
 }

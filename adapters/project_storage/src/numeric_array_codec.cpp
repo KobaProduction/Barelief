@@ -11,13 +11,16 @@ namespace {
 constexpr std::string_view encoding="f32le-base64:";
 constexpr std::string_view alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 struct Group { std::uint32_t bits=0;unsigned bytes=0; };
+bool valid_group_padding(bool pad2,bool pad3,bool last,std::size_t b,std::size_t c) {
+    if((pad2 && !pad3) || ((pad2 || pad3) && !last))return false;
+    return !((pad2 && (b&15)) || (pad3 && !pad2 && (c&3)));
+}
 bool decode_group(std::string_view text,bool last,Group& out) {
     const auto a=alphabet.find(text[0]),b=alphabet.find(text[1]);
     const bool pad2=text[2]=='=',pad3=text[3]=='=';
     const auto c=pad2?0:alphabet.find(text[2]),d=pad3?0:alphabet.find(text[3]);
     if(a==alphabet.npos || b==alphabet.npos || c==alphabet.npos || d==alphabet.npos)return false;
-    if((pad2 && !pad3) || ((pad2 || pad3) && !last))return false;
-    if((pad2 && (b&15)) || (pad3 && !pad2 && (c&3)))return false;
+    if(!valid_group_padding(pad2,pad3,last,b,c))return false;
     out={std::uint32_t((a<<18)|(b<<12)|(c<<6)|d),pad2?1u:pad3?2u:3u};return true;
 }
 struct FloatDecoder {

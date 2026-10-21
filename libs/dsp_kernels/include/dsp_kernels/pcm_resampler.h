@@ -94,7 +94,8 @@ public:
         written=0;const auto bound=maximum_output(count,input_,output_);
         if(!input_||!channels_||input_stride<count||input_stride>input.size()/channels_||output_stride>output.size()/channels_||output_stride<bound||produced_>UINT64_MAX-bound)return false;
         if(!finite_input(input,count,input_stride))return false;
-        if(!count)return true;has_input_=true;
+        if(!count)return true;
+        has_input_=true;
         ProcessBuffers buffers{input,count,input_stride,output,output_stride,written,state_reset};
         if(input_==output_)return copy_identity(buffers);
         return process_filtered(buffers);

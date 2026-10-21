@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 #ifdef Q_OS_WIN
 #include <QtCore/qt_windows.h>
 #endif
@@ -97,62 +98,192 @@ QPolygonF typedPoints(const std::array<double,Samples>& samples){
     for(size_t i=0;i<samples.size();++i)points.append(QPointF(double(i)/(samples.size()-1),(1.-samples[i])*.5));
     return points;
 }
-template<int plotCount, size_t Samples>
-QJsonObject run(ProbeApplication& app,const QString& topology,int fps,int durationMs,int swapInterval,const QString& geometryPath){
-    const QStringList styles{"line","line","line","points","points","bars","bars"};
-    const qint64 periodNs=1000000000LL/fps;
-    std::array<SceneCounters,plotCount> scenes;
-    std::atomic<bool> measuring{false};
-    QWidget host;
-    host.setAttribute(Qt::WA_ShowWithoutActivating);
-    host.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
-    host.setWindowTitle("Owned render topology probe");host.resize(plotCount==1?1332:1600,plotCount==1?825:1000);
-    auto* grid=new QGridLayout(&host);grid->setContentsMargins(0,0,0,0);grid->setSpacing(6);
-    std::array<QuickPlotModel*,plotCount> models{};
-    std::array<VectorPlotItem*,plotCount> plots{};
-    std::array<QWidget*,plotCount> containers{};
-    std::array<QQuickView*,plotCount> nativeViews{};
-    std::array<QQuickWindow*,plotCount> windows{};
-    std::array<QQuickItem*,plotCount> roots{};
-    QQuickView* sharedView=nullptr;QWidget* sharedContainer=nullptr;
-    // This hidden widget is only a layout calculator, never a rendered host.
-    // It preserves the same QWidget grid rounding as the seven-window arms.
-    QWidget geometryHost;QGridLayout* geometryGrid=nullptr;
-    if(topology=="shared"){
-        sharedView=new QQuickView;
-        sharedView->setFlags(sharedView->flags()|Qt::WindowDoesNotAcceptFocus);
-        sharedView->setFormat(QSurfaceFormat::defaultFormat());
-        auto* bridge=new ui::quick::UiBridge(sharedView);
-        sharedView->rootContext()->setContextProperty("quickUi",bridge);
-        sharedView->setColor(bridge->palette().value("window").value<QColor>());
-        sharedContainer=QWidget::createWindowContainer(sharedView,&host);
-        sharedContainer->setFocusPolicy(Qt::NoFocus);grid->addWidget(sharedContainer,0,0);
-        geometryGrid=new QGridLayout(&geometryHost);geometryGrid->setContentsMargins(0,0,0,0);geometryGrid->setSpacing(6);
-        for(int i=0;i<plotCount;++i)geometryGrid->addWidget(new QWidget(&geometryHost),i/2,i%2);
-        const auto layoutShared=[&]{
-            geometryHost.resize(sharedView->size());geometryGrid->setGeometry(geometryHost.rect());
-            for(int i=0;i<plotCount;++i)if(roots[i]){
-                const auto cell=geometryGrid->cellRect(i/2,i%2);roots[i]->setPosition(cell.topLeft());roots[i]->setSize(cell.size());
-            }
-        };
-        QObject::connect(sharedView,&QQuickWindow::widthChanged,&geometryHost,layoutShared);
-        QObject::connect(sharedView,&QQuickWindow::heightChanged,&geometryHost,layoutShared);
-    }
-    QList<QMetaObject::Connection> connections;
-    std::array<double,Samples> samples{};
-    dsp_core::MagnitudeSpectrum fft;
-    std::vector<float> pcm, coefficients;
-    if constexpr(plotCount==1){
-        require(fft.prepare(Samples*2),"FFT preparation failed");
-        pcm.resize(Samples*2);coefficients.resize(Samples);
-    }
-    const auto publishOne=[&](int i){
-        // Both arms build one owned normalized snapshot for each plot. Only the
-        // geometry representation/handoff differs; no QML geometry is omitted.
-        if(geometryPath=="typed")models[i]->publishVector(snapshot(styles[i],samples,false),typedPoints(samples));
-        else models[i]->publish(snapshot(styles[i],samples,true));
-    };
+template<int plotCount,size_t Samples>
+QJsonObject finish_topology(auto& app,auto& topology,auto& fps,auto& swapInterval,auto& geometryPath,auto& host,auto& containers,auto& nativeViews,auto& roots,auto& sharedView,auto& connections,auto& supplies,auto& missed,auto& generation,auto& publishing,auto& lateness,auto& heartbeat,auto& sampleHostDprStart,auto& stageEndpoints,auto& sampleHostDpr,auto& seconds,auto& cpuAvailable,auto& cpuMs,auto& resultPlots,auto& valid,auto& producerMet,auto& targetMet) {
+    for(const auto& connection:std::as_const(connections))QObject::disconnect(connection);
+    host.hide();
+    // Dispose QML bindings while the presentation models are still alive.
     for(int i=0;i<plotCount;++i){
+        if(sharedView){delete roots[i];roots[i]=nullptr;}
+        else if(nativeViews[i])nativeViews[i]->setSource(QUrl{});
+        else static_cast<QQuickWidget*>(containers[i])->setSource(QUrl{});
+    }
+    QJsonArray stages;
+    for(size_t i=0;i<stageEndpoints.size();++i){const auto& c=stageEndpoints[i];if(c.count)stages.append(QJsonObject{{"stage",core::perf::names[i]},{"count",double(c.count)},{"mean_ms",c.total/double(c.count)/1e6},{"max_ms",c.maximum/1e6}});}
+    return {{"fixture_revision",2},{"sample_count",int(Samples)},{"fft_input_size",plotCount==1?int(Samples*2):0},{"host",topology},{"geometry_path",geometryPath},{"plots",resultPlots},{"distinct_scene_count",topology=="shared"?1:plotCount},{"target_fps",fps},{"requested_samples",8},{"requested_swap_interval",swapInterval},{"warmup_ms",warmupMs},{"sample_seconds",seconds},
+        {"live_supplies",double(supplies)},{"supplied_hz",supplies/seconds},{"missed_supply_deadlines",double(missed)},
+        {"scheduled_supply_deadlines",double(supplies+missed)},{"producer_target_met",producerMet},{"target_met",targetMet},{"valid",valid},
+        {"generation_elapsed",distribution(generation)},{"snapshot_publish_elapsed",distribution(publishing)},{"supply_lateness",distribution(lateness)},
+        {"geometry_path_scope","Each plot constructs the same sample_count normalized points inside snapshot_publish_elapsed; typed uses QPolygonF/publishVector and metadata without points, variant uses point QVariantMaps/publish fallback. No cross-plot source geometry sharing in either arm."},
+        {"gui_heartbeat_lateness",distribution(heartbeat)},{"gui_events",double(app.events)},{"gui_event_elapsed_total_ms",app.totalNs/1e6},{"gui_event_elapsed_max_ms",app.maxNs/1e6},
+        {"process_cpu_available",cpuAvailable},{"process_cpu_ms",cpuAvailable?QJsonValue(cpuMs):QJsonValue(QJsonValue::Null)},
+        {"average_busy_logical_cores",cpuAvailable?QJsonValue(cpuMs/(seconds*1000.)):QJsonValue(QJsonValue::Null)},
+        {"process_cpu_scope","Windows GetProcessTimes process-wide kernel+user CPU time over the measured sample; includes all owned process threads. Average busy logical cores is CPU time divided by wall time, not system-wide CPU percent. Unavailable on other platforms."},
+        {"stage_elapsed",stages},{"dpr",sampleHostDpr},{"dpr_start",sampleHostDprStart},{"render_loop_environment",qEnvironmentVariable("QSG_RENDER_LOOP")},
+        {"dpr_scope","Host and per-plot DPR/geometry captured while visible at sample endpoints, before hide or QML teardown. measured_dpr is QQuickWindow::effectiveDevicePixelRatio; window_dpr is QWindow::devicePixelRatio. scene_pixel_size_from_dpr is calculated from logical scene size and effective DPR, not an observed framebuffer allocation."},
+        {"scope",plotCount==1?"One line Plot2D.qml instance, 2048 coefficients of a real portable 4096-sample FFT from eight varying synthetic tones. Fixed amplitude range. Isolates host topology; excludes GraphPanel, docks, audio capture, executor and surface3D. Separate process per host required.":"Seven identical Plot2D.qml instances: three line, two points, two bars; same 256 samples from eight varying synthetic tones. widget/window use seven independent scenes; shared uses one native scene and seven per-plot contexts. Shared per-plot scene fields repeat scene zero, not seven independent completions; unique vector counters remain per item. Isolates vector host topology; excludes GraphPanel, DSP, docks, surface3D, image, metrics, audio and desktop capture. Separate process per host is required."},
+        {"counter_scope","afterRendering counts scene submission, not GPU completion or physical presentation. beforeSynchronizing through afterSynchronizing measures the GUI-blocking scene synchronization interval; beforeRendering through afterRendering measures later scene render submission. Vector atomics count geometry updates (or software paints) and one consumed revision per new snapshot; endpoint may include an in-flight warmup revision. Timing fields are elapsed wall time, including waits, not CPU utilization; GUI event totals can include nested event delivery. Native render threading is observed via render_thread_is_gui."}};
+}
+
+template<int plotCount,size_t Samples>
+QJsonObject serialize_topology(auto& app,auto& topology,auto& fps,auto& swapInterval,auto& geometryPath,auto& styles,auto& scenes,auto& host,auto& containers,auto& nativeViews,auto& roots,auto& sharedView,auto& connections,auto& samples,auto& supplies,auto& missed,auto& generation,auto& publishing,auto& lateness,auto& heartbeat,auto& sampleHostDprStart,auto& effectiveDprStart,auto& endpoints,auto& stageEndpoints,auto& cpuStart,auto& sampleEndNs,auto& cpuEnd,auto& sampleHostDpr) {
+    const double seconds=sampleEndNs/1e9;
+    const bool cpuAvailable=cpuStart.available&&cpuEnd.available&&cpuEnd.ticks100ns>=cpuStart.ticks100ns;
+    const double cpuMs=cpuAvailable?(cpuEnd.ticks100ns-cpuStart.ticks100ns)/10000.:0.;
+    QJsonArray resultPlots;bool valid=true;
+    const bool producerMet=supplies/seconds>=fps*.95 && missed<=.01*double(supplies+missed);
+    bool targetMet=producerMet;
+    for(int i=0;i<plotCount;++i){
+        const auto& e=endpoints[i];const auto unique=e.unique,painted=e.paints,completed=e.completed;
+        const bool met=producerMet&&unique/seconds>=fps*.95;targetMet&=met;valid&=painted>0&&unique>0&&completed>0;
+        const int sceneIndex=topology=="shared"?0:i;
+        resultPlots.append(QJsonObject{{"style",styles[i]},{"logical_size",QJsonArray{e.rootSize.width(),e.rootSize.height()}},
+            {"scene_counter_index",sceneIndex},{"scene_counter_shared",topology=="shared"},
+            {"vector_size",QJsonArray{e.vectorSize.width(),e.vectorSize.height()}},
+            {"measured_dpr",e.effectiveDpr},{"measured_dpr_start",effectiveDprStart[i]},{"window_dpr",e.windowDpr},
+            {"scene_logical_size",QJsonArray{e.windowSize.width(),e.windowSize.height()}},
+            {"scene_pixel_size_from_dpr",QJsonArray{e.scenePixelSize.width(),e.scenePixelSize.height()}},
+            {"scene_submissions",double(completed)},{"scene_submissions_fps",completed/seconds},
+            {"actual_vector_updates",double(painted)},{"unique_presentations_drawn",double(unique)},{"unique_presentations_fps",unique/seconds},
+            {"paint_engine_type",e.engine},{"actual_paint_samples",e.samples},
+            {"scene_render_mean_ms",completed?e.totalNs/double(completed)/1e6:0.},{"scene_render_max_ms",e.maxNs/1e6},
+            {"scene_sync_count",double(e.syncCompleted)},
+            {"scene_sync_mean_ms",e.syncCompleted?e.syncTotalNs/double(e.syncCompleted)/1e6:0.},
+            {"scene_sync_max_ms",e.syncMaxNs/1e6},
+            {"renderer",scenes[sceneIndex].renderer.snapshot()},{"target_met",met}});
+    }
+return finish_topology<plotCount,Samples>(app,topology,fps,swapInterval,geometryPath,host,containers,nativeViews,roots,sharedView,connections,supplies,missed,generation,publishing,lateness,heartbeat,sampleHostDprStart,stageEndpoints,sampleHostDpr,seconds,cpuAvailable,cpuMs,resultPlots,valid,producerMet,targetMet);
+}
+
+template<int plotCount,size_t Samples>
+QJsonObject capture_topology_geometry(auto& app,auto& topology,auto& fps,auto& swapInterval,auto& geometryPath,auto& styles,auto& periodNs,auto& scenes,auto& host,auto& plots,auto& containers,auto& nativeViews,auto& windows,auto& roots,auto& sharedView,auto& connections,auto& samples,auto& nextSupply,auto& supplies,auto& missed,auto& generation,auto& publishing,auto& lateness,auto& heartbeat,auto& producer,auto& beat,auto& safety,auto& sampleHostDprStart,auto& effectiveDprStart,auto& endpoints,auto& stageEndpoints,auto& cpuStart,auto& safetyExpired,auto& sampleEndNs,auto& cpuEnd,auto& deadlineEndNs) {
+    // Read visible-window geometry/DPR before hiding or disposing any QML item.
+    // The effective ratio includes QuickWidget's render-control redirection.
+    const qreal sampleHostDpr=host.devicePixelRatioF();
+    for(int i=0;i<plotCount;++i){auto& e=endpoints[i];
+        e.effectiveDpr=windows[i]->effectiveDevicePixelRatio();e.windowDpr=windows[i]->devicePixelRatio();
+        e.rootSize=roots[i]->size();e.vectorSize=plots[i]->size();e.windowSize=windows[i]->size();
+        e.scenePixelSize={qRound(e.windowSize.width()*e.effectiveDpr),qRound(e.windowSize.height()*e.effectiveDpr)};
+    }
+    producer.stop();beat.stop();safety.stop();
+    require(!safetyExpired&&sampleEndNs>0,"bounded probe lifetime expired before normal completion");
+    if(nextSupply<=deadlineEndNs)missed+=quint64((deadlineEndNs-nextSupply)/periodNs+1);
+return serialize_topology<plotCount,Samples>(app,topology,fps,swapInterval,geometryPath,styles,scenes,host,containers,nativeViews,roots,sharedView,connections,samples,supplies,missed,generation,publishing,lateness,heartbeat,sampleHostDprStart,effectiveDprStart,endpoints,stageEndpoints,cpuStart,sampleEndNs,cpuEnd,sampleHostDpr);
+}
+
+template<int plotCount,size_t Samples>
+QJsonObject collect_topology(auto& app,auto& topology,auto& fps,auto& durationMs,auto& swapInterval,auto& geometryPath,auto& styles,auto& periodNs,auto& scenes,auto& measuring,auto& host,auto& plots,auto& containers,auto& nativeViews,auto& windows,auto& roots,auto& sharedView,auto& connections,auto& samples,auto& clock,auto& nextSupply,auto& nextHeartbeat,auto& supplies,auto& missed,auto& generation,auto& publishing,auto& lateness,auto& heartbeat,auto& producer,auto& beat,auto& end,auto& safety,auto& arm,auto& vectorUpdates,auto& paintStart,auto& uniqueStart,auto& sampleHostDprStart,auto& effectiveDprStart,auto& endpoints,auto& stageEndpoints,auto& cpuStart,auto& sampleClock,auto& loop,auto& safetyExpired) {
+    QTimer::singleShot(warmupMs,&host,[&]{
+        for(int i=0;i<plotCount;++i){paintStart[i]=vectorUpdates(plots[i]);uniqueStart[i]=plots[i]->consumedPresentationCount();}
+        sampleHostDprStart=host.devicePixelRatioF();
+        for(int i=0;i<plotCount;++i)effectiveDprStart[i]=windows[i]->effectiveDevicePixelRatio();
+        core::perf::enabled=true;cpuStart=processCpu();sampleClock.start();measuring=true;app.measuring=true;
+        nextSupply=clock.nsecsElapsed()+periodNs;nextHeartbeat=clock.nsecsElapsed()+10000000;arm();beat.start();end.start(durationMs);
+    });
+    QObject::connect(&end,&QTimer::timeout,&loop,&QEventLoop::quit);
+    arm();beat.start();loop.exec();
+    measuring=false;app.measuring=false;core::perf::enabled=false;
+    const auto sampleEndNs=sampleClock.isValid()?sampleClock.nsecsElapsed():0;
+    const auto cpuEnd=processCpu();
+    const auto deadlineEndNs=clock.nsecsElapsed();
+    // Capture every raw counter before allocating/serializing any report data.
+    for(int i=0;i<plotCount;++i){auto& e=endpoints[i];const auto& s=scenes[topology=="shared"?0:i];
+        e.unique=plots[i]->consumedPresentationCount()-uniqueStart[i];e.paints=vectorUpdates(plots[i])-paintStart[i];
+        e.completed=s.completed.load();e.totalNs=s.totalNs.load();e.maxNs=s.maxNs.load();
+        e.syncCompleted=s.syncCompleted.load();e.syncTotalNs=s.syncTotalNs.load();e.syncMaxNs=s.syncMaxNs.load();
+        e.engine=plots[i]->paintEngineType();e.samples=plots[i]->paintSamples();
+    }
+    for(size_t i=0;i<stageEndpoints.size();++i){const auto& source=core::perf::counters[i];stageEndpoints[i]={source.count.load(),source.total.load(),source.maximum.load()};}
+return capture_topology_geometry<plotCount,Samples>(app,topology,fps,swapInterval,geometryPath,styles,periodNs,scenes,host,plots,containers,nativeViews,windows,roots,sharedView,connections,samples,nextSupply,supplies,missed,generation,publishing,lateness,heartbeat,producer,beat,safety,sampleHostDprStart,effectiveDprStart,endpoints,stageEndpoints,cpuStart,safetyExpired,sampleEndNs,cpuEnd,deadlineEndNs);
+}
+
+template<int plotCount,size_t Samples>
+void generate_probe_values(auto& pcm,auto& fft,auto& coefficients,auto& samples,auto now) {
+        if constexpr(plotCount==1){
+            for(size_t i=0;i<pcm.size();++i){double value=0;for(int tone=1;tone<=8;++tone)value+=.08*std::sin(tone*i*.05+now/1e9*(.6+.1*tone));pcm[i]=float(value);}
+            require(fft.process(pcm,coefficients),"FFT processing failed");
+            // Display a fixed amplitude range [0, .1] using the common normalized mapping.
+            for(size_t i=0;i<samples.size();++i)samples[i]=20.*coefficients[i]-1.;
+        }else{
+            for(size_t i=0;i<samples.size();++i){double value=0;for(int tone=1;tone<=8;++tone)value+=.08*std::sin(tone*i*.05+now/1e9*(.6+.1*tone));samples[i]=value;}
+        }
+}
+
+template<int plotCount,size_t Samples>
+void supply_probe(auto& clock,auto& pcm,auto& fft,auto& coefficients,auto& samples,auto& publishOne,auto& measuring,auto& supplies,auto& generation,auto& publishing,auto& lateness,auto& nextSupply,auto& periodNs,auto& missed,auto& arm) {
+
+        const auto now=clock.nsecsElapsed();const auto start=core::perf::now();
+        generate_probe_values<plotCount,Samples>(pcm,fft,coefficients,samples,now);
+        const auto generated=core::perf::now();
+        for(int i=0;i<plotCount;++i)publishOne(i);
+        const auto published=core::perf::now();
+        if(measuring){++supplies;generation.push_back((generated-start)/1e6);publishing.push_back((published-generated)/1e6);lateness.push_back(std::max(0.,double(now-nextSupply)/1e6));}
+        nextSupply+=periodNs;
+        if(nextSupply<=clock.nsecsElapsed()){const auto skipped=(clock.nsecsElapsed()-nextSupply)/periodNs+1;if(measuring)missed+=quint64(skipped);nextSupply+=skipped*periodNs;}
+        arm();
+    }
+
+template<int plotCount,size_t Samples>
+QJsonObject measure_topology(auto& app,auto& topology,auto& fps,auto& durationMs,auto& swapInterval,auto& geometryPath,auto& styles,auto& periodNs,auto& scenes,auto& measuring,auto& host,auto& plots,auto& containers,auto& nativeViews,auto& windows,auto& roots,auto& sharedView,auto& connections,auto& samples,auto& fft,auto& pcm,auto& coefficients,auto& publishOne) {
+    QElapsedTimer clock;clock.start();
+    qint64 nextSupply=periodNs,nextHeartbeat=10000000;
+    quint64 supplies=0,missed=0;
+    std::vector<double> generation,publishing,lateness,heartbeat;
+    const size_t capacity=size_t(durationMs*fps/1000+100);
+    generation.reserve(capacity);publishing.reserve(capacity);lateness.reserve(capacity);heartbeat.reserve(size_t(durationMs/10+100));
+    QTimer producer,beat,end,safety;producer.setSingleShot(true);producer.setTimerType(Qt::PreciseTimer);
+    beat.setInterval(10);beat.setTimerType(Qt::PreciseTimer);end.setSingleShot(true);
+    const auto arm=[&]{producer.start(int(std::max<qint64>(1,(nextSupply-clock.nsecsElapsed()+999999)/1000000)));};
+    QObject::connect(&producer,&QTimer::timeout,&host,[&]{supply_probe<plotCount,Samples>(clock,pcm,fft,coefficients,samples,publishOne,measuring,supplies,generation,publishing,lateness,nextSupply,periodNs,missed,arm);});
+    QObject::connect(&beat,&QTimer::timeout,&host,[&]{const auto now=clock.nsecsElapsed();if(measuring)heartbeat.push_back(std::max(0.,double(now-nextHeartbeat)/1e6));nextHeartbeat=now+10000000;});
+    const auto vectorUpdates=[](VectorPlotItem* plot){
+        auto* geometry=qobject_cast<VectorGeometryItem*>(plot);
+        return plot->paintCount()+(geometry?geometry->geometryUpdateCount():0);
+    };
+    std::array<quint64,plotCount> paintStart{},uniqueStart{};
+    qreal sampleHostDprStart=0;
+    std::array<qreal,plotCount> effectiveDprStart{};
+    struct Endpoints {
+        quint64 paints=0,unique=0,completed=0,totalNs=0,maxNs=0,syncCompleted=0,syncTotalNs=0,syncMaxNs=0;int engine=-1,samples=-1;
+        qreal effectiveDpr=0,windowDpr=0;QSizeF rootSize,vectorSize;QSize windowSize,scenePixelSize;
+    };
+    std::array<Endpoints,plotCount> endpoints{};
+    struct StageEndpoint {quint64 count=0,total=0,maximum=0;};
+    std::array<StageEndpoint,static_cast<size_t>(core::perf::Stage::Count)> stageEndpoints{};
+    ProcessCpu cpuStart;
+    QElapsedTimer sampleClock;QEventLoop loop;
+    bool safetyExpired=false;safety.setSingleShot(true);
+    QObject::connect(&safety,&QTimer::timeout,&loop,[&]{safetyExpired=true;loop.quit();});
+    safety.start(warmupMs+durationMs+5000);
+return collect_topology<plotCount,Samples>(app,topology,fps,durationMs,swapInterval,geometryPath,styles,periodNs,scenes,measuring,host,plots,containers,nativeViews,windows,roots,sharedView,connections,samples,clock,nextSupply,nextHeartbeat,supplies,missed,generation,publishing,lateness,heartbeat,producer,beat,end,safety,arm,vectorUpdates,paintStart,uniqueStart,sampleHostDprStart,effectiveDprStart,endpoints,stageEndpoints,cpuStart,sampleClock,loop,safetyExpired);
+}
+
+template<int plotCount,size_t Samples>
+void connect_scene_counters(auto& connections,auto& window,auto& host,auto& scenes,auto& measuring,auto& i) {
+        connections.append(QObject::connect(window,&QQuickWindow::beforeSynchronizing,&host,[&,i]{
+            scenes[i].syncStartedInSample=measuring.load(std::memory_order_relaxed);scenes[i].syncBegin=core::perf::now();
+        },Qt::DirectConnection));
+        connections.append(QObject::connect(window,&QQuickWindow::afterSynchronizing,&host,[&,i]{
+            if(!measuring.load(std::memory_order_relaxed)||!scenes[i].syncStartedInSample.load(std::memory_order_relaxed))return;
+            auto& scene=scenes[i];const auto elapsed=core::perf::now()-scene.syncBegin.load(std::memory_order_relaxed);
+            ++scene.syncCompleted;scene.syncTotalNs.fetch_add(elapsed);
+            auto maximum=scene.syncMaxNs.load();while(elapsed>maximum&&!scene.syncMaxNs.compare_exchange_weak(maximum,elapsed)){}
+        },Qt::DirectConnection));
+        connections.append(QObject::connect(window,&QQuickWindow::beforeRendering,&host,[&,i]{
+            scenes[i].renderStartedInSample=measuring.load(std::memory_order_relaxed);scenes[i].begin=core::perf::now();
+        },Qt::DirectConnection));
+        connections.append(QObject::connect(window,&QQuickWindow::afterRendering,&host,[&,i]{
+            scenes[i].renderer.capture();
+            if(!measuring.load(std::memory_order_relaxed)||!scenes[i].renderStartedInSample.load(std::memory_order_relaxed))return;
+            const auto elapsed=core::perf::now()-scenes[i].begin.load(std::memory_order_relaxed);
+            auto& scene=scenes[i];++scene.completed;scene.totalNs.fetch_add(elapsed);
+            auto maximum=scene.maxNs.load();while(elapsed>maximum&&!scene.maxNs.compare_exchange_weak(maximum,elapsed)){}
+        },Qt::DirectConnection));
+    }
+
+template<int plotCount,size_t Samples>
+void initialize_plot(auto& topology,auto& scenes,auto& measuring,auto& host,auto& grid,auto& models,auto& plots,auto& containers,auto& nativeViews,auto& windows,auto& roots,auto& sharedView,auto& sharedContainer,auto& connections,auto& publishOne,auto& i) {
+
         models[i]=new QuickPlotModel(&host);publishOne(i);
         QQuickWindow* window=nullptr;QQuickItem* root=nullptr;
         if(topology=="shared"){
@@ -188,163 +319,80 @@ QJsonObject run(ProbeApplication& app,const QString& topology,int fps,int durati
         require(root,"QML root absent");
         windows[i]=window;
         roots[i]=root;
-        plots[i]=root->findChild<VectorPlotItem*>("numericVectorPlot");require(plots[i],"actual VectorPlotItem absent");
+        plots[i]=root->template findChild<VectorPlotItem*>("numericVectorPlot");require(plots[i],"actual VectorPlotItem absent");
         if(topology!="shared"){containers[i]->setFocusPolicy(Qt::NoFocus);grid->addWidget(containers[i],i/2,i%2);}
         // A shared scene has exactly one callback/counter set. Per-plot reports
         // refer to scene zero rather than manufacturing seven scene completions.
-        if(topology=="shared"&&i!=0)continue;
-        connections.append(QObject::connect(window,&QQuickWindow::beforeSynchronizing,&host,[&,i]{
-            scenes[i].syncStartedInSample=measuring.load(std::memory_order_relaxed);scenes[i].syncBegin=core::perf::now();
-        },Qt::DirectConnection));
-        connections.append(QObject::connect(window,&QQuickWindow::afterSynchronizing,&host,[&,i]{
-            if(!measuring.load(std::memory_order_relaxed)||!scenes[i].syncStartedInSample.load(std::memory_order_relaxed))return;
-            auto& scene=scenes[i];const auto elapsed=core::perf::now()-scene.syncBegin.load(std::memory_order_relaxed);
-            ++scene.syncCompleted;scene.syncTotalNs.fetch_add(elapsed);
-            auto maximum=scene.syncMaxNs.load();while(elapsed>maximum&&!scene.syncMaxNs.compare_exchange_weak(maximum,elapsed)){}
-        },Qt::DirectConnection));
-        connections.append(QObject::connect(window,&QQuickWindow::beforeRendering,&host,[&,i]{
-            scenes[i].renderStartedInSample=measuring.load(std::memory_order_relaxed);scenes[i].begin=core::perf::now();
-        },Qt::DirectConnection));
-        connections.append(QObject::connect(window,&QQuickWindow::afterRendering,&host,[&,i]{
-            scenes[i].renderer.capture();
-            if(!measuring.load(std::memory_order_relaxed)||!scenes[i].renderStartedInSample.load(std::memory_order_relaxed))return;
-            const auto elapsed=core::perf::now()-scenes[i].begin.load(std::memory_order_relaxed);
-            auto& scene=scenes[i];++scene.completed;scene.totalNs.fetch_add(elapsed);
-            auto maximum=scene.maxNs.load();while(elapsed>maximum&&!scene.maxNs.compare_exchange_weak(maximum,elapsed)){}
-        },Qt::DirectConnection));
+        if(topology=="shared"&&i!=0)return;
+connect_scene_counters<plotCount,Samples>(connections,window,host,scenes,measuring,i);
+}
+
+template<int plotCount,size_t Samples>
+void initialize_shared_scene(auto& host,auto& sharedView,auto& sharedContainer,auto& grid,auto& geometryGrid,auto& geometryHost,auto& roots) {
+
+        sharedView=new QQuickView;
+        sharedView->setFlags(sharedView->flags()|Qt::WindowDoesNotAcceptFocus);
+        sharedView->setFormat(QSurfaceFormat::defaultFormat());
+        auto* bridge=new ui::quick::UiBridge(sharedView);
+        sharedView->rootContext()->setContextProperty("quickUi",bridge);
+        sharedView->setColor(bridge->palette().value("window").value<QColor>());
+        sharedContainer=QWidget::createWindowContainer(sharedView,&host);
+        sharedContainer->setFocusPolicy(Qt::NoFocus);grid->addWidget(sharedContainer,0,0);
+        geometryGrid=new QGridLayout(&geometryHost);geometryGrid->setContentsMargins(0,0,0,0);geometryGrid->setSpacing(6);
+        for(int i=0;i<plotCount;++i)geometryGrid->addWidget(new QWidget(&geometryHost),i/2,i%2);
+        const auto layoutShared=[&]{
+            geometryHost.resize(sharedView->size());geometryGrid->setGeometry(geometryHost.rect());
+            for(int i=0;i<plotCount;++i)if(roots[i]){
+                const auto cell=geometryGrid->cellRect(i/2,i%2);roots[i]->setPosition(cell.topLeft());roots[i]->setSize(cell.size());
+            }
+        };
+        QObject::connect(sharedView,&QQuickWindow::widthChanged,&geometryHost,layoutShared);
+        QObject::connect(sharedView,&QQuickWindow::heightChanged,&geometryHost,layoutShared);
     }
+
+template<int plotCount, size_t Samples>
+QJsonObject run(ProbeApplication& app,const QString& topology,int fps,int durationMs,int swapInterval,const QString& geometryPath){
+    const QStringList styles{"line","line","line","points","points","bars","bars"};
+    const qint64 periodNs=1000000000LL/fps;
+    std::array<SceneCounters,plotCount> scenes;
+    std::atomic<bool> measuring{false};
+    QWidget host;
+    host.setAttribute(Qt::WA_ShowWithoutActivating);
+    host.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+    host.setWindowTitle("Owned render topology probe");host.resize(plotCount==1?1332:1600,plotCount==1?825:1000);
+    auto* grid=new QGridLayout(&host);grid->setContentsMargins(0,0,0,0);grid->setSpacing(6);
+    std::array<QuickPlotModel*,plotCount> models{};
+    std::array<VectorPlotItem*,plotCount> plots{};
+    std::array<QWidget*,plotCount> containers{};
+    std::array<QQuickView*,plotCount> nativeViews{};
+    std::array<QQuickWindow*,plotCount> windows{};
+    std::array<QQuickItem*,plotCount> roots{};
+    QQuickView* sharedView=nullptr;QWidget* sharedContainer=nullptr;
+    // This hidden widget is only a layout calculator, never a rendered host.
+    // It preserves the same QWidget grid rounding as the seven-window arms.
+    QWidget geometryHost;QGridLayout* geometryGrid=nullptr;
+    if(topology=="shared"){ initialize_shared_scene<plotCount,Samples>(host,sharedView,sharedContainer,grid,geometryGrid,geometryHost,roots); }
+    QList<QMetaObject::Connection> connections;
+    std::array<double,Samples> samples{};
+    dsp_core::MagnitudeSpectrum fft;
+    std::vector<float> pcm, coefficients;
+    if constexpr(plotCount==1){
+        require(fft.prepare(Samples*2),"FFT preparation failed");
+        pcm.resize(Samples*2);coefficients.resize(Samples);
+    }
+    const auto publishOne=[&](int i){
+        // Both arms build one owned normalized snapshot for each plot. Only the
+        // geometry representation/handoff differs; no QML geometry is omitted.
+        if(geometryPath=="typed")models[i]->publishVector(snapshot(styles[i],samples,false),typedPoints(samples));
+        else models[i]->publish(snapshot(styles[i],samples,true));
+    };
+    for(int i=0;i<plotCount;++i){ initialize_plot<plotCount,Samples>(topology,scenes,measuring,host,grid,models,plots,containers,nativeViews,windows,roots,sharedView,sharedContainer,connections,publishOne,i); }
     host.show();
     if(sharedView){
         geometryHost.resize(sharedView->size());geometryGrid->setGeometry(geometryHost.rect());
         for(int i=0;i<plotCount;++i){const auto cell=geometryGrid->cellRect(i/2,i%2);roots[i]->setPosition(cell.topLeft());roots[i]->setSize(cell.size());}
     }
-    QElapsedTimer clock;clock.start();
-    qint64 nextSupply=periodNs,nextHeartbeat=10000000;
-    quint64 supplies=0,missed=0;
-    std::vector<double> generation,publishing,lateness,heartbeat;
-    const size_t capacity=size_t(durationMs*fps/1000+100);
-    generation.reserve(capacity);publishing.reserve(capacity);lateness.reserve(capacity);heartbeat.reserve(size_t(durationMs/10+100));
-    QTimer producer,beat,end,safety;producer.setSingleShot(true);producer.setTimerType(Qt::PreciseTimer);
-    beat.setInterval(10);beat.setTimerType(Qt::PreciseTimer);end.setSingleShot(true);
-    const auto arm=[&]{producer.start(int(std::max<qint64>(1,(nextSupply-clock.nsecsElapsed()+999999)/1000000)));};
-    QObject::connect(&producer,&QTimer::timeout,&host,[&]{
-        const auto now=clock.nsecsElapsed();const auto start=core::perf::now();
-        if constexpr(plotCount==1){
-            for(size_t i=0;i<pcm.size();++i){double value=0;for(int tone=1;tone<=8;++tone)value+=.08*std::sin(tone*i*.05+now/1e9*(.6+.1*tone));pcm[i]=float(value);}
-            require(fft.process(pcm,coefficients),"FFT processing failed");
-            // Display a fixed amplitude range [0, .1] using the common normalized mapping.
-            for(size_t i=0;i<samples.size();++i)samples[i]=20.*coefficients[i]-1.;
-        }else{
-            for(size_t i=0;i<samples.size();++i){double value=0;for(int tone=1;tone<=8;++tone)value+=.08*std::sin(tone*i*.05+now/1e9*(.6+.1*tone));samples[i]=value;}
-        }
-        const auto generated=core::perf::now();
-        for(int i=0;i<plotCount;++i)publishOne(i);
-        const auto published=core::perf::now();
-        if(measuring){++supplies;generation.push_back((generated-start)/1e6);publishing.push_back((published-generated)/1e6);lateness.push_back(std::max(0.,double(now-nextSupply)/1e6));}
-        nextSupply+=periodNs;
-        if(nextSupply<=clock.nsecsElapsed()){const auto skipped=(clock.nsecsElapsed()-nextSupply)/periodNs+1;if(measuring)missed+=quint64(skipped);nextSupply+=skipped*periodNs;}
-        arm();
-    });
-    QObject::connect(&beat,&QTimer::timeout,&host,[&]{const auto now=clock.nsecsElapsed();if(measuring)heartbeat.push_back(std::max(0.,double(now-nextHeartbeat)/1e6));nextHeartbeat=now+10000000;});
-    const auto vectorUpdates=[](VectorPlotItem* plot){
-        auto* geometry=qobject_cast<VectorGeometryItem*>(plot);
-        return plot->paintCount()+(geometry?geometry->geometryUpdateCount():0);
-    };
-    std::array<quint64,plotCount> paintStart{},uniqueStart{};
-    qreal sampleHostDprStart=0;
-    std::array<qreal,plotCount> effectiveDprStart{};
-    struct Endpoints {
-        quint64 paints=0,unique=0,completed=0,totalNs=0,maxNs=0,syncCompleted=0,syncTotalNs=0,syncMaxNs=0;int engine=-1,samples=-1;
-        qreal effectiveDpr=0,windowDpr=0;QSizeF rootSize,vectorSize;QSize windowSize,scenePixelSize;
-    };
-    std::array<Endpoints,plotCount> endpoints{};
-    struct StageEndpoint {quint64 count=0,total=0,maximum=0;};
-    std::array<StageEndpoint,static_cast<size_t>(core::perf::Stage::Count)> stageEndpoints{};
-    ProcessCpu cpuStart;
-    QElapsedTimer sampleClock;QEventLoop loop;
-    bool safetyExpired=false;safety.setSingleShot(true);
-    QObject::connect(&safety,&QTimer::timeout,&loop,[&]{safetyExpired=true;loop.quit();});
-    safety.start(warmupMs+durationMs+5000);
-    QTimer::singleShot(warmupMs,&host,[&]{
-        for(int i=0;i<plotCount;++i){paintStart[i]=vectorUpdates(plots[i]);uniqueStart[i]=plots[i]->consumedPresentationCount();}
-        sampleHostDprStart=host.devicePixelRatioF();
-        for(int i=0;i<plotCount;++i)effectiveDprStart[i]=windows[i]->effectiveDevicePixelRatio();
-        core::perf::enabled=true;cpuStart=processCpu();sampleClock.start();measuring=true;app.measuring=true;
-        nextSupply=clock.nsecsElapsed()+periodNs;nextHeartbeat=clock.nsecsElapsed()+10000000;arm();beat.start();end.start(durationMs);
-    });
-    QObject::connect(&end,&QTimer::timeout,&loop,&QEventLoop::quit);
-    arm();beat.start();loop.exec();
-    measuring=false;app.measuring=false;core::perf::enabled=false;
-    const auto sampleEndNs=sampleClock.isValid()?sampleClock.nsecsElapsed():0;
-    const auto cpuEnd=processCpu();
-    const auto deadlineEndNs=clock.nsecsElapsed();
-    // Capture every raw counter before allocating/serializing any report data.
-    for(int i=0;i<plotCount;++i){auto& e=endpoints[i];const auto& s=scenes[topology=="shared"?0:i];
-        e.unique=plots[i]->consumedPresentationCount()-uniqueStart[i];e.paints=vectorUpdates(plots[i])-paintStart[i];
-        e.completed=s.completed.load();e.totalNs=s.totalNs.load();e.maxNs=s.maxNs.load();
-        e.syncCompleted=s.syncCompleted.load();e.syncTotalNs=s.syncTotalNs.load();e.syncMaxNs=s.syncMaxNs.load();
-        e.engine=plots[i]->paintEngineType();e.samples=plots[i]->paintSamples();
-    }
-    for(size_t i=0;i<stageEndpoints.size();++i){const auto& source=core::perf::counters[i];stageEndpoints[i]={source.count.load(),source.total.load(),source.maximum.load()};}
-    // Read visible-window geometry/DPR before hiding or disposing any QML item.
-    // The effective ratio includes QuickWidget's render-control redirection.
-    const qreal sampleHostDpr=host.devicePixelRatioF();
-    for(int i=0;i<plotCount;++i){auto& e=endpoints[i];
-        e.effectiveDpr=windows[i]->effectiveDevicePixelRatio();e.windowDpr=windows[i]->devicePixelRatio();
-        e.rootSize=roots[i]->size();e.vectorSize=plots[i]->size();e.windowSize=windows[i]->size();
-        e.scenePixelSize={qRound(e.windowSize.width()*e.effectiveDpr),qRound(e.windowSize.height()*e.effectiveDpr)};
-    }
-    producer.stop();beat.stop();safety.stop();
-    require(!safetyExpired&&sampleEndNs>0,"bounded probe lifetime expired before normal completion");
-    if(nextSupply<=deadlineEndNs)missed+=quint64((deadlineEndNs-nextSupply)/periodNs+1);
-    const double seconds=sampleEndNs/1e9;
-    const bool cpuAvailable=cpuStart.available&&cpuEnd.available&&cpuEnd.ticks100ns>=cpuStart.ticks100ns;
-    const double cpuMs=cpuAvailable?(cpuEnd.ticks100ns-cpuStart.ticks100ns)/10000.:0.;
-    QJsonArray resultPlots;bool valid=true;
-    const bool producerMet=supplies/seconds>=fps*.95 && missed<=.01*double(supplies+missed);
-    bool targetMet=producerMet;
-    for(int i=0;i<plotCount;++i){
-        const auto& e=endpoints[i];const auto unique=e.unique,painted=e.paints,completed=e.completed;
-        const bool met=producerMet&&unique/seconds>=fps*.95;targetMet&=met;valid&=painted>0&&unique>0&&completed>0;
-        const int sceneIndex=topology=="shared"?0:i;
-        resultPlots.append(QJsonObject{{"style",styles[i]},{"logical_size",QJsonArray{e.rootSize.width(),e.rootSize.height()}},
-            {"scene_counter_index",sceneIndex},{"scene_counter_shared",topology=="shared"},
-            {"vector_size",QJsonArray{e.vectorSize.width(),e.vectorSize.height()}},
-            {"measured_dpr",e.effectiveDpr},{"measured_dpr_start",effectiveDprStart[i]},{"window_dpr",e.windowDpr},
-            {"scene_logical_size",QJsonArray{e.windowSize.width(),e.windowSize.height()}},
-            {"scene_pixel_size_from_dpr",QJsonArray{e.scenePixelSize.width(),e.scenePixelSize.height()}},
-            {"scene_submissions",double(completed)},{"scene_submissions_fps",completed/seconds},
-            {"actual_vector_updates",double(painted)},{"unique_presentations_drawn",double(unique)},{"unique_presentations_fps",unique/seconds},
-            {"paint_engine_type",e.engine},{"actual_paint_samples",e.samples},
-            {"scene_render_mean_ms",completed?e.totalNs/double(completed)/1e6:0.},{"scene_render_max_ms",e.maxNs/1e6},
-            {"scene_sync_count",double(e.syncCompleted)},
-            {"scene_sync_mean_ms",e.syncCompleted?e.syncTotalNs/double(e.syncCompleted)/1e6:0.},
-            {"scene_sync_max_ms",e.syncMaxNs/1e6},
-            {"renderer",scenes[sceneIndex].renderer.snapshot()},{"target_met",met}});
-    }
-    for(const auto& connection:connections)QObject::disconnect(connection);
-    host.hide();
-    // Dispose QML bindings while the presentation models are still alive.
-    for(int i=0;i<plotCount;++i){
-        if(sharedView){delete roots[i];roots[i]=nullptr;}
-        else if(nativeViews[i])nativeViews[i]->setSource(QUrl{});
-        else static_cast<QQuickWidget*>(containers[i])->setSource(QUrl{});
-    }
-    QJsonArray stages;
-    for(size_t i=0;i<stageEndpoints.size();++i){const auto& c=stageEndpoints[i];if(c.count)stages.append(QJsonObject{{"stage",core::perf::names[i]},{"count",double(c.count)},{"mean_ms",c.total/double(c.count)/1e6},{"max_ms",c.maximum/1e6}});}
-    return {{"fixture_revision",2},{"sample_count",int(Samples)},{"fft_input_size",plotCount==1?int(Samples*2):0},{"host",topology},{"geometry_path",geometryPath},{"plots",resultPlots},{"distinct_scene_count",topology=="shared"?1:plotCount},{"target_fps",fps},{"requested_samples",8},{"requested_swap_interval",swapInterval},{"warmup_ms",warmupMs},{"sample_seconds",seconds},
-        {"live_supplies",double(supplies)},{"supplied_hz",supplies/seconds},{"missed_supply_deadlines",double(missed)},
-        {"scheduled_supply_deadlines",double(supplies+missed)},{"producer_target_met",producerMet},{"target_met",targetMet},{"valid",valid},
-        {"generation_elapsed",distribution(generation)},{"snapshot_publish_elapsed",distribution(publishing)},{"supply_lateness",distribution(lateness)},
-        {"geometry_path_scope","Each plot constructs the same sample_count normalized points inside snapshot_publish_elapsed; typed uses QPolygonF/publishVector and metadata without points, variant uses point QVariantMaps/publish fallback. No cross-plot source geometry sharing in either arm."},
-        {"gui_heartbeat_lateness",distribution(heartbeat)},{"gui_events",double(app.events)},{"gui_event_elapsed_total_ms",app.totalNs/1e6},{"gui_event_elapsed_max_ms",app.maxNs/1e6},
-        {"process_cpu_available",cpuAvailable},{"process_cpu_ms",cpuAvailable?QJsonValue(cpuMs):QJsonValue(QJsonValue::Null)},
-        {"average_busy_logical_cores",cpuAvailable?QJsonValue(cpuMs/(seconds*1000.)):QJsonValue(QJsonValue::Null)},
-        {"process_cpu_scope","Windows GetProcessTimes process-wide kernel+user CPU time over the measured sample; includes all owned process threads. Average busy logical cores is CPU time divided by wall time, not system-wide CPU percent. Unavailable on other platforms."},
-        {"stage_elapsed",stages},{"dpr",sampleHostDpr},{"dpr_start",sampleHostDprStart},{"render_loop_environment",qEnvironmentVariable("QSG_RENDER_LOOP")},
-        {"dpr_scope","Host and per-plot DPR/geometry captured while visible at sample endpoints, before hide or QML teardown. measured_dpr is QQuickWindow::effectiveDevicePixelRatio; window_dpr is QWindow::devicePixelRatio. scene_pixel_size_from_dpr is calculated from logical scene size and effective DPR, not an observed framebuffer allocation."},
-        {"scope",plotCount==1?"One line Plot2D.qml instance, 2048 coefficients of a real portable 4096-sample FFT from eight varying synthetic tones. Fixed amplitude range. Isolates host topology; excludes GraphPanel, docks, audio capture, executor and surface3D. Separate process per host required.":"Seven identical Plot2D.qml instances: three line, two points, two bars; same 256 samples from eight varying synthetic tones. widget/window use seven independent scenes; shared uses one native scene and seven per-plot contexts. Shared per-plot scene fields repeat scene zero, not seven independent completions; unique vector counters remain per item. Isolates vector host topology; excludes GraphPanel, DSP, docks, surface3D, image, metrics, audio and desktop capture. Separate process per host is required."},
-        {"counter_scope","afterRendering counts scene submission, not GPU completion or physical presentation. beforeSynchronizing through afterSynchronizing measures the GUI-blocking scene synchronization interval; beforeRendering through afterRendering measures later scene render submission. Vector atomics count geometry updates (or software paints) and one consumed revision per new snapshot; endpoint may include an in-flight warmup revision. Timing fields are elapsed wall time, including waits, not CPU utilization; GUI event totals can include nested event delivery. Native render threading is observed via render_thread_is_gui."}};
+return measure_topology<plotCount,Samples>(app,topology,fps,durationMs,swapInterval,geometryPath,styles,periodNs,scenes,measuring,host,plots,containers,nativeViews,windows,roots,sharedView,connections,samples,fft,pcm,coefficients,publishOne);
 }
 }
 int main(int argc,char** argv){

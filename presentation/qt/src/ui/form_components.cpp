@@ -1,4 +1,5 @@
 #include "core_app/ui/field_row.h"
+#include "core_app/ui/wrapping_button.h"
 #include "core_app/ui/validation_message.h"
 #include "core_app/ui/collapsible_section.h"
 #include "core_app/ui/slider_value_control.h"
@@ -8,8 +9,45 @@
 #include <QToolButton>
 #include <QSlider>
 #include <QPushButton>
+#include <QStylePainter>
+#include <QStyleOptionButton>
+#include <QStyle>
 
 namespace ui {
+WrappingButton::WrappingButton(const QString& text,QWidget* parent) : QPushButton(text,parent) {
+    auto policy=QSizePolicy(QSizePolicy::Preferred,QSizePolicy::Preferred);
+    policy.setHeightForWidth(true);
+    setSizePolicy(policy);
+}
+QSize WrappingButton::buttonSize(const QSize& contents) const {
+    QStyleOptionButton option;initStyleOption(&option);
+    return style()->sizeFromContents(QStyle::CT_PushButton,&option,contents,this);
+}
+QSize WrappingButton::sizeHint() const {
+    return buttonSize(fontMetrics().size(Qt::TextShowMnemonic,text()));
+}
+QSize WrappingButton::minimumSizeHint() const {
+    int width=0;
+    const auto words=text().split(' ',Qt::SkipEmptyParts);
+    for(const auto& word:words)width=qMax(width,fontMetrics().size(Qt::TextShowMnemonic,word).width());
+    return buttonSize(QSize(width,fontMetrics().height()));
+}
+int WrappingButton::heightForWidth(int width) const {
+    QStyleOptionButton option;initStyleOption(&option);option.rect=QRect(0,0,width,1000);
+    const auto contents=style()->subElementRect(QStyle::SE_PushButtonContents,&option,this);
+    const auto bounds=fontMetrics().boundingRect(QRect(0,0,qMax(1,contents.width()),1000),Qt::TextWordWrap|Qt::TextShowMnemonic,text());
+    return buttonSize(bounds.size()).height();
+}
+void WrappingButton::paintEvent(QPaintEvent*) {
+    QStylePainter painter(this);QStyleOptionButton option;initStyleOption(&option);
+    const auto title=option.text;option.text.clear();
+    painter.drawControl(QStyle::CE_PushButton,option);
+    auto contents=style()->subElementRect(QStyle::SE_PushButtonContents,&option,this);
+    if(option.state.testFlag(QStyle::State_Sunken))contents.translate(style()->pixelMetric(QStyle::PM_ButtonShiftHorizontal,&option,this),style()->pixelMetric(QStyle::PM_ButtonShiftVertical,&option,this));
+    int flags=Qt::AlignCenter|Qt::TextWordWrap|Qt::TextShowMnemonic;
+    if(!style()->styleHint(QStyle::SH_UnderlineShortcut,&option,this))flags|=Qt::TextHideMnemonic;
+    style()->drawItemText(&painter,contents,flags,option.palette,option.state.testFlag(QStyle::State_Enabled),title,QPalette::ButtonText);
+}
 ValidationMessage::ValidationMessage(QWidget *parent) : QLabel(parent) {
     setObjectName("validationMessage");
     setWordWrap(true);

@@ -121,6 +121,8 @@ class GuiPresenter final : public QObject {
     void bind_numeric_frame_handler(const QString& selected,quint64 generation);
     void bind_numeric_history_handler(const QString& selected,quint64 generation);
     void bind_numeric_snapshot_handler(const QString& selected,quint64 generation);
+    void dispatch_queued_graph();
+    void accept_applied_graph(const pipeline::EngineReply&);
     void accept_graph_reply(const pipeline::EngineReply&);
     void publish_component_statuses(const pipeline::EngineSnapshot&,bool incarnation_changed);
     void restore_selected_device_document();

@@ -15,8 +15,10 @@ public:
      std::optional<desktop::SerialEndpoint> serial={},QObject* parent=nullptr);
  ~NumericDesktopHost() override;
  NumericEngine* local_engine() const;
- // Local capability check is serialized on the worker. Remote unknown capabilities
- // remain authoritative at Apply; this query does not impose the desktop profile.
+ // Owner-thread local capability check reads the immutable execution profile
+ // without waiting for the worker. The host must outlive the synchronous call.
+ // Remote unknown capabilities remain authoritative at Apply; this query does
+ // not impose the desktop profile.
  domain::ProcessingDiagnostic validate_numeric_node(const domain::ConfiguredProcessingNode&) const;
  // Zero refuses admission before dispatch when all128 completion slots are
  // outstanding. Every admitted nonzero request keeps its correlated reply.

@@ -31,20 +31,26 @@ class ConversionExecution {
         const auto physical=(source.ring.oldest+logical)%source.ring.capacity;row_planes(physical);
         MutableNumericView converted{&contract,output.storage,state.row_planes,{source.actual[1],1},{},std::get<NumericView>(row.frame.payload).coordinates};
         const auto status=node.node.enabled?numeric_kernel_status(dsp_kernels::convert(*node.row_conversion,std::get<NumericView>(row.frame.payload),converted,state.numeric_scratch).status):fill_silence(converted,limits);
-        if(status==Status::ok)copy_time_coordinate(logical,physical);return {status,false};
+        if(status==Status::ok)copy_time_coordinate(logical,physical);
+        return {status,false};
     }
     void retain_history() noexcept {
         state.frames=source.actual[0];state.oldest=source.ring.oldest;state.row_ordinal=origin->ordinal;state.progress=origin->progress;
         state.history_origin=origin->node;state.history_origin_valid=true;
     }
+    ConversionExecutionResult convert_changed_rows(std::size_t changed) noexcept {
+        ConversionExecutionResult result;
+        for(std::size_t logical=source.actual[0]-changed;logical<source.actual[0];++logical){result=convert_row(logical);if(result.status!=Status::ok)break;}
+        return result;
+    }
     ConversionExecutionResult convert_history() noexcept {
         if(!origin)return {Status::unavailable,true};
         const bool rebase=!state.history_origin_valid || state.history_origin!=origin->node || current.stamp.discontinuity || origin->ordinal<state.row_ordinal;
         const auto changed=rebase?source.actual[0]:std::size_t(std::min(std::uint64_t(source.actual[0]),origin->ordinal-state.row_ordinal));
-        ConversionExecutionResult result;
-        for(std::size_t logical=source.actual[0]-changed;logical<source.actual[0];++logical){result=convert_row(logical);if(result.status!=Status::ok)break;}
+        const auto result=convert_changed_rows(changed);
         if(result.reject)return result;
-        if(result.status==Status::ok)retain_history();output.ring.silence_mask={};
+        if(result.status==Status::ok)retain_history();
+        output.ring.silence_mask={};
         if(!source.coordinates.axes[0].empty())output.coordinates.axes[0]={state.numeric_outputs[0].coordinates[0].data()+state.oldest*8,state.frames*8};
         return result;
     }

@@ -213,15 +213,23 @@ void MainWindow::register_navigation_tab_actions(QMenu* navigation) {
     };
     action("Next tab","workspaceNextTab","Alt+Right",[this]{activateAdjacentTab(1);});
     action("Previous tab","workspacePreviousTab","Alt+Left",[this]{activateAdjacentTab(-1);});
-    action("Detach active tab","workspaceDetachTab","Shift+F4",[this]{if(auto *dock=activeDock()) dock->setFloating(true);});
-    action("Hide active panel","workspaceHidePanel","Shift+Escape",[this]{if(auto *dock=activeDock()) dock->hide();});
-    action("Focus Data Flow","workspaceFocusFlow","F12",[this]{
-        auto *flow=_panels.value("dataFlow"); flow->raise(); focusDock(flow);
-    });
-    action("Show or hide Data Flow","workspaceToggleTools","Ctrl+Shift+F12",[this]{
-        auto *flow=_panels.value("dataFlow"); flow->toggleView(flow->isHidden());
-    });
+    action("Detach active tab","workspaceDetachTab","Shift+F4",[this]{detach_active_tab();});
+    action("Hide active panel","workspaceHidePanel","Shift+Escape",[this]{hide_active_panel();});
+    action("Focus Data Flow","workspaceFocusFlow","F12",[this]{focus_data_flow();});
+    action("Show or hide Data Flow","workspaceToggleTools","Ctrl+Shift+F12",[this]{toggle_data_flow();});
     action("Switch workspace tab…","workspaceSwitcher","Ctrl+Tab",[this]{show_workspace_switcher();});
+}
+
+void MainWindow::detach_active_tab() {if(auto* dock=activeDock())dock->setFloating(true);}
+void MainWindow::hide_active_panel() {if(auto* dock=activeDock())dock->hide();}
+void MainWindow::focus_data_flow() {
+    auto *flow=_panels.value("dataFlow");
+    flow->raise();
+    focusDock(flow);
+}
+void MainWindow::toggle_data_flow() {
+    auto *flow=_panels.value("dataFlow");
+    flow->toggleView(flow->isHidden());
 }
 
 void MainWindow::show_workspace_switcher() {
@@ -784,7 +792,7 @@ void MainWindow::restore_workspace_dock_visibility(const QJsonObject& visibility
            it.value().dock->isClosed()==visibility.value(identity).toBool())
             it.value().dock->toggleView(visibility.value(identity).toBool());
         auto presentation=_application.state().file_configs.ui.graph_views[it.key()].toObject();
-        presentation["open"]=!it.value().dock->isHidden();
+        presentation["open"]=!it.value().dock->isClosed();
         _application.state().file_configs.ui.graph_views[it.key()]=presentation;
     }
 }
@@ -842,6 +850,19 @@ void MainWindow::restore_default_workspace_visibility(const UIApplicationConfig&
     ui.show_window_signal=saved_ui.show_window_signal;
     ui.show_windowed_signal=saved_ui.show_windowed_signal;
     ui.show_window_function=saved_ui.show_window_function;
+    restore_default_node_visibility(saved_ui);
+}
+
+void MainWindow::restore_default_node_visibility(const UIApplicationConfig& saved_ui) {
+    const auto choices=saved_ui.workspace.value("visibility").toObject();
+    // restore_node_views already filters these docks by the loaded device/graph.
+    for(auto it=_node_views.begin();it!=_node_views.end();++it) {
+        const auto stored=choices.value("nodeView_"+it.key());
+        const auto preferences=saved_ui.graph_views.value(it.key()).toObject();
+        const bool open=it->device==_application.device_id() && (stored.isBool()
+            ?stored.toBool():preferences.value("open").toBool(false));
+        if(it->dock->isClosed()==open)it->dock->toggleView(open);
+    }
 }
 
 QMenu *MainWindow::setup_menu_bar_status() {

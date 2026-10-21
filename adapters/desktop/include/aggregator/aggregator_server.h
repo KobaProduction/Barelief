@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QMap>
+#include <QPointer>
 
 #include "abstract/types.h"
 #include "core/network/tcp_packet_socket.h"
@@ -48,11 +49,16 @@ class AggregatorServer final : public TcpBDSPServer {
     QMap<QUuid, QJsonObject> _capabilities;
     void _log_registration_timeout() const;
     void _close_registered_sockets();
+    void _add_registration(TcpBDSPSocket*,const QUuid&,const component_info_t&,uint16_t);
+    bool _session_token_matches(TcpBDSPSocket*,const QUuid&,uint16_t,uint16_t) const;
     bool _restore_registration(TcpBDSPSocket *socket, const QUuid &uuid,
                                const component_info_t &new_info, uint16_t session_token);
     void _update_registered_capabilities(TcpBDSPSocket *socket, const QUuid &uuid,
                                          const component_info_t &new_info);
     void _send_registry_snapshot(TcpBDSPSocket *socket, const QUuid &uuid);
+    void _send_registry_entries(QPointer<TcpBDSPSocket>,const QUuid&,const QHash<QUuid,registered_component_t>&);
+    void _dispatch_registered_packet(BDSP::packet_context_t&,TcpBDSPSocket*,PacketType);
+    bool _decode_state_change(BDSP::packet_context_t&,TcpBDSPSocket*,component_update_state_packet_t&);
     void _receive_capabilities(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket);
     void _receive_registration(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket);
     void _receive_state_change(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket);

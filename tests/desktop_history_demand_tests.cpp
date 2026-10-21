@@ -13,7 +13,11 @@ void* operator new(std::size_t size){if(measuring){++allocations;allocation_byte
 void* operator new[](std::size_t size){return ::operator new(size);}
 void operator delete(void*p)noexcept{std::free(p);}void operator delete[](void*p)noexcept{std::free(p);}
 void operator delete(void*p,std::size_t)noexcept{std::free(p);}void operator delete[](void*p,std::size_t)noexcept{std::free(p);}
-static void measure(std::uint64_t capacity,bool subscribe,std::size_t columns=50){
+static void frequency_coordinates(std::size_t columns,std::vector<std::byte>& frequencyBytes) {
+ for(std::size_t band=0;band<columns;++band){const auto bits=std::bit_cast<std::uint64_t>(double(band+1)*100.);for(std::size_t byte=0;byte<8;++byte)frequencyBytes[band*8+byte]=std::byte((bits>>(byte*8))&255);}
+}
+
+static auto demand_graph(std::uint64_t capacity,std::size_t columns) {
  auto defaults=numeric_default_graph();auto history=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==7;}),sink=*std::find_if(defaults.nodes.begin(),defaults.nodes.end(),[](const auto& n){return n.id==8;});
  auto c=std::get<NumericContract>(history.inputs[0].contract.view());c.shape.extents[0]={columns,columns};
  auto hc=std::get<NumericContract>(history.outputs[0].contract.view());hc.shape.extents[0].maximum=capacity;hc.shape.extents[1]={columns,columns};
@@ -23,34 +27,11 @@ static void measure(std::uint64_t capacity,bool subscribe,std::size_t columns=50
  history.outputs[0].contract=owner;sink.inputs[0].contract=owner;history.parameters=domain::HistoryProcessingParameters{capacity};
  domain::ConfiguredProcessingNode input;input.id=1;input.kind="NetworkInput";input.outputs.push_back({0,domain::PortDirection::Output,history.inputs[0].contract});
  domain::NumericProcessingGraph graph;graph.graph_id="main";graph.nodes={input,history,sink};graph.edges={{1,7,0,0},{7,8,0,0}};
- NumericEngine engine;Replies replies(engine);replies.accepted(apply(graph));
- const EndpointIdentity output{"main",8,domain::PortDirection::Input,0},source{"main",1,domain::PortDirection::Output,0};
- if(subscribe)require(engine.subscribe_numeric_frames({source}),"selected source subscription");
- std::vector<std::byte> frequencyBytes(columns*8);
- for(std::size_t band=0;band<columns;++band){const auto bits=std::bit_cast<std::uint64_t>(double(band+1)*100.);for(std::size_t byte=0;byte<8;++byte)frequencyBytes[band*8+byte]=std::byte((bits>>(byte*8))&255);}
- std::vector<float> values(columns);PlaneLayout plane{0,{4,0}};FrameStamp stamp;stamp.epoch=700;stamp.graph_revision=800;stamp.producer_epoch=701;stamp.generation=9;
- auto process=[&](std::uint64_t sequence){stamp.sequence=stamp.source_sequence=sequence;stamp.timestamp_ticks=std::int64_t(sequence);std::fill(values.begin(),values.end(),float(sequence));require(engine.feed_numeric(1,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{columns,1},{},CoordinateView{{std::span<const std::byte>(frequencyBytes),{}}}}})==Status::ok,"canonical Mel ingress");};
- for(std::uint64_t sequence=1;sequence<=400;++sequence){process(sequence);if(sequence%32==0)QCoreApplication::processEvents();}
- auto retained=query(engine,output);const auto old=std::get<NumericView>(retained.frame.view().payload);float oldest=0;require(load_element(old,{0,0,0},oldest)==Status::ok,"retained oldest row");
- const auto oldOrdinal=std::uint64_t{400};std::uint64_t ordinal=0;
- allocations=allocation_bytes=0;measuring=true;for(std::uint64_t sequence=401;sequence<=412;++sequence)process(sequence);measuring=false;
- require(allocations==0,"adapter processing allocated/copied growing History");
- auto current=query(engine,output);require(engine.query_numeric(output,current,&ordinal)==Status::ok&&ordinal>oldOrdinal,"unsubscribed History stopped");
- const auto view=std::get<NumericView>(current.frame.view().payload);float last=0,oldAgain=0;
- require(view.actual[0]==capacity&&load_element(view,{0,capacity-1,0},last)==Status::ok&&last==412,"cold latest state incorrect");
- require(load_element(std::get<NumericView>(retained.frame.view().payload),{0,0,0},oldAgain)==Status::ok&&oldAgain==oldest,"cold owned snapshot changed after ingress");
- const auto state=engine.snapshot();const auto observedStamp=current.frame.view().stamp;
- require(observedStamp.producer_epoch==701&&observedStamp.generation==9&&observedStamp.epoch==state.epoch&&observedStamp.graph_revision==state.graph_revision&&current.delivery.epoch==state.epoch&&current.delivery.graph_revision==state.graph_revision,"cold History producer provenance or service delivery identity changed");
- std::fill(values.begin(),values.end(),-1);require(load_element(view,{0,capacity-1,0},last)==Status::ok&&last==412,"History retained borrowed ingress memory");
- require(view.actual[1]==columns,"History snapshot columns changed");
- if(columns==220)require(view.storage.size()>262144,"wide History did not cross old 256KiB snapshot limit");
- std::printf("capacity=%llu columns=%zu subscribed=%d hot_allocations=%zu hot_bytes=%zu ordinal=%llu owned_snapshot_preserved\n",(unsigned long long)capacity,columns,int(subscribe),allocations,allocation_bytes,(unsigned long long)ordinal);
+return graph;
 }
-static void large_snapshot_lifetime_and_bound(){
+
+static auto large_history_graph(const NumericContract& input) {
  constexpr std::size_t rows=400,columns=220;constexpr FrameLimits limits{8,131072,524288,16384,256,8192};
- DeliveredNumericFrame survivor;std::weak_ptr<const void> retainedOwner;
- {
-  NumericContract input=contract(columns);input.dtype=DType::Float32;input.semantic=Semantic::Numeric;input.representation.alignment=alignof(float);input.shape.axes[0]=Axis::Band;
   auto historyContract=input;historyContract.semantic=Semantic::History;historyContract.history_element=input.semantic;
   historyContract.shape={Rank::Matrix,{Axis::Time,Axis::Band},{ExtentBounds{0,rows},ExtentBounds{columns,columns}}};
   historyContract.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
@@ -60,6 +41,45 @@ static void large_snapshot_lifetime_and_bound(){
   auto count=input;count.dtype=DType::UInt64;count.semantic=Semantic::Scalar;count.shape={};count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;count.coordinates={};count.representation.alignment=alignof(std::uint64_t);
   history.outputs.push_back({domain::filled_count_output,domain::PortDirection::Output,own(count)});
   domain::NumericProcessingGraph graph;graph.graph_id="large-history-leases";graph.nodes={source,history};graph.edges={{1,7,0,0}};
+return graph;
+}
+
+static void verify_cold_snapshot(NumericEngine& engine,const DeliveredNumericFrame& current,const DeliveredNumericFrame& retained,std::vector<float>& values,std::size_t capacity,std::size_t columns,float oldest) {
+ const auto view=std::get<NumericView>(current.frame.view().payload);float last=0,oldAgain=0;
+ require(view.actual[0]==capacity&&load_element(view,{0,capacity-1,0},last)==Status::ok&&last==412,"cold latest state incorrect");
+ require(load_element(std::get<NumericView>(retained.frame.view().payload),{0,0,0},oldAgain)==Status::ok&&oldAgain==oldest,"cold owned snapshot changed after ingress");
+ const auto state=engine.snapshot();const auto observedStamp=current.frame.view().stamp;
+ require(observedStamp.producer_epoch==701&&observedStamp.generation==9&&observedStamp.epoch==state.epoch&&observedStamp.graph_revision==state.graph_revision&&current.delivery.epoch==state.epoch&&current.delivery.graph_revision==state.graph_revision,"cold History producer provenance or service delivery identity changed");
+ std::fill(values.begin(),values.end(),-1);require(load_element(view,{0,capacity-1,0},last)==Status::ok&&last==412,"History retained borrowed ingress memory");
+ require(view.actual[1]==columns,"History snapshot columns changed");
+ if(columns==220)require(view.storage.size()>262144,"wide History did not cross old 256KiB snapshot limit");
+
+}
+static void measure(std::uint64_t capacity,bool subscribe,std::size_t columns=50){
+ auto graph=demand_graph(capacity,columns);
+ auto c=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());
+ NumericEngine engine;Replies replies(engine);replies.accepted(apply(graph));
+ const EndpointIdentity output{"main",8,domain::PortDirection::Input,0},source{"main",1,domain::PortDirection::Output,0};
+ if(subscribe)require(engine.subscribe_numeric_frames({source}),"selected source subscription");
+ std::vector<std::byte> frequencyBytes(columns*8);
+ frequency_coordinates(columns,frequencyBytes);
+ std::vector<float> values(columns);PlaneLayout plane{0,{4,0}};FrameStamp stamp;stamp.epoch=700;stamp.graph_revision=800;stamp.producer_epoch=701;stamp.generation=9;
+ auto process=[&](std::uint64_t sequence){stamp.sequence=stamp.source_sequence=sequence;stamp.timestamp_ticks=std::int64_t(sequence);std::fill(values.begin(),values.end(),float(sequence));require(engine.feed_numeric(1,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{columns,1},{},CoordinateView{{std::span<const std::byte>(frequencyBytes),{}}}}})==Status::ok,"canonical Mel ingress");};
+ for(std::uint64_t sequence=1;sequence<=400;++sequence){process(sequence);if(sequence%32==0)QCoreApplication::processEvents();}
+ auto retained=query(engine,output);const auto old=std::get<NumericView>(retained.frame.view().payload);float oldest=0;require(load_element(old,{0,0,0},oldest)==Status::ok,"retained oldest row");
+ const auto oldOrdinal=std::uint64_t{400};std::uint64_t ordinal=0;
+ allocations=allocation_bytes=0;measuring=true;for(std::uint64_t sequence=401;sequence<=412;++sequence)process(sequence);measuring=false;
+ require(allocations==0,"adapter processing allocated/copied growing History");
+ auto current=query(engine,output);require(engine.query_numeric(output,current,&ordinal)==Status::ok&&ordinal>oldOrdinal,"unsubscribed History stopped");
+ verify_cold_snapshot(engine,current,retained,values,capacity,columns,oldest);
+ std::printf("capacity=%llu columns=%zu subscribed=%d hot_allocations=%zu hot_bytes=%zu ordinal=%llu owned_snapshot_preserved\n",(unsigned long long)capacity,columns,int(subscribe),allocations,allocation_bytes,(unsigned long long)ordinal);
+}
+static void large_snapshot_lifetime_and_bound(){
+ constexpr std::size_t rows=400,columns=220;constexpr FrameLimits limits{8,131072,524288,16384,256,8192};
+ DeliveredNumericFrame survivor;std::weak_ptr<const void> retainedOwner;
+ {
+  NumericContract input=contract(columns);input.dtype=DType::Float32;input.semantic=Semantic::Numeric;input.representation.alignment=alignof(float);input.shape.axes[0]=Axis::Band;
+  auto graph=large_history_graph(input);
   NumericEngine engine;Replies replies(engine);replies.accepted(apply(graph));
   std::array<float,columns> values{};values.fill(.125f);values.back()=.75f;const PlaneLayout plane{0,{sizeof(float),0}};
   FrameStamp stamp;stamp.sequence=stamp.source_sequence=1;stamp.producer_epoch=19;stamp.generation=1;stamp.timestamp_ticks=1;

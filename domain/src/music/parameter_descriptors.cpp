@@ -56,7 +56,8 @@ constexpr ParameterDescriptor musical_row[]{
         {"input_representation",C::Processing,V::String,0,0,0,"peak_amplitude"}};
 constexpr auto broadband_row=[] {
         std::array<ParameterDescriptor,17> fields{};
-        for(std::size_t i=0;i<12;++i)fields[i]=musical_row[i];fields[12]=musical_row[19];
+        for(std::size_t i=0;i<12;++i)fields[i]=musical_row[i];
+        fields[12]=musical_row[19];
         fields[13]={"bin_hz",C::Processing,V::Number,1e-9,4294967295.,48000./4096,{}};
         fields[14]={"first_bin",C::Processing,V::Integer,0,4294967295.,1,{}};
         fields[15]=musical_row[20];fields[16]=musical_row[23];return fields;

@@ -298,6 +298,9 @@ void MainWindow::restore_preset_dock_layout(bool& restored) {
     const auto state=QByteArray::fromBase64(ui.workspace.value("ads_state").toString().toLatin1());
     restored=ui.workspace.value("version").toInt()==1 && ui.workspace.value("layout_version").toInt()==5 && !state.isEmpty() && restoreState(state,1);
     if(restored)return;
+    restore_default_graph_docks();
+}
+void MainWindow::restore_default_graph_docks() {
     auto* flow=_panels.value("dataFlow");placeDock(flow,nullptr,Qt::BottomDockWidgetArea);
     WorkspaceDock* anchor=nullptr;
     const auto docks=graph_docks();
@@ -578,6 +581,13 @@ WorkspaceDock *MainWindow::new_graph_view(int node,std::optional<domain::PortId>
     if(ports.empty() || (port && std::none_of(ports.begin(),ports.end(),[&](const auto& p){return p.id==*port;})))return nullptr;
     return create_graph_view_instance(node,port,graph,*found,document);
 }
+void MainWindow::append_graph_port_action(QMenu* menu,int node,domain::PortId port,bool input,int ordinal) {
+    auto* action=menu->addAction(ui::text(input?"Input port %1":"Output port %1").arg(ordinal));
+    action->setObjectName(QStringLiteral("openGraphPort%1").arg(port));
+    connect(action,&QAction::triggered,this,[this,node,port] {
+        if(auto* dock=new_graph_view(node,port))place_graph(dock,1);
+    });
+}
 void MainWindow::populate_graph_ports(int node,const domain::NumericProcessingGraph& graph,QMenu *menu) {
     const auto found=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==node;});
     domain::ResolvedProcessingNode resolved;
@@ -586,14 +596,12 @@ void MainWindow::populate_graph_ports(int node,const domain::NumericProcessingGr
         const auto ports=input?domain::data_inputs(*found):domain::data_outputs(*found);
         if(ports.size()<2)return;
         int data_ordinal=0;
-        for(const auto& port:ports) {
-            auto* action=menu->addAction(ui::text(input?"Input port %1":"Output port %1").arg(++data_ordinal));
-            action->setObjectName(QStringLiteral("openGraphPort%1").arg(port.id));
-            connect(action,&QAction::triggered,this,[this,node,port=port.id] {
-                if(auto* dock=new_graph_view(node,port))place_graph(dock,1);
-            });
-        }
+        for(const auto& port:ports)append_graph_port_action(menu,node,port.id,input,++data_ordinal);
     }
+}
+void MainWindow::focus_graph_dock(WorkspaceDock* dock) {
+            dock->show(); dock->raise(); dock->activateWindow(); dock->widget()->setFocus();
+            if(in_editor_window(dock)) _last_graph_slot=dock;
 }
 void MainWindow::populate_graph_focus(int node,QMenu *menu) {
     auto *focus=menu->addMenu(ui::text("Focus representation")); focus->setObjectName("graphRepresentations");
@@ -605,8 +613,7 @@ void MainWindow::populate_graph_focus(int node,QMenu *menu) {
         auto *action=focus->addAction(ui::text(outside ? "External window %1" : "Internal area %1")
                                      .arg(outside ? ++external : ++internal));
         connect(action,&QAction::triggered,this,[this,dock] {
-            dock->show(); dock->raise(); dock->activateWindow(); dock->widget()->setFocus();
-            if(in_editor_window(dock)) _last_graph_slot=dock;
+            focus_graph_dock(dock);
         });
     }
     focus->setEnabled(!focus->isEmpty());
@@ -836,15 +843,18 @@ void MainWindow::refresh_scalar_input_binding(WorkspaceDock *dock,AudioNodeModel
     panel->set_scalar_inputs(inputs,inputs.size()<qsizetype(numeric_editor::limits().max_ports_per_node));
     if(panel->property("scalarInputsModel").value<QObject*>()!=model)bind_scalar_input_actions(panel,model);
 }
+void MainWindow::initialize_graph_caption(AudioNodeModel* model,const QString& title) {
+    if(model->presentation().value("display_name").toString().trimmed().isEmpty() && !title.isEmpty()){
+        auto presentation=model->presentation();presentation["display_name"]=title;model->set_presentation(presentation);
+    }
+}
 void MainWindow::bind_graph_caption(WorkspaceDock *dock,AudioNodeModel *model,const QString& title) {
     if(dock->property("graphCaptionModel").value<QObject*>()==model)return;
     dock->setProperty("graphCaptionModel",QVariant::fromValue(static_cast<QObject*>(model)));
     connect(model,&QObject::destroyed,dock,[dock,model]{
         if(dock->property("graphCaptionModel").value<QObject*>()==model)dock->setProperty("graphCaptionModel",QVariant{});
     });
-    if(model->presentation().value("display_name").toString().trimmed().isEmpty() && !title.isEmpty()){
-        auto presentation=model->presentation();presentation["display_name"]=title;model->set_presentation(presentation);
-    }
+    initialize_graph_caption(model,title);
     connect(model,&AudioNodeModel::presentation_changed,dock,[this,dock]{
         refresh_graph_title(dock);_workspace_save_timer.start();
         const auto kind=domain::node_kind(dock->property("graphKind").toString().toStdString());

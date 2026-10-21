@@ -44,6 +44,31 @@ std::vector<float> dft_power(std::span<const float> input) {
     return power;
 }
 
+void band_statistic(const auto& power,const auto& edges,dsp_kernels::BandStatistic statistic){
+    using namespace dsp_kernels;
+        BroadbandFeatures processor;
+        require(processor.prepare(power.size(), 16, edges, statistic), "Band prepare failed");
+        std::array<float,8> result{};
+        allocations = 0;
+        watch_allocations = true;
+        const auto success = processor.process(power, result);
+        watch_allocations = false;
+        require(success && allocations == 0, "Band process allocates/fails");
+        for (std::size_t b = 0; b < result.size(); ++b) {
+            double sum = 0, maximum = 0;
+            std::size_t count = 0;
+            for (std::size_t k = 0; k < power.size(); ++k) {
+                if (double(k * 16) < edges[b] || (b + 1 == result.size() ? double(k * 16) > edges[b + 1] : double(k * 16) >= edges[b + 1])) continue;
+                sum += power[k];
+                maximum = std::max(maximum, double(power[k]));
+                ++count;
+            }
+            const auto reference = statistic == BandStatistic::Rms ? std::sqrt(sum) : statistic == BandStatistic::Maximum ? maximum :
+                statistic == BandStatistic::MeanPower && count ? sum / double(count) : sum;
+            near(result[b], reference, 1e-7, "Broadband statistic differs from independent bin oracle");
+            near(processor.centers_hz()[b], (edges[b] + edges[b + 1]) / 2, 0, "Hz centers incorrect");
+        }
+}
 void band_oracle() {
     using namespace dsp_kernels;
     constexpr std::size_t n = 512;
@@ -65,28 +90,7 @@ void band_oracle() {
     near(energy, expected, 1e-7, "DFT power/Parseval oracle disagrees with known tones");
 
     for (const auto statistic : {BandStatistic::SumEnergy, BandStatistic::MeanPower, BandStatistic::Rms, BandStatistic::Maximum}) {
-        BroadbandFeatures processor;
-        require(processor.prepare(power.size(), 16, edges, statistic), "Band prepare failed");
-        std::array<float, edges.size() - 1> result{};
-        allocations = 0;
-        watch_allocations = true;
-        const auto success = processor.process(power, result);
-        watch_allocations = false;
-        require(success && allocations == 0, "Band process allocates/fails");
-        for (std::size_t b = 0; b < result.size(); ++b) {
-            double sum = 0, maximum = 0;
-            std::size_t count = 0;
-            for (std::size_t k = 0; k < power.size(); ++k) {
-                if (double(k * 16) < edges[b] || (b + 1 == result.size() ? double(k * 16) > edges[b + 1] : double(k * 16) >= edges[b + 1])) continue;
-                sum += power[k];
-                maximum = std::max(maximum, double(power[k]));
-                ++count;
-            }
-            const auto reference = statistic == BandStatistic::Rms ? std::sqrt(sum) : statistic == BandStatistic::Maximum ? maximum :
-                statistic == BandStatistic::MeanPower && count ? sum / double(count) : sum;
-            near(result[b], reference, 1e-7, "Broadband statistic differs from independent bin oracle");
-            near(processor.centers_hz()[b], (edges[b] + edges[b + 1]) / 2, 0, "Hz centers incorrect");
-        }
+        band_statistic(power,edges,statistic);
     }
 
     BroadbandFeatures flux, copy;
@@ -115,21 +119,8 @@ void band_oracle() {
     require(!overflow.prepare(3, 10, std::array<double, 3>{0, 10, 10}, BandStatistic::Rms), "Repeated boundary accepted");
 }
 
-void note_oracle() {
-    using namespace dsp_kernels;
-    constexpr std::size_t n = 4096;
-    constexpr double fs = 32768;
-    PreparedRfft rfft;
-    require(rfft.prepare(n), "Note RFFT prepare failed");
-    std::vector<float> input(n), raw(n + 2), power(n / 2 + 1), result(48);
-    NoteSalience salience;
-    require(salience.prepare(power.size(), fs / n, 48, result.size(), 440, 3), "Note prepare failed");
-    for (std::size_t i = 0; i < result.size(); ++i)
-        near(salience.frequencies_hz()[i], 440 * std::pow(2.0, (double(i) + 48 - 69) / 12), 1e-10, "Note frequencies incorrect");
-    // Seven sequential, changing test tones. No audio playback or recording.
-    constexpr std::array<int, 7> midi{60, 64, 67, 69, 72, 76, 81};
-    double worst_neighbor_ratio = 0;
-    for (std::size_t t = 0; t < midi.size(); ++t) {
+double note_tone(dsp_kernels::PreparedRfft& rfft,dsp_kernels::NoteSalience& salience,std::vector<float>& input,std::vector<float>& raw,std::vector<float>& power,std::vector<float>& result,const auto& midi,std::size_t t){
+    constexpr std::size_t n=4096;constexpr double fs=32768;
         const auto frequency = 440 * std::pow(2.0, (midi[t] - 69.0) / 12);
         const auto amplitude = .2 + .07 * double(t);
         double window_sum = 0;
@@ -151,7 +142,24 @@ void note_oracle() {
         const auto peak = std::size_t(std::max_element(result.begin(), result.end()) - result.begin());
         require(peak == target && result[target] > 0, "Known tone does not peak at expected note cell");
         const auto neighbor = std::max(result[target - 1], result[target + 1]);
-        worst_neighbor_ratio = std::max(worst_neighbor_ratio, double(neighbor / result[target]));
+        return double(neighbor / result[target]);
+}
+void note_oracle() {
+    using namespace dsp_kernels;
+    constexpr std::size_t n = 4096;
+    constexpr double fs = 32768;
+    PreparedRfft rfft;
+    require(rfft.prepare(n), "Note RFFT prepare failed");
+    std::vector<float> input(n), raw(n + 2), power(n / 2 + 1), result(48);
+    NoteSalience salience;
+    require(salience.prepare(power.size(), fs / n, 48, result.size(), 440, 3), "Note prepare failed");
+    for (std::size_t i = 0; i < result.size(); ++i)
+        near(salience.frequencies_hz()[i], 440 * std::pow(2.0, (double(i) + 48 - 69) / 12), 1e-10, "Note frequencies incorrect");
+    // Seven sequential, changing test tones. No audio playback or recording.
+    constexpr std::array<int, 7> midi{60, 64, 67, 69, 72, 76, 81};
+    double worst_neighbor_ratio = 0;
+    for (std::size_t t = 0; t < midi.size(); ++t) {
+        worst_neighbor_ratio=std::max(worst_neighbor_ratio,note_tone(rfft,salience,input,raw,power,result,midi,t));
     }
     // Analytic parabolic magnitude peak at fractional bin 55.25; interpolation
     // must recover its location, independently of an FFT/window implementation.
@@ -173,17 +181,8 @@ void note_oracle() {
     std::cout << "note_grid seven_tones_peak_match=7/7 max_neighbor_ratio=" << worst_neighbor_ratio << '\n';
 }
 
-void article_projection_oracle() {
+void article_reduction(dsp_kernels::MusicalSpectrogramConfig& c,const auto& axis,const auto& y,const auto& weights,dsp_kernels::SpectralReduction mode){
     using namespace dsp_kernels;
-    // Explicit irregular axis, with a gap: no hidden assumption of bin index Hz.
-    const std::array<double, 9> axis{0, 40, 100, 200, 250, 1000, 2000, 4000, 16000};
-    const std::array<float, 9> y{99, 1, 3, 5, 2, 4, 8, 6, 10};
-    const std::array<float, 9> weights{1, 1, 1, 1, 1, 2, 3, 4, 5};
-    MusicalSpectrogramConfig c;
-    c.mid.output_count = 1; c.high.output_count = 1;
-    c.first_midi = c.last_midi = 69; c.a4_hz = 440;
-    for (auto mode : {SpectralReduction::Mean, SpectralReduction::Rms,
-        SpectralReduction::WeightedMean, SpectralReduction::Maximum}) {
         c.mid.reduction = c.high.reduction = mode;
         MusicalSpectrogram plan;
         require(plan.prepare(axis, c, weights), "Article reduction prepare failed");
@@ -211,6 +210,19 @@ void article_projection_oracle() {
         auto bad = c; bad.mid.low_hz = 100;
         require(!plan.prepare(axis, bad, weights) && plan.process(y, row, score), "Failed prepare destroyed old article plan");
         require(!plan.process(y, std::span<float>(row).first(row.size()-1), score), "Bad output size accepted");
+}
+void article_projection_oracle() {
+    using namespace dsp_kernels;
+    // Explicit irregular axis, with a gap: no hidden assumption of bin index Hz.
+    const std::array<double, 9> axis{0, 40, 100, 200, 250, 1000, 2000, 4000, 16000};
+    const std::array<float, 9> y{99, 1, 3, 5, 2, 4, 8, 6, 10};
+    const std::array<float, 9> weights{1, 1, 1, 1, 1, 2, 3, 4, 5};
+    MusicalSpectrogramConfig c;
+    c.mid.output_count = 1; c.high.output_count = 1;
+    c.first_midi = c.last_midi = 69; c.a4_hz = 440;
+    for (auto mode : {SpectralReduction::Mean, SpectralReduction::Rms,
+        SpectralReduction::WeightedMean, SpectralReduction::Maximum}) {
+        article_reduction(c,axis,y,weights,mode);
     }
     MusicalSpectrogram plan;
     c.mid.reduction = SpectralReduction::WeightedMean;
@@ -235,6 +247,58 @@ void article_projection_oracle() {
         "Last-coordinate interpolation or out-of-range note incorrect");
 }
 
+void changing_article_tones(dsp_kernels::MusicalSpectrogram& plan,dsp_kernels::MusicalSpectrogramConfig& c,std::vector<float>& row,dsp_kernels::PeakGridAgreement& score,std::array<double,101>& uniform,std::array<float,101>& values){
+    using namespace dsp_kernels;
+    // Seven changing synthetic spectra with note samples tested against an
+    // independent piecewise linear oracle, not the old harmonic salience.
+    c = {}; c.low = {40,250,0,SpectralReduction::PassThrough};
+    c.first_midi=60; c.last_midi=84; c.minimum_peak_level=.01;
+    require(plan.prepare(uniform,c), "Changing tone plan failed"); row.resize(plan.output_size());
+    constexpr std::array<int,7> midi{60,64,67,69,72,76,81};
+    for(std::size_t t=0;t<midi.size();++t) {
+        const double frequency=440*std::pow(2.,(midi[t]-69.)/12);
+        for(std::size_t k=0;k<values.size();++k)
+            values[k]=float((.2+.1*double(t))*std::exp(-.5*std::pow((uniform[k]-frequency)/12,2)));
+        allocations=0; watch_allocations=true;
+        const auto ok=plan.process(values,row,score);
+        watch_allocations=false;
+        require(ok && allocations==0,"Changing seven-tone article projection allocated");
+        for(std::size_t n=0;n<plan.counts()[3];++n) {
+            const double f=440*std::pow(2.,(double(n)+60-69)/12);
+            double expected=0;
+            for(std::size_t k=1;k<uniform.size();++k) if(f>=uniform[k-1] && f<=uniform[k])
+                expected=values[k-1]+(values[k]-values[k-1])*(f-uniform[k-1])/(uniform[k]-uniform[k-1]);
+            near(row[plan.offsets()[3]+n],expected,1e-6,"Changing tone note interpolation oracle mismatch");
+        }
+    }
+}
+void pcm_article_tones(dsp_kernels::MusicalSpectrogram& plan,dsp_kernels::MusicalSpectrogramConfig& c,std::vector<float>& row,dsp_kernels::PeakGridAgreement& score){
+    using namespace dsp_kernels;
+    constexpr std::array<int,7> midi{60,64,67,69,72,76,81};
+    // Independent DFT of seven actual PCM tones, changing pitch and level.
+    constexpr std::size_t pcm_n = 256;
+    std::array<float, pcm_n> pcm{};
+    std::array<double, pcm_n/2+1> pcm_axis{};
+    for (std::size_t k=0;k<pcm_axis.size();++k) pcm_axis[k]=double(k)*16;
+    require(plan.prepare(pcm_axis,c), "PCM-derived article prepare failed");
+    row.resize(plan.output_size());
+    for(std::size_t t=0;t<midi.size();++t) {
+        const double frequency=440*std::pow(2.,(midi[t]-69.)/12);
+        for(std::size_t i=0;i<pcm.size();++i)
+            pcm[i]=float((.2+.05*double(t))*std::sin(2*std::numbers::pi*frequency*double(i)/4096));
+        const auto spectral_power=dft_power(pcm);
+        allocations=0; watch_allocations=true;
+        const auto ok=plan.process(spectral_power,row,score);
+        watch_allocations=false;
+        require(ok && allocations==0,"PCM-derived article process allocated/failed");
+        for(std::size_t note=0;note<plan.counts()[3];++note) {
+            const double f=440*std::pow(2.,(double(note)+60-69)/12);
+            const auto k=std::size_t(std::floor(f/16));
+            const double expected=spectral_power[k]+(spectral_power[k+1]-spectral_power[k])*(f/16-double(k));
+            near(row[plan.offsets()[3]+note],expected,1e-7,"PCM DFT note interpolation oracle mismatch");
+        }
+    }
+}
 void article_peak_grid_oracle() {
     using namespace dsp_kernels;
     MusicalSpectrogramConfig c;
@@ -273,51 +337,8 @@ void article_peak_grid_oracle() {
     require(plan.prepare(uniform,c), "Refined peak prepare failed"); row.resize(plan.output_size());
     require(plan.process(values,row,score) && score.full_percent == 100 && score.selected_percent == 100,
         "Uniform parabolic frequency refinement incorrect");
-    // Seven changing synthetic spectra with note samples tested against an
-    // independent piecewise linear oracle, not the old harmonic salience.
-    c = {}; c.low = {40,250,0,SpectralReduction::PassThrough};
-    c.first_midi=60; c.last_midi=84; c.minimum_peak_level=.01;
-    require(plan.prepare(uniform,c), "Changing tone plan failed"); row.resize(plan.output_size());
-    constexpr std::array<int,7> midi{60,64,67,69,72,76,81};
-    for(std::size_t t=0;t<midi.size();++t) {
-        const double frequency=440*std::pow(2.,(midi[t]-69.)/12);
-        for(std::size_t k=0;k<values.size();++k)
-            values[k]=float((.2+.1*double(t))*std::exp(-.5*std::pow((uniform[k]-frequency)/12,2)));
-        allocations=0; watch_allocations=true;
-        const auto ok=plan.process(values,row,score);
-        watch_allocations=false;
-        require(ok && allocations==0,"Changing seven-tone article projection allocated");
-        for(std::size_t n=0;n<plan.counts()[3];++n) {
-            const double f=440*std::pow(2.,(double(n)+60-69)/12);
-            double expected=0;
-            for(std::size_t k=1;k<uniform.size();++k) if(f>=uniform[k-1] && f<=uniform[k])
-                expected=values[k-1]+(values[k]-values[k-1])*(f-uniform[k-1])/(uniform[k]-uniform[k-1]);
-            near(row[plan.offsets()[3]+n],expected,1e-6,"Changing tone note interpolation oracle mismatch");
-        }
-    }
-    // Independent DFT of seven actual PCM tones, changing pitch and level.
-    constexpr std::size_t pcm_n = 256;
-    std::array<float, pcm_n> pcm{};
-    std::array<double, pcm_n/2+1> pcm_axis{};
-    for (std::size_t k=0;k<pcm_axis.size();++k) pcm_axis[k]=double(k)*16;
-    require(plan.prepare(pcm_axis,c), "PCM-derived article prepare failed");
-    row.resize(plan.output_size());
-    for(std::size_t t=0;t<midi.size();++t) {
-        const double frequency=440*std::pow(2.,(midi[t]-69.)/12);
-        for(std::size_t i=0;i<pcm.size();++i)
-            pcm[i]=float((.2+.05*double(t))*std::sin(2*std::numbers::pi*frequency*double(i)/4096));
-        const auto spectral_power=dft_power(pcm);
-        allocations=0; watch_allocations=true;
-        const auto ok=plan.process(spectral_power,row,score);
-        watch_allocations=false;
-        require(ok && allocations==0,"PCM-derived article process allocated/failed");
-        for(std::size_t note=0;note<plan.counts()[3];++note) {
-            const double f=440*std::pow(2.,(double(note)+60-69)/12);
-            const auto k=std::size_t(std::floor(f/16));
-            const double expected=spectral_power[k]+(spectral_power[k+1]-spectral_power[k])*(f/16-double(k));
-            near(row[plan.offsets()[3]+note],expected,1e-7,"PCM DFT note interpolation oracle mismatch");
-        }
-    }
+    changing_article_tones(plan,c,row,score,uniform,values);
+    pcm_article_tones(plan,c,row,score);
     std::cout<<"article four_sections seven_changing_tones=7/7 noalloc grid_oracles=passed\n";
 }
 

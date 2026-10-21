@@ -8,7 +8,7 @@ using signal_contracts::NumericLiteral;
 constexpr std::uint32_t music_sample_rate=32768;
 constexpr std::uint64_t music_fft_size=4096;
 
-void music_sources(examples::Builder& b) {
+void music_generator(examples::Builder& b) {
     b.add(1,"SignalGenerator");
     b.add(16,"SampleClock");
     b.node(1).clock_node=16;
@@ -17,6 +17,9 @@ void music_sources(examples::Builder& b) {
     tones.clear();
     const double frequencies[]{130.81,164.81,196.,261.63,329.63,392.,523.25,783.99};
     for(unsigned i=0;i<8;++i)tones.push_back({i+1,true,frequencies[i],.055,double(i)*.27,0,0});
+}
+void music_sources(examples::Builder& b) {
+    music_generator(b);
     b.add(13,"AudioSource",EndpointProcessingParameters{{{"source",NumericLiteral{std::int64_t{0}}}}});
     b.add(200,"InputSelector",examples::transform({{"selected_input",NumericLiteral{std::uint64_t{0}}},
         {"channels_per_stream",NumericLiteral{std::uint64_t{2}}}}));

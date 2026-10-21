@@ -26,8 +26,7 @@ Status NumericPreparation::prepare_definition(){
     status=prepare_lowered_definition();if(status!=Status::ok)return status;
     status=prepare_resource_profile();if(status!=Status::ok)return status;
     status=admit_definition();if(status!=Status::ok)return status;
-    status=allocate_bundle();if(status!=Status::ok)return status;
-    return Status::ok;
+    return allocate_bundle();
 }
 Status NumericPreparation::prepare_lowered_definition(){
     const auto status=lower_definition();if(status!=Status::ok)return status;

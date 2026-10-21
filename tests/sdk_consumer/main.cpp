@@ -3,6 +3,31 @@
 #include <dataflow_runtime/runtime.h>
 #include <cstdio>
 struct Clock final:application::ControlClock {std::uint64_t now_ms() const noexcept override{return 1;}};
+struct Delivery {
+ dataflow_runtime::GraphExecutor* executor;bool delivered=false;signal_contracts::Status status=signal_contracts::Status::ok;
+ static void output(void* context,const dataflow_runtime::NumericPortFrameView& output){
+  auto& d=*static_cast<Delivery*>(context);if(output.kind!="NetworkOutput")return;
+  const auto* value=std::get_if<signal_contracts::NumericView>(&output.frame.payload);
+  d.delivered=value&&value->contract&&value->contract->semantic==signal_contracts::Semantic::PCM&&value->contract->dtype==signal_contracts::DType::Float32&&value->contract->representation.encoding==signal_contracts::StorageEncoding::FixedLittleEndian&&value->actual[0]==256&&value->planes.size()==1;
+ }
+ static void input(void* opaque,const bdsp_protocol::numeric_data::Message& message){
+  auto& d=*static_cast<Delivery*>(opaque);
+  d.status=d.executor->process_numeric_ports(0,message.frame_view(),{1,1},{nullptr,output,nullptr,&d});
+ }
+};
+int sdk_source_frames(dataflow_runtime::GraphExecutor& executor,const embedded_support::Profile& profile){
+    embedded_support::SyntheticPipeline source;
+    if(source.prepare_source(profile,"sdk-source")!=signal_contracts::Status::ok)return 3;
+    Delivery delivery{&executor};
+    source.tick_source(Delivery::input,&delivery);
+    if(delivery.status!=signal_contracts::Status::ok || !delivery.delivered)return 4;
+    return 0;
+}
+int sdk_control_session(){
+    Clock clock;control::numeric::SessionConfig config;config.endpoint_authorized=true;config.device_identity="sdk-consumer";config.client_identity=1;
+    control::numeric::ControlSession control(config,clock);
+    return control.open(1)==signal_contracts::Status::ok?0:5;
+}
 int main() {
     const embedded_support::Profile profile{};
     const auto effective=embedded_support::device_profile(profile);
@@ -14,22 +39,6 @@ int main() {
     const application::NumericRuntimeLimits limits{effective.runtime.admission,effective.runtime.resources};
     if(executor.prepare_numeric(graph,limits,prepared)!=signal_contracts::Status::ok ||
        executor.apply(std::move(prepared))!=signal_contracts::Status::ok || !executor.running())return 2;
-    embedded_support::SyntheticPipeline source;
-    if(source.prepare_source(profile,"sdk-source")!=signal_contracts::Status::ok)return 3;
-    struct Delivery {dataflow_runtime::GraphExecutor* executor;bool delivered=false;signal_contracts::Status status=signal_contracts::Status::ok;} delivery{&executor};
-    source.tick_source([](void* opaque,const bdsp_protocol::numeric_data::Message& message) {
-        auto& d=*static_cast<Delivery*>(opaque);
-        d.status=d.executor->process_numeric_ports(0,message.frame_view(),{1,1},{nullptr,
-            [](void* c,const dataflow_runtime::NumericPortFrameView& output) {
-                auto& d=*static_cast<Delivery*>(c);if(output.kind!="NetworkOutput")return;
-                const auto* value=std::get_if<signal_contracts::NumericView>(&output.frame.payload);
-                d.delivered=value && value->contract && value->contract->semantic==signal_contracts::Semantic::PCM &&
-                    value->contract->dtype==signal_contracts::DType::Float32 && value->contract->representation.encoding==signal_contracts::StorageEncoding::FixedLittleEndian &&
-                    value->actual[0]==256 && value->planes.size()==1;
-            },nullptr,&d});
-    },&delivery);
-    if(delivery.status!=signal_contracts::Status::ok || !delivery.delivered)return 4;
-    Clock clock;control::numeric::SessionConfig config;config.endpoint_authorized=true;config.device_identity="sdk-consumer";config.client_identity=1;
-    control::numeric::ControlSession control(config,clock);
-    return control.open(1)==signal_contracts::Status::ok?0:5;
+    const auto processing=sdk_source_frames(executor,profile);if(processing)return processing;
+    return sdk_control_session();
 }

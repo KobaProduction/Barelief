@@ -124,14 +124,17 @@ void NumericSession::accept_message(nd::Message& message) noexcept {
     received_=message.envelope.delivery_sequence;gap_=!message.stamp.available;
     if(handler_)handler_(user_,message);
 }
+void NumericSession::accept_fragment(std::span<const std::uint8_t> payload) noexcept {
+    std::span<const std::uint8_t> complete;auto s=assembler_.accept(payload,complete);
+    if(s==Status::would_block)return;
+    if(s!=Status::ok){fail(s);return;}
+    decode_complete(complete);
+}
 void NumericSession::packet(bdsp_protocol::PacketView packet) noexcept {
     if(state_!=SessionState::ready)return;
     if(packet.payload.size()>packet_payload_capacity_){fail(Status::buffer_too_small);return;}
     if(role_!=Role::subscriber || packet.id!=nd::FragmentId){fail(Status::malformed);return;}
-    std::span<const std::uint8_t> complete;auto s=assembler_.accept(packet.payload,complete);
-    if(s==Status::would_block)return;
-    if(s!=Status::ok){fail(s);return;}
-    decode_complete(complete);
+    accept_fragment(packet.payload);
 }
 void NumericSession::decode_complete(std::span<const std::uint8_t> complete) noexcept {
     nd::Message message;const nd::ReferenceContext context{binding_.nonce,binding_.session,binding_.revision,std::span(&binding_.binding,1)};

@@ -42,9 +42,17 @@ public:
         if(!count)return true;
         // Equal rate is an explicit identity for every mode in this interface.
         if(config_.input_rate==config_.output_rate){
-            for(std::size_t c=0;c<config_.channels;++c){std::memcpy(output.data()+c*capacity,input.data()+c*stride,count*sizeof(float));}
+            copy_identity(input,count,stride,output,capacity);
             written=count;return true;
         }
+        return process_channels(input,count,stride,output,capacity,written);
+    }
+private:
+    void copy_identity(std::span<const float> input,std::size_t count,std::size_t stride,std::span<float> output,std::size_t capacity) noexcept {
+        for(std::size_t c=0;c<config_.channels;++c)
+            std::memcpy(output.data()+c*capacity,input.data()+c*stride,count*sizeof(float));
+    }
+    bool process_channels(std::span<const float> input,std::size_t count,std::size_t stride,std::span<float> output,std::size_t capacity,std::size_t& written) noexcept {
         for(std::size_t c=0;c<config_.channels;++c){unsigned consumed=unsigned(count),produced=unsigned(capacity);
             const int error=speex_resampler_process_float(state_,unsigned(c),input.data()+c*stride,&consumed,output.data()+c*capacity,&produced);
             if(error || consumed!=count || (c && written!=produced))return false;

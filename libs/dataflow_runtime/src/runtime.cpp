@@ -82,32 +82,35 @@ Status GraphExecutor::register_prepared(const application::PreparedExecution& re
     prepared_context_=result.context.get();prepared_base_plan_=base.plan.get();return Status::ok;
 }
 static Status detached_profile(const NumericRuntimeProfile& configured,
-    const application::NumericRuntimeLimits& limits,NumericRuntimeProfile& profile) {
+    const application::NumericRuntimeLimits& limits,NumericRuntimeProfile& profile,
+    const PreparedGraph* plan,const RuntimeContext* context) {
     if(!admission_within(limits.admission,configured.admission) ||
        !resources_within(limits.resources,configured.resources))return Status::exhausted;
     profile=configured;
     profile.admission=limits.admission;
     profile.resources=limits.resources;
     profile.preparation_values=limits.preparation_values;
-    return Status::ok;
+    // Detached preparation retains both the live context and its owning snapshot.
+    // Charge the snapshot in addition to the existing old-plan reservation.
+    return retain_snapshot_allocation(profile,plan,context);
+}
+static Status prepare_detached_graph(const NumericProcessingGraph& graph,const NumericRuntimeProfile& profile,
+    const PreparedGraph* previous,const RuntimeContext* previous_context,application::PreparedExecution& result,
+    std::weak_ptr<const PreparedGraph>& prepared,const application::RuntimeContext*& prepared_context) {
+    result={};std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
+    const auto status=PreparedGraph::prepare_numeric(graph,profile,plan,context,previous,previous_context);
+    if(status!=Status::ok)return status;
+    prepared=plan;prepared_context=context.get();
+    result.plan=std::move(plan);result.context=std::move(context);return Status::ok;
 }
 Status GraphExecutor::prepare_numeric_detached(const NumericProcessingGraph& graph,const application::NumericRuntimeLimits& limits,
     const PreparationBase& base,application::PreparedExecution& result) const {
     if(base.owner!=this){result={};return Status::invalid_argument;}
     NumericRuntimeProfile profile;
-    const auto profile_status=detached_profile(numeric_profile_,limits,profile);
+    const auto profile_status=detached_profile(numeric_profile_,limits,profile,base.plan.get(),base.context.get());
     if(profile_status!=Status::ok){result={};return profile_status;}
-    // Detached preparation temporarily retains both the live context and its
-    // owning snapshot. Charge a conservative full working allocation for the
-    // snapshot in addition to prepare_numeric's existing old-plan reservation.
-    if(retain_snapshot_allocation(profile,base.plan.get(),base.context.get())!=Status::ok) {
-        result={};return Status::overflow;
-    }
-    result={};std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
-    const auto status=PreparedGraph::prepare_numeric(graph,profile,plan,context,base.plan.get(),base.context?base.context.get():base.borrowed_context);
-    if(status!=Status::ok)return status;
-    base.prepared=plan;base.prepared_context=context.get();
-    result.plan=std::move(plan);result.context=std::move(context);return Status::ok;
+    return prepare_detached_graph(graph,profile,base.plan.get(),base.context?base.context.get():base.borrowed_context,
+        result,base.prepared,base.prepared_context);
 }
 Status GraphExecutor::process_numeric_ports(NodeId ingress,const DataFrameView& frame,DeliveryStamp stamp,NumericRuntimeCallbacks cb) noexcept {
     if(!running_ || !plan_)return Status::would_block;

@@ -40,13 +40,15 @@ QString NodeParameterModel::frequencyProfileStatus() const {
         if(parameter.key=="gains")if(const auto* data=std::get_if<domain::NumericArray>(&parameter.value);data && !data->values.empty())return ui::text("Frequency profile attached");
     return ui::text("No frequency profile attached");
 }
+void NodeParameterModel::append_coefficient_summary() {
+    if(_node.kind!="ArrayFill")return;
+    std::size_t count=0;
+    if(domain::array_generator_values(_node,{},count)==signal_contracts::Status::ok && count)
+        appendReadout("Array coefficients","coefficientSummary",[this]{std::size_t count=0;domain::array_generator_values(_node,{},count);return ui::text("Explicit coefficients: %1").arg(count);},true);
+}
 void NodeParameterModel::append_music_fields() {
     if(_node.kind=="MusicalSpectrogram" || _node.kind=="BroadbandRow" || _node.kind=="NoteSpectrum")appendReadout("Row layout","rowLayoutReadout",[this]{return musicRowLayout();},true);
     if(_node.kind=="NoteSalience")appendReadout("Note grid","noteGridReadout",[this]{return noteGridDescription();},true);
-    if(_node.kind=="ArrayFill"){
-        std::size_t count=0;
-        if(domain::array_generator_values(_node,{},count)==signal_contracts::Status::ok && count)
-            appendReadout("Array coefficients","coefficientSummary",[this]{std::size_t count=0;domain::array_generator_values(_node,{},count);return ui::text("Explicit coefficients: %1").arg(count);},true);
-    }
+    append_coefficient_summary();
     if(_node.kind=="FrequencyNormalizer")appendReadout("Frequency profile","frequencyProfileStatus",[this]{return frequencyProfileStatus();});
 }

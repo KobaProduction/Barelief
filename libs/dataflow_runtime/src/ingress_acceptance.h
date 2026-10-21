@@ -27,6 +27,7 @@ class IngressAcceptance {
     Status validate_history_progress(const FrameStamp&) const noexcept;
     Status validate_marker(const FrameStamp&) const noexcept;
     void reset_descendants(const FrameStamp&) noexcept;
+    Status retain_external_history() noexcept;
     Status retain_history() noexcept;
 public:
     const NumericContract* history_input=nullptr;

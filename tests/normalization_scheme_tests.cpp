@@ -243,29 +243,43 @@ void typed_mismatch_messages(){
     }
     ui::Language::instance().set("en");
 }
-void runtime_arrays(bool logarithmic){
-    using namespace dataflow_runtime;constexpr std::array<std::uint32_t,1> mono{0};constexpr FrameLimits limits{1,32,4096,4096,256,4096};
-    NumericContract vector;vector.channel_order=mono;vector.clock={"fixture",{1,48000},48000};vector.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{4,4},ExtentBounds{}}};vector.representation.alignment=alignof(float);
-    OwnedProcessingContract measured;require(numeric_metadata_output_contract(vector,false,measured)==Status::ok,"measure actual input length");const auto scalar=std::get<NumericContract>(measured.view());
-    auto port=[&](PortDirection side,PortId id,const NumericContract& c){OwnedProcessingContract out;require(own_processing_contract(c,limits,65536,out)==Status::ok,"own primitive port");return ProcessingPort{id,side,std::move(out)};};
+auto normalization_length(const auto& port,const NumericContract& vector,const NumericContract& scalar) {
     ConfiguredProcessingNode length;length.id=1;length.kind="ArrayLength";length.parameters=TransformProcessingParameters{};length.inputs={port(PortDirection::Input,0,vector)};length.outputs={port(PortDirection::Output,0,scalar)};
+return length;
+}
+
+auto normalization_source(const auto& port,const NumericContract& vector) {
     ConfiguredProcessingNode source;source.id=3;source.kind="NetworkInput";source.parameters=EndpointProcessingParameters{};source.outputs={port(PortDirection::Output,0,vector)};
+return source;
+}
+
+auto normalization_fill(const auto& port,const NumericContract& scalar,bool logarithmic) {
     ConfiguredProcessingNode fill;fill.id=2;fill.kind="ArrayFill";fill.parameters=TransformProcessingParameters{};put(fill,"size",NumericLiteral{std::uint64_t{4}});put(fill,"values",logarithmic?NumericArray{{10,-10,40,-40}}:NumericArray{{.5f,2,1,4}});fill.inputs={port(PortDirection::Input,0,scalar)};
-    OwnedProcessingContract coefficients;require(array_generator_output_contract(fill,scalar,coefficients)==Status::ok,"derive coefficient array");fill.outputs={{0,PortDirection::Output,coefficients}};
+return fill;
+}
+
+auto normalization_product(const auto& port,const NumericContract& vector,const OwnedProcessingContract& coefficients,bool logarithmic) {
     ConfiguredProcessingNode op;op.id=4;op.kind="ArrayMultiply";op.parameters=TransformProcessingParameters{};put(op,"operation",std::string{logarithmic?"add":"multiply"});put(op,"frame_input",NumericLiteral{std::int64_t{0}});put(op,"floor_enabled",logarithmic);
     op.inputs={port(PortDirection::Input,0,vector),{1,PortDirection::Input,coefficients}};OwnedProcessingContract output;require(array_product_output_contract(op,output)==Status::ok,"derive arithmetic array");op.outputs={{0,PortDirection::Output,output}};
+return op;
+}
+
+auto normalization_runtime_graph(const NumericContract& vector,const NumericContract& scalar,bool logarithmic,ConfiguredProcessingNode& fill,OwnedProcessingContract& coefficients) {
+constexpr FrameLimits limits{1,32,4096,4096,256,4096};
+    auto port=[&](PortDirection side,PortId id,const NumericContract& c){OwnedProcessingContract out;require(own_processing_contract(c,limits,65536,out)==Status::ok,"own primitive port");return ProcessingPort{id,side,std::move(out)};};
+auto length=normalization_length(port,vector,scalar);auto source=normalization_source(port,vector);fill=normalization_fill(port,scalar,logarithmic);
+require(array_generator_output_contract(fill,scalar,coefficients)==Status::ok,"derive coefficient array");fill.outputs={{0,PortDirection::Output,coefficients}};
+auto op=normalization_product(port,vector,coefficients,logarithmic);
     NumericProcessingGraph graph;graph.graph_id="numeric-normalization";graph.nodes={length,fill,source,op};graph.edges={{3,1},{1,2},{2,4,0,1},{3,4}};
-    NumericRuntimeProfile profile{{16,32,8,32,1048576,4*1048576,limits},{{1048576,1048576,1048576,131072},0,16*1048576},{4096,1,4096,4096,1048576},{true,true,true}};
-    for(const auto& n:graph.nodes){ResolvedProcessingNode resolved;const auto diagnostic=resolve_processing_node(n,profile.admission,resolved);if(!diagnostic)std::fprintf(stderr,"primitive admission node=%lld error=%u port=%u\n",static_cast<long long>(n.id),unsigned(diagnostic.error),unsigned(diagnostic.port));}
-    NumericProcessingGraph evaluated,executable;const auto binding=resolve_numeric_parameter_bindings(graph,profile.admission,evaluated,executable);if(!binding)std::fprintf(stderr,"primitive binding node=%lld error=%u port=%u\n",static_cast<long long>(binding.node),unsigned(binding.error),unsigned(binding.port));
-    std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;const auto prepared=PreparedGraph::prepare_numeric(graph,profile,plan,state);if(prepared!=Status::ok)std::fprintf(stderr,"primitive prepare status=%u\n",unsigned(prepared));require(prepared==Status::ok,"prepare numeric normalization runtime");
-    struct Result{std::array<float,4> values{};unsigned calls=0;} result;
-    const auto callback=[](void* user,const NumericPortFrameView& event){if(event.identity.node!=4 || event.status!=Status::ok)return;auto& r=*static_cast<Result*>(user);++r.calls;const auto& v=std::get<NumericView>(event.frame.payload);for(std::size_t i=0;i<4;++i)require(load_element(v,{0,i,0},r.values[i])==Status::ok,"read corrected value");};
-    std::uint64_t sequence=0;auto feed=[&](NodeId id,const NumericContract& c,std::span<const std::byte> bytes,std::size_t count){const PlaneLayout layout{0,{4,0}};FrameStamp stamp;stamp.available=true;stamp.sequence=stamp.source_sequence=++sequence;stamp.generation=stamp.producer_epoch=1;
-        DataFrameView frame{stamp,NumericView{&c,bytes,std::span(&layout,1),{count,1},{},{}}};require(plan->process_numeric_ports(id,0,frame,*state,{},NumericRuntimeCallbacks{callback,nullptr,nullptr,&result})==Status::ok,"process correction input");};
-    const std::array<float,4> samples=logarithmic?std::array<float,4>{-60,-50,-120,-119}:std::array<float,4>{2,3,0,1};feed(3,vector,std::as_bytes(std::span(samples)),4);
-    require(result.calls==1,"one corrected frame, not one per parameter update");
-    require(result.values==(logarithmic?std::array<float,4>{-50,-60,-120,-120}:std::array<float,4>{1,6,0,4}),"actual runtime applies numeric coefficients and preserves the silence floor");
+return graph;
+}
+
+struct NormalizationResult{std::array<float,4> values{};unsigned calls=0;};
+void normalization_result(void* user,const dataflow_runtime::NumericPortFrameView& event) {
+if(event.identity.node!=4 || event.status!=Status::ok)return;auto& r=*static_cast<NormalizationResult*>(user);++r.calls;const auto& v=std::get<NumericView>(event.frame.payload);for(std::size_t i=0;i<4;++i)require(load_element(v,{0,i,0},r.values[i])==Status::ok,"read corrected value");}
+
+static void replace_runtime_coefficients(bool logarithmic,domain::NumericProcessingGraph& graph,const dataflow_runtime::NumericRuntimeProfile& profile,std::shared_ptr<const dataflow_runtime::PreparedGraph>& plan,std::unique_ptr<dataflow_runtime::RuntimeContext>& state,NormalizationResult& result,domain::ConfiguredProcessingNode& fill,const NumericContract& scalar,domain::OwnedProcessingContract& coefficients,const auto& feed,const NumericContract& vector,const std::array<float,4>& samples) {
+    using namespace dataflow_runtime;
     const std::array<float,4> replacement=logarithmic?std::array<float,4>{0,0,0,0}:std::array<float,4>{2,2,2,2};
     put(get(graph,2),"values",NumericArray{std::vector<float>(replacement.begin(),replacement.end())});auto previous=std::move(plan);auto old=std::move(state);
     require(PreparedGraph::prepare_numeric(graph,profile,plan,state,previous.get(),old.get())==Status::ok,"replace correction in a running compatible graph");feed(3,vector,std::as_bytes(std::span(samples)),4);
@@ -273,39 +287,38 @@ void runtime_arrays(bool logarithmic){
     put(fill,"values",NumericArray{{1,std::numeric_limits<float>::quiet_NaN(),1,1}});std::size_t count=0;require(array_generator_values(fill,{},count)!=Status::ok,"nonfinite coefficient refused");
     put(fill,"values",NumericArray{{1,1}});require(array_generator_output_contract(fill,scalar,coefficients)!=Status::ok,"wrong coefficient length refused");
 }
-void dialog_and_persistence(const NumericProcessingGraph& initial){
-    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();for(const auto& kind:numeric_editor::catalog())registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
-    NumericEditorGraphModel model(registry);QUndoStack undo;model.set_undo_stack(&undo);QString error;
-    require(model.set_numeric_graph(initial,&error),"load current standard scheme");const auto original=model.save();
-    const auto targets=[&]{return frequency_profile_targets(model.numeric_graph());};const auto initialTargets=targets();
-    if(initialTargets.empty()){
-        std::fprintf(stderr,"profile routes before editor=%zu after editor=0\n",frequency_profile_targets(initial).size());
-        for(const auto& n:model.numeric_graph().nodes)if(n.kind=="AmplitudePhase" || n.kind=="PcmResampler" || n.kind=="WindowFunction"){
-            std::fprintf(stderr,"route node=%lld kind=%s\n",static_cast<long long>(n.id),n.kind.c_str());
-            for(const auto& field:std::get<TransformProcessingParameters>(n.parameters).values){
-                if(const auto* text=std::get_if<std::string>(&field.value))std::fprintf(stderr,"  %s=%s\n",field.key.c_str(),text->c_str());
-                if(const auto* number=std::get_if<NumericLiteral>(&field.value))std::fprintf(stderr,"  %s=%.12g\n",field.key.c_str(),std::visit([](auto value){return double(value);},*number));
-            }
-        }
-    }
-    require(!initialTargets.empty(),"no compatible profile route in the imported graph");auto target=initialTargets.front();
-    std::optional<dsp_kernels::FrequencyProfile> applied;
-    auto apply=[&](const FrequencyProfileTarget& t,const dsp_kernels::FrequencyProfile& p,QString& error){ConfiguredProcessingNode fill,arithmetic;if(!frequency_profile_edits(model.numeric_graph(),t,p,fill,arithmetic,error))return false;if(!model.edit_nodes({fill,arithmetic},&error))return false;applied=p;return true;};
-    QTemporaryDir directory;QByteArray wav;const unsigned rate=48000,frames=12000;auto word=[&](unsigned v,unsigned n){for(unsigned b=0;b<n;++b)wav.append(char(v>>(8*b)));};
-    wav.append("RIFF");word(36+2*frames,4);wav.append("WAVEfmt ");word(16,4);word(1,2);word(1,2);word(rate,4);word(2*rate,4);word(2,2);word(16,2);wav.append("data");word(2*frames,4);
-    for(unsigned i=0;i<frames;++i){double sample=0;for(unsigned tone=0;tone<8;++tone)sample+=.035*std::sin(2*std::numbers::pi*(200+tone*173)*i/rate+.3*std::sin(double(i)/rate+tone));word(unsigned(std::int16_t(sample*32767)),2);}
-    QFile file(directory.filePath("tones.wav"));require(file.open(QIODevice::WriteOnly)&&file.write(wav)==wav.size(),"write synthetic file");file.close();
-    MusicAnalysisDialog dialog(targets,apply,analysis_services());dialog.show();QCoreApplication::processEvents();
-    auto* choices=dialog.findChild<QComboBox*>("musicSpectrum");auto* compensation=dialog.findChild<QCheckBox*>("musicSpectrumCompensation");
-    const auto kinds=dsp_kernels::amplitude_spectrum_projections();require(choices && choices->count()==int(kinds.size()) && compensation,"batch exposes shared spectrum settings");
-    for(int i=0;i<choices->count();++i)require(choices->itemData(i).toInt()==int(kinds[std::size_t(i)]),"batch uses common representation registry and stable enum values");
-    require(compensation->isChecked()==target.options.compatibility.projection.compensate,"batch compensation reflects the graph route");
-    auto* files=dialog.findChild<QListWidget*>("musicFiles");files->addItem(file.fileName());files->addItem(file.fileName());
-    auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
-    auto* applyButton=dialog.findChild<QPushButton*>("musicApplyProfile");require(applyButton && applyButton->isEnabled(),"actual batch dialog prepares applicable profile");
-    auto* statistics=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");require(statistics && std::size_t(statistics->rowCount())==target.options.compatibility.fft_size/2 && !statistics->item(1,5)->text().isEmpty(),"per-bin mean, gains and frequency occurrence shown");
-    require(!dialog.findChild<QLabel*>("musicMeanValue")->text().isEmpty(),"aggregate mean shown");applyButton->click();
-    require(undo.count()==1 && model.save()!=original,"apply updates both coefficient and arithmetic nodes in one undo item");
+void runtime_arrays(bool logarithmic){
+    using namespace dataflow_runtime;constexpr std::array<std::uint32_t,1> mono{0};constexpr FrameLimits limits{1,32,4096,4096,256,4096};
+    NumericContract vector;vector.channel_order=mono;vector.clock={"fixture",{1,48000},48000};vector.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{4,4},ExtentBounds{}}};vector.representation.alignment=alignof(float);
+    OwnedProcessingContract measured;require(numeric_metadata_output_contract(vector,false,measured)==Status::ok,"measure actual input length");const auto scalar=std::get<NumericContract>(measured.view());
+    ConfiguredProcessingNode fill;OwnedProcessingContract coefficients;
+    auto graph=normalization_runtime_graph(vector,scalar,logarithmic,fill,coefficients);
+    NumericRuntimeProfile profile{{16,32,8,32,1048576,4*1048576,limits},{{1048576,1048576,1048576,131072},0,16*1048576},{4096,1,4096,4096,1048576},{true,true,true}};
+    for(const auto& n:graph.nodes){ResolvedProcessingNode resolved;const auto diagnostic=resolve_processing_node(n,profile.admission,resolved);if(!diagnostic)std::fprintf(stderr,"primitive admission node=%lld error=%u port=%u\n",static_cast<long long>(n.id),unsigned(diagnostic.error),unsigned(diagnostic.port));}
+    NumericProcessingGraph evaluated,executable;const auto binding=resolve_numeric_parameter_bindings(graph,profile.admission,evaluated,executable);if(!binding)std::fprintf(stderr,"primitive binding node=%lld error=%u port=%u\n",static_cast<long long>(binding.node),unsigned(binding.error),unsigned(binding.port));
+    std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;const auto prepared=PreparedGraph::prepare_numeric(graph,profile,plan,state);if(prepared!=Status::ok)std::fprintf(stderr,"primitive prepare status=%u\n",unsigned(prepared));require(prepared==Status::ok,"prepare numeric normalization runtime");
+    NormalizationResult result;
+    const auto callback=normalization_result;
+    std::uint64_t sequence=0;auto feed=[&](NodeId id,const NumericContract& c,std::span<const std::byte> bytes,std::size_t count){const PlaneLayout layout{0,{4,0}};FrameStamp stamp;stamp.available=true;stamp.sequence=stamp.source_sequence=++sequence;stamp.generation=stamp.producer_epoch=1;
+        DataFrameView frame{stamp,NumericView{&c,bytes,std::span(&layout,1),{count,1},{},{}}};require(plan->process_numeric_ports(id,0,frame,*state,{},NumericRuntimeCallbacks{callback,nullptr,nullptr,&result})==Status::ok,"process correction input");};
+    const std::array<float,4> samples=logarithmic?std::array<float,4>{-60,-50,-120,-119}:std::array<float,4>{2,3,0,1};feed(3,vector,std::as_bytes(std::span(samples)),4);
+    require(result.calls==1,"one corrected frame, not one per parameter update");
+    require(result.values==(logarithmic?std::array<float,4>{-50,-60,-120,-120}:std::array<float,4>{1,6,0,4}),"actual runtime applies numeric coefficients and preserves the silence floor");
+    replace_runtime_coefficients(logarithmic,graph,profile,plan,state,result,fill,scalar,coefficients,feed,vector,samples);
+}
+void normalization_dialog_images(MusicAnalysisDialog& dialog) {
+    const auto evidence=QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).absoluteFilePath("../.agent-workspace/normalization-ui");require(QDir().mkpath(evidence),"create own-renderer image directory");
+    for(const auto* language:{"ru","en"})for(const auto* theme:{"light","dark"}){ui::Language::instance().set(language);ui::Theme::instance().set(theme);dialog.findChild<QTabWidget*>()->setCurrentIndex(4);QCoreApplication::processEvents();
+        require(dialog.grab().save(evidence+QString("/analysis-%1-%2.png").arg(language,theme)),"save owned dialog renderer image");
+        dialog.findChild<QTabWidget*>()->setCurrentIndex(2);QCoreApplication::processEvents();
+        require(dialog.grab().save(evidence+QString("/results-preview-%1-%2.png").arg(language,theme)),"save owned cached-preview renderer");
+        dialog.findChild<QTabWidget*>()->setCurrentIndex(5);QCoreApplication::processEvents();
+        require(dialog.grab().save(evidence+QString("/results-track-spectrum-%1-%2.png").arg(language,theme)),"save owned per-track spectrum renderer");
+        dialog.findChild<QPushButton*>("musicNewScan")->click();QCoreApplication::processEvents();
+        require(dialog.grab().save(evidence+QString("/setup-%1-%2.png").arg(language,theme)),"save owned scan-settings renderer");
+        dialog.findChild<QPushButton*>("musicShowResults")->click();QCoreApplication::processEvents();}}
+
+void normalization_project_roundtrip(MusicAnalysisDialog& dialog,NumericEditorGraphModel& model,const auto& registry,QUndoStack& undo,const auto& original,const auto& target,const auto& applied,const QTemporaryDir& directory,QString& error) {
     require(applied.has_value(),"analysis result reaches the explicit apply action");desktop_analysis::offline::ProfileDocument exported;exported.profile=*applied;
     const auto profilePath=directory.filePath("frequency-profile.json");require(desktop_analysis::offline::save_profile(profilePath,exported,error),"export actual trained profile");desktop_analysis::offline::ProfileDocument imported;
     require(desktop_analysis::offline::load_profile(profilePath,imported,error) && imported.profile.gains==applied->gains && imported.profile.mean_spectrum==applied->mean_spectrum && imported.profile.frequency_presence==applied->frequency_presence,"profile export/reload preserves actual means, occurrence and coefficients");
@@ -316,16 +329,57 @@ void dialog_and_persistence(const NumericProcessingGraph& initial){
     const auto path=directory.filePath("corrected.json");require(bool(desktop::save_numeric_project(project,path)),"save corrected project");desktop::NumericProjectDocument loaded;NumericProcessingGraph reloaded;require(bool(desktop::load_numeric_project(path,loaded,reloaded)),"reload corrected project");
     require(same_processing_parameters(get(reloaded,target.coefficients).parameters,get(graph,target.coefficients).parameters),"saved project retains exact coefficients");
     require(dialog.findChild<QLabel*>("musicStatus")->text().contains("save",Qt::CaseInsensitive) || dialog.findChild<QLabel*>("musicStatus")->text().contains(QString::fromUtf8("сохран"),Qt::CaseInsensitive),"dialog confirms scheme application");
-    const auto evidence=QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).absoluteFilePath("../.agent-workspace/normalization-ui");require(QDir().mkpath(evidence),"create own-renderer image directory");
-    for(const auto* language:{"ru","en"})for(const auto* theme:{"light","dark"}){ui::Language::instance().set(language);ui::Theme::instance().set(theme);dialog.findChild<QTabWidget*>()->setCurrentIndex(4);QCoreApplication::processEvents();
-        require(dialog.grab().save(evidence+QString("/analysis-%1-%2.png").arg(language,theme)),"save owned dialog renderer image");
-        dialog.findChild<QTabWidget*>()->setCurrentIndex(2);QCoreApplication::processEvents();
-        require(dialog.grab().save(evidence+QString("/results-preview-%1-%2.png").arg(language,theme)),"save owned cached-preview renderer");
-        dialog.findChild<QTabWidget*>()->setCurrentIndex(5);QCoreApplication::processEvents();
-        require(dialog.grab().save(evidence+QString("/results-track-spectrum-%1-%2.png").arg(language,theme)),"save owned per-track spectrum renderer");
-        dialog.findChild<QPushButton*>("musicNewScan")->click();QCoreApplication::processEvents();
-        require(dialog.grab().save(evidence+QString("/setup-%1-%2.png").arg(language,theme)),"save owned scan-settings renderer");
-        dialog.findChild<QPushButton*>("musicShowResults")->click();QCoreApplication::processEvents();}
+}
+
+void normalization_dialog_scan(MusicAnalysisDialog& dialog,const auto& target,const QString& wavPath) {
+    auto* choices=dialog.findChild<QComboBox*>("musicSpectrum");auto* compensation=dialog.findChild<QCheckBox*>("musicSpectrumCompensation");
+    const auto kinds=dsp_kernels::amplitude_spectrum_projections();require(choices && choices->count()==int(kinds.size()) && compensation,"batch exposes shared spectrum settings");
+    for(int i=0;i<choices->count();++i)require(choices->itemData(i).toInt()==int(kinds[std::size_t(i)]),"batch uses common representation registry and stable enum values");
+    require(compensation->isChecked()==target.options.compatibility.projection.compensate,"batch compensation reflects the graph route");
+    auto* files=dialog.findChild<QListWidget*>("musicFiles");files->addItem(wavPath);files->addItem(wavPath);
+    auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
+    auto* applyButton=dialog.findChild<QPushButton*>("musicApplyProfile");require(applyButton && applyButton->isEnabled(),"actual batch dialog prepares applicable profile");
+    auto* statistics=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");require(statistics && std::size_t(statistics->rowCount())==target.options.compatibility.fft_size/2 && !statistics->item(1,5)->text().isEmpty(),"per-bin mean, gains and frequency occurrence shown");
+    require(!dialog.findChild<QLabel*>("musicMeanValue")->text().isEmpty(),"aggregate mean shown");applyButton->click();
+}
+
+QString normalization_wave_fixture(const QTemporaryDir& directory) {
+QByteArray wav;const unsigned rate=48000,frames=12000;auto word=[&](unsigned v,unsigned n){for(unsigned b=0;b<n;++b)wav.append(char(v>>(8*b)));};
+    wav.append("RIFF");word(36+2*frames,4);wav.append("WAVEfmt ");word(16,4);word(1,2);word(1,2);word(rate,4);word(2*rate,4);word(2,2);word(16,2);wav.append("data");word(2*frames,4);
+    for(unsigned i=0;i<frames;++i){double sample=0;for(unsigned tone=0;tone<8;++tone)sample+=.035*std::sin(2*std::numbers::pi*(200+tone*173)*i/rate+.3*std::sin(double(i)/rate+tone));word(unsigned(std::int16_t(sample*32767)),2);}
+    QFile file(directory.filePath("tones.wav"));require(file.open(QIODevice::WriteOnly)&&file.write(wav)==wav.size(),"write synthetic file");file.close();
+return file.fileName();
+}
+
+void missing_profile_routes(const NumericProcessingGraph& initial,NumericEditorGraphModel& model,const auto& initialTargets) {
+    if(initialTargets.empty()){
+        std::fprintf(stderr,"profile routes before editor=%zu after editor=0\n",frequency_profile_targets(initial).size());
+        for(const auto& n:model.numeric_graph().nodes)if(n.kind=="AmplitudePhase" || n.kind=="PcmResampler" || n.kind=="WindowFunction"){
+            std::fprintf(stderr,"route node=%lld kind=%s\n",static_cast<long long>(n.id),n.kind.c_str());
+            for(const auto& field:std::get<TransformProcessingParameters>(n.parameters).values){
+                if(const auto* text=std::get_if<std::string>(&field.value))std::fprintf(stderr,"  %s=%s\n",field.key.c_str(),text->c_str());
+                if(const auto* number=std::get_if<NumericLiteral>(&field.value))std::fprintf(stderr,"  %s=%.12g\n",field.key.c_str(),std::visit([](auto value){return double(value);},*number));
+            }
+        }
+    }
+}
+
+void dialog_and_persistence(const NumericProcessingGraph& initial){
+    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();const auto catalog=numeric_editor::catalog();for(const auto& kind:catalog)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    NumericEditorGraphModel model(registry);QUndoStack undo;model.set_undo_stack(&undo);QString error;
+    require(model.set_numeric_graph(initial,&error),"load current standard scheme");const auto original=model.save();
+    const auto targets=[&]{return frequency_profile_targets(model.numeric_graph());};const auto initialTargets=targets();
+    missing_profile_routes(initial,model,initialTargets);
+    require(!initialTargets.empty(),"no compatible profile route in the imported graph");auto target=initialTargets.front();
+    std::optional<dsp_kernels::FrequencyProfile> applied;
+    auto apply=[&](const FrequencyProfileTarget& t,const dsp_kernels::FrequencyProfile& p,QString& error){ConfiguredProcessingNode fill,arithmetic;if(!frequency_profile_edits(model.numeric_graph(),t,p,fill,arithmetic,error))return false;if(!model.edit_nodes({fill,arithmetic},&error))return false;applied=p;return true;};
+    QTemporaryDir directory;const auto wavPath=normalization_wave_fixture(directory);
+    MusicAnalysisDialog dialog(targets,apply,analysis_services());dialog.show();QCoreApplication::processEvents();
+    normalization_dialog_scan(dialog,target,wavPath);
+    require(undo.count()==1 && model.save()!=original,"apply updates both coefficient and arithmetic nodes in one undo item");
+    normalization_project_roundtrip(dialog,model,registry,undo,original,target,applied,directory,error);
+    normalization_dialog_images(dialog);
+
 }
 }
 int main(int argc,char** argv){QApplication app(argc,argv);

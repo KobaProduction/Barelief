@@ -64,20 +64,22 @@ Status prepare_projection(OperationKernelState& kernel,PlanNode& node,const Reso
     return std::get<dsp_kernels::PreparedSpectrumProjection>(kernel.operation).prepare(
         std::size_t(fft_size),sample_rate,*scaling,options)?Status::ok:Status::invalid_argument;
 }
+Status prepare_normalizer_profile(OperationKernelState& kernel,const ResolvedProcessingNode& n) {
+    ProcessingParameterView values;
+    if(resolve_processing_parameter(n,"gains",values)!=Status::ok)return Status::invalid_argument;
+    const auto* gains=std::get_if<std::span<const float>>(&values);
+    auto& normalizer=std::get<dsp_kernels::PreparedFrequencyNormalizer>(kernel.operation);
+    if(!gains || gains->size()!=kernel.input.size() || !normalizer.prepare(*gains))return Status::incompatible_contract;
+    return Status::ok;
+}
 Status prepare_normalizer(OperationKernelState& kernel,const ResolvedProcessingNode& n) {
-
-        const auto mode=operation_text(n,"mode");kernel.operation.emplace<dsp_kernels::PreparedFrequencyNormalizer>();
-        auto& normalizer=std::get<dsp_kernels::PreparedFrequencyNormalizer>(kernel.operation);
-        if(mode=="profile"){
-            ProcessingParameterView values;
-            if(resolve_processing_parameter(n,"gains",values)!=Status::ok)return Status::invalid_argument;
-            const auto* gains=std::get_if<std::span<const float>>(&values);
-            if(!gains || gains->size()!=kernel.input.size() || !normalizer.prepare(*gains))return Status::incompatible_contract;
-        }else {
-            double gain=1;if(mode=="manual" && !numeric_parameter(n,"manual_gain",gain))return Status::invalid_argument;
-            if(!normalizer.prepare_manual(kernel.input.size(),float(gain)))return Status::invalid_argument;
-        }
-        return Status::ok;
+    const auto mode=operation_text(n,"mode");
+    kernel.operation.emplace<dsp_kernels::PreparedFrequencyNormalizer>();
+    if(mode=="profile")return prepare_normalizer_profile(kernel,n);
+    auto& normalizer=std::get<dsp_kernels::PreparedFrequencyNormalizer>(kernel.operation);
+    double gain=1;
+    if(mode=="manual" && !numeric_parameter(n,"manual_gain",gain))return Status::invalid_argument;
+    return normalizer.prepare_manual(kernel.input.size(),float(gain))?Status::ok:Status::invalid_argument;
 }
 }
 Status prepare_signal_operation(OperationKernelState& kernel,PlanNode& node,const ResolvedProcessingNode& n) {

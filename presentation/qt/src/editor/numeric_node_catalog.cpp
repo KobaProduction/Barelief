@@ -82,15 +82,30 @@ constexpr std::array operation_groups{
 };
 QStringList catalog_path(const QString& kind);
 }
-presentation::PlotDescriptor plot_descriptor_for_kind(const QString& kind) {
-    presentation::PlotDescriptor descriptor;
+namespace {
+bool apply_fixed_view_descriptor(const QString& kind,presentation::PlotDescriptor& descriptor) {
     const auto fixed=std::find_if(fixed_view_modes.begin(),fixed_view_modes.end(),[&](const auto& item){return kind==item.kind;});
     if(fixed!=fixed_view_modes.end()){
         descriptor.modes={QString::fromLatin1(fixed->mode)};
         descriptor.category_path={"Graphs",fixed->audio?"Audio":"Universal",QString::fromLatin1(fixed->group)};
         descriptor.audio_scales=fixed->audio;
-        return descriptor;
+        return true;
     }
+    return false;
+}
+}
+namespace {
+void apply_legacy_audio_descriptor(const QString& kind,presentation::PlotDescriptor& descriptor) {
+    if(QStringList{"FFTView","AudioView","WindowView","WindowedView",
+                          "WindowFunctionView","MelView"}.contains(kind)) {
+        descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Audio"),QStringLiteral("Signals")};
+        descriptor.audio_scales=true;
+    }
+}
+}
+presentation::PlotDescriptor plot_descriptor_for_kind(const QString& kind) {
+    presentation::PlotDescriptor descriptor;
+    if(apply_fixed_view_descriptor(kind,descriptor))return descriptor;
     if(kind=="PianoView") {
         descriptor.modes=QStringList{QStringLiteral("piano")};
         descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Audio"),QStringLiteral("Notes")};
@@ -101,11 +116,7 @@ presentation::PlotDescriptor plot_descriptor_for_kind(const QString& kind) {
     } else if(kind=="SpectrogramView") {
         descriptor.modes=QStringList{QStringLiteral("image2d"),QStringLiteral("surface3d")};
         descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Universal"),QStringLiteral("Matrices")};
-    } else if(QStringList{"FFTView","AudioView","WindowView","WindowedView",
-                          "WindowFunctionView","MelView"}.contains(kind)) {
-        descriptor.category_path=QStringList{QStringLiteral("Graphs"),QStringLiteral("Audio"),QStringLiteral("Signals")};
-        descriptor.audio_scales=true;
-    }
+    } else apply_legacy_audio_descriptor(kind,descriptor);
     return descriptor;
 }
 
@@ -163,16 +174,22 @@ QString category(const QString& kind) {
     return role==NodeRole::Source?"Sources":role==NodeRole::Sink?"Outputs":"Processors";
 }
 bool is_graph_view(const QString& kind) {return draft_view(kind.toStdString());}
-QString direction_group(const QString& kind) {
-    if(QStringList{"AudioSource","SpectrumPeak"}.contains(kind))return "Audio";
-    if(QStringList{"TestSignal","SignalGenerator"}.contains(kind))return "Generators";
-    if(QStringList{"Fs","UInt32Constant","Number","ArrayLength","SampleRate","FrequencyStep"}.contains(kind))return "Numeric values";
-    if(QStringList{"NetworkInput","WLEDOutput","WLEDEncode"}.contains(kind))return "Transport";
+namespace {
+QString processing_direction_group(const QString& kind) {
     if(is_graph_view(kind))return "Graphs";
     if(QStringList{"InputSelector","Switch","Splitter","Gate","Reroute"}.contains(kind))return "Routing";
     if(kind=="Spectrogram" || kind=="NumberAccumulator")return "Accumulation";
     return "Operations";
 }
+}
+QString direction_group(const QString& kind) {
+    if(QStringList{"AudioSource","SpectrumPeak"}.contains(kind))return "Audio";
+    if(QStringList{"TestSignal","SignalGenerator"}.contains(kind))return "Generators";
+    if(QStringList{"Fs","UInt32Constant","Number","ArrayLength","SampleRate","FrequencyStep"}.contains(kind))return "Numeric values";
+    if(QStringList{"NetworkInput","WLEDOutput","WLEDEncode"}.contains(kind))return "Transport";
+    return processing_direction_group(kind);
+}
+
 namespace {
 QStringList catalog_path(const QString& kind) {
     const auto parent=category(kind);

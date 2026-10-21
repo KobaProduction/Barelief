@@ -123,11 +123,14 @@ void initialize_broadband_boundaries(Factory& f) {
     if(descriptor->default_array.empty() || descriptor->default_array.back()>=nyquist)boundaries.values.push_back(nyquist);
     f.field("boundaries_hz",std::move(boundaries));
 }
-void initialize_music(Factory& f,std::string_view kind) {
-    const auto input=music_input(f,kind);
+void initialize_music_frontend(Factory& f,std::string_view kind) {
     if(one_of(kind,{"RFFT","SpectrumProjection","FrequencyNormalizer"}))f.field("fft_size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
     if(kind=="SpectrumProjection")f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
     if(kind=="FrequencyNormalizer"){f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});f.field("first_bin",NumericLiteral{std::uint64_t{0}});}
+}
+void initialize_music(Factory& f,std::string_view kind) {
+    const auto input=music_input(f,kind);
+    initialize_music_frontend(f,kind);
     if(one_of(kind,{"BroadbandFeatures","NoteSalience","MusicalSpectrogram","BroadbandRow","NoteSpectrum"}))f.field("bin_hz",NumericLiteral{double(f.settings.sample_rate)/f.settings.fft_size});
     if(kind=="NoteSalience"){
         f.field("power_bandwidth_hz",NumericLiteral{double(f.settings.sample_rate)/f.settings.fft_size});
@@ -163,6 +166,13 @@ void initialize_number_accumulator(Factory& f) {
     auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.quantity=Quantity::FilledFrameCount;
     f.port(PortDirection::Output,1,count);
 }
+void initialize_history_view(Factory& f,std::string_view kind,NumericContract& input) {
+    if(kind=="SpectrogramView") {
+        input.semantic=Semantic::History;input.history_element=Semantic::Numeric;input.shape.rank=Rank::Matrix;
+        input.shape.axes={Axis::Time,Axis::Band};input.shape.extents={ExtentBounds{0,f.settings.history_capacity},ExtentBounds{50,50}};
+        input.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
+    }
+}
 NumericContract view_input(Factory& f,std::string_view kind) {
     auto input=f.vector(Semantic::Numeric,f.settings.packet_samples);
     if(kind=="ScalarView" || one_of(kind,{"ScalarMetricsView","ScalarSignedBarView"}))input=f.scalar();
@@ -174,11 +184,7 @@ NumericContract view_input(Factory& f,std::string_view kind) {
         input.shape.axes={Axis::Sample,Axis::Component};
         input.shape.extents={ExtentBounds{16,16},ExtentBounds{16,16}};
     }
-    if(kind=="SpectrogramView") {
-        input.semantic=Semantic::History;input.history_element=Semantic::Numeric;input.shape.rank=Rank::Matrix;
-        input.shape.axes={Axis::Time,Axis::Band};input.shape.extents={ExtentBounds{0,f.settings.history_capacity},ExtentBounds{50,50}};
-        input.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
-    }
+    initialize_history_view(f,kind,input);
     return input;
 }
 void initialize_views(Factory& f,std::string_view kind) {
@@ -206,8 +212,7 @@ NumericContract signal_input(Factory& f,std::string_view kind) {
     if(kind=="Mixer"){input.shape.extents[0].minimum=1;f.node.parameters=MixerProcessingParameters{};}
     return input;
 }
-void initialize_signal(Factory& f,std::string_view kind) {
-    const auto input=signal_input(f,kind);auto output=f.vector(Semantic::PCM,f.settings.packet_samples);
+void initialize_signal_parameters(Factory& f,std::string_view kind) {
     if(kind=="Window")f.field("size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
     if(kind=="Window")f.field("input_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
     if(kind=="PcmResampler")f.field("input_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
@@ -216,6 +221,10 @@ void initialize_signal(Factory& f,std::string_view kind) {
         f.field("bin_hz",NumericLiteral{double(f.settings.sample_rate)/f.settings.fft_size});
         f.field("first_bin",NumericLiteral{std::uint64_t{1}});
     }
+}
+void initialize_signal(Factory& f,std::string_view kind) {
+    const auto input=signal_input(f,kind);auto output=f.vector(Semantic::PCM,f.settings.packet_samples);
+    initialize_signal_parameters(f,kind);
     if(one_of(kind,{"Mixer","SpectrumGain","SpectrumMerge","BarkWeighting"}))output=input;
     f.io(input,output,one_of(kind,{"Mixer","ChannelComparison"})?2:1,1);
     if(kind=="ChannelComparison"){f.node.outputs.clear();f.port(PortDirection::Output,0,f.scalar());}
@@ -264,11 +273,15 @@ bool initialize_operations(Factory& f,std::string_view kind) {
     if(one_of(kind,{"Window","StereoFFT","SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude","PcmResampler","Mixer","ChannelComparison"})){initialize_signal(f,kind);return true;}
     return false;
 }
+bool initialize_interface(Factory& f,std::string_view kind,NodeRole role) {
+    if(kind=="SpectrumPeak"){initialize_peak(f);return true;}
+    if(role==NodeRole::Source){initialize_source(f,kind);return true;}
+    if(one_of(kind,{"Splitter","Switch","Gate","Reroute","InputSelector"})){initialize_routes(f,kind);return true;}
+    if(const auto k=node_kind(kind);k && is_view(*k)){initialize_views(f,kind);return true;}
+    return false;
+}
 void initialize(Factory& f,std::string_view kind,NodeRole role) {
-    if(kind=="SpectrumPeak"){initialize_peak(f);return;}
-    if(role==NodeRole::Source){initialize_source(f,kind);return;}
-    if(one_of(kind,{"Splitter","Switch","Gate","Reroute","InputSelector"})){initialize_routes(f,kind);return;}
-    if(const auto k=node_kind(kind);k && is_view(*k)){initialize_views(f,kind);return;}
+    if(initialize_interface(f,kind,role))return;
     if(one_of(kind,{"WLED","WLEDEncode","WLEDOutput","NetworkOutput"})){initialize_transport(f,kind);return;}
     if(!initialize_operations(f,kind))initialize_numeric(f,kind);
 }

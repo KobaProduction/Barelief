@@ -29,6 +29,9 @@ struct NumericControlServer::Impl {
             note_stopped_analyzer(next);
             state=std::move(next);return true;
         }
+        return refresh_capabilities(std::move(next));
+    }
+    bool refresh_capabilities(EngineSnapshot next) {
         domain::NumericProcessingGraph candidate;
         if(!next.graph.isEmpty()) {
             const auto result=desktop::decode_numeric_graph(QJsonDocument(next.graph).toJson(QJsonDocument::Compact),candidate);
@@ -94,20 +97,47 @@ struct NumericControlServer::Impl {
             // Established session capabilities stay pinned; its registered reply check
             // admits every new graph against this snapshot. New peers use fresh capabilities.
         }
+        bool valid_data_envelope(const nd::Message& m) const {
+            const auto identity=control->identity();
+            if(m.envelope.nonce!=control->nonce()||m.envelope.session!=identity.session||m.envelope.revision!=revision||
+               m.envelope.delivery_epoch!=identity.epoch||m.envelope.delivery_generation!=m.stamp.generation)return false;
+            return true;
+        }
+        bool accept_data_payload(bdsp_protocol::PacketView p,std::span<const std::uint8_t>& bytes) {
+            if(p.id==nd::FragmentId)return codec.assembler.accept(bytes,bytes)==Status::ok&&!bytes.empty();
+            return p.id==nd::SubscribeId||p.id==nd::EventsId||p.id==nd::QueryId;
+        }
         void packet(bdsp_protocol::PacketView p) {
             auto bytes=p.payload;
-            if(p.id==nd::FragmentId){if(codec.assembler.accept(bytes,bytes)!=Status::ok||bytes.empty())return;}
-            else if(p.id!=nd::SubscribeId&&p.id!=nd::EventsId&&p.id!=nd::QueryId)return;
+            if(!accept_data_payload(p,bytes))return;
             nd::Message m;const auto identity=control->identity();
             if(codec.decode(bytes,m,codec.reference_context(bindings,control->nonce(),identity.session,revision))!=Status::ok)return;
-            if(m.envelope.nonce!=control->nonce()||m.envelope.session!=identity.session||m.envelope.revision!=revision||
-               m.envelope.delivery_epoch!=identity.epoch||m.envelope.delivery_generation!=m.stamp.generation)return;
+            if(!valid_data_envelope(m))return;
             const auto e=endpoint(m.endpoint);
             if(p.id==nd::SubscribeId){subscribe(m,e);return;}
+            dispatch_bound_packet(p.id,m,e);
+        }
+        void dispatch_bound_packet(std::uint8_t id,nd::Message& m,const EndpointIdentity& e) {
             auto b=std::find_if(bindings.begin(),bindings.end(),[&](const auto& v){return v.context->endpoint==e&&v.acknowledged;});
             if(b==bindings.end())return;
-            if(p.id==nd::QueryId){query(m,e,*b);return;}
+            if(id==nd::QueryId){query(m,e,*b);return;}
             receive_input(m,e,*b);
+        }
+        void acknowledge_existing_subscription(const nd::Message& m,const EndpointIdentity& e,const Binding& old) {
+                if(old.context->endpoint==e&&old.stream==m.stamp.stream_id&&
+                   signal_contracts::same_contract(old.wire_owner.view(),m.contract))acknowledgements.push_back(old.id);
+        }
+        void install_subscription(Binding b,std::deque<Binding>::iterator old) {
+            b.acknowledged=true;
+            if(old!=bindings.end()){*old=std::move(b);acknowledgements.push_back(old->id);}
+            else {bindings.push_back(std::move(b));acknowledgements.push_back(bindings.back().id);}
+            server.update_demand();
+        }
+        void complete_subscription(const nd::Message& m,const EndpointIdentity& e,const domain::ProcessingPort& port,std::deque<Binding>::iterator old) {
+            Binding b;if(make_binding(e,port.contract,std::uint32_t(m.envelope.request),arena,b)!=Status::ok||
+                !signal_contracts::same_contract(b.wire_owner.view(),m.contract)||b.stream!=m.stamp.stream_id)return;
+            if(!history_subscription_matches(m,port.contract.view()))return;
+            install_subscription(std::move(b),old);
         }
         void subscribe(const nd::Message& m,const EndpointIdentity& e) {
             if(m.kind!=nd::Kind::Unavailable||m.stamp.available||!m.envelope.request||m.envelope.request>UINT32_MAX||
@@ -115,19 +145,15 @@ struct NumericControlServer::Impl {
             const auto* port=find_port(server.graph,e);if(!port)return;
             auto old=std::find_if(bindings.begin(),bindings.end(),[&](const auto& b){return b.context->endpoint==e||b.id==m.envelope.request;});
             if(old!=bindings.end()&&old->id==m.envelope.request) {
-                if(old->context->endpoint==e&&old->stream==m.stamp.stream_id&&
-                   signal_contracts::same_contract(old->wire_owner.view(),m.contract))acknowledgements.push_back(old->id);
+                acknowledge_existing_subscription(m,e,*old);
                 return;
             }
             if(old==bindings.end()&&bindings.size()>=MaxBindings)return;
-            Binding b;if(make_binding(e,port->contract,std::uint32_t(m.envelope.request),arena,b)!=Status::ok||
-                !signal_contracts::same_contract(b.wire_owner.view(),m.contract)||b.stream!=m.stamp.stream_id)return;
-            const auto c=port->contract.view();const auto* history=std::get_if<signal_contracts::NumericContract>(&c);
-            if(m.history.capacity && (!history || history->shape.rank!=signal_contracts::Rank::Matrix || m.history.capacity!=history->shape.extents[0].maximum))return;
-            b.acknowledged=true;
-            if(old!=bindings.end()){*old=std::move(b);acknowledgements.push_back(old->id);}
-            else {bindings.push_back(std::move(b));acknowledgements.push_back(bindings.back().id);}
-            server.update_demand();
+            complete_subscription(m,e,*port,old);
+        }
+        bool history_subscription_matches(const nd::Message& m,const signal_contracts::DataContract& c) const {
+            const auto* history=std::get_if<signal_contracts::NumericContract>(&c);
+            return !m.history.capacity || (history && history->shape.rank==signal_contracts::Rank::Matrix && m.history.capacity==history->shape.extents[0].maximum);
         }
         void query(const nd::Message& m,const EndpointIdentity& e,const Binding& b) {
             const auto c=b.context->contract.view();const auto* h=std::get_if<signal_contracts::NumericContract>(&c);
@@ -143,19 +169,27 @@ struct NumericControlServer::Impl {
             if(inbound.size()>=QueueSize){inbound_losses.insert(e);received_sequence=m.envelope.delivery_sequence;return;}
             const auto n=std::find_if(server.graph.nodes.begin(),server.graph.nodes.end(),[&](const auto& n){return n.id==e.node;});
             if(n==server.graph.nodes.end()||n->kind!="NetworkInput"||e.direction!=domain::PortDirection::Output||e.port!=domain::processing_output)return;
-            if(m.kind==nd::Kind::Snapshot || (m.kind==nd::Kind::Unavailable && m.history.capacity)) {
-                if(!m.envelope.request)return;
-                DeliveredNumericFrame retained;if(retain_snapshot(m,b,codec,arena,retained)!=Status::ok||!retained.frame)return;
+            if(!retain_input(m,e,b))return;
+            received_sequence=m.envelope.delivery_sequence;
+        }
+        bool retain_input_snapshot(nd::Message& m,const EndpointIdentity& e,const Binding& b) {
+                if(!m.envelope.request)return false;
+                DeliveredNumericFrame retained;if(retain_snapshot(m,b,codec,arena,retained)!=Status::ok||!retained.frame)return false;
                 if(inbound_losses.erase(e))retained.frame=retained.frame.with_discontinuity();
                 inbound.push_back({e.node,std::move(retained),m.history.ordinal,m.history.filled});
-            } else {
-                if(m.envelope.request)return;
-                Queued retained;if(retain_delivery(m,b,codec,arena,retained)!=Status::ok)return;
-                auto* frame=std::get_if<DeliveredNumericFrame>(&retained);if(!frame||!frame->frame){inbound_losses.insert(e);return;}
+            return true;
+        }
+        bool retain_input_frame(nd::Message& m,const EndpointIdentity& e,const Binding& b) {
+                if(m.envelope.request)return false;
+                Queued retained;if(retain_delivery(m,b,codec,arena,retained)!=Status::ok)return false;
+                auto* frame=std::get_if<DeliveredNumericFrame>(&retained);if(!frame||!frame->frame){inbound_losses.insert(e);return false;}
                 if(inbound_losses.erase(e))frame->frame=frame->frame.with_discontinuity();
                 inbound.push_back({e.node,*frame,{}});
-            }
-            received_sequence=m.envelope.delivery_sequence;
+            return true;
+        }
+        bool retain_input(nd::Message& m,const EndpointIdentity& e,const Binding& b) {
+            return m.kind==nd::Kind::Snapshot || (m.kind==nd::Kind::Unavailable && m.history.capacity)
+                ?retain_input_snapshot(m,e,b):retain_input_frame(m,e,b);
         }
         void enqueue(const Queued& value) {
             const auto& f=frame(value);if(!f.context||f.delivery.graph_revision!=revision)return;
@@ -165,10 +199,14 @@ struct NumericControlServer::Impl {
         }
         void transmit() {
             if(failed||control->state()!=control::ControlSessionState::Ready)return;
-            if(codec.wire_bytes){const auto result=codec.flush(*control);if(result!=Status::ok&&result!=Status::would_block)failed=true;return;}
+            if(codec.wire_bytes){flush_wire();return;}
             if(!acknowledgements.empty()){transmit_acknowledgement();return;}
             if(!queries.empty()){transmit_query();return;}
             if(!outbound.empty())transmit_delivery();
+        }
+        void flush_wire() {
+            const auto result=codec.flush(*control);
+            if(result!=Status::ok&&result!=Status::would_block)failed=true;
         }
         void transmit_acknowledgement() {
             const auto id=acknowledgements.front();acknowledgements.pop_front();
@@ -213,18 +251,23 @@ struct NumericControlServer::Impl {
             peers.push_back(std::move(peer));
         }
     }
+    void poll_peers() {
+        engine.with_control_service([&](auto&){for(auto& p:peers)poll_peer(*p);});
+    }
+    void service_peers() {for(auto& p:peers)service_peer(*p);}
     void pump() {
         if(pumping)return;pumping=true;
         if(!refresh()){pumping=false;return;}
         if(peers.empty()){update_demand();pumping=false;return;}
-        engine.with_control_service([&](auto&) {
-            for(auto& p:peers)poll_peer(*p);
-        });
-        // Service projection and all input feeding occur after the shared lock.
-        if(refresh())for(auto& p:peers)service_peer(*p);
+        poll_peers();
+        // Service projection and input feeding remain outside the shared control lock.
+        if(refresh())service_peers();
+        remove_failed_peers();
+        update_demand();pumping=false;
+    }
+    void remove_failed_peers() {
         if(std::any_of(peers.begin(),peers.end(),[](const auto& p){return p->failed;}))
             engine.with_control_service([&](auto&){std::erase_if(peers,[](const auto& p){return p->failed;});});
-        update_demand();pumping=false;
     }
     void fail_peer(Peer& peer,Status result) {
         error=QStringLiteral("CONTROL peer failed: status=%1 state=%2 error=%3 assembly=%4 pending=%5")
@@ -251,17 +294,24 @@ struct NumericControlServer::Impl {
         feed_peer_input(peer);
         engine.with_control_service([&](auto&){drain_peer(peer);});
     }
+    bool refresh_peer(Peer& peer) {
+        if(!refresh()){peer.failed=true;return false;}
+        peer.synchronize();return true;
+    }
+    bool peer_idle(const Peer& peer,std::size_t queued,std::size_t offset,std::size_t pending) const {
+        if(queued==peer.outbound.size()+peer.acknowledgements.size()+peer.queries.size() &&
+            offset==peer.codec.wire_offset && pending==peer.control->pending_bytes())return true;
+        return peer.outbound.empty()&&peer.acknowledgements.empty()&&peer.queries.empty()&&
+            !peer.codec.wire_bytes&&!peer.control->pending_bytes();
+    }
     void drain_peer(Peer& peer) {
         for(unsigned step=0;step<64 && !peer.failed;++step){
             const auto queued=peer.outbound.size()+peer.acknowledgements.size()+peer.queries.size();
             const auto offset=peer.codec.wire_offset,pending=peer.control->pending_bytes();
             peer.transmit();const auto io=peer.control->poll(peer.transport(),peer.pending());
             if(io!=Status::ok&&io!=Status::would_block){fail_peer(peer,io);break;}
-            if(!refresh()){peer.failed=true;break;}peer.synchronize();
-            if(queued==peer.outbound.size()+peer.acknowledgements.size()+peer.queries.size() &&
-               offset==peer.codec.wire_offset && pending==peer.control->pending_bytes())break;
-            if(peer.outbound.empty()&&peer.acknowledgements.empty()&&peer.queries.empty()&&
-               !peer.codec.wire_bytes&&!peer.control->pending_bytes())break;
+            if(!refresh_peer(peer))break;
+            if(peer_idle(peer,queued,offset,pending))break;
         }
     }
 };

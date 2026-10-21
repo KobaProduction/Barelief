@@ -5,9 +5,8 @@
 #include <stdexcept>
 #include <iostream>
 static void require(bool value, const char *message) { if (!value) throw std::runtime_error(message); }
-int main() {
-    try {
-        {
+static void wake_cases() {
+
             pipeline::CaptureWake wake;
             for(int i=0;i<10000;++i)wake.notify();
             require(wake.wait_for(std::chrono::milliseconds(0)),"Callback notification before wait was lost");
@@ -29,7 +28,27 @@ int main() {
             }
             producer.join();require(consumed==100000,"Wake/reset race stranded published capture data");
         }
-        for (auto rate : {44100u, 48000u}) for (auto channels : {1u, 2u, 6u, 8u}) {
+static void concurrent_capture_case(unsigned rate,unsigned channels,pipeline::CaptureBuffer& buffer,pipeline::AudioFrame& frame) {
+    buffer.reset(rate,channels);
+            std::atomic<bool> done{false}; bool corrupt=false;
+            std::thread producer([&] {
+                std::vector<float> packet(8*channels); auto* pcm=packet.data();
+                for (int n = 0; n < 10000; ++n) {
+                    for (int i=0;i<8;++i) for(size_t c=0;c<channels;++c) pcm[i*channels+c]=float(n+c*10000);
+                    while (!buffer.push(pcm, 8, n, n * 8)) std::this_thread::yield();
+                }
+                done = true;
+            });
+            int received = 0;
+            while (!done || received < 10000) {
+                if (buffer.pop(frame)) {
+                    for(size_t c=0;c<channels;++c) corrupt |= frame.samples[c*8] != float(received+c*10000) || frame.samples[c*8+7] != float(received+c*10000);
+                    corrupt |= frame.sample_position != uint64_t(received)*8;
+                    ++received;
+                } else std::this_thread::yield();
+            }
+            producer.join(); require(!corrupt,"Concurrent ring data/interval corruption");}
+static void capacity_case(unsigned rate,unsigned channels) {
             pipeline::CaptureBuffer buffer; buffer.reset(rate, channels);
             const auto capacity = rate / 4;
             std::vector<float> pcm_interleaved(size_t(capacity) * channels);
@@ -51,26 +70,12 @@ int main() {
             require(buffer.push(nullptr, 8, 80, 80 * 8) && buffer.pop(frame), "Wrapping silence rejected");
             for (size_t i = 0; i < 8; ++i)
                 require(std::all_of(frame.samples.begin(),frame.samples.end(),[](float x){return x==0;}), "Wrapping silence changed");
-            buffer.reset(rate, channels);
-            std::atomic<bool> done{false}; bool corrupt=false;
-            std::thread producer([&] {
-                std::vector<float> packet(8*channels); auto* pcm=packet.data();
-                for (int n = 0; n < 10000; ++n) {
-                    for (int i=0;i<8;++i) for(size_t c=0;c<channels;++c) pcm[i*channels+c]=float(n+c*10000);
-                    while (!buffer.push(pcm, 8, n, n * 8)) std::this_thread::yield();
-                }
-                done = true;
-            });
-            int received = 0;
-            while (!done || received < 10000) {
-                if (buffer.pop(frame)) {
-                    for(size_t c=0;c<channels;++c) corrupt |= frame.samples[c*8] != float(received+c*10000) || frame.samples[c*8+7] != float(received+c*10000);
-                    corrupt |= frame.sample_position != uint64_t(received)*8;
-                    ++received;
-                } else std::this_thread::yield();
-            }
-            producer.join(); require(!corrupt,"Concurrent ring data/interval corruption");
-        }
+            concurrent_capture_case(rate,channels,buffer,frame);
+}
+int main() {
+    try {
+        wake_cases();
+        for(auto rate:{44100u,48000u})for(auto channels:{1u,2u,6u,8u})capacity_case(rate,channels);
         std::cout << "Capture buffer checks passed\n";
     } catch (const std::exception &error) { std::cerr << error.what() << '\n'; return 1; }
 }

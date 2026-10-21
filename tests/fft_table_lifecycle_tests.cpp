@@ -36,8 +36,7 @@ extern "C" void fft_fault_free(void* pointer) {
     for(auto& a:live)if(a.pointer==pointer){guard_corruption|=!intact(a);std::free(pointer);a={};return;}
     std::abort();
 }
-int main(int argc,char**) {
-    if(argc>1) {
+int reproduce_unsafe_retry(){
         fail_call=2;
         require(dsps_fft4r_init_fc32(nullptr,16)!=ESP_OK,"Expected second-allocation failure");
         const auto* small=dsps_fft4r_w_table_fc32;
@@ -50,9 +49,7 @@ int main(int argc,char**) {
         std::puts("CONFIRMED: FFT4 second malloc failure -> retry larger size reuses undersized twiddles and overwrites guard");
         return 0;
     }
-    // Profiles above the vendor lookup-table limit use direct permutation;
-    // there is no second (bit-reversal table) allocation in those profiles.
-    for(bool radix4:{false,true}) for(unsigned failed=1;failed<=((radix4?dsp_kernels::max_radix4_samples:dsp_kernels::max_fft_samples)<=4096?2u:1u);++failed) {
+void retry_allocation_failure(bool radix4,unsigned failed){
         call_count=0;fail_call=failed;
         require(!dsp_kernels::detail::prepare_backend(16,radix4),"Allocation failure accepted");
         require(!(radix4?dsps_fft4r_initialized:dsps_fft2r_initialized),"Failed init published a ready table");
@@ -63,6 +60,13 @@ int main(int argc,char**) {
         if(radix4)dsps_fft4r_deinit_fc32();else dsps_fft2r_deinit_fc32();
         empty();
         require(!guard_corruption,"Recovered initialization overwrote its allocation");
+}
+int main(int argc,char**) {
+    if(argc>1)return reproduce_unsafe_retry();
+    // Profiles above the vendor lookup-table limit use direct permutation;
+    // there is no second (bit-reversal table) allocation in those profiles.
+    for(bool radix4:{false,true}) for(unsigned failed=1;failed<=((radix4?dsp_kernels::max_radix4_samples:dsp_kernels::max_fft_samples)<=4096?2u:1u);++failed) {
+        retry_allocation_failure(radix4,failed);
     }
     std::puts("FFT2/4 transactional init: every allocation in the configured profile, cleanup, retry and guards PASS");
 }

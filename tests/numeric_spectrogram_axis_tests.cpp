@@ -2,42 +2,7 @@
 #include <barelief/axis_tick_labels.h>
 #include <barelief/spectrograms/spectrogram_scene_geometry.h>
 #include <cstdio>
-int main() {
-    int failures=0,checks=0;
-    const auto check=[&](bool value){++checks;if(!value)++failures;};
-    SpectrogramAxisMetadata axes;axes.time_coordinates=axes.column_coordinates=true;
-    axes.ages={0,.01,.035};axes.columns={70,100,180};
-    check(axes.age(0)==0);check(axes.age(2)==.035);check(axes.age(.5)==.005);
-    check(axes.column(0)==70);check(axes.column(1.5)==140);
-    check(std::isnan(axes.age(3)));check(std::isnan(axes.column(3)));
-    check(std::isnan(axes.age(-1)));check(std::isnan(axes.age(std::numeric_limits<double>::infinity())));
-    axes.time_coordinates=axes.column_coordinates=false;
-    check(axes.age(0)==0);check(axes.age(8)==8);check(axes.column(4)==4);
-    check(axes==axes);
-    check(spectrogramAutomaticRange({})==std::pair<float,float>{0,1});
-    check(spectrogramAutomaticRange({{0,0}})==std::pair<float,float>{0,1});
-    check(spectrogramAutomaticRange({{0,.2f,.8f}})==std::pair<float,float>{0,.8f});
-    check(spectrogramAutomaticRange({{-3,.5f}})==std::pair<float,float>{-3,.5f});
-    const QLocale en("en_US"),ru("ru_RU");
-    const int ranges[4]={0,100,0,100};
-    SpectrogramSceneGeometry scene(8,50,ranges);
-    std::vector<double> y,x;
-    for(int i=0;i<=5;++i) {y.push_back(scene.signalTick(i/5.f));x.push_back(scene.timeTick(i/5.f));}
-    check(axisTickLabels(y,en)==QStringList({"0.0","0.4","0.8","1.2","1.6","2.0"}));
-    check(axisTickLabels(x,en)==QStringList({"0.0","1.4","2.8","4.2","5.6","7.0"}));
-    check(axisTickLabels(y,ru)[1]=="0,4");
-    check(axisTickLabels({0,.5,1,1.5,2},en)[1]=="0.5");
-    check(axisTickLabels({-2,-1,0,1,2},en)==QStringList({"-2","-1","0","1","2"}));
-    check(axisTickLabels({0,10,20,30,40,50},en)[1]=="10");
-    for(const auto &ticks:std::vector<std::vector<double>>{{0,2e-8,4e-8},{-1e8,0,1e8},{1e8,1e8+.25,1e8+.5},{.005,.01,.02}}) {
-        const auto labels=axisTickLabels(ticks,en);
-        for(int i=0;i<labels.size();++i) {
-            check(std::isfinite(en.toDouble(labels[i])));
-            if(i) check(labels[i]!=labels[i-1]);
-        }
-    }
-    check(axisTickLabels({-0.0,1,2},en,2)[0]=="0.00");
-    check(axisTickLabels({0,std::numeric_limits<double>::quiet_NaN(),1},en)[1].isEmpty());
+static void physical_axes(SpectrogramAxisMetadata& axes,const int* ranges,const QLocale& en,const QLocale& ru,const auto& check) {
     // Frequency endpoints are sample centres, including a singleton column.
     axes.time_coordinates=axes.column_coordinates=true;
     axes.ages={0,.01,.035};axes.columns={70,100,180};
@@ -63,5 +28,48 @@ int main() {
     check(!placed.isEmpty() && viewport.contains(placed));
     check(spectrogramTickLabelRect(tick,viewport,{placed}).isEmpty());
     check(spectrogramTickLabelRect(QRectF(900,570,40,20),viewport,{}).isEmpty());
+}
+
+static void tick_labels(const SpectrogramSceneGeometry& scene,const QLocale& en,const QLocale& ru,const auto& check) {
+    std::vector<double> y,x;
+    for(int i=0;i<=5;++i) {y.push_back(scene.signalTick(i/5.f));x.push_back(scene.timeTick(i/5.f));}
+    check(axisTickLabels(y,en)==QStringList({"0.0","0.4","0.8","1.2","1.6","2.0"}));
+    check(axisTickLabels(x,en)==QStringList({"0.0","1.4","2.8","4.2","5.6","7.0"}));
+    check(axisTickLabels(y,ru).at(1)=="0,4");
+    check(axisTickLabels({0,.5,1,1.5,2},en).at(1)=="0.5");
+    check(axisTickLabels({-2,-1,0,1,2},en)==QStringList({"-2","-1","0","1","2"}));
+    check(axisTickLabels({0,10,20,30,40,50},en).at(1)=="10");
+    for(const auto &ticks:std::vector<std::vector<double>>{{0,2e-8,4e-8},{-1e8,0,1e8},{1e8,1e8+.25,1e8+.5},{.005,.01,.02}}) {
+        const auto labels=axisTickLabels(ticks,en);
+        for(int i=0;i<labels.size();++i) {
+            check(std::isfinite(en.toDouble(labels[i])));
+            if(i) check(labels[i]!=labels[i-1]);
+        }
+    }
+    check(axisTickLabels({-0.0,1,2},en,2).at(0)=="0.00");
+    check(axisTickLabels({0,std::numeric_limits<double>::quiet_NaN(),1},en).at(1).isEmpty());
+}
+
+int main() {
+    int failures=0,checks=0;
+    const auto check=[&](bool value){++checks;if(!value)++failures;};
+    SpectrogramAxisMetadata axes;axes.time_coordinates=axes.column_coordinates=true;
+    axes.ages={0,.01,.035};axes.columns={70,100,180};
+    check(axes.age(0)==0);check(axes.age(2)==.035);check(axes.age(.5)==.005);
+    check(axes.column(0)==70);check(axes.column(1.5)==140);
+    check(std::isnan(axes.age(3)));check(std::isnan(axes.column(3)));
+    check(std::isnan(axes.age(-1)));check(std::isnan(axes.age(std::numeric_limits<double>::infinity())));
+    axes.time_coordinates=axes.column_coordinates=false;
+    check(axes.age(0)==0);check(axes.age(8)==8);check(axes.column(4)==4);
+    check(axes==axes);
+    check(spectrogramAutomaticRange({})==std::pair<float,float>{0,1});
+    check(spectrogramAutomaticRange({{0,0}})==std::pair<float,float>{0,1});
+    check(spectrogramAutomaticRange({{0,.2f,.8f}})==std::pair<float,float>{0,.8f});
+    check(spectrogramAutomaticRange({{-3,.5f}})==std::pair<float,float>{-3,.5f});
+    const QLocale en("en_US"),ru("ru_RU");
+    const int ranges[4]={0,100,0,100};
+    SpectrogramSceneGeometry scene(8,50,ranges);
+    tick_labels(scene,en,ru,check);
+    physical_axes(axes,ranges,en,ru,check);
     std::printf("numeric spectrogram axes: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }

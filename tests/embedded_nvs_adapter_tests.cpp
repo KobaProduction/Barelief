@@ -1,4 +1,5 @@
 #include <esp_idf_adapter/nvs_persistence.h>
+#include "test_assertions.h"
 #include <embedded_support/persistence.h>
 #include <embedded_support/synthetic_pipeline.h>
 #include <array>
@@ -9,7 +10,7 @@ namespace {
 std::array<std::vector<std::uint8_t>,2> durable,pending;
 int target=-1,writes=0,commits=0,failures=0;bool interrupt=false,no_space=false;
 int slot(const char* k){return !std::strcmp(k,"processing_a")?0:!std::strcmp(k,"processing_b")?1:-1;}
-#define CHECK(x) do{if(!(x)){++failures;std::printf("FAIL %d: %s\n",__LINE__,#x);}}while(false)
+#define CHECK(x) test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures)
 }
 esp_err_t nvs_get_blob(nvs_handle_t h,const char* key,void* out,std::size_t* size) {
     CHECK(h==42);auto i=slot(key);if(i<0 || durable[i].empty())return ESP_ERR_NVS_NOT_FOUND;

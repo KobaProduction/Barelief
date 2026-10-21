@@ -70,7 +70,7 @@ public:
     }
     QList<QGraphicsItem*> hide_other_nodes(QtNodes::NodeId first,QtNodes::NodeId second){
         QList<QGraphicsItem*> hidden;
-        for(auto* item:scene->items())if(!item->parentItem() && item->isVisible()) {
+        for(const auto items=scene->items();auto* item:items)if(!item->parentItem() && item->isVisible()) {
             auto* node=qgraphicsitem_cast<QtNodes::NodeGraphicsObject*>(item);
             if(!node || (node->nodeId()!=first && node->nodeId()!=second)){hidden.append(item);item->hide();}
         }
@@ -108,11 +108,11 @@ public:
         if(!view->viewport()->rect().contains(start) || !view->viewport()->rect().contains(end))std::fprintf(stderr,"own viewport=%dx%d start=(%d,%d) end=(%d,%d) visible=%d\n",view->viewport()->width(),view->viewport()->height(),start.x(),start.y(),end.x(),end.y(),view->isVisible());
         require(view->viewport()->rect().contains(start) && view->viewport()->rect().contains(end),"Gesture ports outside own viewport");
         drag_between_ports(from,output,start,end);
-        for(auto* item:hidden)item->show();
+        for(const auto hiddenItems=hidden;auto* item:hiddenItems)item->show();
     }
     void reorder(QtNodes::NodeId id,QtNodes::PortType side,QtNodes::PortIndex from,QtNodes::PortIndex to){
         auto* node=scene->nodeGraphicsObject(id);require(node,"Reorder fixture node absent");
-        QList<QGraphicsItem*> hidden;for(auto* item:scene->items())if(!item->parentItem() && item!=node && item->isVisible()){hidden.append(item);item->hide();}
+        QList<QGraphicsItem*> hidden;for(const auto items=scene->items();auto* item:items)if(!item->parentItem() && item!=node && item->isVisible()){hidden.append(item);item->hide();}
         scene->nodeGeometry().recomputeSize(id);view->setupScale(.8);view->centerOn(node);
         QCoreApplication::processEvents();
         const auto start=port_position(id,side,from),end=port_position(id,side,to);
@@ -121,7 +121,7 @@ public:
         send(QEvent::MouseMove,end,Qt::NoButton,Qt::LeftButton,Qt::AltModifier);
         send(QEvent::MouseButtonRelease,end,Qt::LeftButton,Qt::NoButton,Qt::AltModifier);QCoreApplication::processEvents();
         verify_reorder(id,side,from,to,start,end,edges,parameters,undo,*delegate);
-        for(auto* item:hidden)item->show();
+        for(const auto hiddenItems=hidden;auto* item:hiddenItems)item->show();
     }
     void verify_reorder(QtNodes::NodeId id,QtNodes::PortType side,QtNodes::PortIndex from,QtNodes::PortIndex to,
                         QPoint start,QPoint end,const std::unordered_set<QtNodes::ConnectionId>& edges,
@@ -272,9 +272,13 @@ static void connect_generator_to_views(GestureScenario& scenario,QtNodes::NodeId
     auto& model=scenario.model;auto& gestures=scenario.gestures;
     const auto route=gestures.create("Switch");gestures.drag(signal,0,route,0);
     require(model.connectionExists({signal,0,route,0}),"Fresh generator cannot drag-connect fresh route");
-    const auto sink=gestures.create("AudioView");gestures.drag(route,1,sink,0);
+    const auto sink=gestures.create("AudioLineView");gestures.drag(route,1,sink,0);
     require(model.connectionExists({route,1,sink,0}),"Actual drag lost stable second output identity");
-    const auto mel=gestures.create("MelView");gestures.drag(signal,0,mel,0);
+    const auto mel=gestures.create("AudioLineView");
+    auto melNode=*model.delegateModel<AudioNodeModel>(mel)->numeric_node();
+    melNode.inputs[0].contract=model.delegateModel<AudioNodeModel>(11)->numeric_node()->inputs[0].contract;
+    require(model.edit_node(mel,melNode),"Explicit Mel-contract graph fixture refused");
+    gestures.drag(signal,0,mel,0);
     require(model.connectionExists({signal,0,mel,0}),
             "Draft must retain an incompatible generator-to-Mel-view edge");
     scenario.editor.history().undo();
@@ -325,7 +329,7 @@ static void exercise_invalid_source_edits(GestureScenario& scenario,QtNodes::Nod
     std::unique_ptr<QWidget> form(new NodeParameterForm(source->parameter_model(),false,nullptr,true));
     form->setAttribute(Qt::WA_ShowWithoutActivating);
     form->setWindowFlag(Qt::WindowDoesNotAcceptFocus,true);
-    for(auto* section:form->findChildren<ui::CollapsibleSection*>())section->setExpanded(true);
+    for(const auto sections=form->findChildren<ui::CollapsibleSection*>();auto* section:sections)section->setExpanded(true);
     form->show();QCoreApplication::processEvents();
     const auto before=source->save();
     const auto edges=scenario.model.allConnectionIds(signal);
@@ -392,10 +396,12 @@ static void apply_valid_draft(GestureScenario& scenario){
             !scenario.window.findChild<QPushButton*>("pipelineStop"),"Obsolete Run/Stop controls returned");
 }
 static void observe_continuous_source(GestureScenario& scenario){
-    DeliveryOracle delivery;
-    const auto connection=QObject::connect(&scenario.presenter,&GuiPresenter::numeric_frame_ready,&scenario.editor,
+    DeliveryOracle delivery;QObject deliveryWitness;
+    const auto connection=QObject::connect(&scenario.presenter,&GuiPresenter::numeric_frame_ready,&deliveryWitness,
                      [&](const pipeline::DeliveredNumericFrame& frame){observe_pcm(delivery,frame);});
-    auto* raw=scenario.window.workspaceDock("rawSamplesDock");
+    WorkspaceDock* raw=nullptr;
+    for(const auto docks=scenario.window.workspaceDocks();auto* dock:docks)
+        if(dock->property("graphNode").toInt()==9 && dock->property("viewInstance").toInt()==0)raw=dock;
     require(raw,"Continuous source graph dock missing");raw->toggleView(true);raw->setAsCurrentTab();
     const bool continuous=wait_for([&]{return delivery.delivered>=3 && delivery.nonzero && delivery.progressing;});
     if(!continuous)std::fprintf(stderr,

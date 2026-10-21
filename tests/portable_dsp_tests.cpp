@@ -45,8 +45,7 @@ static void verify_spectrum(std::span<const float> input,std::span<const float> 
             near(output[bin],dft_magnitude(input,bin),"FFT differs from independent direct DFT oracle");
     }
 }
-int main() {
-    try {
+static void window_oracles(){
         for(const auto kind:{dsp_core::WindowFunction::Hann,dsp_core::WindowFunction::Hamming,dsp_core::WindowFunction::Blackman,dsp_core::WindowFunction::Rectangular}) {
             std::vector<float> coefficients(513);dsp_core::window(coefficients,kind);
             for(size_t i=0;i<coefficients.size();++i) near(coefficients[i],coefficients[coefficients.size()-1-i],"Window is not symmetric");
@@ -60,7 +59,8 @@ int main() {
         }
         std::vector<float> legacy_hann(512),selected_hann(512);dsp_core::hann_window(legacy_hann);dsp_core::window(selected_hann,dsp_core::WindowFunction::Hann);
         require(legacy_hann==selected_hann,"Hann baseline changed");
-        dsp_core::MagnitudeSpectrum fft, other;
+}
+static void memory_oracles(dsp_core::MagnitudeSpectrum& fft){
         require(!dsp_core::estimate_memory(511, 50) && !dsp_core::estimate_memory(768, 50) &&
                     !dsp_core::estimate_memory(dsp_core::max_fft_samples*2, 50) && !dsp_core::estimate_memory(4096, 51) &&
                     !dsp_core::estimate_memory(4096, 50, 17) && !dsp_core::estimate_memory(4096, 50, 16, 2001),
@@ -78,6 +78,8 @@ int main() {
                 "Shared FFT table estimate differs from vendor allocations");
         require(!fft.prepare(63) && !fft.prepare(maximum * 2) && !fft.prepare(maximum * 2, true),
                 "Invalid or above-profile FFT size accepted");
+}
+static void fft_oracles(dsp_core::MagnitudeSpectrum& fft,dsp_core::MagnitudeSpectrum& other,std::size_t maximum){
         // Both explicitly magnitude-valued routes retain an independent DFT oracle.
         for (bool radix4 : {false, true})
         for (std::size_t n : {std::size_t{4}, std::size_t{16}, std::size_t{64}, maximum,
@@ -101,6 +103,8 @@ int main() {
             require(fft.process(input, output), "Other instance invalidated prepared FFT");
             require(fft.workspace_bytes() == workspace, "FFT workspace changes during processing");
         }
+}
+static void mel_oracles(){
         dsp_core::MelFilterBank mel;
         std::vector<float> spectrum(32, 1), output(50, -1);
         mel.prepare(32, 0, 50);
@@ -118,6 +122,8 @@ int main() {
                     (boundary[m+1]-hz)/(boundary[m+1]-boundary[m])));}
             near(output[m-1],float(expected),"Continuous Hz Mel weights");
         }
+}
+static void stereo_oracles(dsp_core::MagnitudeSpectrum& fft){
         dsp_core::StereoProcessor processor;
         require(processor.prepare(64, 48000), "Stereo preparation failed");
         const auto stereo_workspace = processor.workspace_bytes();
@@ -131,6 +137,16 @@ int main() {
         require(std::all_of(sr.begin(), sr.end(), [](float x) { return x == 0; }), "Stereo channels leak");
         require(processor.process(left, right, window, weights, sl, sr), "Optional Mel suppression failed");
         require(!fft.process(std::span<const float>{}, sl), "Wrong FFT input accepted");
+}
+int main() {
+    try {
+        window_oracles();
+        dsp_core::MagnitudeSpectrum fft, other;
+        memory_oracles(fft);
+        constexpr auto maximum=dsp_core::max_fft_samples;
+        fft_oracles(fft,other,maximum);
+        mel_oracles();
+        stereo_oracles(fft);
         std::cout << "Portable DSP regressions passed\n";
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

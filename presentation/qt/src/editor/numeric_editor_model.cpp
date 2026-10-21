@@ -280,11 +280,14 @@ void NumericEditorGraphModel::loadConnection(const QJsonObject& value){
     _edge_policies[edge_key(edge)]=std::uint8_t(conversion.toInt());addConnection(edge);
     if(!connectionExists(edge))_edge_policies.erase(edge_key(edge));
 }
+bool NumericEditorGraphModel::is_parameter_connection(QtNodes::ConnectionId edge) {
+    const auto* target=delegateModel<AudioNodeModel>(edge.inNodeId);
+    return target && target->numeric_node() && !domain::numeric_parameter_key(target->numeric_node()->kind,target->port_id(QtNodes::PortType::In,edge.inPortIndex)).empty();
+}
 bool NumericEditorGraphModel::undoConnection(QtNodes::ConnectionId edge,const QJsonObject& state){
     if(!connectionExists(edge))return false;
     const auto binding=configuration_binding(edge);
-    const auto* target=delegateModel<AudioNodeModel>(edge.inNodeId);
-    const bool parameter=target && target->numeric_node() && !domain::numeric_parameter_key(target->numeric_node()->kind,target->port_id(QtNodes::PortType::In,edge.inPortIndex)).empty();
+    const bool parameter=is_parameter_connection(edge);
     const auto before=state.value("before").toArray(),after=state.value("after").toArray();
     if(before.size()!=after.size() || before.size()>int(numeric_editor::limits().max_nodes))return deleteConnection(edge);
     auto graph=graph_without_undo_edge(edge);
@@ -553,23 +556,30 @@ void remove_invalid_node_edges(domain::NumericProcessingGraph& graph,const domai
     });
 }
 }
-bool NumericEditorGraphModel::edit_node(QtNodes::NodeId id,const domain::ConfiguredProcessingNode& value){
-    if(!valid_node_edit_source(id,value))return false;
-    const auto* model=delegateModel<AudioNodeModel>(id);
-    const auto original=numeric_graph();auto candidate=original;auto changed=value;changed.id=domain::NodeId(id);
+bool NumericEditorGraphModel::validate_generator_edit(const domain::ConfiguredProcessingNode& changed) {
     if(changed.kind=="SignalGenerator"){
         domain::ResolvedProcessingNode resolved;
         if(!domain::resolve_processing_node(changed,numeric_editor::limits(),resolved)){
             emit edit_rejected(ui::text("Unsupported node settings"));return false;
         }
     }
+    return true;
+}
+bool NumericEditorGraphModel::commit_parameter_edit(const domain::NumericProcessingGraph& original,const domain::NumericProcessingGraph& candidate) {
+    if(!draft_preflight(candidate)){emit edit_rejected(ui::text("Draft contains a missing endpoint"));return false;}
+    if(same_parameter_edit_graph(original,candidate))return true;
+    commit_graph_edit(original,candidate,ui::text("Edit parameters"));return true;
+}
+bool NumericEditorGraphModel::edit_node(QtNodes::NodeId id,const domain::ConfiguredProcessingNode& value){
+    if(!valid_node_edit_source(id,value))return false;
+    const auto* model=delegateModel<AudioNodeModel>(id);
+    const auto original=numeric_graph();auto candidate=original;auto changed=value;changed.id=domain::NodeId(id);
+    if(!validate_generator_edit(changed))return false;
     remove_invalid_node_edges(candidate,changed);
     if(!prepare_parameter_edit(candidate,std::move(changed),model->numeric_node()->clock_node)){
         emit edit_rejected(ui::text("Unsupported node settings"));return false;
     }
-    if(!draft_preflight(candidate)){emit edit_rejected(ui::text("Draft contains a missing endpoint"));return false;}
-    if(same_parameter_edit_graph(original,candidate))return true;
-    commit_graph_edit(original,candidate,ui::text("Edit parameters"));return true;
+    return commit_parameter_edit(original,candidate);
 }
 bool NumericEditorGraphModel::valid_node_edit_source(QtNodes::NodeId id,const domain::ConfiguredProcessingNode& value){
     const auto* model=delegateModel<AudioNodeModel>(id);

@@ -14,6 +14,7 @@
 #include <pipeline/numeric_projection.h>
 #include <QSpinBox>
 #include <QPushButton>
+#include <core_app/ui/wrapping_button.h>
 #include <QMenu>
 #include <QComboBox>
 #include <QApplication>
@@ -286,6 +287,9 @@ QString AudioNodeModel::descriptive_port_caption(QtNodes::PortType type,QtNodes:
     if(configuration_role(type,port))return dataType(type,port).name;
     if(_numeric && _kind=="FrequencyStep" && port_id(type,port)==0)return (type==QtNodes::PortType::In?QStringLiteral("Fs"):ui::text("Frequency step, Hz"))+QStringLiteral(" · ")+dataType(type,port).name;
     if (const auto* title = spectrum_peak_port_title(_kind, type, unsigned(port_id(type, port)))) return ui::text(title) + "\n" + dataType(type, port).name;
+    return specialized_port_caption(type,port);
+}
+QString AudioNodeModel::specialized_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
     for(const auto method:{&AudioNodeModel::numeric_port_caption,&AudioNodeModel::music_port_caption,&AudioNodeModel::fourier_port_caption,&AudioNodeModel::routing_port_caption}) {
         const auto caption=(this->*method)(type,port);if(!caption.isEmpty())return caption;
     }
@@ -579,12 +583,16 @@ bool AudioNodeModel::set_scalar_input_enabled(domain::PortId id,bool enabled){
     auto presentation=_presentation;auto inputs=presentation.value("scalar_inputs").toObject();auto input=inputs.value(QString::number(id)).toObject();input["enabled"]=enabled;inputs[QString::number(id)]=input;presentation["scalar_inputs"]=inputs;
     if(_presentation_edit)return _presentation_edit(presentation);set_presentation(presentation);return true;
 }
+void AudioNodeModel::refresh_embedded_geometry() {
+    if(_widget){_widget->layout()->invalidate();_widget->layout()->activate();}
+    emit embeddedWidgetSizeUpdated();
+}
 QWidget* AudioNodeModel::numeric_parameter_widget(QWidget* parent,bool inline_form) {
     NodeParameterForm::CompositeFactory composite;
     if(_kind=="SignalGenerator")composite=[](auto* model,auto* owner){return new OscillatorBankWidget(model,owner);};
     auto* form=new NodeParameterForm(_parameters,inline_form,parent,false,std::move(composite));update_widget_style(form);
     connect(_parameters,&NodeParameterModel::structureChanged,form,[this]{
-        QTimer::singleShot(0,this,[this]{if(_widget){_widget->layout()->invalidate();_widget->layout()->activate();}emit embeddedWidgetSizeUpdated();});
+        QTimer::singleShot(0,this,[this]{refresh_embedded_geometry();});
     });
     if(!inline_form && (_kind=="InputSelector" || _kind=="Switch"))return selector_parameter_widget(parent,form);
     if(!scalar_view_kind(_kind) || inline_form)return form;
@@ -746,8 +754,8 @@ void AudioNodeModel::edit_port_labels(QWidget* parent) {
 }
 QWidget* AudioNodeModel::numeric_inspector(QWidget* parent) {
     auto* container=new QWidget(parent);auto* layout=new QVBoxLayout(container);layout->setContentsMargins(0,0,0,0);
-    auto* contracts=ui::make<QPushButton>("Edit port contracts…",container);contracts->setObjectName("editNodeContracts");layout->addWidget(contracts);
-    auto* labels=ui::make<QPushButton>("Edit port labels…",container);labels->setObjectName("editPortLabels");layout->addWidget(labels);
+    auto* contracts=ui::make<ui::WrappingButton>("Edit port contracts…",container);contracts->setObjectName("editNodeContracts");layout->addWidget(contracts);
+    auto* labels=ui::make<ui::WrappingButton>("Edit port labels…",container);labels->setObjectName("editPortLabels");layout->addWidget(labels);
     const QPointer<AudioNodeModel> guard(this);
     connect(contracts,&QPushButton::clicked,container,[guard,container]{if(guard)guard->edit_port_contracts(container);});
     connect(labels,&QPushButton::clicked,container,[guard,container]{if(guard)guard->edit_port_labels(container);});
@@ -940,13 +948,18 @@ bool AudioNodeModel::preview_history_snapshot(const pipeline::DeliveredNumericFr
     auto result=preview_description(delivery,*port);
     result.count_source=history->shape.rank==Rank::Vector?"Values":"Frames";
     if(delivery.status!=Status::ok || !delivery.frame)return publish_preview(std::move(result));
+    return publish_history_snapshot_preview(delivery,*history,std::move(result),ordinal,filled_count);
+}
+bool AudioNodeModel::publish_history_snapshot_preview(const pipeline::DeliveredNumericFrame& delivery,
+    const signal_contracts::NumericContract& history,DiagnosticPreview result,std::uint64_t ordinal,std::uint64_t filled_count) {
     const auto frame=delivery.frame.view();
-    if(!valid_history_snapshot(frame,*history,ordinal,filled_count))return false;
+    if(!valid_history_snapshot(frame,history,ordinal,filled_count))return false;
     if(!frame.stamp.available)return publish_preview(std::move(result));
     result.available=true;result.count=filled_count;
     preview_stamp(result,frame.stamp,ordinal);
     return publish_preview(std::move(result));
 }
+
 void AudioNodeModel::set_preview_activity(const QString& status_key) {if(_preview_activity==status_key)return;_preview_activity=status_key;if(!status_key.isEmpty())_diagnostics.clear();update_previews();}
 void AudioNodeModel::set_processing_activity(bool measured,bool active,double calls_hz) {
     const bool changed=_activity_measured!=measured || _activity_active!=active;

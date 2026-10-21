@@ -6,6 +6,15 @@
 namespace dataflow_runtime::detail {
 using namespace domain;using namespace signal_contracts;
 namespace {
+void encode_band_coordinates(State& state,std::span<const double> centers) {
+    auto& coordinates=state.numeric_outputs[0].coordinates[0];
+    for(std::size_t i=0;i<centers.size();++i){
+        std::uint64_t bits=0;
+        const auto value=centers[i];
+        std::memcpy(&bits,&value,8);
+        for(std::size_t b=0;b<8;++b)coordinates[i*8+b]=std::byte((bits>>(b*8))&255);
+    }
+}
 Status prepare_broadband(OperationKernelState& kernel,PlanNode&,State& state,const ResolvedProcessingNode& node) {
     ProcessingParameterView supplied;
     double bin_hz=0;
@@ -21,13 +30,7 @@ Status prepare_broadband(OperationKernelState& kernel,PlanNode&,State& state,con
     kernel.operation.emplace<dsp_kernels::BroadbandFeatures>();
     auto& feature=std::get<dsp_kernels::BroadbandFeatures>(kernel.operation);
     if(!feature.prepare(kernel.input.size(),bin_hz,boundaries,statistic))return Status::invalid_argument;
-    auto& coordinates=state.numeric_outputs[0].coordinates[0];
-    for(std::size_t i=0;i<feature.centers_hz().size();++i){
-        std::uint64_t bits=0;
-        const auto value=feature.centers_hz()[i];
-        std::memcpy(&bits,&value,8);
-        for(std::size_t b=0;b<8;++b)coordinates[i*8+b]=std::byte((bits>>(b*8))&255);
-    }
+    encode_band_coordinates(state,feature.centers_hz());
     return Status::ok;
 }
 Status prepare_quantizer(OperationKernelState& kernel,const ResolvedProcessingNode& n) {

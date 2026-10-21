@@ -66,6 +66,10 @@ std::optional<Status> NumericViewAdapter::accept_frame_for_state(const Key& key,
     if(state.fence_seen && pipeline::delivery_precedes(input.delivery,state.delivery_fence))return std::nullopt;
     const bool changed=reset_frame_state(state,input);
     if(!input.frame || input.status!=Status::ok){state.latest={};return state.status;}
+    return accept_available_frame(key,state,input,changed);
+}
+std::optional<Status> NumericViewAdapter::accept_available_frame(const Key& key,State& state,
+    const pipeline::DeliveredNumericFrame& input,bool changed) {
     const auto frame=input.frame.view();
     if(!frame.stamp.available){state.latest={};state.status=Status::unavailable;return std::nullopt;}
     if(stale_frame_sequence(state,input,changed))return std::nullopt;
@@ -202,13 +206,21 @@ Status NumericViewAdapter::publish_history_snapshot(State& state,NumericRenderTa
     return publish_snapshot(state.matrix_snapshot,history_axes(state,target),target,true);
 }
 namespace {
+Status fill_frequency_coordinates(std::size_t count,NumericRenderTarget::FrequencyGrid grid,std::vector<double>& output){
+    output.resize(count);
+    for(std::size_t i=0;i<output.size();++i){
+        output[i]=(double(grid.first_bin)+double(i))*grid.step;
+        if(!std::isfinite(output[i]))return Status::malformed;
+    }
+    return Status::ok;
+}
 Status explicit_vector_coordinates(const NumericView& numeric,NumericRenderTarget target,std::size_t maximum,std::vector<double>& output,QString& title){
     title=target.frequency_grid.index_title;const auto step=target.frequency_grid.step;
     if(!std::isfinite(step) || step<0)return Status::malformed;
     if(!step)return Status::ok;
     if(numeric.actual[0]>maximum)return Status::buffer_too_small;
-    output.resize(numeric.actual[0]);
-    for(std::size_t i=0;i<output.size();++i){output[i]=(double(target.frequency_grid.first_bin)+double(i))*step;if(!std::isfinite(output[i]))return Status::malformed;}
+    const auto status=fill_frequency_coordinates(numeric.actual[0],target.frequency_grid,output);
+    if(status!=Status::ok)return status;
     title=target.frequency_grid.coordinate_title;return Status::ok;
 }
 Status scalar_readout(const NumericView& numeric,std::size_t plane,NumericRenderTarget target){

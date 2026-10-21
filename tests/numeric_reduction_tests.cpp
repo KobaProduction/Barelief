@@ -13,32 +13,42 @@ void operator delete[](void* p) noexcept {std::free(p);}
 void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 namespace {void check(bool x,const char* text){if(!x){std::cerr<<text<<'\n';std::exit(3);}}}
-int main() {
-    using namespace signal_contracts;using namespace dsp_kernels;
-    const std::array<std::uint32_t,1> channels{0};
-    NumericContract input;input.dtype=DType::UInt64;input.semantic=Semantic::Numeric;input.channel_order=channels;
+namespace {
+using namespace signal_contracts;using namespace dsp_kernels;
+struct ReductionScenario {
+ const std::array<std::uint32_t,1> channels{0};NumericContract input,output;
+ const KernelLimits limits{8,1,64,64,64};const FrameLimits frames{1,8,64,1024,256,64};
+ ReductionRequest request{};PreparedReduction plan;
+ std::array<std::uint64_t,3> values{};const std::array<PlaneLayout,1> in_planes{{{0,{8,0}}}},out_planes{{{0,{0,0}}}};
+ std::array<std::byte,8> destination{},scratch{},before{};NumericView in;MutableNumericView out;std::uint64_t bits=0;std::uint32_t bits32=0;
+ void unsigned_oracles(){
+
+
+    input.dtype=DType::UInt64;input.semantic=Semantic::Numeric;input.channel_order=channels;
     input.shape.rank=Rank::Vector;input.shape.axes={Axis::Declared,Axis::None};input.shape.extents[0]={3,3};
-    auto output=input;output.dtype=DType::Float64;output.semantic=Semantic::Scalar;output.shape={};
-    const KernelLimits limits{8,1,64,64,64};const FrameLimits frames{1,8,64,1024,256,64};
-    ReductionRequest request{input,output,ScalarReduction::SignedMean,PrecisionLoss::AllowDeclared,Rounding::NearestTiesEven,limits,frames};
-    PreparedReduction plan;check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok,"exact64 mean reduction prepare");
-    std::array<std::uint64_t,3> values{9007199254740993ULL,9007199254740993ULL,9007199254740993ULL};
-    const std::array<PlaneLayout,1> in_planes{{{0,{8,0}}}},out_planes{{{0,{0,0}}}};
-    std::array<std::byte,8> destination{},scratch{};destination.fill(std::byte{0xa5});
-    NumericView in{&input,std::as_bytes(std::span(values)),in_planes,{3,1},{},{}};
-    MutableNumericView out{&output,destination,out_planes,{1,1},{},{}};
+    output=input;output.dtype=DType::Float64;output.semantic=Semantic::Scalar;output.shape={};
+
+    request={input,output,ScalarReduction::SignedMean,PrecisionLoss::AllowDeclared,Rounding::NearestTiesEven,limits,frames};
+    check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok,"exact64 mean reduction prepare");
+    values={9007199254740993ULL,9007199254740993ULL,9007199254740993ULL};
+
+    destination.fill(std::byte{0xa5});
+    in={&input,std::as_bytes(std::span(values)),in_planes,{3,1},{},{}};
+    out={&output,destination,out_planes,{1,1},{},{}};
     check(reduce(plan,in,out,scratch).status==NumericStatus::Ok,"exact64 mean aggregate");
-    std::uint64_t bits;std::memcpy(&bits,destination.data(),8);check(bits==0x4340000000000000ULL,"exact64 mean final rounding independent oracle");
+    std::memcpy(&bits,destination.data(),8);check(bits==0x4340000000000000ULL,"exact64 mean final rounding independent oracle");
     request.operation=ScalarReduction::Rms;check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok,"exact64 RMS prepare");
     check(reduce(plan,in,out,scratch).status==NumericStatus::Ok,"exact64 sum squares aggregate");
     std::memcpy(&bits,destination.data(),8);check(bits==0x4340000000000000ULL,"exact64 RMS final rounding independent oracle");
     request.precision_loss=PrecisionLoss::RejectInexact;
     check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok,"exact64 RMS reject mode prepares after exact rational proof");
-    destination.fill(std::byte{0xa5});const auto before=destination;
+    destination.fill(std::byte{0xa5});before=destination;
     check(reduce(plan,in,out,scratch).status==NumericStatus::PrecisionLoss && destination==before,"exact64 RMS inexact output atomically rejected");
     values={UINT64_MAX,UINT64_MAX,UINT64_MAX};request.precision_loss=PrecisionLoss::AllowDeclared;
     check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok && reduce(plan,in,out,scratch).status==NumericStatus::Ok,"UInt64max squares never overflow64 accumulator");
     std::memcpy(&bits,destination.data(),8);check(bits==0x43f0000000000000ULL,"UInt64max RMS rounds only final aggregate to2^64");
+ }
+ void signed_oracles(){
     input.dtype=DType::Int64;request.input=input;values={UINT64_C(0x8000000000000000),UINT64_C(0x8000000000000000),UINT64_C(0x8000000000000000)};
     request.precision_loss=PrecisionLoss::RejectInexact;check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok && reduce(plan,in,out,scratch).status==NumericStatus::Ok,"Int64min square exact limbs");
     std::memcpy(&bits,destination.data(),8);check(bits==0x43e0000000000000ULL,"Int64min RMS exact positive2^63");
@@ -58,6 +68,8 @@ int main() {
     std::memcpy(&bits,destination.data(),8);check(bits==0x8000000000000000ULL,"exact unsigned absolute Int64min");
     output.dtype=DType::Int64;request.output=output;destination=before;
     check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok && reduce(plan,in,out,scratch).status==NumericStatus::Overflow && destination==before,"Int64min absolute refuses signed narrowing atomically");
+ }
+ void native_rms_oracles(){
     input.dtype=DType::Float64;request.input=input;output.dtype=DType::Float64;request.output=output;
     request.operation=ScalarReduction::Rms;request.precision_loss=PrecisionLoss::AllowDeclared;
     values={UINT64_C(0x7fefffffffffffff),UINT64_C(0x7fefffffffffffff),UINT64_C(0x7fefffffffffffff)};
@@ -77,6 +89,8 @@ int main() {
     const auto stable=destination;
     check(reduce(plan,in,out,destination).status==NumericStatus::InvalidLayout && destination==stable,"reduction scratch/output alias rejected atomically");
     check(reduce(plan,in,out,std::span(scratch).first(7)).status==NumericStatus::BufferTooSmall && destination==stable,"reduction insufficient scratch atomic");
+ }
+ void native_subnormal_oracles(){
     request.operation=ScalarReduction::SignedMean;values={1,0,0};
     check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok,"native Float64 subnormal mean prepare");
     for(const auto mode:{FE_TONEAREST,FE_DOWNWARD,FE_UPWARD,FE_TOWARDZERO})for(const bool negative:{false,true}) {
@@ -89,6 +103,8 @@ int main() {
         check(std::fegetround()==mode && std::fetestexcept(FE_ALL_EXCEPT)==ambient_flags,"native Float64 underflow restores exact caller flags");
     }
     std::fesetround(FE_TONEAREST);std::feclearexcept(FE_ALL_EXCEPT);
+ }
+ void float32_oracles(){
     input.dtype=DType::Float32;request.input=input;request.operation=ScalarReduction::SignedMean;
     values={0x7f7fffff,1,0xff7fffff};
     check(prepare_reduction(request,{true,true,true},plan)==NumericStatus::Ok,"Float32 exact dyadic mean prepares");
@@ -98,10 +114,12 @@ int main() {
     request.operation=ScalarReduction::Rms;values={0x3f800000,0x3f800000,0x3f800000};
     check(prepare_reduction(request,{true,true,false},plan)==NumericStatus::Ok,"Float32 RMS requires no nativeFloat64 capability");
     check(reduce(plan,in,out,scratch).status==NumericStatus::Ok,"Float32 exact RMS one portable path");
-    std::uint32_t bits32;std::memcpy(&bits32,destination.data(),4);check(bits32==0x3f800000,"Float32 exact RMS one oracle");
+    std::memcpy(&bits32,destination.data(),4);check(bits32==0x3f800000,"Float32 exact RMS one oracle");
     values={0x7f7fffff,0x7f7fffff,0x7f7fffff};
     check(reduce(plan,in,out,scratch).status==NumericStatus::Ok,"Float32 max squares fit bounded wide limbs");
     std::memcpy(&bits32,destination.data(),4);check(bits32==0x7f7fffff,"Float32 max RMS finalexact oracle");
+ }
+ void float32_underflow_oracles(){
     values={1,0,0};destination.fill(std::byte{0xa5});const auto tiny_before=destination;
     request.operation=ScalarReduction::SignedMean;
     check(prepare_reduction(request,{true,true,false},plan)==NumericStatus::Ok,"Float32 default inexact check prepare");
@@ -115,11 +133,16 @@ int main() {
         check(std::fegetround()==mode && std::fetestexcept(FE_INVALID),"Float32 portable path leaves ambient fenv untouched");
     }
     std::fesetround(FE_TONEAREST);std::feclearexcept(FE_ALL_EXCEPT);
+ }
+ void float32_software_rms(){
     request.operation=ScalarReduction::Rms;values={1,1,0};
     check(prepare_reduction(request,{true,true,false},plan)==NumericStatus::Ok && reduce(plan,in,out,scratch).status==NumericStatus::Ok,"Float32 tiny RMS software square root rounding");
     std::memcpy(&bits32,destination.data(),4);check(bits32==1,"Float32 sqrt2/3 minimumsubnormal rounds nearest1");
     watch_allocations=true;
     for(unsigned i=0;i<16;++i)check(reduce(plan,in,out,scratch).status==NumericStatus::Ok,"Float32 software RMS bounded steady-state");
     watch_allocations=false;check(allocations==0,"Float32 exact software reduction allocates no C++ heap after prepare");
-    std::cout<<"numeric reduction exact oracles passed\n";
+ }
+};
+}
+int main(){ReductionScenario scenario;scenario.unsigned_oracles();scenario.signed_oracles();scenario.native_rms_oracles();scenario.native_subnormal_oracles();scenario.float32_oracles();scenario.float32_underflow_oracles();scenario.float32_software_rms();    std::cout<<"numeric reduction exact oracles passed\n";
 }

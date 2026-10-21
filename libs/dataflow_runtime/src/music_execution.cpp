@@ -28,12 +28,25 @@ PreparedOperationKernel::PreparedOperationKernel(PreparedOperationKernel&&) noex
 PreparedOperationKernel& PreparedOperationKernel::operator=(PreparedOperationKernel&&) noexcept=default;
 void PreparedOperationKernel::reset() noexcept {value_->pending={};value_->product_pending=false;std::copy(value_->factor_initial_ready.begin(),value_->factor_initial_ready.end(),value_->factor_ready.begin());if(auto* broad=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation))broad->reset();}
 void PreparedOperationKernel::invalidate_product_lane(std::size_t lane) noexcept {
-    if(lane>=value_->factor_ready.size())return;value_->factor_ready[lane]=false;value_->product_pending=false;
+    if(lane>=value_->factor_ready.size())return;
+    value_->factor_ready[lane]=false;value_->product_pending=false;
 }
 bool PreparedOperationKernel::copy_state_from(const PreparedOperationKernel& other) noexcept {
     auto* current=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation);
     const auto* before=std::get_if<dsp_kernels::BroadbandFeatures>(&other.value_->operation);
     return !current || (before && current->copy_state_from(*before));
+}
+namespace {
+bool assign_resampler_config(const ResolvedProcessingNode& node,const NumericContract& input,double input_rate,double output_rate,double quality,dsp_kernels::ResamplerConfig& config) noexcept {
+    config.input_rate=std::uint32_t(input_rate);
+    config.output_rate=std::uint32_t(output_rate);
+    config.channels=input.channel_order.size();
+    config.quality=unsigned(quality);
+    if(!node.enabled)config.mode=dsp_kernels::ResamplerMode::Bypass;
+    else if(!signal_contracts::parse_resampler_mode(operation_text(node,"mode"),config.mode))return false;
+    if(config.mode==dsp_kernels::ResamplerMode::Bypass)config.output_rate=config.input_rate;
+    return true;
+}
 }
 bool resampler_config(const ResolvedProcessingNode& node,dsp_kernels::ResamplerConfig& config) noexcept {
     if(node.kind!="PcmResampler" || node.inputs.empty())return false;
@@ -44,14 +57,7 @@ bool resampler_config(const ResolvedProcessingNode& node,dsp_kernels::ResamplerC
        !numeric_parameter(node,"quality",quality) ||
        input_rate<1 || input_rate>UINT32_MAX || std::floor(input_rate)!=input_rate ||
        output_rate<1 || output_rate>UINT32_MAX || std::floor(output_rate)!=output_rate)return false;
-    config.input_rate=std::uint32_t(input_rate);
-    config.output_rate=std::uint32_t(output_rate);
-    config.channels=input.channel_order.size();
-    config.quality=unsigned(quality);
-    if(!node.enabled)config.mode=dsp_kernels::ResamplerMode::Bypass;
-    else if(!signal_contracts::parse_resampler_mode(operation_text(node,"mode"),config.mode))return false;
-    if(config.mode==dsp_kernels::ResamplerMode::Bypass)config.output_rate=config.input_rate;
-    return true;
+    return assign_resampler_config(node,input,input_rate,output_rate,quality,config);
 }
 namespace {
 std::optional<bool> numeric_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,const NumericRuntimeProfile& profile,std::size_t input) {
@@ -60,6 +66,12 @@ std::optional<bool> numeric_operation_resources(const ResolvedProcessingNode& n,
     const auto right=n.inputs[1].contract.view();
     return numeric_add(resources.payload_bytes,std::size_t(std::get<NumericContract>(right).shape.extents[0].maximum)*sizeof(float));
 }
+std::optional<bool> feature_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result) {
+    if(n.kind=="BroadbandFeatures")return numeric_add(resources.scratch_bytes,input*sizeof(float)+output*48+8);
+    if(n.kind=="SpectralQuantize")return numeric_add(resources.payload_bytes,output*(result.dtype==DType::UInt8?1:2));
+    if(n.kind=="FrequencyNormalizer")return numeric_add(resources.scratch_bytes,input*sizeof(float));
+    return {};
+}
 std::optional<bool> signal_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result) {
     if(paired_processing(n.operation))return numeric_add(resources.payload_bytes,(4*input+2)*sizeof(float)) && numeric_add(resources.scratch_bytes,(4*input+4)*sizeof(float));
     if(n.kind=="RFFT")return numeric_add(resources.scratch_bytes,(3*input+4)*sizeof(float));
@@ -67,10 +79,7 @@ std::optional<bool> signal_operation_resources(const ResolvedProcessingNode& n,P
         std::size_t windows=0;if(!dsp_kernels::PreparedWindows::storage_bytes(input-2,windows))return false;
         return numeric_add(resources.scratch_bytes,output*sizeof(float)+windows);
     }
-    if(n.kind=="BroadbandFeatures")return numeric_add(resources.scratch_bytes,input*sizeof(float)+output*48+8);
-    if(n.kind=="SpectralQuantize")return numeric_add(resources.payload_bytes,output*(result.dtype==DType::UInt8?1:2));
-    if(n.kind=="FrequencyNormalizer")return numeric_add(resources.scratch_bytes,input*sizeof(float));
-    return {};
+    return feature_operation_resources(n,resources,input,output,result);
 }
 bool music_operation_resources(const ResolvedProcessingNode& node,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract&){
     if(node.kind=="MusicalSpectrogram" || node.kind=="BroadbandRow" || node.kind=="NoteSpectrum")return numeric_add(resources.scratch_bytes,input*128+output*128+4096);
@@ -109,14 +118,17 @@ Status prepare_music(PlanNode& node,State& state,const ResolvedProcessingNode& n
     return prepare_music_operation(kernel,node,state,n);
 }
 namespace {
-Status read_operation_input(OperationKernelState& kernel,const NumericView& source,const FrameLimits& limits) noexcept {
-    const auto rows=source.actual[0],columns=source.contract->shape.rank==Rank::Matrix?source.actual[1]:1;
-    if(source.ring.capacity || rows*columns!=kernel.input.size())return Status::incompatible_contract;
-    const auto valid=validate_values(source,ValueDomain::FiniteOnly,limits);if(valid!=Status::ok)return valid;
+Status load_operation_input(OperationKernelState& kernel,const NumericView& source,std::size_t rows,std::size_t columns) noexcept {
     for(std::size_t row=0;row<rows;++row)for(std::size_t column=0;column<columns;++column){
         const auto status=load_element(source,{0,row,column},kernel.input[row*columns+column]);if(status!=Status::ok)return status;
     }
     return Status::ok;
+}
+Status read_operation_input(OperationKernelState& kernel,const NumericView& source,const FrameLimits& limits) noexcept {
+    const auto rows=source.actual[0],columns=source.contract->shape.rank==Rank::Matrix?source.actual[1]:1;
+    if(source.ring.capacity || rows*columns!=kernel.input.size())return Status::incompatible_contract;
+    const auto valid=validate_values(source,ValueDomain::FiniteOnly,limits);if(valid!=Status::ok)return valid;
+    return load_operation_input(kernel,source,rows,columns);
 }
 Status write_operation_output(const OperationKernelState& kernel,MutableNumericView& destination) noexcept {
     const auto columns=destination.contract->shape.rank==Rank::Matrix?destination.actual[1]:1;
@@ -150,6 +162,12 @@ Status copy_quantizer_coordinates(const NumericView& source,State& state) noexce
     if(source.coordinates.axes[0].size()!=coordinates.size())return Status::incompatible_contract;
     std::copy(source.coordinates.axes[0].begin(),source.coordinates.axes[0].end(),coordinates.begin());return Status::ok;
 }
+Status execute_common_music(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
+    auto destination=mutable_output(node,state,0);
+    const auto status=compute_operation(kernel,destination,current,node.node.enabled,state.pending_discontinuity,limits);
+    if(status==Status::ok)state.numeric_frames[0]={current.stamp,destination.view()};
+    return status;
+}
 }
 Status execute_music(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
     auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
@@ -157,9 +175,6 @@ Status execute_music(const PlanNode& node,State& state,const DataFrameView& curr
     const auto read=read_operation_input(kernel,source,limits);if(read!=Status::ok)return read;
     if(node.node.kind==NodeKind::SpectralQuantize){const auto copied=copy_quantizer_coordinates(source,state);if(copied!=Status::ok)return copied;}
     if(std::holds_alternative<dsp_kernels::MusicalSpectrogram>(kernel.operation))return execute_musical_spectrogram(kernel,node,state,current);
-    auto destination=mutable_output(node,state,0);
-    const auto status=compute_operation(kernel,destination,current,node.node.enabled,state.pending_discontinuity,limits);
-    if(status==Status::ok)state.numeric_frames[0]={current.stamp,destination.view()};
-    return status;
+    return execute_common_music(kernel,node,state,current,limits);
 }
 }

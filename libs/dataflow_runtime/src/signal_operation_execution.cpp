@@ -14,21 +14,29 @@ bool same_interval(const FrameStamp& a,const FrameStamp& b) noexcept {
         a.graph_revision==b.graph_revision && a.timestamp_ticks==b.timestamp_ticks &&
         a.has_sample_interval==b.has_sample_interval && (!a.has_sample_interval || (a.sample_begin==b.sample_begin && a.sample_count==b.sample_count));
 }
+Status load_plane(OperationKernelState& kernel,const NumericView& source,std::span<float> target) noexcept {
+    for(std::size_t i=0;i<target.size();++i){const auto status=load_element(source,{0,i,0},target[i]);if(status!=Status::ok){kernel.pending={};return status;}}
+    return Status::ok;
+}
 Status retain_plane(OperationKernelState& kernel,std::size_t lane,const DataFrameView& current,const FrameLimits& limits) noexcept {
     const auto* source=std::get_if<NumericView>(&current.payload);auto& target=lane?kernel.imaginary:kernel.input;
     if(!source || source->ring.capacity || source->actual[0]!=target.size()){kernel.pending={};return Status::incompatible_contract;}
     const auto valid=validate_values(*source,ValueDomain::FiniteOnly,limits);if(valid!=Status::ok){kernel.pending={};return valid;}
-    for(std::size_t i=0;i<target.size();++i){const auto status=load_element(*source,{0,i,0},target[i]);if(status!=Status::ok){kernel.pending={};return status;}}
+    const auto loaded=load_plane(kernel,*source,target);if(loaded!=Status::ok)return loaded;
     kernel.stamps[lane]=current.stamp;kernel.stamps[lane].stream_id={};kernel.pending[lane]=true;return Status::ok;
 }
-Status await_pair(OperationKernelState& kernel,const PlanNode& node,std::size_t lane) noexcept {
-    if(node.node.kind==NodeKind::RealFourier)return Status::ok;
-    const auto other=1-lane;
+Status prepare_missing_plane(OperationKernelState& kernel,const PlanNode& node,std::size_t lane,std::size_t other) noexcept {
     if(node.endpoint_plan->inputs[other].parent==absent){
         if(node.operation==ProcessingOperation::ComplexPolar){kernel.pending={};return Status::unavailable;}
         auto& target=other?kernel.imaginary:kernel.input;std::fill(target.begin(),target.end(),0);
         kernel.stamps[other]=kernel.stamps[lane];kernel.pending[other]=true;
     }
+    return Status::ok;
+}
+Status await_pair(OperationKernelState& kernel,const PlanNode& node,std::size_t lane) noexcept {
+    if(node.node.kind==NodeKind::RealFourier)return Status::ok;
+    const auto other=1-lane;
+    const auto ready=prepare_missing_plane(kernel,node,lane,other);if(ready!=Status::ok)return ready;
     if(!kernel.pending[0] || !kernel.pending[1])return Status::would_block;
     if(!same_interval(kernel.stamps[0],kernel.stamps[1])){kernel.pending[other]=false;return Status::would_block;}
     return Status::ok;
@@ -58,17 +66,26 @@ Status compute_paired(OperationKernelState& kernel,const PlanNode& node) noexcep
     const bool ready=complex?std::get<dsp_kernels::FFT>(kernel.operation).process_complex(kernel.input,kernel.imaginary,kernel.output):std::get<dsp_kernels::PreparedRfft>(kernel.operation).process(kernel.input,kernel.output);
     return ready?Status::ok:Status::overflow;
 }
-Status publish_planes(OperationKernelState& kernel,const PlanNode& node,State& state,const FrameStamp& stamp) noexcept {
-    const bool concat=node.operation==ProcessingOperation::ArrayConcat,polar=node.operation==ProcessingOperation::ComplexPolar;
-    for(PortId port=0;port<(concat?1:polar?2:4);++port){
-        auto output=mutable_output(node,state,port);const auto count=port<2?output.actual[0]:1;
+Status write_plane(const OperationKernelState& kernel,MutableNumericView& output,PortId port,std::size_t count,bool concat,bool polar) noexcept {
         for(std::size_t i=0;i<count;++i){
             const auto index=concat?i:polar?2*i+port:port<2?2*(i+1)+port:port-2;
             const auto status=store_element(output,{0,i,0},kernel.output[index]);if(status!=Status::ok)return status;
         }
+    return Status::ok;
+}
+Status publish_planes(OperationKernelState& kernel,const PlanNode& node,State& state,const FrameStamp& stamp) noexcept {
+    const bool concat=node.operation==ProcessingOperation::ArrayConcat,polar=node.operation==ProcessingOperation::ComplexPolar;
+    for(PortId port=0;port<(concat?1:polar?2:4);++port){
+        auto output=mutable_output(node,state,port);const auto count=port<2?output.actual[0]:1;
+        const auto status=write_plane(kernel,output,port,count,concat,polar);if(status!=Status::ok)return status;
         state.numeric_frames[port]={stamp,output.view()};
     }
     return Status::ok;
+}
+Status complete_fourier(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current) noexcept {
+    const auto stamp=combined_stamp(kernel,current,node.node.kind!=NodeKind::RealFourier);kernel.pending={};
+    const auto computed=compute_paired(kernel,node);if(computed!=Status::ok)return computed;
+    return publish_planes(kernel,node,state,stamp);
 }
 }
 Status accept_fourier(const PlanNode& node,State& state,std::size_t lane,const DataFrameView& current,const FrameLimits& limits) noexcept {
@@ -78,8 +95,6 @@ Status accept_fourier(const PlanNode& node,State& state,std::size_t lane,const D
     if(!current.stamp.available){kernel.pending={};return Status::unavailable;}
     const auto retained=retain_plane(kernel,lane,current,limits);if(retained!=Status::ok)return retained;
     const auto paired=await_pair(kernel,node,lane);if(paired!=Status::ok)return paired;
-    const auto stamp=combined_stamp(kernel,current,node.node.kind!=NodeKind::RealFourier);kernel.pending={};
-    const auto computed=compute_paired(kernel,node);if(computed!=Status::ok)return computed;
-    return publish_planes(kernel,node,state,stamp);
+    return complete_fourier(kernel,node,state,current);
 }
 }

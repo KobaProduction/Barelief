@@ -1,0 +1,6 @@
+InheritParentConfig: true
+CheckOptions:
+  readability-function-size.StatementThreshold: '60'
+  readability-function-size.IgnoreMacros: 'false'
+  readability-function-cognitive-complexity.Threshold: '25'
+  readability-function-cognitive-complexity.IgnoreMacros: 'false'

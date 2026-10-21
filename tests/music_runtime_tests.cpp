@@ -34,6 +34,21 @@ ConfiguredProcessingNode history(NodeId id,const NumericContract& input){
     ConfiguredProcessingNode n;n.id=id;n.kind="Spectrogram";n.parameters=HistoryProcessingParameters{400};n.inputs={port(PortDirection::Input,0,input)};
     n.outputs={port(PortDirection::Output,0,c),port(PortDirection::Output,1,count)};return n;
 }
+void music_branches(NumericProcessingGraph& g,unsigned bits){
+    g.nodes.push_back(transform(5,"SpectrumProjection",output(g.nodes.back()),{text("representation","power"),number("sample_rate",32768)}));g.edges.push_back({4,5});
+    g.nodes.push_back(transform(6,"FrequencyNormalizer",output(g.nodes.back())));g.edges.push_back({5,6});
+    const auto power=output(g.nodes.back());g.nodes.push_back(transform(7,"BroadbandFeatures",power,{text("statistic","rms"),{"bin_hz",NumericLiteral{float{8}}}}));g.edges.push_back({6,7});
+    g.nodes.push_back(transform(8,"SpectralQuantize",output(g.nodes.back()),{number("bits",bits)}));g.edges.push_back({7,8});
+    g.nodes.push_back(history(9,output(g.nodes.back())));g.edges.push_back({8,9});
+    g.nodes.push_back(transform(10,"NoteSalience",power,{{"bin_hz",NumericLiteral{float{8}}}}));g.edges.push_back({6,10});
+    g.nodes.push_back(transform(11,"SpectralQuantize",output(g.nodes.back()),{number("bits",bits)}));g.edges.push_back({10,11});
+    g.nodes.push_back(history(12,output(g.nodes.back())));g.edges.push_back({11,12});}
+std::pair<ConfiguredProcessingNode,ConfiguredProcessingNode> window_coefficients(NumericProcessingGraph& g,const ConfiguredProcessingNode& window,const NumericContract& pcm){
+    ConfiguredProcessingNode length;length.id=20;length.kind="ArrayLength";length.parameters=TransformProcessingParameters{};length.inputs={port(PortDirection::Input,0,pcm)};OwnedProcessingContract size;check(numeric_metadata_output_contract(pcm,false,size)==Status::ok,"window array size");length.outputs={{0,PortDirection::Output,size}};
+    auto function=window;function.id=3;function.kind="WindowFunction";function.parameters=TransformProcessingParameters{{text("function","hann"),number("size",4096)}};function.inputs={{0,PortDirection::Input,size}};OwnedProcessingContract coefficients;check(array_generator_output_contract(function,std::get<NumericContract>(size.view()),coefficients)==Status::ok,"window coefficient generator");function.outputs={{0,PortDirection::Output,coefficients}};g.nodes.push_back(function);
+    ConfiguredProcessingNode product;product.id=21;product.kind="ArrayMultiply";product.parameters=TransformProcessingParameters{};product.inputs={port(PortDirection::Input,0,pcm),{1,PortDirection::Input,coefficients}};product.outputs={port(PortDirection::Output,0,pcm)};
+    return {std::move(length),std::move(product)};
+}
 NumericProcessingGraph graph(unsigned cadence=60,unsigned bits=8){
     NumericContract pcm;pcm.channel_order=mono;pcm.semantic=Semantic::PCM;pcm.quantity=Quantity::Amplitude;pcm.unit=NumericUnit::NormalizedAmplitude;
     pcm.representation.normalization=Normalization::FloatUnit;pcm.representation.alignment=alignof(float);
@@ -42,18 +57,9 @@ NumericProcessingGraph graph(unsigned cadence=60,unsigned bits=8){
     auto g=numeric_test_builders::graph("music-runtime-regression",{1,cadence},{source},{});
     auto window=source;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{number("size",4096),number("input_rate",32768)}};window.inputs={port(PortDirection::Input,0,pcm)};
     pcm.shape.extents[0]={4096,4096};pcm.semantic=Semantic::Window;window.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(window);g.edges.push_back({1,2});
-    ConfiguredProcessingNode length;length.id=20;length.kind="ArrayLength";length.parameters=TransformProcessingParameters{};length.inputs={port(PortDirection::Input,0,pcm)};OwnedProcessingContract size;check(numeric_metadata_output_contract(pcm,false,size)==Status::ok,"window array size");length.outputs={{0,PortDirection::Output,size}};
-    auto function=window;function.id=3;function.kind="WindowFunction";function.parameters=TransformProcessingParameters{{text("function","hann"),number("size",4096)}};function.inputs={{0,PortDirection::Input,size}};OwnedProcessingContract coefficients;check(array_generator_output_contract(function,std::get<NumericContract>(size.view()),coefficients)==Status::ok,"window coefficient generator");function.outputs={{0,PortDirection::Output,coefficients}};g.nodes.push_back(function);
-    ConfiguredProcessingNode product;product.id=21;product.kind="ArrayMultiply";product.parameters=TransformProcessingParameters{};product.inputs={port(PortDirection::Input,0,pcm),{1,PortDirection::Input,coefficients}};product.outputs={port(PortDirection::Output,0,pcm)};
+    auto [length,product]=window_coefficients(g,window,pcm);
     g.nodes.push_back(transform(4,"RFFT",pcm));g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});
-    g.nodes.push_back(transform(5,"SpectrumProjection",output(g.nodes.back()),{text("representation","power"),number("sample_rate",32768)}));g.edges.push_back({4,5});
-    g.nodes.push_back(transform(6,"FrequencyNormalizer",output(g.nodes.back())));g.edges.push_back({5,6});
-    const auto power=output(g.nodes.back());g.nodes.push_back(transform(7,"BroadbandFeatures",power,{text("statistic","rms"),{"bin_hz",NumericLiteral{float{8}}}}));g.edges.push_back({6,7});
-    g.nodes.push_back(transform(8,"SpectralQuantize",output(g.nodes.back()),{number("bits",bits)}));g.edges.push_back({7,8});
-    g.nodes.push_back(history(9,output(g.nodes.back())));g.edges.push_back({8,9});
-    g.nodes.push_back(transform(10,"NoteSalience",power,{{"bin_hz",NumericLiteral{float{8}}}}));g.edges.push_back({6,10});
-    g.nodes.push_back(transform(11,"SpectralQuantize",output(g.nodes.back()),{number("bits",bits)}));g.edges.push_back({10,11});
-    g.nodes.push_back(history(12,output(g.nodes.back())));g.edges.push_back({11,12});g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
+    music_branches(g,bits);g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
 }
 struct Observation {
     std::size_t count=0;std::array<std::int64_t,600> ticks{};std::array<std::uint64_t,600> hashes{};std::array<bool,600> boundaries{};bool discontinuity=false;std::size_t discontinuities=0;
@@ -112,6 +118,29 @@ void packet_queue(){
     check(queue.push(samples,stamp(108,8,6))==Status::would_block,"duplicate stamp rejected");check(allocations==before,"packet queue allocation-free");
     std::printf("PCM packet queue PASS: capacity_samples16 capacity_packets4 owned_heap_bytes%zu, fragment timestamps/overflow/gap/no allocations\n",queue.workspace_bytes());
 }
+void retained_feature_geometry(Running& whole){
+    for(std::int64_t at=32768;at<8*32768;at+=1024)whole.feed(at,1024);
+    check(whole.filled(9)==400 && whole.filled(12)==400,"typed History capacity400 retains bounded rows");
+    DataFrameView broad,notes;check(whole.plan->history(9,0,*whole.context,broad)==Status::ok && whole.plan->history(12,0,*whole.context,notes)==Status::ok,"compact snapshots");
+    const auto& b=std::get<NumericView>(broad.payload);const auto& n=std::get<NumericView>(notes.payload);check(b.contract->dtype==DType::UInt8 && n.contract->dtype==DType::UInt8 && b.actual[1]==16 && n.actual[1]==48,"compact feature geometry");
+    check(400*(b.actual[1]+n.actual[1])==25600,"feature payload25600 bytes");
+    const auto before=whole.filled(9);const auto prior_boundaries=whole.observation.discontinuities;whole.feed(8*32768+97,1024);check(whole.observation.discontinuities==prior_boundaries+1,"unhinted source gap resets only first window");check(whole.filled(9)==before,"compatible History preserved at capacity");
+}
+void changed_feature_partition(Running& whole){
+    auto changed=whole.graph;std::get<TransformProcessingParameters>(changed.nodes[6].parameters).values.push_back(ProcessingParameter{"boundaries_hz",NumericArray{{0,70,120,250,400,600,900,1300,1800,2500,3500,4800,6500,8500,11000,14000,16384}}});
+    std::shared_ptr<const PreparedGraph> replacement;std::unique_ptr<RuntimeContext> replacement_context;
+    check(PreparedGraph::prepare_numeric(changed,profile(),replacement,replacement_context,whole.plan.get(),whole.context.get())==Status::ok,"prepare changed frequency partition");
+    DataFrameView retained;std::uint64_t filled=999;
+    check(replacement->history(9,0,*replacement_context,retained,&filled)==Status::ok && filled==0,"same-size changed band centers invalidate affected History");
+    check(replacement->history(12,0,*replacement_context,retained,&filled)==Status::ok && filled==400,"unaffected note History remains intact");
+}
+void refused_feature_profiles(Running& whole){
+    auto profile_embedded=profile();profile_embedded.music_enabled=false;std::shared_ptr<const PreparedGraph> refused;std::unique_ptr<RuntimeContext> context;
+    check(PreparedGraph::prepare_numeric(whole.graph,profile_embedded,refused,context)!=Status::ok && !refused,"new embedded ops unsupported");
+    auto wrong=whole.graph;auto& projection=std::get<TransformProcessingParameters>(wrong.nodes[4].parameters);projection.values={text("representation","phase")};
+    OwnedProcessingContract phase;check(music_output_contract(wrong.nodes[4],std::get<NumericContract>(wrong.nodes[4].inputs[0].contract.view()),phase)==Status::ok,"derive honest phase metadata");
+    auto phase_input=std::get<NumericContract>(phase.view());OwnedProcessingContract invalid;check(music_output_contract(wrong.nodes[6],phase_input,invalid)!=Status::ok,"phase cannot masquerade as power features");
+}
 void partition_and_cadence(){
     Running whole,fragmented;
     for(std::int64_t at=0;at<32768;at+=1024)whole.feed(at,1024);
@@ -122,23 +151,9 @@ void partition_and_cadence(){
     check(whole.filled(9)==60 && whole.filled(12)==60,"two feature History clocks agree");
     Running integral(64,16);for(std::int64_t at=0;at<32768;at+=1024)integral.feed(at,1024);
     check(integral.observation.count==64,"32768/64 integral hop emits64");for(std::size_t i=0;i<64;++i)check(integral.observation.ticks[i]==std::int64_t((i+1)*512)-1,"integral hop512 exact");
-    for(std::int64_t at=32768;at<8*32768;at+=1024)whole.feed(at,1024);
-    check(whole.filled(9)==400 && whole.filled(12)==400,"typed History capacity400 retains bounded rows");
-    DataFrameView broad,notes;check(whole.plan->history(9,0,*whole.context,broad)==Status::ok && whole.plan->history(12,0,*whole.context,notes)==Status::ok,"compact snapshots");
-    const auto& b=std::get<NumericView>(broad.payload);const auto& n=std::get<NumericView>(notes.payload);check(b.contract->dtype==DType::UInt8 && n.contract->dtype==DType::UInt8 && b.actual[1]==16 && n.actual[1]==48,"compact feature geometry");
-    check(400*(b.actual[1]+n.actual[1])==25600,"feature payload25600 bytes");
-    const auto before=whole.filled(9);const auto prior_boundaries=whole.observation.discontinuities;whole.feed(8*32768+97,1024);check(whole.observation.discontinuities==prior_boundaries+1,"unhinted source gap resets only first window");check(whole.filled(9)==before,"compatible History preserved at capacity");
-    auto changed=whole.graph;std::get<TransformProcessingParameters>(changed.nodes[6].parameters).values.push_back(ProcessingParameter{"boundaries_hz",NumericArray{{0,70,120,250,400,600,900,1300,1800,2500,3500,4800,6500,8500,11000,14000,16384}}});
-    std::shared_ptr<const PreparedGraph> replacement;std::unique_ptr<RuntimeContext> replacement_context;
-    check(PreparedGraph::prepare_numeric(changed,profile(),replacement,replacement_context,whole.plan.get(),whole.context.get())==Status::ok,"prepare changed frequency partition");
-    DataFrameView retained;std::uint64_t filled=999;
-    check(replacement->history(9,0,*replacement_context,retained,&filled)==Status::ok && filled==0,"same-size changed band centers invalidate affected History");
-    check(replacement->history(12,0,*replacement_context,retained,&filled)==Status::ok && filled==400,"unaffected note History remains intact");
-    auto profile_embedded=profile();profile_embedded.music_enabled=false;std::shared_ptr<const PreparedGraph> refused;std::unique_ptr<RuntimeContext> context;
-    check(PreparedGraph::prepare_numeric(whole.graph,profile_embedded,refused,context)!=Status::ok && !refused,"new embedded ops unsupported");
-    auto wrong=whole.graph;auto& projection=std::get<TransformProcessingParameters>(wrong.nodes[4].parameters);projection.values={text("representation","phase")};
-    OwnedProcessingContract phase;check(music_output_contract(wrong.nodes[4],std::get<NumericContract>(wrong.nodes[4].inputs[0].contract.view()),phase)==Status::ok,"derive honest phase metadata");
-    auto phase_input=std::get<NumericContract>(phase.view());OwnedProcessingContract invalid;check(music_output_contract(wrong.nodes[6],phase_input,invalid)!=Status::ok,"phase cannot masquerade as power features");
+    retained_feature_geometry(whole);
+    changed_feature_partition(whole);
+    refused_feature_profiles(whole);
     std::printf("music runtime PASS: fractional60/integral64, fragmentation, discontinuity, UInt8/16 History, payload25600, no hot allocations; plan buffers=%zu scratch=%zu\n",whole.plan->memory_requirements().buffer_bytes,whole.plan->memory_requirements().scratch_bytes);
 }
 struct SalienceObservation {

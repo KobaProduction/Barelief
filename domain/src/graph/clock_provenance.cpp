@@ -70,17 +70,23 @@ struct ClockProvenance {
         NumericLiteral literal;
         return resolve_preparation_value(graph,node.id,endpoint.id,literal)==Status::ok;
     }
+    ClockOrigin routed_origin(const ConfiguredProcessingNode& node,const ProcessingPort& endpoint,PortId output,std::size_t depth) const noexcept {
+        const auto input=passthrough_input(node,output);if(!input)return {};
+        const auto* edge=parent(node.id,*input);
+        return edge?edge_origin(*edge,depth):disconnected(endpoint);
+    }
+    ClockOrigin endpoint_origin(const ConfiguredProcessingNode& node,const ProcessingPort& endpoint,PortId output,std::size_t depth) const noexcept {
+        if(preparation(node,endpoint))return {OriginKind::Preparation};
+        const auto own=source(node);if(own.kind==OriginKind::Producer)return own;
+        if(node.kind=="InputSelector")return selector(node,depth);
+        return routed_origin(node,endpoint,output,depth);
+    }
     ClockOrigin origin(NodeId id,PortId output,std::size_t depth) const noexcept {
         if(depth>=graph.nodes.size())return {};
         const auto index=admission_node(graph,id);if(index==graph.nodes.size())return {};
         const auto& node=graph.nodes[index];const auto* endpoint=admission_port(node.outputs,output);
         if(!endpoint)return {};
-        if(preparation(node,*endpoint))return {OriginKind::Preparation};
-        const auto own=source(node);if(own.kind==OriginKind::Producer)return own;
-        if(node.kind=="InputSelector")return selector(node,depth);
-        const auto input=passthrough_input(node,output);if(!input)return {};
-        const auto* edge=parent(node.id,*input);
-        return edge?edge_origin(*edge,depth):disconnected(*endpoint);
+        return endpoint_origin(node,*endpoint,output,depth);
     }
     ProcessingDiagnostic aligned_inputs(const ConfiguredProcessingNode& node) const noexcept {
         ClockOrigin common;

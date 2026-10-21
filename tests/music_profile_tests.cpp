@@ -103,125 +103,15 @@ void channel_selection_oracle(const QString& path){
 }
 
 }
-int main(int argc,char** argv) {
-    QCoreApplication app(argc,argv);using namespace dsp_kernels;using namespace desktop_analysis::offline;
-    try {
-        cadence_oracle();mel_coordinates_oracle();profile_mismatch_reasons();malformed_preview_normalization();
-        ProfileCompatibility c;c.fft_size=512;ProfileTraining t;t.hop=256;t.smoothing_radius=2;
-        CompositionStatistics a,b,quiet;a.frames=a.active_frames=10;a.rms=.1;a.mean_spectrum.assign(257,2);
-        b=a;b.frames=b.active_frames=1000;b.mean_spectrum.assign(257,8);quiet=a;quiet.active_frames=0;quiet.mean_spectrum.assign(257,0);
-        FrequencyProfile p;std::string error;require(build_frequency_profile(c,t,std::array{a,b,quiet},p,error),"Profile build failed");
-        require(std::abs(p.mean_spectrum[40]-5)<1e-12,"Long tracks bias equal composition weighting");
-        FrequencyProfile sentinel=p;require(!build_frequency_profile(c,t,std::array{quiet},p,error),"All silence accepted");require(p.gains==sentinel.gains,"Rejected build mutated profile");
-        ProfileDocument doc;doc.profile=sentinel;doc.preserved["future_hint"]=QJsonObject{{"keep",42}};doc.preserved["metadata"]=QJsonObject{{"future_metadata","yes"}};
-        doc.preserved["training"]=QJsonObject{{"future_training","yes"}};doc.preserved["compositions"]=QJsonArray{QJsonObject{{"future_track","yes"}}};
-        auto encoded=encode_profile(doc);ProfileDocument loaded;QString json_error;require(decode_profile(encoded,loaded,json_error),"Export reload failed");
-        for(const auto kind:amplitude_spectrum_projections())for(const bool compensate:{false,true}){
-            auto candidate=doc;candidate.profile.compatibility.projection={kind,compensate};ProfileDocument roundtrip;
-            require(decode_profile(encode_profile(candidate),roundtrip,json_error) && roundtrip.profile.compatibility.projection==candidate.profile.compatibility.projection,"representation and explicit compensation survive profile export/import");
-        }
-        require(encode_profile(loaded)==encoded,"Profile canonical export is not reproducible");require(loaded.profile.gains==doc.profile.gains && loaded.profile.mean_spectrum==doc.profile.mean_spectrum && loaded.profile.compositions[0].mean_spectrum==doc.profile.compositions[0].mean_spectrum,"Binary reload changed gains or per-track Float64 spectra");
-        auto binary=QJsonDocument::fromJson(encoded).object();require(binary["gains"].toObject()["encoding"].toString()=="f32le-qcompress-base64" && binary["mean_spectrum"].toObject()["encoding"].toString()=="f64le-qcompress-base64","Profile arrays use typed binary storage");
-        auto damaged=binary;auto packed=damaged["gains"].toObject();packed["data"]="!!!!";damaged["gains"]=packed;
-        require(!decode_profile(QJsonDocument(damaged).toJson(),loaded,json_error) && loaded.profile.gains==doc.profile.gains,"Corrupt Base64 rejected atomically");
-        auto expanded=qCompress(QByteArray(qsizetype(doc.profile.gains.size()*8),char(0)));const auto expected_bytes=doc.profile.gains.size()*4;
-        for(unsigned j=0;j<4;++j)expanded[int(j)]=char(expected_bytes>>(8*(3-j)));
-        damaged=binary;packed=damaged["gains"].toObject();packed["data"]=QString::fromLatin1(expanded.toBase64());damaged["gains"]=packed;
-        require(!decode_profile(QJsonDocument(damaged).toJson(),loaded,json_error),"Compressed stream cannot exceed its declared output budget");
-        damaged=binary;packed=damaged["mean_spectrum"].toObject();packed["count"]=1;damaged["mean_spectrum"]=packed;require(!decode_profile(QJsonDocument(damaged).toJson(),loaded,json_error),"Wrong binary shape rejected");
-        require(loaded.preserved["future_hint"].toObject()["keep"].toInt()==42,"Top-level unknown field lost");
-        require(loaded.preserved["metadata"].toObject()["future_metadata"].toString()=="yes","Nested unknown field lost");
-        auto bad=QJsonDocument::fromJson(encoded).object();bad["version"]=4;require(!decode_profile(QJsonDocument(bad).toJson(),loaded,json_error),"Future version accepted");require(loaded.profile.gains==doc.profile.gains,"Future rejection not atomic");
-        require(!decode_profile("{malformed",loaded,json_error),"Malformed JSON accepted");
-        const auto matches=[&](const ProfileCompatibility& expected,ProfileMatchScope scope=ProfileMatchScope::Exact){return profile_mismatches(loaded.profile,expected,scope).empty();};
-        require(matches(c),"Decoded profile does not match its declared frontend");
-        auto wrong=c;wrong.window=WindowFunction::Hamming;require(!matches(wrong),"Wrong window accepted");
-        wrong=c;wrong.sample_rate=32000;require(!matches(wrong),"Wrong Fs accepted");
-        wrong=c;wrong.reference=2;require(!matches(wrong),"Wrong reference accepted");
-        wrong=c;wrong.floor_db=-100;require(!matches(wrong),"Wrong floor accepted");
-        auto training_only=c;training_only.reference=2;training_only.floor_db=-100;
-        require(matches(training_only,ProfileMatchScope::SignalOnly),"Signal-only matching must ignore profile-owned training levels");
-        training_only.window=WindowFunction::Hamming;
-        require(!matches(training_only,ProfileMatchScope::SignalOnly),"Signal-only matching must still check the analysis window");
-        wrong=c;wrong.resampler_mode=ResamplerMode::IirExperimental;require(!matches(wrong),"Profile after a different resampler accepted");
-        wrong=c;wrong.resampler_design_version=1;require(!matches(wrong),"Old frontend design accepted");
-        PreparedFrequencyNormalizer normalizer;require(normalizer.prepare_manual(257,2),"Manual normalizer preparation failed");std::vector<float> input(257,3),out(257,9);
-        require(normalizer.process(input,out)&&out[0]==6,"Manual gain failed");input[1]=NAN;require(!normalizer.process(input,out)&&out[0]==6,"Failure mutated normalizer output");
-        input[1]=3;require(normalizer.prepare_manual(257,0)&&normalizer.process(input,out)&&out[0]==0,"Zero manual gain rejected");
-        require(normalizer.prepare(sentinel.gains),"Profile normalizer preparation failed");
-        QTemporaryDir temp;require(temp.isValid(),"Temp directory failed");wav(temp.filePath("short.wav"),32768);wav(temp.filePath("long.wav"),65536);wav(temp.filePath("silence.wav"),32768,true);
-        require(save_profile(temp.filePath("profile.json"),doc,json_error),"Atomic profile save failed");require(load_profile(temp.filePath("profile.json"),loaded,json_error),"Profile file load failed");
-        AnalysisOptions options;options.compatibility=c;options.training=t;options.workers=1;options.preview_time_bins=32;std::atomic_bool cancel=false;
-        auto single=analyze_music_files({temp.filePath("short.wav"),temp.filePath("long.wav"),temp.filePath("silence.wav")},options,cancel);
-        require(single.success,"Streaming WAV batch failed");require(single.document.profile.compositions[2].active_frames==0,"Silence not excluded");require(single.preview.values.size()<=32*257,"Preview is not bounded");
-        require(std::abs(single.preview.duration_seconds-1)<1e-6,"Full-track preview lost duration");
-        preview_coordinate_oracle(single.preview,single.document.profile.compatibility.fft_size/2+1);
-        invalid_preview_axes_are_atomic(single.document);
-        require(single.document.previews.size()==3 && single.document.previews[1].duration_seconds==2,"Every scanned track receives a bounded full-track preview");
-        ProfileDocument cached;require(decode_profile(encode_profile(single.document),cached,json_error) && cached.previews.size()==3 && cached.previews[1].values==single.document.previews[1].values && cached.previews[1].time_seconds==single.document.previews[1].time_seconds && cached.previews[1].frequency_hz==single.document.previews[1].frequency_hz && cached.profile.compositions[1].mean_spectrum==single.document.profile.compositions[1].mean_spectrum,"Per-track previews and full-resolution statistics survive binary save/load exactly");
-        options.workers=4;auto parallel=analyze_music_files({temp.filePath("short.wav"),temp.filePath("long.wav"),temp.filePath("silence.wav")},options,cancel);
-        require(parallel.success&&encode_profile(single.document)==encode_profile(parallel.document),"Worker count affects exported profile");
-        const auto summary=single.document.preserved.value("analysis_run").toObject();require(summary.value("requested_count").toInt()==3 && summary.value("processed_count").toInt()==3 && summary.value("active_composition_count").toInt()==2 && summary.value("failed_count").toInt()==0,"Batch counts distinguish silent files from decoding failures");
-        auto partial=analyze_music_files({temp.filePath("short.wav"),temp.filePath("silence.wav"),temp.filePath("missing.wav")},options,cancel);
-        require(partial.success && partial.document.profile.compositions.size()==2 && partial.document.preserved["analysis_run"].toObject()["failed_count"].toInt()==1,"Partial failure remains explicit in exported audit");
-        ProfileDocument audited;require(decode_profile(encode_profile(partial.document),audited,json_error) && audited.preserved["analysis_run"]==partial.document.preserved["analysis_run"],"Save/load preserves the run audit without rescanning audio");
-        // A library-sized export fixture contains no decoded music and must not
-        // invoke the scanner. This measures JSON/file transfer separately.
-        auto library=single.document;library.preserved.remove("analysis_run");library.profile.compatibility.fft_size=4096;library.profile.gains.assign(2049,1);library.profile.mean_spectrum.assign(2049,1);library.profile.frequency_presence.assign(2049,1);library.profile.compositions.clear();library.previews.clear();
-        std::uint32_t rng=17;
-        for(unsigned i=0;i<643;++i){CompositionStatistics track;track.source="synthetic-export-fixture/"+std::string(160,'x')+"/track-"+std::to_string(i)+".wav";track.frames=track.active_frames=10;track.samples=48000;track.rms=.1;
-            track.mean_spectrum.resize(2049);for(auto& value:track.mean_spectrum){rng=rng*1664525u+1013904223u;value=double(rng)/4294967296.;}
-            track.frequency_presence.assign(2049,.5);
-            SpectrogramPreview image;image.source=QString::fromStdString(track.source);image.sample_rate=library.profile.compatibility.sample_rate;image.bin_hz=image.sample_rate/4096;image.rows=2;image.bands=16;image.duration_seconds=double(track.samples)/image.sample_rate;image.values.assign(32,.125f);
-            image.time_seconds={image.duration_seconds*.25,image.duration_seconds*.75};
-            for(std::size_t band=0;band<image.bands;++band){const auto first=band*2049/image.bands,last=(band+1)*2049/image.bands;image.frequency_hz.push_back(.5*double(first+last-1)*image.bin_hz);}
-            library.previews.push_back(std::move(image));library.profile.compositions.push_back(std::move(track));}
-        QElapsedTimer export_timer;export_timer.start();const auto export_path=temp.filePath("synthetic-library-profile.json");require(save_profile(export_path,library,json_error),"Library-sized coefficient export");const auto save_ms=export_timer.nsecsElapsed()/1e6;require(QFile(export_path).size()>1024*1024,"Per-track export must exceed the obsolete 1 MiB cap");
-        export_timer.restart();require(load_profile(export_path,audited,json_error) && audited.profile.compositions.size()==643 && audited.profile.gains==library.profile.gains && audited.profile.compositions.back().mean_spectrum==library.profile.compositions.back().mean_spectrum && audited.previews.back().values==library.previews.back().values,"Library-sized coefficient import without scanning");
-        std::cout<<"Synthetic JSON transfer: 643 records, "<<QFile(export_path).size()<<" bytes; save="<<save_ms<<" ms; load="<<export_timer.nsecsElapsed()/1e6<<" ms\n";
-        auto normalized=single.preview.normalized(std::vector<float>(257,2));require(normalized.size()==single.preview.values.size(),"Normalized preview invalid");
-        for(std::size_t i=0;i<normalized.size();++i)require(normalized[i]==single.preview.values[i]*2,"Normalized preview gain is incorrect");
-        // EOF regression: previous fixed63-input flush lost the final output.
-        for(const auto rate:{48000u,44100u})for(const auto target:{32768u,32000u}){
-            const auto path=temp.filePath(QString("resample-%1.wav").arg(rate));wav(path,rate,false,rate);
-            options.compatibility.sample_rate=target;auto sampled=analyze_music_files({path},options,cancel);
-            require(sampled.success,"Resampled WAV failed");require(sampled.document.profile.compositions[0].samples==target,"Resampled EOF length is not exact");
-            require(sampled.preview.duration_seconds==1.,"Resampled preview duration is not one second");
-        }
-        channel_selection_oracle(temp.filePath("channels.wav"));
-        options.training.interval_numerator=0;options.training.hop=1;
-        // Short tracks, decoder chunk boundaries, equal-rate and 8x upsampling:
-        // an indexed terminal-impulse oracle checks both the retained tail and
-        // the absence of extra silence beyond ceil(N*Fs_out/Fs_in).
-        for(const auto rates:{std::pair{48000u,32768u},std::pair{48000u,32000u},std::pair{44100u,32768u},
-                              std::pair{44100u,32000u},std::pair{32768u,32768u},std::pair{8000u,64000u}})
-            for(const auto count:{1u,3u,97u,4095u,4096u,4097u}){
-                const auto [rate,target]=rates;const auto path=temp.filePath("terminal.wav");wav(path,count,false,rate,true);
-                options.compatibility.sample_rate=target;auto sampled=analyze_music_files({path},options,cancel);
-                require(sampled.success,"Terminal impulse analysis failed");
-                const auto expected=(std::uint64_t(count)*target+rate-1)/rate;
-                const auto& stats=sampled.document.profile.compositions[0];require(stats.samples==expected,"Terminal impulse EOF count is not exact");
-                PcmResampler filter;require(filter.prepare(rate,target,1),"Tail oracle prepare failed");
-                const auto g=filter.filter_geometry();const auto w=filter.coefficients();
-                const auto discard=(std::uint64_t(g.delay)*target+rate-1)/rate;double squares=0;
-                for(std::uint64_t i=0;i<expected;++i){double value=0;
-                    if(rate==target)value=i+1==count?32767./32768.:0.;
-                    else{const auto position=(i+discard)*rate;const auto newest=(position+target-1)/target;
-                        if(newest>=count-1 && newest-(count-1)<g.taps){const auto k=std::size_t(newest-(count-1));
-                            const auto back=(newest*target-position)*g.phases;const auto phase=back/target;
-                            const double blend=double(back%target)/target;
-                            value=((1.-blend)*w[phase*g.taps+k]+blend*w[(phase+1)*g.taps+k])*32767./32768.;}}
-                    squares+=value*value;
-                }
-                require(std::abs(stats.rms-std::sqrt(squares/expected))<2e-7,"Terminal impulse tail differs from indexed oracle");
-            }
-        options.training.interval_numerator=1;options.training.interval_denominator=120;
-        for(const std::size_t fft:{8192,16384}){
-            AnalysisOptions large;large.compatibility.fft_size=fft;large.training.hop=fft/4;large.workers=50;large.preview_time_bins=16;large.preview_frequency_bins=32;
-            auto scan=analyze_music_files({temp.filePath("short.wav")},large,cancel);
-            require(scan.success && scan.document.profile.gains.size()==fft/2+1 && scan.document.profile.compositions[0].mean_spectrum.size()==fft/2+1,"8192/16384 FFT scans retain every coefficient");
-            require(scan.document.profile.mean_spectrum[fft*256/32768]>1e-5 && scan.document.previews[0].bands==32,"Large FFT resolves synthetic tone independently of bounded display resolution");
-        }
+static void budget_and_cancel(const QTemporaryDir& temp,auto& options,std::atomic_bool& cancel) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        AnalysisOptions over_budget;over_budget.preview_time_bins=2048;over_budget.preview_frequency_bins=2048;QStringList many;for(unsigned i=0;i<4096;++i)many.append(temp.filePath("short.wav"));
+        require(!analyze_music_files(many,over_budget,cancel).success,"Oversized preview allocation rejected before processing");
+        cancel=true;auto stopped=analyze_music_files({temp.filePath("long.wav")},options,cancel);require(stopped.cancelled&&!stopped.success,"Cancellation ignored");
+}
+
+static void frontend_modes(const QTemporaryDir& temp,std::atomic_bool& cancel,QString& json_error) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
         // Exercise the same frontend choices as the live graph, including EOF
         // drain and a reloaded profile/preview without a second library scan.
         for(const auto mode:{ResamplerMode::ExistingFir,ResamplerMode::CompactFir,ResamplerMode::SpeexDsp,ResamplerMode::IirExperimental,ResamplerMode::LinearDiagnostic}){
@@ -242,9 +132,183 @@ int main(int argc,char** argv) {
                     require(tail.success && std::abs(tail.preview.duration_seconds-double((std::uint64_t(count)*37000+47999)/48000)/37000)<1e-12,"Speex terminal impulse drains to exact length");}
             }
         }
-        AnalysisOptions over_budget;over_budget.preview_time_bins=2048;over_budget.preview_frequency_bins=2048;QStringList many;for(unsigned i=0;i<4096;++i)many.append(temp.filePath("short.wav"));
-        require(!analyze_music_files(many,over_budget,cancel).success,"Oversized preview allocation rejected before processing");
-        cancel=true;auto stopped=analyze_music_files({temp.filePath("long.wav")},options,cancel);require(stopped.cancelled&&!stopped.success,"Cancellation ignored");
+}
+
+static void large_fft_scans(const QTemporaryDir& temp,auto& options,std::atomic_bool& cancel) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        options.training.interval_numerator=1;options.training.interval_denominator=120;
+        for(const std::size_t fft:{8192,16384}){
+            AnalysisOptions large;large.compatibility.fft_size=fft;large.training.hop=fft/4;large.workers=50;large.preview_time_bins=16;large.preview_frequency_bins=32;
+            auto scan=analyze_music_files({temp.filePath("short.wav")},large,cancel);
+            require(scan.success && scan.document.profile.gains.size()==fft/2+1 && scan.document.profile.compositions[0].mean_spectrum.size()==fft/2+1,"8192/16384 FFT scans retain every coefficient");
+            require(scan.document.profile.mean_spectrum[fft*256/32768]>1e-5 && scan.document.previews[0].bands==32,"Large FFT resolves synthetic tone independently of bounded display resolution");
+        }
+}
+
+static double terminal_impulse_sample(std::uint64_t i,std::uint64_t count,std::uint64_t rate,std::uint64_t target,std::uint64_t discard,const auto& g,const auto& w) {
+double value=0;
+                    if(rate==target)value=i+1==count?32767./32768.:0.;
+                    else{const auto position=(i+discard)*rate;const auto newest=(position+target-1)/target;
+                        if(newest>=count-1 && newest-(count-1)<g.taps){const auto k=std::size_t(newest-(count-1));
+                            const auto back=(newest*target-position)*g.phases;const auto phase=back/target;
+                            const double blend=double(back%target)/target;
+                            value=((1.-blend)*w[phase*g.taps+k]+blend*w[(phase+1)*g.taps+k])*32767./32768.;}}
+return value;
+}
+static void terminal_tail_scans(const QTemporaryDir& temp,auto& options,std::atomic_bool& cancel) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        channel_selection_oracle(temp.filePath("channels.wav"));
+        options.training.interval_numerator=0;options.training.hop=1;
+        // Short tracks, decoder chunk boundaries, equal-rate and 8x upsampling:
+        // an indexed terminal-impulse oracle checks both the retained tail and
+        // the absence of extra silence beyond ceil(N*Fs_out/Fs_in).
+        for(const auto rates:{std::pair{48000u,32768u},std::pair{48000u,32000u},std::pair{44100u,32768u},
+                              std::pair{44100u,32000u},std::pair{32768u,32768u},std::pair{8000u,64000u}})
+            for(const auto count:{1u,3u,97u,4095u,4096u,4097u}){
+                const auto [rate,target]=rates;const auto path=temp.filePath("terminal.wav");wav(path,count,false,rate,true);
+                options.compatibility.sample_rate=target;auto sampled=analyze_music_files({path},options,cancel);
+                require(sampled.success,"Terminal impulse analysis failed");
+                const auto expected=(std::uint64_t(count)*target+rate-1)/rate;
+                const auto& stats=sampled.document.profile.compositions[0];require(stats.samples==expected,"Terminal impulse EOF count is not exact");
+                PcmResampler filter;require(filter.prepare(rate,target,1),"Tail oracle prepare failed");
+                const auto g=filter.filter_geometry();const auto w=filter.coefficients();
+                const auto discard=(std::uint64_t(g.delay)*target+rate-1)/rate;double squares=0;
+                for(std::uint64_t i=0;i<expected;++i){const auto value=terminal_impulse_sample(i,count,rate,target,discard,g,w);
+                    squares+=value*value;
+                }
+                require(std::abs(stats.rms-std::sqrt(squares/expected))<2e-7,"Terminal impulse tail differs from indexed oracle");
+            }
+}
+
+static void resampled_eof(const QTemporaryDir& temp,auto& options,std::atomic_bool& cancel) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        // EOF regression: previous fixed63-input flush lost the final output.
+        for(const auto rate:{48000u,44100u})for(const auto target:{32768u,32000u}){
+            const auto path=temp.filePath(QString("resample-%1.wav").arg(rate));wav(path,rate,false,rate);
+            options.compatibility.sample_rate=target;auto sampled=analyze_music_files({path},options,cancel);
+            require(sampled.success,"Resampled WAV failed");require(sampled.document.profile.compositions[0].samples==target,"Resampled EOF length is not exact");
+            require(sampled.preview.duration_seconds==1.,"Resampled preview duration is not one second");
+        }
+}
+
+static void library_transfer(const QTemporaryDir& temp,const auto& single,QString& json_error,auto& audited) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        // A library-sized export fixture contains no decoded music and must not
+        // invoke the scanner. This measures JSON/file transfer separately.
+        auto library=single.document;library.preserved.remove("analysis_run");library.profile.compatibility.fft_size=4096;library.profile.gains.assign(2049,1);library.profile.mean_spectrum.assign(2049,1);library.profile.frequency_presence.assign(2049,1);library.profile.compositions.clear();library.previews.clear();
+        std::uint32_t rng=17;
+        for(unsigned i=0;i<643;++i){CompositionStatistics track;track.source="synthetic-export-fixture/"+std::string(160,'x')+"/track-"+std::to_string(i)+".wav";track.frames=track.active_frames=10;track.samples=48000;track.rms=.1;
+            track.mean_spectrum.resize(2049);for(auto& value:track.mean_spectrum){rng=rng*1664525u+1013904223u;value=double(rng)/4294967296.;}
+            track.frequency_presence.assign(2049,.5);
+            SpectrogramPreview image;image.source=QString::fromStdString(track.source);image.sample_rate=library.profile.compatibility.sample_rate;image.bin_hz=image.sample_rate/4096;image.rows=2;image.bands=16;image.duration_seconds=double(track.samples)/image.sample_rate;image.values.assign(32,.125f);
+            image.time_seconds={image.duration_seconds*.25,image.duration_seconds*.75};
+            for(std::size_t band=0;band<image.bands;++band){const auto first=band*2049/image.bands,last=(band+1)*2049/image.bands;image.frequency_hz.push_back(.5*double(first+last-1)*image.bin_hz);}
+            library.previews.push_back(std::move(image));library.profile.compositions.push_back(std::move(track));}
+        QElapsedTimer export_timer;export_timer.start();const auto export_path=temp.filePath("synthetic-library-profile.json");require(save_profile(export_path,library,json_error),"Library-sized coefficient export");const auto save_ms=export_timer.nsecsElapsed()/1e6;require(QFile(export_path).size()>1024*1024,"Per-track export must exceed the obsolete 1 MiB cap");
+        export_timer.restart();require(load_profile(export_path,audited,json_error) && audited.profile.compositions.size()==643 && audited.profile.gains==library.profile.gains && audited.profile.compositions.back().mean_spectrum==library.profile.compositions.back().mean_spectrum && audited.previews.back().values==library.previews.back().values,"Library-sized coefficient import without scanning");
+        std::cout<<"Synthetic JSON transfer: 643 records, "<<QFile(export_path).size()<<" bytes; save="<<save_ms<<" ms; load="<<export_timer.nsecsElapsed()/1e6<<" ms\n";
+}
+
+static void normalized_preview(const auto& single) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        auto normalized=single.preview.normalized(std::vector<float>(257,2));require(normalized.size()==single.preview.values.size(),"Normalized preview invalid");
+        for(std::size_t i=0;i<normalized.size();++i)require(normalized[i]==single.preview.values[i]*2,"Normalized preview gain is incorrect");
+}
+
+static void worker_determinism(const QTemporaryDir& temp,const auto& single,auto& options,std::atomic_bool& cancel,QString& json_error,auto& audited) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        options.workers=4;auto parallel=analyze_music_files({temp.filePath("short.wav"),temp.filePath("long.wav"),temp.filePath("silence.wav")},options,cancel);
+        require(parallel.success&&encode_profile(single.document)==encode_profile(parallel.document),"Worker count affects exported profile");
+        const auto summary=single.document.preserved.value("analysis_run").toObject();require(summary.value("requested_count").toInt()==3 && summary.value("processed_count").toInt()==3 && summary.value("active_composition_count").toInt()==2 && summary.value("failed_count").toInt()==0,"Batch counts distinguish silent files from decoding failures");
+        auto partial=analyze_music_files({temp.filePath("short.wav"),temp.filePath("silence.wav"),temp.filePath("missing.wav")},options,cancel);
+        require(partial.success && partial.document.profile.compositions.size()==2 && partial.document.preserved["analysis_run"].toObject()["failed_count"].toInt()==1,"Partial failure remains explicit in exported audit");
+        require(decode_profile(encode_profile(partial.document),audited,json_error) && audited.preserved["analysis_run"]==partial.document.preserved["analysis_run"],"Save/load preserves the run audit without rescanning audio");
+}
+
+static void compatibility_matching(const auto& c,const auto& loaded) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        const auto matches=[&](const ProfileCompatibility& expected,ProfileMatchScope scope=ProfileMatchScope::Exact){return profile_mismatches(loaded.profile,expected,scope).empty();};
+        require(matches(c),"Decoded profile does not match its declared frontend");
+        auto wrong=c;wrong.window=WindowFunction::Hamming;require(!matches(wrong),"Wrong window accepted");
+        wrong=c;wrong.sample_rate=32000;require(!matches(wrong),"Wrong Fs accepted");
+        wrong=c;wrong.reference=2;require(!matches(wrong),"Wrong reference accepted");
+        wrong=c;wrong.floor_db=-100;require(!matches(wrong),"Wrong floor accepted");
+        auto training_only=c;training_only.reference=2;training_only.floor_db=-100;
+        require(matches(training_only,ProfileMatchScope::SignalOnly),"Signal-only matching must ignore profile-owned training levels");
+        training_only.window=WindowFunction::Hamming;
+        require(!matches(training_only,ProfileMatchScope::SignalOnly),"Signal-only matching must still check the analysis window");
+        wrong=c;wrong.resampler_mode=ResamplerMode::IirExperimental;require(!matches(wrong),"Profile after a different resampler accepted");
+        wrong=c;wrong.resampler_design_version=1;require(!matches(wrong),"Old frontend design accepted");
+}
+
+static void normalizer_validation(const auto& sentinel) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        PreparedFrequencyNormalizer normalizer;require(normalizer.prepare_manual(257,2),"Manual normalizer preparation failed");std::vector<float> input(257,3),out(257,9);
+        require(normalizer.process(input,out)&&out[0]==6,"Manual gain failed");input[1]=NAN;require(!normalizer.process(input,out)&&out[0]==6,"Failure mutated normalizer output");
+        input[1]=3;require(normalizer.prepare_manual(257,0)&&normalizer.process(input,out)&&out[0]==0,"Zero manual gain rejected");
+        require(normalizer.prepare(sentinel.gains),"Profile normalizer preparation failed");
+}
+
+static void profile_serialization(const auto& c,const auto& doc,const auto& encoded,auto& loaded,QString& json_error) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        for(const auto kind:amplitude_spectrum_projections())for(const bool compensate:{false,true}){
+            auto candidate=doc;candidate.profile.compatibility.projection={kind,compensate};ProfileDocument roundtrip;
+            require(decode_profile(encode_profile(candidate),roundtrip,json_error) && roundtrip.profile.compatibility.projection==candidate.profile.compatibility.projection,"representation and explicit compensation survive profile export/import");
+        }
+        require(encode_profile(loaded)==encoded,"Profile canonical export is not reproducible");require(loaded.profile.gains==doc.profile.gains && loaded.profile.mean_spectrum==doc.profile.mean_spectrum && loaded.profile.compositions[0].mean_spectrum==doc.profile.compositions[0].mean_spectrum,"Binary reload changed gains or per-track Float64 spectra");
+        auto binary=QJsonDocument::fromJson(encoded).object();require(binary["gains"].toObject()["encoding"].toString()=="f32le-qcompress-base64" && binary["mean_spectrum"].toObject()["encoding"].toString()=="f64le-qcompress-base64","Profile arrays use typed binary storage");
+        auto damaged=binary;auto packed=damaged["gains"].toObject();packed["data"]="!!!!";damaged["gains"]=packed;
+        require(!decode_profile(QJsonDocument(damaged).toJson(),loaded,json_error) && loaded.profile.gains==doc.profile.gains,"Corrupt Base64 rejected atomically");
+        auto expanded=qCompress(QByteArray(qsizetype(doc.profile.gains.size()*8),char(0)));const auto expected_bytes=doc.profile.gains.size()*4;
+        for(unsigned j=0;j<4;++j)expanded[int(j)]=char(expected_bytes>>(8*(3-j)));
+        damaged=binary;packed=damaged["gains"].toObject();packed["data"]=QString::fromLatin1(expanded.toBase64());damaged["gains"]=packed;
+        require(!decode_profile(QJsonDocument(damaged).toJson(),loaded,json_error),"Compressed stream cannot exceed its declared output budget");
+        damaged=binary;packed=damaged["mean_spectrum"].toObject();packed["count"]=1;damaged["mean_spectrum"]=packed;require(!decode_profile(QJsonDocument(damaged).toJson(),loaded,json_error),"Wrong binary shape rejected");
+        require(loaded.preserved["future_hint"].toObject()["keep"].toInt()==42,"Top-level unknown field lost");
+        require(loaded.preserved["metadata"].toObject()["future_metadata"].toString()=="yes","Nested unknown field lost");
+        auto bad=QJsonDocument::fromJson(encoded).object();bad["version"]=4;require(!decode_profile(QJsonDocument(bad).toJson(),loaded,json_error),"Future version accepted");require(loaded.profile.gains==doc.profile.gains,"Future rejection not atomic");
+        require(!decode_profile("{malformed",loaded,json_error),"Malformed JSON accepted");
+}
+
+static auto weighting_profile(const auto& c,const auto& t) {
+using namespace dsp_kernels;using namespace desktop_analysis::offline;
+        CompositionStatistics a,b,quiet;a.frames=a.active_frames=10;a.rms=.1;a.mean_spectrum.assign(257,2);
+        b=a;b.frames=b.active_frames=1000;b.mean_spectrum.assign(257,8);quiet=a;quiet.active_frames=0;quiet.mean_spectrum.assign(257,0);
+        FrequencyProfile p;std::string error;require(build_frequency_profile(c,t,std::array{a,b,quiet},p,error),"Profile build failed");
+        require(std::abs(p.mean_spectrum[40]-5)<1e-12,"Long tracks bias equal composition weighting");
+        FrequencyProfile sentinel=p;require(!build_frequency_profile(c,t,std::array{quiet},p,error),"All silence accepted");require(p.gains==sentinel.gains,"Rejected build mutated profile");
+        ProfileDocument doc;doc.profile=sentinel;doc.preserved["future_hint"]=QJsonObject{{"keep",42}};doc.preserved["metadata"]=QJsonObject{{"future_metadata","yes"}};
+        doc.preserved["training"]=QJsonObject{{"future_training","yes"}};doc.preserved["compositions"]=QJsonArray{QJsonObject{{"future_track","yes"}}};
+return doc;
+}
+int main(int argc,char** argv) {
+    QCoreApplication app(argc,argv);using namespace dsp_kernels;using namespace desktop_analysis::offline;
+    try {
+        cadence_oracle();mel_coordinates_oracle();profile_mismatch_reasons();malformed_preview_normalization();
+        ProfileCompatibility c;c.fft_size=512;ProfileTraining t;t.hop=256;t.smoothing_radius=2;
+        auto doc=weighting_profile(c,t);
+        auto encoded=encode_profile(doc);ProfileDocument loaded;QString json_error;require(decode_profile(encoded,loaded,json_error),"Export reload failed");
+        profile_serialization(c,doc,encoded,loaded,json_error);
+        compatibility_matching(c,loaded);
+        normalizer_validation(doc.profile);
+        QTemporaryDir temp;require(temp.isValid(),"Temp directory failed");wav(temp.filePath("short.wav"),32768);wav(temp.filePath("long.wav"),65536);wav(temp.filePath("silence.wav"),32768,true);
+        require(save_profile(temp.filePath("profile.json"),doc,json_error),"Atomic profile save failed");require(load_profile(temp.filePath("profile.json"),loaded,json_error),"Profile file load failed");
+        AnalysisOptions options;options.compatibility=c;options.training=t;options.workers=1;options.preview_time_bins=32;std::atomic_bool cancel=false;
+        auto single=analyze_music_files({temp.filePath("short.wav"),temp.filePath("long.wav"),temp.filePath("silence.wav")},options,cancel);
+        require(single.success,"Streaming WAV batch failed");require(single.document.profile.compositions[2].active_frames==0,"Silence not excluded");require(single.preview.values.size()<=32*257,"Preview is not bounded");
+        require(std::abs(single.preview.duration_seconds-1)<1e-6,"Full-track preview lost duration");
+        preview_coordinate_oracle(single.preview,single.document.profile.compatibility.fft_size/2+1);
+        invalid_preview_axes_are_atomic(single.document);
+        require(single.document.previews.size()==3 && single.document.previews[1].duration_seconds==2,"Every scanned track receives a bounded full-track preview");
+        ProfileDocument cached;require(decode_profile(encode_profile(single.document),cached,json_error) && cached.previews.size()==3 && cached.previews[1].values==single.document.previews[1].values && cached.previews[1].time_seconds==single.document.previews[1].time_seconds && cached.previews[1].frequency_hz==single.document.previews[1].frequency_hz && cached.profile.compositions[1].mean_spectrum==single.document.profile.compositions[1].mean_spectrum,"Per-track previews and full-resolution statistics survive binary save/load exactly");
+        ProfileDocument audited;worker_determinism(temp,single,options,cancel,json_error,audited);
+        library_transfer(temp,single,json_error,audited);
+        normalized_preview(single);
+        resampled_eof(temp,options,cancel);
+        terminal_tail_scans(temp,options,cancel);
+        large_fft_scans(temp,options,cancel);
+        frontend_modes(temp,cancel,json_error);
+        budget_and_cancel(temp,options,cancel);
         std::cout<<"music_profile_tests PASS; wall="<<single.wall_seconds<<" s, audio="<<single.audio_seconds<<" s; threads deterministic\n";return 0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

@@ -42,6 +42,7 @@ public:
     std::size_t pending_bytes() const noexcept {return packets_.pending_bytes()+tx_size_-tx_offset_;}
     std::uint64_t dropped() const noexcept {return dropped_;}
 private:
+    void accept_fragment(std::span<const std::uint8_t>) noexcept;
     void packet(bdsp_protocol::PacketView) noexcept;
     void decode_complete(std::span<const std::uint8_t>) noexcept;
     Status encode_outgoing(const bdsp_protocol::numeric_data::Message&) noexcept;

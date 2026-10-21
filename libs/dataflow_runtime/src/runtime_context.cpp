@@ -62,7 +62,8 @@ class HistoryQuery {
         auto frame=state.owned_ingress.view();auto& view=std::get<NumericView>(frame.payload);
         const auto status=source_value(node,state,frame);if(status!=Status::ok)return status;
         frame.stamp=states[requested].numeric_stamp;
-        if(!frame.stamp.available)view.storage={};output=frame;return frame.stamp.available?Status::ok:Status::unavailable;
+        if(!frame.stamp.available)view.storage={};
+        output=frame;return frame.stamp.available?Status::ok:Status::unavailable;
     }
     FrameStamp prepared_stamp(const NumericContract& contract,const State& state) const noexcept {
         auto stamp=states[requested].numeric_stamp;

@@ -35,14 +35,17 @@ class ClockMixture {
         retain_latency(provenance.latency_seconds,provenance.frequency_dependent_latency);
         queue.stamp_head=(queue.stamp_head+1)%queue.stamps.size();--queue.stamp_count;
     }
-    void prepare_population() noexcept {
-        for(std::size_t lane=0;lane<state.mixer_queues.size();++lane)order[lane]=lane;
-        std::sort(order.begin(),order.begin()+state.mixer_queues.size(),[&](auto a,auto b){return node.endpoint_plan->inputs[a].port<node.endpoint_plan->inputs[b].port;});
+    void prepare_queue_weights() noexcept {
         for(std::size_t lane=0;lane<state.mixer_queues.size();++lane){
             auto& queue=state.mixer_queues[lane];consume_spectral_stamp(queue);
             stamp.discontinuity=stamp.discontinuity || queue.discontinuity;queue.discontinuity=false;
             for(const auto& weight:parameters.weights)if(weight.port==node.endpoint_plan->inputs[lane].port)weights[lane]=weight.weight;
         }
+    }
+    void prepare_population() noexcept {
+        for(std::size_t lane=0;lane<state.mixer_queues.size();++lane)order[lane]=lane;
+        std::sort(order.begin(),order.begin()+state.mixer_queues.size(),[&](auto a,auto b){return node.endpoint_plan->inputs[a].port<node.endpoint_plan->inputs[b].port;});
+        prepare_queue_weights();
     }
     bool apply_aperture() noexcept {
         if(!spectral || !aperture)return true;

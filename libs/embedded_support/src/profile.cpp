@@ -123,8 +123,11 @@ dataflow_runtime::NumericRuntimeProfile numeric_runtime_profile(const Profile& p
     const auto budget=processing_budget(p);
     signal_contracts::FrameLimits frame{p.channels,4096*std::min<std::uint32_t>(p.channels,2),32768,2048,64,256};
     const auto control=bdsp_protocol::numeric_control::device_limits();
-    return {{control.nodes,control.edges,4,16,64,16384,frame},{{budget,budget,budget,p.task_stack_bytes},0,budget},
-        {frame.max_elements,p.channels,32768,32768,budget},{true,true,false},false};
+    dataflow_runtime::NumericRuntimeProfile result{};
+    result.admission={control.nodes,control.edges,4,16,64,16384,frame};
+    result.resources={{budget,budget,budget,p.task_stack_bytes},0,budget};
+    result.kernels={frame.max_elements,p.channels,32768,32768,budget};
+    result.capabilities={true,true,false};result.history_enabled=false;return result;
 }
 bdsp_protocol::numeric_control::Limits numeric_control_limits(const Profile& p) noexcept {
     auto limits=bdsp_protocol::numeric_control::device_limits();limits.frame=numeric_runtime_profile(p).admission.frame;return limits;

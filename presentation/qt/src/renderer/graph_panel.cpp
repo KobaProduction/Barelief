@@ -284,7 +284,10 @@ void GraphPanel::set_axis_permissions(presentation::NumericAxisPermissions axes)
     if(_axis_permissions.frequency==axes.frequency && _axis_permissions.time==axes.time)return;
     _axis_permissions=axes;refresh_axis_display_controls();
 }
-presentation::NumericRenderTarget GraphPanel::render_target(bool visible){return {active_chart()?&_chart_port:nullptr,active_spectrogram()?&_surface_port:nullptr,&_caption_port,visible,image_view()?&_image_port:nullptr,pie_view()?&_pie_port:nullptr,_metrics?&_metrics_port:nullptr,_axis_permissions,piano_view()?&_piano_port:nullptr,_frequency_grid,_plot_presentation};}
+presentation::NumericRenderTarget GraphPanel::render_target(bool visible){
+    const bool metrics_active=_display_mode=="metrics"||_display_mode=="signedbar";
+    return {active_chart()?&_chart_port:nullptr,active_spectrogram()?&_surface_port:nullptr,&_caption_port,visible,image_view()?&_image_port:nullptr,pie_view()?&_pie_port:nullptr,metrics_active&&_metrics?&_metrics_port:nullptr,_axis_permissions,piano_view()?&_piano_port:nullptr,_frequency_grid,_plot_presentation};
+}
 presentation::NumericRenderTarget GraphPanel::all_render_targets(){return {&_chart_port,_surface?&_surface_port:nullptr,&_caption_port,true,&_image_port,&_pie_port,_metrics?&_metrics_port:nullptr,_axis_permissions,_piano?&_piano_port:nullptr,_frequency_grid,_plot_presentation};}
 void GraphPanel::apply_preferences(){
     const auto scale=display_scale(current_value_source());

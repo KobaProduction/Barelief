@@ -138,9 +138,7 @@ inline bool align_binary_magnitudes(const Binary& a,const Binary& b,int exponent
     return av.left(unsigned(a.exponent2-exponent)) && bv.left(unsigned(b.exponent2-exponent));
 }
 
-inline bool add_binary(Binary& a,const Binary& b) noexcept {
-    if(b.magnitude.zero())return true;
-    if(a.magnitude.zero()){a=b;return true;}
+inline bool add_nonzero_binary(Binary& a,const Binary& b) noexcept {
     const int exponent=std::min(a.exponent2,b.exponent2);
     auto av=a.magnitude,bv=b.magnitude;
     if(!align_binary_magnitudes(a,b,exponent,av,bv))return false;
@@ -148,6 +146,11 @@ inline bool add_binary(Binary& a,const Binary& b) noexcept {
     a.magnitude=av;a.exponent2=exponent;
     if(av.zero())a.negative=false;
     return true;
+}
+inline bool add_binary(Binary& a,const Binary& b) noexcept {
+    if(b.magnitude.zero())return true;
+    if(a.magnitude.zero()){a=b;return true;}
+    return add_nonzero_binary(a,b);
 }
 inline int absolute_compare(const Binary& a,const Binary& b) noexcept {
     if(a.magnitude.zero())return b.magnitude.zero()?0:-1;

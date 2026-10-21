@@ -164,6 +164,10 @@ Stock Kconfig: UART1 TX17/RX16, 2 Mbaud 8N1; mono 8 кГц, 256 отсчётов
 History выключена. Memory ceiling — 320 KiB, CONTROL wire/arena — 4/8 KiB;
 реальный доступный бюджет может быть меньше. Значения меняются через menuconfig.
 Admission проверяет память и полную стоимость публикации до Prepare и binding.
+Acquisition task получает 32 KiB стека, CONTROL task — 16 KiB; профиль учитывает
+полные выделенные размеры. Лимит пяти параметров узла покрывает явные настройки
+stock Mel. Это консервативные бюджеты admission, а не измерение stack high-water
+на плате.
 
 ## Проверка интеграции
 
@@ -182,3 +186,9 @@ Host-тесты `embedded_numeric_persistence_tests`, `embedded_numeric_session_
 Xtensa compilation, firmware link и запуск на плате. Фактические heap/stack,
 timing, UART/WiFi throughput и устойчивость NVS к отключению питания измеряются
 на выбранной аппаратной конфигурации.
+
+Host-сценарии FFT 2048/4096 проверяют успешную работу с бюджетом 1 MiB.
+На 64-битном host профиль FFT 2048 с бюджетом 320 KiB проверяется как точный
+отказ `exhausted`: без записи NVS, привязки потока или запуска обработки,
+с освобождением ресурсов чтения. Эти размеры host ABI не определяют доступную
+ёмкость ESP32; отдельный ранний отказ при 64 KiB также не открывает NVS.

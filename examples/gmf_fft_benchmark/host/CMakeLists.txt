@@ -52,3 +52,13 @@ if(GMF_UBSAN)
     target_compile_options(gmf_candidate_check PRIVATE -fsanitize=undefined -fno-sanitize-recover=all)
     target_link_options(gmf_candidate_check PRIVATE -fsanitize=undefined)
 endif()
+
+option(GMF_HEADER_AUDIT "Compile the experiment's C-compatible headers as a C++ consumer" OFF)
+if(GMF_HEADER_AUDIT)
+    add_library(quality_gmf_headers OBJECT "${fft_root}/tools/quality/gmf_headers.cpp")
+    target_include_directories(quality_gmf_headers PRIVATE
+        $<TARGET_PROPERTY:gmf_candidate_check,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(quality_gmf_headers PRIVATE
+        $<TARGET_PROPERTY:gmf_candidate_check,COMPILE_DEFINITIONS>)
+    target_compile_features(quality_gmf_headers PRIVATE cxx_std_20)
+endif()

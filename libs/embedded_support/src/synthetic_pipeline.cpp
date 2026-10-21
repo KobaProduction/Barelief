@@ -115,11 +115,11 @@ struct GraphComposition {
 };
 struct StagedSyntheticPlan {
     const Profile& profile;
-    domain::NumericProcessingGraph graph;
-    dataflow_runtime::NumericRuntimeProfile runtime;
-    domain::OwnedProcessingContract input,output;
-    std::shared_ptr<const dataflow_runtime::PreparedGraph> plan;
-    std::unique_ptr<dataflow_runtime::RuntimeContext> context;
+    domain::NumericProcessingGraph graph{};
+    dataflow_runtime::NumericRuntimeProfile runtime{};
+    domain::OwnedProcessingContract input{},output{};
+    std::shared_ptr<const dataflow_runtime::PreparedGraph> plan{};
+    std::unique_ptr<dataflow_runtime::RuntimeContext> context{};
     domain::NodeId sink() const noexcept {return profile.spectral?6:2;}
     Status budget(const application::MemoryRequirements& old,std::size_t id_bytes) {
         const auto source_bytes=std::size_t(profile.channels)*profile.block_samples*sizeof(float);

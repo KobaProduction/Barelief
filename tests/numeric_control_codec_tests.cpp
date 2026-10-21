@@ -145,17 +145,149 @@ void basic(const Codec &c) {
     malformed_basic(c,e.produced);
     basic_limits(c,golden.size());
 }
-void preflight_regression(const Codec &c) {
-    Parameter parameter{"label", std::string_view{"x"}};
-    Node node{1, "TestSignal", EndpointParameters{{&parameter, 1}}, {}, {}};
-    node.enabled = false;
-    domain::Edge edge{1, 2, 0, 0, 3};
-    Graph graph{"graph", {}, {&node, 1}, {&edge, 1}};
-    CapabilityRow row{node, "k", "b", signal_contracts::ValueDomain::FiniteOnly, {21, 22, 23, 24, 25}};
-    std::array<std::uint8_t, 5> extension_bytes{1, 2, 3, 4, 5};
-    Extension extension{1024, extension_bytes};
-    for (unsigned mask = 0; mask != 4; ++mask) {
-        Reply reply;
+void preflight_node(const Node& n){
+            CHECK(n.id == 1 && n.kind == "TestSignal" && !n.enabled);
+            CHECK(n.inputs.empty() && n.outputs.empty());
+            CHECK(std::holds_alternative<EndpointParameters>(n.parameters));
+            if (const auto *parameters = std::get_if<EndpointParameters>(&n.parameters)) {
+                CHECK(parameters->values.size() == 1);
+                if (parameters->values.size() == 1) {
+                    CHECK(parameters->values[0].key == "label");
+                    const auto *value = std::get_if<std::string_view>(&parameters->values[0].value);
+                    CHECK(value && *value == "x");
+                }
+            }
+        }
+void preflight_applied(const Reply& r,unsigned mask,const Graph& graph){            CHECK(r.state.applied.has_value() == bool(mask & 1));
+            if (r.state.applied) {
+                const auto &g = *r.state.applied;
+                CHECK(g.graph_id == "graph" && g.nodes.size() == 1 && g.edges.size() == 1);
+                CHECK(g.versions.document == graph.versions.document && g.versions.graph == graph.versions.graph &&
+                      g.versions.processing == graph.versions.processing &&
+                      g.versions.control == graph.versions.control && g.versions.data == graph.versions.data);
+                if (g.nodes.size() == 1)
+                    preflight_node(g.nodes[0]);
+                if (g.edges.size() == 1)
+                    CHECK(g.edges[0].from == 1 && g.edges[0].to == 2 && g.edges[0].output_port == 0 &&
+                          g.edges[0].input_port == 0 && g.edges[0].conversion == 3);
+            }
+}
+void preflight_capabilities(const Reply& r,unsigned mask){            CHECK(r.capabilities.has_value() == bool(mask & 2));
+            if (r.capabilities) {
+                const auto &caps = *r.capabilities;
+                CHECK(caps.control_version == 4 && caps.data_version == bdsp_protocol::numeric_data::PayloadVersion && caps.codec_mask == 3 &&
+                      caps.rows.size() == 1);
+                CHECK(caps.maximum.plan == 31 && caps.maximum.payload == 32 && caps.maximum.scratch == 33 &&
+                      caps.maximum.stack == 34 && caps.maximum.peak == 35);
+                if (caps.rows.size() == 1) {
+                    const auto &configuration = caps.rows[0];
+                    preflight_node(configuration.combination);
+                    CHECK(configuration.kernel == "k" && configuration.backend == "b");
+                    CHECK(configuration.values == signal_contracts::ValueDomain::FiniteOnly);
+                    CHECK(configuration.resources.plan == 21 && configuration.resources.payload == 22 &&
+                          configuration.resources.scratch == 23 && configuration.resources.stack == 24 &&
+                          configuration.resources.peak == 25);
+                }
+            }
+}
+void preflight_reply(const Message& m,bool has_extension,unsigned mask,const Graph& graph,const std::array<std::uint8_t,5>& extension_bytes){
+            CHECK(m.schema_version == 4 && m.client == UINT64_MAX && m.session == 9007199254740993ULL);
+            CHECK(m.epoch == 88 && m.request == UINT64_MAX && m.expected_revision == 0);
+            CHECK(std::holds_alternative<Reply>(m.body));
+            const auto *r = std::get_if<Reply>(&m.body);
+            if (!r)
+                return;
+            CHECK(r->command == CommandId::State && r->error == Error::Validation);
+            CHECK(r->diagnostic.node == -7 && r->diagnostic.port == UINT16_MAX && r->diagnostic.edge == UINT64_MAX);
+            CHECK(r->diagnostic.parameter == "why");
+            CHECK(r->state.lifecycle == Lifecycle::Stopped && !r->state.run_intent);
+            CHECK(r->state.revision == UINT64_MAX && r->state.token == 0);
+            CHECK(r->state.resources.plan == 11 && r->state.resources.payload == 12 &&
+                  r->state.resources.scratch == 13 && r->state.resources.stack == 14 && r->state.resources.peak == 15);
+            preflight_applied(*r,mask,graph);
+            preflight_capabilities(*r,mask);
+            CHECK(m.extensions.size() == (has_extension ? 1U : 0U));
+            if (has_extension && m.extensions.size() == 1) {
+                CHECK(m.extensions[0].tag == 1024 && m.extensions[0].bytes.size() == 5);
+                CHECK(std::equal(m.extensions[0].bytes.begin(), m.extensions[0].bytes.end(), extension_bytes.begin(),
+                                 extension_bytes.end()));
+            }
+        }
+void preflight_prefixes(const Codec& c,const Message& message,const auto& encoded,unsigned mask,const Graph& graph,const std::array<std::uint8_t,5>& extension_bytes){        Message without_extension = message;
+        without_extension.extensions = {};
+        tracking = true;
+        const auto bare = c.measure(without_extension, limits);
+        tracking = false;
+        CHECK(bare);
+        constexpr std::array<std::uint8_t, 12> protobuf_extension{0x4a, 0x0a, 0x08, 0x80, 0x08, 0x12,
+                                                                  0x05, 1,    2,    3,    4,    5};
+        if (c.id() == CodecId::Protobuf) {
+            CHECK(encoded.produced >= protobuf_extension.size());
+            CHECK(bare.required_wire + protobuf_extension.size() == encoded.produced);
+            if (encoded.produced >= protobuf_extension.size())
+                CHECK(std::equal(protobuf_extension.begin(), protobuf_extension.end(),
+                                 wire.begin() + encoded.produced - protobuf_extension.size()));
+        }
+        // Protobuf permits omission of the trailing repeated extension field.
+        // All other proper prefixes cut a required field or a declared container.
+        for (std::size_t n = 0; n < encoded.produced; ++n) {
+            arena.fill(std::byte{0xa5});
+            Message prefix;
+            prefix.client = 66;
+            prefix.session = 98;
+            prefix.epoch = 99;
+            prefix.request = 77;
+            prefix.expected_revision = 97;
+            std::get<Command>(prefix.body).id = CommandId::Stop;
+            const auto result = decode(c, n, prefix);
+            const bool valid_prefix = c.id() == CodecId::Protobuf && n + protobuf_extension.size() == encoded.produced;
+            CHECK(bool(result) == valid_prefix);
+            if (valid_prefix) {
+                CHECK(result.consumed == n && result.produced == 0);
+                preflight_reply(prefix,false,mask,graph,extension_bytes);
+            } else {
+                CHECK(result.consumed == 0 && result.produced == 0);
+                CHECK(prefix.client == 66 && prefix.request == 77 && std::holds_alternative<Command>(prefix.body));
+                CHECK(prefix.schema_version == 4 && prefix.session == 98 && prefix.epoch == 99 &&
+                      prefix.expected_revision == 97 && prefix.extensions.empty());
+                if (const auto *command = std::get_if<Command>(&prefix.body)) {
+                    CHECK(command->id == CommandId::Stop && !command->graph && !command->parameters &&
+                          command->graph_id.empty() && command->token == 0 && command->graph_revision == 0 &&
+                          command->node == -1 && command->enabled);
+                }
+                CHECK(std::all_of(arena.begin(), arena.end(), [](auto b) { return b == std::byte{0xa5}; }));
+            }
+        }
+}
+void preflight_decode_capacities(const Codec& c,const Message& message,const auto& measured,const auto& encoded,Message& decoded){        auto bound = limits;
+        bound.arena_bytes = measured.required_arena - 1;
+        tracking = true;
+        CHECK(c.measure(message, bound).status == Status::Limit);
+        tracking = false;
+        arena.fill(std::byte{0xa5});
+        decoded.request = 77;
+        tracking = true;
+        auto short_arena = c.decode(std::span(wire).first(encoded.produced),
+                                    std::span(arena).first(measured.required_arena - 1), stage, decoded, limits);
+        auto short_stage = c.decode(std::span(wire).first(encoded.produced), arena,
+                                    std::span(stage).first(measured.required_arena - 1), decoded, limits);
+        tracking = false;
+        CHECK(short_arena.status == Status::BufferTooSmall && short_stage.status == Status::BufferTooSmall);
+        CHECK(short_arena.consumed == 0 && short_stage.consumed == 0 && decoded.request == 77);
+        CHECK(std::all_of(arena.begin(), arena.end(), [](auto b) { return b == std::byte{0xa5}; }));
+}
+void preflight_encode_capacities(const Codec& c,const Message& message,const auto& measured){        wire.fill(0xcc);
+        tracking = true;
+        auto short_output = c.encode(message, std::span(wire).first(measured.required_wire - 1), scratch, limits);
+        auto short_scratch = c.encode(message, wire, std::span(scratch).first(measured.required_scratch - 1), limits);
+        tracking = false;
+        CHECK(short_output.status == Status::BufferTooSmall && short_output.consumed == 0 &&
+              short_output.produced == 0);
+        CHECK(short_output.required_wire == measured.required_wire &&
+              short_output.required_scratch == measured.required_scratch);
+        CHECK(short_scratch.status == Status::BufferTooSmall && short_scratch.produced == 0);
+        CHECK(std::all_of(wire.begin(), wire.end(), [](auto b) { return b == 0xcc; }));}
+void preflight_mask(const Codec& c,unsigned mask,const Graph& graph,const CapabilityRow& row,const Extension& extension,const std::array<std::uint8_t,5>& extension_bytes){        Reply reply;
         reply.error = Error::Validation;
         reply.diagnostic.node = -7;
         reply.diagnostic.port = UINT16_MAX;
@@ -187,14 +319,14 @@ void preflight_regression(const Codec &c) {
         CHECK(std::all_of(wire.begin(), wire.end(), [](auto b) { return b == 0xcc; }));
         CHECK(std::all_of(scratch.begin(), scratch.end(), [](auto b) { return b == 0xdd; }));
         if (!measured)
-            continue;
+            return;
         tracking = true;
         auto encoded = c.encode(message, std::span(wire).first(measured.required_wire),
                                 std::span(scratch).first(measured.required_scratch), limits);
         tracking = false;
         CHECK(encoded && encoded.produced == measured.required_wire);
         if (!encoded)
-            continue;
+            return;
         Message decoded;
         tracking = true;
         auto restored =
@@ -205,168 +337,45 @@ void preflight_regression(const Codec &c) {
         CHECK(restored.required_scratch == measured.required_arena);
         CHECK(restored.required_text == measured.required_text);
         CHECK(decoded.request == UINT64_MAX);
-        auto check_node = [](const Node &n) {
-            CHECK(n.id == 1 && n.kind == "TestSignal" && !n.enabled);
-            CHECK(n.inputs.empty() && n.outputs.empty());
-            CHECK(std::holds_alternative<EndpointParameters>(n.parameters));
-            if (const auto *parameters = std::get_if<EndpointParameters>(&n.parameters)) {
-                CHECK(parameters->values.size() == 1);
-                if (parameters->values.size() == 1) {
-                    CHECK(parameters->values[0].key == "label");
-                    const auto *value = std::get_if<std::string_view>(&parameters->values[0].value);
-                    CHECK(value && *value == "x");
-                }
-            }
-        };
-        auto check_reply = [&](const Message &m, bool has_extension) {
-            CHECK(m.schema_version == 4 && m.client == UINT64_MAX && m.session == 9007199254740993ULL);
-            CHECK(m.epoch == 88 && m.request == UINT64_MAX && m.expected_revision == 0);
-            CHECK(std::holds_alternative<Reply>(m.body));
-            const auto *r = std::get_if<Reply>(&m.body);
-            if (!r)
-                return;
-            CHECK(r->command == CommandId::State && r->error == Error::Validation);
-            CHECK(r->diagnostic.node == -7 && r->diagnostic.port == UINT16_MAX && r->diagnostic.edge == UINT64_MAX);
-            CHECK(r->diagnostic.parameter == "why");
-            CHECK(r->state.lifecycle == Lifecycle::Stopped && !r->state.run_intent);
-            CHECK(r->state.revision == UINT64_MAX && r->state.token == 0);
-            CHECK(r->state.resources.plan == 11 && r->state.resources.payload == 12 &&
-                  r->state.resources.scratch == 13 && r->state.resources.stack == 14 && r->state.resources.peak == 15);
-            CHECK(r->state.applied.has_value() == bool(mask & 1));
-            if (r->state.applied) {
-                const auto &g = *r->state.applied;
-                CHECK(g.graph_id == "graph" && g.nodes.size() == 1 && g.edges.size() == 1);
-                CHECK(g.versions.document == graph.versions.document && g.versions.graph == graph.versions.graph &&
-                      g.versions.processing == graph.versions.processing &&
-                      g.versions.control == graph.versions.control && g.versions.data == graph.versions.data);
-                if (g.nodes.size() == 1)
-                    check_node(g.nodes[0]);
-                if (g.edges.size() == 1)
-                    CHECK(g.edges[0].from == 1 && g.edges[0].to == 2 && g.edges[0].output_port == 0 &&
-                          g.edges[0].input_port == 0 && g.edges[0].conversion == 3);
-            }
-            CHECK(r->capabilities.has_value() == bool(mask & 2));
-            if (r->capabilities) {
-                const auto &caps = *r->capabilities;
-                CHECK(caps.control_version == 4 && caps.data_version == bdsp_protocol::numeric_data::PayloadVersion && caps.codec_mask == 3 &&
-                      caps.rows.size() == 1);
-                CHECK(caps.maximum.plan == 31 && caps.maximum.payload == 32 && caps.maximum.scratch == 33 &&
-                      caps.maximum.stack == 34 && caps.maximum.peak == 35);
-                if (caps.rows.size() == 1) {
-                    const auto &configuration = caps.rows[0];
-                    check_node(configuration.combination);
-                    CHECK(configuration.kernel == "k" && configuration.backend == "b");
-                    CHECK(configuration.values == signal_contracts::ValueDomain::FiniteOnly);
-                    CHECK(configuration.resources.plan == 21 && configuration.resources.payload == 22 &&
-                          configuration.resources.scratch == 23 && configuration.resources.stack == 24 &&
-                          configuration.resources.peak == 25);
-                }
-            }
-            CHECK(m.extensions.size() == (has_extension ? 1U : 0U));
-            if (has_extension && m.extensions.size() == 1) {
-                CHECK(m.extensions[0].tag == 1024 && m.extensions[0].bytes.size() == 5);
-                CHECK(std::equal(m.extensions[0].bytes.begin(), m.extensions[0].bytes.end(), extension_bytes.begin(),
-                                 extension_bytes.end()));
-            }
-        };
         // Owned decode subtrees must survive reuse of both incoming bytes and staging.
         wire.fill(0);
         stage.fill(std::byte{0});
-        check_reply(decoded, true);
+        preflight_reply(decoded,true,mask,graph,extension_bytes);
         encoded = encode(c, message);
-        Message without_extension = message;
-        without_extension.extensions = {};
-        tracking = true;
-        const auto bare = c.measure(without_extension, limits);
-        tracking = false;
-        CHECK(bare);
-        constexpr std::array<std::uint8_t, 12> protobuf_extension{0x4a, 0x0a, 0x08, 0x80, 0x08, 0x12,
-                                                                  0x05, 1,    2,    3,    4,    5};
-        if (c.id() == CodecId::Protobuf) {
-            CHECK(encoded.produced >= protobuf_extension.size());
-            CHECK(bare.required_wire + protobuf_extension.size() == encoded.produced);
-            if (encoded.produced >= protobuf_extension.size())
-                CHECK(std::equal(protobuf_extension.begin(), protobuf_extension.end(),
-                                 wire.begin() + encoded.produced - protobuf_extension.size()));
-        }
-        // Protobuf permits omission of the trailing repeated extension field.
-        // All other proper prefixes cut a required field or a declared container.
-        for (std::size_t n = 0; n < encoded.produced; ++n) {
-            arena.fill(std::byte{0xa5});
-            Message prefix;
-            prefix.client = 66;
-            prefix.session = 98;
-            prefix.epoch = 99;
-            prefix.request = 77;
-            prefix.expected_revision = 97;
-            std::get<Command>(prefix.body).id = CommandId::Stop;
-            const auto result = decode(c, n, prefix);
-            const bool valid_prefix = c.id() == CodecId::Protobuf && n + protobuf_extension.size() == encoded.produced;
-            CHECK(bool(result) == valid_prefix);
-            if (valid_prefix) {
-                CHECK(result.consumed == n && result.produced == 0);
-                check_reply(prefix, false);
-            } else {
-                CHECK(result.consumed == 0 && result.produced == 0);
-                CHECK(prefix.client == 66 && prefix.request == 77 && std::holds_alternative<Command>(prefix.body));
-                CHECK(prefix.schema_version == 4 && prefix.session == 98 && prefix.epoch == 99 &&
-                      prefix.expected_revision == 97 && prefix.extensions.empty());
-                if (const auto *command = std::get_if<Command>(&prefix.body)) {
-                    CHECK(command->id == CommandId::Stop && !command->graph && !command->parameters &&
-                          command->graph_id.empty() && command->token == 0 && command->graph_revision == 0 &&
-                          command->node == -1 && command->enabled);
-                }
-                CHECK(std::all_of(arena.begin(), arena.end(), [](auto b) { return b == std::byte{0xa5}; }));
-            }
-        }
-        auto bound = limits;
-        bound.arena_bytes = measured.required_arena - 1;
-        tracking = true;
-        CHECK(c.measure(message, bound).status == Status::Limit);
-        tracking = false;
-        arena.fill(std::byte{0xa5});
-        decoded.request = 77;
-        tracking = true;
-        auto short_arena = c.decode(std::span(wire).first(encoded.produced),
-                                    std::span(arena).first(measured.required_arena - 1), stage, decoded, limits);
-        auto short_stage = c.decode(std::span(wire).first(encoded.produced), arena,
-                                    std::span(stage).first(measured.required_arena - 1), decoded, limits);
-        tracking = false;
-        CHECK(short_arena.status == Status::BufferTooSmall && short_stage.status == Status::BufferTooSmall);
-        CHECK(short_arena.consumed == 0 && short_stage.consumed == 0 && decoded.request == 77);
-        CHECK(std::all_of(arena.begin(), arena.end(), [](auto b) { return b == std::byte{0xa5}; }));
-        wire.fill(0xcc);
-        tracking = true;
-        auto short_output = c.encode(message, std::span(wire).first(measured.required_wire - 1), scratch, limits);
-        auto short_scratch = c.encode(message, wire, std::span(scratch).first(measured.required_scratch - 1), limits);
-        tracking = false;
-        CHECK(short_output.status == Status::BufferTooSmall && short_output.consumed == 0 &&
-              short_output.produced == 0);
-        CHECK(short_output.required_wire == measured.required_wire &&
-              short_output.required_scratch == measured.required_scratch);
-        CHECK(short_scratch.status == Status::BufferTooSmall && short_scratch.produced == 0);
-        CHECK(std::all_of(wire.begin(), wire.end(), [](auto b) { return b == 0xcc; }));
+        preflight_prefixes(c,message,encoded,mask,graph,extension_bytes);
+        preflight_decode_capacities(c,message,measured,encoded,decoded);
+        preflight_encode_capacities(c,message,measured);
+}
+void preflight_regression(const Codec &c) {
+    Parameter parameter{"label", std::string_view{"x"}};
+    Node node{1, "TestSignal", EndpointParameters{{&parameter, 1}}, {}, {}};
+    node.enabled = false;
+    domain::Edge edge{1, 2, 0, 0, 3};
+    Graph graph{"graph", {}, {&node, 1}, {&edge, 1}};
+    CapabilityRow row{node, "k", "b", signal_contracts::ValueDomain::FiniteOnly, {21, 22, 23, 24, 25}};
+    std::array<std::uint8_t, 5> extension_bytes{1, 2, 3, 4, 5};
+    Extension extension{1024, extension_bytes};
+    for (unsigned mask = 0; mask != 4; ++mask) {
+        preflight_mask(c,mask,graph,row,extension,extension_bytes);
     }
 }
-void contracts_and_literals(const Codec &c) {
+void literal_arena_exhaustion(const Codec& c,const Message& m,Message& out,std::size_t required_arena){
+            // Exact arena exhaustion, including owned descriptors/text/channel IDs.
+            auto e = encode(c, m);
+            out.request = 77;
+            arena.fill(std::byte{0xa5});
+            tracking = true;
+            auto short_result =
+                c.decode({wire.data(), e.produced}, {arena.data(), required_arena - 1}, stage, out, limits);
+            tracking = false;
+            CHECK(short_result.status == bdsp_protocol::numeric_control::Status::BufferTooSmall);
+            CHECK(short_result.required_arena == required_arena);
+            CHECK(out.request == 77);
+            CHECK(arena.back() == std::byte{0xa5});
+            CHECK(arena.front() == std::byte{0xa5});
+}
+void literal_contract_case(const Codec& c,const auto& desc,signal_contracts::Rank rank,std::array<std::uint32_t,2>& channels,std::array<Parameter,10>& params,const std::array<Literal,10>& values){
     using namespace signal_contracts;
-    std::array<std::uint32_t, 2> channels{7, 13};
-    std::array<Literal, 10> values{INT64_MIN,
-                                   INT64_MAX,
-                                   UINT64_MAX,
-                                   std::uint64_t{9007199254740993ULL},
-                                   std::int64_t{-9007199254740993LL},
-                                   std::bit_cast<float>(0x80000000U),
-                                   std::bit_cast<float>(1U),
-                                   std::bit_cast<float>(0x7fc01234U),
-                                   std::bit_cast<double>(0x8000000000000000ULL),
-                                   std::bit_cast<double>(0x7ff8000000001234ULL)};
-    std::array<Parameter, 10> params{};
-    const std::string_view keys[]{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"};
-    for (std::size_t i = 0; i < values.size(); ++i)
-        params[i] = {keys[i], values[i]};
-    for (auto desc : dtype_descriptors())
-        for (auto rank : std::array{Rank::Scalar, Rank::Vector, Rank::Matrix}) {
             NumericContract contract;
             contract.dtype = desc.type;
             contract.shape.rank = rank;
@@ -399,12 +408,12 @@ void contracts_and_literals(const Codec &c) {
             auto e = encode(c, m);
             CHECK(e);
             if (!e)
-                continue;
+                return;
             Message out;
             auto d = decode(c, e.produced, out);
             CHECK(d);
             if (!d)
-                continue;
+                return;
             wire.fill(0);
             stage.fill(std::byte{0});
             const auto &dg = *std::get<Command>(out.body).graph;
@@ -417,23 +426,10 @@ void contracts_and_literals(const Codec &c) {
             CHECK(pp.size() == 10);
             for (std::size_t i = 0; i < pp.size(); ++i)
                 CHECK(same_literal(std::get<Literal>(pp[i].value), values[i]));
-            // Exact arena exhaustion, including owned descriptors/text/channel IDs.
-            e = encode(c, m);
-            out.request = 77;
-            arena.fill(std::byte{0xa5});
-            tracking = true;
-            auto short_result =
-                c.decode({wire.data(), e.produced}, {arena.data(), d.required_arena - 1}, stage, out, limits);
-            tracking = false;
-            CHECK(short_result.status == bdsp_protocol::numeric_control::Status::BufferTooSmall);
-            CHECK(short_result.required_arena == d.required_arena);
-            CHECK(out.request == 77);
-            CHECK(arena.back() == std::byte{0xa5});
-            CHECK(arena.front() == std::byte{0xa5});
-        }
-    // Explicit packed24 and valid24-in32, distinct placements and endian.
-    for (auto enc : std::array{StorageEncoding::PackedSigned24LE, StorageEncoding::PackedSigned24BE,
-                               StorageEncoding::FixedLittleEndian, StorageEncoding::FixedBigEndian}) {
+            literal_arena_exhaustion(c,m,out,d.required_arena);
+}
+void packed_literal_contract(const Codec& c,signal_contracts::StorageEncoding enc,std::array<std::uint32_t,2>& channels){
+    using namespace signal_contracts;
         NumericContract n;
         n.dtype = DType::Int32;
         n.semantic = Semantic::PCM;
@@ -453,9 +449,37 @@ void contracts_and_literals(const Codec &c) {
         auto e = encode(c, m);
         CHECK(e);
         Message out;
-        const auto decoded=decode(c,e.produced,out);CHECK(decoded);if(!decoded)continue;
+        const auto decoded=decode(c,e.produced,out);CHECK(decoded);if(!decoded)return;
         CHECK(same_contract(std::get<Command>(out.body).graph->nodes[0].outputs[0].contract, n));
-    }
+}
+void literal_extension_limits(const Codec& c,std::array<Parameter,10>& params,Node& n,Graph& g,Command& cmd,Message& m,Message& out){
+    // Unknown optional extension bytes are owned, including NUL/non-UTF8.
+    std::array<std::uint8_t, 4> bytes{0, 255, 1, 2};
+    Extension ext{1024, bytes};
+    m = {};
+    m.extensions = {&ext, 1};
+    auto e = encode(c, m);
+    CHECK(e);
+    CHECK(decode(c, e.produced, out));
+    wire.fill(0);
+    stage.fill(std::byte{0});
+    CHECK(out.extensions[0].bytes[1] == 255);
+    ext.tag = 0x8000;
+    CHECK(encode(c, m).status == bdsp_protocol::numeric_control::Status::UnsupportedField);
+    std::array<Extension, 2> duplicates{Extension{1024, bytes}, Extension{1024, bytes}};
+    m.extensions = duplicates;
+    CHECK(!encode(c, m));
+    params[1].key = params[0].key;
+    n.parameters = EndpointParameters{params};
+    g.versions.graph = 5;
+    g.nodes = {&n, 1};
+    cmd.graph = g;
+    m = {};
+    m.body = cmd;
+    CHECK(!encode(c, m));
+}
+void structured_literal_extensions(const Codec& c,std::array<Parameter,10>& params){
+    using namespace signal_contracts;
     StructuredContract sc{"custom/schema", 7, "opaque-v7", {8, 256}};
     Port p{17, domain::PortDirection::Output, sc};
     ConversionPolicy policy;
@@ -481,30 +505,35 @@ void contracts_and_literals(const Codec &c) {
     cmd.graph = g;
     m.body = cmd;
     CHECK(encode(c, m).status == bdsp_protocol::numeric_control::Status::UnsupportedVersion);
-    // Unknown optional extension bytes are owned, including NUL/non-UTF8.
-    std::array<std::uint8_t, 4> bytes{0, 255, 1, 2};
-    Extension ext{1024, bytes};
-    m = {};
-    m.extensions = {&ext, 1};
-    e = encode(c, m);
-    CHECK(e);
-    CHECK(decode(c, e.produced, out));
-    wire.fill(0);
-    stage.fill(std::byte{0});
-    CHECK(out.extensions[0].bytes[1] == 255);
-    ext.tag = 0x8000;
-    CHECK(encode(c, m).status == bdsp_protocol::numeric_control::Status::UnsupportedField);
-    std::array<Extension, 2> duplicates{Extension{1024, bytes}, Extension{1024, bytes}};
-    m.extensions = duplicates;
-    CHECK(!encode(c, m));
-    params[1].key = params[0].key;
-    n.parameters = EndpointParameters{params};
-    g.versions.graph = 5;
-    g.nodes = {&n, 1};
-    cmd.graph = g;
-    m = {};
-    m.body = cmd;
-    CHECK(!encode(c, m));
+    literal_extension_limits(c,params,n,g,cmd,m,out);
+}
+void contracts_and_literals(const Codec &c) {
+    using namespace signal_contracts;
+    std::array<std::uint32_t, 2> channels{7, 13};
+    std::array<Literal, 10> values{INT64_MIN,
+                                   INT64_MAX,
+                                   UINT64_MAX,
+                                   std::uint64_t{9007199254740993ULL},
+                                   std::int64_t{-9007199254740993LL},
+                                   std::bit_cast<float>(0x80000000U),
+                                   std::bit_cast<float>(1U),
+                                   std::bit_cast<float>(0x7fc01234U),
+                                   std::bit_cast<double>(0x8000000000000000ULL),
+                                   std::bit_cast<double>(0x7ff8000000001234ULL)};
+    std::array<Parameter, 10> params{};
+    const std::string_view keys[]{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"};
+    for (std::size_t i = 0; i < values.size(); ++i)
+        params[i] = {keys[i], values[i]};
+    for (auto desc : dtype_descriptors())
+        for (auto rank : std::array{Rank::Scalar, Rank::Vector, Rank::Matrix}) {
+            literal_contract_case(c,desc,rank,channels,params,values);
+        }
+    // Explicit packed24 and valid24-in32, distinct placements and endian.
+    for (auto enc : std::array{StorageEncoding::PackedSigned24LE, StorageEncoding::PackedSigned24BE,
+                               StorageEncoding::FixedLittleEndian, StorageEncoding::FixedBigEndian}) {
+        packed_literal_contract(c,enc,channels);
+    }
+    structured_literal_extensions(c,params);
 }
 void check_wled_peak_parameters(const Message& message,std::span<const Parameter> expected) {
     const auto& command=std::get<Command>(message.body);
@@ -620,20 +649,7 @@ void messages(const Codec &c) {
     m.body = r;
     CHECK(!encode(c, m));
 }
-void alternatives_and_limits(const Codec &c) {
-    using namespace signal_contracts;
-    std::uint32_t selected[]{17, 23};
-    std::array<Parameter, 2> named{Parameter{"flag", true}, Parameter{"name", std::string_view{"exact"}}};
-    std::array<Parameters, 6> alternatives{EndpointParameters{named},
-                                           TransformParameters{named},
-                                           domain::ConverterProcessingParameters{},
-                                           domain::RouteProcessingParameters{8, 7, false},
-                                           ReductionParameters{domain::NumericReduction::RMS,
-                                                               domain::ReductionChannels::SelectedChannels,
-                                                               domain::ReductionRows::LatestHistoryRow, selected,
-                                                               PrecisionLoss::AllowDeclared, Rounding::TowardZero},
-                                           domain::HistoryProcessingParameters{UINT64_MAX}};
-    for (const auto &alternative : alternatives) {
+void parameter_alternative_case(const Codec& c,const Parameters& alternative){
         Command cmd;
         cmd.id = CommandId::SetParameters;
         cmd.node = INT32_MAX;
@@ -646,7 +662,7 @@ void alternatives_and_limits(const Codec &c) {
         auto d = decode(c, e.produced, out);
         CHECK(d);
         if (!d)
-            continue;
+            return;
         auto &p = *std::get<Command>(out.body).parameters;
         CHECK(p.index() == alternative.index());
         if (auto v = std::get_if<TransformParameters>(&p)) {
@@ -672,9 +688,9 @@ void alternatives_and_limits(const Codec &c) {
         bound.arena_bytes = 0;
         if (d.required_arena)
             CHECK(!decode(c, e.produced, out, bound));
-    }
-    for (auto mode : std::array{ScaleMode::Identity, ScaleMode::IntegerAffine, ScaleMode::DyadicAffine,
-                                ScaleMode::PcmNormalize, ScaleMode::PcmDenormalize, ScaleMode::Binary64Affine}) {
+}
+void converter_alternative_case(const Codec& c,signal_contracts::ScaleMode mode){
+    using namespace signal_contracts;
         ConversionPolicy p;
         p.scaling.mode = mode;
         p.rounding = Rounding::TowardZero;
@@ -702,6 +718,26 @@ void alternatives_and_limits(const Codec &c) {
         CHECK(same_literal(q.scaling.gain.numerator, p.scaling.gain.numerator));
         CHECK(same_literal(q.scaling.offset.numerator, p.scaling.offset.numerator));
         CHECK(same_literal(q.nan_replacement, p.nan_replacement));
+}
+void alternatives_and_limits(const Codec &c) {
+    using namespace signal_contracts;
+    std::uint32_t selected[]{17, 23};
+    std::array<Parameter, 2> named{Parameter{"flag", true}, Parameter{"name", std::string_view{"exact"}}};
+    std::array<Parameters, 6> alternatives{EndpointParameters{named},
+                                           TransformParameters{named},
+                                           domain::ConverterProcessingParameters{},
+                                           domain::RouteProcessingParameters{8, 7, false},
+                                           ReductionParameters{domain::NumericReduction::RMS,
+                                                               domain::ReductionChannels::SelectedChannels,
+                                                               domain::ReductionRows::LatestHistoryRow, selected,
+                                                               PrecisionLoss::AllowDeclared, Rounding::TowardZero},
+                                           domain::HistoryProcessingParameters{UINT64_MAX}};
+    for (const auto &alternative : alternatives) {
+        parameter_alternative_case(c,alternative);
+    }
+    for (auto mode : std::array{ScaleMode::Identity, ScaleMode::IntegerAffine, ScaleMode::DyadicAffine,
+                                ScaleMode::PcmNormalize, ScaleMode::PcmDenormalize, ScaleMode::Binary64Affine}) {
+        converter_alternative_case(c,mode);
     }
     Reply reply;
     reply.diagnostic.node = INT32_MIN;
@@ -770,10 +806,45 @@ void literal_goldens(const Codec &c) {
               wire.begin() + e.produced);
     }
 }
-void codec_mask_regression(const Codec &c) {
-    Node combination{0, "Gate", domain::RouteProcessingParameters{1, 0, true}, {}, {}};
-    CapabilityRow row{combination, "gate", "test", signal_contracts::ValueDomain::FiniteOnly, {}};
-    for (std::uint32_t mask : {0U, 1U, 2U, 3U, 4U, 5U, 8U}) {
+void codec_mask_decode_case(const Codec& c,std::uint32_t mask,bool valid,Reply& reply,Message& message){
+        // Produce a structurally complete wire fixture with a legal mask, then
+        // mutate just its capability scalar. No invalid-encode bootstrap needed.
+        reply.capabilities->codec_mask = 1;
+        message.body = reply;
+        auto fixture = encode(c, message);
+        CHECK(fixture);
+        const std::uint8_t cb[]{0xa5, 1, 4, 2, 6, 3, 1};
+        const std::uint8_t pb[]{8, 4, 16, 6, 24, 1};
+        auto needle = c.id() == CodecId::Cbor ? std::span<const std::uint8_t>{cb} : std::span<const std::uint8_t>{pb};
+        auto end = wire.begin() + fixture.produced;
+        auto match = std::search(wire.begin(), end, needle.begin(), needle.end());
+        CHECK(match != end);
+        if (match == end)
+            return;
+        CHECK(std::search(match + 1, end, needle.begin(), needle.end()) == end);
+        *(match + needle.size() - 1) = static_cast<std::uint8_t>(mask);
+        Message output;
+        output.request = 77;
+        Command sentinel;
+        sentinel.id = CommandId::Stop;
+        output.body = sentinel;
+        arena.fill(std::byte{0x5a});
+        const auto untouched_arena = arena;
+        auto decoded = decode(c, fixture.produced, output);
+        CHECK(bool(decoded) == valid);
+        if (valid)
+            CHECK(std::get<Reply>(output.body).capabilities->codec_mask == mask);
+        else {
+            CHECK(decoded.status == Status::UnsupportedVersion);
+            CHECK(decoded.consumed == 0);
+            CHECK(output.request == 77);
+            CHECK(std::holds_alternative<Command>(output.body));
+            if (auto preserved = std::get_if<Command>(&output.body))
+                CHECK(preserved->id == CommandId::Stop);
+            CHECK(arena == untouched_arena);
+        }
+}
+void codec_mask_case(const Codec& c,std::uint32_t mask,const CapabilityRow& row){
         const bool valid = mask >= 1 && mask <= 3;
         Reply reply;
         reply.command = CommandId::Capabilities;
@@ -797,42 +868,13 @@ void codec_mask_regression(const Codec &c) {
             CHECK(wire == untouched_wire);
         }
 
-        // Produce a structurally complete wire fixture with a legal mask, then
-        // mutate just its capability scalar. No invalid-encode bootstrap needed.
-        reply.capabilities->codec_mask = 1;
-        message.body = reply;
-        auto fixture = encode(c, message);
-        CHECK(fixture);
-        const std::uint8_t cb[]{0xa5, 1, 4, 2, 6, 3, 1};
-        const std::uint8_t pb[]{8, 4, 16, 6, 24, 1};
-        auto needle = c.id() == CodecId::Cbor ? std::span<const std::uint8_t>{cb} : std::span<const std::uint8_t>{pb};
-        auto end = wire.begin() + fixture.produced;
-        auto match = std::search(wire.begin(), end, needle.begin(), needle.end());
-        CHECK(match != end);
-        if (match == end)
-            continue;
-        CHECK(std::search(match + 1, end, needle.begin(), needle.end()) == end);
-        *(match + needle.size() - 1) = static_cast<std::uint8_t>(mask);
-        Message output;
-        output.request = 77;
-        Command sentinel;
-        sentinel.id = CommandId::Stop;
-        output.body = sentinel;
-        arena.fill(std::byte{0x5a});
-        const auto untouched_arena = arena;
-        auto decoded = decode(c, fixture.produced, output);
-        CHECK(bool(decoded) == valid);
-        if (valid)
-            CHECK(std::get<Reply>(output.body).capabilities->codec_mask == mask);
-        else {
-            CHECK(decoded.status == Status::UnsupportedVersion);
-            CHECK(decoded.consumed == 0);
-            CHECK(output.request == 77);
-            CHECK(std::holds_alternative<Command>(output.body));
-            if (auto preserved = std::get_if<Command>(&output.body))
-                CHECK(preserved->id == CommandId::Stop);
-            CHECK(arena == untouched_arena);
-        }
+        codec_mask_decode_case(c,mask,valid,reply,message);
+}
+void codec_mask_regression(const Codec &c) {
+    Node combination{0, "Gate", domain::RouteProcessingParameters{1, 0, true}, {}, {}};
+    CapabilityRow row{combination, "gate", "test", signal_contracts::ValueDomain::FiniteOnly, {}};
+    for (std::uint32_t mask : {0U, 1U, 2U, 3U, 4U, 5U, 8U}) {
+        codec_mask_case(c,mask,row);
     }
 }
 #ifdef NUMERIC_CONTROL_MAPPER_TESTS
@@ -848,11 +890,8 @@ void projection_binding_bounds(control::numeric::GraphProjection& projection,con
     CHECK(projection.wire().nodes.data()==retained_nodes && projection.wire().graph_id==retained_identity);
 }
 #endif
-void native_descriptor_regression(const Codec &c) {
-    namespace sc = signal_contracts;
-    std::array<std::uint32_t, 1> channels{7};
-    // Native buffered PCM, explicit coefficient generator and FFT descriptors.
-    // WindowFunction consumes scalar N and produces coefficients; it does not transform PCM.
+auto native_contracts(const std::array<std::uint32_t,1>& channels){
+    namespace sc=signal_contracts;
     sc::NumericContract pcm;
     pcm.dtype = sc::DType::Float32;
     pcm.semantic = sc::Semantic::PCM;
@@ -887,6 +926,10 @@ void native_descriptor_regression(const Codec &c) {
     spectrum.coordinates[0] = {sc::CoordinateMode::Regular, sc::NumericUnit::Hertz, {0, 1}, {48000, 512}};
     const std::array<sc::NumericContract, 3> input_contracts{pcm, length, win};
     const std::array<sc::NumericContract, 3> output_contracts{win, coefficients, spectrum};
+    return std::pair{input_contracts,output_contracts};
+}
+domain::NumericProcessingGraph native_owned_graph(const auto& input_contracts,const auto& output_contracts){
+    namespace sc=signal_contracts;
     domain::NumericProcessingGraph owned;
     owned.graph_id = "typed.dsp.native";
     const std::string_view kinds[]{"Window", "WindowFunction", "StereoFFT"};
@@ -917,97 +960,10 @@ void native_descriptor_regression(const Codec &c) {
         domain::ResolvedProcessingNode resolved;
         CHECK(domain::resolve_processing_node(n, admission, resolved));
     }
-    std::array<Port, 3> inputs{}, outputs{};
-    std::array<Node, 3> nodes{};
-    Parameter size{"size", Literal{std::uint64_t{512}}};
-    Parameter input_rate{"input_rate", Literal{std::uint64_t{48000}}};
-    std::array<Parameter, 2> window_parameters{size, input_rate};
-    for (std::size_t i = 0; i < 3; ++i) {
-        const auto &n = owned.nodes[i];
-        inputs[i] = {0, domain::PortDirection::Input, n.inputs[0].contract.view()};
-        outputs[i] = {0, domain::PortDirection::Output, n.outputs[0].contract.view()};
-        nodes[i] = {n.id,
-                    n.kind,
-                    TransformParameters{i == 0 ? std::span<const Parameter>{window_parameters}
-                                               : i == 1 ? std::span<const Parameter>{&size, 1}
-                                                        : std::span<const Parameter>{}},
-                    {&inputs[i], 1},
-                    {&outputs[i], 1},
-                    true};
-    }
-    const GraphVersions envelope{bdsp_protocol::document_version,owned.versions.graph,owned.versions.processing,
-        bdsp_protocol::control_version,bdsp_protocol::processing_data_version};
-    Graph g{owned.graph_id, envelope, nodes, owned.edges};
-#ifdef NUMERIC_CONTROL_MAPPER_TESTS
-    control::numeric::GraphProjection projection;
-    auto projected = projection.assign(owned, limits);
-    CHECK(projected);
-    if (projected)
-        g = projection.wire();
-    if (projected)
-        projection_binding_bounds(projection,owned);
-#endif
-    for (bool applied : {false, true}) {
-        Message m;
-        if (applied) {
-            Reply r;
-            r.command = CommandId::Persist;
-            r.state.revision = 17;
-            r.state.applied = g;
-            m.body = r;
-        } else {
-            Command cmd;
-            cmd.id = CommandId::Prepare;
-            cmd.graph = g;
-            m.body = cmd;
-        }
-        auto e = encode(c, m);
-        CHECK(e);
-        if (!e)
-            continue;
-        Message out;
-        auto d = decode(c, e.produced, out);
-        CHECK(d);
-        if (!d)
-            continue;
-        const auto &restored = applied ? *std::get<Reply>(out.body).state.applied : *std::get<Command>(out.body).graph;
-        for (std::size_t i = 0; i < 3; ++i) {
-            CHECK(sc::same_contract(restored.nodes[i].inputs[0].contract, input_contracts[i]));
-            CHECK(sc::same_contract(restored.nodes[i].outputs[0].contract, output_contracts[i]));
-            CHECK(std::get<sc::NumericContract>(restored.nodes[i].outputs[0].contract).representation.encoding ==
-                  sc::StorageEncoding::Native);
-        }
-#ifdef NUMERIC_CONTROL_MAPPER_TESTS
-        domain::NumericProcessingGraph cold_owned;
-        CHECK(control::numeric::own_graph(restored, limits, cold_owned));
-        wire.fill(0);
-        stage.fill(std::byte{0});
-        arena.fill(std::byte{0});
-        for (std::size_t i = 0; i < 3; ++i)
-            CHECK(sc::same_contract(cold_owned.nodes[i].outputs[0].contract.view(), output_contracts[i]));
-#endif
-        // Failed encode/decode may not publish a partial Native graph.
-        wire.fill(0xa5);
-        const auto before = wire;
-        tracking = true;
-        auto short_output = c.encode(m, {wire.data(), 1}, scratch, limits);
-        tracking = false;
-        CHECK(short_output.status == Status::BufferTooSmall);
-        CHECK(wire == before);
-        CHECK(short_output.produced == 0);
-        e = encode(c, m);
-        arena.fill(std::byte{0x5a});
-        const auto before_arena = arena;
-        out.request = 77;
-        tracking = true;
-        auto short_arena =
-            c.decode({wire.data(), e.produced}, {arena.data(), d.required_arena - 1}, stage, out, limits);
-        tracking = false;
-        CHECK(short_arena.status == Status::BufferTooSmall);
-        CHECK(short_arena.consumed == 0);
-        CHECK(out.request == 77);
-        CHECK(arena == before_arena);
-    }
+    return owned;
+}
+void native_capability_data_boundary(const Codec& c,const std::array<std::uint32_t,1>& channels){
+    namespace sc=signal_contracts;
     // Actual T advertised Native scalar capabilities use the same control grammar.
     sc::NumericContract scalar;
     scalar.dtype = sc::DType::UInt64;
@@ -1067,9 +1023,9 @@ void native_descriptor_regression(const Codec &c) {
     CHECK(refused.produced == 0);
     CHECK(arena == data_before);
 #endif
-    for (auto encoding : std::array{sc::StorageEncoding::Native, sc::StorageEncoding::FixedLittleEndian,
-                                    sc::StorageEncoding::FixedBigEndian, sc::StorageEncoding::PackedSigned24LE,
-                                    sc::StorageEncoding::PackedSigned24BE}) {
+}
+void native_encoding_case(const Codec& c,signal_contracts::StorageEncoding encoding,const std::array<std::uint32_t,1>& channels){
+    namespace sc=signal_contracts;
         sc::NumericContract n;
         n.dtype = sc::DType::Int32;
         n.channel_order = {channels.data(), 1};
@@ -1087,7 +1043,7 @@ void native_descriptor_regression(const Codec &c) {
         auto e = encode(c, m);
         CHECK(e);
         if (!e)
-            continue;
+            return;
         Message out;
         CHECK(decode(c, e.produced, out));
         CHECK(sc::same_contract(std::get<Command>(out.body).graph->nodes[0].outputs[0].contract, n));
@@ -1111,6 +1067,117 @@ void native_descriptor_regression(const Codec &c) {
                 CHECK(arena == untouched);
             }
         }
+}
+void native_short_arenas(const Codec& c,const Message& m,auto& e,const auto& d,Message& out){
+        // Failed encode/decode may not publish a partial Native graph.
+        wire.fill(0xa5);
+        const auto before = wire;
+        tracking = true;
+        auto short_output = c.encode(m, {wire.data(), 1}, scratch, limits);
+        tracking = false;
+        CHECK(short_output.status == Status::BufferTooSmall);
+        CHECK(wire == before);
+        CHECK(short_output.produced == 0);
+        e = encode(c, m);
+        arena.fill(std::byte{0x5a});
+        const auto before_arena = arena;
+        out.request = 77;
+        tracking = true;
+        auto short_arena =
+            c.decode({wire.data(), e.produced}, {arena.data(), d.required_arena - 1}, stage, out, limits);
+        tracking = false;
+        CHECK(short_arena.status == Status::BufferTooSmall);
+        CHECK(short_arena.consumed == 0);
+        CHECK(out.request == 77);
+        CHECK(arena == before_arena);
+}
+void native_applied_case(const Codec& c,bool applied,const Graph& g,const auto& input_contracts,const auto& output_contracts){
+    namespace sc=signal_contracts;
+        Message m;
+        if (applied) {
+            Reply r;
+            r.command = CommandId::Persist;
+            r.state.revision = 17;
+            r.state.applied = g;
+            m.body = r;
+        } else {
+            Command cmd;
+            cmd.id = CommandId::Prepare;
+            cmd.graph = g;
+            m.body = cmd;
+        }
+        auto e = encode(c, m);
+        CHECK(e);
+        if (!e)
+            return;
+        Message out;
+        auto d = decode(c, e.produced, out);
+        CHECK(d);
+        if (!d)
+            return;
+        const auto &restored = applied ? *std::get<Reply>(out.body).state.applied : *std::get<Command>(out.body).graph;
+        for (std::size_t i = 0; i < 3; ++i) {
+            CHECK(sc::same_contract(restored.nodes[i].inputs[0].contract, input_contracts[i]));
+            CHECK(sc::same_contract(restored.nodes[i].outputs[0].contract, output_contracts[i]));
+            CHECK(std::get<sc::NumericContract>(restored.nodes[i].outputs[0].contract).representation.encoding ==
+                  sc::StorageEncoding::Native);
+        }
+#ifdef NUMERIC_CONTROL_MAPPER_TESTS
+        domain::NumericProcessingGraph cold_owned;
+        CHECK(control::numeric::own_graph(restored, limits, cold_owned));
+        wire.fill(0);
+        stage.fill(std::byte{0});
+        arena.fill(std::byte{0});
+        for (std::size_t i = 0; i < 3; ++i)
+            CHECK(sc::same_contract(cold_owned.nodes[i].outputs[0].contract.view(), output_contracts[i]));
+#endif
+        native_short_arenas(c,m,e,d,out);
+}
+void native_descriptor_regression(const Codec &c) {
+    namespace sc = signal_contracts;
+    std::array<std::uint32_t, 1> channels{7};
+    // Native buffered PCM, explicit coefficient generator and FFT descriptors.
+    // WindowFunction consumes scalar N and produces coefficients; it does not transform PCM.
+    const auto contracts=native_contracts(channels);const auto& input_contracts=contracts.first;const auto& output_contracts=contracts.second;
+    auto owned=native_owned_graph(input_contracts,output_contracts);
+    std::array<Port, 3> inputs{}, outputs{};
+    std::array<Node, 3> nodes{};
+    Parameter size{"size", Literal{std::uint64_t{512}}};
+    Parameter input_rate{"input_rate", Literal{std::uint64_t{48000}}};
+    std::array<Parameter, 2> window_parameters{size, input_rate};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const auto &n = owned.nodes[i];
+        inputs[i] = {0, domain::PortDirection::Input, n.inputs[0].contract.view()};
+        outputs[i] = {0, domain::PortDirection::Output, n.outputs[0].contract.view()};
+        nodes[i] = {n.id,
+                    n.kind,
+                    TransformParameters{i == 0 ? std::span<const Parameter>{window_parameters}
+                                               : i == 1 ? std::span<const Parameter>{&size, 1}
+                                                        : std::span<const Parameter>{}},
+                    {&inputs[i], 1},
+                    {&outputs[i], 1},
+                    true};
+    }
+    const GraphVersions envelope{bdsp_protocol::document_version,owned.versions.graph,owned.versions.processing,
+        bdsp_protocol::control_version,bdsp_protocol::processing_data_version};
+    Graph g{owned.graph_id, envelope, nodes, owned.edges};
+#ifdef NUMERIC_CONTROL_MAPPER_TESTS
+    control::numeric::GraphProjection projection;
+    auto projected = projection.assign(owned, limits);
+    CHECK(projected);
+    if (projected)
+        g = projection.wire();
+    if (projected)
+        projection_binding_bounds(projection,owned);
+#endif
+    for (bool applied : {false, true}) {
+        native_applied_case(c,applied,g,input_contracts,output_contracts);
+    }
+    native_capability_data_boundary(c,channels);
+    for (auto encoding : std::array{sc::StorageEncoding::Native, sc::StorageEncoding::FixedLittleEndian,
+                                    sc::StorageEncoding::FixedBigEndian, sc::StorageEncoding::PackedSigned24LE,
+                                    sc::StorageEncoding::PackedSigned24BE}) {
+        native_encoding_case(c,encoding,channels);
     }
 }
 } // namespace

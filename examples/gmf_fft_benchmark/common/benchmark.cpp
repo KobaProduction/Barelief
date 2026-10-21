@@ -62,27 +62,32 @@ template<class F> std::array<double,2> timing(F call) {
     std::sort(times.begin(),times.end());
     return {times[batches/2],times[batches*95/100]};
 }
-// Independent double CFFT oracle. Only used outside measurement, no SDK calls.
-std::vector<std::complex<double>> oracle(const std::vector<float>& x) {
-    std::size_t n=x.size();
-    std::vector<std::complex<double>> a(n);
-    for(std::size_t i=0;i<n;++i) a[i]=x[i];
+void reverse_oracle(std::vector<std::complex<double>>& a) {
+    const auto n=a.size();
     for(std::size_t i=1,j=0;i<n;++i) {
         std::size_t bit=n>>1;
         for(;j&bit;bit>>=1) j^=bit;
         j^=bit;
         if(i<j) std::swap(a[i],a[j]);
     }
-    for(std::size_t len=2;len<=n;len<<=1) {
-        auto step=std::polar(1.,-tau/double(len));
-        for(std::size_t i=0;i<n;i+=len) {
-            std::complex<double> w=1;
-            for(std::size_t j=0;j<len/2;++j) {
-                auto u=a[i+j],v=a[i+j+len/2]*w;
-                a[i+j]=u+v; a[i+j+len/2]=u-v; w*=step;
-            }
+}
+void oracle_stage(std::vector<std::complex<double>>& a,std::size_t len) {
+    auto step=std::polar(1.,-tau/double(len));
+    for(std::size_t i=0;i<a.size();i+=len) {
+        std::complex<double> w=1;
+        for(std::size_t j=0;j<len/2;++j) {
+            auto u=a[i+j],v=a[i+j+len/2]*w;
+            a[i+j]=u+v; a[i+j+len/2]=u-v; w*=step;
         }
     }
+}
+// Independent double CFFT oracle. Only used outside measurement, no SDK calls.
+std::vector<std::complex<double>> oracle(const std::vector<float>& x) {
+    std::size_t n=x.size();
+    std::vector<std::complex<double>> a(n);
+    for(std::size_t i=0;i<n;++i) a[i]=x[i];
+    reverse_oracle(a);
+    for(std::size_t len=2;len<=n;len<<=1) oracle_stage(a,len);
     return a;
 }
 bool validate_oracle(const std::vector<float>& x,const std::vector<std::complex<double>>& a) {
@@ -98,6 +103,29 @@ bool validate_oracle(const std::vector<float>& x,const std::vector<std::complex<
     return error<1e-7;
 }
 struct Signal { std::vector<float> ideal,input; std::vector<int16_t> pcm; };
+double multitone_sample(std::size_t i,std::size_t n) {
+    constexpr std::array bins{3.,11.25,23.,41.5,67.,89.75,111.};
+    double x=0;
+    for(std::size_t j=0;j<bins.size();++j)
+        x+=.25/double(j+1)*std::cos(tau*bins[j]*i/n+.13*j);
+    return x*(.5-.5*std::cos(tau*i/(n-1)));
+}
+double named_sample(std::size_t i,std::size_t n,const char* name,const char* kind,std::uint32_t& rng) {
+    if(!std::strcmp(name,"multitone")) return multitone_sample(i,n);
+    if(!std::strcmp(kind,"noise")) {
+        rng=1664525u*rng+1013904223u;
+        return (double(rng)/4294967296.-.5)*1.6;
+    }
+    if(!std::strcmp(kind,"dc")) return .75;
+    if(!std::strcmp(name,"nyquist")) return i%2?-.75:.75;
+    if(!std::strcmp(name,"impulse")) return i==17?.75:0;
+    return 0;
+}
+void quantize_sample(Signal& s,std::size_t i,double x) {
+    s.ideal[i]=float(x);
+    auto q=std::clamp(std::lround(x*32768.),-32768l,32767l);
+    s.pcm[i]=int16_t(q); s.input[i]=float(q)/32768.f;
+}
 Signal signal(std::size_t n,const char* name) {
     Signal s{std::vector<float>(n),std::vector<float>(n),std::vector<int16_t>(n)};
     std::uint32_t rng=0x1949u;
@@ -105,24 +133,11 @@ Signal signal(std::size_t n,const char* name) {
     const char* kind=safe?name+4:name;
     const bool weak=std::strncmp(kind,"weak",4)==0;
     double weak_db=weak?std::atof(kind+4):0;
-    constexpr std::array bins{3.,11.25,23.,41.5,67.,89.75,111.};
     for(std::size_t i=0;i<n;++i) {
-        double x=0;
-        if(!std::strcmp(name,"multitone")) {
-            for(std::size_t j=0;j<bins.size();++j)
-                x+=.25/double(j+1)*std::cos(tau*bins[j]*i/n+.13*j);
-            x*=.5-.5*std::cos(tau*i/(n-1));
-        } else if(!std::strcmp(kind,"noise")) {
-            rng=1664525u*rng+1013904223u;
-            x=(double(rng)/4294967296.-.5)*1.6;
-        } else if(!std::strcmp(kind,"dc")) x=.75;
-        else if(!std::strcmp(name,"nyquist")) x=(i%2?-.75:.75);
-        else if(!std::strcmp(name,"impulse")) x=i==17?.75:0;
-        else if(weak) x=.5*std::cos(tau*13*i/n+.31)+.5*std::pow(10.,weak_db/20)*std::cos(tau*71*i/n+.77);
+        double x=named_sample(i,n,name,kind,rng);
+        if(weak) x=.5*std::cos(tau*13*i/n+.31)+.5*std::pow(10.,weak_db/20)*std::cos(tau*71*i/n+.77);
         if(safe) x*=.25;
-        s.ideal[i]=float(x);
-        auto q=std::clamp(std::lround(x*32768.),-32768l,32767l);
-        s.pcm[i]=int16_t(q); s.input[i]=float(q)/32768.f;
+        quantize_sample(s,i,x);
     }
     return s;
 }
@@ -181,6 +196,54 @@ public:
     }
     ~Gmf() {esp_gmf_fft_free_aligned(data); esp_gmf_fft_deinit(&handle);}
 };
+void report_gmf_roundtrip(Gmf& g,const Signal& s,const char* route,const char* name,int exp) {
+    const auto n=g.n;const bool hp=g.hp;
+    double p=0,e=0,maxerr=0;
+    for(std::size_t i=0;i<n;++i) {
+        double restored=double(g.data[i])*(hp?1.:double(n)/4.);
+        double err=restored-double(s.pcm[i]);
+        p+=double(s.pcm[i])*s.pcm[i]; e+=err*err; maxerr=std::max(maxerr,std::abs(err));
+    }
+    std::printf("roundtrip N=%u route=%s signal=%s snr_db=%.6f max_q15_error=%.6f exponent=%d\n",unsigned(n),route,name,snr(p,e),maxerr,exp);
+}
+bool gmf_signal(Gmf& g,std::vector<float>& output,const char* route,const char* name) {
+    const auto n=g.n;
+    auto s=signal(n,name); auto ref=oracle(s.input);
+    if(!g.forward(s.pcm)) return false;
+    g.decode(output); accuracy(n,route,name,output,ref);
+    int exp=gmf_probe_exponent(g.handle);
+    std::vector<int16_t> spectrum(g.data,g.data+n+2);
+    if(!g.inverse(spectrum)) return false;
+    report_gmf_roundtrip(g,s,route,name,exp);
+    if(!gmf_probe_guards_ok()) return false;
+    yield();
+    return true;
+}
+void report_gmf_timing(std::size_t n,const char* route,const std::array<double,2>& forward,
+                       const std::array<double,2>& contract,const std::array<double,2>& inverse,
+                       const std::array<double,2>& permutation,std::size_t allocations) {
+    std::printf("timing N=%u route=%s forward_copy_us=%.3f forward_p95_us=%.3f float_contract_us=%.3f inverse_copy_us=%.3f inverse_p95_us=%.3f bitrev_only_us=%.3f hot_allocations=%u\n",
+        unsigned(n),route,forward[0],forward[1],contract[0],inverse[0],inverse[1],permutation[0],unsigned(gmf_probe_allocations()-allocations));
+}
+bool finish_gmf_timing(Gmf& g,const Signal& s,const char* route,
+        const std::array<double,2>& forward,const std::array<double,2>& contract,std::size_t allocations,bool& good) {
+    const auto n=g.n;
+    if(!g.forward(s.pcm)) return false;
+    std::vector<int16_t> spectrum(g.data,g.data+n+2);
+    auto inverse=timing([&]{good&=g.inverse(spectrum); sink=float(g.data[13]);});
+    auto permutation=timing([&]{fft_radix2_bit_reverse_s16(g.data,int32_t(n/2),g.log2n); sink=float(g.data[13]);});
+    report_gmf_timing(n,route,forward,contract,inverse,permutation,allocations);
+    if(!good||gmf_probe_allocations()!=allocations) return false;
+    return true;
+}
+bool time_gmf_route(Gmf& g,std::vector<float>& output,const char* route) {
+    auto s=signal(g.n,"multitone");
+    bool good=true;
+    std::size_t allocations=gmf_probe_allocations();
+    auto forward=timing([&]{good&=g.forward(s.pcm); sink=float(g.data[13]);});
+    auto contract=timing([&]{good&=g.forward(s.pcm); g.decode(output); sink=output[13];});
+    return finish_gmf_timing(g,s,route,forward,contract,allocations,good);
+}
 bool gmf_route(std::size_t n,bool hp) {
     const char* route=hp?"GMF_HP":"GMF_Q15";
     std::size_t free_before=free_heap();
@@ -193,36 +256,31 @@ bool gmf_route(std::size_t n,bool hp) {
             unsigned(n),route,unsigned(3*n+gmf_probe_plan_bytes()),unsigned(2*(n+2)),unsigned(2*n),unsigned(4*(n+2)),128u,
             unsigned(free_before-free_after));
         for(const char* name:{"zero","impulse","dc","nyquist","multitone","noise","weak-40","weak-60","weak-80","weak-90","safedc","safenoise","safeweak-40","safeweak-60","safeweak-80","safeweak-90"}) {
-            auto s=signal(n,name); auto ref=oracle(s.input);
-            if(!g.forward(s.pcm)) return false;
-            g.decode(output); accuracy(n,route,name,output,ref);
-            int exp=gmf_probe_exponent(g.handle);
-            std::vector<int16_t> spectrum(g.data,g.data+n+2);
-            if(!g.inverse(spectrum)) return false;
-            double p=0,e=0,maxerr=0;
-            for(std::size_t i=0;i<n;++i) {
-                double restored=double(g.data[i])*(hp?1.:double(n)/4.);
-                double err=restored-double(s.pcm[i]);
-                p+=double(s.pcm[i])*s.pcm[i]; e+=err*err; maxerr=std::max(maxerr,std::abs(err));
-            }
-            std::printf("roundtrip N=%u route=%s signal=%s snr_db=%.6f max_q15_error=%.6f exponent=%d\n",unsigned(n),route,name,snr(p,e),maxerr,exp);
-            if(!gmf_probe_guards_ok()) return false;
-            yield();
+            if(!gmf_signal(g,output,route,name)) return false;
         }
-        auto s=signal(n,"multitone");
-        bool good=true;
-        std::size_t allocations=gmf_probe_allocations();
-        auto forward=timing([&]{good&=g.forward(s.pcm); sink=float(g.data[13]);});
-        auto contract=timing([&]{good&=g.forward(s.pcm); g.decode(output); sink=output[13];});
-        if(!g.forward(s.pcm)) return false;
-        std::vector<int16_t> spectrum(g.data,g.data+n+2);
-        auto inverse=timing([&]{good&=g.inverse(spectrum); sink=float(g.data[13]);});
-        auto permutation=timing([&]{fft_radix2_bit_reverse_s16(g.data,int32_t(n/2),g.log2n); sink=float(g.data[13]);});
-        std::printf("timing N=%u route=%s forward_copy_us=%.3f forward_p95_us=%.3f float_contract_us=%.3f inverse_copy_us=%.3f inverse_p95_us=%.3f bitrev_only_us=%.3f hot_allocations=%u\n",
-            unsigned(n),route,forward[0],forward[1],contract[0],inverse[0],inverse[1],permutation[0],unsigned(gmf_probe_allocations()-allocations));
-        if(!good||gmf_probe_allocations()!=allocations) return false;
+        if(!time_gmf_route(g,output,route)) return false;
     }
     return gmf_probe_guards_ok()&&gmf_probe_live_bytes()==0&&platform_heap_ok();
+}
+bool float_signal(dsp_kernels::PreparedRfft& plan,std::vector<float>& out,std::size_t n,const char* route,const char* name) {
+    auto s=signal(n,name); auto ref=oracle(s.input);
+    if(!plan.process(s.input,out)) return false;
+    accuracy(n,route,name,out,ref);
+    double error=0;
+    for(std::size_t k=0;k<=n/2;++k) {
+        auto r=ref[k]; auto v=std::complex<double>(out[2*k],out[2*k+1]);
+        error=std::max(error,std::abs(r-v));
+        if(std::abs(r-v)>.0003+5e-6*std::abs(r)) return false;
+    }
+    yield();
+    return true;
+}
+bool time_float_route(dsp_kernels::PreparedRfft& plan,std::vector<float>& out,std::size_t n,const char* route) {
+    auto s=signal(n,"multitone"); bool good=true;
+    auto t=timing([&]{good&=plan.process(s.input,out); sink=out[13];});
+    std::printf("timing N=%u route=%s forward_copy_us=%.3f forward_p95_us=%.3f float_contract_us=%.3f inverse_copy_us=0 inverse_p95_us=0 hot_allocations=0\n",
+        unsigned(n),route,t[0],t[1],t[0]);
+    return good&&platform_heap_ok();
 }
 bool float_route(std::size_t n,bool radix4) {
     using namespace dsp_kernels;
@@ -233,35 +291,27 @@ bool float_route(std::size_t n,bool radix4) {
     std::printf("memory N=%u route=%s plan_payload=%u io_payload=%u preserved_input=%u float_output=%u guards=0 heap_delta=0\n",
         unsigned(n),route,unsigned(plan.workspace_bytes()),0u,unsigned(4*n),unsigned(4*(n+2)));
     for(const char* name:{"zero","impulse","dc","nyquist","multitone","noise","weak-40","weak-60","weak-80","weak-90","safedc","safenoise","safeweak-40","safeweak-60","safeweak-80","safeweak-90"}) {
-        auto s=signal(n,name); auto ref=oracle(s.input);
-        if(!plan.process(s.input,out)) return false;
-        accuracy(n,route,name,out,ref);
-        double error=0;
-        for(std::size_t k=0;k<=n/2;++k) {
-            auto r=ref[k]; auto v=std::complex<double>(out[2*k],out[2*k+1]);
-            error=std::max(error,std::abs(r-v));
-            if(std::abs(r-v)>.0003+5e-6*std::abs(r)) return false;
-        }
-        yield();
+        if(!float_signal(plan,out,n,route,name)) return false;
     }
-    auto s=signal(n,"multitone"); bool good=true;
-    auto t=timing([&]{good&=plan.process(s.input,out); sink=out[13];});
-    std::printf("timing N=%u route=%s forward_copy_us=%.3f forward_p95_us=%.3f float_contract_us=%.3f inverse_copy_us=0 inverse_p95_us=0 hot_allocations=0\n",
-        unsigned(n),route,t[0],t[1],t[0]);
-    return good&&platform_heap_ok();
+    return time_float_route(plan,out,n,route);
 }
-bool run() {
+bool initialize_shared_tables() {
     // Initialize SDK shared tables once; payload is separate from per-plan data.
     {dsp_kernels::PreparedRfft r2,r4;if(!r2.prepare(4096)||!r4.prepare(4096,true)) return false;}
     auto estimate=dsp_kernels::estimate_memory(4096,0);
     if(!estimate) return false;
     std::printf("shared sdk_radix2=%u sdk_radix4=%u gmf_shared=0\n",unsigned(estimate->shared_radix2_tables_bytes),unsigned(estimate->shared_radix4_tables_bytes));
+    return true;
+}
+bool validate_signal_oracle(std::size_t n) {
+    auto s=signal(n,"multitone"); auto ref=oracle(s.input);
+    return validate_oracle(s.input,ref);
+}
+bool run() {
+    if(!initialize_shared_tables()) return false;
     std::size_t before=free_heap();
     for(std::size_t n:{512,1024,2048,4096}) {
-        {
-            auto s=signal(n,"multitone"); auto ref=oracle(s.input);
-            if(!validate_oracle(s.input,ref)) return false;
-        }
+        if(!validate_signal_oracle(n)) return false;
         if(!float_route(n,false)||!float_route(n,true)||!gmf_route(n,false)||!gmf_route(n,true)) return false;
     }
     std::printf("cleanup free_before=%u free_after=%u live_gmf=%u guards=%d\n",unsigned(before),unsigned(free_heap()),unsigned(gmf_probe_live_bytes()),gmf_probe_guards_ok());

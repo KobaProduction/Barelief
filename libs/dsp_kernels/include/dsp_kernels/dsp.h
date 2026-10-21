@@ -16,7 +16,7 @@ inline constexpr std::size_t max_mel_bands = 50;
 void hann_window(std::span<float> output);
 
 void window(std::span<float> output, WindowFunction function);
-// Immutable bank shared across graph revisions. All four windows for the
+// Immutable bank shared across graph revisions. All supported windows for the
 // declared geometry are prepared together. Variable extents use prepared
 // rotations rather than trigonometry or a quadratic table of every length.
 class PreparedWindows {
@@ -157,6 +157,7 @@ class PreparedRfft {
     friend struct detail::FftBenchmarkAccess;
     bool transform_prepared() noexcept;
     bool transform_input(std::span<const float> input,bool fused,int& scale) noexcept;
+    void publish_configuration(std::size_t,bool,bool,Split) noexcept;
     bool prepare_twiddles(std::size_t samples, std::size_t packed, bool mixed, Split split) noexcept;
     int input_scale(std::span<const float> input, bool fused) noexcept;
     void pack_mixed(std::span<const float> input, float factor, bool fused) noexcept;

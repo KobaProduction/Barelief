@@ -42,40 +42,7 @@ protected:
     std::int64_t amplitude_clock() const override {return now;}
 };
 
-static bool plot_navigation_oracles() {
-    const auto check=[](bool ok,const char* message){if(!ok)std::fprintf(stderr,"Navigation oracle: %s\n",message);return ok;};
-    const auto wait=[](auto ready){QElapsedTimer timer;timer.start();while(timer.elapsed()<1500){QCoreApplication::processEvents();if(ready())return true;QThread::msleep(3);}return ready();};
-    LineChartView chart;chart.resize(600,400);chart.set_range(-10,10);chart.update({0,1,2,3,4,5,6,7,8,9,10});chart.show();
-    if(!check(wait([&]{return chart.presentation_model()->state().value("kind")=="vector";}),"QML plot unavailable"))return false;
-    const auto state=chart.presentation_model()->state();
-    const double left=state.value("plotLeft").toDouble();
-    const QPointF cursor(left+(chart.width()-left-22)*.25,28+(chart.height()-86)*.25);
-    QWheelEvent wheel(cursor,chart.quickWindow()->mapToGlobal(cursor.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
-    QCoreApplication::sendEvent(chart.quickWindow(),&wheel);
-    const auto v=chart.viewport();
-    if(!check(v.width()<1 && std::abs(v.left()+.25*v.width()-.25)<1e-8 && std::abs(v.top()+.75*v.height()-.75)<1e-8,"actual QML wheel lost cursor anchor / vector Y direction"))return false;
-    const auto baseX=chart.x_range(),baseY=chart.y_range();
-    chart.update({1,2,3,4,5,6,7,8,9,10,0});
-    if(!check(chart.viewport()==v && chart.x_range()==baseX && chart.y_range()==baseY,"incoming frame or navigation altered configured ranges"))return false;
-    // Exercise real QML drag dispatch, including the mouse grab beyond the press.
-    QMouseEvent press(QEvent::MouseButtonPress,cursor,cursor,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(chart.quickWindow(),&press);
-    const QPointF dragged=cursor+QPointF(10,10);
-    QMouseEvent move(QEvent::MouseMove,dragged,dragged,Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(chart.quickWindow(),&move);
-    QMouseEvent release(QEvent::MouseButtonRelease,dragged,dragged,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
-    QCoreApplication::sendEvent(chart.quickWindow(),&release);
-    if(!check(chart.viewport().left()<v.left() && chart.viewport().top()>v.top(),"actual QML drag did not pan vector"))return false;
-    QTest::mouseDClick(chart.quickWindow(),Qt::LeftButton,Qt::NoModifier,cursor.toPoint());
-    if(!check(chart.viewport()==QRectF(0,0,1,1),"actual QML double click did not reset"))return false;
-    chart.presentation_model()->navigate("zoom",.5,.5,.5,1);
-    if(!check(chart.viewport().width()==.5 && chart.viewport().height()==1,"X only zoom"))return false;
-    chart.set_reverse_axes(true,true);wait([&]{return chart.presentation_model()->state().value("reverseX").toBool();});
-    chart.presentation_model()->navigate("zoom",.25,.25,.5,3);
-    const auto reversed=chart.viewport();chart.presentation_model()->navigate("pan",.1,.1);
-    if(!check(chart.viewport().left()>reversed.left() && chart.viewport().top()<reversed.top(),"reversed vector pan"))return false;
-    chart.presentation_model()->navigate("zoom",NAN,0,.5);
-    if(!check(std::isfinite(chart.viewport().left()),"nonfinite navigation"))return false;
+static bool image_navigation(const auto& check,const auto& wait) {
     NumericImageView image;image.resize(600,400);image.show();image.set_matrix({{0,1,2},{3,4,5},{6,7,8}});
     SpectrogramAxisMetadata metadata;metadata.columns={100,200,300};metadata.ages={0,1,2};metadata.column_coordinates=true;metadata.time_coordinates=true;
     image.set_axis_metadata(metadata);
@@ -97,60 +64,72 @@ static bool plot_navigation_oracles() {
     if(!check(image.viewport().width()>=1e-6,"unbounded zoom"))return false;
     image.presentation_model()->navigate("reset",0,0);
     if(!check(image.viewport()==QRectF(0,0,1,1),"image reset"))return false;
+return true;
+}
+
+static bool vector_drag_navigation(LineChartView& chart,const QPointF& cursor,const QRectF& v,const auto& check,const auto& wait) {
+    // Exercise real QML drag dispatch, including the mouse grab beyond the press.
+    QMouseEvent press(QEvent::MouseButtonPress,cursor,cursor,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(chart.quickWindow(),&press);
+    const QPointF dragged=cursor+QPointF(10,10);
+    QMouseEvent move(QEvent::MouseMove,dragged,dragged,Qt::NoButton,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(chart.quickWindow(),&move);
+    QMouseEvent release(QEvent::MouseButtonRelease,dragged,dragged,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(chart.quickWindow(),&release);
+    if(!check(chart.viewport().left()<v.left() && chart.viewport().top()>v.top(),"actual QML drag did not pan vector"))return false;
+    QTest::mouseDClick(chart.quickWindow(),Qt::LeftButton,Qt::NoModifier,cursor.toPoint());
+    if(!check(chart.viewport()==QRectF(0,0,1,1),"actual QML double click did not reset"))return false;
+    chart.presentation_model()->navigate("zoom",.5,.5,.5,1);
+    if(!check(chart.viewport().width()==.5 && chart.viewport().height()==1,"X only zoom"))return false;
+    chart.set_reverse_axes(true,true);wait([&]{return chart.presentation_model()->state().value("reverseX").toBool();});
+    chart.presentation_model()->navigate("zoom",.25,.25,.5,3);
+    const auto reversed=chart.viewport();chart.presentation_model()->navigate("pan",.1,.1);
+    if(!check(chart.viewport().left()>reversed.left() && chart.viewport().top()<reversed.top(),"reversed vector pan"))return false;
+    chart.presentation_model()->navigate("zoom",NAN,0,.5);
+    if(!check(std::isfinite(chart.viewport().left()),"nonfinite navigation"))return false;
+return true;
+}
+
+static bool plot_navigation_oracles() {
+    const auto check=[](bool ok,const char* message){if(!ok)std::fprintf(stderr,"Navigation oracle: %s\n",message);return ok;};
+    const auto wait=[](auto ready){QElapsedTimer timer;timer.start();while(timer.elapsed()<1500){QCoreApplication::processEvents();if(ready())return true;QThread::msleep(3);}return ready();};
+    LineChartView chart;chart.resize(600,400);chart.set_range(-10,10);chart.update({0,1,2,3,4,5,6,7,8,9,10});chart.show();
+    if(!check(wait([&]{return chart.presentation_model()->state().value("kind")=="vector";}),"QML plot unavailable"))return false;
+    const auto state=chart.presentation_model()->state();
+    const double left=state.value("plotLeft").toDouble();
+    const QPointF cursor(left+(chart.width()-left-22)*.25,28+(chart.height()-86)*.25);
+    QWheelEvent wheel(cursor,chart.quickWindow()->mapToGlobal(cursor.toPoint()),{},QPoint(0,120),Qt::NoButton,Qt::NoModifier,Qt::NoScrollPhase,false);
+    QCoreApplication::sendEvent(chart.quickWindow(),&wheel);
+    const auto v=chart.viewport();
+    if(!check(v.width()<1 && std::abs(v.left()+.25*v.width()-.25)<1e-8 && std::abs(v.top()+.75*v.height()-.75)<1e-8,"actual QML wheel lost cursor anchor / vector Y direction"))return false;
+    const auto baseX=chart.x_range(),baseY=chart.y_range();
+    chart.update({1,2,3,4,5,6,7,8,9,10,0});
+    if(!check(chart.viewport()==v && chart.x_range()==baseX && chart.y_range()==baseY,"incoming frame or navigation altered configured ranges"))return false;
+    if(!vector_drag_navigation(chart,cursor,v,check,wait))return false;
+    if(!image_navigation(check,wait))return false;
     return true;
 }
 
-static bool density_scale_oracles() {
-    const auto check=[](bool ok,const char* message){if(!ok)std::fprintf(stderr,"Density/scale oracle: %s\n",message);return ok;};
-    const auto wait=[](auto ready){QElapsedTimer timer;timer.start();while(timer.elapsed()<1500){QCoreApplication::processEvents();if(ready())return true;QThread::msleep(3);}return ready();};
-    // A complete rolling PCM window must retain its waveform across all axis
-    // density settings; labels/grid never become data or zero-fill a prefix.
-    class Waveform final:public LineChartView {public:using AbstractChartView::publish_presentation;};
-    Waveform waveform;waveform.resize(1200,400);waveform.set_range(-1,1);waveform.show();
-    std::vector<float> samples(4096);
-    for(std::size_t i=0;i<samples.size();++i)for(unsigned tone=0;tone<8;++tone)
-        samples[i]+=float(.07*std::sin(double(i)*(tone+1)*.031));
-    waveform.update(samples);
-    for(const auto density:{0,1,17,128,-1}){
-        waveform.set_axis_density(density,density,7,9);
-        if(!check(wait([&]{return waveform.presentation_model()->vectorPoints().size()>100;}),"full PCM projection unavailable"))return false;
-        waveform.publish_presentation();
-        const auto projected=waveform.projected_points();const auto normalized=waveform.presentation_model()->vectorPoints();
-        if(!check(projected.size()==normalized.size(),"axis change lost projected points"))return false;
-        bool active[3]{};
-        for(qsizetype j=0;j<projected.size();++j){const auto index=std::size_t(std::llround(projected[j].x()));
-            if(!check(index<samples.size() && projected[j].y()==samples[index] &&
-                std::abs(normalized[j].x()-double(index)/4095)<1e-12 &&
-                std::abs(normalized[j].y()-(1-double(samples[index]))/2)<1e-12,"axis change altered PCM values/coordinates"))return false;
-            if(std::abs(samples[index])>.01)active[std::min(std::size_t{2},index*3/samples.size())]=true;
-        }
-        if(!check(active[0]&&active[1]&&active[2],"waveform flattened in part of its window"))return false;
-    }
-    ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Decibels;
-    if(!check(std::abs(scale.map(.1)+20)<1e-10 && scale.map(0)==-120 && std::isfinite(scale.map(NAN)),"amplitude dB / silence"))return false;
-    scale.factor=10;if(!check(std::abs(scale.map(.1)+10)<1e-10,"power dB"))return false;
-    scale.source_decibels=true;if(!check(scale.map(-30)==-30 && scale.map(-200)==-120,"double log / floor of dB source"))return false;
-    scale.mode=ValueDisplayScale::Mode::Linear;scale.reference=2;
-    if(!check(std::abs(scale.map(-10)-.2)<1e-10,"inverse power dB reference"))return false;
-    auto* chart=new FreqChartView;GraphPanel panel("fft",chart,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));panel.resize(900,500);panel.show();
-    auto target=panel.all_render_targets();target.chart->set_value_source(false,20);target.chart->set_axis_title_keys("Frequency, Hz (X)","Amplitude (Y)");target.chart->update({1,.1f,0});
-    auto* settings=panel.findChild<QQuickWidget*>("numericGraphSettings");
-    std::function<QQuickItem*(QQuickItem*,const QString&)> findItem=[&](QQuickItem* root,const QString& name)->QQuickItem*{
-        if(root->objectName()==name)return root;for(auto* child:root->childItems())if(auto* found=findItem(child,name))return found;return nullptr;
-    };
-    QQuickItem* axisMenu=nullptr;
-    wait([&]{axisMenu=findItem(settings->rootObject(),"axisMenuX");return axisMenu!=nullptr;});
-    if(!check(axisMenu && !settings->rootObject()->property("axisXOpen").toBool() && !settings->rootObject()->property("axisYOpen").toBool() && !settings->rootObject()->property("scaleOpen").toBool(),"settings menus must start closed"))return false;
-    auto* closedContent=findItem(settings->rootObject(),"axisSettingsX");
-    if(!check(closedContent && !closedContent->isVisible() && QMetaObject::invokeMethod(axisMenu,"clicked"),"axis menu did not open on click"))return false;
-    QQuickItem* gridField=nullptr;
-    wait([&]{gridField=findItem(settings->rootObject(),"grid_lines_x");return gridField!=nullptr;});
-    if(!check(gridField && gridField->setProperty("text","17") && QMetaObject::invokeMethod(gridField,"editingFinished"),"QML density editor unavailable"))return false;
-    if(!check(panel.preferences().value("grid_lines_x").toInt()==17,"QML density edit did not reach preferences"))return false;
-    if(!check(settings->rootObject()->property("axisXOpen").toBool() && !settings->rootObject()->property("axisYOpen").toBool(),"editing reset menu expansion or opened the other axis"))return false;
-    axisMenu=findItem(settings->rootObject(),"axisMenuX");
-    if(!check(axisMenu && QMetaObject::invokeMethod(axisMenu,"clicked") && !settings->rootObject()->property("axisXOpen").toBool(),"axis menu did not close on second click"))return false;
+static bool matrix_value_scales(const auto& check) {
+    // 2D/3D share source metadata and preserve the immutable source history.
+    auto* placeholder=new LineChartView;GraphPanel history("spectrogram",placeholder,{{"kind","SpectrogramView"},{"display_mode","image2d"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},true}));
+    auto imageTarget=history.all_render_targets();SpectrogramAxisMetadata metadata;metadata.value_scale.factor=10;
+    imageTarget.image->set_axis_metadata(metadata);imageTarget.image->set_matrix({{1,.1f},{.01f,0}});
+    history.changePreference("db_factor",20);history.changePreference("db_factor",0);
+    if(!check(history.image_view()->axis_metadata().value_scale.effective_factor()==10,"factor override erased source quantity"))return false;
+    const auto identity=history.image_view()->projection_storage_identity();
+    history.changePreference("value_scale","db");
+    float raw=0;history.image_view()->matrix_sample(0,1,raw);
+    if(!check(identity==history.image_view()->projection_storage_identity() && std::abs(raw-.1)<1e-6 && history.image_view()->axis_metadata().value_scale.map(raw)<-9.99,"2D scale copied source or ignored power metadata"))return false;
+    SpectrogramGraph surface;metadata.value_scale.mode=ValueDisplayScale::Mode::Decibels;surface.set_axis_metadata(metadata);surface.update_frame_history({{1,.1f},{.01f,0}});
+    if(!check(surface.projected_axis_metadata().value_scale.map(.1)==-10 && surface.projected_history_sample(0,1,raw) && std::abs(raw-.1)<1e-6,"3D scale changed raw history"))return false;
+    std::vector<std::vector<float>> db{{-120,-20,-80}};
+    const auto peak=spectrogramPeakSample(db,0,1,0,3,3,true);
+    if(!check(peak.value==-20,"dB surface reduction chooses silence over spectral peak"))return false;
+return true;
+}
 
+static bool chart_density_and_value_scale(GraphPanel& panel,FreqChartView* chart,auto& target,const auto& check,const auto& wait) {
     panel.changePreference("grid_lines_y",9);panel.changePreference("axis_labels_x",5);panel.changePreference("axis_labels_y",7);
     panel.changePreference("value_scale","db");
     if(!check(wait([&]{const auto axes=chart->presentation_model()->axes();return axes.value("xTicks").toList().size()==5 && axes.value("yTicks").toList().size()==7 && axes.value("xGrid").toList().size()==17 && axes.value("yGrid").toList().size()==9;}),"manual density not rendered"))return false;
@@ -167,21 +146,81 @@ static bool density_scale_oracles() {
     if(!check(wait([&]{auto p=chart->projected_points();return p.size()==3 && std::abs(p[1].y()-.1)<1e-6 && p[2].y()==0;}),"switching scale did not retain original vector"))return false;
     target.chart->set_value_source(true,10);target.chart->set_axis_title_keys("Frequency, Hz (X)","Level, dB (Y)");target.chart->update({0,-10,-20});
     if(!check(wait([&]{auto p=chart->projected_points();return p.size()==3 && std::abs(p[1].y()-.1)<1e-6;}),"source power dB inverse uses wrong factor"))return false;
-    // 2D/3D share source metadata and preserve the immutable source history.
-    auto* placeholder=new LineChartView;GraphPanel history("spectrogram",placeholder,{{"kind","SpectrogramView"},{"display_mode","image2d"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},true}));
-    auto imageTarget=history.all_render_targets();SpectrogramAxisMetadata metadata;metadata.value_scale.factor=10;
-    imageTarget.image->set_axis_metadata(metadata);imageTarget.image->set_matrix({{1,.1f},{.01f,0}});
-    history.changePreference("db_factor",20);history.changePreference("db_factor",0);
-    if(!check(history.image_view()->axis_metadata().value_scale.effective_factor()==10,"factor override erased source quantity"))return false;
-    const auto identity=history.image_view()->projection_storage_identity();
-    history.changePreference("value_scale","db");
-    float raw=0;history.image_view()->matrix_sample(0,1,raw);
-    if(!check(identity==history.image_view()->projection_storage_identity() && std::abs(raw-.1)<1e-6 && history.image_view()->axis_metadata().value_scale.map(raw)<-9.99,"2D scale copied source or ignored power metadata"))return false;
-    SpectrogramGraph surface;metadata.value_scale.mode=ValueDisplayScale::Mode::Decibels;surface.set_axis_metadata(metadata);surface.update_frame_history({{1,.1f},{.01f,0}});
-    if(!check(surface.projected_axis_metadata().value_scale.map(.1)==-10 && surface.projected_history_sample(0,1,raw) && std::abs(raw-.1)<1e-6,"3D scale changed raw history"))return false;
-    std::vector<std::vector<float>> db{{-120,-20,-80}};
-    const auto peak=spectrogramPeakSample(db,0,1,0,3,3,true);
-    if(!check(peak.value==-20,"dB surface reduction chooses silence over spectral peak"))return false;
+return true;
+}
+
+static bool qml_density_controls(GraphPanel& panel,QQuickWidget* settings,const auto& findItem,const auto& check,const auto& wait) {
+    QQuickItem* axisMenu=nullptr;
+    wait([&]{axisMenu=findItem(settings->rootObject(),"axisMenuX");return axisMenu!=nullptr;});
+    if(!check(axisMenu && !settings->rootObject()->property("axisXOpen").toBool() && !settings->rootObject()->property("axisYOpen").toBool() && !settings->rootObject()->property("scaleOpen").toBool(),"settings menus must start closed"))return false;
+    auto* closedContent=findItem(settings->rootObject(),"axisSettingsX");
+    if(!check(closedContent && !closedContent->isVisible() && QMetaObject::invokeMethod(axisMenu,"clicked"),"axis menu did not open on click"))return false;
+    QQuickItem* gridField=nullptr;
+    wait([&]{gridField=findItem(settings->rootObject(),"grid_lines_x");return gridField!=nullptr;});
+    if(!check(gridField && gridField->setProperty("text","17") && QMetaObject::invokeMethod(gridField,"editingFinished"),"QML density editor unavailable"))return false;
+    if(!check(panel.preferences().value("grid_lines_x").toInt()==17,"QML density edit did not reach preferences"))return false;
+    if(!check(settings->rootObject()->property("axisXOpen").toBool() && !settings->rootObject()->property("axisYOpen").toBool(),"editing reset menu expansion or opened the other axis"))return false;
+    axisMenu=findItem(settings->rootObject(),"axisMenuX");
+    if(!check(axisMenu && QMetaObject::invokeMethod(axisMenu,"clicked") && !settings->rootObject()->property("axisXOpen").toBool(),"axis menu did not close on second click"))return false;
+
+return true;
+}
+
+static bool numeric_value_scales(const auto& check) {
+    ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Decibels;
+    if(!check(std::abs(scale.map(.1)+20)<1e-10 && scale.map(0)==-120 && std::isfinite(scale.map(NAN)),"amplitude dB / silence"))return false;
+    scale.factor=10;if(!check(std::abs(scale.map(.1)+10)<1e-10,"power dB"))return false;
+    scale.source_decibels=true;if(!check(scale.map(-30)==-30 && scale.map(-200)==-120,"double log / floor of dB source"))return false;
+    scale.mode=ValueDisplayScale::Mode::Linear;scale.reference=2;
+    if(!check(std::abs(scale.map(-10)-.2)<1e-10,"inverse power dB reference"))return false;
+return true;
+}
+
+static bool waveform_density(auto& waveform,int density,const auto& samples,const auto& check,const auto& wait) {
+
+        waveform.set_axis_density(density,density,7,9);
+        if(!check(wait([&]{return waveform.presentation_model()->vectorPoints().size()>100;}),"full PCM projection unavailable"))return false;
+        waveform.publish_presentation();
+        const auto projected=waveform.projected_points();const auto normalized=waveform.presentation_model()->vectorPoints();
+        if(!check(projected.size()==normalized.size(),"axis change lost projected points"))return false;
+        bool active[3]{};
+        for(qsizetype j=0;j<projected.size();++j){const auto index=std::size_t(std::llround(projected[j].x()));
+            if(!check(index<samples.size() && projected[j].y()==samples[index] &&
+                std::abs(normalized[j].x()-double(index)/4095)<1e-12 &&
+                std::abs(normalized[j].y()-(1-double(samples[index]))/2)<1e-12,"axis change altered PCM values/coordinates"))return false;
+            if(std::abs(samples[index])>.01)active[std::min(std::size_t{2},index*3/samples.size())]=true;
+        }
+        if(!check(active[0]&&active[1]&&active[2],"waveform flattened in part of its window"))return false;return true;
+}
+
+static bool panel_density_scale(const auto& check,const auto& wait) {
+    auto* chart=new FreqChartView;GraphPanel panel("fft",chart,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));panel.resize(900,500);panel.show();
+    auto target=panel.all_render_targets();target.chart->set_value_source(false,20);target.chart->set_axis_title_keys("Frequency, Hz (X)","Amplitude (Y)");target.chart->update({1,.1f,0});
+    auto* settings=panel.findChild<QQuickWidget*>("numericGraphSettings");
+    std::function<QQuickItem*(QQuickItem*,const QString&)> findItem=[&](QQuickItem* root,const QString& name)->QQuickItem*{
+        if(root->objectName()==name)return root;const auto children=root->childItems();for(auto* child:children)if(auto* found=findItem(child,name))return found;return nullptr;
+    };
+    if(!qml_density_controls(panel,settings,findItem,check,wait))return false;
+    if(!chart_density_and_value_scale(panel,chart,target,check,wait))return false;
+    if(!matrix_value_scales(check))return false;
+    return true;
+}
+static bool density_scale_oracles() {
+    const auto check=[](bool ok,const char* message){if(!ok)std::fprintf(stderr,"Density/scale oracle: %s\n",message);return ok;};
+    const auto wait=[](auto ready){QElapsedTimer timer;timer.start();while(timer.elapsed()<1500){QCoreApplication::processEvents();if(ready())return true;QThread::msleep(3);}return ready();};
+    // A complete rolling PCM window must retain its waveform across all axis
+    // density settings; labels/grid never become data or zero-fill a prefix.
+    class Waveform final:public LineChartView {public:using AbstractChartView::publish_presentation;};
+    Waveform waveform;waveform.resize(1200,400);waveform.set_range(-1,1);waveform.show();
+    std::vector<float> samples(4096);
+    for(std::size_t i=0;i<samples.size();++i)for(unsigned tone=0;tone<8;++tone)
+        samples[i]+=float(.07*std::sin(double(i)*(tone+1)*.031));
+    waveform.update(samples);
+    for(const auto density:{0,1,17,128,-1}){
+        if(!waveform_density(waveform,density,samples,check,wait))return false;
+    }
+    if(!numeric_value_scales(check))return false;
+    if(!panel_density_scale(check,wait))return false;
     return true;
 }
 
@@ -239,7 +278,7 @@ line.set_range(-1,1);line.set_auto_resizing(true);line.update({});
     const auto peakMaximum=line.y_range().second;
     for(int i=0;i<100;++i)line.update({.03f,.03f,.03f});
     if(!renderer_check(line.y_range().second==peakMaximum && plot_wait([&]{return line.projected_point_count()==3;}),"quiet history shrinks immediately or constant scalar line is empty"))return false;
-    for(auto point:line.projected_points())if(!renderer_check(std::abs(point.y()-.03)<1e-6,"constant scalar line changed value"))return false;
+    const auto projectedPoints=line.projected_points();for(auto point:projectedPoints)if(!renderer_check(std::abs(point.y()-.03)<1e-6,"constant scalar line changed value"))return false;
     line.set_auto_resizing(false);line.set_range(-2,2);line.update({100});
     if(!renderer_check(line.y_range().first==-2 && line.y_range().second==2,"manual amplitude range was overwritten"))return false;
         return true;
@@ -285,8 +324,8 @@ frequency.update_freq_step(10);frequency.update(std::vector<float>(100,0));
     bool stable_coordinates() {
     frequency.set_x_coordinates(std::vector<double>{70.1,70.2});frequency.update({.2f,.3f});
     int coordinateRangeChanges=0;
-    const auto coordinateRange=frequency.x_range();
-    const auto connection=QObject::connect(frequency.presentation_model(),&QuickPlotModel::changed,&frequency,[&]{if(frequency.x_range()!=coordinateRange)++coordinateRangeChanges;});
+    const auto coordinateRange=frequency.x_range();QObject coordinateWitness;
+    const auto connection=QObject::connect(frequency.presentation_model(),&QuickPlotModel::changed,&coordinateWitness,[&]{if(frequency.x_range()!=coordinateRange)++coordinateRangeChanges;});
     for(int i=0;i<20;++i){frequency.update_freq_step(1);frequency.set_x_coordinates({70.1,70.2});frequency.update({.3f,.4f});}
     QObject::disconnect(connection);
     if(!renderer_check(coordinateRangeChanges==0 && frequency.x_range()==coordinateRange && frequency.x_range().first==70.1 && frequency.x_range().second==70.2,"unchanged physical FFT axis emits transient index ranges"))return false;
@@ -383,7 +422,7 @@ static int interval_control_oracles() {
     for(const auto* code:{"en","ru"}) {
         ui::Language::instance().set(code);
         bool translated=false;
-        for(auto* label:intervalControl.findChildren<QLabel*>())
+        const auto intervalLabels=intervalControl.findChildren<QLabel*>();for(auto* label:intervalLabels)
             translated|=label->text()==ui::text("Auto range interval (s)");
         if(!translated || intervalControl.seconds()!=8 || intervalWrites!=1)return failure(35,__LINE__);
     }
@@ -436,6 +475,41 @@ static int decibel_source_oracles() {
     return 0;
 }
 
+static int pie_values(auto* pie) {
+    if(!pie->set_values({1,3}) || pie->slice_count()!=2 || pie->slice_value(0)!=1 || pie->slice_value(1)!=3 || std::abs(pie->slice_fraction(0)-.25)>1e-12)return failure(66,__LINE__);
+    if(pie->set_values({1,-1}) || pie->projection_available() || pie->slice_count()!=0)return failure(67,__LINE__);
+    if(!pie->set_values({0,0}) || !pie->projection_available() || pie->slice_count()!=0)return failure(68,__LINE__);
+    if(!pie->set_values(std::vector<float>(100,1)) || pie->slice_count()!=64 || pie->slice_value(63)!=37)return failure(69,__LINE__);
+    pie->set_values(std::vector<float>(7,1));
+    if(pie->presentation_model()->state().value("slices").toList().size()!=7)return failure(71,__LINE__);
+    pie->set_values({0});pie->set_projection_status("Renderer projection unavailable");
+    if(!pie->presentation_model()->state().value("title").toString().contains("unavailable"))return failure(72,__LINE__);
+    const auto pieLanguage=ui::Language::instance().code();
+    for(const auto* language:{"en","ru"}) {
+        ui::Language::instance().set(language);pie->set_values({-1});
+        if(pie->presentation_model()->state().value("title").toString()!=ui::text("Pie charts require finite nonnegative values"))return failure(73,__LINE__);
+    }
+    ui::Language::instance().set(pieLanguage);
+    pie->set_values({});pie->set_projection_status({});if(!pie->presentation_model()->state().value("title").toString().isEmpty())return failure(74,__LINE__);
+return 0;
+}
+
+static int vector_modes(GraphPanel& panel,FreqChartView* chart,QJsonObject& emitted,int& restorationWrites) {
+    // The graph family fixes rank; only rendering modes within that family
+    // can change without touching processing topology.
+    panel.set_display_mode("image2d");
+    if(!panel.active_chart() || panel.image_view() || panel.active_spectrogram())return failure(47,__LINE__);
+    panel.set_display_mode("points");if(chart->plot_style()!="points")return failure(58,__LINE__);
+    panel.set_display_mode("pie");auto* pie=panel.pie_view();
+    if(!pie || panel.active_chart() || panel.image_view() || panel.active_spectrogram() || emitted["display_mode"]!="pie")return failure(65,__LINE__);
+    if(const auto result=pie_values(pie))return result;
+    const auto pieWrites=restorationWrites;panel.restore_presentation({{"display_mode","pie"}});
+    if(panel.pie_view()!=pie || restorationWrites!=pieWrites)return failure(70,__LINE__);
+    panel.set_display_mode("points");panel.restore_presentation({});
+    if(panel.active_chart()!=chart || panel.display_mode()!="bars" || chart->plot_style()!="bars")return failure(82,__LINE__);
+return 0;
+}
+
 static int vector_panel_oracles() {
     auto *chart = new FreqChartView(10);
     GraphPanel panel("fft", chart, {{"auto_range_x", false}, {"minimum_x", 100},
@@ -464,32 +538,7 @@ static int vector_panel_oracles() {
                                 {"auto_range",false},{"minimum",-2},{"maximum",2},{"reverse_y",false},{"auto_range_interval_seconds",7}});
     if(restorationWrites || chart->x_range().first!=200 || chart->x_range().second!=600 || chart->reverse_x())return failure(6,__LINE__);
     if(chart->auto_range_interval()!=7 || panel.preferences().value("auto_range").toBool())return failure(30,__LINE__);
-    // The graph family fixes rank; only rendering modes within that family
-    // can change without touching processing topology.
-    panel.set_display_mode("image2d");
-    if(!panel.active_chart() || panel.image_view() || panel.active_spectrogram())return failure(47,__LINE__);
-    panel.set_display_mode("points");if(chart->plot_style()!="points")return failure(58,__LINE__);
-    panel.set_display_mode("pie");auto* pie=panel.pie_view();
-    if(!pie || panel.active_chart() || panel.image_view() || panel.active_spectrogram() || emitted["display_mode"]!="pie")return failure(65,__LINE__);
-    if(!pie->set_values({1,3}) || pie->slice_count()!=2 || pie->slice_value(0)!=1 || pie->slice_value(1)!=3 || std::abs(pie->slice_fraction(0)-.25)>1e-12)return failure(66,__LINE__);
-    if(pie->set_values({1,-1}) || pie->projection_available() || pie->slice_count()!=0)return failure(67,__LINE__);
-    if(!pie->set_values({0,0}) || !pie->projection_available() || pie->slice_count()!=0)return failure(68,__LINE__);
-    if(!pie->set_values(std::vector<float>(100,1)) || pie->slice_count()!=64 || pie->slice_value(63)!=37)return failure(69,__LINE__);
-    pie->set_values(std::vector<float>(7,1));
-    if(pie->presentation_model()->state().value("slices").toList().size()!=7)return failure(71,__LINE__);
-    pie->set_values({0});pie->set_projection_status("Renderer projection unavailable");
-    if(!pie->presentation_model()->state().value("title").toString().contains("unavailable"))return failure(72,__LINE__);
-    const auto pieLanguage=ui::Language::instance().code();
-    for(const auto* language:{"en","ru"}) {
-        ui::Language::instance().set(language);pie->set_values({-1});
-        if(pie->presentation_model()->state().value("title").toString()!=ui::text("Pie charts require finite nonnegative values"))return failure(73,__LINE__);
-    }
-    ui::Language::instance().set(pieLanguage);
-    pie->set_values({});pie->set_projection_status({});if(!pie->presentation_model()->state().value("title").toString().isEmpty())return failure(74,__LINE__);
-    const auto pieWrites=restorationWrites;panel.restore_presentation({{"display_mode","pie"}});
-    if(panel.pie_view()!=pie || restorationWrites!=pieWrites)return failure(70,__LINE__);
-    panel.set_display_mode("points");panel.restore_presentation({});
-    if(panel.active_chart()!=chart || panel.display_mode()!="bars" || chart->plot_style()!="bars")return failure(82,__LINE__);
+    if(const auto result=vector_modes(panel,chart,emitted,restorationWrites))return result;
     return 0;
 }
 
@@ -530,11 +579,11 @@ class MatrixPanelScenario {
     int surface_mode_and_precision() {
     matrixPanel.set_display_mode("surface3d");arbitrarySurface=matrixPanel.active_spectrogram();
     if(!arbitrarySurface || matrixPanel.image_view() || matrixPanel.active_chart() || matrixEmitted["display_mode"]!="surface3d")return failure(52,__LINE__);
-    if(arbitrarySurface->surface_settings()["axis_precision"].toInt()!=5)return failure(76,__LINE__);
+    if(arbitrarySurface->surface_settings().value("axis_precision").toInt()!=5)return failure(76,__LINE__);
     matrixPanel.set_axis_precision(3);matrixPanel.set_display_mode("image2d");
     if(matrixPanel.image_view()->axis_precision()!=3)return failure(77,__LINE__);
     matrixPanel.set_display_mode("surface3d");
-    if(arbitrarySurface->surface_settings()["axis_precision"].toInt()!=3)return failure(78,__LINE__);
+    if(arbitrarySurface->surface_settings().value("axis_precision").toInt()!=3)return failure(78,__LINE__);
         return 0;
     }
     int surface_geometry() {
@@ -636,6 +685,25 @@ public:
     }
 };
 static int matrix_panel_oracles() {MatrixPanelScenario scenario;return scenario.run();}
+static int adaptive_tick_axis(NumericImageView& adaptiveImage,const QVariantMap& adaptiveState,const QFontMetrics& adaptiveFont,bool horizontal) {
+
+        const auto ticks=adaptiveState.value(horizontal?"xTicks":"yTicks").toList();
+        const auto sections=adaptiveImage.property(horizontal?"columnAxisSections":"timeAxisSections").toInt();
+        if(ticks.size()!=sections+1 || ticks.size()<2)return failure(91,__LINE__);
+        const double extent=horizontal?adaptiveImage.width()-adaptiveState.value("plotLeft").toDouble()-22:adaptiveImage.height()-86;
+        double previous=-1;QString previousText;
+        for(int i=0;i<ticks.size();++i) {
+            const auto tick=ticks[i].toMap();const double position=tick.value("position").toDouble();const auto text=tick.value("text").toString();
+            if(!std::isfinite(position) || position<=previous || text.isEmpty() || text==previousText ||
+               (i==0 && position!=0) || (i==ticks.size()-1 && position!=1))return failure(91,__LINE__);
+            if(i>0) {
+                const double needed=horizontal?(adaptiveFont.horizontalAdvance(previousText)+adaptiveFont.horizontalAdvance(text))/2.+12:adaptiveFont.height()+12;
+                if((position-previous)*extent<needed)return failure(91,__LINE__);
+            }
+            previous=position;previousText=text;
+        }return 0;
+}
+
 static int adaptive_image_oracles() {
     // A bigger 2D viewport exposes more sections while values and owner stay fixed.
     NumericImageView adaptiveImage;
@@ -660,21 +728,7 @@ static int adaptive_image_oracles() {
     const auto adaptiveState=adaptiveImage.presentation_model()->state();
     const QFontMetrics adaptiveFont(adaptiveImage.font());
     for(const bool horizontal:{false,true}) {
-        const auto ticks=adaptiveState.value(horizontal?"xTicks":"yTicks").toList();
-        const auto sections=adaptiveImage.property(horizontal?"columnAxisSections":"timeAxisSections").toInt();
-        if(ticks.size()!=sections+1 || ticks.size()<2)return failure(91,__LINE__);
-        const double extent=horizontal?adaptiveImage.width()-adaptiveState.value("plotLeft").toDouble()-22:adaptiveImage.height()-86;
-        double previous=-1;QString previousText;
-        for(int i=0;i<ticks.size();++i) {
-            const auto tick=ticks[i].toMap();const double position=tick.value("position").toDouble();const auto text=tick.value("text").toString();
-            if(!std::isfinite(position) || position<=previous || text.isEmpty() || text==previousText ||
-               (i==0 && position!=0) || (i==ticks.size()-1 && position!=1))return failure(91,__LINE__);
-            if(i>0) {
-                const double needed=horizontal?(adaptiveFont.horizontalAdvance(previousText)+adaptiveFont.horizontalAdvance(text))/2.+12:adaptiveFont.height()+12;
-                if((position-previous)*extent<needed)return failure(91,__LINE__);
-            }
-            previous=position;previousText=text;
-        }
+        if(const auto result=adaptive_tick_axis(adaptiveImage,adaptiveState,adaptiveFont,horizontal))return result;
     }
     return 0;
 }
@@ -721,7 +775,7 @@ static int surface_range_oracles() {
     stableOptions["auto_range_interval_seconds"]=7;stableOptions["extension"]=99;
     spectrogram.set_surface_settings(stableOptions);
     spectrogram.set_render_visible(false);spectrogram.set_render_visible(true);
-    if(spectrogram.y_range()!=firstRange || spectrogram.surface_settings()["auto_range_interval_seconds"].toDouble()!=7 || spectrogram.surface_settings()["extension"].toInt()!=99)return failure(33,__LINE__);
+    if(spectrogram.y_range()!=firstRange || spectrogram.surface_settings().value("auto_range_interval_seconds").toDouble()!=7 || spectrogram.surface_settings().value("extension").toInt()!=99)return failure(33,__LINE__);
     const auto roundTrip=SurfaceSettings::effective({{"defaults",SurfaceSettings::defaults()}},{{"surface_override",QJsonObject{{"enabled",true},{"values",spectrogram.surface_settings()}}}});
     if(roundTrip["auto_range_interval_seconds"].toDouble()!=7 || roundTrip["extension"].toInt()!=99)return failure(34,__LINE__);
     spectrogram.set_paused(true);
@@ -769,7 +823,7 @@ static int axis_control_oracles(QApplication& app) {
     compact->set_hint("Range (%)\nHistory: 400 / 400 frames");
     bodyLayout->addWidget(compact);bodyLayout->addStretch();scroll.setWidget(body);
     scroll.resize(200,220);scroll.show();app.processEvents();
-    for(auto *label:compact->findChildren<QLabel *>()) {
+    const auto compactLabels=compact->findChildren<QLabel *>();for(auto *label:compactLabels) {
         if(label->isVisible() && label->wordWrap() && label->height()<label->heightForWidth(label->width())) {
             std::fprintf(stderr,"Wrapped label clipped: %s %dx%d requires %d\n",qPrintable(label->text()),
                          label->width(),label->height(),label->heightForWidth(label->width()));return failure(10,__LINE__);

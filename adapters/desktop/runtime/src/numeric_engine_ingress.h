@@ -73,6 +73,16 @@ struct SourceIngress {
     static Status reserve_capture_node(const domain::ConfiguredProcessingNode&,std::size_t&) noexcept;
     static Status reserve_capture_port(const domain::ProcessingPort&,std::size_t&) noexcept;
     Status stage(const domain::NumericProcessingGraph&,const domain::ProcessingAdmissionLimits&,Staged&);
+    static bool physical_rate_supported(const domain::ResolvedProcessingNode&,std::uint32_t) noexcept;
+    static Status reserve_capture_ports(const domain::ConfiguredProcessingNode&,std::size_t&) noexcept;
+    Status stage_unbound_generator(const domain::ConfiguredProcessingNode&,Staged&);
+    static std::size_t reserved_capture_lanes(const domain::ConfiguredProcessingNode&) noexcept;
+    void configure_external_cadence(ExternalInput&,const NumericContract&);
+    void stage_external_node(const domain::NumericProcessingGraph&,const domain::ConfiguredProcessingNode&,Staged&);
+    Status limit_clock_block(const domain::NumericProcessingGraph&,const domain::ConfiguredProcessingNode&,ClockInput&);
+    void retain_staged_clock(domain::NodeId,ClockInput,Staged&);
+    Status prepare_capture_storage(CaptureInput&,std::uint32_t);
+    Status stage_timelines(const domain::NumericProcessingGraph&,Staged&);
     void stage_external_inputs(const domain::NumericProcessingGraph&,Staged&);
     Status stage_sample_clocks(const domain::NumericProcessingGraph&,Staged&);
     Status stage_unbound_generators(const domain::NumericProcessingGraph&,Staged&);
@@ -98,6 +108,16 @@ struct SourceIngress {
     std::uint64_t resumed_capture_epoch(domain::NodeId node,const AudioFrame& frame);
     bool capture_contract_matches(const CaptureInput& input,const AudioFrame& frame) const;
     void reject_capture(CaptureInput& input,domain::NodeId node,std::uint64_t fence,const AudioFrame& frame);
+    void restore_capture_admission(CaptureInput&,domain::NodeId,std::uint64_t);
+    void process_capture_samples(CaptureInput&,const AudioFrame&,bool);
+    FrameStamp capture_packet_stamp(CaptureInput&,const AudioFrame&,std::size_t,std::size_t,bool);
+    void append_capture_samples(CaptureInput&,std::size_t,const FrameStamp&);
+    FrameStamp clock_frame_stamp(ClockInput&);
+    bool emit_clock_frame(domain::NodeId,ClockInput&);
+    bool advance_missing_stamp(domain::NodeId,ExternalInput&,std::uint64_t,FrameStamp&);
+    bool emit_failed_source_frame(CaptureInput&);
+    void update_capture_timeline(CaptureInput&,const AudioFrame&,std::uint64_t);
+    void catch_up_failed_source(CaptureInput&,std::uint64_t);
     void process_capture_input(CaptureInput& input,domain::NodeId node,std::uint64_t fence,
                                const AudioFrame& frame,std::uint64_t resumed_epoch);
     void enqueue_capture_packets(CaptureInput& input,const AudioFrame& frame,const float* samples,bool capture_gap);

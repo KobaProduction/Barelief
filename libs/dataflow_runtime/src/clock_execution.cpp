@@ -88,7 +88,8 @@ class ClockExecution {
     NumericView publication_view(const NumericContract& contract,NumericBuffer& buffer,std::size_t count,bool available) const noexcept {
         buffer.actual={count,1};NumericView view{&contract,buffer.storage(),buffer.planes,buffer.actual,{},{}};
         for(std::size_t axis=0;axis<2;++axis)if(!buffer.coordinates[axis].empty())view.coordinates.axes[axis]={buffer.coordinates[axis].data(),buffer.actual[axis]*8};
-        if(!available)view.storage={};return view;
+        if(!available)view.storage={};
+        return view;
     }
     void deliver_tick(const PlanNode& node,State& state,const FrameStamp& stamp,const NumericView& view,std::uint64_t measured) noexcept {
         if(profile.monotonic_nanoseconds){const auto end=profile.monotonic_nanoseconds(profile.measurement_clock);if(end>=measured)state.pending_self_nanoseconds=end-measured;}

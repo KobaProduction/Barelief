@@ -39,3 +39,9 @@ target_link_libraries(core_app_components PUBLIC
         wled_protocol
         barelief
 )
+
+if(BUILD_QUALITY_HEADER_AUDIT)
+    add_library(quality_qt_headers OBJECT "${CMAKE_SOURCE_DIR}/tools/quality/qt_headers.cpp")
+    target_link_libraries(quality_qt_headers PRIVATE core_app_components)
+    target_compile_features(quality_qt_headers PRIVATE cxx_std_23)
+endif()

@@ -81,8 +81,88 @@ static void selected_native_lane() {
     probes[0]->audio(frame);require(wait([&]{return received>0;})&&exact,"mono output selects first native stereo lane without mixing");
     engine.unsubscribe_numeric_tap(token);
 }
-static void downstream_error_preserves_capture_continuity() {
-    using namespace signal_contracts;
+static void observe_downstream_error(const DeliveredNumericFrame& delivered,domain::NodeId source,
+ domain::NodeId product,domain::NodeId window,unsigned& sourceFrames,unsigned& boundaries,unsigned& errors,std::size_t& windowPrefix) {
+ using namespace signal_contracts;
+        if(!delivered.context || !delivered.frame)return;const auto frame=delivered.frame.view();
+        if(delivered.context->endpoint.node==source && delivered.context->endpoint.port==0){++sourceFrames;boundaries+=frame.stamp.discontinuity;}
+        if(delivered.context->endpoint.node==product && !frame.stamp.available)++errors;
+        if(delivered.context->endpoint.node==window && frame.stamp.available){
+            const auto& values=std::get<NumericView>(frame.payload);windowPrefix=0;
+            for(std::size_t i=0;i<values.actual[0];++i){float value=0;require(load_element(values,{0,i,0},value)==Status::ok,"window read");if(value!=0)break;++windowPrefix;}
+        }
+}
+struct CaptureObservations {
+ std::size_t available[2]{},unavailable[2]{},zero[2]{};
+ void observe(const DeliveredNumericFrame& delivered) {
+        if(!delivered.context)return;const auto node=delivered.context->endpoint.node;
+        if(node!=3 && node!=4)return;const auto index=node-3;
+        if(delivered.frame && delivered.frame.view().stamp.available) {
+            ++available[index];const auto frame=delivered.frame.view();
+            if(const auto* numeric=std::get_if<signal_contracts::NumericView>(&frame.payload)) {
+                bool silent=true;for(std::size_t i=0;i<numeric->actual[0];++i) {
+                    float value=0;require(signal_contracts::load_element(*numeric,{0,i,0},value)==signal_contracts::Status::ok,"capture value");silent&=value==0;
+                }
+                if(silent)++zero[index];
+            }
+        }else ++unavailable[index];
+ }
+};
+template<class Submit>
+static void verify_capture_retirement(NumericEngine& engine,const domain::NumericProcessingGraph& graph,
+ EngineCommand& apply,const Submit& submit,const std::vector<std::shared_ptr<Probe>>& probes,const std::size_t* available) {
+    auto detached=graph;for(auto& node:detached.nodes)if(node.kind=="AudioSource"){node.kind="NetworkInput";node.parameters=domain::EndpointProcessingParameters{};}
+    QByteArray detached_bytes;require(bool(desktop::encode_numeric_graph(detached,detached_bytes)),"detached graph");
+    EngineCommand detach=apply;detach.graph=QJsonDocument::fromJson(detached_bytes).object();submit(detach);
+    require(engine.snapshot().statuses.value("capture").state==State::Stopped,"removed physical resources remain active");
+    require(probes[0]->stops==1 && probes[1]->stops==1,"source replacement did not stop retired providers");
+    const auto stale_audio=probes[0]->audio;const auto stale_status=probes[0]->status;
+    const auto stopped_count=available[0];stale_audio(tones());stale_status(true,{});
+    QCoreApplication::processEvents();require(available[0]==stopped_count && engine.snapshot().statuses.value("capture").state==State::Stopped,"retired source callback accepted");
+    submit(apply);require(probes.size()==4,"restart did not create new providers");
+    const auto restarted=available[0];stale_audio(tones());stale_status(false,"retired device error");probes[2]->audio(tones(2));
+    require(wait([&]{return available[0]>restarted;}),"restarted source unavailable");
+    require(engine.snapshot().statuses.value("capture").state==State::Running,"retired source error overwrote new source");
+    submit(detach);
+}
+static void verify_multichannel_ring(unsigned lanes) {
+        // Exercise both ring wrap copies and channel-major delivery independently
+        // of OS callback chunk sizes. Capacity at 8kHz is 2000 frames.
+        CaptureBuffer buffer;buffer.reset(8000,lanes);AudioFrame popped;
+        std::vector<float> interleaved(1500*lanes);
+        for(std::size_t frame=0;frame<1500;++frame)for(std::size_t lane=0;lane<lanes;++lane)
+            interleaved[frame*lanes+lane]=float(lane*10000+frame);
+        for(int iteration=0;iteration<3;++iteration) {
+            require(buffer.push(interleaved.data(),1500,17,iteration*1500),"N-lane ring push");
+            require(buffer.pop(popped) && popped.channel_count==lanes && popped.frame_count==1500,"N-lane ring pop");
+            for(std::size_t frame=0;frame<1500;++frame)for(std::size_t lane=0;lane<lanes;++lane)
+                require(popped.samples[lane*1500+frame]==interleaved[frame*lanes+lane],"N-lane wrap cross-contaminated lanes");
+        }
+}
+static domain::NumericProcessingGraph multichannel_graph(unsigned lanes) {
+ using namespace signal_contracts;
+        auto defaults=numeric_default_graph();domain::NumericProcessingGraph graph;graph.graph_id="main";graph.execution_interval={1,120};
+        auto source=defaults.nodes.front();source.outputs.clear();
+        for(std::uint16_t lane=0;lane<lanes;++lane){auto port=defaults.nodes.front().outputs.front();port.id=lane;source.outputs.push_back(port);}
+        graph.nodes.push_back(source);
+        for(std::uint16_t lane=0;lane<lanes;++lane) {
+            auto window=defaults.nodes[1];window.id=10+lane;
+            auto contract=std::get<NumericContract>(window.outputs.front().contract.view());contract.shape.extents[0]={1024,1024};
+            require(domain::own_processing_contract(contract,{8,32768,262144,16384,256,8192},16384,window.outputs.front().contract)==Status::ok,"N-lane window contract");
+            auto& parameters=std::get<domain::TransformProcessingParameters>(window.parameters);parameters.values.front().value=NumericLiteral{std::uint64_t(1024)};
+            graph.nodes.push_back(window);graph.edges.push_back({source.id,window.id,lane,0});
+        }
+        return graph;
+}
+static QJsonObject invalid_device_graph(QJsonObject invalid) {
+    auto nodes=invalid["nodes"].toArray();
+    for(const auto index:{0,1}){auto node=nodes[index].toObject();const auto key=index==0?"outputs":"inputs";auto ports=node[key].toArray();auto port=ports[0].toObject();auto contract=port["contract"].toObject();contract["dtype"]="Int64";port["contract"]=contract;ports[0]=port;node[key]=ports;nodes[index]=node;}
+    invalid["nodes"]=nodes;domain::NumericProcessingGraph rejected_graph;
+    require(bool(desktop::decode_numeric_graph(QJsonDocument(invalid).toJson(),rejected_graph)),"rejected device fixture must decode");
+    return invalid;
+}
+static auto downstream_error_graph() {
+using namespace signal_contracts;
     auto defaults=numeric_default_graph();auto source=defaults.nodes.front(),window=defaults.nodes[1];
     domain::ConfiguredProcessingNode product;product.id=50;product.kind="ArrayMultiply";
     product.parameters=domain::TransformProcessingParameters{};
@@ -91,6 +171,49 @@ static void downstream_error_preserves_capture_continuity() {
     product.outputs={source.outputs.front()};
     domain::NumericProcessingGraph graph;graph.graph_id="main";graph.nodes={source,window,product};
     graph.edges={{source.id,window.id,0,0},{source.id,product.id,0,0},{source.id,product.id,0,1}};
+return graph;
+}
+
+static void capture_error_recovery(NumericEngine& engine,const auto& probes,CaptureObservations& observation) {
+ auto& available=observation.available;auto& unavailable=observation.unavailable;auto& zero=observation.zero;
+    probes[0]->audio(tones());probes[1]->audio(tones());
+    require(wait([&]{return available[0] && available[1];}),"both sources delivered");
+    probes[0]->status(false,"device disconnected");probes[1]->status(true,{});
+    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Failed;}),"healthy source hid failed source");
+    require(engine.snapshot().statuses.value("capture").error.contains("device disconnected"),"device error lost");
+    require(wait([&]{return zero[0]>0;}) && unavailable[0]==0,"known failed source did not advance with typed zeros");
+    const auto unaffected=available[1];probes[1]->audio(tones());
+    require(wait([&]{return available[1]>unaffected;}),"unrelated source stopped on failure");
+    probes[0]->lifecycle(true,0,{});
+    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Running;}),"capture recovery");
+    auto bad=tones();bad.sample_rate=44100;const auto prior_bad=zero[0];probes[0]->audio(bad);
+    require(wait([&]{return zero[0]>prior_bad;}),"wrong rate did not enter zero fallback");
+    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Failed;}),"wrong rate missing failure status");
+    require(engine.snapshot().statuses.value("capture").error.contains("expected 48000")&&engine.snapshot().statuses.value("capture").error.contains("received 44100"),"wrong rate diagnostic lost");
+    probes[0]->audio(tones());
+    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Running;}),"valid capture metadata did not recover");
+}
+
+static void deliver_lanes(const std::shared_ptr<Probe>& probe,unsigned lanes,std::uint64_t generation,std::size_t begin,std::size_t count,float base) {
+
+            AudioFrame frame;frame.sample_rate=48000;frame.channel_count=lanes;frame.frame_count=count;
+            frame.generation=generation;frame.sample_position=begin;frame.discontinuity=begin==0;frame.timestamp_ns=1000000;
+            frame.samples.resize(count*lanes);for(std::size_t lane=0;lane<lanes;++lane)
+                std::fill_n(frame.samples.begin()+lane*count,count,base+float(lane));probe->audio(frame);
+}
+
+static void verify_resumed_lanes(unsigned lanes,const auto& observed) {
+using namespace signal_contracts;
+        for(std::uint16_t lane=0;lane<lanes;++lane) {
+            const auto& frame=observed[lane];require(frame.status==Status::ok && frame.frame,"resumed lane Window unavailable");
+            const auto view=std::get<NumericView>(frame.frame.view().payload);require(view.actual[0]==1024,"resumed Window size");
+            for(std::size_t sample=0;sample<1024;++sample){float value=0;require(load_element(view,{0,sample,0},value)==Status::ok && value==10+float(lane),"later lane resume reset earlier lane Window");}
+        }
+}
+
+static void downstream_error_preserves_capture_continuity() {
+    using namespace signal_contracts;
+    auto graph=downstream_error_graph();
     std::shared_ptr<Probe> probe;NumericEngine engine([&](auto){probe=std::make_shared<Probe>();return std::make_unique<ProbeSource>(probe);});
     QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"error isolation encode");
     bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
@@ -98,13 +221,7 @@ static void downstream_error_preserves_capture_continuity() {
     require(wait([&]{return replied;}) && accepted && probe,"error isolation Apply");
     unsigned boundaries=0,sourceFrames=0,errors=0;std::size_t windowPrefix=4096;
     const auto token=engine.subscribe_numeric_tap({},[&](const DeliveredNumericFrame& delivered){
-        if(!delivered.context || !delivered.frame)return;const auto frame=delivered.frame.view();
-        if(delivered.context->endpoint.node==source.id && delivered.context->endpoint.port==0){++sourceFrames;boundaries+=frame.stamp.discontinuity;}
-        if(delivered.context->endpoint.node==product.id && !frame.stamp.available)++errors;
-        if(delivered.context->endpoint.node==window.id && frame.stamp.available){
-            const auto& values=std::get<NumericView>(frame.payload);windowPrefix=0;
-            for(std::size_t i=0;i<values.actual[0];++i){float value=0;require(load_element(values,{0,i,0},value)==Status::ok,"window read");if(value!=0)break;++windowPrefix;}
-        }
+        observe_downstream_error(delivered,graph.nodes[0].id,graph.nodes[2].id,graph.nodes[1].id,sourceFrames,boundaries,errors,windowPrefix);
     },{});require(token!=0,"error isolation tap");
     for(unsigned packet=0;packet<32;++packet){auto frame=tones(17);frame.sample_position=packet*256;frame.discontinuity=packet==0;
         // Eight finite tones are accepted PCM; their product overflows Float32
@@ -128,49 +245,12 @@ static void capture_lifecycle() {
     EngineCommand apply;apply.kind=EngineCommand::ApplyGraph;apply.graph=QJsonDocument::fromJson(bytes).object();submit(apply);
     require(probes.size()==2 && wait([&]{return engine.snapshot().statuses.value("capture").state==State::Running;}),"both sources running");
     require(probes[0]->configuration.value("sample_rate").toInt()==48000,"capture contract rate");
-    std::size_t available[2]{},unavailable[2]{},zero[2]{};
+    CaptureObservations observation;auto& available=observation.available;auto& unavailable=observation.unavailable;auto& zero=observation.zero;
     const auto token=engine.subscribe_numeric_tap({},[&](auto delivered){
-        if(!delivered.context)return;const auto node=delivered.context->endpoint.node;
-        if(node!=3 && node!=4)return;const auto index=node-3;
-        if(delivered.frame && delivered.frame.view().stamp.available) {
-            ++available[index];const auto frame=delivered.frame.view();
-            if(const auto* numeric=std::get_if<signal_contracts::NumericView>(&frame.payload)) {
-                bool silent=true;for(std::size_t i=0;i<numeric->actual[0];++i) {
-                    float value=0;require(signal_contracts::load_element(*numeric,{0,i,0},value)==signal_contracts::Status::ok,"capture value");silent&=value==0;
-                }
-                if(silent)++zero[index];
-            }
-        }else ++unavailable[index];
+        observation.observe(delivered);
     },{});require(token!=0,"tap");
-    probes[0]->audio(tones());probes[1]->audio(tones());
-    require(wait([&]{return available[0] && available[1];}),"both sources delivered");
-    probes[0]->status(false,"device disconnected");probes[1]->status(true,{});
-    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Failed;}),"healthy source hid failed source");
-    require(engine.snapshot().statuses.value("capture").error.contains("device disconnected"),"device error lost");
-    require(wait([&]{return zero[0]>0;}) && unavailable[0]==0,"known failed source did not advance with typed zeros");
-    const auto unaffected=available[1];probes[1]->audio(tones());
-    require(wait([&]{return available[1]>unaffected;}),"unrelated source stopped on failure");
-    probes[0]->lifecycle(true,0,{});
-    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Running;}),"capture recovery");
-    auto bad=tones();bad.sample_rate=44100;const auto prior_bad=zero[0];probes[0]->audio(bad);
-    require(wait([&]{return zero[0]>prior_bad;}),"wrong rate did not enter zero fallback");
-    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Failed;}),"wrong rate missing failure status");
-    require(engine.snapshot().statuses.value("capture").error.contains("expected 48000")&&engine.snapshot().statuses.value("capture").error.contains("received 44100"),"wrong rate diagnostic lost");
-    probes[0]->audio(tones());
-    require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Running;}),"valid capture metadata did not recover");
-    auto detached=graph;for(auto& node:detached.nodes)if(node.kind=="AudioSource"){node.kind="NetworkInput";node.parameters=domain::EndpointProcessingParameters{};}
-    QByteArray detached_bytes;require(bool(desktop::encode_numeric_graph(detached,detached_bytes)),"detached graph");
-    EngineCommand detach=apply;detach.graph=QJsonDocument::fromJson(detached_bytes).object();submit(detach);
-    require(engine.snapshot().statuses.value("capture").state==State::Stopped,"removed physical resources remain active");
-    require(probes[0]->stops==1 && probes[1]->stops==1,"source replacement did not stop retired providers");
-    const auto stale_audio=probes[0]->audio;const auto stale_status=probes[0]->status;
-    const auto stopped_count=available[0];stale_audio(tones());stale_status(true,{});
-    QCoreApplication::processEvents();require(available[0]==stopped_count && engine.snapshot().statuses.value("capture").state==State::Stopped,"retired source callback accepted");
-    submit(apply);require(probes.size()==4,"restart did not create new providers");
-    const auto restarted=available[0];stale_audio(tones());stale_status(false,"retired device error");probes[2]->audio(tones(2));
-    require(wait([&]{return available[0]>restarted;}),"restarted source unavailable");
-    require(engine.snapshot().statuses.value("capture").state==State::Running,"retired source error overwrote new source");
-    submit(detach);engine.unsubscribe_numeric_tap(token);
+    capture_error_recovery(engine,probes,observation);
+    verify_capture_retirement(engine,graph,apply,submit,probes,available);engine.unsubscribe_numeric_tap(token);
     std::puts("capture lifecycle/error/recovery/rate/zeros/retired callbacks PASS");
 }
 static void capture_declared_rate() {
@@ -196,40 +276,15 @@ static void capture_declared_rate() {
 static void capture_multichannel() {
     using namespace signal_contracts;
     for(const auto lanes:{1u,2u,6u,8u}) {
-        // Exercise both ring wrap copies and channel-major delivery independently
-        // of OS callback chunk sizes. Capacity at 8kHz is 2000 frames.
-        CaptureBuffer buffer;buffer.reset(8000,lanes);AudioFrame popped;
-        std::vector<float> interleaved(1500*lanes);
-        for(std::size_t frame=0;frame<1500;++frame)for(std::size_t lane=0;lane<lanes;++lane)
-            interleaved[frame*lanes+lane]=float(lane*10000+frame);
-        for(int iteration=0;iteration<3;++iteration) {
-            require(buffer.push(interleaved.data(),1500,17,iteration*1500),"N-lane ring push");
-            require(buffer.pop(popped) && popped.channel_count==lanes && popped.frame_count==1500,"N-lane ring pop");
-            for(std::size_t frame=0;frame<1500;++frame)for(std::size_t lane=0;lane<lanes;++lane)
-                require(popped.samples[lane*1500+frame]==interleaved[frame*lanes+lane],"N-lane wrap cross-contaminated lanes");
-        }
-        auto defaults=numeric_default_graph();domain::NumericProcessingGraph graph;graph.graph_id="main";graph.execution_interval={1,120};
-        auto source=defaults.nodes.front();source.outputs.clear();
-        for(std::uint16_t lane=0;lane<lanes;++lane){auto port=defaults.nodes.front().outputs.front();port.id=lane;source.outputs.push_back(port);}
-        graph.nodes.push_back(source);
-        for(std::uint16_t lane=0;lane<lanes;++lane) {
-            auto window=defaults.nodes[1];window.id=10+lane;
-            auto contract=std::get<NumericContract>(window.outputs.front().contract.view());contract.shape.extents[0]={1024,1024};
-            require(domain::own_processing_contract(contract,{8,32768,262144,16384,256,8192},16384,window.outputs.front().contract)==Status::ok,"N-lane window contract");
-            auto& parameters=std::get<domain::TransformProcessingParameters>(window.parameters);parameters.values.front().value=NumericLiteral{std::uint64_t(1024)};
-            graph.nodes.push_back(window);graph.edges.push_back({source.id,window.id,lane,0});
-        }
+        verify_multichannel_ring(lanes);
+        auto graph=multichannel_graph(lanes);
         std::shared_ptr<Probe> probe;NumericEngine engine([&](auto){probe=std::make_shared<Probe>();return std::make_unique<ProbeSource>(probe);});
         QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"N-lane graph encode");
         bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& reply){replied=true;accepted=reply.accepted;});
         EngineCommand apply;apply.kind=EngineCommand::ApplyGraph;apply.graph=QJsonDocument::fromJson(bytes).object();engine.submit(apply);
         require(wait([&]{return replied;})&&accepted&&probe,"N-lane Apply");
         require(probe->configuration["channel_count"].toInt()==int(lanes),"admitted N not passed to capture owner");
-        const auto deliver=[&](std::uint64_t generation,std::size_t begin,std::size_t count,float base) {
-            AudioFrame frame;frame.sample_rate=48000;frame.channel_count=lanes;frame.frame_count=count;
-            frame.generation=generation;frame.sample_position=begin;frame.discontinuity=begin==0;frame.timestamp_ns=1000000;
-            frame.samples.resize(count*lanes);for(std::size_t lane=0;lane<lanes;++lane)
-                std::fill_n(frame.samples.begin()+lane*count,count,base+float(lane));probe->audio(frame);
+        const auto deliver=[&](std::uint64_t generation,std::size_t begin,std::size_t count,float base) {deliver_lanes(probe,lanes,generation,begin,count,base);
         };
         std::vector<EndpointIdentity> selected;for(std::uint16_t lane=0;lane<lanes;++lane)selected.push_back({"main",10+lane,domain::PortDirection::Output,0});
         std::vector<DeliveredNumericFrame> observed(lanes);
@@ -237,11 +292,7 @@ static void capture_multichannel() {
         require(tap!=0,"N-lane Window tap");
         deliver(1,0,1024,1);deliver(2,0,1024,10);deliver(2,1024,512,10);
         require(wait([&]{return std::all_of(observed.begin(),observed.end(),[](const auto& frame){return bool(frame.frame);});}),"resumed Window delivery");
-        for(std::uint16_t lane=0;lane<lanes;++lane) {
-            const auto& frame=observed[lane];require(frame.status==Status::ok && frame.frame,"resumed lane Window unavailable");
-            const auto view=std::get<NumericView>(frame.frame.view().payload);require(view.actual[0]==1024,"resumed Window size");
-            for(std::size_t sample=0;sample<1024;++sample){float value=0;require(load_element(view,{0,sample,0},value)==Status::ok && value==10+float(lane),"later lane resume reset earlier lane Window");}
-        }
+        verify_resumed_lanes(lanes,observed);
         engine.unsubscribe_numeric_tap(tap);
     }
 }
@@ -261,7 +312,7 @@ static void measured_processing_telemetry() {
     require(diagnostic["processing_measured"].toBool()&&seconds>0&&diagnostic["processing_rate_node"].toInt()==1&&diagnostic["processing_rate_basis"]=="source_outputs","processing rate has no declared measured origin");
     require(std::abs(diagnostic["processing_hz"].toDouble()*seconds-12)<1e-6,"processing Hz is not actual output count over monotonic interval");
     bool source_seen=false;
-    for(const auto entry:diagnostic["node_stats"].toArray()){const auto stats=entry.toObject();if(stats["node"].toInt()!=1)continue;source_seen=true;
+    const auto nodeStats=diagnostic["node_stats"].toArray();for(const auto entry:nodeStats){const auto stats=entry.toObject();if(stats["node"].toInt()!=1)continue;source_seen=true;
         require(stats["active"].toBool()&&std::abs(stats["calls_hz"].toDouble()*seconds-12)<1e-6&&std::abs(stats["produced_hz"].toDouble()*seconds-12)<1e-6,"per-node activity/cadence mismatches actual calls");
         require(stats["errors_delta"].toString()=="0"&&std::isfinite(stats["busy_fraction"].toDouble())&&stats["busy_fraction"].toDouble()>=0,"invalid measured node diagnostics");}
     require(source_seen,"measured source node omitted");
@@ -399,10 +450,7 @@ static void capture_device_selection() {
     require(apply(selected("endpoint-B")),"device switch Apply");
     require(wait([&]{return probes.size()==3;}),"device switch producer");
     require(probes[0]->stops==1&&probes[2]->configuration["device_id"]=="endpoint-B"&&unaffected->stops==0,"device switch affected unrelated source");
-    auto invalid=selected("endpoint-C");auto nodes=invalid["nodes"].toArray();
-    for(const auto index:{0,1}){auto node=nodes[index].toObject();const auto key=index==0?"outputs":"inputs";auto ports=node[key].toArray();auto port=ports[0].toObject();auto contract=port["contract"].toObject();contract["dtype"]="Int64";port["contract"]=contract;ports[0]=port;node[key]=ports;nodes[index]=node;}
-    invalid["nodes"]=nodes;domain::NumericProcessingGraph rejected_graph;
-    require(bool(desktop::decode_numeric_graph(QJsonDocument(invalid).toJson(),rejected_graph)),"rejected device fixture must decode");
+    auto invalid=invalid_device_graph(selected("endpoint-C"));
     require(!apply(invalid),"invalid device graph accepted");
     require(engine.snapshot().graph["nodes"].toArray()[0].toObject()["adapter"].toObject()["device_identity"]=="endpoint-B","rejected device leaked into authoritative snapshot");
     require(apply(selected("endpoint-B"))&&probes.size()==3&&probes[2]->stops==0,"refused graph changed accepted endpoint");

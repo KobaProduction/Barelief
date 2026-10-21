@@ -13,11 +13,7 @@ class HistoryWriter {
     const NumericView& source;
     const std::size_t capacity,physical;
     bool scalar() const noexcept {return output.contract->shape.rank==Rank::Vector;}
-    Status copy_row() noexcept {
-        const auto zero=std::get<NumericView>(zero_value(node.numeric_input,state.numeric_zero));
-        const auto width=scalar()?std::size_t{1}:source.actual[0];
-        for(std::size_t plane=0;plane<output.planes.size();++plane)
-            for(std::size_t column=0;column<width;++column){
+    Status copy_element(const NumericView& zero,std::size_t plane,std::size_t column) noexcept {
                 std::uint64_t bits=0;
                 const auto input_index=scalar()?ElementIndex{plane,0,0}:ElementIndex{plane,column,0};
                 auto status=load_bits(node.node.enabled?source:zero,input_index,source.contract->dtype,bits);
@@ -25,6 +21,14 @@ class HistoryWriter {
                 const auto output_index=scalar()?ElementIndex{plane,physical,0}:ElementIndex{plane,physical,column};
                 status=store_bits(output,output_index,output.contract->dtype,bits);
                 if(status!=Status::ok)return status;
+        return Status::ok;
+    }
+    Status copy_row() noexcept {
+        const auto zero=std::get<NumericView>(zero_value(node.numeric_input,state.numeric_zero));
+        const auto width=scalar()?std::size_t{1}:source.actual[0];
+        for(std::size_t plane=0;plane<output.planes.size();++plane)
+            for(std::size_t column=0;column<width;++column){
+                const auto status=copy_element(zero,plane,column);if(status!=Status::ok)return status;
             }
         return Status::ok;
     }

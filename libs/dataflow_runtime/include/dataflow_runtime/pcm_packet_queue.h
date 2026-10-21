@@ -22,6 +22,11 @@ public:
     static std::size_t storage_bytes(std::size_t sample_capacity,std::size_t packet_capacity) noexcept;
 private:
     struct Packet {signal_contracts::FrameStamp stamp;std::size_t size=0,consumed=0;};
+    bool valid_packet(std::span<const float>,const signal_contracts::FrameStamp&) const noexcept;
+    signal_contracts::Status retain_packet(std::span<const float>,const signal_contracts::FrameStamp&,bool gap) noexcept;
+    void publish_stamp(const Packet&,std::size_t,signal_contracts::FrameStamp&) noexcept;
+    std::size_t pop_packet(std::span<float>,Packet&,signal_contracts::FrameStamp&) noexcept;
+    void consume_packet(Packet&,std::size_t) noexcept;
     std::vector<float> samples_;std::vector<Packet> packets_;
     std::uint32_t rate_=0;std::size_t sample_head_=0,sample_count_=0,packet_head_=0,packet_count_=0;
     std::uint64_t accepted_=0,overflow_=0,dropped_=0,discontinuities_=0,sequence_=0;

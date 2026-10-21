@@ -25,16 +25,16 @@ void add_second_generator(examples::Builder& b) {
     b.add(101,"SignalGenerator");set_generator_tones(b,101,2);
     b.node(101).clock_node=16;b.configuration(16,101);
 }
+void redirect_source_edge(examples::Builder& builder,Edge& edge,NodeId to,PortId rate_port) {
+    const auto port=edge.output_port==sample_rate_output?rate_port:edge.output_port;
+    const auto& outputs=builder.node(to).outputs;
+    if(std::none_of(outputs.begin(),outputs.end(),[=](const auto& p){return p.id==port;}))return;
+    edge.from=to;edge.output_port=port;
+    const auto contract=builder.output(to,port);
+    for(auto& input:builder.node(edge.to).inputs)if(input.id==edge.input_port)input.contract=contract;
+}
 void replace_source(examples::Builder& b,NodeId from,NodeId to,PortId rate_port=sample_rate_output) {
-    for(auto& edge:b.graph.edges)if(edge.from==from && edge.to!=to){
-        const auto port=edge.output_port==sample_rate_output?rate_port:edge.output_port;
-        const auto& outputs=b.node(to).outputs;
-        if(std::none_of(outputs.begin(),outputs.end(),[=](const auto& p){return p.id==port;}))continue;
-        edge.from=to;edge.output_port=port;
-        const auto contract=b.output(to,port);
-        auto& inputs=b.node(edge.to).inputs;
-        for(auto& input:inputs)if(input.id==edge.input_port)input.contract=contract;
-    }
+    for(auto& edge:b.graph.edges)if(edge.from==from && edge.to!=to)redirect_source_edge(b,edge,to,rate_port);
 }
 void add_mixer(examples::Builder& b,NodeId id,NodeId first,NodeId second,PortId second_port=0,bool aligned=false) {
     MixerProcessingParameters parameters;parameters.consumption=aligned?MixerConsumption::SourceAligned:MixerConsumption::ClockedFifo;
@@ -51,6 +51,11 @@ OwnedProcessingContract selector_packet_contract(examples::Builder& b) {
         throw std::runtime_error("Selector packet envelope exceeds example resources");
     return result;
 }
+void append_selector_inputs(ConfiguredProcessingNode& selector,unsigned lanes,unsigned streams,
+                            const OwnedProcessingContract& pcm,const OwnedProcessingContract& rate) {
+    for(unsigned stream=0;stream<streams;++stream)for(unsigned lane=0;lane<=lanes;++lane)
+        selector.inputs.push_back({PortId(stream*(lanes+1)+lane),PortDirection::Input,lane==lanes?rate:pcm});
+}
 void add_selector(examples::Builder& b,unsigned lanes,unsigned streams) {
     const auto pcm=selector_packet_contract(b),rate=b.output(1,sample_rate_output);
     b.add(200,"InputSelector",examples::transform({{"selected_input",NumericLiteral{std::uint64_t{0}}},{"channels_per_stream",NumericLiteral{std::uint64_t(lanes+1)}}}));
@@ -58,8 +63,7 @@ void add_selector(examples::Builder& b,unsigned lanes,unsigned streams) {
     for(unsigned lane=0;lane<lanes;++lane)selector.outputs.push_back({PortId(lane),PortDirection::Output,pcm});
     selector.outputs.push_back({PortId(lanes),PortDirection::Output,rate});
     replace_source(b,1,200,PortId(lanes));
-    for(unsigned stream=0;stream<streams;++stream)for(unsigned lane=0;lane<=lanes;++lane)
-        selector.inputs.push_back({PortId(stream*(lanes+1)+lane),PortDirection::Input,lane==lanes?rate:pcm});
+    append_selector_inputs(selector,lanes,streams,pcm,rate);
 }
 void connect_generator_stream(examples::Builder& b,unsigned lanes) {
     b.connect(1,200);

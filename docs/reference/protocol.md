@@ -57,7 +57,7 @@ sequenceDiagram
 | Graph / processing | 5 / 4 | [domain DTO](../../domain/include/domain/processing_contracts.h) |
 | HELLO envelope | 2 | [ControlSession](../../adapters/desktop/runtime/src/numeric_control_session.cpp) |
 | CONTROL schema | 4 | [CONTROL DTO](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_control_message.h), [Protobuf schema](../../libs/bdsp_protocol/schema/numeric_control.proto) |
-| DATA payload / delivery grammar | 5 / 1 | [DATA DTO](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_data_message.h), [DATA codec](../../libs/bdsp_protocol/src/numeric_data_codec.cpp) |
+| DATA payload / delivery grammar | 6 / 1 | [DATA DTO](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_data_message.h), [DATA codec](../../libs/bdsp_protocol/src/numeric_data_codec.cpp) |
 
 Номера этих границ независимы. На провод передаются символические идентификаторы,
 а не C++ enum ordinals или память `struct`. Точную таблицу полей CBOR/Protobuf

@@ -56,5 +56,6 @@ class NodeParameterForm final : public QWidget {
     void bindRow(ui::FieldRow*,ControlBinding,QAction*,const Field&);
     QVBoxLayout* createSection(QVBoxLayout*,NodeParameterModel::Section);
     void rebuild();
+    void appendComposite(QVBoxLayout*);
     void appendFields(QVBoxLayout*,ui::CollapsibleSection*);
 };

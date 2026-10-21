@@ -9,7 +9,7 @@ struct Admission {
     const ProcessingAdmissionLimits& limits;
     const NumericDeviceCapabilities& capabilities;
     std::span<std::size_t> workspace;
-    ProcessingGraphAdmission result;
+    ProcessingGraphAdmission result{};
     std::size_t metadata=0,workspace_count=0;
     ProcessingDiagnostic header() noexcept;
     ProcessingDiagnostic workspace_budget() noexcept;

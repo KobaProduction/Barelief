@@ -65,6 +65,18 @@ public:
     void restore_all();
 private:
     struct Change {DisplayModeSnapshot original,last;std::optional<DisplayModeSnapshot> rollback_previous;};
+    using ChangeIterator=std::map<std::wstring,Change>::iterator;
+    ChangeIterator reconcile_selection_claim(const std::wstring&,const DisplayModeSnapshot&);
+    std::optional<bool> rollback_unverified_selection(std::wstring_view,const DisplayModeSnapshot&,const DisplayModeSnapshot&);
+    bool record_verified_selection(const std::wstring&,const DisplayModeSnapshot&,const DisplayModeSnapshot&,const DisplayModeSnapshot&,ChangeIterator);
+    void retain_uncertain_selection(const std::wstring&,const DisplayModeSnapshot&,const DisplayModeSnapshot&,ChangeIterator);
+    std::optional<bool> select_cached_maximum(std::wstring_view,std::optional<DisplayModeSnapshot>&);
+    std::optional<bool> reconcile_previous_selection(std::wstring_view,ChangeIterator,const DisplayModeSnapshot&,const DisplayModeSnapshot&);
+    bool finish_reconciled_selection(ChangeIterator,const DisplayModeSnapshot&);
+    bool recover_unverified_selection(std::wstring_view,const DisplayModeSnapshot&,const DisplayModeSnapshot&,ChangeIterator);
+    bool select_catalog_rate(std::wstring_view,const DisplayModeSnapshot&,double,bool);
+    std::optional<bool> restore_previous_selection(std::wstring_view,ChangeIterator,const DisplayModeSnapshot&);
+    bool restore_original_selection(std::wstring_view,ChangeIterator,const DisplayModeSnapshot&);
     DisplayModeApi api_;
     std::map<std::wstring,Change> changes_;
     struct Maximum {DisplayModeSnapshot geometry; double rate=0;};

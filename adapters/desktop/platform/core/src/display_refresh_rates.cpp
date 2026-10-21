@@ -38,6 +38,12 @@ std::optional<DEVMODEW> current_mode(std::wstring_view display_device){
     if(!EnumDisplaySettingsExW(name.empty()?nullptr:name.c_str(),ENUM_CURRENT_SETTINGS,&mode,0))return {};
     return mode;
 }
+void append_display_mode(std::vector<DisplayModeSnapshot>& catalog,const DEVMODEW& mode,const DisplayModeSnapshot& current) {
+        if(auto value=snapshot(mode,&current)){
+            if(!value->bits_per_pixel)value->bits_per_pixel=current.bits_per_pixel;
+            catalog.push_back(*value);
+        }
+}
 std::vector<DisplayModeSnapshot> enumerated_modes(std::wstring_view display_device,const DisplayModeSnapshot& current){
     std::vector<DisplayModeSnapshot> catalog;
     if(!device_name_valid(display_device))return catalog;
@@ -46,10 +52,7 @@ std::vector<DisplayModeSnapshot> enumerated_modes(std::wstring_view display_devi
     for(DWORD index=0;index<ENUM_REGISTRY_SETTINGS;++index){
         DEVMODEW mode{};mode.dmSize=sizeof(mode);
         if(!EnumDisplaySettingsExW(name.empty()?nullptr:name.c_str(),index,&mode,0))break;
-        if(auto value=snapshot(mode,&current)){
-            if(!value->bits_per_pixel)value->bits_per_pixel=current.bits_per_pixel;
-            catalog.push_back(*value);
-        }
+        append_display_mode(catalog,mode,current);
     }
     return catalog;
 }
@@ -84,22 +87,31 @@ std::wstring display_device_for_monitor(std::uintptr_t native_monitor){
     (void)native_monitor;return {};
 #endif
 }
-DisplayModeApi native_display_mode_api(){
 #ifdef _WIN32
-    return {
-        [](std::wstring_view device)->std::optional<DisplayModeSnapshot>{const auto mode=current_mode(device);return mode?snapshot(*mode):std::nullopt;},
-        [](std::wstring_view device){const auto mode=current_mode(device);const auto actual=mode?snapshot(*mode):std::nullopt;return actual?enumerated_modes(device,*actual):std::vector<DisplayModeSnapshot>{};},
-        [](std::wstring_view device,double rate){
+namespace {
+bool apply_refresh_mode(std::wstring_view device,const DEVMODEW& before,double rate) {
+            auto requested=before;requested.dmFields=DM_DISPLAYFREQUENCY;requested.dmDisplayFrequency=DWORD(std::round(rate));
+            const std::wstring name(device);
+            if(ChangeDisplaySettingsExW(name.c_str(),&requested,nullptr,CDS_TEST,nullptr)!=DISP_CHANGE_SUCCESSFUL)return false;
+            return ChangeDisplaySettingsExW(name.c_str(),&requested,nullptr,0,nullptr)==DISP_CHANGE_SUCCESSFUL;
+}
+bool apply_native_refresh(std::wstring_view device,double rate) {
+
             if(device.empty() || !usable_rate(rate))return false;
             const auto before=current_mode(device);if(!before)return false;
             const auto actual=snapshot(*before);if(!actual)return false;
             const auto rates=refresh_rates_for_modes(*actual,enumerated_modes(device,*actual));
             if(std::none_of(rates.supported.begin(),rates.supported.end(),[rate](double supported){return std::abs(rate-supported)<1e-6;}))return false;
-            auto requested=*before;requested.dmFields=DM_DISPLAYFREQUENCY;requested.dmDisplayFrequency=DWORD(std::round(rate));
-            const std::wstring name(device);
-            if(ChangeDisplaySettingsExW(name.c_str(),&requested,nullptr,CDS_TEST,nullptr)!=DISP_CHANGE_SUCCESSFUL)return false;
-            return ChangeDisplaySettingsExW(name.c_str(),&requested,nullptr,0,nullptr)==DISP_CHANGE_SUCCESSFUL;
-        }};
+            return apply_refresh_mode(device,*before,rate);
+}
+}
+#endif
+DisplayModeApi native_display_mode_api(){
+#ifdef _WIN32
+    return {
+        [](std::wstring_view device)->std::optional<DisplayModeSnapshot>{const auto mode=current_mode(device);return mode?snapshot(*mode):std::nullopt;},
+        [](std::wstring_view device){const auto mode=current_mode(device);const auto actual=mode?snapshot(*mode):std::nullopt;return actual?enumerated_modes(device,*actual):std::vector<DisplayModeSnapshot>{};},
+        apply_native_refresh};
 #else
     return {};
 #endif
@@ -114,44 +126,64 @@ bool DisplayRefreshSession::select(std::wstring_view device,double rate){
     if(std::none_of(rates.supported.begin(),rates.supported.end(),[rate](double value){return std::abs(value-rate)<1e-6;}))return false;
     return select_current(device,*before,rate);
 }
-bool DisplayRefreshSession::select_current(std::wstring_view device,const DisplayModeSnapshot& current,double rate){
+DisplayRefreshSession::ChangeIterator DisplayRefreshSession::reconcile_selection_claim(const std::wstring& key,const DisplayModeSnapshot& current) {
     const auto* before=&current;
-    const std::wstring key(device);
     auto existing=changes_.find(key);
     if(existing!=changes_.end() && (same_mode(existing->second.original,*before) ||
        (!same_mode(existing->second.last,*before) &&
         (!existing->second.rollback_previous || !same_mode(*existing->second.rollback_previous,*before))))){changes_.erase(existing);existing=changes_.end();}
-    if(std::abs(before->refresh_rate-rate)<1e-6)return true;
-    if(!api_.apply(device,rate))return false;
-    auto expected=*before;expected.refresh_rate=rate;
-    const auto after=api_.query(device);
-    if(!after){
+    return existing;
+}
+std::optional<bool> DisplayRefreshSession::rollback_unverified_selection(std::wstring_view device,const DisplayModeSnapshot& before,const DisplayModeSnapshot& expected) {
+    api_.apply(device,before.refresh_rate);
+    const auto restored=api_.query(device);
+    if(restored && same_mode(*restored,before))return false;
+    if(restored && !same_mode(*restored,expected)){changes_.erase(std::wstring(device));return false;}
+    return std::nullopt;
+}
+void DisplayRefreshSession::retain_uncertain_selection(const std::wstring& key,const DisplayModeSnapshot& before,const DisplayModeSnapshot& expected,ChangeIterator existing) {
+        if(existing==changes_.end())changes_.emplace(key,Change{before,expected,before});
+        else {existing->second.last=expected;existing->second.rollback_previous=before;}
+}
+bool DisplayRefreshSession::recover_unverified_selection(std::wstring_view device,const DisplayModeSnapshot& current,
+    const DisplayModeSnapshot& expected,ChangeIterator existing) {
+    const auto* before=&current;
+    const std::wstring key(device);
         invalidate_catalog(device);
         // Retry readback before rollback: an unrelated external mode must not
         // be overwritten just because the first verification was unavailable.
         const auto retry=api_.query(device);
         if(retry && same_mode(*retry,*before))return false;
         if(retry && !same_mode(*retry,expected)){changes_.erase(key);return false;}
-        if(retry){
-            api_.apply(device,before->refresh_rate);
-            const auto restored=api_.query(device);
-            if(restored && same_mode(*restored,*before))return false;
-            if(restored && !same_mode(*restored,expected)){changes_.erase(key);return false;}
-        }
-        if(existing==changes_.end())changes_.emplace(key,Change{*before,expected,*before});
-        else {existing->second.last=expected;existing->second.rollback_previous=*before;}
+        if(retry){const auto recovered=rollback_unverified_selection(device,*before,expected);if(recovered)return *recovered;}
+        retain_uncertain_selection(key,*before,expected,existing);
         return false;
-    }
-    if(!same_mode(expected,*after)){
+}
+bool DisplayRefreshSession::record_verified_selection(const std::wstring& key,const DisplayModeSnapshot& before,
+    const DisplayModeSnapshot& expected,const DisplayModeSnapshot& after,ChangeIterator existing) {
+    if(!same_mode(expected,after)){
         // A valid, unexpected mode might be an intervening external change.
         // There is no atomic OS ownership token: preserve it rather than
         // claiming or overwriting a mode this request did not establish.
-        if(!same_mode(*before,*after))changes_.erase(key);
+        if(!same_mode(before,after))changes_.erase(key);
         return false;
     }
-    if(existing==changes_.end())changes_.emplace(key,Change{*before,expected});
+    if(existing==changes_.end())changes_.emplace(key,Change{before,expected});
     else {existing->second.last=expected;existing->second.rollback_previous.reset();}
     return true;
+}
+bool DisplayRefreshSession::select_current(std::wstring_view device,const DisplayModeSnapshot& current,double rate){
+    const auto* before=&current;
+    const std::wstring key(device);
+    auto existing=reconcile_selection_claim(key,*before);
+    if(std::abs(before->refresh_rate-rate)<1e-6)return true;
+    if(!api_.apply(device,rate))return false;
+    auto expected=*before;expected.refresh_rate=rate;
+    const auto after=api_.query(device);
+    if(!after){
+        return recover_unverified_selection(device,*before,expected,existing);
+    }
+    return record_verified_selection(key,*before,expected,*after,existing);
 }
 bool DisplayRefreshSession::select_maximum(std::wstring_view device){
     return select_policy(device,0,true);
@@ -160,41 +192,73 @@ bool DisplayRefreshSession::select_or_maximum(std::wstring_view device,double ra
     if(!usable_rate(rate))return false;
     return select_policy(device,rate,false);
 }
-bool DisplayRefreshSession::select_policy(std::wstring_view device,double rate,bool maximum){
-    if(device.empty() || device.find(L'\0')!=std::wstring_view::npos || !api_.query || !api_.enumerate || !api_.apply)return false;
-    auto current=api_.query(device);if(!current){invalidate_catalog(device);return false;}
+bool DisplayRefreshSession::select_catalog_rate(std::wstring_view device,const DisplayModeSnapshot& geometry,double rate,bool maximum) {
+    const auto* current=&geometry;
     const std::wstring key(device);
-    const auto cached=maximum_.find(key);
-    if(maximum && cached!=maximum_.end() && same_geometry(cached->second.geometry,*current) &&
-       std::abs(cached->second.rate-current->refresh_rate)<1e-6){
-        if(select_current(device,*current,cached->second.rate))return true;
-        // One fresh capability read after a failed cached selection.
-        invalidate_catalog(device);current=api_.query(device);if(!current)return false;
-    }
-    if(!maximum && std::abs(current->refresh_rate-rate)<1e-6)return select_current(device,*current,rate);
     const auto rates=refresh_rates_for_modes(*current,api_.enumerate(device));
     if(rates.supported.empty())return false;
     maximum_[key]={*current,rates.supported.back()};
     const bool supported=std::any_of(rates.supported.begin(),rates.supported.end(),[rate](double value){return std::abs(value-rate)<1e-6;});
     return select_current(device,*current,maximum || !supported?rates.supported.back():rate);
 }
-bool DisplayRefreshSession::reconcile(std::wstring_view device){
-    const auto entry=changes_.find(std::wstring(device));
-    if(entry==changes_.end() || !entry->second.rollback_previous)return true;
-    const auto current=api_.query?api_.query(device):std::nullopt;if(!current){invalidate_catalog(device);return false;}
-    const auto previous=*entry->second.rollback_previous;
-    if(!same_mode(*current,previous)){
-        if(!same_mode(*current,entry->second.last)){changes_.erase(entry);return true;}
+std::optional<bool> DisplayRefreshSession::select_cached_maximum(std::wstring_view device,std::optional<DisplayModeSnapshot>& current) {
+    const std::wstring key(device);
+    const auto cached=maximum_.find(key);
+    if(cached!=maximum_.end() && same_geometry(cached->second.geometry,*current) &&
+       std::abs(cached->second.rate-current->refresh_rate)<1e-6){
+        if(select_current(device,*current,cached->second.rate))return true;
+        // One fresh capability read after a failed cached selection.
+        invalidate_catalog(device);current=api_.query(device);if(!current)return false;
+    }
+    return std::nullopt;
+}
+bool DisplayRefreshSession::select_policy(std::wstring_view device,double rate,bool maximum){
+    if(device.empty() || device.find(L'\0')!=std::wstring_view::npos || !api_.query || !api_.enumerate || !api_.apply)return false;
+    auto current=api_.query(device);if(!current){invalidate_catalog(device);return false;}
+    if(maximum)if(const auto selected=select_cached_maximum(device,current))return *selected;
+    if(!maximum && std::abs(current->refresh_rate-rate)<1e-6)return select_current(device,*current,rate);
+    return select_catalog_rate(device,*current,rate,maximum);
+}
+std::optional<bool> DisplayRefreshSession::restore_previous_selection(std::wstring_view device,ChangeIterator entry,const DisplayModeSnapshot& previous) {
         if(!api_.apply || !api_.apply(device,previous.refresh_rate))return false;
         const auto restored=api_.query(device);if(!restored)return false;
         if(!same_mode(*restored,previous)){
             if(!same_mode(*restored,entry->second.last)){changes_.erase(entry);return true;}
             return false;
         }
+    return std::nullopt;
+}
+std::optional<bool> DisplayRefreshSession::reconcile_previous_selection(std::wstring_view device,ChangeIterator entry,const DisplayModeSnapshot& current,const DisplayModeSnapshot& previous) {
+    if(!same_mode(current,previous)){
+        if(!same_mode(current,entry->second.last)){changes_.erase(entry);return true;}
+        const auto result=restore_previous_selection(device,entry,previous);
+        if(result)return *result;
     }
+    return std::nullopt;
+}
+bool DisplayRefreshSession::finish_reconciled_selection(ChangeIterator entry,const DisplayModeSnapshot& previous) {
     if(same_mode(previous,entry->second.original))changes_.erase(entry);
     else {entry->second.last=previous;entry->second.rollback_previous.reset();}
     return true;
+}
+bool DisplayRefreshSession::reconcile(std::wstring_view device){
+    const auto entry=changes_.find(std::wstring(device));
+    if(entry==changes_.end() || !entry->second.rollback_previous)return true;
+    const auto current=api_.query?api_.query(device):std::nullopt;if(!current){invalidate_catalog(device);return false;}
+    const auto previous=*entry->second.rollback_previous;
+    if(const auto result=reconcile_previous_selection(device,entry,*current,previous))return *result;
+    return finish_reconciled_selection(entry,previous);
+}
+bool DisplayRefreshSession::restore_original_selection(std::wstring_view device,ChangeIterator entry,const DisplayModeSnapshot& before) {
+    const auto* current=&before;
+    if(!api_.apply || !api_.apply(device,entry->second.original.refresh_rate))return false;
+    const auto restored=api_.query(device);
+    if(!restored)return false;
+    if(!same_mode(*restored,entry->second.original)){
+        if(!same_mode(*restored,*current))changes_.erase(entry);
+        return false;
+    }
+    changes_.erase(entry);return true;
 }
 bool DisplayRefreshSession::release(std::wstring_view device){
     invalidate_catalog(device);
@@ -206,14 +270,7 @@ bool DisplayRefreshSession::release(std::wstring_view device){
     if(same_mode(*current,entry->second.original)){changes_.erase(entry);return true;}
     if(!same_mode(*current,entry->second.last) &&
        (!entry->second.rollback_previous || !same_mode(*current,*entry->second.rollback_previous))){changes_.erase(entry);return true;}
-    if(!api_.apply || !api_.apply(device,entry->second.original.refresh_rate))return false;
-    const auto restored=api_.query(device);
-    if(!restored)return false;
-    if(!same_mode(*restored,entry->second.original)){
-        if(!same_mode(*restored,*current))changes_.erase(entry);
-        return false;
-    }
-    changes_.erase(entry);return true;
+    return restore_original_selection(device,entry,*current);
 }
 void DisplayRefreshSession::invalidate_catalog(std::wstring_view device){
     if(device.empty())maximum_.clear();else maximum_.erase(std::wstring(device));

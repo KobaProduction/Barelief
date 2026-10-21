@@ -51,7 +51,8 @@ class ResourceAdmission {
         out.resources.plan_bytes=sizeof(PlanNode)+sizeof(State)+2*sizeof(std::size_t);
         if(!content_storage())return false;
         const bool multi_switch=n.operation==ProcessingOperation::Switch && std::get<RouteProcessingParameters>(*n.parameters).channels_per_stream>1;
-        const bool scalar=n.kind=="ScalarView" || multi_switch;
+        const auto kind=node_kind(n.kind);
+        const bool scalar=(kind && is_scalar_view(*kind)) || multi_switch;
         if((scalar || n.operation==ProcessingOperation::Mixer || n.operation==ProcessingOperation::ChannelComparison || n.operation==ProcessingOperation::Extract) && !numeric_add(out.resources.plan_bytes,sizeof(PlanNode::EndpointPlan)))return false;
         return !scalar || numeric_add(out.resources.plan_bytes,n.inputs.size()*sizeof(PlanNode::ScalarInput));
     }

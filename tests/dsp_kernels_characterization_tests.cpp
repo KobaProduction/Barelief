@@ -43,6 +43,14 @@ void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
 static void check(bool ok, const char *message) {
     if (!ok) { std::cerr << message << '\n'; std::exit(1); }
 }
+static void check_extreme_fft(std::span<const float> plain,std::span<const float> typed,float maximum,int mode){
+    constexpr std::size_t n=16;
+        for(std::size_t k=0;k<n/2;++k){const double expected=mode==0?double(maximum)/n:mode==1&&k==0?maximum:0.;
+            check(std::isfinite(plain[k])&&std::isfinite(typed[k]),"successful FFT nonfinite output");
+            const double bound=double(maximum)*2e-6;
+            check(std::abs(double(plain[k])-expected)<=bound&&std::abs(double(typed[k])-expected)<=bound,"independent high-range DFT oracle");
+            check(plain[k]==typed[k],"plain/typed FFT parity");}
+}
 static void finite_fft_oracles() {
     using namespace signal_contracts;
     constexpr std::size_t n=16;
@@ -60,11 +68,7 @@ static void finite_fft_oracles() {
         check(fft.process(input,plain)&&fft.process_plane(in,out,0)==Status::ok,"finite high-range FFT rejected");
         // Closed-form DFT: impulse gives |x|/N in every bin; constant gives DC;
         // alternating signal lies entirely at the excluded Nyquist bin.
-        for(std::size_t k=0;k<n/2;++k){const double expected=mode==0?double(maximum)/n:mode==1&&k==0?maximum:0.;
-            check(std::isfinite(plain[k])&&std::isfinite(typed[k]),"successful FFT nonfinite output");
-            const double bound=double(maximum)*2e-6;
-            check(std::abs(double(plain[k])-expected)<=bound&&std::abs(double(typed[k])-expected)<=bound,"independent high-range DFT oracle");
-            check(plain[k]==typed[k],"plain/typed FFT parity");}
+        check_extreme_fft(plain,typed,maximum,mode);
     }
     for(float bad:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}){
         input.fill(0);input[7]=bad;plain.fill(19);typed.fill(23);
@@ -82,14 +86,8 @@ static void mel_magnitude_oracle(){
             expected+=input[k]*std::max(0.,std::min((f-hz[m])/(hz[m+1]-hz[m]),(hz[m+2]-f)/(hz[m+2]-hz[m+1])));}
         check(std::abs(actual[m]-expected)<=1e-5*std::max(1.,expected),"Mel magnitude continuous-Hz independent oracle");}
 }
-static void mel_frequency_and_gain_oracles() {
-    // Independent closed-form triangles, sampled on the declared FFT grid.
-    // Cover the low-resolution collapse that integer-rounded boundaries caused,
-    // both source rates, flat spectra, moving sparse tones and linear gain.
+static void mel_frequency_case(std::size_t n,std::size_t rate){
     constexpr std::size_t bands=50;
-    for (const std::size_t n : {std::size_t{512}, std::size_t{4096}}) {
-        if (n>dsp_core::max_fft_samples) continue;
-        for (const std::size_t rate : {std::size_t{44100}, std::size_t{48000}}) {
             dsp_core::MelFilterBank mel;
             check(mel.prepare(n/2,rate,bands),"Mel frequency matrix prepare");
             std::vector<float> spectrum(n/2),actual(bands),doubled(bands);
@@ -134,14 +132,30 @@ static void mel_frequency_and_gain_oracles() {
                 check(std::abs(actual[0]+actual[1]-1.f)<2e-6f,
                       "Interior Mel pair does not preserve unit tone weight");
             }
+}
+static void mel_frequency_and_gain_oracles() {
+    // Independent closed-form triangles, sampled on the declared FFT grid.
+    // Cover the low-resolution collapse that integer-rounded boundaries caused,
+    // both source rates, flat spectra, moving sparse tones and linear gain.
+    for (const std::size_t n : {std::size_t{512}, std::size_t{4096}}) {
+        if (n>dsp_core::max_fft_samples) continue;
+        for (const std::size_t rate : {std::size_t{44100}, std::size_t{48000}}) {
+            mel_frequency_case(n,rate);
         }
     }
 }
-static void pcm_resampler_oracles() {
+static void resampler_partitions(dsp_kernels::PcmResampler& chunked,std::span<const float> input,std::vector<float>& partitioned,std::uint32_t in,std::uint32_t out){
+    using dsp_kernels::PcmResampler;const auto n=input.size();
+        std::size_t offset=0;std::vector<float> chunk(PcmResampler::maximum_output(113,in,out));
+        while(offset<n){const auto taken=std::min(n-offset,std::size_t(1+(offset*17)%113));
+            std::size_t written=0;allocations=0;watching=true;
+            const bool ok=chunked.process(std::span<const float>(input).subspan(offset,taken),taken,taken,chunk,chunk.size(),written);watching=false;
+            check(ok && allocations==0,"resampler chunk processing allocated");
+            partitioned.insert(partitioned.end(),chunk.begin(),chunk.begin()+written);offset+=taken;
+        }
+}
+static void resampler_rate_case(const std::array<std::uint32_t,2>& rates){
     using dsp_kernels::PcmResampler;
-    check(!PcmResampler::supported(8000,192000),"unbounded resampler ratio accepted");
-    check(PcmResampler::maximum_output(SIZE_MAX,8000,64000)==SIZE_MAX,"resampler capacity overflow");
-    for(const auto rates:std::array<std::array<std::uint32_t,2>,5>{{{48000,48000},{48000,16000},{44100,48000},{48000,44100},{8000,64000}}}){
         constexpr std::size_t n=4096;
         const auto in=rates[0],out=rates[1];
         const auto maximum=PcmResampler::maximum_output(n,in,out);
@@ -153,13 +167,7 @@ static void pcm_resampler_oracles() {
         check(complete && allocations==0,"resampler full processing allocated");
         check(count==((n-1)*std::uint64_t(out))/in+1,"resampler output sample grid");
         whole.resize(count);partitioned.reserve(count);
-        std::size_t offset=0;std::vector<float> chunk(PcmResampler::maximum_output(113,in,out));
-        while(offset<n){const auto taken=std::min(n-offset,std::size_t(1+(offset*17)%113));
-            std::size_t written=0;allocations=0;watching=true;
-            const bool ok=chunked.process(std::span<const float>(input).subspan(offset,taken),taken,taken,chunk,chunk.size(),written);watching=false;
-            check(ok && allocations==0,"resampler chunk processing allocated");
-            partitioned.insert(partitioned.end(),chunk.begin(),chunk.begin()+written);offset+=taken;
-        }
+        resampler_partitions(chunked,input,partitioned,in,out);
         check(partitioned==whole,"resampler depends on ingress partition");
         if(in==out)check(whole==input,"equal-rate resampler changed PCM");
         chunked.reset();std::size_t repeated=0;
@@ -169,6 +177,13 @@ static void pcm_resampler_oracles() {
         std::fill(input.begin(),input.end(),1.f);full.reset();
         check(full.process(input,n,n,reset_output,maximum,repeated),"DC process");
         for(std::size_t i=repeated-std::min(repeated,std::size_t(100));i<repeated;++i)check(std::abs(reset_output[i]-1.f)<2e-6f,"resampler DC gain");
+}
+static void pcm_resampler_oracles() {
+    using dsp_kernels::PcmResampler;
+    check(!PcmResampler::supported(8000,192000),"unbounded resampler ratio accepted");
+    check(PcmResampler::maximum_output(SIZE_MAX,8000,64000)==SIZE_MAX,"resampler capacity overflow");
+    for(const auto rates:std::array<std::array<std::uint32_t,2>,5>{{{48000,48000},{48000,16000},{44100,48000},{48000,44100},{8000,64000}}}){
+        resampler_rate_case(rates);
     }
     // Independent analytic tones: a frequency above the output Nyquist must
     // not fold into a strong low-frequency signal after decimation.
@@ -201,31 +216,12 @@ static void weighted_mix_oracles() {
     check(population.amplitude_scale()==4. && population.value(WeightedMixOperation::Mean)==0.,"normalized clock population changed raw amplitude scale");
     WeightedMixAccumulator empty;check(empty.value(WeightedMixOperation::Mean)==0. && empty.value(WeightedMixOperation::Rms)==0.,"zero weight population must publish zero");
 }
-int main() { weighted_share_oracles();weighted_mix_oracles();pcm_resampler_oracles();finite_fft_oracles();mel_magnitude_oracle();mel_frequency_and_gain_oracles();
-#ifdef DSP_KERNELS_WRAP_ALLOCATOR
-    // Verify the C linker guard itself before relying on a zero count.
-    void *(*volatile probe)(std::size_t) = std::malloc;
-    watching = true;
-    auto *probe_memory = probe(8);
-    watching = false;
-    std::free(probe_memory);
-    check(allocations > 0, "C allocation guard is inactive");
-    allocations = 0;
-#endif
-    // Eight changing silent tones, both FFT radices, every supported profile.
-    for (std::size_t n = 512; n <= dsp_core::max_fft_samples; n *= 2) {
-        dsp_core::StereoProcessor stereo;
-        dsp_core::MagnitudeSpectrum reference;
-        dsp_core::MelFilterBank mel;
-        check(stereo.prepare(n, 48000, 50) && reference.prepare(n, (n & 0x55555555) != 0) &&
-                  mel.prepare(n / 2, 48000, 50), "prepare failed");
-        std::vector<float> left(n), right(n), expected_left(n), expected_right(n), win(n), weights(n / 2);
-        std::vector<float> sl(n / 2), sr(n / 2), expected_sl(n / 2), expected_sr(n / 2);
-        std::vector<float> ml(50), mr(50), expected_ml(50), expected_mr(50);
-        dsp_core::hann_window(win);
-        dsp_core::bark_weights(weights, 48000.f / n);
-        const auto workspace = stereo.workspace_bytes();
-        for (unsigned tick = 0; tick < 5; ++tick) {
+struct StereoBuffers {
+ std::vector<float> left,right,expected_left,expected_right,win,weights,sl,sr,expected_sl,expected_sr,ml,mr,expected_ml,expected_mr;
+ explicit StereoBuffers(std::size_t n):left(n),right(n),expected_left(n),expected_right(n),win(n),weights(n/2),sl(n/2),sr(n/2),expected_sl(n/2),expected_sr(n/2),ml(50),mr(50),expected_ml(50),expected_mr(50){}
+};
+static void stereo_tick(StereoBuffers& storage,dsp_core::StereoProcessor& stereo,dsp_core::MagnitudeSpectrum& reference,dsp_core::MelFilterBank& mel,std::size_t n,unsigned tick,std::size_t workspace){
+ auto& [left,right,expected_left,expected_right,win,weights,sl,sr,expected_sl,expected_sr,ml,mr,expected_ml,expected_mr]=storage;
             for (std::size_t i = 0; i < n; ++i) {
                 float x = 0, y = 0;
                 for (unsigned tone = 0; tone < 8; ++tone) {
@@ -254,11 +250,40 @@ int main() { weighted_share_oracles();weighted_mix_oracles();pcm_resampler_oracl
             const bool extra = reference.process(left, sl) && stereo.process_mel(sl, sr, ml, mr);
             watching = false;
             check(extra && allocations == 0, "Magnitude or Mel-only kernel allocated");
+}
+static void stereo_profile(std::size_t n){
+        dsp_core::StereoProcessor stereo;
+        dsp_core::MagnitudeSpectrum reference;
+        dsp_core::MelFilterBank mel;
+        check(stereo.prepare(n, 48000, 50) && reference.prepare(n, (n & 0x55555555) != 0) &&
+                  mel.prepare(n / 2, 48000, 50), "prepare failed");
+        StereoBuffers storage(n);
+        auto& [left,right,expected_left,expected_right,win,weights,sl,sr,expected_sl,expected_sr,ml,mr,expected_ml,expected_mr]=storage;
+        dsp_core::hann_window(win);
+        dsp_core::bark_weights(weights, 48000.f / n);
+        const auto workspace = stereo.workspace_bytes();
+        for (unsigned tick = 0; tick < 5; ++tick) {
+            stereo_tick(storage,stereo,reference,mel,n,tick,workspace);
         }
         std::fill(weights.begin(), weights.end(), std::numeric_limits<float>::infinity());
         check(stereo.process(left, right, win, weights, sl, sr, ml, mr), "nonfinite weight process failed");
         check(std::all_of(sl.begin(), sl.end(), [](float x) { return x == 0; }) &&
                   std::all_of(sr.begin(), sr.end(), [](float x) { return x == 0; }), "nonfinite spectra sanitization changed");
+}
+int main() { weighted_share_oracles();weighted_mix_oracles();pcm_resampler_oracles();finite_fft_oracles();mel_magnitude_oracle();mel_frequency_and_gain_oracles();
+#ifdef DSP_KERNELS_WRAP_ALLOCATOR
+    // Verify the C linker guard itself before relying on a zero count.
+    void *(*volatile probe)(std::size_t) = std::malloc;
+    watching = true;
+    auto *probe_memory = probe(8);
+    watching = false;
+    std::free(probe_memory);
+    check(allocations > 0, "C allocation guard is inactive");
+    allocations = 0;
+#endif
+    // Eight changing silent tones, both FFT radices, every supported profile.
+    for (std::size_t n = 512; n <= dsp_core::max_fft_samples; n *= 2) {
+        stereo_profile(n);
     }
     std::cout << "Full spectrum/Mel characterization and allocation guard passed\n";
 }

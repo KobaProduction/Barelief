@@ -244,8 +244,9 @@ ProcessingDiagnostic resolve_reroute_alias(const NumericProcessingGraph& graph,c
         if(depth>=graph.nodes.size())return {ProcessingError::Cycle,node.id};
         const auto at=node_index(graph,alias.source);if(at==graph.nodes.size())return {ProcessingError::MissingEndpoint,alias.source};
         if(graph.nodes[at].kind!="Reroute")return {};
-        bool disconnected=false;const auto valid=follow_reroute(graph,alias,disconnected);if(!valid)return valid;
-        if(disconnected)return {};
+        bool disconnected=false;
+        const auto valid=follow_reroute(graph,alias,disconnected);
+        if(!valid || disconnected)return valid;
     }
 }
 struct RoutingLowering {
@@ -322,8 +323,8 @@ namespace {
 struct NodeResolution {
     const ConfiguredProcessingNode& configured;
     const ProcessingAdmissionLimits& limits;
-    std::span<const ProcessingPort> inputs,outputs;
-    std::optional<NodeKind> kind;
+    std::span<const ProcessingPort> inputs{},outputs{};
+    std::optional<NodeKind> kind{};
     NodeRole role=NodeRole::Processor;
     ProcessingOperation operation=ProcessingOperation::Converter;
     std::size_t input_count=1,output_count=1;

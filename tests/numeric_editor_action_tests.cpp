@@ -31,7 +31,7 @@ static void trigger(QWidget* root,const char* name){
     }
     auto* action=root->findChild<QAction*>(name);require(action && action->isEnabled(),name);action->trigger();QCoreApplication::processEvents();
 }
-static QAction* shortcut(QtNodes::GraphicsView* view,QKeySequence::StandardKey key){for(auto* action:view->actions())if(action->shortcuts().contains(QKeySequence(key)))return action;throw std::runtime_error("Canvas action missing");}
+static QAction* shortcut(QtNodes::GraphicsView* view,QKeySequence::StandardKey key){for(const auto actions=view->actions();auto* action:actions)if(action->shortcuts().contains(QKeySequence(key)))return action;throw std::runtime_error("Canvas action missing");}
 struct ActionContext {
     CoreApplication& app;
     MainWindow* window;

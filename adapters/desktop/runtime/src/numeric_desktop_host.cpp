@@ -69,13 +69,17 @@ struct NumericDesktopHost::Impl {
   for(std::size_t i=0;i<count;++i){auto previous=frames.pop();
    if(previous&&(!previous->context||previous->context->endpoint!=endpoint))frames.push(std::move(*previous));}
  }
- bool reserve_preview_slot(std::size_t incoming) {
-  if(frames.size()!=32)return true;
+ std::pair<std::size_t,std::uint64_t> preview_eviction_candidate() {
   std::size_t victim=0;std::uint64_t newest=0;
   for(std::size_t i=0;i<32;++i){auto previous=frames.pop();
    const auto index=previous&&previous->context?selected_index(previous->context->endpoint):selected.size();
    const auto age=index<preview_service_age.size()?preview_service_age[index]:UINT64_MAX;
    if(age>=newest){newest=age;victim=i;}if(previous)frames.push(std::move(*previous));}
+  return {victim,newest};
+ }
+ bool reserve_preview_slot(std::size_t incoming) {
+  if(frames.size()!=32)return true;
+  const auto [victim,newest]=preview_eviction_candidate();
   if(preview_service_age[incoming]>=newest)return false;
   for(std::size_t i=0;i<32;++i){auto previous=frames.pop();if(previous&&i!=victim)frames.push(std::move(*previous));}
   return true;
@@ -108,6 +112,12 @@ struct NumericDesktopHost::Impl {
     schedule_locked();
     return true;
  }
+ void finish_local_snapshot_batch(std::shared_ptr<LocalSnapshotQuery> query,bool cancelled) {
+   std::lock_guard lock(mutex);
+   if(cancelled)query->next=query->endpoints.size();
+   local_query=query;local_query_ready=true;
+   if(!retired)schedule_locked();
+ }
  void run_local_snapshot_batch(std::shared_ptr<LocalSnapshotQuery> query) {
    bool cancelled=false;
    for(std::size_t batch=0;batch<8&&query->next<query->endpoints.size();++batch){
@@ -122,10 +132,7 @@ struct NumericDesktopHost::Impl {
     }
     ++query->next;
    }
-   std::lock_guard lock(mutex);
-   if(cancelled)query->next=query->endpoints.size();
-   local_query=query;local_query_ready=true;
-   if(!retired)schedule_locked();
+   finish_local_snapshot_batch(std::move(query),cancelled);
  }
  struct DrainHandlers {
   std::function<void(EngineSnapshot)> snapshot;
@@ -149,6 +156,14 @@ struct NumericDesktopHost::Impl {
   return generation==data_generation&&snapshot.frame.delivery.epoch==cache.epoch&&
          snapshot.frame.delivery.graph_revision==cache.graph_revision&&cache.statuses.value("analyzer").state!=State::Stopped;
  }
+ bool accept_history_resume_baseline(const HistorySnapshot& snapshot,const signal_contracts::FrameStamp& stamp) {
+  auto found=std::find_if(resumed_ordinals.begin(),resumed_ordinals.end(),[&](const auto& item){return item.endpoint==snapshot.frame.context->endpoint;});
+  if(found!=resumed_ordinals.end()&&found->producer_epoch==stamp.producer_epoch&&found->generation==stamp.generation&&
+     !stamp.discontinuity&&snapshot.ordinal<found->ordinal)return false;
+  ResumeBaseline baseline{snapshot.frame.context->endpoint,snapshot.ordinal,stamp.producer_epoch,stamp.generation};
+  if(found==resumed_ordinals.end())resumed_ordinals.push_back(std::move(baseline));else *found=std::move(baseline);
+  return true;
+ }
  void restore_history_snapshot(HistorySnapshot snapshot,std::uint64_t generation,const DrainHandlers& handlers) {
   if(!current_history_snapshot(generation,snapshot)||!snapshot.frame.context||!snapshot.frame.frame)return;
   const auto value=snapshot.frame.frame.view();
@@ -157,12 +172,7 @@ struct NumericDesktopHost::Impl {
    if(handlers.frame&&handlers.frame_version==frame_generation)handlers.frame(std::move(snapshot.frame));
    return;
   }
-  const auto stamp=value.stamp;
-  auto found=std::find_if(resumed_ordinals.begin(),resumed_ordinals.end(),[&](const auto& item){return item.endpoint==snapshot.frame.context->endpoint;});
-  if(found!=resumed_ordinals.end()&&found->producer_epoch==stamp.producer_epoch&&found->generation==stamp.generation&&
-     !stamp.discontinuity&&snapshot.ordinal<found->ordinal)return;
-  ResumeBaseline baseline{snapshot.frame.context->endpoint,snapshot.ordinal,stamp.producer_epoch,stamp.generation};
-  if(found==resumed_ordinals.end())resumed_ordinals.push_back(std::move(baseline));else *found=std::move(baseline);
+  if(!accept_history_resume_baseline(snapshot,value.stamp))return;
   if(handlers.history_snapshot&&handlers.history_snapshot_version==history_snapshot_generation)
    handlers.history_snapshot(std::move(snapshot.frame),snapshot.ordinal,snapshot.filled_count);
  }
@@ -222,18 +232,30 @@ struct NumericDesktopHost::Impl {
     else continuation=local_query;}}
   if(continuation)query_local_snapshots(std::move(continuation));
  }
- void drain(){QPointer<NumericDesktopHost> guard(&owner);const auto handlers=capture_handlers();
-  EngineSnapshot state;{std::lock_guard lock(mutex);pending=false;state=cache;}
-  if(handlers.snapshot&&handlers.snapshot_version==snapshot_generation)handlers.snapshot(state);if(!guard)return;
+ bool drain_history_deliveries(const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard,std::uint64_t resumeGeneration) {
+  for(std::size_t i=0;i<8;++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}
+   if(!full)break;restore_history_snapshot(std::move(*full),resumeGeneration,handlers);if(!guard)return false;}
+  return true;
+ }
+ bool drain_owning_deliveries(const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard,std::uint64_t resumeGeneration) {
+  if(!drain_history_deliveries(handlers,guard,resumeGeneration))return false;
+  for(std::size_t i=0;i<128;++i){auto batch=pop_delivery_batch();
+   if(!batch.reply&&!batch.frame&&!batch.history)break;
+   if(!deliver_batch(std::move(batch),handlers,guard))return false;}
+  return true;
+ }
+ std::uint64_t prepare_history_resync() {
   std::uint64_t resumeGeneration;bool resume=false;std::vector<EndpointIdentity> endpoints;
   begin_history_resync(resumeGeneration,resume,endpoints);
   if(resumed_generation!=resumeGeneration){resumed_generation=resumeGeneration;resumed_ordinals.clear();}
   request_history_resync(resume,std::move(endpoints),resumeGeneration);
-  for(std::size_t i=0;i<8;++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}
-   if(!full)break;restore_history_snapshot(std::move(*full),resumeGeneration,handlers);if(!guard)return;}
-  for(std::size_t i=0;i<128;++i){auto batch=pop_delivery_batch();
-   if(!batch.reply&&!batch.frame&&!batch.history)break;
-   if(!deliver_batch(std::move(batch),handlers,guard))return;}
+  return resumeGeneration;
+ }
+ void drain(){QPointer<NumericDesktopHost> guard(&owner);const auto handlers=capture_handlers();
+  EngineSnapshot state;{std::lock_guard lock(mutex);pending=false;state=cache;}
+  if(handlers.snapshot&&handlers.snapshot_version==snapshot_generation)handlers.snapshot(state);if(!guard)return;
+  const auto resumeGeneration=prepare_history_resync();
+  if(!drain_owning_deliveries(handlers,guard,resumeGeneration))return;
   // A worker batch cannot overwrite other selected endpoints while the GUI is
   // paused. Advance only after this bounded owning batch has been consumed.
   continue_local_query();
@@ -283,9 +305,9 @@ NumericDesktopHost::NumericDesktopHost(AudioSourceFactory factory,QString host,q
 NumericDesktopHost::~NumericDesktopHost()=default;
 NumericEngine* NumericDesktopHost::local_engine()const{return impl_->local;}
 domain::ProcessingDiagnostic NumericDesktopHost::validate_numeric_node(const domain::ConfiguredProcessingNode& node)const{
- domain::ProcessingDiagnostic result;
- impl_->call([&]{if(impl_->local)result=impl_->local->validate_numeric_node(node);});
- return result;
+ // The host owner retains local until destruction; this pure profile query
+ // must not queue behind processing or acquire the execution mutex.
+ return impl_->local?impl_->local->validate_numeric_node(node):domain::ProcessingDiagnostic{};
 }
 
 quint64 NumericDesktopHost::submit(EngineCommand command){

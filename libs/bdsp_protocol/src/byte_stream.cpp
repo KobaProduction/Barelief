@@ -91,22 +91,25 @@ struct PacketShape {
     Status status=Status::ok;
     BDSP::parse_packet_status_t error=BDSP::STREAM_READING_ERROR;
 };
+static void inspect_packet_size(std::span<const std::uint8_t> incoming,std::size_t count,PacketShape& shape) noexcept {
+    shape.start=shape.header.is_two_bytes_for_packet_size?3:2;
+    if(count<shape.start){shape.status=Status::malformed;return;}
+    shape.size=shape.header.is_two_bytes_for_packet_size?
+        (std::size_t(incoming[1])<<8)|incoming[2]:incoming[1];
+    if(!shape.size){
+        shape.status=Status::malformed;shape.error=BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR;
+        return;
+    }
+    if(count!=shape.start+shape.size+(shape.header.is_checksum_used?1:0))
+        shape.status=Status::malformed;
+}
 static PacketShape inspect_packet(std::span<const std::uint8_t> incoming,std::size_t count) noexcept {
     PacketShape shape;
     std::memcpy(&shape.header,incoming.data(),1);
     if(shape.header.is_unsupported_protocol_version){
         shape.status=Status::unsupported_version;shape.error=BDSP::UNSUPPORTED_PROTOCOL_ERROR;return shape;
     }
-    shape.start=shape.header.is_two_bytes_for_packet_size?3:2;
-    if(count<shape.start){shape.status=Status::malformed;return shape;}
-    shape.size=shape.header.is_two_bytes_for_packet_size?
-        (std::size_t(incoming[1])<<8)|incoming[2]:incoming[1];
-    if(!shape.size){
-        shape.status=Status::malformed;shape.error=BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR;
-        return shape;
-    }
-    if(count!=shape.start+shape.size+(shape.header.is_checksum_used?1:0))
-        shape.status=Status::malformed;
+    inspect_packet_size(incoming,count,shape);
     return shape;
 }
 void PacketStream::dispatch_packet(std::size_t count) noexcept {

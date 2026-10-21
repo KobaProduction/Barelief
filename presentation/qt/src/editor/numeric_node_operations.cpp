@@ -52,13 +52,9 @@ bool resampler_extent(const ConfiguredProcessingNode& node,NumericContract& cont
         ExtentBounds{1,(maximum*output_rate+clock.sample_rate-1)/clock.sample_rate+1};
     return contract.shape.extents[0].maximum<=65536;
 }
-bool update_clock_port(ConfiguredProcessingNode& node,ProcessingPort& port,const ClockContract& clock,
-                       std::uint32_t output_rate,const ExtentBounds* pcm_extent,bool output) {
-    if(!output && !numeric_parameter_key(node.kind,port.id).empty())return true;
-    if(output && has_sample_rate_output(node.kind) && port.id==sample_rate_output)return true;
-    auto data=port.contract.view();
-    auto* contract=std::get_if<NumericContract>(&data);
-    if(!contract)return true;
+bool update_numeric_clock(const ConfiguredProcessingNode& node,NumericContract& value,const ClockContract& clock,
+    std::uint32_t output_rate,const ExtentBounds* pcm_extent,bool output) {
+    auto* contract=&value;
     const bool resampler=node.kind=="PcmResampler";
     auto next_clock=clock;
     if(resampler && output){next_clock.sample_rate=output_rate;next_clock.tick_seconds={1,output_rate};}
@@ -67,6 +63,16 @@ bool update_clock_port(ConfiguredProcessingNode& node,ProcessingPort& port,const
     if(pcm_extent && contract->shape.rank==Rank::Vector && contract->shape.axes[0]==Axis::Sample &&
        (node.kind!="Window" || !output) && node.kind!="WindowFunction" && node.kind!="StereoFFT")contract->shape.extents[0]=*pcm_extent;
     if(resampler && output && !resampler_extent(node,*contract,clock,output_rate,!node.enabled))return false;
+    return true;
+}
+bool update_clock_port(ConfiguredProcessingNode& node,ProcessingPort& port,const ClockContract& clock,
+                       std::uint32_t output_rate,const ExtentBounds* pcm_extent,bool output) {
+    if(!output && !numeric_parameter_key(node.kind,port.id).empty())return true;
+    if(output && has_sample_rate_output(node.kind) && port.id==sample_rate_output)return true;
+    auto data=port.contract.view();
+    auto* contract=std::get_if<NumericContract>(&data);
+    if(!contract)return true;
+    if(!update_numeric_clock(node,*contract,clock,output_rate,pcm_extent,output))return false;
     return own_processing_contract(data,limits().frame,limits().max_owned_metadata_bytes,port.contract)==Status::ok;
 }
 bool valid_resampler_clock(const ConfiguredProcessingNode& node,const ClockContract& clock,std::uint32_t output_rate) {
@@ -133,11 +139,14 @@ bool set_dtype(ConfiguredProcessingNode& n,PortDirection direction,PortId id,DTy
     return set_contract(n,direction,id,c);
 }
 namespace {
-void propagate_route_contract(ConfiguredProcessingNode& candidate,PortId id,const OwnedProcessingContract& owner) {
-    if(candidate.kind=="InputSelector"){
+void propagate_selector_contract(ConfiguredProcessingNode& candidate,PortId id,const OwnedProcessingContract& owner) {
         const auto width=candidate.outputs.size();const auto lane=id%width;
         for(auto& port:candidate.inputs)if(port.id%width==lane)port.contract=owner;
         candidate.outputs[lane].contract=owner;
+}
+void propagate_route_contract(ConfiguredProcessingNode& candidate,PortId id,const OwnedProcessingContract& owner) {
+    if(candidate.kind=="InputSelector"){
+        propagate_selector_contract(candidate,id,owner);
     }else if(std::holds_alternative<RouteProcessingParameters>(candidate.parameters))
         for(auto* collection:{&candidate.inputs,&candidate.outputs})
             for(auto& port:*collection)if(port.id!=sample_rate_output)port.contract=owner;
@@ -162,12 +171,17 @@ bool prepare_array_multiply_input(OwnedProcessingContract& input) {
     return own_processing_contract(value,limits().frame,limits().max_owned_metadata_bytes,input)==Status::ok;
 }
 }
-bool add_input(ConfiguredProcessingNode& n) {
-    if((n.kind!="InputSelector" && !scalar_view_kind(n.kind) && n.kind!="ArrayMultiply") || n.inputs.empty() || n.inputs.size()>=limits().max_ports_per_node)return false;
-    if(n.kind=="InputSelector"&&data_outputs(n).size()>1) {
+namespace {
+bool add_selector_input_group(ConfiguredProcessingNode& n) {
         const auto channels=data_outputs(n).size();if(n.inputs.size()+channels>limits().max_ports_per_node)return false;
         for(std::size_t lane=0;lane<channels;++lane)n.inputs.push_back({PortId(n.inputs.size()),PortDirection::Input,n.outputs[lane].contract});
         return true;
+}
+}
+bool add_input(ConfiguredProcessingNode& n) {
+    if((n.kind!="InputSelector" && !scalar_view_kind(n.kind) && n.kind!="ArrayMultiply") || n.inputs.empty() || n.inputs.size()>=limits().max_ports_per_node)return false;
+    if(n.kind=="InputSelector"&&data_outputs(n).size()>1) {
+        return add_selector_input_group(n);
     }
     const auto maximum=std::max_element(n.inputs.begin(),n.inputs.end(),[](const auto& a,const auto& b){return a.id<b.id;})->id;
     if(maximum==std::numeric_limits<PortId>::max())return false;

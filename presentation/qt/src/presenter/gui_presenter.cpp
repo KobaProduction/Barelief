@@ -73,13 +73,19 @@ void GuiPresenter::accept_graph_reply(const pipeline::EngineReply& reply) {
     set_apply_status(reply.accepted?ui::text("Applied"):ui::text("Not applied: ")+error);
     if(!reply.accepted)_last_numeric_rejection=reply.numeric_diagnostic;
     if(reply.accepted) {
-        domain::NumericProcessingGraph applied;
-        if(desktop::decode_numeric_graph(QJsonDocument(reply.snapshot.graph).toJson(QJsonDocument::Compact),applied))
-            _applied_numeric=std::move(applied);
+        accept_applied_graph(reply);
         emit on_config_updated();
     }
     emit graph_apply_finished(pending.logical_id,reply.accepted,error);
+    dispatch_queued_graph();
+}
+void GuiPresenter::dispatch_queued_graph() {
     if(_queued_graph){auto next=std::move(*_queued_graph);_queued_graph.reset();dispatch_graph(std::move(next));}
+}
+void GuiPresenter::accept_applied_graph(const pipeline::EngineReply& reply) {
+        domain::NumericProcessingGraph applied;
+        if(desktop::decode_numeric_graph(QJsonDocument(reply.snapshot.graph).toJson(QJsonDocument::Compact),applied))
+            _applied_numeric=std::move(applied);
 }
 void GuiPresenter::bind_numeric_handlers(const QString& selected,quint64 generation) {
     bind_numeric_frame_handler(selected,generation);

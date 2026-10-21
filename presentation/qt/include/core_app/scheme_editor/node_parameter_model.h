@@ -105,6 +105,7 @@ class NodeParameterModel final : public QObject {
     template<class Read,class Write> void text(QString,QString,Read,Write);
     template<class Read,class Write> void integer(QString,QString,int,int,Read,Write);
     void append_routing_fields();
+    void appendFactorCount();
     void appendSelectorFields();
     void appendRoutingOutputCount();
     void appendSwitchFields();
@@ -123,6 +124,7 @@ class NodeParameterModel final : public QObject {
     void appendMixerWeight(domain::PortId);
     QString mixerShare(domain::PortId) const;
     void append_music_fields();
+    void append_coefficient_summary();
     void appendReadout(QString,QString,std::function<QString()>,bool primary=false);
     QString musicRowLayout() const;
     QString noteGridDescription() const;
@@ -134,7 +136,13 @@ class NodeParameterModel final : public QObject {
     static void putParameter(domain::ConfiguredProcessingNode&,std::string_view,domain::ProcessingParameterValue);
     bool parameterVisible(const domain::ParameterDescriptor&) const;
     void appendParameterField(const domain::ParameterDescriptor&);
+    void appendInvalidParameter(const QString&,const QString&);
+    void configureParameterAvailability(const domain::ParameterDescriptor&);
+    bool writeParameterChoice(const domain::ParameterDescriptor&,const QStringList&,int);
     void appendParameterChoice(const domain::ParameterDescriptor&,const QString&,const QStringList&,const QStringList&);
+    void appendBooleanParameter(const domain::ParameterDescriptor&,const QString&,const QString&);
+    void appendTextParameter(const domain::ParameterDescriptor&,const QString&,const QString&);
+    void appendNonNumericParameter(const domain::ParameterDescriptor&,const QString&,const QString&);
     void appendParameterValue(const domain::ParameterDescriptor&,const QString&);
     void append_contracts_fields();
     void appendContractCaption(const domain::ProcessingPort&,domain::PortDirection);

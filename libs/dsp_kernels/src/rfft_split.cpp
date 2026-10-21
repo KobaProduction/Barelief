@@ -13,19 +13,9 @@
 #endif
 
 namespace dsp_kernels::detail {
-void rfft_mixed_split(float* out, const float* data, const float* w, std::size_t h) noexcept {
-    const auto m = 2*h, n = 4*h;
-    const float zr = data[0]+data[m], zi = data[1]+data[m+1];
-    out[0]=zr+zi; out[1]=0; out[n]=zr-zi; out[n+1]=0;
-    out[m]=data[0]-data[m]; out[m+1]=data[m+1]-data[1];
-#if defined(DSP_FFT_AE32)
-    dsp_rfft_fused_pairs_ae32(out,data,w,h);
-#else
-    // For j=h-k, group the four final bins. The rotations reduce to
-    // W_N^(2k)*(U+iV), W_N^k*(C+iD), W_N^(3k)*(S+iT).
-    // This replaces two mixed butterflies plus two real split pairs.
-    for(std::size_t k=1;k<h/2;++k) {
-        const auto j=h-k;
+namespace {
+struct MixedRotations {float a,b,r,i,l,q,p,z;};
+MixedRotations mixed_rotations(const float* data,const float* w,std::size_t m,std::size_t h,std::size_t k,std::size_t j) noexcept {
         const float a=.5f*(data[2*k]+data[2*j]);
         const float b=.5f*(data[2*k+1]-data[2*j+1]);
         const float c=(data[2*k+1]+data[2*j+1]);
@@ -39,20 +29,47 @@ void rfft_mixed_split(float* out, const float* data, const float* w, std::size_t
         const auto index=3*k<=h ? 3*k : m-3*k;
         const float wr=3*k<=h ? w[2*index] : -w[2*index], wi=w[2*index+1];
         const float p=wr*s-wi*t, z=wr*t+wi*s;
+    return {a,b,r,i,l,q,p,z};
+}
+void publish_mixed_rotations(float* out,std::size_t m,std::size_t k,std::size_t j,const MixedRotations& rotation) noexcept {
+    const auto [a,b,r,i,l,q,p,z]=rotation;
         const float rp=a+r, rm=a-r, ip=b+i, im=i-b;
         const float p1=l+p, q1=q+z, p2=z-q, q2=p-l;
         out[2*k]=rp+p1; out[2*k+1]=ip+q1;
         out[2*(m-k)]=rp-p1; out[2*(m-k)+1]=q1-ip;
         out[2*j]=rm+p2; out[2*j+1]=im+q2;
         out[2*(m-j)]=rm-p2; out[2*(m-j)+1]=q2-im;
-    }
-#endif
+}
+}
+namespace {
+void mixed_midpoint(float* out,const float* data,const float* w,std::size_t h,std::size_t m) noexcept {
     const auto k=h/2;
     const float re=data[2*k], oi=data[m+2*k];
     const float x=(2.f*w[2*k])*(data[2*k+1]-data[m+2*k+1]);
     const float y=(2.f*w[2*k])*(data[2*k+1]+data[m+2*k+1]);
     out[2*k]=re+x; out[2*k+1]=-oi-y;
     out[2*(m-k)]=re-x; out[2*(m-k)+1]=oi-y;
+}
+}
+void rfft_mixed_split(float* out, const float* data, const float* w, std::size_t h) noexcept {
+    const auto m = 2*h, n = 4*h;
+    const float zr = data[0]+data[m], zi = data[1]+data[m+1];
+    out[0]=zr+zi; out[1]=0; out[n]=zr-zi; out[n+1]=0;
+    out[m]=data[0]-data[m]; out[m+1]=data[m+1]-data[1];
+#if defined(DSP_FFT_AE32)
+    dsp_rfft_fused_pairs_ae32(out,data,w,h);
+#else
+    // For j=h-k, group the four final bins. The rotations reduce to
+    // W_N^(2k)*(U+iV), W_N^k*(C+iD), W_N^(3k)*(S+iT).
+    // This replaces two mixed butterflies plus two real split pairs.
+    for(std::size_t k=1;k<h/2;++k) {
+        const auto j=h-k;
+        const auto rotation=mixed_rotations(data,w,m,h,k,j);
+        publish_mixed_rotations(out,m,k,j,rotation);
+
+    }
+#endif
+    mixed_midpoint(out,data,w,h,m);
 }
 static_assert(sizeof(float) == sizeof(std::uint32_t) && std::numeric_limits<float>::is_iec559);
 bool fft_all_finite(const float* data, std::size_t n) noexcept {
@@ -78,13 +95,9 @@ void fft_copy(const float* source, float* destination, std::size_t n) noexcept {
     std::copy_n(source, n, destination);
 #endif
 }
-bool fft_input_max(const float* data, std::size_t n, float& maximum) noexcept {
-#if defined(DSP_FFT_AE32)
-    return dsp_fft_input_max_ae32(data, n, &maximum);
-#else
-    std::size_t i = 0;
-    maximum = 0;
 #if DSP_RFFT_SSE2
+namespace {
+bool simd_input_max(const float* data,std::size_t n,std::size_t& i,float& maximum) noexcept {
     auto largest = _mm_setzero_ps();
     const auto sign = _mm_set1_ps(-0.f);
     const auto infinity = _mm_set1_ps(std::numeric_limits<float>::infinity());
@@ -98,6 +111,18 @@ bool fft_input_max(const float* data, std::size_t n, float& maximum) noexcept {
     alignas(16) float lanes[4];
     _mm_store_ps(lanes, largest);
     maximum = std::max({lanes[0], lanes[1], lanes[2], lanes[3]});
+    return true;
+}
+}
+#endif
+bool fft_input_max(const float* data, std::size_t n, float& maximum) noexcept {
+#if defined(DSP_FFT_AE32)
+    return dsp_fft_input_max_ae32(data, n, &maximum);
+#else
+    std::size_t i = 0;
+    maximum = 0;
+#if DSP_RFFT_SSE2
+    if(!simd_input_max(data,n,i,maximum))return false;
 #endif
     // Positive IEEE Float32 bit ordering matches magnitude ordering, including
     // subnormals. Classify exponent bits without floating-point helper calls.
@@ -122,19 +147,9 @@ const char* rfft_split_implementation() noexcept {
     return "scalar-f32";
 #endif
 }
-void rfft_split(float* data, const float* twiddles, std::size_t packed, bool scalar) noexcept {
-#if defined(DSP_FFT_AE32)
-    if (!scalar) { dsp_rfft_split_ae32(data, twiddles, packed); return; }
-#endif
-    std::size_t k = 1;
 #if DSP_RFFT_SSE2
-    if (!scalar) {
-        const auto half = _mm_set1_ps(.5f);
-        const auto conjugate = _mm_setr_ps(0.f, -0.f, 0.f, -0.f);
-        const auto rotate = _mm_setr_ps(-0.f, 0.f, -0.f, 0.f);
-        // Two independent split pairs per register. Both sides are loaded
-        // before either is stored; the self-conjugate midpoint is scalar.
-        for (; k + 1 < packed / 2; k += 2) {
+namespace {
+void split_vector_pair(float* data,const float* twiddles,std::size_t packed,std::size_t k,__m128 half,__m128 conjugate,__m128 rotate) noexcept {
             const auto a = _mm_loadu_ps(data + 2 * k);
             const auto reversed = _mm_loadu_ps(data + 2 * (packed - k - 1));
             const auto b = _mm_xor_ps(_mm_shuffle_ps(reversed, reversed, _MM_SHUFFLE(1,0,3,2)), conjugate);
@@ -151,7 +166,27 @@ void rfft_split(float* data, const float* twiddles, std::size_t packed, bool sca
             const auto opposite = _mm_xor_ps(_mm_sub_ps(even, product), conjugate);
             _mm_storeu_ps(data + 2 * (packed - k - 1),
                 _mm_shuffle_ps(opposite, opposite, _MM_SHUFFLE(1,0,3,2)));
+}
+void split_vector_pairs(float* data,const float* twiddles,std::size_t packed,std::size_t& k) noexcept {
+        const auto half = _mm_set1_ps(.5f);
+        const auto conjugate = _mm_setr_ps(0.f, -0.f, 0.f, -0.f);
+        const auto rotate = _mm_setr_ps(-0.f, 0.f, -0.f, 0.f);
+        // Two independent split pairs per register. Both sides are loaded
+        // before either is stored; the self-conjugate midpoint is scalar.
+        for (; k + 1 < packed / 2; k += 2) {
+            split_vector_pair(data,twiddles,packed,k,half,conjugate,rotate);
         }
+}
+}
+#endif
+void rfft_split(float* data, const float* twiddles, std::size_t packed, bool scalar) noexcept {
+#if defined(DSP_FFT_AE32)
+    if (!scalar) { dsp_rfft_split_ae32(data, twiddles, packed); return; }
+#endif
+    std::size_t k = 1;
+#if DSP_RFFT_SSE2
+    if (!scalar) {
+        split_vector_pairs(data,twiddles,packed,k);
     }
 #else
     (void)scalar;

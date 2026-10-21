@@ -94,7 +94,7 @@ bool resolve_native_capture_graph(domain::NumericProcessingGraph& graph,
 
 struct NumericEngine::Impl final : application::NumericGraphPreparationPort,application::GraphRuntimePort,application::ControlClock {
     NumericEngine& owner;
-    dataflow_runtime::NumericRuntimeProfile profile=desktop_profile();
+    const dataflow_runtime::NumericRuntimeProfile profile=desktop_profile();
     ExecutionBoundary execution;
     std::mutex& mutex;
     EngineSnapshot& state;
@@ -148,7 +148,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         ingress.snapshot_changed=[this]{if(snapshot_handler)snapshot_handler(owner.snapshot());};
         initialize_control_service();
         auto reply=command(application::GetState{});project(reply);
-        QObject::connect(&timer,&QTimer::timeout,&owner,[this]{QPointer<NumericEngine> lifetime(&owner);refresh_diagnostics();if(lifetime)delivery.drain();});timer.start(16);
+        initialize_diagnostics_timer();
     }
     void initialize_control_service() {
         caps.numeric=application::NumericProcessingCapabilities{
@@ -195,6 +195,21 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
     bool retained_replies_fit(const domain::NumericProcessingGraph& graph) const {
         for(const auto& [id,check]:control_reply_checks)if(!check(graph))return false;return true;
     }
+    void initialize_diagnostics_timer() {
+        QObject::connect(&timer,&QTimer::timeout,&owner,[this]{
+            QPointer<NumericEngine> lifetime(&owner);refresh_diagnostics();if(lifetime)delivery.drain();
+        });
+        timer.start(16);
+    }
+    Status prepare_platform_graph(const domain::NumericProcessingGraph& graph,const application::NumericRuntimeLimits& limits,application::PreparedExecution& out) {
+        dataflow_runtime::GraphExecutor::PreparationBase base;
+        auto platform_limits=limits;
+        const auto capture_status=prepare_capture_limits(graph,base,platform_limits);
+        if(capture_status!=Status::ok)return capture_status;
+        const auto status=executor.prepare_numeric_detached(graph,platform_limits,base,out);
+        if(status!=Status::ok){qWarning("Numeric cold prepare failed: graph=%s status=%d nodes=%zu",graph.graph_id.c_str(),int(status),graph.nodes.size());return status;}
+        {std::lock_guard lock(mutex);const auto registered=executor.register_prepared(out,base);if(registered!=Status::ok)qWarning("Numeric cold prepare registration failed: status=%d",int(registered));return registered;}
+    }
     Status prepare_numeric(const domain::NumericProcessingGraph& requested,const application::NumericRuntimeLimits& limits,
         application::PreparedExecution& out) override {
         domain::NumericProcessingGraph graph,executable;
@@ -204,13 +219,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         if(candidate_capabilities.assign(graph,caps)!=Status::ok ||
            !control::numeric::reply_envelope_fits(graph,remote_numeric::control_limits(),candidate_capabilities.value))return Status::exhausted;
         if(!retained_replies_fit(graph))return Status::exhausted;
-        dataflow_runtime::GraphExecutor::PreparationBase base;
-        auto platform_limits=limits;
-        const auto capture_status=prepare_capture_limits(graph,base,platform_limits);
-        if(capture_status!=Status::ok)return capture_status;
-        const auto status=executor.prepare_numeric_detached(graph,platform_limits,base,out);
-        if(status!=Status::ok){qWarning("Numeric cold prepare failed: graph=%s status=%d nodes=%zu",graph.graph_id.c_str(),int(status),graph.nodes.size());return status;}
-        {std::lock_guard lock(mutex);const auto registered=executor.register_prepared(out,base);if(registered!=Status::ok)qWarning("Numeric cold prepare registration failed: status=%d",int(registered));return registered;}
+        return prepare_platform_graph(graph,limits,out);
     }
     bool graph_nodes_supported(const domain::NumericProcessingGraph& graph) const {
         for(const auto& node:graph.nodes) {
@@ -226,12 +235,16 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
             if(node.kind=="AudioSource"&&!native_capture_format_supported(node))return false;
         return true;
     }
-    bool native_capture_format_supported(const domain::ConfiguredProcessingNode& node) const {
+    static AudioSourceKind native_capture_kind(const domain::ConfiguredProcessingNode& node) {
         AudioSourceKind kind=AudioSourceKind::SystemOutput;
         if(const auto* parameters=std::get_if<domain::EndpointProcessingParameters>(&node.parameters))
             for(const auto& parameter:parameters->values)if(parameter.key=="source")
                 if(const auto* literal=std::get_if<NumericLiteral>(&parameter.value))
                     kind=AudioSourceKind(std::visit([](auto value){return int(value);},*literal));
+        return kind;
+    }
+    bool native_capture_format_supported(const domain::ConfiguredProcessingNode& node) const {
+        const auto kind=native_capture_kind(node);
         const auto endpoints=enumerate_audio_capture_devices(kind);
         const auto configured=ingress.capture_devices.find(node.id);
         const auto endpoint=std::find_if(endpoints.begin(),endpoints.end(),[&](const auto& device){
@@ -295,6 +308,21 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         out=cached->second;out.context=context;out.delivery={state.graph_revision,state.epoch};
         if(ordinal)*ordinal=0;if(filled_count)*filled_count=0;return out.status;
     }
+    Status retain_history_query(const DataFrameView& borrowed,DeliveredNumericFrame& candidate) {
+        Status retained;
+        {core::perf::Scope copy(core::perf::Stage::NumericQueryCopy);
+            retained=retain_frame(borrowed,frame_limits,delivery.history_snapshot_arena->payload_pool,
+                                  delivery.history_snapshot_arena->metadata_pool,candidate.frame);}
+        return retained;
+    }
+    Status retain_history_result(DataFrameView borrowed,const std::shared_ptr<const NumericDeliveryContext>& context,
+        Status result,DeliveredNumericFrame& out,std::uint64_t* ordinal,std::uint64_t* filled_count,std::uint64_t accepted_ordinal,std::uint64_t occupancy) {
+        borrowed.stamp.graph_revision=state.graph_revision;borrowed.stamp.epoch=state.epoch;
+        DeliveredNumericFrame candidate{context,{state.graph_revision,state.epoch},{},result};
+        const auto retained=retain_history_query(borrowed,candidate);
+        if(retained!=Status::ok)return retained;
+        out=std::move(candidate);if(ordinal)*ordinal=accepted_ordinal;if(filled_count)*filled_count=occupancy;return result;
+    }
     Status query_history(const EndpointIdentity& endpoint,const std::shared_ptr<const NumericDeliveryContext>& context,
                          DeliveredNumericFrame& out,std::uint64_t* ordinal,std::uint64_t* filled_count,bool* is_history) {
         DataFrameView borrowed;
@@ -303,28 +331,52 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         if(result==Status::incompatible_contract)return query_cached_matrix(endpoint,context,out,ordinal,filled_count);
         if(result!=Status::ok && result!=Status::unavailable)return result;
         if(is_history)*is_history=true;
-        borrowed.stamp.graph_revision=state.graph_revision;borrowed.stamp.epoch=state.epoch;
-        DeliveredNumericFrame candidate{context,{state.graph_revision,state.epoch},{},result};
-        Status retained;
-        {core::perf::Scope copy(core::perf::Stage::NumericQueryCopy);
-            retained=retain_frame(borrowed,frame_limits,delivery.history_snapshot_arena->payload_pool,
-                                  delivery.history_snapshot_arena->metadata_pool,candidate.frame);}
-        if(retained!=Status::ok)return retained;
-        out=std::move(candidate);if(ordinal)*ordinal=accepted_ordinal;if(filled_count)*filled_count=occupancy;return result;
+        return retain_history_result(borrowed,context,result,out,ordinal,filled_count,accepted_ordinal,occupancy);
     }
-    bool collect_capture_devices(const QJsonObject& candidate,std::map<domain::NodeId,QString>& devices,QString& error) const {
-        const auto nodes=candidate.value("nodes").toArray();
-        for(const auto& value:nodes) {
-            const auto node=value.toObject();if(node.value("kind").toString()!=QStringLiteral("AudioSource"))continue;
-            const auto raw=node.value("adapter");if(raw.isUndefined())continue;
+    bool collect_capture_device(const QJsonObject& node,std::map<domain::NodeId,QString>& devices,QString& error) const {
+            const auto raw=node.value("adapter");if(raw.isUndefined())return true;
             QJsonObject adapter;
             const auto decoded=desktop::decode_numeric_node_adapter(
                 QJsonDocument(raw.toObject()).toJson(QJsonDocument::Compact),adapter);
             if(!raw.isObject() || !decoded){error=QStringLiteral("Invalid capture endpoint adapter");return false;}
             const auto device=adapter.value("device_identity").toString();
             if(!device.isEmpty())devices.emplace(node.value("id").toInt(),device);
+        return true;
+    }
+    bool collect_capture_devices(const QJsonObject& candidate,std::map<domain::NodeId,QString>& devices,QString& error) const {
+        const auto nodes=candidate.value("nodes").toArray();
+        for(const auto& value:nodes) {
+            const auto node=value.toObject();if(node.value("kind").toString()!=QStringLiteral("AudioSource"))continue;
+            if(!collect_capture_device(node,devices,error))return false;
         }
         return true;
+    }
+    application::ProcessingReply prepare_and_apply_public_graph(const domain::NumericProcessingGraph& graph) {
+        application::ProcessingDTO dto;dto.numeric=graph;
+        auto result=command(application::PrepareProcessing{&dto});project(result);
+        if(result.accepted)result=command(application::ApplyProcessing{result.prepared_token,graph.graph_id});
+        return result;
+    }
+    void commit_public_graph(const domain::NumericProcessingGraph& graph,EngineReply& reply,bool& reconcile,std::map<domain::NodeId,QString> capture_devices) {
+        auto prior_devices=std::move(ingress.capture_devices);
+        ingress.capture_devices=std::move(capture_devices);
+        auto result=prepare_and_apply_public_graph(graph);
+        if(!result.accepted)ingress.capture_devices=std::move(prior_devices);
+        project(result);reply.accepted=result.accepted;reconcile=result.accepted;
+        if(result.accepted)ingress.capture_requested=result.state.run_requested;
+        if(!result.accepted)record_public_apply_failure(result,reply);
+    }
+    void dispatch_public_command(const EngineCommand& request,EngineReply& reply,bool& reconcile,
+        std::map<domain::NodeId,QString> capture_devices,bool adapter_valid,const QString& adapter_error) {
+    {
+        std::lock_guard control_lock(control_mutex);
+        project(command(application::GetState{}));
+        if(request.kind==EngineCommand::ApplyGraph)
+            apply_public_graph(request,reply,reconcile,std::move(capture_devices),adapter_valid,adapter_error);
+        else if(request.kind==EngineCommand::Snapshot || request.kind==EngineCommand::Subscribe)reply.accepted=true;
+        else reply.error=QStringLiteral("Processing parameters belong to the numeric graph");
+        reply.snapshot=state;
+    }
     }
     void apply_public_graph(const EngineCommand& request,EngineReply& reply,bool& reconcile,
                             std::map<domain::NodeId,QString> capture_devices,bool adapter_valid,const QString& adapter_error) {
@@ -334,15 +386,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         if(!decoded){reply.error=decoded.path+": "+decoded.error;return;}
         if(request.expected_revision!=std::numeric_limits<quint64>::max() && request.expected_revision!=state.graph_revision){
             reply.error=QStringLiteral("Graph revision conflict");return;}
-        auto prior_devices=std::move(ingress.capture_devices);
-        ingress.capture_devices=std::move(capture_devices);
-        application::ProcessingDTO dto;dto.numeric=graph;
-        auto result=command(application::PrepareProcessing{&dto});project(result);
-        if(result.accepted)result=command(application::ApplyProcessing{result.prepared_token,graph.graph_id});
-        if(!result.accepted)ingress.capture_devices=std::move(prior_devices);
-        project(result);reply.accepted=result.accepted;reconcile=result.accepted;
-        if(result.accepted)ingress.capture_requested=result.state.run_requested;
-        if(!result.accepted)record_public_apply_failure(result,reply);
+        commit_public_graph(graph,reply,reconcile,std::move(capture_devices));
     }
     static void record_public_apply_failure(const application::ProcessingReply& result,EngineReply& reply) {
         reply.error=failure(result.status)+QStringLiteral(" control=%1 validation=%2 node=%3")
@@ -425,18 +469,21 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
                 {"capacity",count(input->capacity)},{"dropped_samples",count(input->dropped_samples)},
                 {"underrun_samples",count(input->underrun_samples)}});
     }
+    void collect_node_statistics(const domain::ConfiguredProcessingNode& node,const dataflow_runtime::NodeStats& stats,RateSummary& summary,QJsonArray& nodes,QJsonArray& mixers) {
+                const auto rate=calculate_node_rate(node.id,stats,summary);
+                const auto [priority,basis]=processing_rate_role(node.kind);
+                if(priority>summary.priority || (priority==summary.priority && priority && rate.produced_hz>summary.hz)){
+                    summary.priority=priority;summary.hz=rate.produced_hz;summary.node=node.id;summary.basis=basis;}
+                rate_baselines[node.id]=stats;
+                append_node_statistics(node,stats,rate,nodes,mixers);
+    }
     RateSummary collect_execution_statistics(std::uint64_t now,QJsonArray& nodes,QJsonArray& mixers) {
         if(rate_graph_revision!=state.graph_revision){rate_graph_revision=state.graph_revision;rate_sample_ns=0;rate_baselines.clear();}
         RateSummary summary;summary.measured=rate_sample_ns && now>rate_sample_ns;
         summary.seconds=summary.measured?double(now-rate_sample_ns)/1000000000.:0.;
         if(executor.plan())for(const auto& node:executor.plan()->numeric_definition()->nodes)
             if(const auto stats=executor.node_stats(node.id)) {
-                const auto rate=calculate_node_rate(node.id,*stats,summary);
-                const auto [priority,basis]=processing_rate_role(node.kind);
-                if(priority>summary.priority || (priority==summary.priority && priority && rate.produced_hz>summary.hz)){
-                    summary.priority=priority;summary.hz=rate.produced_hz;summary.node=node.id;summary.basis=basis;}
-                rate_baselines[node.id]=*stats;
-                append_node_statistics(node,*stats,rate,nodes,mixers);
+                collect_node_statistics(node,*stats,summary,nodes,mixers);
             }
         rate_sample_ns=now;
         return summary;
@@ -522,7 +569,8 @@ std::uint64_t NumericEngine::register_control_reply_check(std::function<bool(con
 void NumericEngine::unregister_control_reply_check(std::uint64_t token){impl_->control_reply_checks.erase(token);}
 application::ProcessingCapabilities NumericEngine::capabilities() const {return impl_->caps;}
 domain::ProcessingDiagnostic NumericEngine::validate_numeric_node(const domain::ConfiguredProcessingNode& node) const {
-    std::lock_guard lock(impl_->mutex);
+    // The immutable profile and pure capability query do not access execution state.
+    // Callers retain the engine lifetime; DSP can continue on its worker concurrently.
     domain::ResolvedProcessingNode resolved;
     const auto diagnostic=domain::resolve_processing_node(node,impl_->profile.admission,resolved);
     if(!diagnostic)return diagnostic;
@@ -595,15 +643,7 @@ quint64 NumericEngine::submit(EngineCommand request) {
     std::map<domain::NodeId,QString> capture_devices;
     if(request.kind==EngineCommand::ApplyGraph && adapter_valid)
         adapter_valid=impl_->collect_capture_devices(request.graph,capture_devices,adapter_error);
-    {
-        std::lock_guard control_lock(impl_->control_mutex);
-        impl_->project(impl_->command(application::GetState{}));
-        if(request.kind==EngineCommand::ApplyGraph)
-            impl_->apply_public_graph(request,reply,reconcile,std::move(capture_devices),adapter_valid,adapter_error);
-        else if(request.kind==EngineCommand::Snapshot || request.kind==EngineCommand::Subscribe)reply.accepted=true;
-        else reply.error=QStringLiteral("Processing parameters belong to the numeric graph");
-        reply.snapshot=impl_->state;
-    }
+    impl_->dispatch_public_command(request,reply,reconcile,std::move(capture_devices),adapter_valid,adapter_error);
     if(request.kind==EngineCommand::ApplyGraph && reply.accepted && adapter_handlers_.commit_graph)
         adapter_handlers_.commit_graph(request.graph);
     if(reconcile)impl_->ingress.reconcile_sources();

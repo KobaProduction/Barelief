@@ -4,14 +4,54 @@
 #include <cstdio>
 #include <cmath>
 
+static bool check(bool valid,const char* message) {
+ if(!valid)std::fprintf(stderr,"FAIL: %s\n",message);
+ return valid;
+}
 // Pure settings contracts; deliberately no QApplication, dialogs, timers or GL.
-int main() {
-    using namespace SurfaceSettings;
-    auto check = [](bool valid, const char *message) {
-        if (!valid)
-            std::fprintf(stderr, "FAIL: %s\n", message);
-        return valid;
-    };
+static int camera_bindings() {
+ using namespace SurfaceSettings;
+    const QJsonObject controls{
+        {"movement_speed", 4.123456},
+        {"extension", 99},
+        {"forward", QJsonArray{QJsonObject{{"scan", 17}, {"key", Qt::Key_W}, {"binding_extension", 42}}}}};
+    const auto normalizedControls = CameraControls::normalized(controls);
+    if (!check(CameraControls::movementSpeed({}) == 3 &&
+                   CameraControls::movementSpeed(QJsonObject{{"movement_speed", 1e300}}) == 10 &&
+                   CameraControls::movementSpeed(QJsonObject{{"movement_speed", -.1}}) == .5 &&
+                   CameraControls::movementSpeed(QJsonObject{{"movement_speed", "bad"}}) == 3 &&
+                   normalizedControls["extension"].toInt() == 99 &&
+                   normalizedControls["forward"].toArray().at(0).toObject().value("binding_extension").toInt() == 42 &&
+                   normalizedControls["movement_speed"].toDouble() == 4.123456,
+               "Common speed bounds/defaults preserve settings and binding extensions"))
+        return 1;
+    const auto resetControls = CameraControls::restoreDefaultBindings(normalizedControls);
+    const auto up=CameraControls::defaults().value("up").toArray().at(0).toObject();
+    const auto down=CameraControls::defaults().value("down").toArray().at(0).toObject();
+    const auto forward=CameraControls::defaults().value("forward").toArray().at(0).toObject();
+    const QKeyEvent space(QEvent::KeyPress,Qt::Key_Space,Qt::NoModifier);
+    const QKeyEvent ctrlSpace(QEvent::KeyPress,Qt::Key_Space,Qt::ControlModifier);
+    const QKeyEvent ctrl(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier);
+    const QKeyEvent ctrlW(QEvent::KeyPress,Qt::Key_W,Qt::ControlModifier);
+    const QKeyEvent shiftW(QEvent::KeyPress,Qt::Key_W,Qt::ShiftModifier);
+    const QKeyEvent ctrlShift(QEvent::KeyPress,Qt::Key_Shift,Qt::ShiftModifier|Qt::ControlModifier);
+    const auto fast=CameraControls::defaults().value("fast").toArray().at(0).toObject();
+    if(!check(CameraControls::matches(up,space) && !CameraControls::matches(down,space) &&
+              CameraControls::matches(down,ctrlSpace) && !CameraControls::matches(up,ctrlSpace) &&
+              !CameraControls::matches(down,ctrl) && !CameraControls::matches(forward,ctrlW) &&
+              CameraControls::matches(forward,shiftW) && CameraControls::matches(fast,ctrlShift,true) &&
+              !CameraControls::same(up,down) &&
+              CameraControls::label(57,Qt::Key_Space,Qt::ControlModifier)=="Ctrl+Space" &&
+              CameraControls::normalized({{"down",QJsonArray{CameraControls::binding(29,Qt::Key_Control)}}}).value("down")==CameraControls::defaults().value("down"),
+              "Space/Ctrl+Space are distinct; Ctrl shortcuts remain available and Shift acceleration works"))return 1;
+    if (!check(resetControls["movement_speed"] == normalizedControls["movement_speed"] &&
+                   resetControls["extension"] == normalizedControls["extension"],
+               "Restoring keys erased common speed or extensions"))
+        return 1;
+ return 0;
+}
+
+static int camera_geometry() {
     for(const float yaw:{-170.f,-90.f,0.f,45.f,90.f,170.f})for(const float pitch:{-89.f,-60.f,0.f,60.f,89.f}) {
         const auto orientation=QQuaternion::fromEulerAngles(pitch,yaw,0);
         const auto forward=CameraGeometry::horizontalMovement(orientation,{0,0,-1});
@@ -34,11 +74,47 @@ int main() {
     const auto clipped=CameraGeometry::translatedPosition(edge,{1,0,0});
     if(!check(clipped.y()==edge.y() && clipped.length()<=10.00001f,
               "Horizontal movement keeps height at the camera distance limit"))return 1;
+return 0;
+}
+
+static int color_presets() {
+using namespace SurfaceSettings;
+    const QJsonArray stops{QJsonObject{{"position", 0}, {"color", "#123456"}, {"extension", 7}},
+                           QJsonObject{{"position", .123456789}, {"color", "#abcdef"}},
+                           QJsonObject{{"position", 1}, {"color", "#ffffff"}}};
+    const QJsonObject colors{{"gradient", "viridis"}, {"gradient_layout", "log"}, {"gradient_stops", stops}};
+    QJsonArray original{QJsonObject{{"id", "first"},
+                                    {"name", "Existing"},
+                                    {"entry_extension", 42},
+                                    {"values", QJsonObject{{"value_extension", 17}, {"gradient", "green_red"}}}},
+                        QJsonObject{{"unknown_entry", 91}}};
+    const auto updated = saveColorPreset(original, "first", " Renamed ", colors);
+    const auto entry = updated[0].toObject(), values = entry["values"].toObject();
+    if (!check(original[0].toObject().value("name") == "Existing" && updated.size() == 2 && entry["id"] == "first" &&
+                   entry["name"] == "Renamed" && entry["entry_extension"].toInt() == 42 &&
+                   values["value_extension"].toInt() == 17 &&
+                   values["gradient_stops"].toArray().at(0).toObject().value("extension").toInt() == 7 &&
+                   gradientStops(values).at(1).first == .123456789,
+               "Preset transaction preserves ID, unknown fields and exact custom positions"))
+        return 1;
+    const auto added = saveColorPreset(updated, "second", "New", QJsonObject{{"gradient", "ice_fire"}});
+    const auto removed = removeColorPreset(added, "first");
+    if (!check(added.size() == 3 && removed.size() == 2 && removed[0].toObject().value("unknown_entry").toInt() == 91 &&
+                   removed[1].toObject().value("id") == "second" && removeColorPreset(added, "missing") == added &&
+                   saveColorPreset(added, "bad", "  ", colors) == added,
+               "Preset add/delete preserve unrelated and unknown entries"))
+        return 1;
+return 0;
+}
+
+int main() {
+    using namespace SurfaceSettings;
+    if(const auto result=camera_geometry())return result;
     const auto initial = normalized({});
     if(!check(initial["auto_range_interval_seconds"].toDouble()==10 &&
-        normalized({{"auto_range_interval_seconds",0}})["auto_range_interval_seconds"].toDouble()==1 &&
-        normalized({{"auto_range_interval_seconds",120}})["auto_range_interval_seconds"].toDouble()==60 &&
-        normalized({{"auto_range_interval_seconds","bad"}})["auto_range_interval_seconds"].toDouble()==10,
+        normalized({{"auto_range_interval_seconds",0}}).value("auto_range_interval_seconds").toDouble()==1 &&
+        normalized({{"auto_range_interval_seconds",120}}).value("auto_range_interval_seconds").toDouble()==60 &&
+        normalized({{"auto_range_interval_seconds","bad"}}).value("auto_range_interval_seconds").toDouble()==10,
         "Automatic amplitude interval defaults and validated seconds bounds"))return 1;
     if (!check(initial["background_mode"] == "auto" && initial["mesh_color"] == "auto" &&
                    initial["axis_precision"].toInt() == 0 && !initial["reverse_amplitude"].toBool() &&
@@ -73,7 +149,7 @@ int main() {
                "Custom settings and precision preserved"))
         return 1;
     const auto invalid = normalized(QJsonObject{{"axis_precision", 1e300}, {"y_min", 4}, {"y_max", 2}});
-    if(!check(normalizedCadence({})["gui_fps_mode"]=="maximum" && renderFps({},165)==165 && renderFps({},360)==360 &&
+    if(!check(normalizedCadence({}).value("gui_fps_mode")=="maximum" && renderFps({},165)==165 && renderFps({},360)==360 &&
               renderFps(QJsonObject{{"gui_fps_mode","display"},{"gui_target_fps",120}},165)==165 &&
               renderFps(QJsonObject{{"gui_fps_mode","maximum"}},360)==360 &&
               renderFps(QJsonObject{{"gui_fps_mode","fixed"},{"gui_target_fps",170}},165)==170 &&
@@ -86,31 +162,7 @@ int main() {
                    renderFps(QJsonObject{{"gui_fps_mode", "screen"}}, 59.94) == 60,
                "Axis/FPS bounds and invalid Y range fallback"))
         return 1;
-    const QJsonArray stops{QJsonObject{{"position", 0}, {"color", "#123456"}, {"extension", 7}},
-                           QJsonObject{{"position", .123456789}, {"color", "#abcdef"}},
-                           QJsonObject{{"position", 1}, {"color", "#ffffff"}}};
-    const QJsonObject colors{{"gradient", "viridis"}, {"gradient_layout", "log"}, {"gradient_stops", stops}};
-    QJsonArray original{QJsonObject{{"id", "first"},
-                                    {"name", "Existing"},
-                                    {"entry_extension", 42},
-                                    {"values", QJsonObject{{"value_extension", 17}, {"gradient", "green_red"}}}},
-                        QJsonObject{{"unknown_entry", 91}}};
-    const auto updated = saveColorPreset(original, "first", " Renamed ", colors);
-    const auto entry = updated[0].toObject(), values = entry["values"].toObject();
-    if (!check(original[0].toObject()["name"] == "Existing" && updated.size() == 2 && entry["id"] == "first" &&
-                   entry["name"] == "Renamed" && entry["entry_extension"].toInt() == 42 &&
-                   values["value_extension"].toInt() == 17 &&
-                   values["gradient_stops"].toArray()[0].toObject()["extension"].toInt() == 7 &&
-                   gradientStops(values)[1].first == .123456789,
-               "Preset transaction preserves ID, unknown fields and exact custom positions"))
-        return 1;
-    const auto added = saveColorPreset(updated, "second", "New", QJsonObject{{"gradient", "ice_fire"}});
-    const auto removed = removeColorPreset(added, "first");
-    if (!check(added.size() == 3 && removed.size() == 2 && removed[0].toObject()["unknown_entry"].toInt() == 91 &&
-                   removed[1].toObject()["id"] == "second" && removeColorPreset(added, "missing") == added &&
-                   saveColorPreset(added, "bad", "  ", colors) == added,
-               "Preset add/delete preserve unrelated and unknown entries"))
-        return 1;
+    if(const auto result=color_presets())return result;
     const auto override = effective(
         QJsonObject{{"defaults", custom}},
         QJsonObject{
@@ -123,48 +175,12 @@ int main() {
         return 1;
     const auto oldOverride = QJsonObject{
         {"surface_override", QJsonObject{{"enabled", true}, {"values", QJsonObject{{"axis_precision", 2}}}}}};
-    if (!check(effective(QJsonObject{{"defaults", QJsonObject{{"axis_precision", 7}}}}, oldOverride)["axis_precision"]
+    if (!check(effective(QJsonObject{{"defaults", QJsonObject{{"axis_precision", 7}}}}, oldOverride).value("axis_precision")
                            .toInt() == 7 &&
-                   oldOverride["surface_override"].toObject()["values"].toObject()["axis_precision"].toInt() == 2,
+                   oldOverride["surface_override"].toObject().value("values").toObject().value("axis_precision").toInt() == 2,
                "Global precision wins without mutating stored view"))
         return 1;
-    const QJsonObject controls{
-        {"movement_speed", 4.123456},
-        {"extension", 99},
-        {"forward", QJsonArray{QJsonObject{{"scan", 17}, {"key", Qt::Key_W}, {"binding_extension", 42}}}}};
-    const auto normalizedControls = CameraControls::normalized(controls);
-    if (!check(CameraControls::movementSpeed({}) == 3 &&
-                   CameraControls::movementSpeed(QJsonObject{{"movement_speed", 1e300}}) == 10 &&
-                   CameraControls::movementSpeed(QJsonObject{{"movement_speed", -.1}}) == .5 &&
-                   CameraControls::movementSpeed(QJsonObject{{"movement_speed", "bad"}}) == 3 &&
-                   normalizedControls["extension"].toInt() == 99 &&
-                   normalizedControls["forward"].toArray()[0].toObject()["binding_extension"].toInt() == 42 &&
-                   normalizedControls["movement_speed"].toDouble() == 4.123456,
-               "Common speed bounds/defaults preserve settings and binding extensions"))
-        return 1;
-    const auto resetControls = CameraControls::restoreDefaultBindings(normalizedControls);
-    const auto up=CameraControls::defaults()["up"].toArray()[0].toObject();
-    const auto down=CameraControls::defaults()["down"].toArray()[0].toObject();
-    const auto forward=CameraControls::defaults()["forward"].toArray()[0].toObject();
-    const QKeyEvent space(QEvent::KeyPress,Qt::Key_Space,Qt::NoModifier);
-    const QKeyEvent ctrlSpace(QEvent::KeyPress,Qt::Key_Space,Qt::ControlModifier);
-    const QKeyEvent ctrl(QEvent::KeyPress,Qt::Key_Control,Qt::ControlModifier);
-    const QKeyEvent ctrlW(QEvent::KeyPress,Qt::Key_W,Qt::ControlModifier);
-    const QKeyEvent shiftW(QEvent::KeyPress,Qt::Key_W,Qt::ShiftModifier);
-    const QKeyEvent ctrlShift(QEvent::KeyPress,Qt::Key_Shift,Qt::ShiftModifier|Qt::ControlModifier);
-    const auto fast=CameraControls::defaults()["fast"].toArray()[0].toObject();
-    if(!check(CameraControls::matches(up,space) && !CameraControls::matches(down,space) &&
-              CameraControls::matches(down,ctrlSpace) && !CameraControls::matches(up,ctrlSpace) &&
-              !CameraControls::matches(down,ctrl) && !CameraControls::matches(forward,ctrlW) &&
-              CameraControls::matches(forward,shiftW) && CameraControls::matches(fast,ctrlShift,true) &&
-              !CameraControls::same(up,down) &&
-              CameraControls::label(57,Qt::Key_Space,Qt::ControlModifier)=="Ctrl+Space" &&
-              CameraControls::normalized({{"down",QJsonArray{CameraControls::binding(29,Qt::Key_Control)}}})["down"]==CameraControls::defaults()["down"],
-              "Space/Ctrl+Space are distinct; Ctrl shortcuts remain available and Shift acceleration works"))return 1;
-    if (!check(resetControls["movement_speed"] == normalizedControls["movement_speed"] &&
-                   resetControls["extension"] == normalizedControls["extension"],
-               "Restoring keys erased common speed or extensions"))
-        return 1;
+    if(const auto result=camera_bindings())return result;
     std::puts("PASS: pure surface settings, precision/Y/cadence bounds, color presets and unknown metadata");
     return 0;
 }

@@ -64,6 +64,19 @@ QGridLayout* camera_binding_grid(QGroupBox* group) {
     grid->addWidget(ui::make<QLabel>("Alternative",group),0,2);
     return grid;
 }
+void append_camera_binding_help(QVBoxLayout* layout,QGroupBox* group) {
+    auto *help = ui::make<QLabel>("Click a key to reassign it. Works in any keyboard layout.\nThe second column adds "
+                                  "an alternative key for the same action.",
+                                  group);
+    help->setWordWrap(true);
+    layout->addWidget(help);
+}
+QLabel* camera_binding_status(QGroupBox* group) {
+    auto *status = new QLabel(group);
+    status->setWordWrap(true);
+    status->setObjectName("cameraBindingStatus");
+    return status;
+}
 } // namespace
 
 void SettingsWidget::_setup_camera_controls() {
@@ -119,19 +132,13 @@ void SettingsWidget::_refresh_camera_bindings(QGroupBox *group) {
 }
 
 void SettingsWidget::_setup_camera_bindings(QVBoxLayout *layout,QGroupBox *group) {
-    auto *help = ui::make<QLabel>("Click a key to reassign it. Works in any keyboard layout.\nThe second column adds "
-                                  "an alternative key for the same action.",
-                                  group);
-    help->setWordWrap(true);
-    layout->addWidget(help);
+    append_camera_binding_help(layout,group);
     auto *grid=camera_binding_grid(group);
     const std::pair<const char *, const char *> actions[] = {
         {"forward", "Forward"}, {"backward", "Backward"}, {"left", "Strafe left"}, {"right", "Strafe right"},
         {"up", "Move up"},      {"down", "Move down"},    {"fast", "Move faster"}, {"reset", "Reset camera"}};
     _context.file_configs.ui.camera_controls = CameraControls::normalized(_context.file_configs.ui.camera_controls);
-    auto *status = new QLabel(group);
-    status->setWordWrap(true);
-    status->setObjectName("cameraBindingStatus");
+    auto *status=camera_binding_status(group);
     int row = 1;
     for (auto [action, title] : actions) {
         _add_camera_binding_row(grid,group,row,action,title,status);

@@ -7,10 +7,10 @@ repos:
       - id: quality-tools
         name: Quality-tool regression tests
         language: python
-        additional_dependencies: [identify==2.6.20]
+        additional_dependencies: [identify==2.6.20, clang-tidy==22.1.8]
         entry: python scripts/verify_quality_tools.py
         pass_filenames: false
-        files: '^(\.pre-commit-config\.yaml|\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution)(_tests)?|run_(clazy|clang_tidy)|verify_quality_tools)\.py|tests/(quality_execution|run_clazy|run_clang_tidy)_tests\.py)$'
+        files: '^(\.pre-commit-config\.yaml|(?:tests/)?\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution|compile_context)(_tests)?|run_(clazy|clang_tidy)|verify_quality_tools)\.py|tests/(quality_execution|quality_compile_context|run_clazy|run_clang_tidy)_tests\.py)$'
       - id: checkdeps
         name: Chromium checkdeps (module boundaries)
         language: python
@@ -30,7 +30,7 @@ repos:
         language: python
         additional_dependencies: [clang-tidy==22.1.8]
         entry: python scripts/run_clang_tidy.py
-        args: [-p=cmake-build-release, --extra-arg=-xc++, --extra-arg-before=-std=c++23]
+        args: [-p=cmake-build-release, --extra-arg-before=-xc++, --extra-arg-before=-std=c++23]
         pass_filenames: false
         always_run: true
         require_serial: true
@@ -49,7 +49,7 @@ repos:
         language: python
         additional_dependencies: [clang-tidy==22.1.8]
         entry: python scripts/run_clang_tidy.py
-        args: [--scope=full, --code-scope=tests, -p=cmake-build-release, --extra-arg=-xc++, --extra-arg-before=-std=c++23]
+        args: [--scope=full, --code-scope=tests, -p=cmake-build-release, --extra-arg-before=-xc++, --extra-arg-before=-std=c++23]
         pass_filenames: false
         always_run: true
         require_serial: true

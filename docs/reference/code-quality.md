@@ -28,7 +28,8 @@ Serena помогает с навигацией/рефакторингом и н
 Python и QML не проверяются линтерами. Python используется только для запуска
 инструментов. Правила include-зависимостей находятся в стандартных файлах DEPS.
 
-В `.clang-tidy` настроены два правила:
+В корневом `.clang-tidy` настроены production-пороги и строгая политика
+тестовых builders, fixtures, oracle и инфраструктуры:
 
 - `readability-function-size`: максимум 20 операторов функции;
 - `readability-function-cognitive-complexity`: максимум 15.
@@ -49,8 +50,9 @@ python -m venv .agent-workspace/quality-venv
 использует оттуда include paths и defines. Generated Qt headers должны быть
 созданы сборкой. Сам pre-push не собирает приложение.
 
-Для C++ headers без собственной записи clang-tidy может подобрать C-команду.
-Hook явно задаёт язык C++ и начальный стандарт C++23 через стандартные
+Для C++ headers без собственной записи launcher выбирает доказанный C++ owning
+контекст; произвольная соседняя C-команда больше не используется. Hook явно
+задаёт язык C++ и начальный стандарт C++23 через стандартные
 `--extra-arg`/`--extra-arg-before`; собственный `-std` compilation database
 остаётся приоритетнее начального стандарта. Пороги и состав проверок не меняются.
 Описание аргументов: [LLVM clang-tidy](https://releases.llvm.org/22.1.0/tools/clang/tools/extra/docs/clang-tidy/index.html).
@@ -213,7 +215,41 @@ change this category: production and examples outside `tests/` remain production
 `--code-scope production` is the default; `tests` selects tests and `all` explicitly
 combines both. Git scope is independent: `--scope full`, `--full` and
 `QUALITY_FULL=1` expand coverage within the selected category. Explicit files
-from a different category fail. Checks and thresholds are identical in both passes.
+from a different category fail. Both passes retain the same two function checks;
+their limits differ only for registered test scenario sources.
+
+Files under `tests/` ending in `_tests.cpp` and the 13 explicitly registered
+scenario/measurement drivers in `scripts/run_clang_tidy.py::SCENARIO_DRIVERS` use
+`tests/.clang-tidy`: at most 60 statements and cognitive complexity 25. The registry
+covers application startup, block UI, FFT size, graph performance/visual comparison,
+numeric loopback/preview cadence, render topology, resampler quality, the three UI
+audits and UI transitions. It classifies their actual scenario responsibility;
+it does not exempt their diagnostics or all C++ files by name. Every test header, including builders,
+fixtures and computational oracles, and every other test C++ source use the root
+configuration explicitly: 20 statements and complexity 15. For example,
+`tests/sdk_consumer/main.cpp` remains strict; `tests/fft_size_benchmark.cpp` is an
+explicitly registered measurement scenario.
+The runner chooses the configuration for the requested source, even when a header
+needs an owning scenario translation unit, and reports the policy on each task.
+Registered test fragments run in their actual owning translation unit with the
+strict configuration. An exact path header filter and a basename line filter
+intersect to report that header alone, accepting Clang's mixed Windows separators;
+the owning scenario is checked separately with its scenario policy. Compiler
+errors still fail the task. Production fragment handling is unchanged.
+Fixture headers may take a proven C/C++ owner compiled by an actual test target
+whose include roots contain `tests/`. Such an owner supplies compiler context,
+not an additional production lint job. Selected headers still use the canonical
+C++ header language and strict policy; incompatible compiler flags fail rather
+than being discarded. This covers the pure attribute macros used by the
+component fixture's vendor C sources. Unreferenced helpers require an explicit
+retirement decision instead of an arbitrary nearby owner.
+Computational helpers extracted from a scenario belong in strict support headers;
+the scenario allowance is not a claim that every mixed helper has been audited.
+
+`IgnoreMacros` remains `false` for both checks and both policies. Scenario `CHECK`
+macros may forward to a small reporting function, so assertion error reporting does
+not add nested branches to each scenario. Conditions, loops and other actual logic
+remain visible to the checks; no blanket macro exclusion is enabled.
 
 Run the separate test lint explicitly:
 
@@ -227,3 +263,76 @@ pull-request CI do not run test lint. The hooks are manual-only and do not run
 in the default pre-push. Test Clazy selects owning test TUs and preserves only-Qt,
 level0/level1 and errors. Python quality-tool regressions remain in the existing
 meta-hook for changes to quality tooling.
+
+
+## Proven compilation profiles
+
+clang-tidy no longer borrows an arbitrary nearby compilation command. Each selected
+source must have a real entry in a configured compilation database. Self-contained
+headers remain main files with `-x c++-header` placed before the input and use each
+distinct proven literal-include owner command. Explicitly registered fragments
+(FFT correctness/memory and legacy FIR benchmark headers) run in their real owner
+translation unit, preserving its original declarations/include order; an anchored
+header filter selects only the requested fragment, accepting both Windows separator
+forms. The owner is not force-included into a second standalone copy of that header.
+Unknown fragments fail compilation rather than receiving guessed includes. Real
+compiler regressions verify an oversized unguarded fragment still blocks on its own
+header diagnostic, without redefinition/pragma errors, and a self-contained header
+still blocks with canonical header language. Supplying `ESP_CLANG_TIDY` also requires
+these regressions against that actual Espressif tool; standard host meta checks use
+the pinned host clang-tidy. Missing owners fail closed; distinct owning feature
+variants are not silently discarded.
+
+Use repeatable `--context-build-path <build-directory>` for additional configured
+profiles; `QUALITY_CONTEXT_BUILD_PATHS` accepts the platform path separator (semicolon
+on Windows). The primary database remains `cmake-build-release/compile_commands.json`.
+For GMF use the existing `examples/gmf_fft_benchmark/host` composition and its pinned
+`GMF_FFT_SOURCE_DIR`; firmware sources use their actual ESP-IDF build profiles.
+Profiles are explicit, not discovered by searching old build directories. No synthetic
+system headers or arbitrary include paths substitute for a missing platform profile.
+
+Xtensa policy analysis uses real ESP-IDF Clang build profiles and the official
+Espressif clang-tidy supplied by `--embedded-executable` or `ESP_CLANG_TIDY`.
+The saved official command must identify `--target=xtensa-esp-elf` and an explicit
+supported `-mcpu`; it is preserved without GCC flag or standard-library adaptation.
+An unproven CPU or target fails closed. Configure these profiles separately with
+`IDF_TOOLCHAIN=clang`, the same composition/options/target and their own build-local
+sdkconfig. Supply their databases explicitly through `QUALITY_CONTEXT_BUILD_PATHS`.
+The current IDF Clang profile selects bundled Newlib; it does not claim to reproduce
+the GCC/Picolibc ABI. Native GCC object compilation remains separate acceptance for
+that configuration. No hardware or benchmark performance claim follows from syntax
+analysis. Compiler-only language overrides precede inputs, including header main files.
+
+Materialized per-owner databases and provenance (original database SHA and owner)
+are written to ignored `.agent-workspace/quality/compile-contexts/`. The original
+configured databases are never modified by the quality runner. Materialization identity
+includes the adapted arguments, so a driver-adaptation change preserves older evidence. The meta-hook pins
+clang-tidy22.1.8 for its real fail-closed fragment regression; embedded analysis uses
+the Espressif version required by the selected ESP-IDF installation.
+
+The release database is the primary analysis profile. Additional real profiles fill
+sources/headers without any proven primary context; they do not multiply every
+portable source across every installed firmware configuration. All semantic variants
+within the selected tier remain checked. Owner candidates follow the same registered
+production/test and vendor/generated main-file policy as the requested category.
+Emission-only output/dependency flags are normalized; defines, undefines, standards,
+include order and forced includes are preserved. Process-local include-edge and
+command caches avoid repeated filesystem discovery; there is no saved PASS cache.
+This gate covers default production plus missing platform contexts, not every possible
+platform configuration. Native cross-compilation separately covers the configured
+firmware branches.
+
+Configured GCC response files are expanded in place, recursively, with original byte
+hashes saved in context provenance. GNU response-file quoting and whitespace rules
+(including Windows text-mode CRLF handling) are separate from Windows command-line
+parsing. Missing files, cycles and malformed quoting fail closed. Production
+headers with no production owner may borrow a proven existing test-owner command as
+a final metadata fallback; test sources themselves are not selected or linted.
+
+Unused exported standalone aliases have an explicit compile-only consumer target:
+configure release with `-DBUILD_QUALITY_HEADER_AUDIT=ON`. Its real target links the
+modules exporting those headers. The retained FIR benchmark reference has an
+ESP-IDF consumer enabled by `PORTABLE_SDK_HEADER_AUDIT=ON` together with
+`PORTABLE_SDK_EXAMPLE_ENTRYPOINT=ON`; it inherits the actual stock component and
+FreeRTOS context. These fixtures do not install fake platform headers or add a
+runtime feature. Include their configured databases in the explicit context list.

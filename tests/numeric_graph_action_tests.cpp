@@ -21,7 +21,7 @@
 #include <stdexcept>
 static void require(bool ok,const char* text){if(!ok)throw std::runtime_error(text);}
 using editor_ui_test_fixture::wait_until;
-static QList<WorkspaceDock*> docks(int node){QList<WorkspaceDock*> result;for(auto* widget:QApplication::allWidgets())if(auto* dock=qobject_cast<WorkspaceDock*>(widget);dock && dock->property("graphNode").isValid() && dock->property("graphNode").toInt()==node)result.append(dock);return result;}
+static QList<WorkspaceDock*> docks(int node){QList<WorkspaceDock*> result;const auto widgets=QApplication::allWidgets();for(auto* widget:widgets)if(auto* dock=qobject_cast<WorkspaceDock*>(widget);dock && dock->property("graphNode").isValid() && dock->property("graphNode").toInt()==node)result.append(dock);return result;}
 static QtNodes::NodeGraphicsObject* owning_node(QGraphicsItem* hit){
     for(auto* parent=hit;parent;parent=parent->parentItem())
         if(auto* node=qgraphicsitem_cast<QtNodes::NodeGraphicsObject*>(parent))return node;
@@ -36,14 +36,15 @@ static void require_menu_target(QtNodes::NodeGraphicsObject* item,QtNodes::NodeG
 static QMenu* node_menu(QtNodes::DataFlowGraphicsScene* scene,int node){
     auto* item=scene->nodeGraphicsObject(node);require(item,"Scene node missing");
     const auto point=item->sceneBoundingRect().center();
-    for(auto* hit:scene->items(point))if(auto* owner=owning_node(hit)){
+    const auto items=scene->items(point);
+    for(auto* hit:items)if(auto* owner=owning_node(hit)){
         require_menu_target(item,owner,node,point);break;
     }
     return scene->createSceneMenu(point);
 }
 static void report_missing_dock(int node,const QString& name,const QAction& action,qsizetype before){
     std::fprintf(stderr,"Action node=%d name=%s label=%s before=%lld after=%lld\n",node,qPrintable(name),qPrintable(action.text()),static_cast<long long>(before),static_cast<long long>(docks(node).size()));
-    for(auto* widget:QApplication::allWidgets())if(auto* dock=qobject_cast<WorkspaceDock*>(widget);dock && dock->property("graphNode").isValid())
+    const auto widgets=QApplication::allWidgets();for(auto* widget:widgets)if(auto* dock=qobject_cast<WorkspaceDock*>(widget);dock && dock->property("graphNode").isValid())
         std::fprintf(stderr,"Dock graphNode=%d closed=%d floating=%d\n",dock->property("graphNode").toInt(),dock->isClosed(),dock->isFloating());
 }
 static WorkspaceDock* trigger(QtNodes::DataFlowGraphicsScene* scene,int node,const QString& name){
@@ -52,25 +53,28 @@ static WorkspaceDock* trigger(QtNodes::DataFlowGraphicsScene* scene,int node,con
         report_missing_dock(node,name,*action,before.size());
         throw std::runtime_error("Actual QAction failed to create exactly one graph representation");
     }
-    WorkspaceDock* created=nullptr;for(auto* dock:docks(node))if(!before.contains(dock))created=dock;require(created && !created->isClosed(),"New representation remains closed");return created;
+    WorkspaceDock* created=nullptr;const auto current=docks(node);for(auto* dock:current)if(!before.contains(dock))created=dock;require(created && !created->isClosed(),"New representation remains closed");return created;
 }
 static domain::NumericProcessingGraph graph_with_catalog_sinks(){
     auto graph=numeric_default_graph();int next=20;
-    for(auto& node:graph.nodes)if(node.kind=="ScalarView"){
-        require(node.inputs.size()==1,"Scalar view fixture has unexpected inputs");
-        auto second=node.inputs.front();second.id=1;node.inputs.push_back(second);
-    }
-    for(const auto& kind:numeric_editor::catalog()){
+    const auto kinds=numeric_editor::catalog();
+    for(const auto& kind:kinds){
         auto configured=numeric_editor::default_node(kind);domain::ResolvedProcessingNode resolved;
         if(!domain::resolve_processing_node(configured,numeric_editor::limits(),resolved) || resolved.role!=domain::NodeRole::Sink)continue;
         bool present=false;for(const auto& node:graph.nodes)present|=node.kind==configured.kind;
         if(!present){configured.id=next++;graph.nodes.push_back(std::move(configured));}
     }
+    // Include catalog-added scalar views as well as the factory metrics view.
+    for(auto& node:graph.nodes)if(node.kind=="ScalarView" || node.kind=="ScalarMetricsView"){
+        require(node.inputs.size()==1,"Scalar view fixture has unexpected inputs");
+        auto second=node.inputs.front();second.id=1;node.inputs.push_back(second);
+    }
     return graph;
 }
 static desktop::NumericDraftPresentation graph_settings(const domain::NumericProcessingGraph& graph){
     desktop::NumericDraftPresentation settings;
-    settings.application_settings={{"ui",QJsonObject{{"autosave_enabled",false},{"pipeline_auto_apply",false},{"language","en"},{"theme","light"},{"show_data_flow",true},{"show_raw_samples",false},{"show_amplitudes",false},{"show_test_amplitudes",false},{"show_spectrogram",false}}}};
+    // This menu/endpoint scenario opens every catalog view; rendering cadence is independent of its running DSP.
+    settings.application_settings={{"ui",QJsonObject{{"autosave_enabled",false},{"pipeline_auto_apply",false},{"graph_rendering",QJsonObject{{"gui_fps_mode","fixed"},{"gui_target_fps",1}}},{"language","en"},{"theme","light"},{"show_data_flow",true},{"show_raw_samples",false},{"show_amplitudes",false},{"show_test_amplitudes",false},{"show_spectrogram",false}}}};
     int position=0;for(const auto& node:graph.nodes){settings.positions[QString::number(node.id)]=QJsonObject{{"x",(position%4)*10000},{"y",(position/4)*10000}};++position;}
     return settings;
 }
@@ -112,7 +116,7 @@ static void open_sink_views(QtNodes::DataFlowGraphicsScene* scene,const domain::
                 "Open in new tab detached from the existing group or reopened a closed graph");
         require(!dock->property("numericEndpoint").toMap().isEmpty(),"Working view has no runtime endpoint");
         if(node.kind=="FFTView")verify_single_input_menu(scene,node.id);
-        if(node.kind=="ScalarView")verify_multi_input_menu(scene,node.id,app);
+        if(node.kind=="ScalarView" || node.kind=="ScalarMetricsView")verify_multi_input_menu(scene,node.id,app);
     }
 }
 static WorkspaceDock* open_placement_variants(QtNodes::DataFlowGraphicsScene* scene,QList<WorkspaceDock*>& requested){
@@ -130,7 +134,7 @@ static void open_split_and_selected(QtNodes::DataFlowGraphicsScene* scene,Scheme
                                     QSignalSpy& opened){
     std::unique_ptr<QMenu> splitMenu(node_menu(scene,10));auto* beside=splitMenu->findChild<QMenu*>("graphPlacementTargets");
     require(beside && beside->isEnabled() && !beside->actions().isEmpty(),"Split target menu unavailable");
-    const auto beforeSplit=docks(10).size();beside->actions().first()->trigger();
+    const auto beforeSplit=docks(10).size();const auto actions=beside->actions();actions.first()->trigger();
     require(wait_until([&]{return docks(10).size()==beforeSplit+1;}),"Actual split QAction did not create representation");
     scene->clearSelection();scene->nodeGraphicsObject(9)->setSelected(true);
     auto* selected=editor->findChild<QAction*>("showSelectedGraph");require(selected,"Selected graph action missing");
@@ -162,7 +166,8 @@ static void verify_dock_bindings(const QList<WorkspaceDock*>& requested,const do
 static void verify_floating_editor(MainWindow* window,SchemeEditorWidget* editor,
                                    QtNodes::DataFlowGraphicsScene* scene,WorkspaceDock* external){
     WorkspaceDock* flow=nullptr;
-    for(auto* dock:window->findChildren<WorkspaceDock*>())if(dock->widget()==editor)flow=dock;
+    const auto windowDocks=window->findChildren<WorkspaceDock*>();
+    for(auto* dock:windowDocks)if(dock->widget()==editor)flow=dock;
     require(flow,"Data Flow dock missing");flow->setFloating(true);
     require(wait_until([&]{return flow->isFloating();}),"Isolated Data Flow did not float");
     auto* scoped=trigger(scene,9,"openGraphPlacement1");

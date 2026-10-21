@@ -542,6 +542,9 @@ struct ControlSession::Impl {
   if(!decode_message(bytes,wire)){fail(ControlSessionError::Codec);return;}
   // The decode lease has ended; only primary-arena views reach application callbacks.
   if(application::SessionIdentity{wire.client,wire.session,wire.epoch}!=context){fail(ControlSessionError::Identity);return;}
+  dispatch_message(wire);
+ }
+ void dispatch_message(const nc::Message& wire) {
   if(service)server_message(wire);
   else client_message(wire);
  }
@@ -583,6 +586,9 @@ struct ControlSession::Impl {
   device_pending=std::size_t(pending);
   if(session_expired()){fail(ControlSessionError::Timeout);return Status::unavailable;}
   // Service submit owns preparation expiry and preserves rejection provenance.
+  return validate_outbound_budget();
+ }
+ Status validate_outbound_budget() {
   const auto reservation=tx_size?control_message_bound(tx_size,effective_packet_bytes):std::optional<std::size_t>(0);
   if(!reservation || !budget(*reservation)){fail(ControlSessionError::LimitExceeded);return Status::exhausted;}
   return Status::ok;
@@ -660,6 +666,9 @@ struct ControlSession::Impl {
   if(!fragment_valid(fragment)){fail(ControlSessionError::Malformed);return;}
   if(!total && !start_assembly(fragment))return;
   if(!fragment_continues_assembly(fragment)){fail(ControlSessionError::Malformed);return;}
+  append_fragment(payload,fragment);
+ }
+ void append_fragment(std::span<const std::uint8_t> payload,const FragmentView& fragment) {
   std::memcpy(assembly.data()+received,payload.data()+fragment.reader.at,std::size_t(fragment.count));
   received+=std::size_t(fragment.count);
   if(received==total)finish_assembly();

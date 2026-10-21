@@ -11,6 +11,23 @@
 #include "aggregator/utils.h"
 
 Q_LOGGING_CATEGORY(aggregator_server, "aggregator.server")
+namespace {
+void log_received_registration(TcpBDSPSocket* socket) {
+    qCDebug(aggregator_server, "Registration received from %s",
+            qPrintable(convert_qt_socket_to_string_ip_port(socket)));
+}
+bool registration_socket_available(TcpBDSPSocket* previous,TcpBDSPSocket* socket,const QUuid& uuid) {
+    if(!previous || !previous->isOpen() || previous==socket)return true;
+    qCWarning(aggregator_server, "Socket %s tried to take control of a component with a uuid: %s",
+              qPrintable(convert_qt_socket_to_string_ip_port(socket)), qPrintable(uuid.toString()));
+    return false;
+}
+void retire_registered_socket(QPointer<TcpBDSPSocket> socket) {
+    if(!socket)return;
+    socket->abort();
+    if(socket)socket->deleteLater();
+}
+}
 
 AggregatorServer::AggregatorServer(QObject *parent) : TcpBDSPServer(parent) {
     connect(this, &TcpBDSPServer::tcp_bdsp_socket_ready, this, &AggregatorServer::_on_new_connection);
@@ -61,20 +78,17 @@ void AggregatorServer::_close_registered_sockets() {
     _registered_components_map.clear();
     _capabilities.clear();
     _offline_generation.clear();
-    for (const auto &socket : sockets) {
+    for (const auto &socket : std::as_const(sockets)) {
         if (!socket)
             continue;
         socket->disconnect(this);
-        socket->abort();
-        if (socket)
-            socket->deleteLater();
+        retire_registered_socket(socket);
     }
 }
 
 bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &uuid, const component_info_t &new_info,
                                            const uint16_t session_token) {
-    qCDebug(aggregator_server, "Registration received from %s",
-            qPrintable(convert_qt_socket_to_string_ip_port(socket)));
+    log_received_registration(socket);
 
     if (new_info.type < ComponentType::data_source || new_info.type > ComponentType::core)
         return false;
@@ -83,7 +97,15 @@ bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &u
     if (_registered_components_map.contains(uuid)) {
         if (!_restore_registration(socket, uuid, new_info, session_token))
             return false;
-    } else {
+    } else _add_registration(socket,uuid,new_info,session_token);
+    _offline_generation[uuid] = ++_next_generation;
+    _sockets_uuid_map[socket] = uuid;
+    _update_registered_capabilities(socket, uuid, new_info);
+    _send_registry_snapshot(socket, uuid);
+    return true;
+}
+void AggregatorServer::_add_registration(TcpBDSPSocket* socket,const QUuid& uuid,
+                                         const component_info_t& new_info,uint16_t session_token) {
         qCInfo(aggregator_server, "Registered new component %s",
                qPrintable(aggregator_utils::format_component_registration(
                    uuid, new_info.type, convert_qt_socket_to_string_ip_port(socket))));
@@ -95,28 +117,14 @@ bool AggregatorServer::_register_component(TcpBDSPSocket *socket, const QUuid &u
                                                 .component_server_port = new_info.component_server_port,
                                                 .address = new_info.address,
                                             }};
-    }
-    _offline_generation[uuid] = ++_next_generation;
-    _sockets_uuid_map[socket] = uuid;
-    _update_registered_capabilities(socket, uuid, new_info);
-    _send_registry_snapshot(socket, uuid);
-    return true;
 }
 
 bool AggregatorServer::_restore_registration(TcpBDSPSocket *socket, const QUuid &uuid,
                                               const component_info_t &new_info, uint16_t session_token) {
         auto &[socket_before, last_token, info] = _registered_components_map[uuid];
-        if (last_token not_eq session_token) {
-            qCWarning(aggregator_server, "Invalid session token for component uuid: %s from %s",
-                      qPrintable(uuid.toString()), qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-            return false;
-        }
+        if (!_session_token_matches(socket,uuid,last_token,session_token))return false;
 
-        if (socket_before && socket_before->isOpen() && socket_before != socket) {
-            qCWarning(aggregator_server, "Socket %s tried to take control of a component with a uuid: %s",
-                      qPrintable(convert_qt_socket_to_string_ip_port(socket)), qPrintable(uuid.toString()));
-            return false;
-        }
+        if(!registration_socket_available(socket_before,socket,uuid))return false;
 
         socket_before = socket;
         info = new_info;
@@ -127,6 +135,13 @@ bool AggregatorServer::_restore_registration(TcpBDSPSocket *socket, const QUuid 
         qCInfo(aggregator_server, "Session restored for component uuid: %s, %s", qPrintable(uuid.toString()),
                qPrintable(convert_qt_socket_to_string_ip_port(socket)));
     return true;
+}
+bool AggregatorServer::_session_token_matches(TcpBDSPSocket* socket,const QUuid& uuid,
+                                              uint16_t expected,uint16_t supplied) const {
+    if(expected==supplied)return true;
+    qCWarning(aggregator_server, "Invalid session token for component uuid: %s from %s",
+              qPrintable(uuid.toString()), qPrintable(convert_qt_socket_to_string_ip_port(socket)));
+    return false;
 }
 
 void AggregatorServer::_update_registered_capabilities(TcpBDSPSocket *socket, const QUuid &uuid,
@@ -151,6 +166,13 @@ void AggregatorServer::_send_registry_snapshot(TcpBDSPSocket *socket, const QUui
     QPointer<TcpBDSPSocket> receiver(socket);
     _send_update_component_event(info);
     const auto registry = _registered_components_map;
+    _send_registry_entries(receiver,uuid,registry);
+    for (const auto &metadata : std::as_const(_capabilities))
+        if (receiver)
+            receiver->send_packet(aggregator_capabilities::PacketId, aggregator_capabilities::encode(metadata));
+}
+void AggregatorServer::_send_registry_entries(QPointer<TcpBDSPSocket> receiver,const QUuid& uuid,
+                                             const QHash<QUuid,registered_component_t>& registry) {
     for (auto it = registry.cbegin(); it != registry.cend(); ++it) {
         if (!receiver || !_get_registration_status(receiver))
             break;
@@ -166,9 +188,6 @@ void AggregatorServer::_send_registry_snapshot(TcpBDSPSocket *socket, const QUui
                                    aggregator_wire::encode(snapshot)))
             break;
     }
-    for (const auto &metadata : std::as_const(_capabilities))
-        if (receiver)
-            receiver->send_packet(aggregator_capabilities::PacketId, aggregator_capabilities::encode(metadata));
 }
 
 void AggregatorServer::_reject(TcpBDSPSocket *socket, const QString &error) {
@@ -214,6 +233,10 @@ void AggregatorServer::_on_got_packet(BDSP::packet_context_t &packet_context, Tc
         return;
     }
 
+    _dispatch_registered_packet(packet_context,socket,packet_type);
+}
+void AggregatorServer::_dispatch_registered_packet(BDSP::packet_context_t& packet_context,
+                                                   TcpBDSPSocket* socket,PacketType packet_type) {
     switch (packet_type) {
     case static_cast<PacketType>(aggregator_capabilities::PacketId):
         _receive_capabilities(packet_context, socket); break;
@@ -282,18 +305,8 @@ void AggregatorServer::_receive_registration(BDSP::packet_context_t &packet_cont
 }
 
 void AggregatorServer::_receive_state_change(BDSP::packet_context_t &packet_context, TcpBDSPSocket *socket) {
-    if (packet_context.size not_eq sizeof(component_update_state_packet_t)) {
-        qCWarning(aggregator_server, "Component state change packet size incorrect from %s",
-                  qPrintable(convert_qt_socket_to_string_ip_port(socket)));
-        _reject(socket, "Invalid packet size");
-        return;
-    }
     component_update_state_packet_t decoded{};
-    if (!aggregator_wire::decode(
-            QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded)) {
-        _reject(socket, "Invalid state");
-        return;
-    }
+    if(!_decode_state_change(packet_context,socket,decoded))return;
     const auto [uuid_raw, new_state] = decoded;
     const auto uuid = QUuid::fromBytes(&uuid_raw);
     if (_sockets_uuid_map.value(socket) not_eq uuid) {
@@ -306,6 +319,21 @@ void AggregatorServer::_receive_state_change(BDSP::packet_context_t &packet_cont
         return;
     }
     _update_component_state_with_broadcast(uuid, new_state);
+}
+bool AggregatorServer::_decode_state_change(BDSP::packet_context_t& packet_context,TcpBDSPSocket* socket,
+                                            component_update_state_packet_t& decoded) {
+    if (packet_context.size not_eq sizeof(component_update_state_packet_t)) {
+        qCWarning(aggregator_server, "Component state change packet size incorrect from %s",
+                  qPrintable(convert_qt_socket_to_string_ip_port(socket)));
+        _reject(socket, "Invalid packet size");
+        return false;
+    }
+    if (!aggregator_wire::decode(
+            QByteArray(reinterpret_cast<const char *>(packet_context.data_ptr), packet_context.size), decoded)) {
+        _reject(socket, "Invalid state");
+        return false;
+    }
+    return true;
 }
 
 void AggregatorServer::_on_new_connection(TcpBDSPSocket *socket) {

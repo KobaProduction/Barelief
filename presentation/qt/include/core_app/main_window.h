@@ -211,6 +211,7 @@ class MainWindow final : public WorkspaceWindow {
     void restore_workspace_dock_visibility(const QJsonObject& visibility,int layout_version);
     void sync_workspace_config_visibility();
     void restore_default_workspace_visibility(const UIApplicationConfig& saved_ui);
+    void restore_default_node_visibility(const UIApplicationConfig& saved_ui);
     QWidget *make_panel_content(const QString& id,QWidget *view,WorkspaceDock *dock);
     void bind_panel_presentation(GraphPanel *panel);
     void save_graph_panel_preferences(const QString& id,const QJsonObject& prefs);
@@ -243,6 +244,8 @@ class MainWindow final : public WorkspaceWindow {
         const domain::NumericProcessingGraph& graph,const domain::ConfiguredProcessingNode& found,
         const QJsonObject& document);
     void focus_or_place_graph(WorkspaceDock *dock,WorkspaceDock *slot,int node);
+    void append_graph_port_action(QMenu*,int,domain::PortId,bool,int);
+    void initialize_graph_caption(AudioNodeModel*,const QString&);
     void populate_graph_ports(int node,const domain::NumericProcessingGraph& graph,QMenu *menu);
     void populate_graph_focus(int node,QMenu *menu);
     void populate_graph_placements(int node,QMenu *menu);
@@ -387,6 +390,15 @@ class MainWindow final : public WorkspaceWindow {
     void update_chart_visibility(const UIApplicationConfig &config);
     void update_chart_docks(const UIApplicationConfig &config);
     void register_navigation_tab_actions(QMenu*);
+    void focus_data_flow();
+    void detach_active_tab();
+    void hide_active_panel();
+    void restore_default_graph_docks();
+    void focus_graph_dock(WorkspaceDock*);
+    void update_render_precision(const QJsonObject&,QHash<QScreen*,double>&);
+    void toggle_data_flow();
+    void reset_numeric_view_endpoints();
+    void prepare_numeric_render();
     void register_theme_actions(QMenu*,QComboBox*,QActionGroup*);
     void sync_theme_combo(QComboBox*,const QStringList&);
     void refresh_spectrogram_fps();

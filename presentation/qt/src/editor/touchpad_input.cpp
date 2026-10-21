@@ -85,6 +85,10 @@ private:
         // QCursor converts Windows physical pixels to Qt logical coordinates.
         const auto position=target->mapFromGlobal(QCursor::pos());
         if(!target->rect().contains(position) || !accepts_contact(position)) return false;
+        begin_touchpad_contact(msg,position);
+        return false;
+    }
+    void begin_touchpad_contact(const MSG* msg,QPoint position) {
         POINTER_INPUT_TYPE type{};
         const auto id=UINT32(LOWORD(msg->wParam));
         const bool begin=!timer.isActive();
@@ -93,7 +97,6 @@ private:
             timer.start();
             qCDebug(touchpadLog)<<"touchpad contact"<<id;
         }
-        return false;
     }
     void update_viewport() {
         QPointer<Touchpad> alive(this);
@@ -157,6 +160,9 @@ private:
         close(); hwnd=window; host=current_host;
         host->installEventFilter(this);
         if(!initialize_com()) return;
+        initialize_viewport();
+    }
+    void initialize_viewport() {
         const auto result=create_viewport();
         if(FAILED(result)) {
             qCWarning(touchpadLog)<<"Native touchpad unavailable; retaining wheel input"<<Qt::hex<<quint32(result);
@@ -242,6 +248,12 @@ private:
            !std::isfinite(matrix[4]) || !std::isfinite(matrix[5])) return;
         apply_transform(matrix);
     }
+    void dispatch_transform(double ratio,QPointF delta) {
+        // Pinch translation must not also pan.
+        if(pinching) {
+            if(std::abs(ratio-1)>1e-6) send(Qt::ZoomNativeGesture,ratio-1,{});
+        } else if(!delta.isNull()) send(Qt::PanNativeGesture,0,delta);
+    }
     void apply_transform(const float (&matrix)[6]) {
         const double ratio=matrix[0]/last_scale;
         const QPointF translation(matrix[4]/host->devicePixelRatioF(),matrix[5]/host->devicePixelRatioF());
@@ -249,10 +261,7 @@ private:
         last_scale=matrix[0]; last_translation=translation;
         qCDebug(touchpadLog)<<"transform"<<matrix[0]<<translation<<"delta"<<delta;
         if(std::abs(matrix[0]-1)>1e-5) pinching=true;
-        // Pinch translation must not also pan.
-        if(pinching) {
-            if(std::abs(ratio-1)>1e-6) send(Qt::ZoomNativeGesture,ratio-1,{});
-        } else if(!delta.isNull()) send(Qt::PanNativeGesture,0,delta);
+        dispatch_transform(ratio,delta);
     }
 };
 }

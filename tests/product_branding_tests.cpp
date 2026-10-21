@@ -24,7 +24,8 @@ void write_empty_project(const QString& path) {
     require(bool(desktop::save_numeric_project(document,path)),"save isolated project");
 }
 MainWindow& main_window() {
-    for(auto* widget:QApplication::topLevelWidgets())
+    const auto widgets=QApplication::topLevelWidgets();
+    for(auto* widget:widgets)
         if(auto* window=qobject_cast<MainWindow*>(widget))return *window;
     throw std::runtime_error("No main window");
 }

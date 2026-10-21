@@ -28,12 +28,27 @@ template<class T> Status materialize_constant(T literal,MutableNumericView& outp
     const NumericView source{&input,std::as_bytes(std::span(&literal,1)),std::span(&plane,1),{1,1},{},{}};
     return convert_constant(source,output,profile,bits);
 }
+void allocate_conversion_rows(PlanNode& n,State& state,std::shared_ptr<GatherOwner> owner,const NumericGatherRequirements& req){
+                n.input_gather=std::move(owner);state.input_gather_payload.resize(req.payload_bytes);state.input_gather_metadata.resize(req.output_metadata_bytes);state.input_gather_scratch.resize(req.scratch_bytes);
+                state.row_planes.resize(std::get<NumericContract>(n.numeric_outputs[0]).channel_order.size());
+}
 Status prepare_constant_value(const ResolvedProcessingNode& configured,PlanNode& node,State& state,const NumericRuntimeProfile& profile) {
     ProcessingParameterView parameter;
     if(resolve_processing_parameter(configured,"value",parameter)!=Status::ok)return Status::invalid_argument;
     const auto* literal=std::get_if<NumericLiteral>(&parameter);if(!literal)return Status::invalid_argument;
     auto output=mutable_output(node,state,0);
     return std::visit([&](auto value){return materialize_constant(value,output,profile,node.constant_bits);},*literal);
+}
+bool fill_frequency_values(std::size_t bins,std::span<const float> explicit_hz,
+                           double sample_rate,double bin_hz,double first_bin,std::vector<double>& frequencies) {
+    frequencies.resize(bins);
+    double previous=-1;
+    for(std::size_t i=0;i<bins;++i){
+        const double hz=explicit_hz.empty()?(first_bin+double(i))*bin_hz:double(explicit_hz[i]);
+        if(!std::isfinite(hz) || hz<0 || hz<=previous || hz>sample_rate*.5)return false;
+        frequencies[i]=hz;previous=hz;
+    }
+    return true;
 }
 bool declared_frequency_values(const ResolvedProcessingNode& node,std::size_t bins,
                                std::vector<double>& frequencies) {
@@ -45,14 +60,7 @@ bool declared_frequency_values(const ResolvedProcessingNode& node,std::size_t bi
        resolve_processing_parameter(node,"frequencies_hz",supplied)!=Status::ok)return false;
     const auto* explicit_hz=std::get_if<std::span<const float>>(&supplied);
     if(!explicit_hz || (!explicit_hz->empty() && explicit_hz->size()!=bins))return false;
-    frequencies.resize(bins);
-    double previous=-1;
-    for(std::size_t i=0;i<bins;++i){
-        const double hz=explicit_hz->empty()?(first_bin+double(i))*bin_hz:double((*explicit_hz)[i]);
-        if(!std::isfinite(hz) || hz<0 || hz<=previous || hz>sample_rate*.5)return false;
-        frequencies[i]=hz;previous=hz;
-    }
-    return true;
+    return fill_frequency_values(bins,*explicit_hz,sample_rate,bin_hz,first_bin,frequencies);
 }
 }
 Status NumericPreparation::prepare_nodes(){
@@ -61,7 +69,7 @@ Status NumericPreparation::prepare_nodes(){
 }
 Status NumericPreparation::prepare_node(std::size_t position){
     const auto configured=order[g.nodes.size()+position];const auto& cn=plan->impl_->numeric_graph->nodes[configured];
-    ResolvedProcessingNode resolved;if(!resolve_processing_node(cn,profile.admission,resolved))return Status::invalid_argument;
+    ResolvedProcessingNode resolved;
     PlanNode n;auto& state=c->impl_->states[position];NodeFrame frame{configured,position,cn,resolved,n,state};
     auto status=prepare_node_header(frame);if(status!=Status::ok)return status;
     if(n.operation!=ProcessingOperation::Clock)status=prepare_node_processing(frame);
@@ -72,6 +80,7 @@ Status NumericPreparation::prepare_node_processing(NodeFrame& frame){
     const auto status=prepare_node_buffers(frame);return status==Status::ok?prepare_node_operations(frame):status;
 }
 Status NumericPreparation::prepare_node_header(NodeFrame& frame){
+    if(!resolve_processing_node(frame.cn,profile.admission,frame.resolved))return Status::invalid_argument;
     {const auto status=initialize_node(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_metadata_values(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_node_parameters(frame);if(status!=Status::ok)return status;}
@@ -79,13 +88,15 @@ Status NumericPreparation::prepare_node_header(NodeFrame& frame){
     return Status::ok;
 }
 Status NumericPreparation::prepare_node_buffers(NodeFrame& frame){
+    {const auto status=prepare_node_outputs(frame);if(status!=Status::ok)return status;}
+    {const auto status=prepare_input_storage(frame);if(status!=Status::ok)return status;}
+    return prepare_selector(frame);
+}
+Status NumericPreparation::prepare_node_outputs(NodeFrame& frame){
     {const auto status=prepare_output_contracts(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_output_storage(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_constant(frame);if(status!=Status::ok)return status;}
-    {const auto status=prepare_array_values(frame);if(status!=Status::ok)return status;}
-    {const auto status=prepare_input_storage(frame);if(status!=Status::ok)return status;}
-    {const auto status=prepare_selector(frame);if(status!=Status::ok)return status;}
-    return Status::ok;
+    return prepare_array_values(frame);
 }
 Status NumericPreparation::prepare_node_operations(NodeFrame& frame){
     {const auto status=prepare_node_links(frame);if(status!=Status::ok)return status;}
@@ -126,7 +137,11 @@ Status NumericPreparation::initialize_node(NodeFrame& frame){
         n.configured=frame.configured;n.node.id=cn.id;n.operation=resolved.operation;n.node.enabled=cn.enabled;
         n.internal_conversion=std::none_of(original.nodes.begin(),original.nodes.end(),[&](const auto& node){return node.id==cn.id;});
         if(auto kind=node_kind(cn.kind))n.node.kind=*kind;
-        if(!cn.inputs.empty())n.numeric_input=(resolved.operation==ProcessingOperation::InputSelector || resolved.operation==ProcessingOperation::Mixer || resolved.operation==ProcessingOperation::ArrayProduct || resolved.operation==ProcessingOperation::ChannelComparison || cn.kind=="ScalarView"?&cn.inputs.front():numeric_port(cn.inputs,0))->contract.view();
+    return initialize_node_input(frame);
+}
+Status NumericPreparation::initialize_node_input(NodeFrame& frame){
+    const auto& cn=frame.cn;const auto& resolved=frame.resolved;auto& n=frame.n;
+        if(!cn.inputs.empty())n.numeric_input=(resolved.operation==ProcessingOperation::InputSelector || resolved.operation==ProcessingOperation::Mixer || resolved.operation==ProcessingOperation::ArrayProduct || resolved.operation==ProcessingOperation::ChannelComparison || is_scalar_view(n.node.kind)?&cn.inputs.front():numeric_port(cn.inputs,0))->contract.view();
         if(resolved.operation==ProcessingOperation::ArrayProduct){OwnedProcessingContract output;if(array_product_output_contract(cn,output,&n.product_frame_input)!=Status::ok)return Status::invalid_argument;n.numeric_input=cn.inputs[n.product_frame_input].contract.view();}
     return Status::ok;
 }
@@ -204,7 +219,7 @@ Status NumericPreparation::bind_input_endpoint(PlanNode::ScalarInput& input,Node
 }
 Status NumericPreparation::prepare_input_endpoints(NodeFrame& frame){
     const auto& cn=frame.cn;auto& n=frame.n;
-    if(cn.kind!="ScalarView"&&!paired_processing(n.operation)&&n.operation!=ProcessingOperation::WLEDEncoder&&
+    if(!is_scalar_view(n.node.kind)&&!paired_processing(n.operation)&&n.operation!=ProcessingOperation::WLEDEncoder&&
        n.operation!=ProcessingOperation::Mixer&&n.operation!=ProcessingOperation::ChannelComparison&&
        !(n.operation==ProcessingOperation::Switch&&std::get<RouteProcessingParameters>(cn.parameters).channels_per_stream>1))return Status::ok;
     n.endpoint_plan=std::make_unique<PlanNode::EndpointPlan>();n.endpoint_plan->inputs.reserve(cn.inputs.size());
@@ -288,6 +303,10 @@ Status NumericPreparation::prepare_selector(NodeFrame& frame){
     auto& n=frame.n;if(n.operation!=ProcessingOperation::InputSelector)return Status::ok;
     double selected=0;if(!numeric_parameter(frame.resolved,"selected_input",selected))return Status::invalid_argument;
     n.selected_input=std::uint16_t(selected);if(frame.cn.outputs.size()<=1)return Status::ok;
+    return prepare_selector_channels(frame);
+}
+Status NumericPreparation::prepare_selector_channels(NodeFrame& frame){
+    auto& n=frame.n;
     n.endpoint_plan=std::make_unique<PlanNode::EndpointPlan>();n.endpoint_plan->inputs.resize(frame.cn.outputs.size());
     for(std::size_t lane=0;lane<frame.cn.outputs.size();++lane){const auto status=prepare_selector_lane(frame,lane);if(status!=Status::ok)return status;}
     return Status::ok;
@@ -317,12 +336,19 @@ Status NumericPreparation::prepare_group_parent(NodeFrame& frame){
         }
     return Status::ok;
 }
+void NumericPreparation::select_parent(PlanNode& node,const PlanNode::ScalarInput& input){
+    node.parent=input.parent;node.parent_port=input.parent_port;
+    node.clock=plan->impl_->nodes[input.parent].clock;
+}
 Status NumericPreparation::prepare_paired_parent(NodeFrame& frame){
-    const auto& cn=frame.cn;auto& n=frame.n;
-        if(paired_processing(n.operation)){
-            for(const auto& input:n.endpoint_plan->inputs)if(input.parent!=absent){n.parent=input.parent;n.parent_port=input.parent_port;n.clock=plan->impl_->nodes[input.parent].clock;break;}
-            if(n.operation==ProcessingOperation::ArrayProduct){const auto& driver=n.endpoint_plan->inputs[n.product_frame_input];if(driver.parent!=absent){n.parent=driver.parent;n.parent_port=driver.parent_port;n.clock=plan->impl_->nodes[driver.parent].clock;}}
-        }
+    auto& n=frame.n;
+    if(!paired_processing(n.operation))return Status::ok;
+    for(const auto& input:n.endpoint_plan->inputs)
+        if(input.parent!=absent){select_parent(n,input);break;}
+    if(n.operation==ProcessingOperation::ArrayProduct){
+        const auto& driver=n.endpoint_plan->inputs[n.product_frame_input];
+        if(driver.parent!=absent)select_parent(n,driver);
+    }
     return Status::ok;
 }
 bool NumericPreparation::parent_changed(std::size_t current,std::size_t prior)const {
@@ -386,6 +412,10 @@ Status NumericPreparation::prepare_mixer(NodeFrame& frame){
     const auto parameters=n.operation==ProcessingOperation::Mixer?std::get<MixerProcessingParameters>(frame.cn.parameters):MixerProcessingParameters{};
     frame.state.mixer_queues.resize(frame.cn.inputs.size());
     if(n.operation==ProcessingOperation::Mixer)prepare_mixer_weights(frame,parameters);
+    return prepare_mixer_storage(frame,parameters);
+}
+Status NumericPreparation::prepare_mixer_storage(NodeFrame& frame,const MixerProcessingParameters& parameters){
+    auto& n=frame.n;
     const auto& output=std::get<NumericContract>(n.numeric_outputs[0]);
     if(spectral_vector(output)){const auto status=prepare_hop(n,output.clock.sample_rate);if(status!=Status::ok)return status;}
     for(std::size_t lane=0;lane<frame.cn.inputs.size();++lane)prepare_mixer_queue(frame,lane,parameters);
@@ -398,8 +428,7 @@ Status NumericPreparation::prepare_conversion_rows(NodeFrame& frame){
                 NumericGatherRequirements req;if(numeric_gather_requirements(request,req)!=Status::ok)return Status::invalid_argument;
                 auto owner=std::make_shared<GatherOwner>(req.plan_metadata_bytes);
                 if(prepare_numeric_gather(request,owner->pool,owner->gather)!=Status::ok)return Status::invalid_argument;
-                n.input_gather=std::move(owner);state.input_gather_payload.resize(req.payload_bytes);state.input_gather_metadata.resize(req.output_metadata_bytes);state.input_gather_scratch.resize(req.scratch_bytes);
-                state.row_planes.resize(std::get<NumericContract>(n.numeric_outputs[0]).channel_order.size());
+                allocate_conversion_rows(n,state,std::move(owner),req);
                 n.row_conversion=std::make_unique<dsp_kernels::PreparedConversion>();
                 const auto status=dsp_kernels::prepare_conversion({n.input_gather->gather.output_contract(),numeric_projection(std::get<NumericContract>(n.numeric_outputs[0]),{},true),
                     std::get<ConverterProcessingParameters>(frame.cn.parameters).policy,profile.kernels,profile.admission.frame},profile.capabilities,*n.row_conversion);
@@ -512,7 +541,6 @@ Status NumericPreparation::prepare_transform_window(NodeFrame& frame){
 Status NumericPreparation::prepare_transform_window_function(NodeFrame& frame){
     auto& resolved=frame.resolved;
     auto& n=frame.n;
-    auto& state=frame.state;
     const auto old=frame.old;
     const auto& out=std::get<NumericContract>(frame.n.numeric_outputs[0]);
     const auto count=std::size_t(out.shape.extents[0].maximum);
@@ -522,10 +550,15 @@ Status NumericPreparation::prepare_transform_window_function(NodeFrame& frame){
                 if(old!=absent && previous->impl_->nodes[old].windows && previous->impl_->nodes[old].windows->maximum()==count)
                     n.windows=previous->impl_->nodes[old].windows;
                 else n.windows=std::make_shared<const dsp_kernels::PreparedWindows>(count);
+                return prepare_window_coefficients(frame,count);}
+
+
+}
+Status NumericPreparation::prepare_window_coefficients(NodeFrame& frame,std::size_t count){
+    auto& n=frame.n;auto& state=frame.state;
                 auto output=mutable_output(n,state,0);const auto coefficients=n.windows->coefficients(n.window_function);
                 for(std::size_t j=0;j<count;++j){const auto status=store_element(output,{0,j,0},n.node.enabled?coefficients[j]:1.f);if(status!=Status::ok)return status;}
-                return Status::ok;}
-
+    return Status::ok;
 }
 Status NumericPreparation::prepare_transform_bark_weighting(NodeFrame& frame){
     auto& state=frame.state;

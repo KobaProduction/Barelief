@@ -47,6 +47,7 @@ private:
     static QRectF strokeBounds(const Command& command);
     static QTransform decodeTransform(const QVariantMap& value);
     static void completeBounds(Command& command);
+    QRectF removedCommandBounds(qsizetype count) const;
     void appendCommand(std::vector<Command>& next,QRectF& damage,const QVariantList& commands,qsizetype index);
     static void paintCommand(QPainter* painter,const Command& command);
 

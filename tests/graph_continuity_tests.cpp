@@ -1,4 +1,5 @@
 #include <core_app/numeric_default_graph.h>
+#include "test_assertions.h"
 #include <dataflow_runtime/runtime.h>
 #include <algorithm>
 #include <array>
@@ -17,7 +18,7 @@ void* operator new[](std::size_t size){return ::operator new(size);}
 void operator delete(void* value)noexcept{std::free(value);}void operator delete[](void* value)noexcept{std::free(value);}
 void operator delete(void* value,std::size_t)noexcept{std::free(value);}void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
 namespace {
-#define CHECK(x) do{if(!(x)){std::printf("FAIL line%d %s\n",__LINE__,#x);++failures;}}while(false)
+#define CHECK(x) test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures)
 constexpr FrameLimits frame_limits{8,32768,262144,16384,256,8192};
 NumericRuntimeProfile profile(){return {{32,64,8,16,256,65536,frame_limits},{{1048576,2*1048576,1048576,65536},0,8388608},{32768,8,262144,262144,262144},{true,true,true}};}
 struct Snapshot {std::size_t rows=0,bands=0,capacity=0;std::uint64_t ordinal=0;std::vector<std::uint64_t> bits;};

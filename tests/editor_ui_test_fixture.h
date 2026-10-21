@@ -29,7 +29,8 @@ inline bool save_project(const QString& path,
 }
 
 inline MainWindow* main_window(Check check) {
-    for(auto* widget:QApplication::topLevelWidgets())
+    const auto widgets=QApplication::topLevelWidgets();
+    for(auto* widget:widgets)
         if(auto* window=qobject_cast<MainWindow*>(widget))return window;
     check(false,"Application MainWindow missing");
     return nullptr;

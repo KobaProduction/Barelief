@@ -126,35 +126,46 @@ private:
         if(lead>=0xf0 && lead<=0xf4){length=4;cp=lead&7;minimum=0x10000;return true;}
         return false;
     }
-    void utf8() noexcept {
-        const auto begin = at_;
-        const auto lead = static_cast<unsigned char>(current());
-        unsigned length = 0; std::uint32_t cp = 0, minimum = 0;
-        if(!utf8_prefix(lead,length,cp,minimum)){fail(Error::InvalidUtf8);return;}
-        if (bytes_.size() - at_ < length) { fail(Error::InvalidUtf8); return; }
+    bool utf8_continuations(std::size_t begin,unsigned length,std::uint32_t& cp) noexcept {
         for (unsigned i = 1; i < length; ++i) {
             const auto b = static_cast<unsigned char>(bytes_[begin+i]);
-            if ((b & 0xc0) != 0x80) { fail(Error::InvalidUtf8); return; }
+            if ((b & 0xc0) != 0x80) { fail(Error::InvalidUtf8); return false; }
             cp = (cp << 6) | (b & 63);
         }
+        return true;
+    }
+    void emit_utf8_codepoint(std::size_t begin,unsigned length,std::uint32_t cp,std::uint32_t minimum) noexcept {
         if (cp < minimum || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
             fail(Error::InvalidUtf8); return;
         }
         for (unsigned i = 0; i < length; ++i) emit(static_cast<unsigned char>(bytes_[begin+i]));
         at_ += length;
     }
+    void utf8() noexcept {
+        const auto begin = at_;
+        const auto lead = static_cast<unsigned char>(current());
+        unsigned length = 0; std::uint32_t cp = 0, minimum = 0;
+        if(!utf8_prefix(lead,length,cp,minimum)){fail(Error::InvalidUtf8);return;}
+        if (bytes_.size() - at_ < length) { fail(Error::InvalidUtf8); return; }
+        if(!utf8_continuations(begin,length,cp))return;
+        emit_utf8_codepoint(begin,length,cp,minimum);
+    }
+    bool surrogate_pair(std::uint32_t& cp) noexcept {
+            if(bytes_.size()-at_<2 || bytes_[at_]!='\\' || bytes_[at_+1]!='u') {
+                fail(Error::InvalidEscape);return false;
+            }
+            at_+=2;
+            std::uint32_t low;
+            if(!unicode_unit(low))return false;
+            if(low<0xdc00 || low>0xdfff){fail(Error::InvalidEscape);return false;}
+            cp=0x10000u+((cp-0xd800u)<<10)+low-0xdc00u;
+        return true;
+    }
     void escaped_unicode() noexcept {
         std::uint32_t cp;
         if(!unicode_unit(cp))return;
         if(cp>=0xd800 && cp<=0xdbff) {
-            if(bytes_.size()-at_<2 || bytes_[at_]!='\\' || bytes_[at_+1]!='u') {
-                fail(Error::InvalidEscape);return;
-            }
-            at_+=2;
-            std::uint32_t low;
-            if(!unicode_unit(low))return;
-            if(low<0xdc00 || low>0xdfff){fail(Error::InvalidEscape);return;}
-            cp=0x10000u+((cp-0xd800u)<<10)+low-0xdc00u;
+            if(!surrogate_pair(cp))return;
         }else if(cp>=0xdc00 && cp<=0xdfff){fail(Error::InvalidEscape);return;}
         codepoint(cp);
     }
@@ -174,26 +185,36 @@ private:
         if(escape=='u'){escaped_unicode();return;}
         if(!escaped_simple(escape))fail(Error::InvalidEscape);
     }
+    bool string_character() noexcept {
+            const auto b = static_cast<unsigned char>(current());
+            if (b < 0x20) { fail(Error::InvalidJson); return false; }
+            if (b == '\\') escaped_character();
+            else if (b >= 0x80) utf8();
+            else { emit(b); ++at_; }
+        return true;
+    }
+    void string_contents(bool key,const TextRange& result,std::size_t raw_begin) noexcept {
+        const auto raw_limit = key ? limits_.raw_key_bytes : limits_.raw_string_bytes;
+        const auto decoded_limit = key ? limits_.key_bytes : limits_.string_bytes;
+        while (error_ && at_ < bytes_.size() && current() != '"') {
+            if(!string_character())break;
+            if (at_ - raw_begin > raw_limit || count_.decoded - result.begin > decoded_limit) fail(Error::TextLimit);
+        }
+    }
+    void close_string(TextRange& result) noexcept {
+        result.size = count_.decoded - result.begin;
+        if (!error_) return;
+        if (at_ == bytes_.size()) { fail(Error::InvalidJson); return; }
+        ++at_;
+    }
     void string(bool key, TextRange& result) noexcept {
         if (!error_) return;
         if (current() != '"' || at_ == bytes_.size()) { fail(Error::InvalidJson); return; }
         token(); if (!error_) return;
         ++at_; const auto raw_begin = at_;
         result.begin = count_.decoded; capture_at_ = 0;
-        const auto raw_limit = key ? limits_.raw_key_bytes : limits_.raw_string_bytes;
-        const auto decoded_limit = key ? limits_.key_bytes : limits_.string_bytes;
-        while (error_ && at_ < bytes_.size() && current() != '"') {
-            const auto b = static_cast<unsigned char>(current());
-            if (b < 0x20) { fail(Error::InvalidJson); break; }
-            if (b == '\\') escaped_character();
-            else if (b >= 0x80) utf8();
-            else { emit(b); ++at_; }
-            if (at_ - raw_begin > raw_limit || count_.decoded - result.begin > decoded_limit) fail(Error::TextLimit);
-        }
-        result.size = count_.decoded - result.begin;
-        if (!error_) return;
-        if (at_ == bytes_.size()) { fail(Error::InvalidJson); return; }
-        ++at_;
+        string_contents(key,result,raw_begin);
+        close_string(result);
     }
     void number_fraction() noexcept {
         if(at_==bytes_.size() || current()!='.')return;
@@ -208,12 +229,15 @@ private:
         if(at_==bytes_.size() || !digit(current())){fail(Error::InvalidJson);return;}
         while(at_<bytes_.size() && digit(current()))++at_;
     }
-    void number() noexcept {
-        const auto begin = at_; token(); if (!error_) return;
+    void number_integer() noexcept {
         if (current() == '-') ++at_;
         if (at_ == bytes_.size() || !digit(current())) { fail(Error::InvalidJson); return; }
         if (current() == '0') ++at_;
         else while (at_ < bytes_.size() && digit(current())) ++at_;
+    }
+    void number() noexcept {
+        const auto begin = at_; token(); if (!error_) return;
+        number_integer();if(!error_)return;
         number_fraction();
         if(!error_)return;
         number_exponent();
@@ -232,19 +256,26 @@ private:
         if(previous==none)parent.first=child;
         else nodes_[previous].next=child;
     }
+    void member_key(char opening,TextRange& key) noexcept {
+        if(opening!='{')return;
+        string(true,key);whitespace();punctuation(':');whitespace();
+    }
+    bool next_container_member(char closing) noexcept {
+        whitespace();if(current()==closing)return false;
+        punctuation(',');whitespace();return true;
+    }
     void container_members(Node& node,std::size_t index,std::size_t depth,
                            char opening,char closing) noexcept {
         if(current()==closing)return;
         std::size_t previous=none;
         while(error_) {
             TextRange key;std::size_t member_begin=at_;
-            if(opening=='{'){string(true,key);whitespace();punctuation(':');whitespace();}
+            member_key(opening,key);
             const auto child=value(index,depth+1);
             if(!error_)break;
             append_child(node,child,previous,key,member_begin);
-            previous=child;whitespace();
-            if(current()==closing)break;
-            punctuation(',');whitespace();
+            previous=child;
+            if(!next_container_member(closing))break;
         }
     }
     void container_value(Node& node,std::size_t index,std::size_t depth,char opening) noexcept {
@@ -318,6 +349,13 @@ bool materialization_charge(std::string_view input,Counts counts,std::size_t& re
         charge(own,counts.decoded,limits.peak_bytes) &&
         charge(resident,own,limits.peak_bytes);
 }
+Diagnostic initialize_materialization(Storage& storage,std::string_view input,Counts counts,std::size_t own) noexcept {
+    if(storage.bytes.get()!=input.data())std::memcpy(storage.bytes.get(),input.data(),input.size());
+    storage.size=input.size();storage.count=counts.nodes;
+    storage.decoded_size=counts.decoded;storage.charge=own;storage.id=new_id();
+    if(!storage.id)return {Error::InvalidHandle};
+    return {};
+}
 Diagnostic allocate_materialization(Storage& storage,std::string_view input,Counts counts,
                                     std::unique_ptr<char[]> owned,std::size_t own) noexcept {
     storage.bytes=std::move(owned);
@@ -326,11 +364,7 @@ Diagnostic allocate_materialization(Storage& storage,std::string_view input,Coun
     if(counts.decoded)storage.decoded.reset(new(std::nothrow) char[counts.decoded]);
     if((!input.empty() && !storage.bytes) || !storage.nodes ||
        (counts.decoded && !storage.decoded))return {Error::AllocationFailure};
-    if(storage.bytes.get()!=input.data())std::memcpy(storage.bytes.get(),input.data(),input.size());
-    storage.size=input.size();storage.count=counts.nodes;
-    storage.decoded_size=counts.decoded;storage.charge=own;storage.id=new_id();
-    if(!storage.id)return {Error::InvalidHandle};
-    return {};
+    return initialize_materialization(storage,input,counts,own);
 }
 Diagnostic materialize(std::string_view input, Counts counts, std::size_t resident,
                        std::unique_ptr<char[]> owned, OwnedProjectSource& out,
@@ -370,6 +404,13 @@ bool parse_integer_digits(std::string_view raw,std::uint64_t max,std::uint64_t& 
     }
     return true;
 }
+Diagnostic integer_magnitude(std::string_view raw,bool signed_type,bool negative,std::size_t offset,std::uint64_t& magnitude) noexcept {
+    const auto max = signed_type ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + (negative ? 1u : 0u)
+                                 : std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t value=0;
+    if(!parse_integer_digits(raw,max,value))return {Error::IntegerRange,offset};
+    magnitude = value; return {};
+}
 Diagnostic integer(const OwnedProjectSource& source, NodeHandle h, bool signed_type,
                    std::uint64_t& magnitude, bool& negative) noexcept {
     NodeView v; auto d = source.view(h,v); if (!d) return d;
@@ -377,12 +418,9 @@ Diagnostic integer(const OwnedProjectSource& source, NodeHandle h, bool signed_t
     auto raw = v.raw; negative = raw[0] == '-';
     if (negative) raw.remove_prefix(1);
     if ((negative && (!signed_type || raw == "0")) || raw.empty()) return {Error::IntegerRange,v.offset};
-    const auto max = signed_type ? static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + (negative ? 1u : 0u)
-                                 : std::numeric_limits<std::uint64_t>::max();
-    std::uint64_t value=0;
-    if(!parse_integer_digits(raw,max,value))return {Error::IntegerRange,v.offset};
-    magnitude = value; return {};
+    return integer_magnitude(raw,signed_type,negative,v.offset,magnitude);
 }
+
 } // namespace
 
 OwnedProjectSource::OwnedProjectSource() noexcept = default;
@@ -549,6 +587,12 @@ Diagnostic stage_budget(const Storage& source,const OwnedProjectSource& original
        !charge(resident,replacement_bytes,limits.peak_bytes))return {Error::PeakLimit};
     return {};
 }
+Diagnostic allocate_edit_plan(std::size_t count,std::size_t edit_count,std::unique_ptr<NodePlan[]>& plan,std::unique_ptr<EditPlan[]>& staged) noexcept {
+    plan.reset(new(std::nothrow) NodePlan[count]);
+    if(edit_count!=0)staged.reset(new(std::nothrow) EditPlan[edit_count]);
+    if(!plan || (edit_count!=0 && !staged))return {Error::AllocationFailure};
+    return {};
+}
 Diagnostic prepare_edit_stage(const OwnedProjectSource& source,const OwnedProjectSource& output,
     std::span<const DocumentEdit> edits,const DocumentLimits& limits,const Storage*& storage,
     std::size_t& resident,std::unique_ptr<NodePlan[]>& plan,
@@ -560,10 +604,7 @@ Diagnostic prepare_edit_stage(const OwnedProjectSource& source,const OwnedProjec
     std::size_t replacement_bytes=0;
     const auto budget=stage_budget(*storage,source,output,edits,limits,resident,replacement_bytes);
     if(!budget)return budget;
-    plan.reset(new(std::nothrow) NodePlan[storage->count]);
-    if(!edits.empty())staged.reset(new(std::nothrow) EditPlan[edits.size()]);
-    if(!plan || (!edits.empty() && !staged))return {Error::AllocationFailure};
-    return {};
+    return allocate_edit_plan(storage->count,edits.size(),plan,staged);
 }
 struct EditStage {
     const Storage& source;
@@ -572,20 +613,32 @@ struct EditStage {
     NodePlan* plan;
     EditPlan* staged;
 
-    Diagnostic target(std::size_t index) noexcept {
-        const auto& edit=edits[index];
+    Diagnostic valid_edit_handles(const DocumentEdit& edit) const noexcept {
         if((!edit.target.source && edit.target.index) ||
            (!edit.parent.source && edit.parent.index) ||
            (!edit.before.source && edit.before.index))return {Error::InvalidHandle};
         if(edit.kind!=EditKind::Replace && edit.kind!=EditKind::Remove &&
            edit.kind!=EditKind::Insert && edit.kind!=EditKind::Move)return {Error::InvalidEdit};
+        return {};
+    }
+    Diagnostic target(std::size_t index) noexcept {
+        const auto& edit=edits[index];
+        const auto valid=valid_edit_handles(edit);if(!valid)return valid;
         if(edit.kind==EditKind::Insert)
             return edit.target.source?Diagnostic{Error::InvalidEdit}:Diagnostic{};
         if(!source.valid(edit.target))return {Error::InvalidHandle};
+        return validate_target_node(index);
+    }
+    Diagnostic validate_target_node(std::size_t index) noexcept {
+        const auto& edit=edits[index];
         const auto& node=source.nodes[edit.target.index];
         if(source.raw(node)!=edit.expected)return {Error::ExpectedMismatch,node.begin};
         if(ambiguous_path(source,edit.target.index))return {Error::AmbiguousKey,node.member_begin};
         if(plan[edit.target.index].operation!=none)return {Error::ConflictingEdits,node.begin};
+        return mark_target(index,node);
+    }
+    Diagnostic mark_target(std::size_t index,const Node& node) noexcept {
+        const auto& edit=edits[index];
         if((edit.kind==EditKind::Remove || edit.kind==EditKind::Move) &&
            node.parent==none)return {Error::InvalidEdit,node.begin};
         plan[edit.target.index].operation=index;
@@ -707,6 +760,10 @@ struct EditStage {
         const auto existing=duplicate_existing(index,key);
         return existing?duplicate_planned(index,key):existing;
     }
+    Diagnostic validate_plan() const noexcept {
+        const auto conflicts=conflicts_all();if(!conflicts)return conflicts;
+        return duplicates_all();
+    }
     Diagnostic validate_all() noexcept {
         for(std::size_t index=0;index<edits.size();++index) {
             const auto result=one(index);
@@ -729,6 +786,12 @@ struct EditStage {
         return {};
     }
 };
+Diagnostic materialize_candidate(std::unique_ptr<char[]> bytes,std::size_t size,std::size_t resident,OwnedProjectSource& output,const DocumentLimits& limits) noexcept {
+    const std::string_view candidate(bytes.get(),size);
+    Parser parser(candidate,limits);
+    const auto result=parser.run();if(!result)return result;
+    return materialize(candidate,parser.counts(),resident,std::move(bytes),output,limits);
+}
 Diagnostic render_candidate(const Storage& source,const NodePlan* plan,const EditPlan* staged,
                             std::span<const DocumentEdit> edits,const DocumentLimits& limits,
                             std::size_t resident,OwnedProjectSource& output) noexcept {
@@ -740,10 +803,7 @@ Diagnostic render_candidate(const Storage& source,const NodePlan* plan,const Edi
     if(!bytes)return {Error::AllocationFailure};
     Renderer write(source,plan,staged,edits,limits.candidate_bytes,bytes.get());
     result=write.run();if(!result)return result;
-    const std::string_view candidate(bytes.get(),count.size());
-    Parser parser(candidate,limits);
-    result=parser.run();if(!result)return result;
-    return materialize(candidate,parser.counts(),resident,std::move(bytes),output,limits);
+    return materialize_candidate(std::move(bytes),count.size(),resident,output,limits);
 }
 } // namespace
 
@@ -757,8 +817,7 @@ Diagnostic stage_project_edits(const OwnedProjectSource& source,std::span<const 
     if(!prepared)return prepared;
     EditStage stage{*storage,edits,limits,plan.get(),staged.get()};
     const auto valid=stage.validate_all();if(!valid)return valid;
-    const auto conflicts=stage.conflicts_all();if(!conflicts)return conflicts;
-    const auto duplicates=stage.duplicates_all();if(!duplicates)return duplicates;
+    const auto checked=stage.validate_plan();if(!checked)return checked;
     return render_candidate(*storage,plan.get(),staged.get(),edits,limits,resident,out);
 }
 } // namespace project_storage

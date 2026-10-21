@@ -453,6 +453,12 @@ inline bool valid_row_metadata_header(std::span<const std::byte> e) {
        number({reinterpret_cast<const std::uint8_t*>(e.data()),e.size()},2,4)!=27||e[6]!=std::byte{1})return false;
     return true;
 }
+inline void apply_row_metadata_flags(std::span<const std::byte> bytes,unsigned flags,signal_contracts::NumericGatherOutput& compact) {
+    compact.row.mask_present=bool(flags&2);
+    compact.row.silenced=bool(flags&4);
+    if(flags&1)compact.row.time_coordinate=bytes.subspan(25,8);
+    if(flags&2)compact.row.selected_mask=bytes.subspan(8,1);
+}
 inline Status decode_row_metadata(const nd::Message& message,signal_contracts::NumericGatherOutput& compact) {
     const auto e=message.extensions;
     if(!valid_row_metadata_header(e))return Status::malformed;
@@ -463,10 +469,7 @@ inline Status decode_row_metadata(const nd::Message& message,signal_contracts::N
     if(logical>std::numeric_limits<std::size_t>::max()||physical>std::numeric_limits<std::size_t>::max())return Status::exhausted;
     compact.row.logical_row=std::size_t(logical);
     compact.row.physical_row=std::size_t(physical);
-    compact.row.mask_present=bool(flags&2);
-    compact.row.silenced=bool(flags&4);
-    if(flags&1)compact.row.time_coordinate=e.subspan(25,8);
-    if(flags&2)compact.row.selected_mask=e.subspan(8,1);
+    apply_row_metadata_flags(e,flags,compact);
     return Status::ok;
 }
 inline signal_contracts::NumericGatherOutput history_gather(const nd::Message& message,const signal_contracts::NumericContract& contract) {

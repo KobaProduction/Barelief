@@ -95,7 +95,8 @@ struct App {
         application->_ctx.file_configs.ui.autosave_enabled=false;
     }
     void show_window() {
-        for(auto* widget:QApplication::topLevelWidgets())if(auto* found=qobject_cast<MainWindow*>(widget))window=found;
+        const auto widgets=QApplication::topLevelWidgets();
+        for(auto* widget:widgets)if(auto* found=qobject_cast<MainWindow*>(widget))window=found;
         check(window,"MainWindow fixture");
         editor=window->findChild<SchemeEditorWidget*>();
         check(editor,"editor fixture");
@@ -131,23 +132,44 @@ struct App {
         auto* item=scene->nodeGraphicsObject(node);
         return std::unique_ptr<QMenu>(scene->createSceneMenu(item->sceneBoundingRect().center()));
     }
-    static QAction* graph_action(QMenu& menu,int node,int placement,std::optional<unsigned> port) {
+    WorkspaceDock* node_dock(int node) const {
+        for(const auto docks=window->workspaceDocks();auto* dock:docks)
+            if(!dock->isClosed() && dock->property("graphNode").isValid() &&
+               dock->property("graphNode").toInt()==node && dock->property("viewInstance").toInt()==0)return dock;
+        check(false,"current primary graph dock missing");return nullptr;
+    }
+    void require_single_graph_port(int node,unsigned port) const {
+        auto* model=dynamic_cast<NumericEditorGraphModel*>(application->_ctx.data_flow_graph.get());
+        auto* delegate=model?model->delegateModel<AudioNodeModel>(node):nullptr;
+        const auto* configured=delegate?delegate->numeric_node():nullptr;
+        check(configured,"single-port graph node missing");
+        const auto ports=domain::data_inputs(*configured);
+        check(ports.size()==1 && ports.front().id==port,"requested graph port lacks a dedicated action");
+    }
+    QAction* graph_action(QMenu& menu,int node,int placement,std::optional<unsigned> port) const {
         const auto name=port?QStringLiteral("openGraphPort%1").arg(*port):QStringLiteral("openGraphPlacement%1").arg(placement);
         auto* action=menu.findChild<QAction*>(name);
+        if(!action && port){
+            require_single_graph_port(node,*port);
+            action=menu.findChild<QAction*>(QStringLiteral("openGraphPlacement%1").arg(placement));
+        }
         if(!action){
             qWarning()<<"Graph menu diagnostic"<<node<<placement<<menu.actions();
-            for(auto* candidate:menu.findChildren<QAction*>())qWarning()<<candidate->objectName()<<candidate->text();
+            const auto candidates=menu.findChildren<QAction*>();
+            for(auto* candidate:candidates)qWarning()<<candidate->objectName()<<candidate->text();
         }
         check(action,"graph placement/port QAction");
         return action;
     }
     static QList<WorkspaceDock*> current_docks() {
         QList<WorkspaceDock*> docks;
-        for(auto* widget:QApplication::allWidgets())if(auto* dock=qobject_cast<WorkspaceDock*>(widget))docks.append(dock);
+        const auto widgets=QApplication::allWidgets();
+        for(auto* widget:widgets)if(auto* dock=qobject_cast<WorkspaceDock*>(widget))docks.append(dock);
         return docks;
     }
     static WorkspaceDock* new_dock(int node,const QList<WorkspaceDock*>& before) {
-        for(auto* dock:current_docks())
+        const auto docks=current_docks();
+        for(auto* dock:docks)
             if(!before.contains(dock) && dock->property("graphNode").toInt()==node)return dock;
         return nullptr;
     }
@@ -168,7 +190,12 @@ struct App {
         const auto before=current_docks();
         action->trigger();
         auto* created=await_new_dock(node,before);
-        if(port && placement!=1)set_created_placement(*created,placement);
+        if(port){
+            const auto binding=created->property("numericEndpoint").toMap();
+            check(binding.value("node").toInt()==node && binding.value("direction")=="input" &&
+                  binding.value("port").toUInt()==*port,"created graph bound a different requested endpoint");
+        }
+        if(port && placement!=1 && action->objectName().startsWith("openGraphPort"))set_created_placement(*created,placement);
         return created;
     }
     ~App(){application.reset();}

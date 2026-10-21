@@ -33,21 +33,24 @@ inline void source_geometry(ConfiguredProcessingNode& source_node,std::size_t ra
  }
  if(!has_rate)source.push_back({"sample_rate",NumericLiteral{std::uint64_t(rate)}});
 }
+template<class Field> inline void transform_geometry_field(Field& field,bool window_node,std::size_t rate,std::size_t window) {
+ if(field.key=="size" && window_node)field.value=NumericLiteral{std::uint64_t(window)};
+ if(field.key=="input_rate" && window_node)field.value=NumericLiteral{std::uint64_t(rate)};
+ if(field.key=="sample_rate" && !window_node)field.value=NumericLiteral{std::uint64_t(rate)};
+ if(field.key=="bin_hz" && !window_node)field.value=NumericLiteral{double(rate)/double(window)};
+}
+inline void transform_geometry(ConfiguredProcessingNode& configured,std::size_t rate,std::size_t window){
+  if(configured.kind!="Window" && configured.kind!="BarkWeighting" && configured.kind!="Mel")return;
+  auto& values=std::get<TransformProcessingParameters>(configured.parameters).values;
+  for(auto& field:values)transform_geometry_field(field,configured.kind=="Window",rate,window);
+
+}
 inline void geometry(NumericProcessingGraph& graph,std::size_t rate,std::size_t window,std::size_t block){
  for(auto& configured:graph.nodes)for(auto* ports:{&configured.inputs,&configured.outputs})for(auto& port:*ports){
   const auto contract=adjusted_geometry(std::get<NumericContract>(port.contract.view()),rate,window,block);
   check(own_processing_contract(contract,limits,65536,port.contract)==Status::ok,"own adjusted contract");
  }
- for(auto& configured:graph.nodes){
-  if(configured.kind!="Window" && configured.kind!="BarkWeighting" && configured.kind!="Mel")continue;
-  auto& values=std::get<TransformProcessingParameters>(configured.parameters).values;
-  for(auto& field:values){
-   if(field.key=="size" && configured.kind=="Window")field.value=NumericLiteral{std::uint64_t(window)};
-   if(field.key=="input_rate" && configured.kind=="Window")field.value=NumericLiteral{std::uint64_t(rate)};
-   if(field.key=="sample_rate" && configured.kind!="Window")field.value=NumericLiteral{std::uint64_t(rate)};
-   if(field.key=="bin_hz" && configured.kind!="Window")field.value=NumericLiteral{double(rate)/double(window)};
-  }
- }
+ for(auto& configured:graph.nodes)transform_geometry(configured,rate,window);
  source_geometry(node(graph,1),rate);
 }
 struct Feed {

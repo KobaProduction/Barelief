@@ -21,10 +21,10 @@ struct ProcessingDiagnostic {
     ProcessingError error = ProcessingError::None;
     NodeId node = -1;
     PortId port = 0;
-    std::optional<std::size_t> edge;
+    std::optional<std::size_t> edge{};
     ProcessingReason reason=ProcessingReason::None;
     // Local producers use immutable static parameter keys; asynchronous adapters copy them.
-    std::string_view parameter;
+    std::string_view parameter{};
     explicit operator bool() const noexcept { return error == ProcessingError::None; }
 };
 struct ProcessingResources { std::size_t plan_bytes = 0, payload_bytes = 0, scratch_bytes = 0, stack_bytes = 0; };

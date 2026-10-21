@@ -72,6 +72,10 @@ struct DeliveryHub {
         decltype(wled_outputs) wled_outputs_candidate;
     };
     Status stage(const domain::NumericProcessingGraph&,const domain::ProcessingAdmissionLimits&,Staged&);
+    void stage_history_port(const std::shared_ptr<NumericDeliveryContext>&,const DataContract&,Staged&);
+    void stage_node_ports(const domain::NumericProcessingGraph&,const domain::ConfiguredProcessingNode&,domain::NodeRole,Staged&);
+    Status assign_wled_address(domain::NodeId,const char*,std::string_view,WledOutput&);
+    Status assign_wled_parameter(domain::NodeId,const char*,const domain::ProcessingParameterView&,WledOutput&,std::uint32_t&);
     void stage_port(const domain::NumericProcessingGraph&,const domain::ConfiguredProcessingNode&,
                     const domain::ProcessingPort&,Staged&);
     Status stage_wled(const domain::ConfiguredProcessingNode&,const domain::ResolvedProcessingNode&,Staged&);
@@ -86,6 +90,39 @@ struct DeliveryHub {
     using LatestIterator=decltype(latest_matrices)::iterator;
     ContextIterator find_context(const dataflow_runtime::NumericPortFrameView& borrowed);
     void update_wled_input(const dataflow_runtime::NumericPortFrameView& borrowed);
+    std::size_t count_preview_matches(const EndpointIdentity&);
+    bool discard_preview(const DeliveredNumericFrame&,const EndpointIdentity&,const FrameStamp&,bool,std::size_t&,std::size_t) const;
+    void commit_tap_frame(ContextIterator,LatestIterator,const dataflow_runtime::NumericPortFrameView&,DeliveredNumericFrame,Status);
+    ContextIterator history_context(const dataflow_runtime::NumericHistoryRowView&);
+    void record_transport_drop(ContextIterator);
+    static NumericHistoryEvent history_event(dataflow_runtime::NumericHistoryEventKind);
+    bool delivery_current(std::uint64_t,const DeliveryStamp&) const;
+    bool generation_current(std::uint64_t) const;
+    template<class Frame> struct PendingCallback {
+        std::function<void(Frame)> callback;
+        std::shared_ptr<std::atomic_bool> active;
+    };
+    struct PreviewFrameDispatch {
+        std::optional<DeliveredNumericFrame> next;
+        PendingCallback<DeliveredNumericFrame> handler;
+        std::uint64_t generation=0;
+        bool duplicate=false;
+    };
+    struct PreviewRowDispatch {
+        std::optional<DeliveredNumericHistoryRow> next;
+        PendingCallback<DeliveredNumericHistoryRow> handler;
+        std::uint64_t generation=0;
+    };
+    bool dispatch_preview_frame(const PreviewFrameDispatch&,QPointer<NumericEngine>);
+    PreviewFrameDispatch pop_preview_frame(std::array<EndpointIdentity,128>&,std::size_t&);
+    PreviewRowDispatch pop_preview_row();
+    bool preview_subscribed(const NumericDeliveryContext*,const DeliveryStamp&) const;
+    using FrameCallbacks=std::array<PendingCallback<DeliveredNumericFrame>,9>;
+    using RowCallbacks=std::array<PendingCallback<DeliveredNumericHistoryRow>,9>;
+    std::size_t select_frame_callbacks(const DeliveredNumericFrame&,FrameCallbacks&) const;
+    std::size_t select_row_callbacks(const DeliveredNumericHistoryRow&,RowCallbacks&) const;
+    bool dispatch_frame_callbacks(const DeliveredNumericFrame&,const FrameCallbacks&,std::size_t,std::uint64_t,QPointer<NumericEngine>);
+    bool dispatch_row_callbacks(const DeliveredNumericHistoryRow&,const RowCallbacks&,std::size_t,std::uint64_t,QPointer<NumericEngine>);
     void coalesce_preview_frames(const EndpointIdentity&,const FrameStamp&,Status);
     void queue_preview(ContextIterator,LatestIterator,const dataflow_runtime::NumericPortFrameView&);
     void queue_tap_frame(ContextIterator,LatestIterator,const dataflow_runtime::NumericPortFrameView&);

@@ -54,6 +54,13 @@ bool duplicate_association(const NumericProcessingGraph& graph,std::size_t index
         if(graph.configuration_bindings[previous].to==binding.to && graph.configuration_bindings[previous].input==binding.input)return true;
     return false;
 }
+ProcessingDiagnostic validate_association_clock(const NumericProcessingGraph& graph,const ConfigurationBinding& binding,
+    const ConfiguredProcessingNode& source,const ConfiguredProcessingNode& target) noexcept {
+    if(binding.input==ConfigurationRole::FrequencyGrid)return validate_frequency_grid(source,target);
+    if(clock_consumer(target.kind))return validate_execution_clock(graph,source,target);
+    const auto kind=node_kind(target.kind);
+    return kind && is_view(*kind)?validate_view_clock(source,target):ProcessingDiagnostic{};
+}
 ProcessingDiagnostic validate_association(const NumericProcessingGraph& graph,std::size_t index) noexcept {
     const auto& binding=graph.configuration_bindings[index];
     const auto from=detail::admission_node(graph,binding.from),to=detail::admission_node(graph,binding.to);
@@ -61,10 +68,7 @@ ProcessingDiagnostic validate_association(const NumericProcessingGraph& graph,st
     const auto& source=graph.nodes[from];const auto& target=graph.nodes[to];
     if(binding.output!=binding.input || !configuration_output_supported(source,binding.output) || !configuration_input_supported(target,binding.input) || binding.from==binding.to)return {ProcessingError::InvalidPort,binding.to};
     if(duplicate_association(graph,index))return {ProcessingError::MultipleInputs,binding.to};
-    if(binding.input==ConfigurationRole::FrequencyGrid)return validate_frequency_grid(source,target);
-    if(clock_consumer(target.kind))return validate_execution_clock(graph,source,target);
-    const auto kind=node_kind(target.kind);
-    return kind && is_view(*kind)?validate_view_clock(source,target):ProcessingDiagnostic{};
+    return validate_association_clock(graph,binding,source,target);
 }
 }
 bool configuration_output_supported(const ConfiguredProcessingNode& node,ConfigurationRole role) noexcept {

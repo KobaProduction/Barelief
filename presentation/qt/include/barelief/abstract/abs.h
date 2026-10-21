@@ -79,6 +79,7 @@ protected:
     void observe_amplitude_range();
     void append_projected_point(size_t index);
     std::pair<size_t,size_t> visible_data_interval() const;
+    void append_bucket_extrema(size_t first,size_t last);
     void append_bar_points(size_t begin,size_t end);
     void append_line_points(size_t begin,size_t end,size_t buckets);
     void update_axis_ticks(qreal x_min,qreal x_max,qreal y_min,qreal y_max);

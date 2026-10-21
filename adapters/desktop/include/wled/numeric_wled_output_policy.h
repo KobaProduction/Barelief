@@ -49,10 +49,15 @@ public:
         if(select_packet(now_ms,candidate)!=Status::ok)return Status::invalid_argument;
         if(wled_protocol::write_counter(candidate,counter_,{0,wled_protocol::packet_size})!=wled_protocol::Status::Ok)
             return Status::invalid_argument;
-        output=candidate;counter_=static_cast<std::uint8_t>(unsigned(counter_)+1);last_attempt_ms_=now_ms;return Status::ok;
+        commit_attempt(now_ms,candidate,output);return Status::ok;
     }
     void note_send_result(bool complete_write) noexcept {if(!complete_write)running_=false;}
 private:
+    void commit_attempt(std::uint64_t now_ms,const wled_protocol::WledPacket& candidate,wled_protocol::WledPacket& output) noexcept {
+        output=candidate;
+        counter_=static_cast<std::uint8_t>(unsigned(counter_)+1);
+        last_attempt_ms_=now_ms;
+    }
     bool reset_rolled_back_clock(std::uint64_t now_ms) noexcept {
         if(now_ms>=last_attempt_ms_)return false;
         has_packet_=false;last_attempt_ms_=now_ms;return true;

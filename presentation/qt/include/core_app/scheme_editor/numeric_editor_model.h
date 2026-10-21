@@ -86,6 +86,7 @@ private:
     void install_draft_graph(const domain::NumericProcessingGraph&,const NumericEditorGraphModel&);
     void restore_document_nodes(const domain::NumericProcessingGraph&);
     void load_document_policies(const QJsonObject&);
+    QJsonObject document_connection(QJsonObject) const;
     void save_document_connections(QJsonObject&) const;
     void save_document_metadata(QJsonObject&) const;
     void append_numeric_graph_edges(domain::NumericProcessingGraph&,const std::vector<QtNodes::NodeId>&) const;
@@ -93,6 +94,9 @@ private:
     void install_draft_nodes(const domain::NumericProcessingGraph&,const NumericEditorGraphModel&);
     void install_draft_edges(const domain::NumericProcessingGraph&);
     domain::NumericProcessingGraph graph_without_undo_edge(QtNodes::ConnectionId) const;
+    bool is_parameter_connection(QtNodes::ConnectionId);
+    bool validate_generator_edit(const domain::ConfiguredProcessingNode&);
+    bool commit_parameter_edit(const domain::NumericProcessingGraph&,const domain::NumericProcessingGraph&);
     bool valid_node_edit_source(QtNodes::NodeId,const domain::ConfiguredProcessingNode&);
     bool evaluate_node_changes(domain::NumericProcessingGraph&,QString*);
     bool draft_preflight(const domain::NumericProcessingGraph&,QString* error=nullptr);

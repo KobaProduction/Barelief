@@ -18,10 +18,7 @@ ProcessorManagerDialog::ProcessorManagerDialog(ProcessorDirectoryModel &model, Q
     : QDialog(parent), _model(model) {
     setObjectName("engineRegistryDialog"); ui::bind(this,"windowTitle","Manage processors"); resize(600,520);
     auto *layout = new QVBoxLayout(this);
-    auto *explanation = ui::make<QLabel>("Local processing needs no registry. Discover external processors through an aggregator.",this);
-    explanation->setWordWrap(true); layout->addWidget(explanation);
-    _list = new QTreeWidget(this); _list->setObjectName("processorManagerList"); _list->setRootIsDecorated(false);
-    _list->header()->setSectionResizeMode(QHeaderView::ResizeToContents); layout->addWidget(_list);
+    setup_processor_list(layout);
     setup_direct_connection(layout);
     setup_registry_connection(layout,host,port);
     _warning = new QLabel(this); _warning->setWordWrap(true); layout->addWidget(_warning); set_warning({});
@@ -31,6 +28,13 @@ ProcessorManagerDialog::ProcessorManagerDialog(ProcessorDirectoryModel &model, Q
     connect(&_model,&ProcessorDirectoryModel::changed,this,[this] { refresh(); });
     connect(&ui::Language::instance(),&ui::Language::changed,this,[this] { refresh(); });
     refresh();
+}
+
+void ProcessorManagerDialog::setup_processor_list(QVBoxLayout* layout) {
+    auto *explanation = ui::make<QLabel>("Local processing needs no registry. Discover external processors through an aggregator.",this);
+    explanation->setWordWrap(true); layout->addWidget(explanation);
+    _list = new QTreeWidget(this); _list->setObjectName("processorManagerList"); _list->setRootIsDecorated(false);
+    _list->header()->setSectionResizeMode(QHeaderView::ResizeToContents); layout->addWidget(_list);
 }
 
 void ProcessorManagerDialog::setup_direct_connection(QVBoxLayout *layout) {
@@ -63,8 +67,11 @@ void ProcessorManagerDialog::setup_registry_connection(QVBoxLayout *layout,const
     form->addRow(ui::make<QLabel>("Registry address",registry),registryHost); form->addRow(ui::make<QLabel>("Registry port",registry),registryPort);
     auto *discover = ui::make<QPushButton>("Discover engines",registry); discover->setObjectName("discoverEngines"); form->addRow(discover);
     auto *disconnect = ui::make<QPushButton>("Disconnect registry",registry); form->addRow(disconnect);
-    _status = new QLabel(registry); _status->setObjectName("engineRegistryStatus"); _status->setWordWrap(true); form->addRow(_status); layout->addWidget(registry);
+    append_registry_status(registry,form);layout->addWidget(registry);
     bind_registry_actions(discover,disconnect,registryHost,registryPort);
+}
+void ProcessorManagerDialog::append_registry_status(QWidget* registry,QFormLayout* form) {
+    _status = new QLabel(registry); _status->setObjectName("engineRegistryStatus"); _status->setWordWrap(true); form->addRow(_status);
 }
 void ProcessorManagerDialog::bind_registry_actions(QPushButton *discover,QPushButton *disconnect,
     QLineEdit *registryHost,QSpinBox *registryPort) {
@@ -82,14 +89,17 @@ void ProcessorManagerDialog::refresh() {
     _list->clear(); _list->setHeaderLabels({ui::text("Processor"),ui::text("Endpoint"),ui::text("State")});
     update_discovery_status(populate_processors());
 }
-int ProcessorManagerDialog::populate_processors() {
-    int available=0;
-    for (const auto &endpoint : _model.processors()) {
-        if (endpoint.from_registry && endpoint.available) ++available;
+void ProcessorManagerDialog::append_processor_row(const ProcessorEndpoint& endpoint) {
         auto *row = new QTreeWidgetItem(_list,{processor_caption(endpoint),endpoint.local ? ui::text("Inside this application") : endpoint.address+":"+QString::number(endpoint.port),
             !endpoint.available ? ui::text("Unavailable") : endpoint.local ? ui::text("Available") : endpoint.allow_mutations ? ui::text("Editing allowed") : ui::text("Read-only engine")});
         row->setData(0,Qt::UserRole,endpoint.id); row->setDisabled(!endpoint.available); row->setToolTip(2,endpoint.error);
         if (endpoint.id == _model.selected_id()) _list->setCurrentItem(row);
+}
+int ProcessorManagerDialog::populate_processors() {
+    int available=0;
+    for (const auto &endpoint : _model.processors()) {
+        if (endpoint.from_registry && endpoint.available) ++available;
+        append_processor_row(endpoint);
     }
     return available;
 }

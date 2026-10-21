@@ -70,47 +70,64 @@ void SourceIngress::reject_capture(CaptureInput& input,domain::NodeId node,std::
     }
     input.filled=0;input.gap=true;
 }
-void SourceIngress::process_capture_input(CaptureInput& input,domain::NodeId node,std::uint64_t fence,
-                                          const AudioFrame& frame,std::uint64_t resumed_epoch) {
-    if(!capture_contract_matches(input,frame)){reject_capture(input,node,fence,frame);return;}
-    if(input.admission_failed){input.admission_failed=false;
-        QMetaObject::invokeMethod(&owner,[this,node,fence]{source_status(node,fence,true,{});},Qt::QueuedConnection);}
-    const bool interval_gap=input.last_frame_ns && !input.synthetic &&
-        frame.generation==input.generation && frame.sample_position!=input.next_sample;
-    const bool capture_gap=frame.discontinuity || frame.generation!=input.generation || input.synthetic || interval_gap;
-    if(capture_gap){input.filled=0;input.gap=true;}
-    if(resumed_epoch)input.producer_epoch=resumed_epoch;
-    input.generation=frame.generation;input.synthetic=false;input.last_frame_ns=steady_ns();
-    input.clock_origin_ns=input.last_frame_ns;
-    input.next_sample=frame.sample_position+frame.frame_count;input.clock_base_sample=input.next_sample;
+void SourceIngress::restore_capture_admission(CaptureInput& input,domain::NodeId node,std::uint64_t fence) {
+    if(!input.admission_failed)return;
+    input.admission_failed=false;
+    QMetaObject::invokeMethod(&owner,[this,node,fence]{source_status(node,fence,true,{});},Qt::QueuedConnection);
+}
+void SourceIngress::process_capture_samples(CaptureInput& input,const AudioFrame& frame,bool capture_gap) {
     const auto* samples=frame.samples.data()+input.lane*frame.frame_count;
     for(std::size_t sample=0;sample<frame.frame_count;++sample)if(!std::isfinite(samples[sample])){
         input.filled=0;input.gap=true;input.dropped_samples+=frame.frame_count;input.packets.clear();return;}
     enqueue_capture_packets(input,frame,samples,capture_gap);
 }
-void SourceIngress::enqueue_capture_packets(CaptureInput& input,const AudioFrame& frame,const float* samples,bool capture_gap) {
-    for(std::size_t offset=0;offset<frame.frame_count;) {
-        const auto count=std::min(input.block,frame.frame_count-offset);
-        if(input.packet_sequence==UINT64_MAX){input.gap=true;input.filled=0;break;}
+void SourceIngress::update_capture_timeline(CaptureInput& input,const AudioFrame& frame,std::uint64_t resumed_epoch) {
+    if(resumed_epoch)input.producer_epoch=resumed_epoch;
+    input.generation=frame.generation;input.synthetic=false;input.last_frame_ns=steady_ns();
+    input.clock_origin_ns=input.last_frame_ns;
+    input.next_sample=frame.sample_position+frame.frame_count;input.clock_base_sample=input.next_sample;
+}
+void SourceIngress::process_capture_input(CaptureInput& input,domain::NodeId node,std::uint64_t fence,
+                                          const AudioFrame& frame,std::uint64_t resumed_epoch) {
+    if(!capture_contract_matches(input,frame)){reject_capture(input,node,fence,frame);return;}
+    restore_capture_admission(input,node,fence);
+    const bool interval_gap=input.last_frame_ns && !input.synthetic &&
+        frame.generation==input.generation && frame.sample_position!=input.next_sample;
+    const bool capture_gap=frame.discontinuity || frame.generation!=input.generation || input.synthetic || interval_gap;
+    if(capture_gap){input.filled=0;input.gap=true;}
+    update_capture_timeline(input,frame,resumed_epoch);
+    process_capture_samples(input,frame,capture_gap);
+}
+FrameStamp SourceIngress::capture_packet_stamp(CaptureInput& input,const AudioFrame& frame,std::size_t offset,std::size_t count,bool capture_gap) {
         FrameStamp packet;packet.sequence=++input.packet_sequence;packet.source_sequence=frame.sequence;
         packet.producer_epoch=input.producer_epoch;packet.generation=input.generation;
         packet.timestamp_ticks=packet.sample_begin=std::int64_t(frame.sample_position+offset);
         packet.sample_count=count;packet.has_sample_interval=true;packet.discontinuity=offset==0&&capture_gap;
+    return packet;
+}
+void SourceIngress::enqueue_capture_packets(CaptureInput& input,const AudioFrame& frame,const float* samples,bool capture_gap) {
+    for(std::size_t offset=0;offset<frame.frame_count;) {
+        const auto count=std::min(input.block,frame.frame_count-offset);
+        if(input.packet_sequence==UINT64_MAX){input.gap=true;input.filled=0;break;}
+        const auto packet=capture_packet_stamp(input,frame,offset,count,capture_gap);
         const auto pushed=input.packets.push({samples+offset,count},packet);
         if(pushed!=Status::ok){input.gap=true;input.filled=0;input.dropped_samples+=count;break;}
         offset+=count;
         drain_capture_packets(input);
     }
 }
+void SourceIngress::append_capture_samples(CaptureInput& input,std::size_t written,const FrameStamp& accepted) {
+        if(accepted.discontinuity){input.filled=0;input.gap=true;}
+        if(!input.filled)input.ticks=accepted.sample_begin;
+        std::memcpy(input.bytes.data()+input.filled*sizeof(float),input.packet_scratch.data(),written*sizeof(float));
+        input.filled+=written;if(input.filled==input.block)emit_input(input);
+}
 void SourceIngress::drain_capture_packets(CaptureInput& input) {
     while(input.packets.stats().queued_samples){
         std::size_t written=0;FrameStamp accepted;
         const auto popped=input.packets.pop(std::span(input.packet_scratch).first(input.block-input.filled),written,accepted);
         if(popped!=Status::ok){input.gap=true;input.filled=0;break;}
-        if(accepted.discontinuity){input.filled=0;input.gap=true;}
-        if(!input.filled)input.ticks=accepted.sample_begin;
-        std::memcpy(input.bytes.data()+input.filled*sizeof(float),input.packet_scratch.data(),written*sizeof(float));
-        input.filled+=written;if(input.filled==input.block)emit_input(input);
+        append_capture_samples(input,written,accepted);
     }
 }
 void SourceIngress::note_external(domain::NodeId node,const DataFrameView& frame,Status status) {
@@ -152,24 +169,32 @@ void SourceIngress::advance_clocks() {
 void SourceIngress::advance_sample_clocks(std::uint64_t now) {
     for(auto& [id,clock]:clocks)advance_sample_clock(id,clock,now);
 }
+FrameStamp SourceIngress::clock_frame_stamp(ClockInput& clock) {
+        FrameStamp stamp;stamp.sequence=stamp.source_sequence=++clock.sequence;
+        stamp.producer_epoch=clock.producer_epoch;stamp.epoch=state.epoch;stamp.graph_revision=state.graph_revision;
+        stamp.timestamp_ticks=stamp.sample_begin=std::int64_t(clock.next_sample);stamp.sample_count=clock.block;
+        stamp.has_sample_interval=true;stamp.discontinuity=clock.next_sample==0;
+    return stamp;
+}
+bool SourceIngress::emit_clock_frame(domain::NodeId id,ClockInput& clock) {
+        if(clock.next_sample>std::uint64_t(INT64_MAX)-clock.block || clock.sequence==UINT64_MAX) {
+            clock.failed=true;state.statuses[QStringLiteral("clock:%1").arg(id)]={State::Failed,QStringLiteral("Synchronization timeline exhausted"),state.revision};return false;
+        }
+        const auto stamp=clock_frame_stamp(clock);
+        const auto result=executor.process_clock(id,stamp,{state.graph_revision,state.epoch},delivery.callbacks());
+        if(result!=Status::ok) {
+            clock.failed=true;state.statuses[QStringLiteral("clock:%1").arg(id)]={State::Failed,failure(result),state.revision};return false;
+        }
+        state.statuses.remove(QStringLiteral("clock:%1").arg(id));clock.next_sample+=clock.block;
+    return true;
+}
 void SourceIngress::advance_sample_clock(domain::NodeId id,ClockInput& clock,std::uint64_t now) {
     if(clock.failed)return;
     const auto elapsed=now-clock.origin_ns;
     const auto target=elapsed/1000000000*clock.rate+elapsed%1000000000*clock.rate/1000000000;
     std::size_t iterations=0;
     while(clock.next_sample<=target && clock.block<=target-clock.next_sample && iterations++<32) {
-        if(clock.next_sample>std::uint64_t(INT64_MAX)-clock.block || clock.sequence==UINT64_MAX) {
-            clock.failed=true;state.statuses[QStringLiteral("clock:%1").arg(id)]={State::Failed,QStringLiteral("Synchronization timeline exhausted"),state.revision};break;
-        }
-        FrameStamp stamp;stamp.sequence=stamp.source_sequence=++clock.sequence;
-        stamp.producer_epoch=clock.producer_epoch;stamp.epoch=state.epoch;stamp.graph_revision=state.graph_revision;
-        stamp.timestamp_ticks=stamp.sample_begin=std::int64_t(clock.next_sample);stamp.sample_count=clock.block;
-        stamp.has_sample_interval=true;stamp.discontinuity=clock.next_sample==0;
-        const auto result=executor.process_clock(id,stamp,{state.graph_revision,state.epoch},delivery.callbacks());
-        if(result!=Status::ok) {
-            clock.failed=true;state.statuses[QStringLiteral("clock:%1").arg(id)]={State::Failed,failure(result),state.revision};break;
-        }
-        state.statuses.remove(QStringLiteral("clock:%1").arg(id));clock.next_sample+=clock.block;
+        if(!emit_clock_frame(id,clock))break;
     }
     clock.lag_samples=target>clock.next_sample?target-clock.next_sample:0;
     clock.max_lag_samples=std::max(clock.max_lag_samples,clock.lag_samples);
@@ -193,11 +218,7 @@ static bool advance_stamp_value(std::int64_t& value,long double delta) {
     const auto increment=std::int64_t(delta);
     if(value>INT64_MAX-increment)return false;value+=increment;return true;
 }
-bool SourceIngress::emit_missing_frame(domain::NodeId node,ExternalInput& input) {
-    auto stamp=input.stamp;const auto ordinal=++input.ordinal;
-    if(ordinal>UINT64_MAX-stamp.sequence) {
-        input.failed=true;state.statuses[QStringLiteral("input:%1").arg(node)]={State::Failed,QStringLiteral("Source clock exhausted"),state.revision};return false;
-    }
+bool SourceIngress::advance_missing_stamp(domain::NodeId node,ExternalInput& input,std::uint64_t ordinal,FrameStamp& stamp) {
     stamp.sequence+=ordinal;stamp.source_sequence=input.stamp.source_sequence;
     stamp.epoch=state.epoch;stamp.graph_revision=state.graph_revision;
     stamp.discontinuity=ordinal==1;stamp.available=true;
@@ -208,9 +229,24 @@ bool SourceIngress::emit_missing_frame(domain::NodeId node,ExternalInput& input)
         stamp.sample_count>std::uint64_t(INT64_MAX) || stamp.sample_begin>INT64_MAX-std::int64_t(stamp.sample_count)))) {
         input.failed=true;state.statuses[QStringLiteral("input:%1").arg(node)]={State::Failed,QStringLiteral("Source clock exhausted"),state.revision};return false;
     }
+    return true;
+}
+bool SourceIngress::emit_missing_frame(domain::NodeId node,ExternalInput& input) {
+    auto stamp=input.stamp;const auto ordinal=++input.ordinal;
+    if(ordinal>UINT64_MAX-stamp.sequence) {
+        input.failed=true;state.statuses[QStringLiteral("input:%1").arg(node)]={State::Failed,QStringLiteral("Source clock exhausted"),state.revision};return false;
+    }
+    if(!advance_missing_stamp(node,input,ordinal,stamp))return false;
     const auto result=executor.advance_unavailable_source(node,stamp,{state.graph_revision,state.epoch},delivery.callbacks());
     if(result==Status::ok)++input.zero_frames;
     return true;
+}
+void SourceIngress::catch_up_failed_source(CaptureInput& input,std::uint64_t target) {
+            std::size_t iterations=0;
+            while(input.next_sample<=target && input.block<=target-input.next_sample && iterations++<32) {
+                if(!emit_failed_source_frame(input))break;
+            }
+            if(iterations>32){input.gap=true;input.next_sample=target;}
 }
 void SourceIngress::advance_failed_sources(std::uint64_t now) {
         for(auto& input:inputs) {
@@ -219,6 +255,15 @@ void SourceIngress::advance_failed_sources(std::uint64_t now) {
             if(failed)advance_failed_source(input,now);
         }
     }
+bool SourceIngress::emit_failed_source_frame(CaptureInput& input) {
+                if(input.next_sample>std::uint64_t(INT64_MAX)-input.block) {
+                    state.statuses[QStringLiteral("input:%1").arg(input.node)]={State::Failed,QStringLiteral("Source clock exhausted"),state.revision};return false;
+                }
+                input.ticks=std::int64_t(input.next_sample);
+                std::fill(input.bytes.begin(),input.bytes.end(),std::byte{});input.gap|=!input.synthetic;input.synthetic=true;
+                emit_input(input);input.next_sample+=input.block;
+    return true;
+}
 void SourceIngress::advance_failed_source(CaptureInput& input,std::uint64_t now) {
             const auto rate=input.contract.clock.sample_rate;
             if(!input.clock_origin_ns)input.clock_origin_ns=now;
@@ -230,16 +275,7 @@ void SourceIngress::advance_failed_source(CaptureInput& input,std::uint64_t now)
                 state.statuses[QStringLiteral("input:%1").arg(input.node)]={State::Failed,QStringLiteral("Source clock exhausted"),state.revision};return;
             }
             const auto target=input.clock_base_sample+due;
-            std::size_t iterations=0;
-            while(input.next_sample<=target && input.block<=target-input.next_sample && iterations++<32) {
-                if(input.next_sample>std::uint64_t(INT64_MAX)-input.block) {
-                    state.statuses[QStringLiteral("input:%1").arg(input.node)]={State::Failed,QStringLiteral("Source clock exhausted"),state.revision};break;
-                }
-                input.ticks=std::int64_t(input.next_sample);
-                std::fill(input.bytes.begin(),input.bytes.end(),std::byte{});input.gap|=!input.synthetic;input.synthetic=true;
-                emit_input(input);input.next_sample+=input.block;
-            }
-            if(iterations>32){input.gap=true;input.next_sample=target;}
+            catch_up_failed_source(input,target);
     }
 void SourceIngress::stop_sources(){
         {std::lock_guard lock(mutex);source_tokens.clear();source_states.clear();}

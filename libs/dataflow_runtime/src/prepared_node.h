@@ -49,7 +49,7 @@ struct PlanNode {
     struct SpectrumPeakSettings {double bin_hz=1;std::uint32_t first_bin=0;};
     SpectrumPeakSettings spectrum_peak;
 
-    bool scalar_view() const noexcept {return node.kind==NodeKind::ScalarView && endpoint_plan!=nullptr;}
+    bool scalar_view() const noexcept {return is_scalar_view(node.kind) && endpoint_plan!=nullptr;}
     std::vector<std::size_t> children;
     struct MixerDestination {std::size_t node=0,input=0;PortId output=0;};
     std::vector<MixerDestination> mixer_destinations;

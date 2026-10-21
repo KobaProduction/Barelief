@@ -69,26 +69,28 @@ bool dense_layout(const Message& message,std::span<PlaneLayout> output) {
                        {rank?(rank==2?second*lane:lane):0,rank==2?lane:0}};
     return true;
 }
-DataContract binding_contract(const Binding& b,Kind kind) {
-    if(kind!=Kind::HistoryRow)return b.contract;
-    const auto* registered=std::get_if<NumericContract>(&b.contract);
-    if(!registered)return b.contract;
-    const bool matrix_history=registered->shape.rank==Rank::Matrix;
-    const bool vector_history=registered->shape.rank==Rank::Vector &&
-        b.history_contract.shape.rank==Rank::Vector;
-    if(!matrix_history && !vector_history)return b.contract;
-    auto row=*registered;
+NumericContract history_row_contract(const NumericContract& registered,bool matrix_history) {
+    auto row=registered;
     row.semantic=row.history_element;
     row.history_element=Semantic::Numeric;
     if(matrix_history){
-        row.shape={Rank::Vector,{registered->shape.axes[1],Axis::None},
-            {registered->shape.extents[1],ExtentBounds{}}};
-        row.coordinates={registered->coordinates[1],AxisCoordinates{}};
+        row.shape={Rank::Vector,{registered.shape.axes[1],Axis::None},
+            {registered.shape.extents[1],ExtentBounds{}}};
+        row.coordinates={registered.coordinates[1],AxisCoordinates{}};
     }else{
         row.shape={Rank::Scalar,{Axis::None,Axis::None},{ExtentBounds{},ExtentBounds{}}};
         row.coordinates={AxisCoordinates{},AxisCoordinates{}};
     }
     return row;
+}
+DataContract binding_contract(const Binding& b,Kind kind) {
+    if(kind!=Kind::HistoryRow)return b.contract;
+    const auto* registered=std::get_if<NumericContract>(&b.contract);
+    if(!registered)return b.contract;
+    const bool matrix_history=registered->shape.rank==Rank::Matrix;
+    const bool vector_history=registered->shape.rank==Rank::Vector && b.history_contract.shape.rank==Rank::Vector;
+    if(!matrix_history && !vector_history)return b.contract;
+    return history_row_contract(*registered,matrix_history);
 }
 bool matches_dense_planes(const NumericPayload& payload,const NumericContract& contract,
                           std::span<const PlaneLayout> dense) noexcept {

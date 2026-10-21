@@ -21,6 +21,6 @@ inline void set_menu_row_fixture_font(QWidget *menuRow, const QFont &font) {
     // CoreApplication may already have polished children before the offscreen
     // font is registered. Set the owned row explicitly rather than relying on
     // a later top-level inherited-font change to replace cached style fonts.
-    for (auto *child : menuRow->findChildren<QWidget *>()) child->setFont(font);
+    for (const auto children=menuRow->findChildren<QWidget *>();auto *child : children) child->setFont(font);
     menuRow->setFont(font);
 }

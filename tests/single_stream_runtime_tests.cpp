@@ -58,6 +58,13 @@ void feed(Running& r,const NumericProcessingGraph& g,NodeId id,std::span<const f
 void near(double actual,double expected,const char* message,double tolerance=2e-5){require(std::abs(actual-expected)<=tolerance,message);}
 void constant(const Observation& o,float expected){require(o.count>0,"nonempty output");for(std::size_t i=0;i<o.count;++i)near(o.values[i],expected,"all output elements follow arithmetic oracle");}
 
+void generator_envelope_oracle(){
+ auto envelope_graph=generator_graph();auto& envelope=std::get<SignalGeneratorProcessingParameters>(node(envelope_graph,1).parameters).oscillators.front();envelope.amplitude=1;envelope.frequency_hz=500;envelope.phase_radians=tau/4;envelope.attack_seconds=.001;envelope.release_seconds=.001;
+ Running envelope_run(envelope_graph);Observation ramp;ramp.watched=1;clock(envelope_run,tick(0,48,1),ramp);
+ for(std::size_t i=0;i<48;++i)near(ramp.values[i],double(i+1)/48*std::sin(tau/4+tau*500*i/48000.),"individual attack envelope");
+ envelope.enabled=false;envelope_run.replace(envelope_graph);clock(envelope_run,tick(48,48,2),ramp);
+ for(std::size_t i=0;i<48;++i)near(ramp.values[i],double(47-i)/48*std::sin(tau/4+tau*500*(48+i)/48000.),"individual disable release envelope");
+}
 void generator_oracles(){
  auto g=generator_graph();Running r(g);Observation o;o.watched=1;
  clock(r,tick(0,256,1),o);require(o.count==256,"generator emits one mono output");for(std::size_t i=0;i<o.count;++i)near(o.values[i],2*std::sin(tau*1000*i/48000.),"single stationary tone; no normalization or sweep");
@@ -72,11 +79,7 @@ void generator_oracles(){
  // A generator added to a running shared clock must not restart at sample zero.
  auto second=node(g,1);second.id=2;second.parameters=SignalGeneratorProcessingParameters{{{99,true,300,.1,.7,0,0}}};g.nodes.push_back(second);g.configuration_bindings.push_back({10,2});r.replace(g);o.watched=2;clock(r,tick(2816,256,6),o);
  near(o.values[0],.1*std::sin(tau*300*2816/48000.+.7),"new generator joins shared sample position");
- auto envelope_graph=generator_graph();auto& envelope=std::get<SignalGeneratorProcessingParameters>(node(envelope_graph,1).parameters).oscillators.front();envelope.amplitude=1;envelope.frequency_hz=500;envelope.phase_radians=tau/4;envelope.attack_seconds=.001;envelope.release_seconds=.001;
- Running envelope_run(envelope_graph);Observation ramp;ramp.watched=1;clock(envelope_run,tick(0,48,1),ramp);
- for(std::size_t i=0;i<48;++i)near(ramp.values[i],double(i+1)/48*std::sin(tau/4+tau*500*i/48000.),"individual attack envelope");
- envelope.enabled=false;envelope_run.replace(envelope_graph);clock(envelope_run,tick(48,48,2),ramp);
- for(std::size_t i=0;i<48;++i)near(ramp.values[i],double(47-i)/48*std::sin(tau/4+tau*500*(48+i)/48000.),"individual disable release envelope");
+ generator_envelope_oracle();
  std::puts("single-stream generator numerical/timeline/ID/phase oracles PASS");
 }
 void internal_generator_oracles(){
@@ -144,31 +147,19 @@ void rejection_preserves_working_graph(){
  std::puts("geometry/resource rejection atomicity and working-graph continuity PASS");
 }
 
-void node_stats_oracles(){
  struct FakeTime {
   std::uint64_t elapsed=0,delivery_delay=0;
   static std::uint64_t read(void* p) noexcept {auto& t=*static_cast<FakeTime*>(p);const auto current=t.elapsed;t.elapsed+=3000000;return current;}
   static void delivery(void* p,const NumericPortFrameView&){auto& t=*static_cast<FakeTime*>(p);t.elapsed+=t.delivery_delay;}
  };
- auto graph=[](std::uint64_t rate,bool deep){
+NumericProcessingGraph stats_graph(std::uint64_t rate,bool deep){
   auto c=vector_contract(4,true);NumericProcessingGraph g;g.graph_id="stats";g.execution_interval={1,rate};g.nodes.push_back(source(1,c));
   ConfiguredProcessingNode gain;gain.id=2;gain.kind="SpectrumGain";gain.inputs={port(PortDirection::Input,0,c)};gain.outputs={port(PortDirection::Output,0,c)};
   gain.parameters=TransformProcessingParameters{{{"gain",NumericLiteral{2.0}}}};g.nodes.push_back(gain);g.edges.push_back({1,2,0,0});
   if(deep){gain.id=3;gain.parameters=TransformProcessingParameters{{{"gain",NumericLiteral{.5}}}};g.nodes.push_back(gain);g.edges.push_back({2,3,0,0});}
   ConfiguredProcessingNode sink;sink.id=4;sink.kind="FFTView";sink.inputs={port(PortDirection::Input,0,c)};g.nodes.push_back(sink);g.edges.push_back({deep?3:2,4,0,0});return g;
- };
- // A monotonic clock with a known resolution supplies synthetic work time.
- // Delivery consumes an additional20ms, independent of kernel topology/work.
- // Comparing identical runs with/without that cost catches callback charging;
- // adding a descendant catches inclusive time charged again to ancestors.
- for(const auto rate:{90u,120u})for(const bool deep:{false,true}){
-  std::array<NodeStats,4> reference{};
-  for(const auto delivery_delay:{std::uint64_t{0},std::uint64_t{20000000}}){
-   auto g=graph(rate,deep);FakeTime time;time.delivery_delay=delivery_delay;auto p=profile();p.monotonic_nanoseconds=FakeTime::read;p.measurement_clock=&time;Running r(g,p);
-   const auto contract=std::get<NumericContract>(node(g,1).outputs[0].contract.view());std::array<float,4> samples{1,2,3,4};const PlaneLayout plane{0,{sizeof(float),0}};
-   auto process=[&](std::uint64_t sequence){const DataFrameView frame{tick(std::int64_t((sequence-1)*4),4,sequence),NumericView{&contract,std::as_bytes(std::span(samples)),std::span(&plane,1),{4,1}}};
-    const auto before=allocations;const auto status=r.plan->process_numeric_ports(1,frame,*r.state,{}, {FakeTime::delivery,FakeTime::delivery,nullptr,&time});require(allocations==before,"measured ingress and stats do not allocate");return status;};
-   require(process(1)==Status::ok && process(2)==Status::ok,"measured numerical chain processes frames");
+ }
+void verify_stats_snapshot(Running& r,std::array<NodeStats,4>& reference,unsigned rate,bool deep,std::uint64_t delivery_delay){
    for(const auto id:{1,2,3,4}){if(id==3&&!deep)continue;const auto stats=r.plan->node_stats(id,*r.state);require(bool(stats)&&stats->node==id,"stats retain stable node identity");
     require(stats->calls==2 && stats->produced==(id==4?0u:2u) && stats->errors==0,"per-node calls/produced/errors reflect actual execution");
     require(stats->self_nanoseconds>0 && stats->self_nanoseconds==2*stats->max_self_nanoseconds,"repeatable work has exact cumulative/max selftime");
@@ -177,6 +168,16 @@ void node_stats_oracles(){
     require(stats->deadline_misses==(exceeds?2u:0u),"deadline misses use configured rational analysis interval");
     if(!delivery_delay)reference[id-1]=*stats;else{const auto& baseline=reference[id-1];require(stats->self_nanoseconds==baseline.self_nanoseconds && stats->max_self_nanoseconds==baseline.max_self_nanoseconds && stats->deadline_misses==baseline.deadline_misses && stats->self_histogram==baseline.self_histogram,"delivery latency cannot alter reported kernel selftime");}
    }
+}
+void stats_deadline_case(unsigned rate,bool deep){
+  std::array<NodeStats,4> reference{};
+  for(const auto delivery_delay:{std::uint64_t{0},std::uint64_t{20000000}}){
+   auto g=stats_graph(rate,deep);FakeTime time;time.delivery_delay=delivery_delay;auto p=profile();p.monotonic_nanoseconds=FakeTime::read;p.measurement_clock=&time;Running r(g,p);
+   const auto contract=std::get<NumericContract>(node(g,1).outputs[0].contract.view());std::array<float,4> samples{1,2,3,4};const PlaneLayout plane{0,{sizeof(float),0}};
+   auto process=[&](std::uint64_t sequence){const DataFrameView frame{tick(std::int64_t((sequence-1)*4),4,sequence),NumericView{&contract,std::as_bytes(std::span(samples)),std::span(&plane,1),{4,1}}};
+    const auto before=allocations;const auto status=r.plan->process_numeric_ports(1,frame,*r.state,{}, {FakeTime::delivery,FakeTime::delivery,nullptr,&time});require(allocations==before,"measured ingress and stats do not allocate");return status;};
+   require(process(1)==Status::ok && process(2)==Status::ok,"measured numerical chain processes frames");
+   verify_stats_snapshot(r,reference,rate,deep,delivery_delay);
    const auto source_stats=*r.plan->node_stats(1,*r.state),gain_stats=*r.plan->node_stats(2,*r.state);
    require(source_stats.max_self_nanoseconds==gain_stats.max_self_nanoseconds,"ancestor selftime excludes descendants");
    require(source_stats.deadline_misses==(rate==120?2u:0u),"same work crosses120Hz budget but fits90Hz budget");
@@ -188,6 +189,14 @@ void node_stats_oracles(){
    const auto recovered=*r.plan->node_stats(2,*r.state);require(recovered.calls==4&&recovered.produced==4&&recovered.errors==1,"recovery retains error diagnostics without inventing new errors");
    require(!r.plan->node_stats(99,*r.state),"unknown node has no fabricated stats");
   }
+}
+void node_stats_oracles(){
+ // A monotonic clock with a known resolution supplies synthetic work time.
+ // Delivery consumes an additional20ms, independent of kernel topology/work.
+ // Comparing identical runs with/without that cost catches callback charging;
+ // adding a descendant catches inclusive time charged again to ancestors.
+ for(const auto rate:{90u,120u})for(const bool deep:{false,true}){
+  stats_deadline_case(rate,deep);
  }
  std::puts("NodeStats fakeclock exclusive selftime/callback isolation/counters/histogram/rational deadlines PASS");
 }
@@ -200,7 +209,7 @@ void resampler_latency(bool spectral){
  if(!spectral){node(g,2).outputs[0]=port(PortDirection::Output,0,pcm);node(g,3).inputs={port(PortDirection::Input,9,pcm),port(PortDirection::Input,5,pcm)};node(g,3).outputs={port(PortDirection::Output,0,pcm)};}
  else {
   auto window=pcm;window.shape.extents[0]={512,512};auto bins=vector_contract(256,true,24000);bins.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{24000,512}};
-  ConfiguredProcessingNode w;w.id=21;w.kind="Window";w.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t(512)}}}};w.inputs={port(PortDirection::Input,0,pcm)};w.outputs={port(PortDirection::Output,0,window)};
+  ConfiguredProcessingNode w;w.id=21;w.kind="Window";w.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t(512)}},{"input_rate",NumericLiteral{std::uint64_t{24000}}}}};w.inputs={port(PortDirection::Input,0,pcm)};w.outputs={port(PortDirection::Output,0,window)};
   ConfiguredProcessingNode fft;fft.id=22;fft.kind="StereoFFT";fft.parameters=TransformProcessingParameters{};fft.inputs={port(PortDirection::Input,0,window)};fft.outputs={port(PortDirection::Output,0,bins)};
   node(g,2).outputs={port(PortDirection::Output,0,bins)};node(g,3).inputs={port(PortDirection::Input,9,bins),port(PortDirection::Input,5,bins)};node(g,3).outputs={port(PortDirection::Output,0,bins)};
   g.nodes.push_back(w);g.nodes.push_back(fft);g.edges[0].from=22;g.edges.push_back({20,21,0,0});g.edges.push_back({21,22,0,0});

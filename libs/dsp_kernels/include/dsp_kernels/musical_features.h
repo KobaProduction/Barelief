@@ -67,6 +67,17 @@ class MusicalSpectrogram {
   private:
     struct Cell { std::size_t begin, end; SpectralReduction reduction; double weight; };
     struct Note { std::size_t left, right; double fraction; bool available; };
+    bool prepare_plan(std::span<const double>,const MusicalSpectrogramConfig&,std::span<const float>,std::span<const SpectralRange>);
+    bool prepare_cells(std::span<const double>,std::span<const float>,const SpectralRange&,std::size_t,std::size_t,std::size_t);
+    bool prepare_broadband(std::span<const double>,std::span<const float>,std::span<const SpectralRange>);
+    bool prepare_note(std::span<const double>,int);
+    bool prepare_notes(std::span<const double>);
+    double accumulate_cell(std::span<const float>,const Cell&) const noexcept;
+    double normalize_cell(double,const Cell&) const noexcept;
+    bool process_cells(std::span<const float>) noexcept;
+    void process_notes(std::span<const float>) noexcept;
+    bool is_grid_peak(std::span<const float>,std::size_t) const noexcept;
+    PeakGridAgreement grid_agreement(std::span<const float>) const noexcept;
     MusicalSpectrogramConfig config_;
     std::vector<double> input_frequencies_, centers_;
     std::vector<float> weights_, staging_;
@@ -96,6 +107,9 @@ class BroadbandFeatures {
     std::span<const double> centers_hz() const noexcept { return centers_; }
   private:
     struct Band { std::size_t begin, end; };
+    void prepare_bands(std::size_t,double,std::span<const double>);
+    void accumulate_band(std::span<const float>,std::size_t,bool,bool,double&) const noexcept;
+    bool process_band(std::span<const float>,std::size_t,bool,bool) noexcept;
     std::size_t bins_ = 0;
     double step_ = 0;
     BandStatistic statistic_ = BandStatistic::SumEnergy;
@@ -120,6 +134,10 @@ class NoteSalience {
   private:
     struct Harmonic { double bin, weight; std::size_t begin, end; };
     struct Cell { std::size_t begin, end; double total_weight; };
+    bool prepare_notes(std::size_t,int,double,double,double,std::size_t);
+    void prepare_harmonics(double,double,std::size_t,Cell&);
+    double harmonic_peak(std::size_t,double) const noexcept;
+    float cell_salience(const Cell&) const noexcept;
     std::size_t bins_ = 0;
     std::vector<double> frequencies_;
     std::vector<Cell> cells_;

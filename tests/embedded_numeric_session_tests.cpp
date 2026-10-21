@@ -1,4 +1,5 @@
 #include <embedded_support/session.h>
+#include "test_assertions.h"
 #include <embedded_support/synthetic_pipeline.h>
 #include <array>
 #include <bit>
@@ -13,7 +14,7 @@ namespace {int failures=0,checks=0;bool tracking=false;std::size_t allocations=0
 void* operator new(std::size_t n){if(tracking)++allocations;auto* p=std::malloc(n?n:1);if(!p)std::abort();return p;}
 void operator delete(void* p) noexcept {std::free(p);}void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 namespace {
-#define CHECK(x) do{++checks;if(!(x)){++failures;std::printf("FAIL %d: %s\n",__LINE__,#x);}}while(false)
+#define CHECK(x) (++checks, test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures))
 struct Transport final:bdsp_protocol::ByteTransport {
     std::array<std::uint8_t,8192> queue{},trace{};std::size_t head=0,count=0,traced=0,quantum=7;
     Transport* peer=nullptr;bool stalled=false,connected=true;
@@ -48,17 +49,45 @@ void receive(void* p,const nd::Message& message) {
 void transfer(es::NumericSession& p,es::NumericSession& s,Transport& a,Transport& b) {
     for(int i=0;i<1000;++i){CHECK(p.poll(a)==Status::ok);CHECK(s.poll(b)==Status::ok);}
 }
+es::NumericSessionBinding exact_binding(const NumericContract& contract) {
+    es::NumericSessionBinding binding;
+    binding.binding={{1,1},{"graph",2,nd::Direction::Input,0},"exact64",contract,{},ValueDomain::FiniteOnly};
+    binding.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion,1,1);
+    binding.nonce=13;
+    binding.session=17;
+    binding.revision=19;
+    binding.publisher_epoch=23;
+    return binding;
+}
+void rejected_bindings(const es::NumericSessionBinding& binding,Storage& ps,Storage& ss) {
+    auto invalid=binding;
+    invalid.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion-1,1,1);
+    es::NumericSession refused(es::Role::publisher,invalid,ps.view(),nd::device_block_limits());
+    CHECK(refused.begin()!=Status::ok);
+    invalid=binding;
+    invalid.negotiated.features=0;
+    es::NumericSession zero(es::Role::subscriber,invalid,ss.view(),nd::device_block_limits());
+    CHECK(zero.begin()!=Status::ok);
+    invalid=binding;
+    std::get<NumericContract>(invalid.binding.contract).representation.encoding=StorageEncoding::Native;
+    es::NumericSession native(es::Role::subscriber,invalid,ss.view(),nd::device_block_limits());
+    CHECK(native.begin()!=Status::ok);
+}
+void descriptive_history_binding(const es::NumericSessionBinding& binding,const NumericContract& contract,Storage& storage) {
+    auto passive=binding;
+    auto tagged=contract;
+    tagged.semantic=Semantic::History;
+    passive.binding.contract=tagged;
+    es::NumericSession ordinary(es::Role::publisher,passive,storage.view(),nd::device_block_limits());
+    // A descriptive tag cannot turn a scalar into a ring History.
+    CHECK(ordinary.begin()==Status::ok);
+}
 void scenario() {
     constexpr std::array<std::uint32_t,1> channels{42};NumericContract contract;contract.dtype=DType::UInt64;contract.channel_order=channels;
     contract.representation.encoding=StorageEncoding::FixedLittleEndian;
-    es::NumericSessionBinding binding;binding.binding={{1,1},{"graph",2,nd::Direction::Input,0},"exact64",contract,{},ValueDomain::FiniteOnly};
-    binding.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion,1,1);binding.nonce=13;binding.session=17;binding.revision=19;binding.publisher_epoch=23;
+    auto binding=exact_binding(contract);
     Storage ps,ss;Transport a,b;a.peer=&b;b.peer=&a;
-    {
-        auto passive=binding;auto tagged=contract;tagged.semantic=Semantic::History;passive.binding.contract=tagged;
-        es::NumericSession ordinary(es::Role::publisher,passive,ps.view(),nd::device_block_limits());
-        CHECK(ordinary.begin()==Status::ok); // A descriptive tag cannot turn a scalar into a ring History.
-    }
+    descriptive_history_binding(binding,contract,ps);
     es::NumericSession publisher(es::Role::publisher,binding,ps.view(),nd::device_block_limits());
     es::NumericSession subscriber(es::Role::subscriber,binding,ss.view(),nd::device_block_limits());
 
@@ -78,11 +107,7 @@ void scenario() {
     message.kind=nd::Kind::Unavailable;message.stamp.available=false;message.numeric={};
     CHECK(publisher.publish(message)==Status::ok);transfer(publisher,subscriber,a,b);CHECK(captured.markers==1);
     a.connected=false;CHECK(publisher.poll(a)==Status::disconnected && publisher.state()==es::SessionState::failed);
-    auto invalid=binding;invalid.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion-1,1,1);es::NumericSession refused(es::Role::publisher,invalid,ps.view(),nd::device_block_limits());
-    CHECK(refused.begin()!=Status::ok);invalid=binding;invalid.negotiated.features=0;
-    es::NumericSession zero(es::Role::subscriber,invalid,ss.view(),nd::device_block_limits());CHECK(zero.begin()!=Status::ok);
-    invalid=binding;std::get<NumericContract>(invalid.binding.contract).representation.encoding=StorageEncoding::Native;
-    es::NumericSession native(es::Role::subscriber,invalid,ss.view(),nd::device_block_limits());CHECK(native.begin()!=Status::ok);
+    rejected_bindings(binding,ps,ss);
 }
 // Models the one shared CONTROL PacketStream enqueue boundary, without an OS
 // reader in DATA. Backpressure must preserve the fragment until accepted once.
@@ -104,8 +129,7 @@ void external_session() {
     constexpr std::array<std::uint32_t,1> channels{42};NumericContract c;c.dtype=DType::UInt64;
     c.semantic=Semantic::Numeric;c.shape.rank=Rank::Vector;c.shape.axes={Axis::Declared,Axis::None};
     c.shape.extents={ExtentBounds{128,128},ExtentBounds{1,1}};c.channel_order=channels;c.representation.encoding=StorageEncoding::FixedLittleEndian;
-    es::NumericSessionBinding binding;binding.binding={{1,1},{"graph",2,nd::Direction::Input,0},"exact64",c,{},ValueDomain::FiniteOnly};
-    binding.negotiated=nd::negotiate(nd::PayloadVersion,nd::PayloadVersion,1,1);binding.nonce=13;binding.session=17;binding.revision=19;binding.publisher_epoch=23;
+    auto binding=exact_binding(c);
     Storage ps,ss;auto pb=ps.view(),sb=ss.view();pb.packet_in=pb.packet_out=pb.read={};sb.packet_in=sb.packet_out=sb.read={};pb.assembly={};
     PacketQueue queue;es::NumericSession publisher(es::Role::publisher,binding,pb,nd::device_block_limits(),PacketQueue::send,&queue,64);
     es::NumericSession subscriber(es::Role::subscriber,binding,sb,nd::device_block_limits(),PacketQueue::send,&queue,64);

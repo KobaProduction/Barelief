@@ -57,7 +57,36 @@ static void worker_routing(){
     require(c.snapshot().graph_revision==before+1,"CONTROL2 mutation stalls with blocked GUI");
     require(wait([&]{return rr.values.contains(id)&&rr.values.at(id).accepted;}),"queued worker CONTROL reply lost");
     directory.stop();QThread::msleep(150);
-    require(b.routing_diagnostics()["peer_count"].toInt()==0&&c.routing_diagnostics()["peer_count"].toInt()==0,"directory retirement stalls with blocked GUI");
+    require(b.routing_diagnostics().value("peer_count").toInt()==0&&c.routing_diagnostics().value("peer_count").toInt()==0,"directory retirement stalls with blocked GUI");
+}
+static void routing_diagnostic(auto& rb, auto& rc, auto& fanout, std::uint64_t observed, FrameProbe& bObservation, FrameProbe& cObservation) {
+        std::fprintf(stderr,"routing B=%s C=%s fanout epoch=%llu graphrev=%llu observed=%llu warning=%s\n",
+            QJsonDocument(rb.diagnostics()).toJson(QJsonDocument::Compact).constData(),QJsonDocument(rc.diagnostics()).toJson(QJsonDocument::Compact).constData(),
+            (unsigned long long)fanout.snapshot().epoch,(unsigned long long)fanout.snapshot().graph_revision,(unsigned long long)observed,qPrintable(fanout.network_warning()));
+        for(auto* probe:{&bObservation,&cObservation}){auto f=probe->latest();
+            std::fprintf(stderr,"probe status=%d frame=%d available=%d producer=%llu sequence=%llu\n",int(f.status),bool(f.frame),f.frame&&f.frame.view().stamp.available,
+                f.frame?(unsigned long long)f.frame.view().stamp.producer_epoch:0,f.frame?(unsigned long long)f.frame.view().stamp.sequence:0);}
+}
+static void replace_publisher(auto& ac, auto& ar, auto& a, auto& as, const auto& ga, const QUuid& aid, AggregatorServer& registry, std::uint64_t& sequence, const auto& endToEnd, FrameProbe& cObservation, std::uint64_t firstProducer, FrameProbe& unrelated) {
+    // Replace publisher process identity while retaining its persistent directory UUID.
+    ac.reset();ar.reset();a.reset();a=std::make_unique<NumericEngine>();ar=std::make_unique<Replies>(*a);
+    ar->accepted(apply(ga));as=std::make_unique<NumericControlServer>(*a);
+    require(as->listen(QHostAddress::LocalHost,0,true),"replacement publisher server");
+    ac=std::make_unique<AggregatorClient>(AggregatorClientConfig{aid,ComponentType::core,as->port(),321});
+    ac->set_capabilities(advertised(*a,as->port(),"a"));ac->connect_to_aggregator_server(QHostAddress::LocalHost,registry.serverPort(),1000);sequence=0;
+    require(wait([&]{return endToEnd(UINT64_MAX);},6000),"same UUID new publisher incarnation with restarted sequence");
+    require(cObservation.latest().frame.view().stamp.producer_epoch!=firstProducer,"publisher provenance was rewritten or stale");
+    require(unrelated.equals(73),"publisher restart reset unrelated branch");
+}
+static void selective_retirement(auto& ac,auto& ar,auto& a,auto& as,const auto& ga,const QUuid& aid,AggregatorServer& registry,std::uint64_t& sequence,const auto& endToEnd,FrameProbe& cObservation,FrameProbe& unrelated,NumericEngine& b,AggregatorClient& directoryB,AggregatorClient& directoryC,NumericRoutingAdapter& rb,NumericRoutingAdapter& rc) {
+    const auto firstProducer=cObservation.latest().frame.view().stamp.producer_epoch;
+    ac->disconnect_from_aggregator_server();as.reset();
+    require(wait([&]{return directoryB.resolve_engine(aid).isEmpty()&&!cObservation.available();},6000),"offline provider propagated typed unavailable");
+    feed(b,1,1,73,2);require(wait([&]{return unrelated.equals(73);}),"retirement cleared unrelated branch");
+    replace_publisher(ac,ar,a,as,ga,aid,registry,sequence,endToEnd,cObservation,firstProducer,unrelated);
+    registry.stop();require(wait([&]{return !directoryB.is_registered()&&!directoryC.is_registered();}),"directory disconnection");
+    require(wait([&]{return rb.diagnostics().value("peer_count").toInt()==0&&rc.diagnostics().value("peer_count").toInt()==0;}),"directory loss retained cached/direct fallback peer");
+
 }
 int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
     AggregatorServer registry;require(registry.start(0),"directory listen");
@@ -82,28 +111,9 @@ int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
     std::uint64_t sequence=0;auto endToEnd=[&](std::uint64_t expected){feed(*a,1,++sequence,expected);return cObservation.equals(expected)&&observed==expected;};
     const auto relayed=wait([&]{return endToEnd(9007199254740993ULL);},6000);
     if(!relayed){
-        std::fprintf(stderr,"routing B=%s C=%s fanout epoch=%llu graphrev=%llu observed=%llu warning=%s\n",
-            QJsonDocument(rb.diagnostics()).toJson(QJsonDocument::Compact).constData(),QJsonDocument(rc.diagnostics()).toJson(QJsonDocument::Compact).constData(),
-            (unsigned long long)fanout.snapshot().epoch,(unsigned long long)fanout.snapshot().graph_revision,(unsigned long long)observed,qPrintable(fanout.network_warning()));
-        for(auto* probe:{&bObservation,&cObservation}){auto f=probe->latest();
-            std::fprintf(stderr,"probe status=%d frame=%d available=%d producer=%llu sequence=%llu\n",int(f.status),bool(f.frame),f.frame&&f.frame.view().stamp.available,
-                f.frame?(unsigned long long)f.frame.view().stamp.producer_epoch:0,f.frame?(unsigned long long)f.frame.view().stamp.sequence:0);}
+        routing_diagnostic(rb,rc,fanout,observed,bObservation,cObservation);
     }
     require(relayed,"three-engine directory relay and fanout exact64");
-    const auto firstProducer=cObservation.latest().frame.view().stamp.producer_epoch;
-    ac->disconnect_from_aggregator_server();as.reset();
-    require(wait([&]{return directoryB.resolve_engine(aid).isEmpty()&&!cObservation.available();},6000),"offline provider propagated typed unavailable");
-    feed(b,1,1,73,2);require(wait([&]{return unrelated.equals(73);}),"retirement cleared unrelated branch");
-    // Replace publisher process identity while retaining its persistent directory UUID.
-    ac.reset();ar.reset();a.reset();a=std::make_unique<NumericEngine>();ar=std::make_unique<Replies>(*a);
-    ar->accepted(apply(ga));as=std::make_unique<NumericControlServer>(*a);
-    require(as->listen(QHostAddress::LocalHost,0,true),"replacement publisher server");
-    ac=std::make_unique<AggregatorClient>(AggregatorClientConfig{aid,ComponentType::core,as->port(),321});
-    ac->set_capabilities(advertised(*a,as->port(),"a"));ac->connect_to_aggregator_server(QHostAddress::LocalHost,registry.serverPort(),1000);sequence=0;
-    require(wait([&]{return endToEnd(UINT64_MAX);},6000),"same UUID new publisher incarnation with restarted sequence");
-    require(cObservation.latest().frame.view().stamp.producer_epoch!=firstProducer,"publisher provenance was rewritten or stale");
-    require(unrelated.equals(73),"publisher restart reset unrelated branch");
-    registry.stop();require(wait([&]{return !directoryB.is_registered()&&!directoryC.is_registered();}),"directory disconnection");
-    require(wait([&]{return rb.diagnostics()["peer_count"].toInt()==0&&rc.diagnostics()["peer_count"].toInt()==0;}),"directory loss retained cached/direct fallback peer");
+    selective_retirement(ac,ar,a,as,ga,aid,registry,sequence,endToEnd,cObservation,unrelated,b,directoryB,directoryC,rb,rc);
     worker_routing();std::puts("three canonical engines + directory + fanout + selective retirement + same UUID incarnation + blocked GUI worker DATA/CONTROL/directory passed");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

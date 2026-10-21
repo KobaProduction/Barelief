@@ -103,7 +103,8 @@ bool PreparedResampler::reject_output(std::size_t& written) noexcept {reset();wr
 bool PreparedResampler::process_fir(ProcessBuffers& buffers) noexcept {
     bool state_reset=false;
     if(!existing_.process(buffers.input,buffers.count,buffers.stride,buffers.output,buffers.capacity,buffers.written,&state_reset)){
-        if(state_reset)reset();return false;
+        if(state_reset)reset();
+        return false;
     }
     has_input_=has_input_||buffers.count!=0;produced_+=buffers.written;return true;
 }
@@ -127,7 +128,8 @@ bool PreparedResampler::filter_sample(const ProcessBuffers& buffers,std::size_t 
     for(std::size_t channel=0;channel<config_.channels;++channel){
         float value=buffers.input[channel*buffers.stride+index];
         if(config_.mode==ResamplerMode::IirExperimental)value=filter_iir(value,channel);
-        if(!std::isfinite(value))return false;current[channel]=value;
+        if(!std::isfinite(value))return false;
+        current[channel]=value;
     }
     return true;
 }
@@ -140,7 +142,8 @@ bool PreparedResampler::emit_sample(ProcessBuffers& buffers,const std::array<flo
     const auto backwards=fraction_?config_.output_rate-fraction_:0u;const float back=float(backwards)*inverse_output_;
     for(std::size_t channel=0;channel<config_.channels;++channel){
         const float value=std::lerp(current[channel],previous_[channel],back);
-        if(!std::isfinite(value))return false;buffers.output[channel*buffers.capacity+buffers.written]=value;
+        if(!std::isfinite(value))return false;
+        buffers.output[channel*buffers.capacity+buffers.written]=value;
     }
     ++buffers.written;++produced_;advance_phase();return true;
 }
@@ -152,6 +155,15 @@ bool PreparedResampler::process_interpolated(ProcessBuffers& buffers) noexcept {
     }
     return true;
 }
+bool PreparedResampler::process_non_fir(ProcessBuffers& buffers) noexcept {
+    const auto count=buffers.count;
+    const auto& config=config_;
+    if(!count)return true;
+    has_input_=true;
+    if(backend_)return process_backend(buffers);
+    if(config.input_rate==config.output_rate)return process_identity(buffers);
+    return process_interpolated(buffers);
+}
 bool PreparedResampler::process(std::span<const float> input,std::size_t count,std::size_t stride,
     std::span<float> output,std::size_t capacity,std::size_t& written) noexcept {
     written=0;const auto& config=config_;const auto bound=maximum_output(count,config.input_rate,config.output_rate);
@@ -159,9 +171,6 @@ bool PreparedResampler::process(std::span<const float> input,std::size_t count,s
     ProcessBuffers buffers{input,count,stride,output,capacity,written};
     if(fir_mode(config.mode))return process_fir(buffers);
     if(!finite_channels(input,count,stride,config.channels))return false;
-    if(!count)return true;has_input_=true;
-    if(backend_)return process_backend(buffers);
-    if(config.input_rate==config.output_rate)return process_identity(buffers);
-    return process_interpolated(buffers);
+    return process_non_fir(buffers);
 }
 }

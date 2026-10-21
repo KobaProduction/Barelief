@@ -10,14 +10,23 @@ void NodeParameterModel::literal(QString label,QString key,Read read,Write write
     f.write=[this,write](const Value& v){auto n=_node;write(n,std::get<signal_contracts::NumericLiteral>(v));return commit(std::move(n));};
     _fields.push_back(std::move(f));
 }
+namespace numeric_editor::detail {
+inline std::vector<NodeParameterModel::Option> selector_options(const domain::ConfiguredProcessingNode& node) {
+    std::vector<NodeParameterModel::Option> options;
+    const auto outputs=domain::data_outputs(node).size();
+    if(outputs>1)for(std::size_t stream=0;stream<node.inputs.size()/outputs;++stream)
+        options.push_back({"Stream %1",int(stream),true,{QString::number(stream+1)}});
+    else for(const auto& port:node.inputs)
+        options.push_back({"Input %1",int(port.id),true,{QString::number(unsigned(port.id)+1)}});
+    return options;
+}
+}
 template<class Read,class Write>
 void NodeParameterModel::choice(QString label,QString key,QStringList names,Read read,Write write) {
     auto f=makeField(label,key,Editor::Choice);
-    if(_node.kind=="InputSelector" && key=="numericSelected") {
-        const auto outputs=domain::data_outputs(_node).size();
-        if(outputs>1)for(std::size_t stream=0;stream<_node.inputs.size()/outputs;++stream)f.options.push_back({"Stream %1",int(stream),true,{QString::number(stream+1)}});
-        else for(const auto& p:_node.inputs)f.options.push_back({"Input %1",int(p.id),true,{QString::number(unsigned(p.id)+1)}});
-    }else for(int i=0;i<names.size();++i)f.options.push_back({names[i],i,true});
+    if(_node.kind=="InputSelector" && key=="numericSelected")
+        f.options=numeric_editor::detail::selector_options(_node);
+    else for(int i=0;i<names.size();++i)f.options.push_back({names[i],i,true});
     f.read=[this,read]()->Value{return int(read(_node));};
     f.write=[this,write](const Value& v){auto n=_node;write(n,std::get<int>(v));return commit(std::move(n));};
     _fields.push_back(std::move(f));

@@ -83,13 +83,17 @@ void IngressAcceptance::reset_descendants(const FrameStamp& old) noexcept {
         if(nodes[index].clock==source_index && belongs_to_lane(index))reset_descendant(index);
     retire_epoch(old.producer_epoch);
 }
-Status IngressAcceptance::retain_history() noexcept {
+Status IngressAcceptance::retain_external_history() noexcept {
     if(external_history){
         source_state.history_origin_valid=true;
         if(!input.stamp.available){source_state.frames=history_input->shape.extents[0].maximum;source_state.progress=std::size_t(real_filled);source_state.row_ordinal=*history_ordinal;}
         if(*history_ordinal<source_state.row_ordinal)return Status::invalid_argument;
         auto previous_owner=source_state.ingress_owner;source_state.ingress_owner=std::move(retention_owner);source_state.owned_ingress=*owned;
     }
+    return Status::ok;
+}
+Status IngressAcceptance::retain_history() noexcept {
+    const auto retained=retain_external_history();if(retained!=Status::ok)return retained;
     if(!external_history && input.stamp.available && history_input && (history_input->shape.rank==Rank::Matrix || history_input->semantic==Semantic::History)){
         source_state.owned_ingress={};source_state.ingress_owner.reset();source_state.history_origin_valid=false;
         source_state.frames=source_state.oldest=source_state.progress=0;source_state.row_ordinal=0;

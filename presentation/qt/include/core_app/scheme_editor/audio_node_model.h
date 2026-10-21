@@ -164,6 +164,10 @@ private:
     QString field_summary(const QString&,bool) const;
     QString routing_summary() const;
     QString processing_summary() const;
+    QString specialized_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
+    void refresh_embedded_geometry();
+    bool publish_history_snapshot_preview(const pipeline::DeliveredNumericFrame&,const signal_contracts::NumericContract&,
+        DiagnosticPreview,std::uint64_t,std::uint64_t);
     QString descriptive_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     QString fallback_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     QString music_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;

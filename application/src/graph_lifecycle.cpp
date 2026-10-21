@@ -61,7 +61,8 @@ LifecycleResult admit_preparation_graph(const domain::NumericProcessingGraph& gr
     if(graph.nodes.size()>std::vector<std::size_t>().max_size()/2)return {Status::overflow,{domain::ProcessingError::Limit}};
     std::vector<std::size_t> workspace(graph.nodes.size()*2);domain::ProcessingGraphAdmission admitted;
     const auto diagnostic=domain::admit_processing_graph(graph,limits.admission,capabilities,workspace,admitted);
-    return diagnostic?LifecycleResult{}:LifecycleResult{Status::invalid_argument,diagnostic};
+    const auto status=diagnostic.error==domain::ProcessingError::ResourceLimit?Status::exhausted:Status::invalid_argument;
+    return diagnostic?LifecycleResult{}:LifecycleResult{status,diagnostic};
 }
 LifecycleResult prepare_execution(NumericGraphPreparationPort& port,const domain::NumericProcessingGraph& graph,
     const NumericRuntimeLimits& limits,PreparedExecution& candidate) {

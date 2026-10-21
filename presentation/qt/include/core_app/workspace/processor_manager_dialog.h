@@ -5,6 +5,7 @@
 class QLabel;
 class QTreeWidget;
 class QVBoxLayout;
+class QFormLayout;
 class QLineEdit;
 class QSpinBox;
 class QPushButton;
@@ -16,6 +17,9 @@ public:
     void set_warning(const QString &);
 private:
     void refresh();
+    void setup_processor_list(QVBoxLayout*);
+    void append_registry_status(QWidget*,QFormLayout*);
+    void append_processor_row(const ProcessorEndpoint&);
     void setup_direct_connection(QVBoxLayout *layout);
     void setup_registry_connection(QVBoxLayout *layout,const QString& host,quint16 port);
     int populate_processors();

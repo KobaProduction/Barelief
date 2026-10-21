@@ -56,6 +56,7 @@
 #include <QLabel>
 #include <QScopedPointer>
 #include <utility>
+#include <optional>
 #include <vector>
 
 #include <QtNodes/DataFlowGraphicsScene>
@@ -123,53 +124,7 @@ double literal_field(NodeParameterModel* model,const char* key){
 
 }
 
-int main(int argc,char** argv){
-
-    QApplication app(argc,argv);
-#ifdef Q_OS_WIN
-    const auto fontFile=QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf");
-    check(QFontDatabase::addApplicationFont(fontFile)>=0,"Own offscreen scene uses the system font with Cyrillic glyphs");
-    app.setFont(QFont("Segoe UI",9));
-#endif
-    if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-path") {
-        QFile file(QString::fromLocal8Bit(argv[2]));check(file.open(QIODevice::ReadOnly),"native path data file");
-        std::vector<std::vector<float>> history;QTextStream input(&file);
-        while(!input.atEnd()){const auto fields=input.readLine().split(',');if(fields.size()<52 || fields[0]!="7")continue;
-            history.clear();for(int i=2;i+49<fields.size();i+=50){std::vector<float> row;for(int b=0;b<50;++b)row.push_back(fields[i+b].toFloat());history.push_back(std::move(row));}}
-        check(!history.empty(),"native runtime History matrix");float peak=0;size_t peakAge=0,peakBand=0;
-        for(size_t r=0;r<history.size();++r)for(size_t b=0;b<50;++b)if(history[r][b]>peak){peak=history[r][b];peakAge=history.size()-1-r;peakBand=b;}
-        SpectrogramGraph view;view.resize(900,600);check(view.initialize({240,180},{1200,900}),"native renderer initialization");
-        view.set_history_dimensions(400,50);view.update_frame_history(history);view.set_y_range(0,peak);
-        view.setAttribute(Qt::WA_ShowWithoutActivating);view.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
-        auto* host=view.findChild<QQuickWidget*>("spectrogramQuickView");
-        auto* gl=host && host->rootObject()?host->rootObject()->findChild<SurfaceQuickItem*>():nullptr;check(gl,"native Quick renderer container");
-        gl->backend()->setProperty("verifyGeometryUpload",true);view.show();gl->update();
-        QElapsedTimer timer;timer.start();while(!view.axis_layout_telemetry().value("geometryUploadVerified").toBool() && timer.elapsed()<5000){QCoreApplication::processEvents();QThread::msleep(2);}
-        const auto telemetry=view.axis_layout_telemetry();const auto image=host->grabFramebuffer();
-        if(!image.isNull())image.save(QFileInfo(file).absolutePath()+"/native-history-frame.png");
-        check(!image.isNull() && host->status()==QQuickWidget::Ready && telemetry.value("rendererReady").toBool(),"native Quick FBO rendering");
-        check(telemetry.value("geometryUploadVerified").toBool() && telemetry.value("vertexCount").toInt()==49*399*6,"actual GPU VBO exact readback/mesh topology");
-        check(telemetry.value("surfacePeakAge").toULongLong()==peakAge && telemetry.value("surfacePeakBand").toULongLong()==peakBand,"GPU mesh retains History band/age peak");
-        std::printf("native Quick runtime History rows=%zu bands=50 peak=%.9g age=%zu band=%zu GPU vertices=%d exact VBO PASS\n",history.size(),peak,peakAge,peakBand,telemetry.value("vertexCount").toInt());
-        view.resize(321,259);view.quick_action("selection",1);
-        timer.restart();while(timer.elapsed()<300){QCoreApplication::processEvents();QThread::msleep(2);}
-        for(int y=20;y<gl->height() && view.axis_layout_telemetry().value("selectionReadoutRows").toStringList().isEmpty();y+=16)
-            for(int x=20;x<gl->width() && view.axis_layout_telemetry().value("selectionReadoutRows").toStringList().isEmpty();x+=16){
-                view.quick_pointer(0,x,y,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
-                view.quick_pointer(2,x,y,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
-                QCoreApplication::processEvents();
-            }
-        timer.restart();while(view.axis_layout_telemetry().value("selectionReadoutRows").toStringList().isEmpty() && timer.elapsed()<2000){QCoreApplication::processEvents();QThread::msleep(2);}
-        const auto narrow=view.axis_layout_telemetry();const auto readout=narrow.value("selectionReadoutRect").toRect();
-        check(!narrow.value("selectionReadoutRows").toStringList().isEmpty(),"small native surface has a selected sample");
-        check(!readout.isEmpty() && QRect(0,0,qRound(gl->width()),qRound(gl->height())).contains(readout),"small native selection readout fits the actual viewport");
-        const auto smallImage=host->grabFramebuffer();check(!smallImage.isNull(),"small native framebuffer remains rendered after resize");
-        if(!smallImage.isNull())smallImage.save(QFileInfo(file).absolutePath()+"/native-history-small-frame.png");
-        return failures?1:0;
-    }
-
-
-    {
+void coefficient_port_identity(QApplication& app){
         AudioNodeModel generator("WindowFunction");
         generator.set_numeric_node(*generator.numeric_node()); // Canonical ordering used by bind_node.
         int deleted=0,aboutToDelete=0;
@@ -185,11 +140,11 @@ int main(int argc,char** argv){
         check(std::get<signal_contracts::NumericContract>(generator.numeric_node()->outputs[0].contract.view()).shape.extents[0].maximum==2048,"coefficient bank exposes updated geometry");
     }
 
-    {
+void axis_range_controls(){
         SpectrogramGraph view;view.update_frame_history({{-.5f,.25f},{0,.75f}});
         check(view.y_range().first<=-.5f && view.y_range().second>=.75f && view.y_range().second<2,"automatic signed actual history extent");
         view.set_y_range(-2,3);
-        check(view.y_range()==QPair<float,float>{-2,3} && view.surface_settings()["y_range_mode"]=="manual","manual API changes display range");
+        check(view.y_range()==QPair<float,float>{-2,3} && view.surface_settings().value("y_range_mode")=="manual","manual API changes display range");
         view.update_frame_history({{.001f,.002f}});check(view.y_range()==QPair<float,float>{-2,3},"new frames preserve manual range");
         const auto explicit_settings=view.surface_settings();SpectrogramGraph restored;restored.set_surface_settings(explicit_settings);
         check(restored.y_range()==QPair<float,float>{-2,3},"explicit manual settings restore");
@@ -205,12 +160,8 @@ int main(int argc,char** argv){
         settings["y_range_mode"]="auto";view.set_surface_settings(settings);const auto heldRange=view.y_range();view.update_frame_history({});
         check(view.projected_history_frames()==0 && view.y_range()==heldRange,"empty projection clears geometry and preserves interval amplitude bounds");
     }
-    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
 
-    for(const auto& kind:numeric_editor::catalog())registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
-    sparse_port_publication(registry);
-
-    {
+void source_rate_dependencies(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel rates(registry);
         const auto source=rates.addNode("SignalGenerator"),buffer=rates.addNode("Window");
         auto* generator=rates.delegateModel<AudioNodeModel>(source);auto* window=rates.delegateModel<AudioNodeModel>(buffer);
@@ -225,7 +176,8 @@ int main(int argc,char** argv){
         check(rates.edit_node(source,changed) && rates.save()==bound_before,"explicit synchronization binding wins over a conflicting derived source contract");
 
     }
-    {
+
+void capture_endpoint_guard(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel capture(registry);
         capture.set_admission_limits(numeric_editor::limits());capture.set_capture_device_provider([](int source,QString*){return QJsonArray{QJsonObject{{"id",source==0?"render-A":"capture-B"},{"name","Fake endpoint"},{"is_default",true},{"native_sample_rate",48000},{"native_channels",1}}};});
         const auto source=capture.addNode("AudioSource"),buffer=capture.addNode("Window");
@@ -238,7 +190,8 @@ int main(int argc,char** argv){
         check(capture.edit_adapter(source,{}),"restore default endpoint");changed=*physical->numeric_node();change_kind(changed);check(numeric_editor::set_sample_rate(changed,44100),"prepare simultaneous source/rate edit");const auto default_before=capture.save();
         check(capture.edit_node(source,changed) && capture.save()!=default_before,"unpinned draft may explicitly change source kind and declared rate");
     }
-    {
+
+void fourier_port_roundtrip(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel fourier(registry);
         const auto complex=fourier.addNode("Fourier"),real=fourier.addNode("RealFourier"),polar=fourier.addNode("ComplexPolar");
         auto* a=fourier.delegateModel<AudioNodeModel>(complex);auto* b=fourier.delegateModel<AudioNodeModel>(real);
@@ -254,7 +207,8 @@ int main(int argc,char** argv){
         check(desktop::create_numeric_project(restored,{},document) && desktop::read_numeric_draft(document,restored),"Fourier project round-trip");
         NumericEditorGraphModel roundtrip(registry);check(roundtrip.set_numeric_graph(restored),"Fourier/polar ports restore atomically");
     }
-    {
+
+void routing_point_roundtrip(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel routes(registry);
         const auto source=routes.addNode("RealFourier"),route=routes.addNode("Reroute"),view=routes.addNode("FFTView");
         for(const auto edge:std::array{QtNodes::ConnectionId{source,0,route,0},QtNodes::ConnectionId{route,0,view,0}}){
@@ -267,7 +221,8 @@ int main(int argc,char** argv){
         domain::NumericProcessingGraph restored;check(bool(desktop::decode_numeric_graph(encoded,restored)),"Routing point deserializes");
         NumericEditorGraphModel roundtrip(registry);check(roundtrip.set_numeric_graph(restored),"Routing point restores with ordinary wires");
     }
-    {
+
+void numeric_primitive_roundtrip(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel numbers(registry);
         const auto fs=numbers.addNode("Fs"),integer=numbers.addNode("UInt32Constant"),route=numbers.addNode("Reroute"),view=numbers.addNode("ScalarView");
         auto* fsModel=numbers.delegateModel<AudioNodeModel>(fs);check(fsModel && fsModel->caption()=="Fs","Fs keeps a concise block caption");
@@ -288,7 +243,8 @@ int main(int argc,char** argv){
         domain::NumericProcessingGraph restored;check(bool(desktop::decode_numeric_graph(encoded,restored)),"Numeric primitive graph deserializes");
         NumericEditorGraphModel roundtrip(registry);check(roundtrip.set_numeric_graph(restored),"Numeric primitives restore with ordinary ports");
     }
-    {
+
+void parameter_wire_geometry(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel parameters(registry);QUndoStack history;parameters.set_undo_stack(&history);
         const auto window=parameters.addNode("Window"),fft=parameters.addNode("RealFourier"),length=parameters.addNode("ArrayLength");
         auto* buffer=parameters.delegateModel<AudioNodeModel>(window);
@@ -308,7 +264,8 @@ int main(int argc,char** argv){
         check(std::get<signal_contracts::NumericContract>(value->numeric_node()->outputs[0].contract.view()).dtype==signal_contracts::DType::Float64,"Number type follows selected primitive dtype");
 
     }
-    {
+
+void surviving_widget_localization(){
         QScopedPointer<QWidget> remainingBody;
         { AudioNodeModel transient("Fs");remainingBody.reset(transient.embeddedWidget());transient.set_processing_activity(true,true,120); }
         ui::Language::instance().set("ru");
@@ -316,27 +273,7 @@ int main(int argc,char** argv){
         ui::Language::instance().set("en");
     }
 
-    {
-        NumericEditorGraphModel temporal(registry);QUndoStack undo;temporal.set_undo_stack(&undo);
-        QString temporalRejection;QObject::connect(&temporal,&NumericEditorGraphModel::edit_rejected,&temporal,[&](const QString& error){temporalRejection=error;});
-        const auto mel=temporal.addNode("Mel"),history=temporal.addNode("Spectrogram"),transpose=temporal.addNode("MatrixTranspose"),center=temporal.addNode("MatrixCenter"),window=temporal.addNode("MatrixWindowFunction"),fft=temporal.addNode("MatrixFFT"),row=temporal.addNode("MatrixRow"),map=temporal.addNode("SpectrogramView"),line=temporal.addNode("FFTView");
-        auto* centerModel=temporal.delegateModel<AudioNodeModel>(center);auto* centerParameters=centerModel->parameter_model();
-        auto* transposeModel=temporal.delegateModel<AudioNodeModel>(transpose);auto* windowModel=temporal.delegateModel<AudioNodeModel>(window);auto* fftModel=temporal.delegateModel<AudioNodeModel>(fft);auto* rowModel=temporal.delegateModel<AudioNodeModel>(row);
-        auto* windowParameters=windowModel->parameter_model();auto* fftParameters=fftModel->parameter_model();auto* rowParameters=rowModel->parameter_model();
-        check(fftParameters->field("fft_size") && !fftParameters->field("function") && !fftParameters->field("window_enabled") && windowParameters->field("function"),"Matrix FFT and window have separate registered controls");
-        check(fftParameters->editLiteral("fft_size","512",0) && !windowModel->numeric_node()->enabled && fftModel->numeric_node()->enabled,"Matrix FFT fixture declares 512 explicitly while the separate window defaults to bypass");
-        check(fftParameters->onBlock("fft_size") && windowParameters->onBlock("function") && rowParameters->onBlock("row"),"Matrix FFT, window and band selection are visible on their blocks");
-        check(temporal.delegateModel<AudioNodeModel>(history)->parameter_model()->editLiteral("numericCapacity","200",1),"History capacity can differ from FFT zero-padding size");
-        for(const auto edge:std::array{QtNodes::ConnectionId{mel,0,history,0},QtNodes::ConnectionId{history,0,transpose,0},QtNodes::ConnectionId{transpose,0,center,0},QtNodes::ConnectionId{center,0,window,0},QtNodes::ConnectionId{window,0,fft,0},QtNodes::ConnectionId{fft,0,map,0},QtNodes::ConnectionId{fft,0,row,0},QtNodes::ConnectionId{row,0,line,0}}) {
-            check(temporal.connectionPossible(edge),"Temporal analysis connection preflight");temporal.addConnection(edge);check(temporal.connectionExists(edge),"Temporal analysis connection accepted");
-        }
-        const auto matrix=[&]{return std::get<signal_contracts::NumericContract>(fftModel->numeric_node()->outputs[0].contract.view());};
-        check(matrix().shape.axes[0]==signal_contracts::Axis::Band && matrix().shape.axes[1]==signal_contracts::Axis::Bin && matrix().shape.extents[0].maximum==50 && matrix().shape.extents[1].maximum==256,"Matrix row FFT output is a band-by-bin ordinary matrix");
-        const auto transposed=std::get<signal_contracts::NumericContract>(transposeModel->numeric_node()->outputs[0].contract.view());
-        const auto centered=std::get<signal_contracts::NumericContract>(centerModel->numeric_node()->outputs[0].contract.view());
-        check(centered.shape==transposed.shape && centered.coordinates==transposed.coordinates && centered.clock.domain==transposed.clock.domain && centered.clock.sample_rate==transposed.clock.sample_rate && centered.clock.tick_seconds==transposed.clock.tick_seconds && centered.semantic==signal_contracts::Semantic::Numeric && centered.representation.normalization==signal_contracts::Normalization::None,"Centering preserves matrix geometry and physical coordinates without a normalization claim");
-        check(transposed.shape.axes[0]==signal_contracts::Axis::Band && transposed.shape.axes[1]==signal_contracts::Axis::Time && transposed.shape.extents[1].maximum==200 && std::get<signal_contracts::NumericContract>(fftModel->numeric_node()->inputs[0].contract.view()).shape.extents[1].maximum==200,"Separate transpose and window preserve the real History capacity before zero padding");
-        check(rowParameters->field("row")->numeric_maximum.value_or(-1)==49 && edit_row(rowParameters,49) && !edit_row(rowParameters,50) && edit_row(rowParameters,0),"Every valid band can be selected and out-of-range selection is refused");
+void temporal_window_edit(NumericEditorGraphModel& temporal,QtNodes::NodeId window,AudioNodeModel* windowModel,NodeParameterModel* windowParameters){
         int unrelated_validations=0,wire_changes=0,immediate_requests=0;
         temporal.set_node_validator([&](const domain::ConfiguredProcessingNode& n){if(n.id!=domain::NodeId(window))++unrelated_validations;return domain::ProcessingDiagnostic{};});
         const auto deleted=QObject::connect(&temporal,&QtNodes::DataFlowGraphModel::connectionDeleted,&temporal,[&]{++wire_changes;});
@@ -348,6 +285,9 @@ int main(int argc,char** argv){
         check(temporal.edit_node(window,enabledWindow),"Separate matrix window can leave generic bypass");
         check(unrelated_validations==0 && wire_changes==0 && immediate_requests==2,"Window selections retain topology and request Apply without the typing debounce");
         QObject::disconnect(deleted);QObject::disconnect(created);QObject::disconnect(immediate);temporal.set_node_validator({});
+
+}
+std::unique_ptr<QWidget> temporal_center_edit(NumericEditorGraphModel& temporal,QUndoStack& undo,QtNodes::NodeId center,AudioNodeModel* centerModel,NodeParameterModel* centerParameters){
         check(centerParameters->onBlock("method") && std::get<int>(centerParameters->field("method")->read())==0 && centerModel->numeric_node()->enabled,"Centering defaults to visible mean subtraction");
         std::unique_ptr<QWidget> centerForm(centerModel->parameter_widget());
         auto* offsetControl=centerForm->findChild<QWidget*>("offset");
@@ -365,6 +305,10 @@ int main(int argc,char** argv){
         QObject::disconnect(centerDeleted);QObject::disconnect(centerCreated);QObject::disconnect(centerApplied);temporal.set_node_validator({});
         const auto centerAfter=temporal.save();undo.undo();undo.undo();undo.undo();check(temporal.save()==centerBefore && !offsetControl->isEnabled(),"Centering method and offset undo restore the original settings");
         undo.redo();undo.redo();undo.redo();check(temporal.save()==centerAfter && offsetControl->isEnabled(),"Centering method and offset redo restore manual settings");
+
+return centerForm;
+}
+void temporal_geometry_edits(NumericEditorGraphModel& temporal,QUndoStack& undo,QtNodes::NodeId mel,QtNodes::NodeId history,QtNodes::NodeId transpose,QtNodes::NodeId center,QtNodes::NodeId window,QtNodes::NodeId fft,QtNodes::NodeId row,QtNodes::NodeId map,QtNodes::NodeId line,AudioNodeModel* rowModel,NodeParameterModel* fftParameters,NodeParameterModel* rowParameters,const QString& temporalRejection,const auto& matrix){
         undo.clear();const auto before=temporal.save();
         check(fftParameters->editLiteral("fft_size","256",0),"Connected FFT size change accepted");
         check(matrix().shape.extents[1].maximum==128 && std::get<signal_contracts::NumericContract>(rowModel->numeric_node()->outputs[0].contract.view()).shape.extents[0].maximum==128 &&
@@ -386,6 +330,32 @@ int main(int argc,char** argv){
         check(contractOf(row,true).shape.extents[0].maximum==128 && contractOf(line,false).shape.extents[0].maximum==128 && rowParameters->field("row")->numeric_maximum.value_or(-1)==31,"Upstream bands preserve FFT size and refresh selection bounds");
         const auto reduced=temporal.save();undo.undo();check(temporal.save()==compatibleBefore,"Upstream Mel geometry undo restores entire branch");undo.redo();check(temporal.save()==reduced,"Upstream Mel geometry redo restores entire branch");
         check(melParameters->editLiteral("bands","8",0) && rowParameters->field("row")->numeric_maximum.value_or(-1)==7 && matrix().shape.extents[0].maximum==8,"Reduction to eight bands succeeds with selected band zero");
+
+}
+void temporal_matrix_chain(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel temporal(registry);QUndoStack undo;temporal.set_undo_stack(&undo);
+        QString temporalRejection;QObject::connect(&temporal,&NumericEditorGraphModel::edit_rejected,&temporal,[&](const QString& error){temporalRejection=error;});
+        const auto mel=temporal.addNode("Mel"),history=temporal.addNode("Spectrogram"),transpose=temporal.addNode("MatrixTranspose"),center=temporal.addNode("MatrixCenter"),window=temporal.addNode("MatrixWindowFunction"),fft=temporal.addNode("MatrixFFT"),row=temporal.addNode("MatrixRow"),map=temporal.addNode("SpectrogramView"),line=temporal.addNode("FFTView");
+        auto* centerModel=temporal.delegateModel<AudioNodeModel>(center);auto* centerParameters=centerModel->parameter_model();
+        auto* transposeModel=temporal.delegateModel<AudioNodeModel>(transpose);auto* windowModel=temporal.delegateModel<AudioNodeModel>(window);auto* fftModel=temporal.delegateModel<AudioNodeModel>(fft);auto* rowModel=temporal.delegateModel<AudioNodeModel>(row);
+        auto* windowParameters=windowModel->parameter_model();auto* fftParameters=fftModel->parameter_model();auto* rowParameters=rowModel->parameter_model();
+        check(fftParameters->field("fft_size") && !fftParameters->field("function") && !fftParameters->field("window_enabled") && windowParameters->field("function"),"Matrix FFT and window have separate registered controls");
+        check(fftParameters->editLiteral("fft_size","512",0) && !windowModel->numeric_node()->enabled && fftModel->numeric_node()->enabled,"Matrix FFT fixture declares 512 explicitly while the separate window defaults to bypass");
+        check(fftParameters->onBlock("fft_size") && windowParameters->onBlock("function") && rowParameters->onBlock("row"),"Matrix FFT, window and band selection are visible on their blocks");
+        check(temporal.delegateModel<AudioNodeModel>(history)->parameter_model()->editLiteral("numericCapacity","200",1),"History capacity can differ from FFT zero-padding size");
+        for(const auto edge:std::array{QtNodes::ConnectionId{mel,0,history,0},QtNodes::ConnectionId{history,0,transpose,0},QtNodes::ConnectionId{transpose,0,center,0},QtNodes::ConnectionId{center,0,window,0},QtNodes::ConnectionId{window,0,fft,0},QtNodes::ConnectionId{fft,0,map,0},QtNodes::ConnectionId{fft,0,row,0},QtNodes::ConnectionId{row,0,line,0}}) {
+            check(temporal.connectionPossible(edge),"Temporal analysis connection preflight");temporal.addConnection(edge);check(temporal.connectionExists(edge),"Temporal analysis connection accepted");
+        }
+        const auto matrix=[&]{return std::get<signal_contracts::NumericContract>(fftModel->numeric_node()->outputs[0].contract.view());};
+        check(matrix().shape.axes[0]==signal_contracts::Axis::Band && matrix().shape.axes[1]==signal_contracts::Axis::Bin && matrix().shape.extents[0].maximum==50 && matrix().shape.extents[1].maximum==256,"Matrix row FFT output is a band-by-bin ordinary matrix");
+        const auto transposed=std::get<signal_contracts::NumericContract>(transposeModel->numeric_node()->outputs[0].contract.view());
+        const auto centered=std::get<signal_contracts::NumericContract>(centerModel->numeric_node()->outputs[0].contract.view());
+        check(centered.shape==transposed.shape && centered.coordinates==transposed.coordinates && centered.clock.domain==transposed.clock.domain && centered.clock.sample_rate==transposed.clock.sample_rate && centered.clock.tick_seconds==transposed.clock.tick_seconds && centered.semantic==signal_contracts::Semantic::Numeric && centered.representation.normalization==signal_contracts::Normalization::None,"Centering preserves matrix geometry and physical coordinates without a normalization claim");
+        check(transposed.shape.axes[0]==signal_contracts::Axis::Band && transposed.shape.axes[1]==signal_contracts::Axis::Time && transposed.shape.extents[1].maximum==200 && std::get<signal_contracts::NumericContract>(fftModel->numeric_node()->inputs[0].contract.view()).shape.extents[1].maximum==200,"Separate transpose and window preserve the real History capacity before zero padding");
+        check(rowParameters->field("row")->numeric_maximum.value_or(-1)==49 && edit_row(rowParameters,49) && !edit_row(rowParameters,50) && edit_row(rowParameters,0),"Every valid band can be selected and out-of-range selection is refused");
+        temporal_window_edit(temporal,window,windowModel,windowParameters);
+        auto centerForm=temporal_center_edit(temporal,undo,center,centerModel,centerParameters);
+        temporal_geometry_edits(temporal,undo,mel,history,transpose,center,window,fft,row,map,line,rowModel,fftParameters,rowParameters,temporalRejection,matrix);
         desktop::NumericProjectDocument project;domain::NumericProcessingGraph restored;
         check(desktop::create_numeric_project(temporal.numeric_graph(),{},project) && desktop::read_numeric_draft(project,restored),"Separate matrix chain project round-trip");
         NumericEditorGraphModel reloaded(registry);check(reloaded.set_numeric_graph(restored),"Separate matrix chain saved graph can be restored");
@@ -396,7 +366,7 @@ int main(int argc,char** argv){
         ui::Language::instance().set("en");
     }
 
-    {
+void explicit_clock_bindings(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel clocks(registry);domain::NumericProcessingGraph exported;QString error;
         const auto unbound=clocks.addNode("Mixer");
         check(!clocks.export_numeric_graph(exported,&error) && error.contains(QString::number(unbound)) && error.contains("synchronization"),"Missing mixer synchronization reports actionable node identity before Apply");
@@ -418,7 +388,22 @@ int main(int argc,char** argv){
         check(clocks.delegateModel<AudioNodeModel>(ambiguous)->numeric_node()->clock_node==-1 && !clocks.export_numeric_graph(exported,&error),"Independent clocks are never selected implicitly");
     }
 
-    {
+void configuration_visual_import(NumericEditorGraphModel& configUndo,const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        auto visual=configUndo.save();const auto connections=visual["connections"].toArray();QJsonArray reversed;
+        for(auto i=connections.size();i>0;--i)reversed.append(connections[i-1]);visual["connections"]=reversed;
+        NumericEditorGraphModel strictReload(registry);strictReload.load(visual);
+        const auto expectedImport=configUndo.numeric_graph(),actualImport=strictReload.numeric_graph();
+        bool exactImport=expectedImport.nodes.size()==actualImport.nodes.size() && std::is_permutation(expectedImport.edges.begin(),expectedImport.edges.end(),actualImport.edges.begin(),actualImport.edges.end()) && std::is_permutation(expectedImport.configuration_bindings.begin(),expectedImport.configuration_bindings.end(),actualImport.configuration_bindings.begin(),actualImport.configuration_bindings.end());
+        for(const auto& n:expectedImport.nodes){const auto found=std::find_if(actualImport.nodes.begin(),actualImport.nodes.end(),[&](const auto& other){return other.id==n.id;});QByteArray a,b;if(found==actualImport.nodes.end() || !desktop::encode_numeric_node(n,a) || !desktop::encode_numeric_node(*found,b) || a!=b || n.clock_node!=found->clock_node){exactImport=false;std::fprintf(stderr,"Strict import mismatch node=%d originalClock=%d loadedClock=%d original=%s loaded=%s\n",int(n.id),int(n.clock_node),found==actualImport.nodes.end()?-999:int(found->clock_node),a.constData(),b.constData());}}
+        if(!exactImport)std::fprintf(stderr,"Strict import counts nodes=%zu/%zu edges=%zu/%zu config=%zu/%zu\n",expectedImport.nodes.size(),actualImport.nodes.size(),expectedImport.edges.size(),actualImport.edges.size(),expectedImport.configuration_bindings.size(),actualImport.configuration_bindings.size());
+        check(exactImport,"Strict visual import preserves prepared downstream contracts independently of configuration-wire order");
+
+}
+void configuration_exact_undo(NumericEditorGraphModel& configUndo,const domain::NumericProcessingGraph& before){
+        const auto restored=configUndo.numeric_graph();bool same=before.nodes.size()==restored.nodes.size();for(std::size_t i=0;same && i<before.nodes.size();++i){QByteArray a,b;desktop::encode_numeric_node(before.nodes[i],a);desktop::encode_numeric_node(restored.nodes[i],b);same=a==b && before.nodes[i].clock_node==restored.nodes[i].clock_node;if(!same)std::fprintf(stderr,"Config undo mismatch id=%lld beforeClock=%lld restoredClock=%lld before=%s restored=%s\n",static_cast<long long>(before.nodes[i].id),static_cast<long long>(before.nodes[i].clock_node),static_cast<long long>(restored.nodes[i].clock_node),a.constData(),b.constData());}check(same,"Config undo restores exact before processing state");
+
+}
+void configuration_wire_undo(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel configUndo(registry);
         configUndo.addNode("SampleClock");const auto clock=configUndo.addNode("SampleClock");
         check(configUndo.delegateModel<AudioNodeModel>(clock)->parameter_model()->edit("clockSampleRate",44100),"Configuration undo test distinct target rate");
@@ -433,17 +418,10 @@ int main(int argc,char** argv){
         const auto before=configUndo.numeric_graph();const auto undo=configUndo.connectionUndoState(edge);configUndo.addConnection(edge);
         const auto rate=[&](QtNodes::NodeId id){const auto* node=configUndo.delegateModel<AudioNodeModel>(id)->numeric_node();const auto data=(node->outputs.empty()?node->inputs.front():node->outputs.front()).contract.view();return std::get<signal_contracts::NumericContract>(data).clock.sample_rate;};
         check(configUndo.connectionExists(edge) && rate(generator)==44100 && rate(window)==44100 && rate(view)==44100,"Config wire adapts source and downstream contracts");
-        auto visual=configUndo.save();const auto connections=visual["connections"].toArray();QJsonArray reversed;
-        for(auto i=connections.size();i>0;--i)reversed.append(connections[i-1]);visual["connections"]=reversed;
-        NumericEditorGraphModel strictReload(registry);strictReload.load(visual);
-        const auto expectedImport=configUndo.numeric_graph(),actualImport=strictReload.numeric_graph();
-        bool exactImport=expectedImport.nodes.size()==actualImport.nodes.size() && std::is_permutation(expectedImport.edges.begin(),expectedImport.edges.end(),actualImport.edges.begin(),actualImport.edges.end()) && std::is_permutation(expectedImport.configuration_bindings.begin(),expectedImport.configuration_bindings.end(),actualImport.configuration_bindings.begin(),actualImport.configuration_bindings.end());
-        for(const auto& n:expectedImport.nodes){const auto found=std::find_if(actualImport.nodes.begin(),actualImport.nodes.end(),[&](const auto& other){return other.id==n.id;});QByteArray a,b;if(found==actualImport.nodes.end() || !desktop::encode_numeric_node(n,a) || !desktop::encode_numeric_node(*found,b) || a!=b || n.clock_node!=found->clock_node){exactImport=false;std::fprintf(stderr,"Strict import mismatch node=%d originalClock=%d loadedClock=%d original=%s loaded=%s\n",int(n.id),int(n.clock_node),found==actualImport.nodes.end()?-999:int(found->clock_node),a.constData(),b.constData());}}
-        if(!exactImport)std::fprintf(stderr,"Strict import counts nodes=%zu/%zu edges=%zu/%zu config=%zu/%zu\n",expectedImport.nodes.size(),actualImport.nodes.size(),expectedImport.edges.size(),actualImport.edges.size(),expectedImport.configuration_bindings.size(),actualImport.configuration_bindings.size());
-        check(exactImport,"Strict visual import preserves prepared downstream contracts independently of configuration-wire order");
+        configuration_visual_import(configUndo,registry);
         check(configUndo.undoConnection(edge,undo),"Configuration connection undo succeeds");
         check(!configUndo.connectionExists(edge) && rate(generator)==48000 && rate(window)==48000 && rate(view)==48000 && configUndo.delegateModel<AudioNodeModel>(generator)->numeric_node()->clock_node==-1,"Config undo restores contracts and derived cache throughout downstream");
-        const auto restored=configUndo.numeric_graph();bool same=before.nodes.size()==restored.nodes.size();for(std::size_t i=0;same && i<before.nodes.size();++i){QByteArray a,b;desktop::encode_numeric_node(before.nodes[i],a);desktop::encode_numeric_node(restored.nodes[i],b);same=a==b && before.nodes[i].clock_node==restored.nodes[i].clock_node;if(!same)std::fprintf(stderr,"Config undo mismatch id=%lld beforeClock=%lld restoredClock=%lld before=%s restored=%s\n",static_cast<long long>(before.nodes[i].id),static_cast<long long>(before.nodes[i].clock_node),static_cast<long long>(restored.nodes[i].clock_node),a.constData(),b.constData());}check(same,"Config undo restores exact before processing state");
+        configuration_exact_undo(configUndo,before);
         configUndo.addConnection(edge);check(configUndo.connectionExists(edge) && rate(generator)==44100 && rate(window)==44100 && rate(view)==44100,"Config redo reapplies source and downstream contracts");
         const auto mixer=configUndo.addNode("Mixer");auto boundMixer=*configUndo.delegateModel<AudioNodeModel>(mixer)->numeric_node();boundMixer.clock_node=clock;check(configUndo.edit_node(mixer,boundMixer),"Bind independent mixer for deletion isolation");
         int removals=0;QObject::connect(&configUndo,&NumericEditorGraphModel::atomic_edit_finished,&configUndo,[&]{++removals;});
@@ -454,7 +432,32 @@ int main(int argc,char** argv){
 
     }
 
-    {
+void native_import_refusals(NumericEditorGraphModel& native,QUndoStack& history,QJsonArray& devices,const domain::NumericProcessingGraph& imported,QString& error,domain::NumericProcessingGraph& exported){
+        const auto before=native.save();const auto undoBefore=history.index();
+        devices[0]=QJsonObject{{"id","native-A"},{"is_default",true},{"native_sample_rate",999},{"native_channels",3}};
+        check(!native.set_numeric_graph(imported,&error) && !error.isEmpty() && native.save()==before && history.index()==undoBefore,
+            "Unsupported native import preserves prior graph and Undo atomically");
+        devices[0]=QJsonObject{{"id","native-A"},{"is_default",false},{"native_sample_rate",44100},{"native_channels",3}};
+        devices[1]=QJsonObject{{"id","native-B"},{"is_default",true},{"native_sample_rate",32000},{"native_channels",1}};
+        auto saved=native.numeric_graph();saved.edges[0].output_port=2;
+        desktop::NumericDraftPresentation display;display.node_adapters={{"1",QJsonObject{{"device_identity","native-A"}}}};
+        desktop::NumericProjectDocument project;domain::NumericProcessingGraph roundtrip;desktop::NumericDraftPresentation restored;
+        check(desktop::create_numeric_project(saved,display,project) && desktop::read_numeric_draft(project,roundtrip) &&
+            desktop::read_numeric_presentation(project,restored),"Pinned multichannel project roundtrip");
+        check(native.set_numeric_graph(roundtrip,&error,restored.node_adapters) &&
+            native.numeric_graph().edges==saved.edges && domain::data_outputs(*native.delegateModel<AudioNodeModel>(1)->numeric_node()).size()==3 &&
+            native.delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="native-A",
+            "Default mono device must not remove saved pinned output three before adapter import");
+        check(native.export_numeric_graph(exported,&error) && exported.edges==saved.edges && domain::data_outputs(exported.nodes[0]).size()==3,
+            "Pinned output three survives Apply without silent rewiring");
+        const auto pinnedBefore=native.save();const auto pinnedUndo=history.index();
+        disappearing_native_output(native,roundtrip,restored.node_adapters,devices,history);
+        devices[0]=QJsonObject{{"id","native-A"},{"is_default",false},{"native_sample_rate",999},{"native_channels",3}};
+        check(!native.set_numeric_graph(roundtrip,&error,restored.node_adapters) && native.save()==pinnedBefore && history.index()==pinnedUndo &&
+            native.delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="native-A",
+            "Failed pinned import preserves graph, adapter binding and Undo atomically");
+}
+void native_format_admission(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel native(registry);QUndoStack history;native.set_undo_stack(&history);
         QJsonArray devices{QJsonObject{{"id","native-A"},{"is_default",true},{"native_sample_rate",44100},{"native_channels",3}},
             QJsonObject{{"id","native-B"},{"native_sample_rate",32000},{"native_channels",1}}};
@@ -484,42 +487,11 @@ int main(int argc,char** argv){
         // document's pinned device, even when node IDs coincide.
         check(native.set_numeric_graph(imported,&error) && domain::data_outputs(*native.delegateModel<AudioNodeModel>(1)->numeric_node()).size()==3,
             "New draft must not inherit prior pinned device by coincident node ID");
-        const auto before=native.save();const auto undoBefore=history.index();
-        devices[0]=QJsonObject{{"id","native-A"},{"is_default",true},{"native_sample_rate",999},{"native_channels",3}};
-        check(!native.set_numeric_graph(imported,&error) && !error.isEmpty() && native.save()==before && history.index()==undoBefore,
-            "Unsupported native import preserves prior graph and Undo atomically");
-        devices[0]=QJsonObject{{"id","native-A"},{"is_default",false},{"native_sample_rate",44100},{"native_channels",3}};
-        devices[1]=QJsonObject{{"id","native-B"},{"is_default",true},{"native_sample_rate",32000},{"native_channels",1}};
-        auto saved=native.numeric_graph();saved.edges[0].output_port=2;
-        desktop::NumericDraftPresentation display;display.node_adapters={{"1",QJsonObject{{"device_identity","native-A"}}}};
-        desktop::NumericProjectDocument project;domain::NumericProcessingGraph roundtrip;desktop::NumericDraftPresentation restored;
-        check(desktop::create_numeric_project(saved,display,project) && desktop::read_numeric_draft(project,roundtrip) &&
-            desktop::read_numeric_presentation(project,restored),"Pinned multichannel project roundtrip");
-        check(native.set_numeric_graph(roundtrip,&error,restored.node_adapters) &&
-            native.numeric_graph().edges==saved.edges && domain::data_outputs(*native.delegateModel<AudioNodeModel>(1)->numeric_node()).size()==3 &&
-            native.delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="native-A",
-            "Default mono device must not remove saved pinned output three before adapter import");
-        check(native.export_numeric_graph(exported,&error) && exported.edges==saved.edges && domain::data_outputs(exported.nodes[0]).size()==3,
-            "Pinned output three survives Apply without silent rewiring");
-        const auto pinnedBefore=native.save();const auto pinnedUndo=history.index();
-        disappearing_native_output(native,roundtrip,restored.node_adapters,devices,history);
-        devices[0]=QJsonObject{{"id","native-A"},{"is_default",false},{"native_sample_rate",999},{"native_channels",3}};
-        check(!native.set_numeric_graph(roundtrip,&error,restored.node_adapters) && native.save()==pinnedBefore && history.index()==pinnedUndo &&
-            native.delegateModel<AudioNodeModel>(1)->adapter().value("device_identity")=="native-A",
-            "Failed pinned import preserves graph, adapter binding and Undo atomically");
+native_import_refusals(native,history,devices,imported,error,exported);
+
     }
 
-    {
-        NumericEditorGraphModel layoutGraph(registry);
-        QtNodes::DataFlowGraphicsScene scene(layoutGraph);
-        QJsonObject geometrySettings{{"node_width",140}};
-        scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(layoutGraph,[&]{return geometrySettings;}));
-        const auto id=layoutGraph.addNode("Converter");
-        auto* node=layoutGraph.delegateModel<AudioNodeModel>(id);
-        auto* body=node->embeddedWidget();
-        std::unique_ptr<QWidget> inspector(node->parameter_widget());
-        auto settle=[] { for(int i=0;i<8;++i)QApplication::processEvents(); };
-        const QString artifactDirectory=qEnvironmentVariable("UI_FIX_ARTIFACTS");
+void layout_capture_font(const QString& artifactDirectory,QWidget* body,QWidget* inspector){
         if(!artifactDirectory.isEmpty()) {
             check(QDir().mkpath(artifactDirectory),"Create requested node layout artifact directory");
             // The offscreen platform may omit Windows system font discovery.
@@ -536,55 +508,9 @@ int main(int argc,char** argv){
                 inspector->setFont(captureFont);
             }
         }
-        auto capture=[&](QWidget* widget,const char* name) {
-            if(artifactDirectory.isEmpty())return;
-            // Render only this fixture's widget tree; no window activation,
-            // desktop capture or user input is involved.
-            widget->ensurePolished();
-            if(widget->layout())widget->layout()->activate();
-            const auto image=widget->grab();
-            check(!image.isNull() && image.save(QDir(artifactDirectory).filePath(QString::fromUtf8(name))),
-                  "Save requested node layout widget artifact");
-        };
-        body->ensurePolished();
-        inspector->ensurePolished();
-        scene.nodeGeometry().recomputeSize(id);
-        settle();
-        capture(body,"node-inline-collapsed-baseline.png");
-        scene.nodeGeometry().recomputeSize(id);settle();
-        const auto collapsedHeight=body->height();
-        const auto collapsible=inspector->findChildren<ui::CollapsibleSection*>();
-        check(collapsible.size()==1 && collapsible.front()->objectName()=="fieldsOnBlockSection",
-              "Only field placement is collapsible; parameters stay visible");
-        for(const auto* key:{"numericRounding_row","numericResetSettings_row"}) {
-            auto* row=inspector->findChild<QWidget*>(key);
-            check(row && row->isVisibleTo(inspector.get()),"Processing, contracts and reset are visible without expansion");
-        }
-        for(const auto* key:{"numericNan","numericRounding"}) {
-            auto* action=inspector->findChild<QAction*>(QString("showOnBlock_")+key);
-            check(action,"Inline geometry fixture has placement action");
-            if(action)action->setChecked(true);
-        }
-        settle();
-        check(body->height()>collapsedHeight,"Adding inline controls grows the existing node body automatically");
-        auto verify=[&] {
-            const auto bounds=scene.nodeGeometry().boundingRect(id);
-            check(bounds.contains(QRectF(scene.nodeGeometry().widgetPosition(id),body->size())),
-                  "Dynamic node bounds contain all embedded controls");
-            int previousBottom=-1;
-            for(auto* child:body->findChildren<QWidget*>()) {
-                auto* row=dynamic_cast<ui::FieldRow*>(child);
-                if(!row)continue;
-                if(!row->isVisibleTo(body))continue;
-                auto* editor=row->editor();
-                check(editor->width()>=editor->minimumSizeHint().width(),"Inline editors retain their usable minimum width");
-                const auto top=row->mapTo(body,QPoint{}).y();
-                check(top>=previousBottom && top+row->height()<=body->height(),"Pinned rows neither overlap nor overflow the body");
-                previousBottom=top+row->height();
-            }
-        };
-        verify();
-        capture(body,"node-inline-three-fields.png");
+
+}
+void tall_inspector_geometry(const std::unique_ptr<QWidget>& inspector,const QString& artifactDirectory,const auto& settle,const auto& capture){
         inspector->resize(640,inspector->sizeHint().height());
         inspector->layout()->setGeometry(inspector->rect());
         settle();
@@ -616,6 +542,9 @@ int main(int argc,char** argv){
             inspector->ensurePolished();
             capture(inspector.get(),"node-inspector-fields-collapsed.png");
         }
+
+}
+void inline_resize_and_shrink(QtNodes::DataFlowGraphicsScene& scene,QtNodes::NodeId id,QJsonObject& geometrySettings,QWidget* body,const std::unique_ptr<QWidget>& inspector,int collapsedHeight,const auto& settle,const auto& capture,const auto& verify){
         for(int width:{400,140,240}) {
             geometrySettings["node_width"]=width;
             scene.nodeGeometry().recomputeSize(id);settle();verify();
@@ -637,9 +566,75 @@ int main(int argc,char** argv){
                          collapsedHeight,body->height(),body->width(),geometrySettings["node_width"].toInt(),
                          body->sizeHint().height(),body->minimumSizeHint().height());
         check(body->height()==collapsedHeight,"Removing inline controls releases their previous height");
+}
+void verify_inline_geometry(QtNodes::DataFlowGraphicsScene& scene,QtNodes::NodeId id,QWidget* body){
+            const auto bounds=scene.nodeGeometry().boundingRect(id);
+            check(bounds.contains(QRectF(scene.nodeGeometry().widgetPosition(id),body->size())),
+                  "Dynamic node bounds contain all embedded controls");
+            int previousBottom=-1;
+            for(const auto children=body->findChildren<QWidget*>();auto* child:children) {
+                auto* row=dynamic_cast<ui::FieldRow*>(child);
+                if(!row)continue;
+                if(!row->isVisibleTo(body))continue;
+                auto* editor=row->editor();
+                check(editor->width()>=editor->minimumSizeHint().width(),"Inline editors retain their usable minimum width");
+                const auto top=row->mapTo(body,QPoint{}).y();
+                check(top>=previousBottom && top+row->height()<=body->height(),"Pinned rows neither overlap nor overflow the body");
+                previousBottom=top+row->height();
+            }
+        }
+void inline_field_layout(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel layoutGraph(registry);
+        QtNodes::DataFlowGraphicsScene scene(layoutGraph);
+        QJsonObject geometrySettings{{"node_width",140}};
+        scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(layoutGraph,[&]{return geometrySettings;}));
+        const auto id=layoutGraph.addNode("Converter");
+        auto* node=layoutGraph.delegateModel<AudioNodeModel>(id);
+        auto* body=node->embeddedWidget();
+        std::unique_ptr<QWidget> inspector(node->parameter_widget());
+        auto settle=[] { for(int i=0;i<8;++i)QApplication::processEvents(); };
+        const QString artifactDirectory=qEnvironmentVariable("UI_FIX_ARTIFACTS");
+        layout_capture_font(artifactDirectory,body,inspector.get());
+        auto capture=[&](QWidget* widget,const char* name) {
+            if(artifactDirectory.isEmpty())return;
+            // Render only this fixture's widget tree; no window activation,
+            // desktop capture or user input is involved.
+            widget->ensurePolished();
+            if(widget->layout())widget->layout()->activate();
+            const auto image=widget->grab();
+            check(!image.isNull() && image.save(QDir(artifactDirectory).filePath(QString::fromUtf8(name))),
+                  "Save requested node layout widget artifact");
+        };
+        body->ensurePolished();
+        inspector->ensurePolished();
+        scene.nodeGeometry().recomputeSize(id);
+        settle();
+        capture(body,"node-inline-collapsed-baseline.png");
+        scene.nodeGeometry().recomputeSize(id);settle();
+        const auto collapsedHeight=body->height();
+        const auto collapsible=inspector->findChildren<ui::CollapsibleSection*>();
+        check(collapsible.size()==1 && collapsible.front()->objectName()=="fieldsOnBlockSection",
+              "Only field placement is collapsible; parameters stay visible");
+        for(const auto* key:{"numericRounding_row","numericResetSettings_row"}) {
+            auto* row=inspector->findChild<QWidget*>(key);
+            check(row && row->isVisibleTo(inspector.get()),"Processing, contracts and reset are visible without expansion");
+        }
+        for(const auto* key:{"numericNan","numericRounding"}) {
+            auto* action=inspector->findChild<QAction*>(QString("showOnBlock_")+key);
+            check(action,"Inline geometry fixture has placement action");
+            if(action)action->setChecked(true);
+        }
+        settle();
+        check(body->height()>collapsedHeight,"Adding inline controls grows the existing node body automatically");
+        auto verify=[&]{verify_inline_geometry(scene,id,body);};
+        verify();
+        capture(body,"node-inline-three-fields.png");
+        tall_inspector_geometry(inspector,artifactDirectory,settle,capture);
+        inline_resize_and_shrink(scene,id,geometrySettings,body,inspector,collapsedHeight,settle,capture,verify);
+
     }
 
-    {
+void view_contract_adoption(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         for(const auto* kind:{"AudioView","WindowView","WindowedView","FFTView","MelView","SpectrogramView","ScalarView"}) {
             NumericEditorGraphModel views(registry);QtNodes::DataFlowGraphicsScene scene(views);
             const QString sourceKind=QString(kind)=="ScalarView"?"ScalarReduce":QString(kind)=="SpectrogramView"?"Spectrogram":"Window";
@@ -667,7 +662,7 @@ int main(int argc,char** argv){
         auto copied=metrics.saveNode(id);copied["id"]=70;metrics.loadNode(copied);check(metrics.delegateModel<AudioNodeModel>(70)->presentation()==metric->presentation(),"Metric clipboard retains input names and visibility");
     }
 
-    {
+void preview_extraction(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel extraction(registry);QtNodes::DataFlowGraphicsScene scene(extraction);
         const auto source=extraction.addNode("NetworkInput"),extractor=extraction.addNode("IndexExtract"),metric=extraction.addNode("ScalarView");
         auto producer=*extraction.delegateModel<AudioNodeModel>(source)->numeric_node();
@@ -689,7 +684,7 @@ int main(int argc,char** argv){
         scene.undoStack().undo();check(extraction.save()==before,"Extractor adoption Undo restores all endpoint contracts");
     }
 
-    {
+void native_source_contract(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel native(registry);
         const auto source=native.addNode("AudioSource"),resampler=native.addNode("PcmResampler");
         native.addConnection({source,0,resampler,0});
@@ -704,7 +699,8 @@ int main(int argc,char** argv){
         bool targetRetained=false;if(resolved!=graph.nodes.end())for(const auto& parameter:std::get<domain::TransformProcessingParameters>(resolved->parameters).values)if(parameter.key=="output_rate")targetRetained=std::visit([](auto value){return value==32000;},std::get<signal_contracts::NumericLiteral>(parameter.value));
         check(targetRetained,"Native Fs negotiation preserves requested resampling target");
     }
-    {
+
+void source_rate_undo(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel rates(registry);QUndoStack history;rates.set_undo_stack(&history);
         const auto genericSource=rates.addNode("NetworkInput"),accumulator=rates.addNode("Window");
         auto generic=*rates.delegateModel<AudioNodeModel>(genericSource)->numeric_node();
@@ -718,7 +714,8 @@ int main(int argc,char** argv){
               std::get<signal_contracts::NumericContract>(accumulated->outputs[0].contract.view()).shape.extents[0].maximum==4096,
               "Incompatible source geometry remains a diagnosed draft while Window owns its output size");
     }
-    {
+
+void clock_rate_dependency(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel rates(registry);QUndoStack history;rates.set_undo_stack(&history);
         // Connected clipboard round-trip exercises adapter-owned policy, placement and names.
         const auto a=rates.addNode("Converter"),b=rates.addNode("Converter");
@@ -740,8 +737,8 @@ int main(int argc,char** argv){
         const auto after=rates.save();scene.undoStack().undo();check(rates.save()==before,"Connected paste undo restores the entire original document");
         scene.undoStack().redo();check(rates.save()==after,"Connected paste redo restores metadata, connections and placement");
     }
-    {
-        NumericEditorGraphModel rates(registry);QUndoStack history;rates.set_undo_stack(&history);
+
+void resampler_refused_settings(){
         auto malformed=numeric_editor::default_node("PcmResampler");malformed.inputs.clear();
         check(!numeric_editor::set_sample_rate(malformed,44100),"Malformed resampler rate edit must fail without indexing a missing input");
         auto belowResampler=numeric_editor::default_node("PcmResampler");
@@ -749,6 +746,62 @@ int main(int argc,char** argv){
         check(!numeric_editor::set_sample_rate(belowResampler,1000) && signal_contracts::same_contract(initialResampler.view(),belowResampler.outputs[0].contract.view()),"Resampler rejects 1000 Hz without changing its contract");
         auto unsupported=numeric_editor::default_node("PcmResampler");auto lowClock=std::get<signal_contracts::NumericContract>(unsupported.inputs[0].contract.view());lowClock.clock.tick_seconds={1,8000};lowClock.clock.sample_rate=8000;
         check(numeric_editor::set_contract(unsupported,domain::PortDirection::Input,0,lowClock) && !numeric_editor::set_sample_rate(unsupported,192000),"Editor refuses unsupported resampling ratios before device-specific validation");
+
+}
+void resampler_connection_undo(NumericEditorGraphModel& rates,QtNodes::NodeId resampler,QtNodes::NodeId fresh,const QJsonObject& beforeConnection,QtNodes::DataFlowGraphicsScene& scene){
+        const QtNodes::ConnectionId edge{resampler,0,fresh,0};
+        scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));
+        check(rates.connectionExists(edge),"Connection adapts default downstream clock and PCM block bounds");
+        scene.undoStack().push(new QtNodes::DisconnectCommand(&scene,edge));
+        const auto disconnected=std::get<signal_contracts::NumericContract>(rates.delegateModel<AudioNodeModel>(fresh)->numeric_node()->inputs[0].contract.view());
+        check(!rates.connectionExists(edge) && disconnected.clock.sample_rate==32000,"Ordinary disconnect retains known clock for typed-zero continuity");
+        scene.undoStack().undo();check(rates.connectionExists(edge),"Undo disconnect must restore the connection with its current contract");
+        scene.undoStack().undo();check(rates.save()==beforeConnection,"Undo connection creation restores adapted downstream contracts atomically");
+        scene.undoStack().redo();check(rates.connectionExists(edge),"Redo connection creation adapts downstream clock again");
+
+}
+void resampler_card_render(NumericEditorGraphModel& rates,QtNodes::NodeId resampler,QtNodes::NodeId selector,QtNodes::NodeId sink,QWidget* body,QtNodes::DataFlowGraphicsScene& scene){
+        scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(rates,[]{return QJsonObject{};}));
+        scene.setNodePainter(std::make_unique<EditorNodePainter>());
+        auto& geometry=static_cast<EditorNodeGeometry&>(scene.nodeGeometry());geometry.recomputeSize(resampler);geometry.recomputeSize(selector);
+        check(!geometry.bypassRect(resampler).isEmpty() && geometry.bypassRect(selector).isEmpty() && geometry.bypassRect(sink).isEmpty(),"Header bypass belongs only to meaningful processing nodes");
+        check(!body->findChild<QCheckBox*>("numericBypass"),"Card body does not duplicate the header bypass");
+        auto* card=scene.nodeGraphicsObject(resampler);card->updateQWidgetEmbedPos();
+        for(const auto items=scene.items();auto* item:items)if(!item->parentItem())item->setVisible(item==card);
+        const auto oldTheme=ui::Theme::instance().code();
+        const auto oldLanguage=ui::Language::instance().code();
+        for(const auto& language:{QString("en"),QString("ru")})for(const auto& theme:{QString("light"),QString("dark")}){
+            ui::Language::instance().set(language);
+            ui::Theme::instance().set(theme);QCoreApplication::processEvents();geometry.recomputeSize(resampler);card->updateQWidgetEmbedPos();
+            const auto bounds=card->sceneBoundingRect();QImage image(bounds.size().toSize()+QSize(24,24),QImage::Format_ARGB32_Premultiplied);image.fill(QApplication::palette().color(QPalette::Window));
+            QPainter painter(&image);scene.render(&painter,QRectF(12,12,bounds.width(),bounds.height()),bounds);painter.end();
+            const QDir evidence(QDir(QString::fromUtf8(QT_TESTCASE_SOURCEDIR)).absoluteFilePath("../.agent-workspace"));
+            check(image.save(evidence.filePath("blocks17-resampler-"+language+"-"+theme+".png")),"Own scene renderer image saved");
+            if(language=="en")check(image.save(evidence.filePath("blocks17-resampler-"+theme+".png")),"English scene renderer image saved");
+        }
+        ui::Theme::instance().set(oldTheme);
+        ui::Language::instance().set(oldLanguage);
+
+}
+void resampler_inline_bypass(NumericEditorGraphModel& rates,QtNodes::NodeId resampler,QtNodes::NodeId sink,AudioNodeModel* resamplerModel,QtNodes::DataFlowGraphicsScene& scene){
+        check(!rates.delegateModel<AudioNodeModel>(sink)->parameter_model()->supportsBypass(),"Graph has no processing bypass");
+        const auto selector=rates.addNode("InputSelector");check(!rates.delegateModel<AudioNodeModel>(selector)->parameter_model()->supportsBypass(),"Selector cannot bypass its routing decision");
+        for(const auto* kind:{"Gate","ArrayLength","ArrayFill","MatrixTranspose"}){AudioNodeModel node(kind);check(!node.parameter_model()->supportsBypass(),"Same storage alone does not define an identity bypass for routing, metadata or geometry changes");}
+        auto* body=resamplerModel->embeddedWidget();auto* rateEdit=body->findChild<QLineEdit*>("output_rate");
+        check(rateEdit!=nullptr,"Resampler inline card exposes a real rate editor");
+        if(rateEdit){rateEdit->setText("36000");rateEdit->setModified(true);QMetaObject::invokeMethod(rateEdit,"editingFinished",Qt::DirectConnection);}
+        check(std::get<signal_contracts::NumericContract>(resamplerModel->numeric_node()->outputs[0].contract.view()).clock.sample_rate==36000,"Actual inline field commits 36000 Hz");
+        check(resamplerModel->parameter_model()->setBypassed(true),"Resampler bypass can be enabled");
+        check(signal_contracts::same_physical_contract(resamplerModel->numeric_node()->inputs[0].contract.view(),resamplerModel->numeric_node()->outputs[0].contract.view()),"Resampler bypass preserves input geometry and Fs");
+        check(std::visit([](auto v){return double(v);},std::get<signal_contracts::NumericLiteral>(resamplerModel->parameter_model()->field("output_rate")->read()))==36000,"Configured target remains visible while bypassed");
+        check(resamplerModel->parameter_model()->setBypassed(false),"Resampler processing resumes");
+        check(std::get<signal_contracts::NumericContract>(resamplerModel->numeric_node()->outputs[0].contract.view()).clock.sample_rate==36000,"Leaving bypass restores the requested 36000 Hz");
+        resampler_card_render(rates,resampler,selector,sink,body,scene);
+
+}
+void resampler_editor(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel rates(registry);QUndoStack history;rates.set_undo_stack(&history);
+        resampler_refused_settings();
         const auto source=rates.addNode("SignalGenerator"),resampler=rates.addNode("PcmResampler"),window=rates.addNode("Window"),sink=rates.addNode("WindowView");
         rates.addConnection({source,0,resampler,0});
         rates.addConnection({source,rates.delegateModel<AudioNodeModel>(source)->port_index(QtNodes::PortType::Out,domain::sample_rate_output),resampler,
@@ -772,15 +825,8 @@ int main(int argc,char** argv){
         if(downstream.clock.sample_rate!=32000)std::fprintf(stderr,"Resampler downstream rates window=%u resampler=%u\n",downstream.clock.sample_rate,std::get<signal_contracts::NumericContract>(resamplerModel->numeric_node()->outputs[0].contract.view()).clock.sample_rate);
         check(downstream.clock.sample_rate==32000,"Resampler output-rate change re-clocks its downstream chain");
         const auto fresh=rates.addNode("AudioView");const auto beforeConnection=rates.save();
-        QtNodes::DataFlowGraphicsScene scene(rates);const QtNodes::ConnectionId edge{resampler,0,fresh,0};
-        scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));
-        check(rates.connectionExists(edge),"Connection adapts default downstream clock and PCM block bounds");
-        scene.undoStack().push(new QtNodes::DisconnectCommand(&scene,edge));
-        const auto disconnected=std::get<signal_contracts::NumericContract>(rates.delegateModel<AudioNodeModel>(fresh)->numeric_node()->inputs[0].contract.view());
-        check(!rates.connectionExists(edge) && disconnected.clock.sample_rate==32000,"Ordinary disconnect retains known clock for typed-zero continuity");
-        scene.undoStack().undo();check(rates.connectionExists(edge),"Undo disconnect must restore the connection with its current contract");
-        scene.undoStack().undo();check(rates.save()==beforeConnection,"Undo connection creation restores adapted downstream contracts atomically");
-        scene.undoStack().redo();check(rates.connectionExists(edge),"Redo connection creation adapts downstream clock again");
+        QtNodes::DataFlowGraphicsScene scene(rates);
+        resampler_connection_undo(rates,resampler,fresh,beforeConnection,scene);
         check(resamplerModel->port_index(QtNodes::PortType::In,domain::target_sample_rate_input)==QtNodes::InvalidPortIndex,"No external resampler target command input");
         check(resamplerModel->port_index(QtNodes::PortType::Out,domain::sample_rate_output)!=QtNodes::InvalidPortIndex,"Resampler publishes Fs on the right");
         check(resamplerModel->parameter_model()->editLiteral("output_rate","96000",0),"Local resampler target edit");
@@ -789,52 +835,11 @@ int main(int argc,char** argv){
         domain::NumericProcessingGraph resolvedTarget;QString targetError;const auto targetPrepared=rates.export_numeric_graph(resolvedTarget,&targetError);
         if(!targetPrepared)std::fprintf(stderr,"Resampler export rejected: %s\n",targetError.toUtf8().constData());
         check(targetPrepared,"Local resampler target agrees with prepared contract");
-        check(!rates.delegateModel<AudioNodeModel>(sink)->parameter_model()->supportsBypass(),"Graph has no processing bypass");
-        const auto selector=rates.addNode("InputSelector");check(!rates.delegateModel<AudioNodeModel>(selector)->parameter_model()->supportsBypass(),"Selector cannot bypass its routing decision");
-        for(const auto* kind:{"Gate","ArrayLength","ArrayFill","MatrixTranspose"}){AudioNodeModel node(kind);check(!node.parameter_model()->supportsBypass(),"Same storage alone does not define an identity bypass for routing, metadata or geometry changes");}
-        auto* body=resamplerModel->embeddedWidget();auto* rateEdit=body->findChild<QLineEdit*>("output_rate");
-        check(rateEdit!=nullptr,"Resampler inline card exposes a real rate editor");
-        if(rateEdit){rateEdit->setText("36000");rateEdit->setModified(true);QMetaObject::invokeMethod(rateEdit,"editingFinished",Qt::DirectConnection);}
-        check(std::get<signal_contracts::NumericContract>(resamplerModel->numeric_node()->outputs[0].contract.view()).clock.sample_rate==36000,"Actual inline field commits 36000 Hz");
-        check(resamplerModel->parameter_model()->setBypassed(true),"Resampler bypass can be enabled");
-        check(signal_contracts::same_physical_contract(resamplerModel->numeric_node()->inputs[0].contract.view(),resamplerModel->numeric_node()->outputs[0].contract.view()),"Resampler bypass preserves input geometry and Fs");
-        check(std::visit([](auto v){return double(v);},std::get<signal_contracts::NumericLiteral>(resamplerModel->parameter_model()->field("output_rate")->read()))==36000,"Configured target remains visible while bypassed");
-        check(resamplerModel->parameter_model()->setBypassed(false),"Resampler processing resumes");
-        check(std::get<signal_contracts::NumericContract>(resamplerModel->numeric_node()->outputs[0].contract.view()).clock.sample_rate==36000,"Leaving bypass restores the requested 36000 Hz");
-        scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(rates,[]{return QJsonObject{};}));
-        scene.setNodePainter(std::make_unique<EditorNodePainter>());
-        auto& geometry=static_cast<EditorNodeGeometry&>(scene.nodeGeometry());geometry.recomputeSize(resampler);geometry.recomputeSize(selector);
-        check(!geometry.bypassRect(resampler).isEmpty() && geometry.bypassRect(selector).isEmpty() && geometry.bypassRect(sink).isEmpty(),"Header bypass belongs only to meaningful processing nodes");
-        check(!body->findChild<QCheckBox*>("numericBypass"),"Card body does not duplicate the header bypass");
-        auto* card=scene.nodeGraphicsObject(resampler);card->updateQWidgetEmbedPos();
-        for(auto* item:scene.items())if(!item->parentItem())item->setVisible(item==card);
-        const auto oldTheme=ui::Theme::instance().code();
-        const auto oldLanguage=ui::Language::instance().code();
-        for(const auto& language:{QString("en"),QString("ru")})for(const auto& theme:{QString("light"),QString("dark")}){
-            ui::Language::instance().set(language);
-            ui::Theme::instance().set(theme);QCoreApplication::processEvents();geometry.recomputeSize(resampler);card->updateQWidgetEmbedPos();
-            const auto bounds=card->sceneBoundingRect();QImage image(bounds.size().toSize()+QSize(24,24),QImage::Format_ARGB32_Premultiplied);image.fill(QApplication::palette().color(QPalette::Window));
-            QPainter painter(&image);scene.render(&painter,QRectF(12,12,bounds.width(),bounds.height()),bounds);painter.end();
-            const QDir evidence(QDir(QString::fromUtf8(QT_TESTCASE_SOURCEDIR)).absoluteFilePath("../.agent-workspace"));
-            check(image.save(evidence.filePath("blocks17-resampler-"+language+"-"+theme+".png")),"Own scene renderer image saved");
-            if(language=="en")check(image.save(evidence.filePath("blocks17-resampler-"+theme+".png")),"English scene renderer image saved");
-        }
-        ui::Theme::instance().set(oldTheme);
-        ui::Language::instance().set(oldLanguage);
+        resampler_inline_bypass(rates,resampler,sink,resamplerModel,scene);
 
     }
 
-    NumericEditorGraphModel graph(registry);graph.set_admission_limits(numeric_editor::limits());QUndoStack undo;graph.set_undo_stack(&undo);
-
-    for(const auto& kind:numeric_editor::catalog()){
-
-        auto node=numeric_editor::default_node(kind);domain::ResolvedProcessingNode resolved;
-
-        check(bool(domain::resolve_processing_node(node,numeric_editor::limits(),resolved)),qPrintable(kind));
-
-    }
-
-    {
+void delivery_diagnostics(NumericEditorGraphModel& graph,QUndoStack& undo){
 
         const auto source=graph.addNode("AudioSource"),view=graph.addNode("Converter");auto* target=graph.delegateModel<AudioNodeModel>(view);
 
@@ -861,8 +866,7 @@ int main(int argc,char** argv){
 
     }
 
-    {
-
+void grouped_selector_envelope(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         {
             NumericEditorGraphModel grouped(registry);
             const auto source=grouped.addNode("AudioSource"),destination=grouped.addNode("InputSelector");
@@ -880,14 +884,9 @@ int main(int argc,char** argv){
             check(signal_contracts::same_contract(actual->outputs[0].contract.view(),owned.view()) && signal_contracts::same_contract(actual->outputs[1].contract.view(),owned.view()) &&
                   signal_contracts::same_contract(actual->inputs[0].contract.view(),node.inputs[0].contract.view()),"Connecting a new group preserves output envelope and earlier group contracts");
         }
-        const auto generator=graph.addNode("AudioSource"),audio=graph.addNode("AudioSource"),selector=graph.addNode("InputSelector");
 
-        graph.addConnection({generator,0,selector,0});graph.addConnection({audio,0,selector,1});
-
-        auto* model=graph.delegateModel<AudioNodeModel>(selector);auto* body=model->embeddedWidget();
-
-        check(!body->findChild<QComboBox*>("numericSelected") && !body->findChild<QPushButton*>("addSelectorInput"),"selector has no central strip");
-        check(!body->findChild<QWidget*>("pipelineDataStatus"),"no default diagnostic card in node body");
+}
+void selector_growth_undo(NumericEditorGraphModel& graph,QUndoStack& undo,AudioNodeModel* model,QtNodes::NodeId generator,QtNodes::NodeId audio,QtNodes::NodeId selector){
         QObject selectorWitness;int selectorPublications=0;bool selectorPublicationComplete=true;
         QObject::connect(&graph,&NumericEditorGraphModel::atomic_edit_finished,&selectorWitness,[&]{
             ++selectorPublications;
@@ -916,16 +915,9 @@ int main(int argc,char** argv){
         QObject::disconnect(&graph,nullptr,&tailUndoWitness,nullptr);
         changed=*model->numeric_node();numeric_editor::set_input_count(changed,1);check(graph.edit_node(selector,changed) && graph.connectionExists({generator,0,selector,0}) && !graph.connectionExists({audio,0,selector,1}),"multi-tail shrink retains stable input zero");
         undo.undo();check(graph.connectionExists({audio,0,selector,1}) && graph.connectionExists({generator,0,selector,2}),"multi-tail undo restores exact IDs");
-        QByteArray bytes;domain::NumericProcessingGraph restored;
-        check(desktop::encode_numeric_graph(graph.numeric_graph(),bytes) && desktop::decode_numeric_graph(bytes,restored),"N selector typed save/load");
-        NumericEditorGraphModel loaded(registry);
-        QString selectorLoadError;const bool loadedSelector=loaded.set_numeric_graph(restored,&selectorLoadError);
-        if(!loadedSelector)std::fprintf(stderr,"Selector typed reload rejected: %s\n",selectorLoadError.toUtf8().constData());
-        const auto* loadedModel=loadedSelector?loaded.delegateModel<AudioNodeModel>(selector):nullptr;
-        check(loadedModel && loadedModel->numeric_node() && loadedModel->numeric_node()->inputs.size()==3,"N selector model load");
-        if(!loadedModel || !loadedModel->numeric_node() || loadedModel->numeric_node()->inputs.size()!=3 || model->nPorts(QtNodes::PortType::In)<3)
-            return failures?failures:1;
-        QtNodes::DataFlowGraphicsScene scene(graph);scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(graph,[]{return QJsonObject{};}));
+
+}
+void selector_hit_geometry(QtNodes::DataFlowGraphicsScene& scene,QtNodes::NodeId selector,AudioNodeModel* model,QWidget* body,NumericEditorGraphModel& graph){
         for(const auto& language:{QString("ru"),QString("en")}) {
             ui::Language::instance().set(language);QApplication::processEvents();
             check(model->portCaption(QtNodes::PortType::In,2)==model->stream_name(2)+" · "+ui::text("Channel %1").arg(1),"physical input captions match stable mono stream and channel numbering");
@@ -942,6 +934,9 @@ int main(int argc,char** argv){
             const auto outputCount=model->nPorts(QtNodes::PortType::Out);
             for(unsigned i=0;i<outputCount;++i)check(std::abs(geometry.portPosition(selector,QtNodes::PortType::Out,i).y()+geometry.portPosition(selector,QtNodes::PortType::Out,outputCount-1-i).y()-2*center)<1e-6,"output data and configuration pins centered independently");
         }
+
+}
+void selector_sparse_roundtrip(NumericEditorGraphModel& graph,QUndoStack& undo,AudioNodeModel* model,QtNodes::NodeId generator,QtNodes::NodeId audio,QtNodes::NodeId selector,QByteArray& bytes,domain::NumericProcessingGraph& restored,NumericEditorGraphModel& loaded,const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         auto n=*model->numeric_node();numeric_editor::set_input_count(n,3);graph.edit_node(selector,n);
         graph.addConnection({audio,0,selector,1});graph.addConnection({generator,0,selector,2});model->select_input(2);
         n=*model->numeric_node();check(numeric_editor::remove_input(n,1) && graph.edit_node(selector,n),"remove arbitrary connected input");
@@ -956,13 +951,41 @@ int main(int argc,char** argv){
         check(desktop::decode_numeric_editor_graph(visualBytes,decodedVisual) && std::any_of(decodedVisual.edges.begin(),decodedVisual.edges.end(),[&](const auto& e){return e.to==domain::NodeId(selector) && e.input_port==2;}),"visual indices decode to stable domain IDs");
         std::unique_ptr<QWidget> selectorForm(model->parameter_widget());auto* reset=selectorForm->findChild<QPushButton*>("numericResetSettings");check(reset,"selector reset inspector");reset->click();
         check(model->numeric_node()->inputs.size()==1 && model->port_id(QtNodes::PortType::In,0)==2 && graph.connectionExists({generator,0,selector,0}),"settings reset preserves selector topology and stable IDs");
+
+}
+int selector_topology(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,NumericEditorGraphModel& graph,QUndoStack& undo){
+
+        grouped_selector_envelope(registry);
+        const auto generator=graph.addNode("AudioSource"),audio=graph.addNode("AudioSource"),selector=graph.addNode("InputSelector");
+
+        graph.addConnection({generator,0,selector,0});graph.addConnection({audio,0,selector,1});
+
+        auto* model=graph.delegateModel<AudioNodeModel>(selector);auto* body=model->embeddedWidget();
+
+        check(!body->findChild<QComboBox*>("numericSelected") && !body->findChild<QPushButton*>("addSelectorInput"),"selector has no central strip");
+        check(!body->findChild<QWidget*>("pipelineDataStatus"),"no default diagnostic card in node body");
+        selector_growth_undo(graph,undo,model,generator,audio,selector);
+        QByteArray bytes;domain::NumericProcessingGraph restored;
+        check(desktop::encode_numeric_graph(graph.numeric_graph(),bytes) && desktop::decode_numeric_graph(bytes,restored),"N selector typed save/load");
+        NumericEditorGraphModel loaded(registry);
+        QString selectorLoadError;const bool loadedSelector=loaded.set_numeric_graph(restored,&selectorLoadError);
+        if(!loadedSelector)std::fprintf(stderr,"Selector typed reload rejected: %s\n",selectorLoadError.toUtf8().constData());
+        const auto* loadedModel=loadedSelector?loaded.delegateModel<AudioNodeModel>(selector):nullptr;
+        check(loadedModel && loadedModel->numeric_node() && loadedModel->numeric_node()->inputs.size()==3,"N selector model load");
+        if(!loadedModel || !loadedModel->numeric_node() || loadedModel->numeric_node()->inputs.size()!=3 || model->nPorts(QtNodes::PortType::In)<3)
+            return failures?failures:1;
+        QtNodes::DataFlowGraphicsScene scene(graph);scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(graph,[]{return QJsonObject{};}));
+        selector_hit_geometry(scene,selector,model,body,graph);
+        selector_sparse_roundtrip(graph,undo,model,generator,audio,selector,bytes,restored,loaded,registry);
         scene.clearScene();
 
 
 
-    }
 
-    {
+    return 0;
+}
+
+void window_function_edit(NumericEditorGraphModel& graph,QUndoStack& undo){
 
         std::fprintf(stderr,"editor fixture phase window-function\n");
         const auto id=graph.addNode("WindowFunction");auto* window=graph.delegateModel<AudioNodeModel>(id);std::unique_ptr<QWidget> controls(window->parameter_widget());auto* function=controls->findChild<QComboBox*>("function");check(function && function->count()==7,"registered window-function choice editor exists");
@@ -977,14 +1000,7 @@ int main(int argc,char** argv){
 
     }
 
-    std::fprintf(stderr,"editor fixture phase routing\n");
-    const auto source=graph.addNode("NetworkInput"),route=graph.addNode("Switch"),sink=graph.addNode("NetworkOutput"),other=graph.addNode("NetworkOutput");
-
-    check(graph.connectionPossible({source,0,route,0}),"compatible typed source route");graph.addConnection({source,0,route,0});
-
-    graph.addConnection({route,0,sink,0});graph.addConnection({route,1,other,0});
-
-    {
+void network_adapter_undo(NumericEditorGraphModel& graph,QUndoStack& undo,QtNodes::NodeId source){
 
         auto* sourceModel=graph.delegateModel<AudioNodeModel>(source);const QJsonObject adapter{{"provider_uuid","00000000-0000-4000-8000-000000000001"},{"stream_id","spectrum-main"},{"host","127.0.0.1"},{"port",47655},{"remote_endpoint",QJsonObject{{"graph_id","main"},{"node_id",4},{"direction","output"},{"port_index",0}}}};
 
@@ -1000,21 +1016,7 @@ int main(int argc,char** argv){
 
     }
 
-    auto n=*graph.delegateModel<AudioNodeModel>(route)->numeric_node();numeric_editor::set_output_count(n,4);graph.edit_node(route,n);
-
-    check(graph.connectionExists({route,0,sink,0}) && graph.connectionExists({route,1,other,0}),"grow preserves existing edges");
-
-    const auto tail=graph.addNode("NetworkOutput");graph.addConnection({route,3,tail,0});
-
-    n=*graph.delegateModel<AudioNodeModel>(route)->numeric_node();numeric_editor::set_output_count(n,2);
-
-    const int undoBeforeShrink=undo.index();
-    check(graph.edit_node(route,n) && undo.index()==undoBeforeShrink+1 && !graph.connectionExists({route,3,tail,0}),"Connected endpoint shrink removes only its incident edge atomically");
-    check(graph.connectionExists({route,0,sink,0}) && graph.connectionExists({route,1,other,0}),"Connected shrink preserves stable surviving endpoints");
-    undo.undo();check(graph.delegateModel<AudioNodeModel>(route)->numeric_node()->outputs.size()==4 && graph.connectionExists({route,3,tail,0}),"Shrink Undo restores removed port and exact edge");
-    undo.redo();check(!graph.connectionExists({route,3,tail,0}) && graph.connectionExists({route,0,sink,0}),"Shrink Redo removes only the tail edge");
-
-    {
+void routing_inline_count(NumericEditorGraphModel& graph,QUndoStack& undo,QtNodes::NodeId route){
 
         auto* routing=graph.delegateModel<AudioNodeModel>(route);
         check(!routing->parameter_on_block("numericOutputs") && routing->set_parameter_on_block("numericOutputs",true),"Switch output count can be explicitly pinned on block");
@@ -1033,100 +1035,7 @@ int main(int argc,char** argv){
 
     }
 
-    auto mismatch=*graph.delegateModel<AudioNodeModel>(tail)->numeric_node();numeric_editor::set_dtype(mismatch,domain::PortDirection::Input,0,signal_contracts::DType::UInt64);graph.edit_node(tail,mismatch);
-
-    check(graph.connectionPossible({source,0,tail,0}),"dtype-only link supports prepared conversion");graph.addConnection({source,0,tail,0});check(graph.connectionExists({source,0,tail,0}),"raw add admits dtype-only conversion");graph.deleteConnection({source,0,tail,0});
-
-    std::fprintf(stderr,"editor fixture phase typed-converter\n");
-    auto converter=graph.addNode("Converter");auto* model=graph.delegateModel<AudioNodeModel>(converter);
-
-    std::fprintf(stderr,"editor converter before form\n");
-    std::unique_ptr<QWidget> form(model->parameter_widget());
-    std::fprintf(stderr,"editor converter after form\n");
-
-    auto* type=form->findChild<QComboBox*>("numericNan_type");auto* text=form->findChild<QLineEdit*>("numericNan");
-
-    check(type && text,"exact typed field exists");
-
-    std::fprintf(stderr,"editor converter before type\n");
-    if(type && text){type->setCurrentIndex(1);std::fprintf(stderr,"editor converter after type\n");text=form->findChild<QLineEdit*>("numericNan");text->setText("18446744073709551615");text->setModified(true);QMetaObject::invokeMethod(text,"editingFinished",Qt::DirectConnection);}
-
-    std::fprintf(stderr,"editor converter after edit\n");
-    auto value=[&]{return std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.nan_replacement;};
-
-    check(std::holds_alternative<std::uint64_t>(value()) && std::get<std::uint64_t>(value())==std::numeric_limits<std::uint64_t>::max(),"UI UInt64 exact");
-
-    std::fprintf(stderr,"editor converter before undo\n");
-    undo.undo();check(std::get<std::uint64_t>(value())==0,"undo exact field");undo.redo();
-
-    auto* signedText=form->findChild<QLineEdit*>("numericNegativeInf");
-
-    if(signedText){signedText->setText("-9223372036854775808");signedText->setModified(true);QMetaObject::invokeMethod(signedText,"editingFinished",Qt::DirectConnection);}
-
-    check(std::get<std::int64_t>(std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.negative_inf_replacement)==std::numeric_limits<std::int64_t>::min(),"UI Int64 minimum exact");
-
-    auto* exponent=form->findChild<QSpinBox*>("numericGainExponent");check(exponent,"dyadic gain exponent is editable");
-
-    if(exponent)exponent->setValue(-17);
-
-    check(std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.scaling.gain.exponent2==-17,"dyadic exponent edit preserves signed value");
-
-    std::fprintf(stderr,"editor converter before inline\n");
-    auto* body=model->embeddedWidget();auto* inlineText=body->findChild<QLineEdit*>("numericNan");
-
-    auto* show=form->findChild<QAction*>("showOnBlock_numericNan");
-
-    check(show && inlineText && !show->isChecked() && !inlineText->isVisibleTo(body),"compact default hides editable parameters");
-
-    QByteArray processingBefore;desktop::encode_numeric_graph(graph.numeric_graph(),processingBefore);
-
-    if(show)show->setChecked(true);
-
-    check(inlineText && inlineText->isVisibleTo(body) && inlineText->text()=="18446744073709551615","selected inline parameter displays exact inspector value");
-
-    QByteArray processingAfter;desktop::encode_numeric_graph(graph.numeric_graph(),processingAfter);
-
-    check(processingBefore==processingAfter,"presentation flags leak into processing serialization");
-
-    undo.undo();check(show && !show->isChecked() && !inlineText->isVisibleTo(body),"visibility undo synchronizes inspector and block");
-
-    undo.redo();check(show && show->isChecked() && inlineText->isVisibleTo(body),"visibility redo restores block field");
-
-    if(inlineText){inlineText->setText("9007199254740993");inlineText->setModified(true);QMetaObject::invokeMethod(inlineText,"editingFinished",Qt::DirectConnection);}
-
-    check(text && text->text()=="9007199254740993" && std::get<std::uint64_t>(value())==9007199254740993ULL,"inline exact edit synchronizes inspector");
-
-    undo.undo();check(inlineText->text()=="18446744073709551615" && text->text()==inlineText->text(),"parameter undo synchronizes both forms");
-
-    if(show)show->setChecked(false);
-
-    check(!inlineText->isVisibleTo(body) && std::get<std::uint64_t>(value())==std::numeric_limits<std::uint64_t>::max(),"hiding inline preserves parameter value");
-
-    if(show)show->setChecked(true);
-
-    const auto beforeNameUndo=undo.count();
-    std::fprintf(stderr,"editor converter before custom presentation node=%u exists=%d\n",unsigned(converter),int(graph.nodeExists(converter)));
-    auto display=model->presentation();display["future_display_field"]="kept";model->set_presentation(display);
-    check(model->edit_display_name(QString::fromUtf8("Мой преобразователь")) && model->caption()==QString::fromUtf8("Мой преобразователь") && model->name()=="Converter","Custom caption preserves stable algorithm kind");
-    QByteArray namedProcessing;desktop::encode_numeric_graph(graph.numeric_graph(),namedProcessing);
-    check(namedProcessing==processingBefore && undo.count()==beforeNameUndo+1,"Node rename is one presentation-only undo command");
-    const auto namedPresentation=model->presentation();
-    check(!model->edit_display_name(QString(257,'x')) && !model->edit_display_name(QString("bad")+QChar(1)) && model->presentation()==namedPresentation,"Invalid display names refuse without mutation");
-    auto malformedName=model->save();auto invalidDisplay=namedPresentation;invalidDisplay["display_name"]=17;malformedName["presentation"]=invalidDisplay;
-    AudioNodeModel malformedCaption("Converter");malformedCaption.load(malformedName);
-    check(!malformedCaption.numeric_node(),"Malformed persisted display name must reject the node rather than silently discard metadata");
-    undo.undo();check(model->caption()!=QString::fromUtf8("Мой преобразователь") && model->presentation()["future_display_field"]=="kept","Rename undo preserves unknown presentation fields");
-    undo.redo();check(model->caption()==QString::fromUtf8("Мой преобразователь"),"Rename redo restores user caption");
-
-    const auto saved=graph.saveNode(converter);auto copied=saved;copied["id"]=100;graph.loadNode(copied);
-
-    auto* copy=graph.delegateModel<AudioNodeModel>(100);
-
-    check(copy && copy->numeric_node() && copy->numeric_node()->id==100 && domain::same_processing_parameters(model->numeric_node()->parameters,copy->numeric_node()->parameters),"clipboard remaps id preserves exact literals");
-
-    check(copy && copy->presentation()==model->presentation() && copy->parameter_on_block("numericNan"),"node snapshot preserves presentation flags");
-
-    {
+void converter_clipboard(NumericEditorGraphModel& graph,QtNodes::NodeId converter,AudioNodeModel* model){
 
         QtNodes::DataFlowGraphicsScene scene(graph);scene.nodeGraphicsObject(converter)->setSelected(true);
 
@@ -1146,13 +1055,7 @@ int main(int argc,char** argv){
 
     }
 
-    QByteArray bytes;check(bool(desktop::encode_numeric_graph(graph.numeric_graph(),bytes)),"known snapshot encode");domain::NumericProcessingGraph restored;check(bool(desktop::decode_numeric_graph(bytes,restored)),"known snapshot decode");
-
-    if(restored.nodes.empty()){check(false,"Known snapshot unexpectedly contains no restored nodes");return 1;}
-
-    NumericEditorGraphModel restoredGraph(registry);restoredGraph.set_numeric_graph(restored);check(restoredGraph.connectionExists({route,0,sink,0}),"typed graph reload keeps ports");
-
-    {
+void restored_graph_validation(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,NumericEditorGraphModel& restoredGraph,const domain::NumericProcessingGraph& restored,QtNodes::NodeId sink){
 
         auto timed=restored;timed.execution_interval={1,40};
         check(restoredGraph.set_numeric_graph(timed),"custom analysis interval imports");
@@ -1189,7 +1092,7 @@ int main(int argc,char** argv){
 
     }
 
-    {
+int source_backed_project(NumericEditorGraphModel& restoredGraph,const QByteArray& bytes,QtNodes::NodeId converter,AudioNodeModel* model){
 
         QByteArray sourceBytes="{\"schema_version\":4,\"scene_graph\":"+bytes+",\"ui\":{\"unknown\":9007199254740993},\"app\":-0}";
 
@@ -1204,7 +1107,7 @@ int main(int argc,char** argv){
         check(bool(desktop::stage_numeric_draft(sourceDocument,snapshot,staged)),"typed GUI snapshot stages source-backed draft");
 
         desktop::NumericDraftPresentation visibility;visibility.node_presentations[QString::number(converter)]=QJsonObject{
-            {"inline_parameters",model->presentation()["inline_parameters"]},{"display_name",model->caption()}};
+            {"inline_parameters",model->presentation().value("inline_parameters")},{"display_name",model->caption()}};
 
         desktop::NumericProjectDocument presented;check(bool(desktop::stage_numeric_presentation(staged,visibility,presented)),"presentation flags stage separately from processing DTO");staged=std::move(presented);
 
@@ -1230,38 +1133,11 @@ int main(int argc,char** argv){
 
         QFile file(path);check(file.open(QIODevice::ReadOnly) && file.readAll().contains("\"unknown\":9007199254740993"),"unknown raw64 preserved beside GUI edits");
 
-    }
 
-    auto history=graph.addNode("Spectrogram");auto* accumulator=graph.delegateModel<AudioNodeModel>(history);std::unique_ptr<QWidget> historyForm(accumulator->parameter_widget());auto* capacity=historyForm->findChild<QLineEdit*>("numericCapacity");
-    const auto historyContract=std::get<signal_contracts::NumericContract>(accumulator->numeric_node()->outputs[0].contract.view());
-    check(historyContract.coordinates[0].mode==signal_contracts::CoordinateMode::ExplicitFloat64LE && historyContract.coordinates[0].unit==signal_contracts::NumericUnit::Seconds,"new History preserves individual source-clock seconds");
+    return 0;
+}
 
-    if(capacity){capacity->setText("17");capacity->setModified(true);QMetaObject::invokeMethod(capacity,"editingFinished",Qt::DirectConnection);}
-
-    auto h=*accumulator->numeric_node();domain::ResolvedProcessingNode hr;
-
-    check(bool(domain::resolve_processing_node(h,numeric_editor::limits(),hr)) && std::get<signal_contracts::NumericContract>(h.outputs[0].contract.view()).shape.extents[0].maximum==17,"history capacity edits both configured parameter and contract");
-
-    auto bad=graph.saveNode(source);bad["id"]=101;auto data=bad.value("internal-data").toObject();data["numeric_processing"]="{invalid";bad["internal-data"]=data;graph.loadNode(bad);
-
-    check(!graph.connectionPossible({101,0,sink,0}),"malformed typed snapshot never defaults to connectable node");
-
-    graph.loadNode({{"id",102},{"internal-data",QJsonObject{{"model-name","NetworkOutput"}}}});
-
-    check(!graph.connectionPossible({101,0,102,0}),"malformed typed snapshot never falls back to legacy ports");
-
-    const QtNodes::ConnectionId incompatibleUnit{source,0,tail,0};
-    check(graph.connectionPossible(incompatibleUnit),"Units mismatch keeps a structurally valid draft endpoint");
-    graph.addConnection(incompatibleUnit);
-    auto changed=*graph.delegateModel<AudioNodeModel>(tail)->numeric_node();
-    auto contract=changed.inputs[0].contract.view();std::get<signal_contracts::NumericContract>(contract).unit=signal_contracts::NumericUnit::RawAmplitude;
-    check(numeric_editor::set_contract(changed,domain::PortDirection::Input,0,contract) &&
-          numeric_editor::set_dtype(changed,domain::PortDirection::Input,0,signal_contracts::DType::Float32) && graph.edit_node(tail,changed),
-          "Connected draft accepts an explicit incompatible physical unit edit");
-    check(graph.connectionExists(incompatibleUnit) && graph.connection_visual_state(incompatibleUnit)==3 && !graph.connection_failure(incompatibleUnit).isEmpty(),"Units mismatch is retained with a visible typed incompatibility");
-    graph.deleteConnection(incompatibleUnit);
-
-    {
+int physical_endpoint_controls(NumericEditorGraphModel& graph,QUndoStack& undo){
 
         QJsonArray choices{QJsonObject{{"id","render-A"},{"name","Endpoint A"},{"is_default",true}},QJsonObject{{"id","render-B"},{"name","Endpoint B"}}};
 
@@ -1311,9 +1187,161 @@ int main(int argc,char** argv){
 
         check(enumerations==afterDeletion,"External capture form accesses discovery after its model is deleted");
 
+
+    return 0;
+}
+
+void frequency_step_wires(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel steps(registry);QtNodes::DataFlowGraphicsScene scene(steps);steps.set_undo_stack(&scene.undoStack());
+        const auto source=steps.addNode("AudioSource"),window=steps.addNode("Window"),length=steps.addNode("ArrayLength"),delta=steps.addNode("FrequencyStep"),spectrum=steps.addNode("AmplitudePhase"),plot=steps.addNode("FFTView");
+        auto connect=[&](QtNodes::NodeId from,domain::PortId out,QtNodes::NodeId to,domain::PortId in){
+            const QtNodes::ConnectionId edge{from,steps.delegateModel<AudioNodeModel>(from)->port_index(QtNodes::PortType::Out,out),to,steps.delegateModel<AudioNodeModel>(to)->port_index(QtNodes::PortType::In,in)};
+            check(steps.connectionPossible(edge),"Frequency step has visible connectable ordinary numeric ports");scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));check(steps.connectionExists(edge),"Frequency step numeric wire is actually created");
+        };
+        connect(source,0,window,0);connect(source,domain::sample_rate_output,window,domain::input_sample_rate_input);
+        connect(window,0,length,0);connect(length,0,delta,domain::window_size_input);connect(source,domain::sample_rate_output,delta,0);connect(spectrum,0,plot,0);connect(delta,0,plot,domain::frequency_step_input);
+        check(!domain::node_kind("SpectrumAxis") && !numeric_editor::catalog().contains("SpectrumAxis"),"Removed frequency-axis block is unavailable");
+        check(steps.delegateModel<AudioNodeModel>(plot)->numeric_node()->inputs.size()==2,"FFT graph exposes data and explicit frequency-step inputs");
+        auto plotStep=[&]{const auto* fields=std::get_if<domain::EndpointProcessingParameters>(&steps.delegateModel<AudioNodeModel>(plot)->numeric_node()->parameters);for(const auto& value:fields->values)if(value.key=="bin_hz")return std::visit([](auto n){return double(n);},std::get<signal_contracts::NumericLiteral>(value.value));return 0.;};
+        check(plotStep()==48000./4096,"Graph obtains Fs/N through its scalar step wire");
+        auto configured=*steps.delegateModel<AudioNodeModel>(source)->numeric_node();check(numeric_editor::set_sample_rate(configured,36000) && steps.edit_node(source,configured),"Changing source Fs updates explicit step dependency");
+        check(plotStep()==36000./4096,"Source Fs edit updates wired frequency step and graph");
+        scene.undoStack().undo();check(plotStep()==48000./4096,"Step propagation Undo restores physical graph axis");
+        NumericEditorGraphModel restored(registry);restored.load(steps.save());check(restored.save()==steps.save(),"Graph step connection and parameters reload");
+        check(restored.delegateModel<AudioNodeModel>(plot)->port_index(QtNodes::PortType::In,domain::frequency_step_input)!=QtNodes::InvalidPortIndex,"Reload preserves visible graph step input");
     }
 
-    for(bool coefficientsFirst:{false,true}) {
+void port_labels(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel labels(registry);QtNodes::DataFlowGraphicsScene scene(labels);labels.set_undo_stack(&scene.undoStack());
+        const auto id=labels.addNode("Window"),length=labels.addNode("ArrayLength");auto* node=labels.delegateModel<AudioNodeModel>(id);
+        const auto before=labels.numeric_graph();std::unique_ptr<QWidget> inspector(node->parameter_widget());
+        check(!inspector->findChild<QComboBox*>("input0Dtype"),"Inspector no longer contains contract controls");
+        auto* contracts=inspector->findChild<QPushButton*>("editNodeContracts");auto* names=inspector->findChild<QPushButton*>("editPortLabels");check(contracts&&names,"Inspector exposes separate contract and label dialogs");
+        bool opened=false;
+        QObject dialogCallbacks;
+        QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());opened=dialog&&dialog->objectName()=="portContractsDialog";check(opened&&dialog->findChild<QComboBox*>("input0Dtype"),"Actual modal contains the contract editor");if(dialog)dialog->accept();});if(contracts)contracts->click();check(opened,"Contract dialog opens modally");
+        QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());auto* edit=dialog?dialog->findChild<QLineEdit*>("portLabel_input65531"):nullptr;check(edit,"Fs label editor uses stable port ID");if(edit)edit->setText("Моя частота");if(dialog)dialog->accept();});if(names)names->click();
+        const auto port=node->port_index(QtNodes::PortType::In,domain::input_sample_rate_input);
+        check(node->portCaption(QtNodes::PortType::In,port).startsWith("Моя частота\n"),"Custom text is rendered on the port");
+        QByteArray a,b;check(desktop::encode_numeric_graph(before,a)&&desktop::encode_numeric_graph(labels.numeric_graph(),b)&&a==b,"Label edit does not change processing graph or contracts");
+        scene.undoStack().undo();check(!node->presentation().contains("port_labels"),"Label changes support Undo");scene.undoStack().redo();
+        NumericEditorGraphModel restored(registry);restored.load(labels.save());check(restored.delegateModel<AudioNodeModel>(id)->portCaption(QtNodes::PortType::In,port)==node->portCaption(QtNodes::PortType::In,port),"Labels survive project reload");
+        check(!labels.delegateModel<AudioNodeModel>(length)->embeddedWidget(),"Array length has no empty fixed-width body");scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(labels,[]{return QJsonObject{};}));scene.nodeGeometry().recomputeSize(length);
+        check(scene.nodeGeometry().size(length).width()<260,"Array length node is compact");
+    }
+
+void compact_graph_card(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel compact(registry);const auto plot=compact.addNode("FFTView");
+        QtNodes::DataFlowGraphicsScene scene(compact);scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(compact,[]{return QJsonObject{};}));scene.setNodePainter(std::make_unique<EditorNodePainter>());
+        auto& geometry=static_cast<EditorNodeGeometry&>(scene.nodeGeometry());geometry.recomputeSize(plot);
+        const auto title=geometry.captionRect(plot).translated(geometry.captionPosition(plot));
+        check(!title.intersects(QRectF(12,12,8,8)),"Compact graph title does not overlap activity lamp");
+        check(title.bottom()<geometry.portTextPosition(plot,QtNodes::PortType::In,0).y(),"Compact graph title is above input labels");
+        auto* item=scene.nodeGraphicsObject(plot);item->updateQWidgetEmbedPos();const auto bounds=item->sceneBoundingRect();
+        QImage image(bounds.size().toSize()+QSize(24,24),QImage::Format_ARGB32_Premultiplied);image.fill(QApplication::palette().color(QPalette::Window));QPainter painter(&image);scene.render(&painter,QRectF(12,12,bounds.width(),bounds.height()),bounds);painter.end();
+        check(image.save(QDir(QString::fromUtf8(QT_TESTCASE_SOURCEDIR)).absoluteFilePath("../.agent-workspace/graph-step-card.png")),"Own graph card renderer shows the explicit step port");
+    }
+
+void musical_row_edits(NumericEditorGraphModel& rows,QtNodes::DataFlowGraphicsScene& scene,QtNodes::NodeId notes,QtNodes::NodeId broad,QtNodes::NodeId broadHistory,QtNodes::NodeId noteHistory,QtNodes::NodeId combinedHistory,QtNodes::NodeId piano,QtNodes::NodeId join,QtNodes::NodeId metrics,const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        auto* note=rows.delegateModel<AudioNodeModel>(notes);auto* bands=rows.delegateModel<AudioNodeModel>(broad);
+        auto failureContext=std::make_shared<pipeline::NumericDeliveryContext>();failureContext->endpoint={"main",domain::NodeId(notes),domain::PortDirection::Output,0};failureContext->contract=note->numeric_node()->outputs[0].contract;
+        check(note->preview(pipeline::DeliveredNumericFrame{failureContext,{1,1},{},signal_contracts::Status::invalid_argument}) && note->diagnostic_failure(domain::PortDirection::Output,0)==ui::text("Input spectrum must contain finite nonnegative values. Check correction coefficients and array operation."),"Rejected musical spectrum explains input domain and correction at its origin");
+        note->clear_preview();
+        check(!note->parameter_model()->field("high_count") && !bands->parameter_model()->field("first_midi"),"Broadband and note settings are independent cards");
+        const auto width=[&](auto id){return std::get<signal_contracts::NumericContract>(rows.delegateModel<AudioNodeModel>(id)->numeric_node()->inputs[0].contract.view()).shape.extents[0].maximum;};
+        const auto bandCount=width(broadHistory);const auto before=rows.save();check(note->parameter_model()->editLiteral("first_midi","60",0),"Actual note control edits an independent row");
+        check(width(broadHistory)==bandCount && width(noteHistory)==49 && width(combinedHistory)==bandCount+49,"Note range edits propagate only note geometry and explicit join");
+        domain::ResolvedProcessingNode pianoNode;domain::ProcessingParameterView first;
+        check(bool(domain::resolve_processing_node(*rows.delegateModel<AudioNodeModel>(piano)->numeric_node(),numeric_editor::limits(),pianoNode)) && domain::resolve_processing_parameter(pianoNode,"first_midi",first)==signal_contracts::Status::ok && std::visit([](auto v){return unsigned(v);},std::get<signal_contracts::NumericLiteral>(first))==60,"Piano key origin follows an explicit ordinary numeric wire");
+        scene.undoStack().undo();check(rows.save()==before,"Independent note edit Undo restores the entire wired document");
+        NumericEditorGraphModel restored(registry);restored.load(rows.save());
+        check(restored.connectionExists({notes,rows.delegateModel<AudioNodeModel>(notes)->port_index(QtNodes::PortType::Out,1),metrics,0}) && restored.connectionExists({notes,rows.delegateModel<AudioNodeModel>(notes)->port_index(QtNodes::PortType::Out,2),metrics,1}),"Both note agreement connections survive document reload");
+        check(restored.delegateModel<AudioNodeModel>(join)->numeric_node()->inputs.size()==2 && restored.delegateModel<AudioNodeModel>(broad)->numeric_node()->inputs.back().id==domain::frequency_step_input && restored.delegateModel<AudioNodeModel>(notes)->numeric_node()->inputs.back().id==domain::frequency_step_input,"Independent rows, stable step ports and generic join survive reload");
+}
+void independent_musical_rows(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel rows(registry);rows.set_admission_limits(numeric_editor::limits());QtNodes::DataFlowGraphicsScene scene(rows);rows.set_undo_stack(&scene.undoStack());
+        const auto spectrum=rows.addNode("AmplitudePhase"),broad=rows.addNode("BroadbandRow"),notes=rows.addNode("NoteSpectrum"),join=rows.addNode("ArrayConcat"),broadHistory=rows.addNode("Spectrogram"),noteHistory=rows.addNode("Spectrogram"),combinedHistory=rows.addNode("Spectrogram"),piano=rows.addNode("PianoView");
+        const auto source=rows.addNode("AudioSource"),window=rows.addNode("Window"),length=rows.addNode("ArrayLength"),step=rows.addNode("FrequencyStep");
+        auto connect=[&](QtNodes::NodeId from,domain::PortId out,QtNodes::NodeId to,domain::PortId in){const QtNodes::ConnectionId edge{from,rows.delegateModel<AudioNodeModel>(from)->port_index(QtNodes::PortType::Out,out),to,rows.delegateModel<AudioNodeModel>(to)->port_index(QtNodes::PortType::In,in)};check(rows.connectionPossible(edge),"Independent row and join ordinary wire is admissible");scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));check(rows.connectionExists(edge),"Independent row and join wire is created");};
+        connect(spectrum,0,broad,0);connect(spectrum,0,notes,0);connect(broad,0,join,0);connect(notes,0,join,1);connect(broad,0,broadHistory,0);connect(notes,0,noteHistory,0);connect(join,0,combinedHistory,0);
+        connect(source,0,window,0);connect(window,0,length,0);connect(length,0,step,domain::window_size_input);connect(source,domain::sample_rate_output,step,0);connect(step,0,broad,domain::frequency_step_input);connect(step,0,notes,domain::frequency_step_input);connect(notes,0,piano,0);connect(notes,domain::note_first_output,piano,domain::note_first_input);
+        const auto metrics=rows.addNode("ScalarView");
+        check(rows.delegateModel<AudioNodeModel>(metrics)->add_scalar_input(),"Note agreement has two independent metric inputs");
+        connect(notes,1,metrics,0);connect(notes,2,metrics,1);
+        for(const auto& port:rows.delegateModel<AudioNodeModel>(metrics)->numeric_node()->inputs){
+            const auto value=std::get<signal_contracts::NumericContract>(port.contract.view());
+            check(value.dtype==signal_contracts::DType::Float32 && value.shape.rank==signal_contracts::Rank::Scalar,"Note agreement keeps its scalar Float32 contract in the metrics view");
+        }
+        musical_row_edits(rows,scene,notes,broad,broadHistory,noteHistory,combinedHistory,piano,join,metrics,registry);
+
+    }
+
+void activity_telemetry(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel telemetry(registry);const auto id=telemetry.addNode("SignalGenerator");auto* node=telemetry.delegateModel<AudioNodeModel>(id);
+        int edits=0,redraws=0;QObject::connect(&telemetry,&NumericEditorGraphModel::nodeUpdated,&telemetry,[&](auto){++edits;});QObject::connect(node,&AudioNodeModel::activity_changed,&telemetry,[&]{++redraws;});
+        const auto before=telemetry.save();for(unsigned i=0;i<128;++i)node->set_processing_activity(true,bool(i%2),double(i));
+        check(edits==0 && redraws==128 && telemetry.save()==before,"Activity telemetry redraws without persistent node updates or graph serialization triggers");
+    }
+
+void incompatible_draft(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+        NumericEditorGraphModel draft(registry);QtNodes::DataFlowGraphicsScene scene(draft);auto& history=scene.undoStack();draft.set_undo_stack(&history);
+        const auto source=draft.addNode("SignalGenerator"),sink=draft.addNode("WLEDOutput");
+        const QtNodes::ConnectionId edge{source,0,sink,0};
+        check(draft.connectionPossible(edge),"Structural draft accepts incompatible numeric-to-packet edge");
+        history.push(new QtNodes::ConnectCommand(&scene,edge));
+        check(draft.connectionExists(edge) && draft.connection_visual_state(edge)==3 && !draft.connection_failure(edge).isEmpty(),"Invalid draft edge has a visible reason");
+        domain::NumericProcessingGraph raw;check(draft.export_numeric_graph(raw,nullptr,false),"Saving an incompatible draft does not prepare it");
+        NumericEditorGraphModel restored(registry);check(restored.set_numeric_graph(raw) && restored.connectionExists(edge),"Typed draft load retains an incompatible edge");
+        domain::NumericProcessingGraph executable;check(!draft.export_numeric_graph(executable),"Execution export remains strict");
+        history.undo();check(!draft.connectionExists(edge),"Undo removes the invalid draft connection");history.redo();check(draft.connectionExists(edge),"Redo restores the invalid draft connection");
+    }
+
+void native_selection_readout(SpectrogramGraph& view,QQuickItem* gl,QQuickWidget* host,QFile& file,QElapsedTimer& timer){
+        view.resize(321,259);view.quick_action("selection",1);
+        timer.restart();while(timer.elapsed()<300){QCoreApplication::processEvents();QThread::msleep(2);}
+        for(int y=20;y<gl->height() && view.axis_layout_telemetry().value("selectionReadoutRows").toStringList().isEmpty();y+=16)
+            for(int x=20;x<gl->width() && view.axis_layout_telemetry().value("selectionReadoutRows").toStringList().isEmpty();x+=16){
+                view.quick_pointer(0,x,y,Qt::LeftButton,Qt::LeftButton,Qt::NoModifier);
+                view.quick_pointer(2,x,y,Qt::LeftButton,Qt::NoButton,Qt::NoModifier);
+                QCoreApplication::processEvents();
+            }
+        timer.restart();while(view.axis_layout_telemetry().value("selectionReadoutRows").toStringList().isEmpty() && timer.elapsed()<2000){QCoreApplication::processEvents();QThread::msleep(2);}
+        const auto narrow=view.axis_layout_telemetry();const auto readout=narrow.value("selectionReadoutRect").toRect();
+        check(!narrow.value("selectionReadoutRows").toStringList().isEmpty(),"small native surface has a selected sample");
+        check(!readout.isEmpty() && QRect(0,0,qRound(gl->width()),qRound(gl->height())).contains(readout),"small native selection readout fits the actual viewport");
+        const auto smallImage=host->grabFramebuffer();check(!smallImage.isNull(),"small native framebuffer remains rendered after resize");
+        if(!smallImage.isNull())smallImage.save(QFileInfo(file).absolutePath()+"/native-history-small-frame.png");
+
+}
+std::vector<std::vector<float>> native_history_rows(QFile& file){
+        std::vector<std::vector<float>> history;QTextStream input(&file);
+        while(!input.atEnd()){const auto fields=input.readLine().split(',');if(fields.size()<52 || fields[0]!="7")continue;
+            history.clear();for(int i=2;i+49<fields.size();i+=50){std::vector<float> row;for(int b=0;b<50;++b)row.push_back(fields[i+b].toFloat());history.push_back(std::move(row));}}
+        return history;
+}
+int native_history_path(const char* path){
+        QFile file(QString::fromLocal8Bit(path));check(file.open(QIODevice::ReadOnly),"native path data file");
+        const auto history=native_history_rows(file);
+        check(!history.empty(),"native runtime History matrix");float peak=0;size_t peakAge=0,peakBand=0;
+        for(size_t r=0;r<history.size();++r)for(size_t b=0;b<50;++b)if(history[r][b]>peak){peak=history[r][b];peakAge=history.size()-1-r;peakBand=b;}
+        SpectrogramGraph view;view.resize(900,600);check(view.initialize({240,180},{1200,900}),"native renderer initialization");
+        view.set_history_dimensions(400,50);view.update_frame_history(history);view.set_y_range(0,peak);
+        view.setAttribute(Qt::WA_ShowWithoutActivating);view.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+        auto* host=view.findChild<QQuickWidget*>("spectrogramQuickView");
+        auto* gl=host && host->rootObject()?host->rootObject()->findChild<SurfaceQuickItem*>():nullptr;check(gl,"native Quick renderer container");
+        gl->backend()->setProperty("verifyGeometryUpload",true);view.show();gl->update();
+        QElapsedTimer timer;timer.start();while(!view.axis_layout_telemetry().value("geometryUploadVerified").toBool() && timer.elapsed()<5000){QCoreApplication::processEvents();QThread::msleep(2);}
+        const auto telemetry=view.axis_layout_telemetry();const auto image=host->grabFramebuffer();
+        if(!image.isNull())image.save(QFileInfo(file).absolutePath()+"/native-history-frame.png");
+        check(!image.isNull() && host->status()==QQuickWidget::Ready && telemetry.value("rendererReady").toBool(),"native Quick FBO rendering");
+        check(telemetry.value("geometryUploadVerified").toBool() && telemetry.value("vertexCount").toInt()==49*399*6,"actual GPU VBO exact readback/mesh topology");
+        check(telemetry.value("surfacePeakAge").toULongLong()==peakAge && telemetry.value("surfacePeakBand").toULongLong()==peakBand,"GPU mesh retains History band/age peak");
+        std::printf("native Quick runtime History rows=%zu bands=50 peak=%.9g age=%zu band=%zu GPU vertices=%d exact VBO PASS\n",history.size(),peak,peakAge,peakBand,telemetry.value("vertexCount").toInt());
+        native_selection_readout(view,gl,host,file,timer);
+        return failures?1:0;
+    }
+
+void product_connection_order(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,bool coefficientsFirst){
         NumericEditorGraphModel factors(registry);factors.set_admission_limits(numeric_editor::limits());QtNodes::DataFlowGraphicsScene scene(factors);
         factors.set_undo_stack(&scene.undoStack());
         const auto amplitude=factors.addNode("AmplitudePhase"),length=factors.addNode("ArrayLength"),bank=factors.addNode("ArrayFill"),product=factors.addNode("ArrayMultiply");
@@ -1346,27 +1374,7 @@ int main(int argc,char** argv){
         check(restored.delegateModel<AudioNodeModel>(product)->numeric_node()->inputs.size()==4 && restored.connectionExists(data) && restored.connectionExists(coefficient),"Four factors and ordinary connections survive document reload");
     }
 
-    {
-        NumericEditorGraphModel steps(registry);QtNodes::DataFlowGraphicsScene scene(steps);steps.set_undo_stack(&scene.undoStack());
-        const auto source=steps.addNode("AudioSource"),window=steps.addNode("Window"),length=steps.addNode("ArrayLength"),delta=steps.addNode("FrequencyStep"),spectrum=steps.addNode("AmplitudePhase"),plot=steps.addNode("FFTView");
-        auto connect=[&](QtNodes::NodeId from,domain::PortId out,QtNodes::NodeId to,domain::PortId in){
-            const QtNodes::ConnectionId edge{from,steps.delegateModel<AudioNodeModel>(from)->port_index(QtNodes::PortType::Out,out),to,steps.delegateModel<AudioNodeModel>(to)->port_index(QtNodes::PortType::In,in)};
-            check(steps.connectionPossible(edge),"Frequency step has visible connectable ordinary numeric ports");scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));check(steps.connectionExists(edge),"Frequency step numeric wire is actually created");
-        };
-        connect(source,0,window,0);connect(source,domain::sample_rate_output,window,domain::input_sample_rate_input);
-        connect(window,0,length,0);connect(length,0,delta,domain::window_size_input);connect(source,domain::sample_rate_output,delta,0);connect(spectrum,0,plot,0);connect(delta,0,plot,domain::frequency_step_input);
-        check(!domain::node_kind("SpectrumAxis") && !numeric_editor::catalog().contains("SpectrumAxis"),"Removed frequency-axis block is unavailable");
-        check(steps.delegateModel<AudioNodeModel>(plot)->numeric_node()->inputs.size()==2,"FFT graph exposes data and explicit frequency-step inputs");
-        auto plotStep=[&]{const auto* fields=std::get_if<domain::EndpointProcessingParameters>(&steps.delegateModel<AudioNodeModel>(plot)->numeric_node()->parameters);for(const auto& value:fields->values)if(value.key=="bin_hz")return std::visit([](auto n){return double(n);},std::get<signal_contracts::NumericLiteral>(value.value));return 0.;};
-        check(plotStep()==48000./4096,"Graph obtains Fs/N through its scalar step wire");
-        auto configured=*steps.delegateModel<AudioNodeModel>(source)->numeric_node();check(numeric_editor::set_sample_rate(configured,36000) && steps.edit_node(source,configured),"Changing source Fs updates explicit step dependency");
-        check(plotStep()==36000./4096,"Source Fs edit updates wired frequency step and graph");
-        scene.undoStack().undo();check(plotStep()==48000./4096,"Step propagation Undo restores physical graph axis");
-        NumericEditorGraphModel restored(registry);restored.load(steps.save());check(restored.save()==steps.save(),"Graph step connection and parameters reload");
-        check(restored.delegateModel<AudioNodeModel>(plot)->port_index(QtNodes::PortType::In,domain::frequency_step_input)!=QtNodes::InvalidPortIndex,"Reload preserves visible graph step input");
-    }
-
-    for(const bool sourceFirst:{false,true}){
+void scalar_route_order(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,bool sourceFirst){
         NumericEditorGraphModel routes(registry);QtNodes::DataFlowGraphicsScene scene(routes);routes.set_undo_stack(&scene.undoStack());
         const auto fs=routes.addNode("Fs"),route=routes.addNode("Reroute"),tail=routes.addNode("Reroute"),delta=routes.addNode("FrequencyStep"),amplitude=routes.addNode("AmplitudePhase");
         auto edge=[&](QtNodes::NodeId from,domain::PortId out,QtNodes::NodeId to,domain::PortId in){return QtNodes::ConnectionId{from,routes.delegateModel<AudioNodeModel>(from)->port_index(QtNodes::PortType::Out,out),to,routes.delegateModel<AudioNodeModel>(to)->port_index(QtNodes::PortType::In,in)};};
@@ -1380,84 +1388,287 @@ int main(int argc,char** argv){
         NumericEditorGraphModel restored(registry);check(restored.set_numeric_graph(exported),"Scalar parameter routing reloads");
         check(restored.connectionExists(edge(tail,0,delta,0)) && restored.connectionExists(edge(tail,0,amplitude,domain::target_sample_rate_input)),"Both scalar fan-out wires survive reload");
     }
-    {
-        NumericEditorGraphModel labels(registry);QtNodes::DataFlowGraphicsScene scene(labels);labels.set_undo_stack(&scene.undoStack());
-        const auto id=labels.addNode("Window"),length=labels.addNode("ArrayLength");auto* node=labels.delegateModel<AudioNodeModel>(id);
-        const auto before=labels.numeric_graph();std::unique_ptr<QWidget> inspector(node->parameter_widget());
-        check(!inspector->findChild<QComboBox*>("input0Dtype"),"Inspector no longer contains contract controls");
-        auto* contracts=inspector->findChild<QPushButton*>("editNodeContracts");auto* names=inspector->findChild<QPushButton*>("editPortLabels");check(contracts&&names,"Inspector exposes separate contract and label dialogs");
-        bool opened=false;
-        QTimer::singleShot(0,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());opened=dialog&&dialog->objectName()=="portContractsDialog";check(opened&&dialog->findChild<QComboBox*>("input0Dtype"),"Actual modal contains the contract editor");if(dialog)dialog->accept();});if(contracts)contracts->click();check(opened,"Contract dialog opens modally");
-        QTimer::singleShot(0,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());auto* edit=dialog?dialog->findChild<QLineEdit*>("portLabel_input65531"):nullptr;check(edit,"Fs label editor uses stable port ID");if(edit)edit->setText("Моя частота");if(dialog)dialog->accept();});if(names)names->click();
-        const auto port=node->port_index(QtNodes::PortType::In,domain::input_sample_rate_input);
-        check(node->portCaption(QtNodes::PortType::In,port).startsWith("Моя частота\n"),"Custom text is rendered on the port");
-        QByteArray a,b;check(desktop::encode_numeric_graph(before,a)&&desktop::encode_numeric_graph(labels.numeric_graph(),b)&&a==b,"Label edit does not change processing graph or contracts");
-        scene.undoStack().undo();check(!node->presentation().contains("port_labels"),"Label changes support Undo");scene.undoStack().redo();
-        NumericEditorGraphModel restored(registry);restored.load(labels.save());check(restored.delegateModel<AudioNodeModel>(id)->portCaption(QtNodes::PortType::In,port)==node->portCaption(QtNodes::PortType::In,port),"Labels survive project reload");
-        check(!labels.delegateModel<AudioNodeModel>(length)->embeddedWidget(),"Array length has no empty fixed-width body");scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(labels,[]{return QJsonObject{};}));scene.nodeGeometry().recomputeSize(length);
-        check(scene.nodeGeometry().size(length).width()<260,"Array length node is compact");
-    }
-    {
-        NumericEditorGraphModel compact(registry);const auto plot=compact.addNode("FFTView");
-        QtNodes::DataFlowGraphicsScene scene(compact);scene.setNodeGeometry(std::make_unique<EditorNodeGeometry>(compact,[]{return QJsonObject{};}));scene.setNodePainter(std::make_unique<EditorNodePainter>());
-        auto& geometry=static_cast<EditorNodeGeometry&>(scene.nodeGeometry());geometry.recomputeSize(plot);
-        const auto title=geometry.captionRect(plot).translated(geometry.captionPosition(plot));
-        check(!title.intersects(QRectF(12,12,8,8)),"Compact graph title does not overlap activity lamp");
-        check(title.bottom()<geometry.portTextPosition(plot,QtNodes::PortType::In,0).y(),"Compact graph title is above input labels");
-        auto* item=scene.nodeGraphicsObject(plot);item->updateQWidgetEmbedPos();const auto bounds=item->sceneBoundingRect();
-        QImage image(bounds.size().toSize()+QSize(24,24),QImage::Format_ARGB32_Premultiplied);image.fill(QApplication::palette().color(QPalette::Window));QPainter painter(&image);scene.render(&painter,QRectF(12,12,bounds.width(),bounds.height()),bounds);painter.end();
-        check(image.save(QDir(QString::fromUtf8(QT_TESTCASE_SOURCEDIR)).absoluteFilePath("../.agent-workspace/graph-step-card.png")),"Own graph card renderer shows the explicit step port");
-    }
-    {
-        NumericEditorGraphModel rows(registry);rows.set_admission_limits(numeric_editor::limits());QtNodes::DataFlowGraphicsScene scene(rows);rows.set_undo_stack(&scene.undoStack());
-        const auto spectrum=rows.addNode("AmplitudePhase"),broad=rows.addNode("BroadbandRow"),notes=rows.addNode("NoteSpectrum"),join=rows.addNode("ArrayConcat"),broadHistory=rows.addNode("Spectrogram"),noteHistory=rows.addNode("Spectrogram"),combinedHistory=rows.addNode("Spectrogram"),piano=rows.addNode("PianoView");
-        const auto source=rows.addNode("AudioSource"),window=rows.addNode("Window"),length=rows.addNode("ArrayLength"),step=rows.addNode("FrequencyStep");
-        auto connect=[&](QtNodes::NodeId from,domain::PortId out,QtNodes::NodeId to,domain::PortId in){const QtNodes::ConnectionId edge{from,rows.delegateModel<AudioNodeModel>(from)->port_index(QtNodes::PortType::Out,out),to,rows.delegateModel<AudioNodeModel>(to)->port_index(QtNodes::PortType::In,in)};check(rows.connectionPossible(edge),"Independent row and join ordinary wire is admissible");scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));check(rows.connectionExists(edge),"Independent row and join wire is created");};
-        connect(spectrum,0,broad,0);connect(spectrum,0,notes,0);connect(broad,0,join,0);connect(notes,0,join,1);connect(broad,0,broadHistory,0);connect(notes,0,noteHistory,0);connect(join,0,combinedHistory,0);
-        connect(source,0,window,0);connect(window,0,length,0);connect(length,0,step,domain::window_size_input);connect(source,domain::sample_rate_output,step,0);connect(step,0,broad,domain::frequency_step_input);connect(step,0,notes,domain::frequency_step_input);connect(notes,0,piano,0);connect(notes,domain::note_first_output,piano,domain::note_first_input);
-        const auto metrics=rows.addNode("ScalarView");
-        check(rows.delegateModel<AudioNodeModel>(metrics)->add_scalar_input(),"Note agreement has two independent metric inputs");
-        connect(notes,1,metrics,0);connect(notes,2,metrics,1);
-        for(const auto& port:rows.delegateModel<AudioNodeModel>(metrics)->numeric_node()->inputs){
-            const auto value=std::get<signal_contracts::NumericContract>(port.contract.view());
-            check(value.dtype==signal_contracts::DType::Float32 && value.shape.rank==signal_contracts::Rank::Scalar,"Note agreement keeps its scalar Float32 contract in the metrics view");
-        }
-        auto* note=rows.delegateModel<AudioNodeModel>(notes);auto* bands=rows.delegateModel<AudioNodeModel>(broad);
-        auto failureContext=std::make_shared<pipeline::NumericDeliveryContext>();failureContext->endpoint={"main",domain::NodeId(notes),domain::PortDirection::Output,0};failureContext->contract=note->numeric_node()->outputs[0].contract;
-        check(note->preview(pipeline::DeliveredNumericFrame{failureContext,{1,1},{},signal_contracts::Status::invalid_argument}) && note->diagnostic_failure(domain::PortDirection::Output,0)==ui::text("Input spectrum must contain finite nonnegative values. Check correction coefficients and array operation."),"Rejected musical spectrum explains input domain and correction at its origin");
-        note->clear_preview();
-        check(!note->parameter_model()->field("high_count") && !bands->parameter_model()->field("first_midi"),"Broadband and note settings are independent cards");
-        const auto width=[&](auto id){return std::get<signal_contracts::NumericContract>(rows.delegateModel<AudioNodeModel>(id)->numeric_node()->inputs[0].contract.view()).shape.extents[0].maximum;};
-        const auto bandCount=width(broadHistory);const auto before=rows.save();check(note->parameter_model()->editLiteral("first_midi","60",0),"Actual note control edits an independent row");
-        check(width(broadHistory)==bandCount && width(noteHistory)==49 && width(combinedHistory)==bandCount+49,"Note range edits propagate only note geometry and explicit join");
-        domain::ResolvedProcessingNode pianoNode;domain::ProcessingParameterView first;
-        check(bool(domain::resolve_processing_node(*rows.delegateModel<AudioNodeModel>(piano)->numeric_node(),numeric_editor::limits(),pianoNode)) && domain::resolve_processing_parameter(pianoNode,"first_midi",first)==signal_contracts::Status::ok && std::visit([](auto v){return unsigned(v);},std::get<signal_contracts::NumericLiteral>(first))==60,"Piano key origin follows an explicit ordinary numeric wire");
-        scene.undoStack().undo();check(rows.save()==before,"Independent note edit Undo restores the entire wired document");
-        NumericEditorGraphModel restored(registry);restored.load(rows.save());
-        check(restored.connectionExists({notes,rows.delegateModel<AudioNodeModel>(notes)->port_index(QtNodes::PortType::Out,1),metrics,0}) && restored.connectionExists({notes,rows.delegateModel<AudioNodeModel>(notes)->port_index(QtNodes::PortType::Out,2),metrics,1}),"Both note agreement connections survive document reload");
-        check(restored.delegateModel<AudioNodeModel>(join)->numeric_node()->inputs.size()==2 && restored.delegateModel<AudioNodeModel>(broad)->numeric_node()->inputs.back().id==domain::frequency_step_input && restored.delegateModel<AudioNodeModel>(notes)->numeric_node()->inputs.back().id==domain::frequency_step_input,"Independent rows, stable step ports and generic join survive reload");
+
+struct EditorDocumentScenario {
+ const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry;
+ NumericEditorGraphModel graph;QUndoStack undo;
+ QtNodes::NodeId source{},route{},sink{},other{},tail{},converter{};AudioNodeModel* model=nullptr;
+ std::unique_ptr<QWidget> form;QComboBox* type=nullptr;QLineEdit* text=nullptr;QWidget* body=nullptr;QLineEdit* inlineText=nullptr;QAction* show=nullptr;
+ QByteArray processingBefore,bytes;domain::NumericProcessingGraph restored;
+ std::optional<NumericEditorGraphModel> restoredGraphStorage;std::unique_ptr<QWidget> historyForm;
+ explicit EditorDocumentScenario(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& value):registry(value),graph(value){}
+ auto value()const{return std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.nan_replacement;}
+int initialize(){
+    graph.set_admission_limits(numeric_editor::limits());graph.set_undo_stack(&undo);
+
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds){
+
+        auto node=numeric_editor::default_node(kind);domain::ResolvedProcessingNode resolved;
+
+        check(bool(domain::resolve_processing_node(node,numeric_editor::limits(),resolved)),qPrintable(kind));
+
     }
 
-    {
-        NumericEditorGraphModel telemetry(registry);const auto id=telemetry.addNode("SignalGenerator");auto* node=telemetry.delegateModel<AudioNodeModel>(id);
-        int edits=0,redraws=0;QObject::connect(&telemetry,&NumericEditorGraphModel::nodeUpdated,&telemetry,[&](auto){++edits;});QObject::connect(node,&AudioNodeModel::activity_changed,&telemetry,[&]{++redraws;});
-        const auto before=telemetry.save();for(unsigned i=0;i<128;++i)node->set_processing_activity(true,bool(i%2),double(i));
-        check(edits==0 && redraws==128 && telemetry.save()==before,"Activity telemetry redraws without persistent node updates or graph serialization triggers");
-    }
+    delivery_diagnostics(graph,undo);
 
-    {
-        NumericEditorGraphModel draft(registry);QtNodes::DataFlowGraphicsScene scene(draft);auto& history=scene.undoStack();draft.set_undo_stack(&history);
-        const auto source=draft.addNode("SignalGenerator"),sink=draft.addNode("WLEDOutput");
-        const QtNodes::ConnectionId edge{source,0,sink,0};
-        check(draft.connectionPossible(edge),"Structural draft accepts incompatible numeric-to-packet edge");
-        history.push(new QtNodes::ConnectCommand(&scene,edge));
-        check(draft.connectionExists(edge) && draft.connection_visual_state(edge)==3 && !draft.connection_failure(edge).isEmpty(),"Invalid draft edge has a visible reason");
-        domain::NumericProcessingGraph raw;check(draft.export_numeric_graph(raw,nullptr,false),"Saving an incompatible draft does not prepare it");
-        NumericEditorGraphModel restored(registry);check(restored.set_numeric_graph(raw) && restored.connectionExists(edge),"Typed draft load retains an incompatible edge");
-        domain::NumericProcessingGraph executable;check(!draft.export_numeric_graph(executable),"Execution export remains strict");
-        history.undo();check(!draft.connectionExists(edge),"Undo removes the invalid draft connection");history.redo();check(draft.connectionExists(edge),"Redo restores the invalid draft connection");
-    }
-    graph.set_admission_limits(numeric_editor::limits());graph.set_capture_device_provider({});
+    if(const auto result=selector_topology(registry,graph,undo);result)return result;
+
+    window_function_edit(graph,undo);
+
+
+return 0;
+}
+void routing(){
+    std::fprintf(stderr,"editor fixture phase routing\n");
+    source=graph.addNode("NetworkInput");route=graph.addNode("Switch");sink=graph.addNode("NetworkOutput");other=graph.addNode("NetworkOutput");
+
+    check(graph.connectionPossible({source,0,route,0}),"compatible typed source route");graph.addConnection({source,0,route,0});
+
+    graph.addConnection({route,0,sink,0});graph.addConnection({route,1,other,0});
+
+    network_adapter_undo(graph,undo,source);
+
+    auto n=*graph.delegateModel<AudioNodeModel>(route)->numeric_node();numeric_editor::set_output_count(n,4);graph.edit_node(route,n);
+
+    check(graph.connectionExists({route,0,sink,0}) && graph.connectionExists({route,1,other,0}),"grow preserves existing edges");
+
+    tail=graph.addNode("NetworkOutput");graph.addConnection({route,3,tail,0});
+
+    n=*graph.delegateModel<AudioNodeModel>(route)->numeric_node();numeric_editor::set_output_count(n,2);
+
+    const int undoBeforeShrink=undo.index();
+    check(graph.edit_node(route,n) && undo.index()==undoBeforeShrink+1 && !graph.connectionExists({route,3,tail,0}),"Connected endpoint shrink removes only its incident edge atomically");
+    check(graph.connectionExists({route,0,sink,0}) && graph.connectionExists({route,1,other,0}),"Connected shrink preserves stable surviving endpoints");
+    undo.undo();check(graph.delegateModel<AudioNodeModel>(route)->numeric_node()->outputs.size()==4 && graph.connectionExists({route,3,tail,0}),"Shrink Undo restores removed port and exact edge");
+    undo.redo();check(!graph.connectionExists({route,3,tail,0}) && graph.connectionExists({route,0,sink,0}),"Shrink Redo removes only the tail edge");
+
+    routing_inline_count(graph,undo,route);
+
+    auto mismatch=*graph.delegateModel<AudioNodeModel>(tail)->numeric_node();numeric_editor::set_dtype(mismatch,domain::PortDirection::Input,0,signal_contracts::DType::UInt64);graph.edit_node(tail,mismatch);
+
+    check(graph.connectionPossible({source,0,tail,0}),"dtype-only link supports prepared conversion");graph.addConnection({source,0,tail,0});check(graph.connectionExists({source,0,tail,0}),"raw add admits dtype-only conversion");graph.deleteConnection({source,0,tail,0});
+
+}
+void exact_fields(){
+    std::fprintf(stderr,"editor fixture phase typed-converter\n");
+    converter=graph.addNode("Converter");model=graph.delegateModel<AudioNodeModel>(converter);
+
+    std::fprintf(stderr,"editor converter before form\n");
+    form.reset(model->parameter_widget());
+    std::fprintf(stderr,"editor converter after form\n");
+
+    type=form->findChild<QComboBox*>("numericNan_type");text=form->findChild<QLineEdit*>("numericNan");
+
+    check(type && text,"exact typed field exists");
+
+    std::fprintf(stderr,"editor converter before type\n");
+    if(type && text){type->setCurrentIndex(1);std::fprintf(stderr,"editor converter after type\n");text=form->findChild<QLineEdit*>("numericNan");text->setText("18446744073709551615");text->setModified(true);QMetaObject::invokeMethod(text,"editingFinished",Qt::DirectConnection);}
+
+    std::fprintf(stderr,"editor converter after edit\n");
+
+
+    check(std::holds_alternative<std::uint64_t>(value()) && std::get<std::uint64_t>(value())==std::numeric_limits<std::uint64_t>::max(),"UI UInt64 exact");
+
+    std::fprintf(stderr,"editor converter before undo\n");
+    undo.undo();check(std::get<std::uint64_t>(value())==0,"undo exact field");undo.redo();
+
+    auto* signedText=form->findChild<QLineEdit*>("numericNegativeInf");
+
+    if(signedText){signedText->setText("-9223372036854775808");signedText->setModified(true);QMetaObject::invokeMethod(signedText,"editingFinished",Qt::DirectConnection);}
+
+    check(std::get<std::int64_t>(std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.negative_inf_replacement)==std::numeric_limits<std::int64_t>::min(),"UI Int64 minimum exact");
+
+    auto* exponent=form->findChild<QSpinBox*>("numericGainExponent");check(exponent,"dyadic gain exponent is editable");
+
+    if(exponent)exponent->setValue(-17);
+
+    check(std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.scaling.gain.exponent2==-17,"dyadic exponent edit preserves signed value");
+
+}
+void inline_fields(){
+    std::fprintf(stderr,"editor converter before inline\n");
+    body=model->embeddedWidget();inlineText=body->findChild<QLineEdit*>("numericNan");
+
+    show=form->findChild<QAction*>("showOnBlock_numericNan");
+
+    check(show && inlineText && !show->isChecked() && !inlineText->isVisibleTo(body),"compact default hides editable parameters");
+
+    desktop::encode_numeric_graph(graph.numeric_graph(),processingBefore);
+
+    if(show)show->setChecked(true);
+
+    check(inlineText && inlineText->isVisibleTo(body) && inlineText->text()=="18446744073709551615","selected inline parameter displays exact inspector value");
+
+    QByteArray processingAfter;desktop::encode_numeric_graph(graph.numeric_graph(),processingAfter);
+
+    check(processingBefore==processingAfter,"presentation flags leak into processing serialization");
+
+    undo.undo();check(show && !show->isChecked() && !inlineText->isVisibleTo(body),"visibility undo synchronizes inspector and block");
+
+    undo.redo();check(show && show->isChecked() && inlineText->isVisibleTo(body),"visibility redo restores block field");
+
+    if(inlineText){inlineText->setText("9007199254740993");inlineText->setModified(true);QMetaObject::invokeMethod(inlineText,"editingFinished",Qt::DirectConnection);}
+
+    check(text && text->text()=="9007199254740993" && std::get<std::uint64_t>(value())==9007199254740993ULL,"inline exact edit synchronizes inspector");
+
+    undo.undo();check(inlineText->text()=="18446744073709551615" && text->text()==inlineText->text(),"parameter undo synchronizes both forms");
+
+    if(show)show->setChecked(false);
+
+    check(!inlineText->isVisibleTo(body) && std::get<std::uint64_t>(value())==std::numeric_limits<std::uint64_t>::max(),"hiding inline preserves parameter value");
+
+    if(show)show->setChecked(true);
+
+}
+void presentation(){
+    const auto beforeNameUndo=undo.count();
+    std::fprintf(stderr,"editor converter before custom presentation node=%u exists=%d\n",unsigned(converter),int(graph.nodeExists(converter)));
+    auto display=model->presentation();display["future_display_field"]="kept";model->set_presentation(display);
+    check(model->edit_display_name(QString::fromUtf8("Мой преобразователь")) && model->caption()==QString::fromUtf8("Мой преобразователь") && model->name()=="Converter","Custom caption preserves stable algorithm kind");
+    QByteArray namedProcessing;desktop::encode_numeric_graph(graph.numeric_graph(),namedProcessing);
+    check(namedProcessing==processingBefore && undo.count()==beforeNameUndo+1,"Node rename is one presentation-only undo command");
+    const auto namedPresentation=model->presentation();
+    check(!model->edit_display_name(QString(257,'x')) && !model->edit_display_name(QString("bad")+QChar(1)) && model->presentation()==namedPresentation,"Invalid display names refuse without mutation");
+    auto malformedName=model->save();auto invalidDisplay=namedPresentation;invalidDisplay["display_name"]=17;malformedName["presentation"]=invalidDisplay;
+    AudioNodeModel malformedCaption("Converter");malformedCaption.load(malformedName);
+    check(!malformedCaption.numeric_node(),"Malformed persisted display name must reject the node rather than silently discard metadata");
+    undo.undo();check(model->caption()!=QString::fromUtf8("Мой преобразователь") && model->presentation().value("future_display_field")=="kept","Rename undo preserves unknown presentation fields");
+    undo.redo();check(model->caption()==QString::fromUtf8("Мой преобразователь"),"Rename redo restores user caption");
+
+    const auto saved=graph.saveNode(converter);auto copied=saved;copied["id"]=100;graph.loadNode(copied);
+
+    auto* copy=graph.delegateModel<AudioNodeModel>(100);
+
+    check(copy && copy->numeric_node() && copy->numeric_node()->id==100 && domain::same_processing_parameters(model->numeric_node()->parameters,copy->numeric_node()->parameters),"clipboard remaps id preserves exact literals");
+
+    check(copy && copy->presentation()==model->presentation() && copy->parameter_on_block("numericNan"),"node snapshot preserves presentation flags");
+
+    converter_clipboard(graph,converter,model);
+
+}
+int restore_snapshot(){
+    check(bool(desktop::encode_numeric_graph(graph.numeric_graph(),bytes)),"known snapshot encode");check(bool(desktop::decode_numeric_graph(bytes,restored)),"known snapshot decode");
+
+    if(restored.nodes.empty()){check(false,"Known snapshot unexpectedly contains no restored nodes");return 1;}
+
+    restoredGraphStorage.emplace(registry);auto& restoredGraph=*restoredGraphStorage;restoredGraph.set_numeric_graph(restored);check(restoredGraph.connectionExists({route,0,sink,0}),"typed graph reload keeps ports");
+
+    restored_graph_validation(registry,restoredGraph,restored,sink);
+
+    if(const auto result=source_backed_project(restoredGraph,bytes,converter,model);result)return result;
+
+
+return 0;
+}
+void history_capacity(){
+    auto history=graph.addNode("Spectrogram");auto* accumulator=graph.delegateModel<AudioNodeModel>(history);historyForm.reset(accumulator->parameter_widget());auto* capacity=historyForm->findChild<QLineEdit*>("numericCapacity");
+    const auto historyContract=std::get<signal_contracts::NumericContract>(accumulator->numeric_node()->outputs[0].contract.view());
+    check(historyContract.coordinates[0].mode==signal_contracts::CoordinateMode::ExplicitFloat64LE && historyContract.coordinates[0].unit==signal_contracts::NumericUnit::Seconds,"new History preserves individual source-clock seconds");
+
+    if(capacity){capacity->setText("17");capacity->setModified(true);QMetaObject::invokeMethod(capacity,"editingFinished",Qt::DirectConnection);}
+
+    auto h=*accumulator->numeric_node();domain::ResolvedProcessingNode hr;
+
+    check(bool(domain::resolve_processing_node(h,numeric_editor::limits(),hr)) && std::get<signal_contracts::NumericContract>(h.outputs[0].contract.view()).shape.extents[0].maximum==17,"history capacity edits both configured parameter and contract");
+
+}
+void incompatible_contracts(){
+    auto bad=graph.saveNode(source);bad["id"]=101;auto data=bad.value("internal-data").toObject();data["numeric_processing"]="{invalid";bad["internal-data"]=data;graph.loadNode(bad);
+
+    check(!graph.connectionPossible({101,0,sink,0}),"malformed typed snapshot never defaults to connectable node");
+
+    graph.loadNode({{"id",102},{"internal-data",QJsonObject{{"model-name","NetworkOutput"}}}});
+
+    check(!graph.connectionPossible({101,0,102,0}),"malformed typed snapshot never falls back to legacy ports");
+
+    const QtNodes::ConnectionId incompatibleUnit{source,0,tail,0};
+    check(graph.connectionPossible(incompatibleUnit),"Units mismatch keeps a structurally valid draft endpoint");
+    graph.addConnection(incompatibleUnit);
+    auto changed=*graph.delegateModel<AudioNodeModel>(tail)->numeric_node();
+    auto contract=changed.inputs[0].contract.view();std::get<signal_contracts::NumericContract>(contract).unit=signal_contracts::NumericUnit::RawAmplitude;
+    check(numeric_editor::set_contract(changed,domain::PortDirection::Input,0,contract) &&
+          numeric_editor::set_dtype(changed,domain::PortDirection::Input,0,signal_contracts::DType::Float32) && graph.edit_node(tail,changed),
+          "Connected draft accepts an explicit incompatible physical unit edit");
+    check(graph.connectionExists(incompatibleUnit) && graph.connection_visual_state(incompatibleUnit)==3 && !graph.connection_failure(incompatibleUnit).isEmpty(),"Units mismatch is retained with a visible typed incompatibility");
+    graph.deleteConnection(incompatibleUnit);
+
+}
+int physical_endpoints(){
+    if(const auto result=physical_endpoint_controls(graph,undo);result)return result;
+
+
+return 0;
+}
+int run(){
+ if(const auto result=initialize();result)return result;
+ routing();exact_fields();inline_fields();presentation();
+ if(const auto result=restore_snapshot();result)return result;
+ history_capacity();incompatible_contracts();return physical_endpoints();
+}
+};
+
+int main(int argc,char** argv){
+
+    QApplication app(argc,argv);
+#ifdef Q_OS_WIN
+    const auto fontFile=QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf");
+    check(QFontDatabase::addApplicationFont(fontFile)>=0,"Own offscreen scene uses the system font with Cyrillic glyphs");
+    app.setFont(QFont("Segoe UI",9));
+#endif
+    if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-path")return native_history_path(argv[2]);
+
+
+    coefficient_port_identity(app);
+
+    axis_range_controls();
+    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
+
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    sparse_port_publication(registry);
+
+    source_rate_dependencies(registry);
+    capture_endpoint_guard(registry);
+    fourier_port_roundtrip(registry);
+    routing_point_roundtrip(registry);
+    numeric_primitive_roundtrip(registry);
+    parameter_wire_geometry(registry);
+    surviving_widget_localization();
+
+    temporal_matrix_chain(registry);
+
+    explicit_clock_bindings(registry);
+
+    configuration_wire_undo(registry);
+
+    native_format_admission(registry);
+
+    inline_field_layout(registry);
+
+    view_contract_adoption(registry);
+
+    preview_extraction(registry);
+
+    native_source_contract(registry);
+    source_rate_undo(registry);
+    clock_rate_dependency(registry);
+    resampler_editor(registry);
+
+    EditorDocumentScenario document(registry);
+    if(const auto result=document.run();result)return result;
+
+    for(const bool coefficientsFirst:{false,true})product_connection_order(registry,coefficientsFirst);
+
+    frequency_step_wires(registry);
+
+    for(const bool sourceFirst:{false,true})scalar_route_order(registry,sourceFirst);
+    port_labels(registry);
+    compact_graph_card(registry);
+    independent_musical_rows(registry);
+
+    activity_telemetry(registry);
+
+    incompatible_draft(registry);
+    document.graph.set_admission_limits(numeric_editor::limits());document.graph.set_capture_device_provider({});
 
     std::printf("numeric editor failures=%d\n",failures);return failures?1:0;
 

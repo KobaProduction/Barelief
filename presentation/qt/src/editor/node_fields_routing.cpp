@@ -44,10 +44,13 @@ void NodeParameterModel::appendSwitchFields() {
         [](const auto& node){return std::get<domain::RouteProcessingParameters>(node.parameters).selected;},
         [](auto& node,int value){std::get<domain::RouteProcessingParameters>(node.parameters).selected=std::uint16_t(value);});
 }
-void NodeParameterModel::append_routing_fields() {
-    if(_node.kind=="ArrayMultiply"){integer("Factor count","factorCount",2,int(std::min(domain::max_variadic_inputs,profilePortLimit().value_or(domain::max_variadic_inputs))),
+void NodeParameterModel::appendFactorCount() {
+    integer("Factor count","factorCount",2,int(std::min(domain::max_variadic_inputs,profilePortLimit().value_or(domain::max_variadic_inputs))),
         [](const auto& node){return int(domain::data_inputs(node).size());},
-        [](auto& node,int count){if(!numeric_editor::set_input_count(node,std::uint16_t(count)))throw std::invalid_argument("factors");});requireProfile();}
+        [](auto& node,int count){if(!numeric_editor::set_input_count(node,std::uint16_t(count)))throw std::invalid_argument("factors");});requireProfile();
+}
+void NodeParameterModel::append_routing_fields() {
+    if(_node.kind=="ArrayMultiply")appendFactorCount();
     if(_node.kind=="InputSelector")appendSelectorFields();
     if(!std::holds_alternative<domain::RouteProcessingParameters>(_node.parameters))return;
     if(_node.kind=="Splitter" || _node.kind=="Switch")appendRoutingOutputCount();

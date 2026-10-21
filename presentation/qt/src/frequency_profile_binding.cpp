@@ -8,6 +8,12 @@
 namespace core_app {
 namespace {
 QString resampler_name(dsp_kernels::ResamplerMode mode){return ui::text(presentation::resampler_caption(mode));}
+bool parse_frontend_methods(const application::ProfileFrontend& declared,dsp_kernels::ProfileCompatibility& result){
+    if(declared.channel_policy!="mean" && declared.channel_policy!="select")return false;
+    return dsp_kernels::parse_window_function(declared.window_function,result.window) &&
+        dsp_kernels::parse_spectrum_projection(declared.representation,result.projection.representation) &&
+        signal_contracts::parse_resampler_mode(declared.resampler_mode,result.resampler_mode);
+}
 std::optional<dsp_kernels::ProfileCompatibility> to_compatibility(const application::ProfileFrontend& declared){
     dsp_kernels::ProfileCompatibility result;
     result.sample_rate=declared.sample_rate;result.fft_size=declared.fft_size;
@@ -16,10 +22,7 @@ std::optional<dsp_kernels::ProfileCompatibility> to_compatibility(const applicat
     result.projection.compensate=declared.normalize;
     result.channel_policy=declared.channel_policy=="select"?dsp_kernels::ChannelPolicy::Select:dsp_kernels::ChannelPolicy::Mean;
     result.channel_index=declared.channel_index;result.resampler_quality=declared.resampler_quality;
-    if(declared.channel_policy!="mean" && declared.channel_policy!="select")return std::nullopt;
-    if(!dsp_kernels::parse_window_function(declared.window_function,result.window))return std::nullopt;
-    if(!dsp_kernels::parse_spectrum_projection(declared.representation,result.projection.representation))return std::nullopt;
-    if(!signal_contracts::parse_resampler_mode(declared.resampler_mode,result.resampler_mode))return std::nullopt;
+    if(!parse_frontend_methods(declared,result))return std::nullopt;
     return result;
 }
 dsp_kernels::ProfileTraining to_training(const application::ProfileTrainingCadence& declared){
@@ -128,20 +131,22 @@ QString frequency_profile_incompatibility(const FrequencyProfileTarget& target,c
     for(const auto reason:dsp_kernels::profile_mismatches(profile,target.options.compatibility))reasons.append(mismatch_detail(reason,profile.compatibility,target.options.compatibility));
     return reasons.join('\n');
 }
+namespace {
+QString profile_refusal_text(application::ProfileApplyRefusal refusal){
+    switch(refusal){
+    case application::ProfileApplyRefusal::RouteUnavailable:return ui::text("The coefficient route is no longer available");
+    case application::ProfileApplyRefusal::SharedCoefficients:return ui::text("The coefficient source feeds multiple routes; select an isolated source");
+    case application::ProfileApplyRefusal::CoefficientRange:return ui::text("Profile coefficient range does not match the declared array size");
+    case application::ProfileApplyRefusal::None:case application::ProfileApplyRefusal::ProfileMismatch:return {};
+    }
+    return {};
+}
+}
 bool frequency_profile_edits(const domain::NumericProcessingGraph& graph,const FrequencyProfileTarget& selected,const dsp_kernels::FrequencyProfile& profile,
     domain::ConfiguredProcessingNode& coefficients,domain::ConfiguredProcessingNode& arithmetic,QString& error){
     auto result=application::apply_frequency_profile(graph,selected.route,profile.gains,DspProfileMatcher{&profile});
-    switch(result.refusal){
-    case application::ProfileApplyRefusal::None:break;
-    case application::ProfileApplyRefusal::RouteUnavailable:
-        error=ui::text("The coefficient route is no longer available");return false;
-    case application::ProfileApplyRefusal::SharedCoefficients:
-        error=ui::text("The coefficient source feeds multiple routes; select an isolated source");return false;
-    case application::ProfileApplyRefusal::CoefficientRange:
-        error=ui::text("Profile coefficient range does not match the declared array size");return false;
-    case application::ProfileApplyRefusal::ProfileMismatch:
-        break;
-    }
+    const auto refusal=profile_refusal_text(result.refusal);
+    if(!refusal.isEmpty()){error=refusal;return false;}
     if(result.refusal==application::ProfileApplyRefusal::ProfileMismatch){
         QStringList reasons;
         const auto expected=to_compatibility(result.expected_frontend);

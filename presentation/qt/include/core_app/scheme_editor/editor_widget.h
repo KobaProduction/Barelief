@@ -159,6 +159,8 @@ protected:
     void bind_application_feedback();
     void restore_initial_camera();
     void apply_saved_camera(const QJsonObject& saved);
+    void bind_execution_rate(QLineEdit*);
+    AdapterMap snapshot_adapters(const AdapterMap&) const;
     void refresh_execution_rate_text(NumericEditorGraphModel*,QLineEdit*);
     void wire_source_model(QtNodes::NodeId id);
     QLabel *_status = nullptr;

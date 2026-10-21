@@ -68,6 +68,23 @@ void discovery() {
     }
     port->publish({DiscoveryState::Unavailable, "gone", {}}); // No callbacks into a destroyed model.
 }
+void modeless_commands(QWidget& host,presentation::UiCommandRegistry& registry,int& undos) {
+    QDialog dialog(&host); auto *dialogLayout = new QVBoxLayout(&dialog);
+    auto *dialogText = new QLineEdit(&dialog); dialogLayout->addWidget(dialogText);
+    dialog.show(); dialog.activateWindow(); dialogText->setFocus(); settle(); registry.refresh();
+    check(QApplication::focusWidget()==dialogText,"command fixture has actual modeless dialog text focus");
+    check(!registry.execute("schemaUndo") && undos == 2, "modeless settings dialog excludes schema history");
+    dialog.close(); host.close();
+}
+void text_command_exclusion(QWidget& host,QLineEdit* text,presentation::UiCommandRegistry& registry,QAction* action,QMenu& menu,int& undos) {
+    host.activateWindow(); text->setFocus(); settle(); registry.refresh();
+    check(QApplication::focusWidget()==text,"command fixture has actual text focus after menu dismissal");
+    check(!action->isEnabled() && !registry.execute("schemaUndo") && undos == 2, "text editing excludes schema undo");
+    menu.popup(text->mapToGlobal(QPoint(0, 0))); settle(); registry.refresh();
+    check(!action->isEnabled(), "menu opened from text retains text editing context");
+    menu.hide(); action->trigger(); settle();
+    check(undos == 2, "text-origin menu cannot dispatch schema history");
+}
 void commands() {
     using namespace presentation;
     QWidget host; auto *layout = new QVBoxLayout(&host);
@@ -80,7 +97,7 @@ void commands() {
         UiCommandContext::SchemaEditor, [&] { ++undos; }, [&] { return available; }});
     check(registry.register_command({"schemaUndo", "Redo", {}, UiCommandContext::Workspace, {}}) == action,
           "command registration reuses canonical action");
-    host.show(); QApplication::setActiveWindow(&host); editor->setFocus(); settle(); registry.refresh();
+    host.show(); host.activateWindow(); editor->setFocus(); settle(); registry.refresh();
     check(QApplication::focusWidget()==editor,"command fixture has actual editor focus");
     check(registry.can_execute("schemaUndo") && action->isEnabled(), "schema history available in editor");
     action->trigger(); check(undos == 1, "canonical action dispatches command");
@@ -90,24 +107,13 @@ void commands() {
     menu.hide(); action->trigger();
     check(undos == 2, "menu dismissal retains editor origin during action dispatch");
     settle();
-    QApplication::setActiveWindow(&host); text->setFocus(); settle(); registry.refresh();
-    check(QApplication::focusWidget()==text,"command fixture has actual text focus after menu dismissal");
-    check(!action->isEnabled() && !registry.execute("schemaUndo") && undos == 2, "text editing excludes schema undo");
-    menu.popup(text->mapToGlobal(QPoint(0, 0))); settle(); registry.refresh();
-    check(!action->isEnabled(), "menu opened from text retains text editing context");
-    menu.hide(); action->trigger(); settle();
-    check(undos == 2, "text-origin menu cannot dispatch schema history");
-    QApplication::setActiveWindow(&host); editor->setFocus(); settle(); available = false; registry.refresh();
+    text_command_exclusion(host,text,registry,action,menu,undos);
+    host.activateWindow(); editor->setFocus(); settle(); available = false; registry.refresh();
     check(!action->isEnabled() && !registry.execute("schemaUndo"), "history availability shared with action");
     available = true; belongs = false; registry.refresh();
     check(!registry.execute("schemaUndo"), "other workspace context cannot execute schema history");
     belongs = true;
-    QDialog dialog(&host); auto *dialogLayout = new QVBoxLayout(&dialog);
-    auto *dialogText = new QLineEdit(&dialog); dialogLayout->addWidget(dialogText);
-    dialog.show(); QApplication::setActiveWindow(&dialog); dialogText->setFocus(); settle(); registry.refresh();
-    check(QApplication::focusWidget()==dialogText,"command fixture has actual modeless dialog text focus");
-    check(!registry.execute("schemaUndo") && undos == 2, "modeless settings dialog excludes schema history");
-    dialog.close(); host.close();
+    modeless_commands(host,registry,undos);
 }
 void components_and_sections() {
     QWidget parent; auto *input = new QLineEdit(&parent);

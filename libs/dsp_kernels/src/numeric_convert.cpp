@@ -204,6 +204,12 @@ NumericStatus exact_affine(Binary& value,const ConversionPolicy& policy) noexcep
     value.negative=value.negative!=gain.negative;
     return add_binary(value,offset)?NumericStatus::Ok:NumericStatus::Overflow;
 }
+#if DSP_KERNELS_HAS_DECLARED_IEEE64_ENVIRONMENT
+void collect_binary64_loss(const Packed& a,const Packed& b,const Packed& c,std::uint32_t& loss) noexcept {
+    if(a.rounded || b.rounded || c.rounded || std::fetestexcept(FE_INEXACT))loss|=std::uint32_t(LossFlag::Rounded);
+    if(a.underflow || b.underflow || c.underflow || std::fetestexcept(FE_UNDERFLOW))loss|=std::uint32_t(LossFlag::Underflow);
+}
+#endif
 NumericStatus apply_binary64_packed(const Packed& a,const Packed& b,const Packed& c,
                                      Binary& value,std::uint32_t& loss) noexcept {
 #if DSP_KERNELS_HAS_DECLARED_IEEE64_ENVIRONMENT
@@ -216,8 +222,7 @@ NumericStatus apply_binary64_packed(const Packed& a,const Packed& b,const Packed
     const auto decoded=decode_ieee(std::bit_cast<std::uint64_t>(double(affine_value)),11,52);
     if(decoded.special!=Special::Finite)return NumericStatus::Overflow;
     value=decoded.value;
-    if(a.rounded || b.rounded || c.rounded || std::fetestexcept(FE_INEXACT))loss|=std::uint32_t(LossFlag::Rounded);
-    if(a.underflow || b.underflow || c.underflow || std::fetestexcept(FE_UNDERFLOW))loss|=std::uint32_t(LossFlag::Underflow);
+    collect_binary64_loss(a,b,c,loss);
     return NumericStatus::Ok;
 #else
     (void)a;(void)b;(void)c;(void)value;(void)loss;

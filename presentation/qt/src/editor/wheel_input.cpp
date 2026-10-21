@@ -123,13 +123,16 @@ public:
         auto *selector=parameter_selector(control);
         if(!selector)return false;
         if(auto* combo=qobject_cast<QComboBox*>(selector);combo && combo->view()->isVisible())return false;
+        return protect_selector(selector,event);
+    }
+private:
+    static bool protect_selector(QWidget* selector,QEvent* event) {
         QScrollArea* scroll=nullptr;
         const bool protectedForm=protected_parent(selector,scroll);
         if(!protectedForm)return false;
         if(scroll) forward_wheel(scroll,*static_cast<QWheelEvent*>(event));
         event->accept();return true;
     }
-private:
     static QWidget* parameter_selector(QWidget *control) {
         auto *selector=control;
         while(selector && !qobject_cast<QComboBox*>(selector) && !qobject_cast<QAbstractSpinBox*>(selector))

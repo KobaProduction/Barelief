@@ -97,6 +97,12 @@ std::pair<size_t,size_t> AbstractChartView::visible_data_interval() const {
 void AbstractChartView::append_projected_point(size_t index){
     _points.append({projected_x_coordinate(index),_data[index]});
 }
+void AbstractChartView::append_bucket_extrema(size_t first,size_t last){
+    const auto [low,high]=std::minmax_element(_data.begin()+first,_data.begin()+last);
+    const auto a=size_t(low-_data.begin()),b=size_t(high-_data.begin());
+    append_projected_point(std::min(a,b));
+    if(a!=b)append_projected_point(std::max(a,b));
+}
 void AbstractChartView::append_bar_points(size_t begin,size_t end){
     const size_t visible=end-begin;
     // Use physical columns so HiDPI displays retain resolvable bins.
@@ -105,17 +111,14 @@ void AbstractChartView::append_bar_points(size_t begin,size_t end){
     // Keep both polarities at their supplied coordinates.
     const size_t columns=std::max(size_t{1},physicalColumns/2);
     for(size_t bucket=0;bucket<columns;++bucket){const auto first=begin+bucket*visible/columns,last=begin+(bucket+1)*visible/columns;
-        const auto [low,high]=std::minmax_element(_data.begin()+first,_data.begin()+last);
-        const auto a=size_t(low-_data.begin()),b=size_t(high-_data.begin());
-        append_projected_point(std::min(a,b));if(a!=b)append_projected_point(std::max(a,b));}
+        append_bucket_extrema(first,last);}
 }
 void AbstractChartView::append_line_points(size_t begin,size_t end,size_t buckets){
     const size_t visible=end-begin;
     if(visible<=2*buckets){for(size_t i=begin;i<end;++i)append_projected_point(i);return;}
     append_projected_point(begin);
     for(size_t bucket=0;bucket<buckets;++bucket){const auto first=begin+bucket*visible/buckets,last=begin+(bucket+1)*visible/buckets;
-        auto [lo,hi]=std::minmax_element(_data.begin()+first,_data.begin()+last);const auto a=size_t(lo-_data.begin()),b=size_t(hi-_data.begin());
-        append_projected_point(std::min(a,b));if(a!=b)append_projected_point(std::max(a,b));}
+        append_bucket_extrema(first,last);}
     append_projected_point(end-1);
 }
 void AbstractChartView::refresh_presentation(){

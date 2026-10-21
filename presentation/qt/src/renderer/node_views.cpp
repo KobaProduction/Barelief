@@ -33,7 +33,10 @@ bool scalar_view_kind(std::string_view kind) {
 void refresh_plot_descriptor(GraphPanel* panel,const presentation::PlotDescriptor& descriptor,const QJsonObject& preferences){
     if(!panel)return;
     const auto capabilities=presentation::plot_capabilities(descriptor);
-    if(panel->modes()==capabilities.modes && panel->audio_scales()==capabilities.audio_scales)return;
+    const bool sameCapabilities=panel->modes()==capabilities.modes && panel->audio_scales()==capabilities.audio_scales;
+    const bool samePreferences=panel->property("restoredViewPreferences").toJsonObject()==preferences;
+    if(sameCapabilities && samePreferences)return;
+    panel->setProperty("restoredViewPreferences",QVariant::fromValue(preferences));
     panel->set_plot_capabilities(capabilities);
     panel->restore_presentation(preferences);
 }
@@ -273,6 +276,9 @@ void MainWindow::restore_saved_node_view(const QString& key,const QJsonObject& p
                      false, instance, &*found);
 }
 
+void MainWindow::reset_numeric_view_endpoints() {
+    for (const auto docks=graph_docks(); auto *dock:docks) dock->setProperty("numericEndpoint",QVariant{});
+}
 void MainWindow::sync_node_views(const QJsonObject& document) {
     if (_view_draft && _view_draft_device != _application.device_id()) _view_draft.reset();
     if (document.isEmpty() && !_view_draft) {
@@ -285,7 +291,7 @@ void MainWindow::sync_node_views(const QJsonObject& document) {
     update_view_draft();
     const auto& graph = _view_draft ? *_view_draft : runtime_graph;
     restore_node_views(&graph);
-    for (const auto docks = graph_docks(); auto *dock : docks) dock->setProperty("numericEndpoint", QVariant{});
+    reset_numeric_view_endpoints();
     const auto previous = _active_node_views;
     _active_node_views.clear();
     rebuild_node_view_bindings(graph,runtime_graph,runtime_available);
@@ -313,7 +319,7 @@ void MainWindow::complete_node_view_sync(const QMap<int,QString>& previous) {
     render_numeric_views();
 }
 void MainWindow::retire_node_view_session() {
-    for (const auto docks = graph_docks(); auto *dock : docks) dock->setProperty("numericEndpoint", QVariant{});
+    reset_numeric_view_endpoints();
     const auto previous = _active_node_views;
     clear_node_views();
     release_node_view_bindings();
@@ -605,6 +611,22 @@ void apply_frequency_parameter(presentation::NumericRenderTarget::FrequencyGrid&
     if (std::string_view(key) == "bin_hz") grid.step = numeric;
     else grid.first_bin = std::uint64_t(numeric);
 }
+void resolve_frequency_grid(presentation::NumericRenderTarget::FrequencyGrid& grid,
+    const domain::ConfiguredProcessingNode& node,const domain::NumericProcessingGraph& runtime_graph,
+    bool applied,bool audio) {
+    const auto active = std::find_if(runtime_graph.nodes.begin(),runtime_graph.nodes.end(),
+        [&](const auto& candidate) { return candidate.id == node.id; });
+    const bool connected = std::any_of(runtime_graph.edges.begin(),runtime_graph.edges.end(),
+        [&](const auto& edge) { return edge.to == node.id && edge.input_port == domain::frequency_step_input; });
+    if (applied && active != runtime_graph.nodes.end() && (connected || audio)) {
+        domain::ResolvedProcessingNode resolved;
+        if (domain::resolve_processing_node(*active,numeric_editor::limits(),resolved)) {
+            apply_frequency_parameter(grid,resolved,"bin_hz");
+            apply_frequency_parameter(grid,resolved,"first_bin");
+        }
+    }
+}
+
 }
 
 void MainWindow::configure_frequency_grid(GraphPanel *panel,const domain::ConfiguredProcessingNode& node,
@@ -618,17 +640,7 @@ void MainWindow::configure_frequency_grid(GraphPanel *panel,const domain::Config
         return;
     }
     grid.explicit_input=legacy;
-    const auto active = std::find_if(runtime_graph.nodes.begin(),runtime_graph.nodes.end(),
-        [&](const auto& candidate) { return candidate.id == node.id; });
-    const bool connected = std::any_of(runtime_graph.edges.begin(),runtime_graph.edges.end(),
-        [&](const auto& edge) { return edge.to == node.id && edge.input_port == domain::frequency_step_input; });
-    if (applied && active != runtime_graph.nodes.end() && (connected || audio)) {
-        domain::ResolvedProcessingNode resolved;
-        if (domain::resolve_processing_node(*active,numeric_editor::limits(),resolved)) {
-            apply_frequency_parameter(grid,resolved,"bin_hz");
-            apply_frequency_parameter(grid,resolved,"first_bin");
-        }
-    }
+    resolve_frequency_grid(grid,node,runtime_graph,applied,audio);
     if (grid.step>0)grid.explicit_input=true;
     if (grid.explicit_input){grid.index_title="Frequency bin (X)";grid.coordinate_title="Frequency, Hz (X)";}
     panel->set_frequency_grid(grid);
@@ -873,14 +885,17 @@ void MainWindow::render_numeric_views(bool consumeQueuedFrames,bool changedOnly)
     auto changed = std::move(_numeric_changed_endpoints);
     _numeric_changed_endpoints.clear();
     if (consumeQueuedFrames) consume_queued_vector_frames(changed);
+    prepare_numeric_render();
+    render_bound_views(changed,changedOnly);
+    render_metric_views(changed,changedOnly);
+}
+void MainWindow::prepare_numeric_render() {
     for (const auto& queue : _vector_delivery_queues)
         if (queue.count) _numeric_render_dirty = true;
     if (_numeric_snapshot_dirty) {
         _numeric_snapshot_dirty = false;
         _application.client().request_numeric_snapshots();
     }
-    render_bound_views(changed,changedOnly);
-    render_metric_views(changed,changedOnly);
 }
 void MainWindow::consume_queued_vector_frames(std::vector<pipeline::EndpointIdentity>& changed) {
     for (auto& queue : _vector_delivery_queues) {
@@ -962,6 +977,9 @@ void MainWindow::apply_render_rate() {
     // Preview delivery has jitter headroom; processing clock is independent.
     _application.set_numeric_preview_cadence_hz(std::min(240,_render_fps * 2));
     _numeric_render_timer.setInterval(qMax(1,1000 / qMax(1,_render_fps)));
+    update_render_precision(prefs,refresh_rates);
+}
+void MainWindow::update_render_precision(const QJsonObject& prefs,QHash<QScreen*,double>& refresh_rates) {
     const int precision = SurfaceSettings::effective(prefs).value("axis_precision").toInt();
     update_chart_render_rates(precision);
     update_graph_panel_render_rates(prefs,refresh_rates,precision);

@@ -62,13 +62,16 @@ class WindowExecution {
         if(direct && !node.node.enabled){value.storage=std::as_const(state.numeric_outputs[0]).storage();value.semantic_silence=true;}
         state.pending_discontinuity=false;state.numeric_frames[0]={stamp,value};delivery.emit(delivery.user);state.progress=state.hop=0;
     }
+    Status publish_window(std::uint64_t ticks) noexcept {
+        auto stamp=current.stamp;stamp.sequence=++state.output_sequence;if(!stamp.source_sequence)stamp.source_sequence=current.stamp.sequence;stamp.timestamp_ticks+=std::int64_t(ticks);
+        {const auto status=sample_interval(stamp);if(status!=Status::ok)return status;}
+        stamp.discontinuity=state.pending_discontinuity;publish(stamp);return Status::ok;
+    }
     Status emit_window() noexcept {
         if(state.output_sequence==UINT64_MAX)return Status::overflow;
         std::uint64_t ticks=0;{const auto status=ticks_at_end(ticks);if(status!=Status::ok)return status;}
         {const auto status=copy_window();if(status!=Status::ok)return status;}
-        auto stamp=current.stamp;stamp.sequence=++state.output_sequence;if(!stamp.source_sequence)stamp.source_sequence=current.stamp.sequence;stamp.timestamp_ticks+=std::int64_t(ticks);
-        {const auto status=sample_interval(stamp);if(status!=Status::ok)return status;}
-        stamp.discontinuity=state.pending_discontinuity;publish(stamp);return Status::ok;
+        return publish_window(ticks);
     }
 public:
     WindowExecution(const PlanNode& prepared,State& context,const DataFrameView& input,TransformDelivery sink) noexcept

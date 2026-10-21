@@ -2,27 +2,34 @@
 #include <barelief/ui_text.h>
 #include <QJsonArray>
 namespace presentation {
+namespace {
+QStringList preferred_plot_modes(const QJsonArray& modes) {
+    QStringList selected;
+    const QStringList supported{"line","points","bars","pie","image2d","surface3d","piano","metrics","signedbar"};
+    for(const auto& mode:modes)if(mode.isString() && supported.contains(mode.toString()) && !selected.contains(mode.toString()))
+        selected.append(mode.toString());
+    return selected;
+}
+QStringList preferred_category_path(const QJsonArray& path) {
+    QStringList selected;
+    for(const auto& part:path)if(part.isString()&&!part.toString().isEmpty())selected.append(part.toString());
+    return selected;
+}
+void apply_plot_specialization(PlotDescriptor& result,const QJsonObject& preferences) {
+    const auto specialization=preferences.value("plot_specialization").toString();
+    if(specialization=="audio")result.audio_scales=true;
+    if(specialization=="generic")result.audio_scales=false;
+}
+}
 PlotDescriptor plot_descriptor_from_preferences(const QJsonObject& preferences,const PlotDescriptor& fallback) {
     auto result=fallback;
-    const auto modes=preferences.value("plot_modes").toArray();
-    if(fallback.modes.size()>1 && !modes.isEmpty()){
-        QStringList selected;
-        const QStringList supported{"line","points","bars","pie","image2d","surface3d","piano","metrics","signedbar"};
-        for(const auto& mode:modes)if(mode.isString() && supported.contains(mode.toString()) && !selected.contains(mode.toString()))
-            selected.append(mode.toString());
+    if(fallback.modes.size()>1) {
+        const auto selected=preferred_plot_modes(preferences.value("plot_modes").toArray());
         if(!selected.isEmpty())result.modes=selected;
     }
-    const auto path=preferences.value("plot_category_path").toArray();
-    if(!path.isEmpty()){
-        QStringList selected;
-        for(const auto& part:path)if(part.isString()&&!part.toString().isEmpty())selected.append(part.toString());
-        if(!selected.isEmpty())result.category_path=selected;
-    }
-    const auto specialization=preferences.value("plot_specialization").toString();
-    if(fallback.modes.size()>1){
-        if(specialization=="audio")result.audio_scales=true;
-        if(specialization=="generic")result.audio_scales=false;
-    }
+    const auto path=preferred_category_path(preferences.value("plot_category_path").toArray());
+    if(!path.isEmpty())result.category_path=path;
+    if(fallback.modes.size()>1)apply_plot_specialization(result,preferences);
     return result;
 }
 QJsonObject plot_descriptor_preferences(const PlotDescriptor& descriptor) {
@@ -35,23 +42,35 @@ QJsonObject plot_descriptor_preferences(const PlotDescriptor& descriptor) {
 PlotCapabilities plot_capabilities(const PlotDescriptor& descriptor) {
     return {descriptor.modes,descriptor.audio_scales};
 }
+namespace {
+QString audio_value_title(const signal_contracts::NumericContract& value) {
+    using namespace signal_contracts;
+    if(value.quantity==Quantity::NoteSalience)return "Note salience (Y)";
+    if(value.unit==NumericUnit::RawAmplitude || value.unit==NumericUnit::NormalizedAmplitude)return "Amplitude (Y)";
+    if(value.unit==NumericUnit::Radians)return "Phase, radians (Y)";
+    if(value.unit==NumericUnit::SquaredAmplitude)return "Power (Y)";
+    if(value.unit==NumericUnit::SquaredAmplitudePerHertz)return "PSD (Y)";
+    if(value.unit==NumericUnit::Decibels)return "Level, dB (Y)";
+    return {};
+}
+void apply_audio_axis_titles(const signal_contracts::NumericContract& value,PlotPresentation& result) {
+    using namespace signal_contracts;
+    const auto axis=value.shape.rank==Rank::Matrix?1:0;
+    if(value.coordinates[axis].unit==NumericUnit::Hertz){result.vector_x_title="Frequency, Hz (X)";result.column_title="Frequency, Hz (Z)";}
+    if(value.quantity==Quantity::NoteSalience)result.column_title="Note salience, MIDI (Z)";
+    if(value.coordinates[0].unit==NumericUnit::Seconds)result.row_title="Time, seconds (X)";
+    if(value.semantic==Semantic::History){result.row_title="Time delay, seconds (X)";result.row_index_title="Temporal frame (X)";}
+}
+}
 PlotPresentation audio_plot_presentation(const signal_contracts::NumericContract& value) {
     using namespace signal_contracts;PlotPresentation result;
     result.piano_frequency_coordinates=value.coordinates[0].unit==NumericUnit::Hertz;
     result.value_scale.source_decibels=value.unit==NumericUnit::Decibels;
     const bool power=value.unit==NumericUnit::SquaredAmplitude || value.unit==NumericUnit::SquaredAmplitudePerHertz;
     result.value_scale.factor=power?10:20;
-    if(value.unit==NumericUnit::RawAmplitude || value.unit==NumericUnit::NormalizedAmplitude)result.value_title="Amplitude (Y)";
-    if(value.unit==NumericUnit::Radians)result.value_title="Phase, radians (Y)";
-    if(value.unit==NumericUnit::SquaredAmplitude)result.value_title="Power (Y)";
-    if(value.unit==NumericUnit::SquaredAmplitudePerHertz)result.value_title="PSD (Y)";
-    if(value.unit==NumericUnit::Decibels)result.value_title="Level, dB (Y)";
-    if(value.quantity==Quantity::NoteSalience)result.value_title="Note salience (Y)";
-    const auto axis=value.shape.rank==Rank::Matrix?1:0;
-    if(value.coordinates[axis].unit==NumericUnit::Hertz){result.vector_x_title="Frequency, Hz (X)";result.column_title="Frequency, Hz (Z)";}
-    if(value.quantity==Quantity::NoteSalience)result.column_title="Note salience, MIDI (Z)";
-    if(value.coordinates[0].unit==NumericUnit::Seconds)result.row_title="Time, seconds (X)";
-    if(value.semantic==Semantic::History){result.row_title="Time delay, seconds (X)";result.row_index_title="Temporal frame (X)";}
+    const auto title=audio_value_title(value);
+    if(!title.isEmpty())result.value_title=title;
+    apply_audio_axis_titles(value,result);
     return result;
 }
 QStringList plot_category_path(const PlotDescriptor& descriptor) {return descriptor.category_path;}

@@ -14,13 +14,18 @@ bool number(const ConfiguredProcessingNode& node,std::string_view key,std::uint6
     if(!std::isfinite(value) || value<0 || value>UINT32_MAX || std::floor(value)!=value)return false;
     out=static_cast<std::uint64_t>(value);return true;
 }
+bool scale_frequency_ratio(std::uint64_t& numerator,int exponent,std::uint64_t& denominator) {
+    denominator=1;
+    if(exponent<0){if(exponent<=-64)return false;denominator<<=-exponent;}
+    else {if(exponent>=63 || numerator>(std::uint64_t(INT64_MAX)>>exponent))return false;numerator<<=exponent;}
+    return true;
+}
 bool frequency_step_ratio(double step,Ratio& out) {
     int exponent=0;const auto fraction=std::frexp(step,&exponent);
     std::uint64_t numerator=std::uint64_t(std::ldexp(fraction,53));exponent-=53;
     while(exponent<0 && !(numerator&1)){numerator>>=1;++exponent;}
     std::uint64_t denominator=1;
-    if(exponent<0){if(exponent<=-64)return false;denominator<<=-exponent;}
-    else {if(exponent>=63 || numerator>(std::uint64_t(INT64_MAX)>>exponent))return false;numerator<<=exponent;}
+    if(!scale_frequency_ratio(numerator,exponent,denominator))return false;
     if(numerator>std::uint64_t(INT64_MAX))return false;
     out={std::int64_t(numerator),denominator};return true;
 }
@@ -41,13 +46,19 @@ bool declared_frequency_axis_matches(const AxisCoordinates& axis,double step,std
     return std::abs(actual_step-step)<=tolerance &&
         std::abs(actual_origin-double(first)*step)<=tolerance*(double(first)+1);
 }
-Status spectrum_peak_output_contracts(const NumericContract& input,std::array<OwnedProcessingContract,2>& output) noexcept {
-    if(input.dtype!=DType::Float32 || input.shape.rank!=Rank::Vector || input.channel_order.size()!=1 ||
-       input.representation.encoding!=StorageEncoding::Native || input.representation.normalization!=Normalization::None)return Status::incompatible_contract;
+namespace {
+NumericContract peak_scalar_contract(const NumericContract& input) {
     auto scalar=input;
     scalar.shape={};scalar.coordinates={};scalar.semantic=Semantic::Scalar;
     scalar.quantity=Quantity::Unspecified;scalar.unit=NumericUnit::Hertz;
     scalar.representation={};scalar.representation.alignment=alignof(float);
+    return scalar;
+}
+}
+Status spectrum_peak_output_contracts(const NumericContract& input,std::array<OwnedProcessingContract,2>& output) noexcept {
+    if(input.dtype!=DType::Float32 || input.shape.rank!=Rank::Vector || input.channel_order.size()!=1 ||
+       input.representation.encoding!=StorageEncoding::Native || input.representation.normalization!=Normalization::None)return Status::incompatible_contract;
+    auto scalar=peak_scalar_contract(input);
     std::array<OwnedProcessingContract,2> candidate;
     const FrameLimits limits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX};
     auto status=own_processing_contract(scalar,limits,SIZE_MAX,candidate[0]);
@@ -79,8 +90,9 @@ Status spectrum_amplitude_output_contract(const ConfiguredProcessingNode& node,c
     auto output=input;output.semantic=Semantic::SpectrumMagnitude;output.quantity=Quantity::SpectrumPeakAmplitude;
     const FrameLimits frame{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX};return own_processing_contract(output,frame,SIZE_MAX,out);
 }
-Status amplitude_phase_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,std::array<OwnedProcessingContract,2>& output) noexcept {
-    std::array<OwnedProcessingContract,2> polar;auto status=complex_polar_output_contracts(input,polar);if(status!=Status::ok)return status;
+namespace {
+Status amplitude_phase_parameters(const ConfiguredProcessingNode& node,const NumericContract& input,
+    std::uint64_t& size,bool& normalize) {
     const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::ComplexPolar,node.inputs,node.outputs,&node.parameters,node.enabled};
     ProcessingParameterView half,normalized;
     if(resolve_processing_parameter(resolved,"positive_half",half)!=Status::ok || !std::holds_alternative<bool>(half) ||
@@ -88,25 +100,58 @@ Status amplitude_phase_output_contracts(const ConfiguredProcessingNode& node,con
     const auto extent=input.shape.extents[0];
     if(!extent.maximum || extent.minimum!=extent.maximum || extent.maximum>UINT32_MAX/2)return Status::incompatible_contract;
     // Both explicit layouts exclude DC: half keeps k=1..N/2, full k=1..N-1.
-    const std::uint64_t size=std::get<bool>(half)?2*extent.maximum:extent.maximum+1;
-    const bool normalize=std::get<bool>(normalized);
-    auto result=std::get<NumericContract>(polar[0].view());const auto representation=text(node,"representation");
-    result.quantity=!normalize?(representation=="power" || representation=="psd"?Quantity::SpectrumPower:Quantity::SpectrumMagnitude):
-        representation=="magnitude"?Quantity::SpectrumMagnitude:representation=="power"?Quantity::SpectrumPower:representation=="psd"?Quantity::SpectrumPsd:Quantity::SpectrumPeakAmplitude;
-    if(representation!="magnitude" && representation!="peak_amplitude" && representation!="power" && representation!="psd")return Status::invalid_argument;
-    std::uint64_t fs=0;if(!number(node,"sample_rate",fs) || !fs)return Status::invalid_argument;
-    result.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(fs),size},{std::int64_t(fs),size}};
+    size=std::get<bool>(half)?2*extent.maximum:extent.maximum+1;
+    normalize=std::get<bool>(normalized);
+    return Status::ok;
+}
+Quantity amplitude_quantity(std::string_view representation,bool normalize) {
+    if(!normalize)return representation=="power" || representation=="psd"?Quantity::SpectrumPower:Quantity::SpectrumMagnitude;
+    if(representation=="magnitude")return Quantity::SpectrumMagnitude;
+    if(representation=="power")return Quantity::SpectrumPower;
+    return representation=="psd"?Quantity::SpectrumPsd:Quantity::SpectrumPeakAmplitude;
+}
+}
+namespace {
+Status own_amplitude_phase(NumericContract result,std::array<OwnedProcessingContract,2>& polar,
+    std::string_view representation,bool normalize) {
     auto phase=std::get<NumericContract>(polar[1].view());
     phase.coordinates=result.coordinates;
     if(own_processing_contract(phase,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,polar[1])!=Status::ok)return Status::invalid_argument;
     result.unit=representation=="power" || (!normalize && representation=="psd")?NumericUnit::SquaredAmplitude:representation=="psd"?NumericUnit::SquaredAmplitudePerHertz:NumericUnit::RawAmplitude;
     if(own_processing_contract(result,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,polar[0])!=Status::ok)return Status::invalid_argument;
+    return Status::ok;
+}
+}
+namespace {
+Status configure_amplitude_phase(const ConfiguredProcessingNode& node,std::uint64_t size,bool normalize,std::array<OwnedProcessingContract,2>& polar) {
+    auto result=std::get<NumericContract>(polar[0].view());const auto representation=text(node,"representation");
+    result.quantity=amplitude_quantity(representation,normalize);
+    if(representation!="magnitude" && representation!="peak_amplitude" && representation!="power" && representation!="psd")return Status::invalid_argument;
+    std::uint64_t fs=0;if(!number(node,"sample_rate",fs) || !fs)return Status::invalid_argument;
+    result.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(fs),size},{std::int64_t(fs),size}};
+    if(own_amplitude_phase(result,polar,representation,normalize)!=Status::ok)return Status::invalid_argument;
+    return Status::ok;
+}
+}
+Status amplitude_phase_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,std::array<OwnedProcessingContract,2>& output) noexcept {
+    std::array<OwnedProcessingContract,2> polar;auto status=complex_polar_output_contracts(input,polar);if(status!=Status::ok)return status;
+    std::uint64_t size=0;bool normalize=false;
+    status=amplitude_phase_parameters(node,input,size,normalize);if(status!=Status::ok)return status;
+    status=configure_amplitude_phase(node,size,normalize,polar);if(status!=Status::ok)return status;
     output=std::move(polar);return Status::ok;
 }
 Status frequency_step_output_contract(const NumericContract& input,OwnedProcessingContract& out) noexcept {
     if(input.dtype!=DType::UInt32 || input.shape.rank!=Rank::Scalar || input.channel_order.size()!=1 || input.representation.encoding!=StorageEncoding::Native || input.representation.normalization!=Normalization::None)return Status::incompatible_contract;
     auto output=input;output.dtype=DType::Float64;output.semantic=Semantic::Scalar;output.quantity=Quantity::Unspecified;output.unit=NumericUnit::Hertz;output.coordinates={};output.representation={};output.representation.alignment=alignof(double);
     return own_processing_contract(output,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,out);
+}
+namespace {
+Status own_frequency_grid(const NumericContract& input,double step,std::uint64_t first,OwnedProcessingContract& out) {
+    Ratio ratio;
+    if(!frequency_step_ratio(step,ratio) || (first && std::uint64_t(ratio.numerator)>std::uint64_t(INT64_MAX)/first))return Status::overflow;
+    auto output=input;output.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(first*std::uint64_t(ratio.numerator)),ratio.denominator},ratio};
+    return own_processing_contract(output,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,out);
+}
 }
 Status explicit_frequency_grid_contract(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& out) noexcept {
     const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,node.inputs,node.outputs,&node.parameters,node.enabled};
@@ -115,10 +160,7 @@ Status explicit_frequency_grid_contract(const ConfiguredProcessingNode& node,con
     const double step=std::visit([](auto v){return double(v);},std::get<NumericLiteral>(parameter));
     if(!std::isfinite(step) || step<=0 || step>4294967295.)return Status::invalid_argument;
     if(!declared_frequency_axis_matches(input.coordinates[0],step,first))return Status::incompatible_contract;
-    Ratio ratio;
-    if(!frequency_step_ratio(step,ratio) || (first && std::uint64_t(ratio.numerator)>std::uint64_t(INT64_MAX)/first))return Status::overflow;
-    auto output=input;output.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(first*std::uint64_t(ratio.numerator)),ratio.denominator},ratio};
-    return own_processing_contract(output,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,out);
+    return own_frequency_grid(input,step,first,out);
 }
 
 }

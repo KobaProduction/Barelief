@@ -67,7 +67,7 @@ struct Fixture {
         std::uint64_t value=0;std::memcpy(&value,destination.data()+offset,bytes);return value;
     }
 };
-void conversion_edges() {
+void conversion_inventory() {
     using namespace signal_contracts;using namespace dsp_kernels;
     require(declared_ieee64_environment_supported()==numeric_detail::declared_ieee64_environment_available,
             "public native arithmetic query matches actual compiled library capability");
@@ -86,6 +86,9 @@ void conversion_edges() {
         const auto expected=to.ieee?to.type==DType::Float32?0x3f800000:0x3ff0000000000000ULL:1;
         require(f.output_bits(to.bytes)==expected,"all100 dtype pairs exact one independent bit oracle");
     }
+}
+void conversion_signed_boundaries() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture f(DType::Float64,DType::UInt64);f.source_bits(0x43f0000000000000ULL);
     require(f.prepare()==NumericStatus::Ok && f.run().status==NumericStatus::Overflow,"Float64 2^64 rejects UInt64 bound before cast");
     require(f.output_bits()==0xa5a5a5a5a5a5a5a5ULL,"overflow atomic output sentinel");
@@ -94,6 +97,9 @@ void conversion_edges() {
     Fixture s(DType::Float64,DType::Int64);s.source_bits(0xc3e0000000000000ULL);
     require(s.prepare()==NumericStatus::Ok && s.run().status==NumericStatus::Ok && s.output_bits()==0x8000000000000000ULL,"Int64min exact negative boundary");
     s.source_bits(0x43e0000000000000ULL);require(s.run().status==NumericStatus::Overflow,"positive2^63 rejects Int64");
+}
+void conversion_rounding_ties() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture ties(DType::Float64,DType::Int32);ties.source_bits(0x4004000000000000ULL); //2.5
     require(ties.prepare()==NumericStatus::Ok && ties.run().status==NumericStatus::PrecisionLoss,"rounding alone never permits inexact");
     ties.policy.precision_loss=PrecisionLoss::AllowDeclared;require(ties.prepare()==NumericStatus::Ok,"explicit loss policy prepare");
@@ -104,29 +110,47 @@ void conversion_edges() {
     std::fesetround(FE_TONEAREST);
     ties.source_bits(0x400c000000000000ULL);require(ties.run().status==NumericStatus::Ok && ties.output_bits(4)==4,"odd3.5 tiesup4");
     ties.source_bits(0xc004000000000000ULL);require(ties.run().status==NumericStatus::Ok && ties.output_bits(4)==0xfffffffeULL,"negative2.5 ties-even-2");
+}
+void conversion_subnormals() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture narrow(DType::Float64,DType::Float32);narrow.source_bits(0x36a0000000000000ULL);
     require(narrow.prepare()==NumericStatus::Ok && narrow.run().status==NumericStatus::Ok && narrow.output_bits(4)==1,"Float64 2^-149 exact Float32 minsubnormal");
     narrow.source_bits(0x3690000000000000ULL);require(narrow.run().status==NumericStatus::PrecisionLoss,"halfsubnormal rejected");
     narrow.policy.precision_loss=PrecisionLoss::AllowDeclared;require(narrow.prepare()==NumericStatus::Ok,"subnormal allow prepare");
     const auto underflow=narrow.run();require(underflow.status==NumericStatus::Ok && narrow.output_bits(4)==0 && (underflow.loss_flags&std::uint32_t(LossFlag::Underflow)),"underflow flagged atomically");
+}
+void conversion_nonfinite() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture special(DType::Float64,DType::Float64);special.source_bits(0x7ff0000000000001ULL);
     require(special.prepare()==NumericStatus::Ok && special.run().status==NumericStatus::NonFiniteInput,"signaling NaN rejected by bit classification");
     special.policy.nonfinite=NonFinite::ReplaceFinite;special.policy.precision_loss=PrecisionLoss::AllowDeclared;
     special.policy.nan_replacement=std::uint64_t{9007199254740993ULL};
     require(special.prepare()==NumericStatus::Ok && special.run().status==NumericStatus::Ok && special.output_bits()==0x4340000000000000ULL,"exact tagged64 NaN replacement uses explicit rounding");
+}
+void conversion_integer_affine() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture affine(DType::UInt64,DType::UInt64);affine.policy.scaling.mode=ScaleMode::IntegerAffine;
     affine.policy.scaling.gain.numerator=std::uint64_t{1};affine.policy.scaling.offset.numerator=std::int64_t{-1};
     affine.source_bits(UINT64_MAX);require(affine.prepare()==NumericStatus::Ok && affine.run().status==NumericStatus::Ok && affine.output_bits()==UINT64_MAX-1,"affine exact UInt64 max-1 no double trap");
+}
+void conversion_late_failure() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture late(DType::UInt64,DType::UInt8);late.input.semantic=Semantic::Numeric;late.input.shape.rank=Rank::Vector;
     late.input.shape.axes={Axis::Declared,Axis::None};late.input.shape.extents[0]={3,3};late.output=late.input;late.output.dtype=DType::UInt8;
     late.source_bits(1);late.source_bits(2,8);late.source_bits(256,16);
     const auto before=late.destination;
     require(late.prepare()==NumericStatus::Ok,"vector bounded staging prepare");
     const auto failed=late.run({3,1});require(failed.status==NumericStatus::Overflow && failed.error_plane==0 && failed.error_element==2 && late.destination==before,"late element failure never partially commits");
+}
+void conversion_owned_replay() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture copied(DType::UInt64,DType::UInt64);copied.input.clock.domain="owned";copied.output.clock.domain="owned";copied.source_bits(UINT64_MAX);
     require(copied.prepare()==NumericStatus::Ok,"own snapshot prepares");
     auto moved=copied.plan;copied.plan={};copied.plan=moved;
     require(copied.run().status==NumericStatus::Ok && copied.output_bits()==UINT64_MAX,"prepared copies rebase owned metadata");
+}
+void conversion_native_affine_environment() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture declared(DType::Float64,DType::Float64);declared.source_bits(0x3ff0000000000001ULL);
     declared.policy.precision_loss=PrecisionLoss::AllowDeclared;declared.policy.scaling.mode=ScaleMode::Binary64Affine;
     declared.policy.scaling.gain.numerator=std::bit_cast<double>(UINT64_C(0x3feffffffffffffe));
@@ -139,11 +163,9 @@ void conversion_edges() {
         require(std::fegetround()==mode && std::fetestexcept(FE_INVALID),"binary64 affine restores ambient rounding and flags");
     }
     std::fesetround(FE_TONEAREST);std::feclearexcept(FE_ALL_EXCEPT);
-    Fixture inactive(DType::UInt64,DType::UInt64);inactive.source_bits(UINT64_MAX);
-    inactive.policy.scaling.gain.numerator=std::bit_cast<double>(UINT64_C(0x7ff80000000000ab));
-    inactive.policy.scaling.gain.exponent2=32767;inactive.policy.nan_replacement=std::bit_cast<double>(UINT64_C(0x7ff0000000000001));
-    require(inactive.prepare()==NumericStatus::Ok && inactive.run().status==NumericStatus::Ok && inactive.output_bits()==UINT64_MAX,"inactive exact policy fields never activate semantics");
-    require(std::bit_cast<std::uint64_t>(std::get<double>(inactive.plan.policy.scaling.gain.numerator))==0x7ff80000000000abULL && inactive.plan.policy.scaling.gain.exponent2==32767,"inactive literal payload exactly preserved in prepared replay");
+}
+void conversion_tiny_affine_environment() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture native_tiny(DType::Float64,DType::Float64);native_tiny.source_bits(1);
     native_tiny.policy.precision_loss=PrecisionLoss::AllowDeclared;native_tiny.policy.scaling.mode=ScaleMode::Binary64Affine;
     native_tiny.policy.scaling.gain.numerator=0.5;native_tiny.policy.scaling.offset.numerator=0.0;
@@ -171,6 +193,9 @@ void conversion_edges() {
     require(native_tiny.prepare()==NumericStatus::Ok,"software tiny affine offset prepare");
     require(native_tiny.run().loss_flags==9 && native_tiny.output_bits()==0x3ff0000000000000ULL,"lost tiny offset flags retained despite normal final result");
     std::fesetround(FE_TONEAREST);std::feclearexcept(FE_ALL_EXCEPT);
+}
+void conversion_staging_aliases(Fixture& inactive) {
+    using namespace signal_contracts;using namespace dsp_kernels;
     watch_allocations=true;
     for(unsigned i=0;i<32;++i)require(inactive.run().status==NumericStatus::Ok,"prepared converter steady-state run");
     watch_allocations=false;require(allocations==0,"no C++ heap allocation after prepare");
@@ -180,6 +205,9 @@ void conversion_edges() {
     const auto alias_before=inactive.source;
     require(convert(inactive.plan,alias_in,alias_out,inactive.source).status==NumericStatus::InvalidLayout && inactive.source==alias_before,"scratch alias rejected before touching source/destination");
     require(convert(inactive.plan,alias_in,alias_out,std::span(inactive.scratch).first(7)).status==NumericStatus::BufferTooSmall && inactive.source==alias_before,"insufficient scratch refused atomically");
+}
+void conversion_clamp_bounds() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture clamped(DType::Float64,DType::UInt64);clamped.source_bits(0x7ff0000000000000ULL);
     clamped.policy.precision_loss=PrecisionLoss::AllowDeclared;clamped.policy.nonfinite=NonFinite::ClampFinite;
     clamped.policy.negative_inf_replacement=std::uint64_t{0};clamped.policy.positive_inf_replacement=UINT64_MAX;
@@ -189,6 +217,9 @@ void conversion_edges() {
     Fixture bad_replacement(DType::Float64,DType::UInt8);bad_replacement.policy.precision_loss=PrecisionLoss::AllowDeclared;
     bad_replacement.policy.nonfinite=NonFinite::ReplaceFinite;bad_replacement.policy.nan_replacement=std::uint64_t{256};
     require(bad_replacement.prepare()==NumericStatus::InvalidPolicy,"active replacement outside destination bounds rejected before publication");
+}
+void conversion_integer_endpoints() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     struct Endpoint {DType type;std::uint64_t low,high;std::size_t bytes;};
     for(const auto endpoint:std::array<Endpoint,8>{{
         {DType::Int8,0x80,0x7f,1},{DType::UInt8,0,0xff,1},
@@ -201,11 +232,17 @@ void conversion_edges() {
             exact.source_bits(value);require(exact.run().status==NumericStatus::Ok && exact.output_bits(endpoint.bytes)==value,"integer minmax never passed through float");
         }
     }
+}
+void conversion_exact_dyadic() {
+    using namespace signal_contracts;using namespace dsp_kernels;
     Fixture dyadic(DType::UInt64,DType::Float64);dyadic.source_bits(9007199254740993ULL);
     dyadic.policy.scaling.mode=ScaleMode::DyadicAffine;dyadic.policy.scaling.gain.exponent2=-1;
     dyadic.policy.scaling.offset.numerator=std::int64_t{-1};dyadic.policy.scaling.offset.exponent2=-1;
     require(dyadic.prepare()==NumericStatus::Ok && dyadic.run().status==NumericStatus::Ok && dyadic.output_bits()==0x4330000000000000ULL,"exact dyadic64 cancellation before narrowing");
     dyadic.policy.scaling.gain.exponent2=-64;require(dyadic.prepare()==NumericStatus::UnsupportedCombination,"active dyadic unsupported exponent rejected at prepare");
+}
+void conversion_matrix_scatter(){
+    using namespace signal_contracts;using namespace dsp_kernels;
     const std::array<std::uint32_t,2> matrix_channels{9,3};
     NumericContract matrix;matrix.dtype=DType::UInt16;matrix.semantic=Semantic::Numeric;matrix.channel_order=matrix_channels;
     matrix.shape.rank=Rank::Matrix;matrix.shape.axes={Axis::Declared,Axis::Declared};matrix.shape.extents={ExtentBounds{2,2},ExtentBounds{2,2}};
@@ -227,6 +264,29 @@ void conversion_edges() {
     auto refused=matrix_plan;const auto function_before=refused.function;
     auto too_small_limits=KernelLimits{7,2,64,64,64};
     require(prepare_conversion({matrix,matrix_output,{},too_small_limits,{2,8,64,1024,256,64}},{true,true,true},refused)==NumericStatus::LimitExceeded && refused.function==function_before,"Prepare limit refusal never republishes partial plan");
+}
+void conversion_edges() {
+    using namespace signal_contracts;using namespace dsp_kernels;
+    conversion_inventory();
+    conversion_signed_boundaries();
+    conversion_rounding_ties();
+    conversion_subnormals();
+    conversion_nonfinite();
+    conversion_integer_affine();
+    conversion_late_failure();
+    conversion_owned_replay();
+    conversion_native_affine_environment();
+    Fixture inactive(DType::UInt64,DType::UInt64);inactive.source_bits(UINT64_MAX);
+    inactive.policy.scaling.gain.numerator=std::bit_cast<double>(UINT64_C(0x7ff80000000000ab));
+    inactive.policy.scaling.gain.exponent2=32767;inactive.policy.nan_replacement=std::bit_cast<double>(UINT64_C(0x7ff0000000000001));
+    require(inactive.prepare()==NumericStatus::Ok && inactive.run().status==NumericStatus::Ok && inactive.output_bits()==UINT64_MAX,"inactive exact policy fields never activate semantics");
+    require(std::bit_cast<std::uint64_t>(std::get<double>(inactive.plan.policy.scaling.gain.numerator))==0x7ff80000000000abULL && inactive.plan.policy.scaling.gain.exponent2==32767,"inactive literal payload exactly preserved in prepared replay");
+    conversion_tiny_affine_environment();
+    conversion_staging_aliases(inactive);
+    conversion_clamp_bounds();
+    conversion_integer_endpoints();
+    conversion_exact_dyadic();
+    conversion_matrix_scatter();
 }
 }
 int main() {

@@ -33,26 +33,26 @@ QList<QQuickItem*> items(QQuickItem* root) {
     QList<QQuickItem*> result;
     if (!root) return result;
     result.append(root);
-    for (auto* child:root->childItems()) result.append(items(child));
+    for (const auto children=root->childItems();auto* child:children) result.append(items(child));
     return result;
 }
 QQuickItem* named(QQuickItem* root,const QString& name) {
-    for(auto* item:items(root)) if(item->objectName()==name)return item;
+    for(const auto children=items(root);auto* item:children) if(item->objectName()==name)return item;
     return nullptr;
 }
 QQuickItem* axis(QQuickItem* root,const QString& lowKey) {
-    for(auto* item:items(root)) if(item->property("lowKey").toString()==lowKey)return item;
+    for(const auto children=items(root);auto* item:children) if(item->property("lowKey").toString()==lowKey)return item;
     return nullptr;
 }
 QList<QQuickItem*> fields(QQuickItem* root) {
     QList<QQuickItem*> result;
-    for(auto* item:items(root))
+    for(const auto children=items(root);auto* item:children)
         if(item->metaObject()->indexOfSignal("editingFinished()")>=0 && item->property("validator").isValid())
             result.append(item);
     return result;
 }
 QQuickItem* checkBox(QQuickItem* root,const char* label) {
-    for(auto* item:items(root))
+    for(const auto children=items(root);auto* item:children)
         if(item->property("text").toString()==ui::text(label) && item->property("checked").isValid()
            && item->metaObject()->indexOfSignal("clicked()")>=0)return item;
     return nullptr;
@@ -71,7 +71,7 @@ bool activate(QQuickItem* item,int index) {
 }
 QJsonObject state(GraphPanel& panel,QQuickWidget* controls) {
     QJsonArray controlsState;
-    for(auto* item:items(controls?controls->rootObject():nullptr)) {
+    for(const auto children=items(controls?controls->rootObject():nullptr);auto* item:children) {
         if(item->objectName().isEmpty() && !item->property("lowKey").isValid()
            && !item->property("validator").isValid() && !item->property("checked").isValid())continue;
         QJsonObject entry{{"objectName",item->objectName()},{"class",item->metaObject()->className()},
@@ -88,6 +88,17 @@ QJsonObject state(GraphPanel& panel,QQuickWidget* controls) {
             {"qmlStatus",controls?int(controls->status()):-1},{"qmlControls",controlsState},
             {"theme",ui::Theme::instance().code()},{"language",ui::Language::instance().code()}};
 }
+void open_axis_settings(QQuickWidget* controls) {
+    for (const auto* suffix : {"X", "Y"}) {
+        auto* button = named(controls->rootObject(), QString("axisMenu") + suffix);
+        auto* settings = named(controls->rootObject(), QString("axisSettings") + suffix);
+        if (!button || !settings || settings->isVisible()) continue;
+        if (!button->isVisible() || !QMetaObject::invokeMethod(button, "clicked"))
+            throw std::runtime_error("Axis settings could not be opened through their menu");
+        QCoreApplication::processEvents();
+        if (!settings->isVisible()) throw std::runtime_error("Axis settings remain collapsed");
+    }
+}
 bool prepare(GraphPanel& panel,Recorder& recorder,const QString& id,QQuickWidget*& controls) {
     panel.setAttribute(Qt::WA_ShowWithoutActivating);
     panel.setWindowFlag(Qt::WindowDoesNotAcceptFocus);
@@ -97,6 +108,7 @@ bool prepare(GraphPanel& panel,Recorder& recorder,const QString& id,QQuickWidget
         && controls->status()==QQuickWidget::Ready && controls->rootObject();
     if(!ready)recorder.finding(id+".qml","error","construction","Graph settings QML did not become ready",
                              "Actual graph sidebar must load before transition audit",state(panel,controls));
+    if (ready) open_axis_settings(controls);
     return ready;
 }
 void record(Recorder& recorder,const QString& id,GraphPanel& panel,QQuickWidget* controls,
@@ -108,21 +120,8 @@ void record(Recorder& recorder,const QString& id,GraphPanel& panel,QQuickWidget*
 }
 }
 
-void audit_graphs(Recorder& recorder) {
-    if(QGuiApplication::platformName()!=QStringLiteral("offscreen")) {
-        recorder.coverage("graphs","not_covered","Graph probe requires the isolated offscreen platform.");
-        return;
-    }
-    const QString originalTheme=ui::Theme::instance().code(),originalLanguage=ui::Language::instance().code();
-    ui::Language::instance().set("en");
-    GraphPanel vector("auditVector",new LineChartView,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
-    GraphPanel matrix("auditMatrix",new LineChartView,{{"kind","SpectrogramView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},false}));
-    GraphPanel metrics("auditMetrics",new LineChartView,{{"kind","ScalarView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"metrics","signedbar"},{},false}));
-    int modesVisited=0;
-    for(auto* panel:{&vector,&matrix,&metrics}) {
-        QQuickWidget* controls=nullptr;
-        if(!prepare(*panel,recorder,panel->objectName(),controls))continue;
-        for(const auto& mode:panel->modes()) {
+void audit_one_panel_mode(GraphPanel*& panel,Recorder& recorder,auto& modesVisited,auto& mode,auto& controls) {
+
             const QString id="graphs.mode."+mode;
             bool routed=false;
             const auto before=panel->preferences();
@@ -143,17 +142,16 @@ void audit_graphs(Recorder& recorder) {
                 return failures;
             },panel->modes().size()==1?"public_api":"qt_local_signal");
         }
+
+void audit_panel_modes(GraphPanel*& panel,Recorder& recorder,auto& modesVisited) {
+
+        QQuickWidget* controls=nullptr;
+        if(!prepare(*panel,recorder,panel->objectName(),controls))return;
+        for(const auto modes=panel->modes();const auto& mode:modes) {audit_one_panel_mode(panel,recorder,modesVisited,mode,controls);}
     }
-    // A single scalar mode is inspected, not falsely presented as an enabled mode-selection action.
-    recorder.evidence("graphs.mode.metrics.selection",{{"selectorAction","not_applicable_single_mode"}});
-    vector.set_display_mode("line");
-    auto* controls=vector.findChild<QQuickWidget*>("numericGraphSettings");
-    if(controls && controls->rootObject()) {
-        for(const QString lowKey:{"minimum_x","minimum"}) {
-            const QString autoKey=lowKey=="minimum_x"?"auto_range_x":"auto_range";
-            const QString highKey=lowKey=="minimum_x"?"maximum_x":"maximum";
-            int toggle=0;
-            for(bool automatic:{false,true,false}) {
+
+void audit_axis_toggle(bool automatic,auto& toggle,auto& autoKey,auto& lowKey,GraphPanel& vector,QQuickWidget*& controls,Recorder& recorder) {
+
                 bool routed=false;
                 record(recorder,"graphs.axes."+autoKey+QString(".toggle%1.").arg(++toggle)+(automatic?"automatic":"manual"),vector,controls,
                        "Toggle axis range and inspect dependent editors",[&]{
@@ -171,6 +169,13 @@ void audit_graphs(Recorder& recorder) {
                     return failures;
                 },"qt_local_signal");
             }
+
+void audit_axis_bounds(auto& lowKey,Recorder& recorder,GraphPanel& vector,QQuickWidget*& controls) {
+
+            const QString autoKey=lowKey=="minimum_x"?"auto_range_x":"auto_range";
+            const QString highKey=lowKey=="minimum_x"?"maximum_x":"maximum";
+            int toggle=0;
+            for(bool automatic:{false,true,false}) {audit_axis_toggle(automatic,toggle,autoKey,lowKey,vector,controls,recorder);}
             bool routed=false;
             record(recorder,"graphs.axes."+lowKey+".valid",vector,controls,"Commit valid manual lower bound through QML field",[&]{
                 const auto editors=fields(axis(controls->rootObject(),lowKey));
@@ -208,6 +213,43 @@ void audit_graphs(Recorder& recorder) {
                 vector.changePreference(lowKey,QString("-3"));
             },[&]{return vector.preferences()==valid?QStringList{}:QStringList{"Invalid bound changed persisted preferences"};});
         }
+
+void restored_graph_axis(auto& lowKey,auto& saved,QQuickWidget*& controls,auto& failures) {
+
+                const QString autoKey=lowKey=="minimum_x"?"auto_range_x":"auto_range";
+                const QString highKey=lowKey=="minimum_x"?"maximum_x":"maximum";
+                const bool automatic=saved.value(autoKey).toBool();
+                auto* editor=axis(controls->rootObject(),lowKey);
+                auto* automaticBox=checkBox(editor,"Auto");
+                if(!automaticBox || !settle([&]{return automaticBox->property("checked").toBool()==automatic;}))
+                    failures<<autoKey+": restored checkbox disagrees with saved preference";
+                const auto bounds=fields(editor);
+                if(bounds.size()<2) {failures<<lowKey+": restored bound editors missing";return;}
+                for(int i=0;i<2;++i) {
+                    const QString key=i==0?lowKey:highKey;
+                    if(!settle([&]{return bounds[i]->property("text").toString()==QString::number(saved.value(key).toDouble());}))
+                        failures<<key+": restored field text disagrees with saved preference";
+                    if(bounds[i]->isEnabled()==automatic)failures<<key+": restored field enablement disagrees with Auto";
+                }
+            }
+
+QStringList restored_graph_settings(GraphPanel& vector,QQuickWidget*& controls,auto& saved,auto& divergent,auto& writes) {
+
+            QStringList failures;
+            if(!divergent)failures<<"Restore setup did not establish divergent mode/settings";
+            if(vector.preferences()!=saved || writes!=0)failures<<"Restore changed saved settings or emitted a persistence write";
+            const QString expectedMode=saved.value("display_mode").toString();
+            if(vector.display_mode()!=expectedMode)failures<<"Restore did not reinstate display mode";
+            auto* selector=named(controls->rootObject(),"numericDisplayMode");
+            if(!selector || !settle([&]{return selector->property("currentIndex").toInt()==vector.modes().indexOf(expectedMode);}))
+                failures<<"Restored mode not reflected by QML selector";
+            for(const QString& lowKey:{"minimum_x","minimum"}) {restored_graph_axis(lowKey,saved,controls,failures);}
+            return failures;
+        }
+
+void audit_vector_controls(Recorder& recorder,GraphPanel& vector,QQuickWidget*& controls) {
+
+        for(const QString& lowKey:{"minimum_x","minimum"}) {audit_axis_bounds(lowKey,recorder,vector,controls);}
         const auto saved=vector.preferences();
         int writes=0;
         const auto connection=QObject::connect(&vector,&GraphPanel::presentation_changed,&vector,[&]{++writes;});
@@ -224,34 +266,7 @@ void audit_graphs(Recorder& recorder) {
         writes=0;
         record(recorder,"graphs.restore",vector,controls,"Restore manual axes and mode without document writes",[&]{
             vector.restore_presentation(QJsonObject::fromVariantMap(saved));
-        },[&]{
-            QStringList failures;
-            if(!divergent)failures<<"Restore setup did not establish divergent mode/settings";
-            if(vector.preferences()!=saved || writes!=0)failures<<"Restore changed saved settings or emitted a persistence write";
-            const QString expectedMode=saved.value("display_mode").toString();
-            if(vector.display_mode()!=expectedMode)failures<<"Restore did not reinstate display mode";
-            auto* selector=named(controls->rootObject(),"numericDisplayMode");
-            if(!selector || !settle([&]{return selector->property("currentIndex").toInt()==vector.modes().indexOf(expectedMode);}))
-                failures<<"Restored mode not reflected by QML selector";
-            for(const QString lowKey:{"minimum_x","minimum"}) {
-                const QString autoKey=lowKey=="minimum_x"?"auto_range_x":"auto_range";
-                const QString highKey=lowKey=="minimum_x"?"maximum_x":"maximum";
-                const bool automatic=saved.value(autoKey).toBool();
-                auto* editor=axis(controls->rootObject(),lowKey);
-                auto* automaticBox=checkBox(editor,"Auto");
-                if(!automaticBox || !settle([&]{return automaticBox->property("checked").toBool()==automatic;}))
-                    failures<<autoKey+": restored checkbox disagrees with saved preference";
-                const auto bounds=fields(editor);
-                if(bounds.size()<2) {failures<<lowKey+": restored bound editors missing";continue;}
-                for(int i=0;i<2;++i) {
-                    const QString key=i==0?lowKey:highKey;
-                    if(!settle([&]{return bounds[i]->property("text").toString()==QString::number(saved.value(key).toDouble());}))
-                        failures<<key+": restored field text disagrees with saved preference";
-                    if(bounds[i]->isEnabled()==automatic)failures<<key+": restored field enablement disagrees with Auto";
-                }
-            }
-            return failures;
-        });
+        },[&]{return restored_graph_settings(vector,controls,saved,divergent,writes);});
         QObject::disconnect(connection);
         vector.set_display_mode("pie");
         auto* pie=vector.pie_view();
@@ -264,11 +279,32 @@ void audit_graphs(Recorder& recorder) {
         });
     }
 
-    {
-        GraphPanel automatic("auditAutomatic",new LineChartView,
-                             {{"kind","NumericView"},{"auto_range",false},{"minimum",-.5},{"maximum",.5}},nullptr);
-        QQuickWidget* automaticControls=nullptr;
-        if(prepare(automatic,recorder,"graphs.auto_display",automaticControls)) {
+void report_automatic_range(GraphPanel& automatic,Recorder& recorder,QQuickWidget*& automaticControls,auto& chart,auto& samples,auto& manual,auto& routed) {
+            const auto range=chart->y_range();
+            const auto editors=fields(axis(automaticControls->rootObject(),"minimum"));
+            const auto extrema=std::minmax_element(samples.begin(),samples.end());
+            QJsonObject rangeEvidence{{"storedManualMinimum",manual.value("minimum").toDouble()},
+                {"storedManualMaximum",manual.value("maximum").toDouble()},
+                {"effectiveChartMinimum",range.first},{"effectiveChartMaximum",range.second},
+                {"sampleMinimum",double(*extrema.first)},{"sampleMaximum",double(*extrema.second)},
+                {"sampleCount",256},{"syntheticToneCount",8},{"automatic",chart->automatic_y_range()},
+                {"qml",state(automatic,automaticControls)}};
+            if(editors.size()>1) {
+                rangeEvidence["disabledMinimumText"]=editors[0]->property("text").toString();
+                rangeEvidence["disabledMaximumText"]=editors[1]->property("text").toString();
+            }
+            recorder.evidence("graphs.auto_display.ranges",rangeEvidence);
+            if(routed && chart->automatic_y_range() && editors.size()>1
+               && (range.first!=manual.value("minimum").toDouble() || range.second!=manual.value("maximum").toDouble()))
+                recorder.finding("graphs.auto_display.clarity","review","usability",
+                                 "Auto scales the chart to measured data while disabled Min/Max fields continue displaying the retained manual bounds",
+                                 "Review whether the sidebar clearly distinguishes saved manual limits from effective automatic limits; retaining manual settings is expected",
+                                 rangeEvidence);
+            recorder.coverage("graphs.auto_display","partial","Compared actual public chart y_range with disabled QML limits and retained manual preferences after 256 samples containing eight synthetic tones; clarity remains a UX review, not a processing defect.");
+        }
+
+void audit_automatic_range(GraphPanel& automatic,Recorder& recorder,QQuickWidget*& automaticControls) {
+
             std::vector<float> samples(256);
             constexpr double pi=3.14159265358979323846;
             // Eight bounded synthetic tones, delivered only to this chart fixture.
@@ -302,52 +338,26 @@ void audit_graphs(Recorder& recorder) {
                 }
                 return failures;
             },"qt_local_signal");
-            const auto range=chart->y_range();
-            const auto editors=fields(axis(automaticControls->rootObject(),"minimum"));
-            const auto extrema=std::minmax_element(samples.begin(),samples.end());
-            QJsonObject rangeEvidence{{"storedManualMinimum",manual.value("minimum").toDouble()},
-                {"storedManualMaximum",manual.value("maximum").toDouble()},
-                {"effectiveChartMinimum",range.first},{"effectiveChartMaximum",range.second},
-                {"sampleMinimum",double(*extrema.first)},{"sampleMaximum",double(*extrema.second)},
-                {"sampleCount",256},{"syntheticToneCount",8},{"automatic",chart->automatic_y_range()},
-                {"qml",state(automatic,automaticControls)}};
-            if(editors.size()>1) {
-                rangeEvidence["disabledMinimumText"]=editors[0]->property("text").toString();
-                rangeEvidence["disabledMaximumText"]=editors[1]->property("text").toString();
-            }
-            recorder.evidence("graphs.auto_display.ranges",rangeEvidence);
-            if(routed && chart->automatic_y_range() && editors.size()>1
-               && (range.first!=manual.value("minimum").toDouble() || range.second!=manual.value("maximum").toDouble()))
-                recorder.finding("graphs.auto_display.clarity","review","usability",
-                                 "Auto scales the chart to measured data while disabled Min/Max fields continue displaying the retained manual bounds",
-                                 "Review whether the sidebar clearly distinguishes saved manual limits from effective automatic limits; retaining manual settings is expected",
-                                 rangeEvidence);
-            recorder.coverage("graphs.auto_display","partial","Compared actual public chart y_range with disabled QML limits and retained manual preferences after 256 samples containing eight synthetic tones; clarity remains a UX review, not a processing defect.");
-        }
+report_automatic_range(automatic,recorder,automaticControls,chart,samples,manual,routed);
+}
+
+void audit_automatic_display(Recorder& recorder) {
+
+        GraphPanel automatic("auditAutomatic",new LineChartView,
+                             {{"kind","NumericView"},{"auto_range",false},{"minimum",-.5},{"maximum",.5}},nullptr);
+        QQuickWidget* automaticControls=nullptr;
+        if(prepare(automatic,recorder,"graphs.auto_display",automaticControls)) {audit_automatic_range(automatic,recorder,automaticControls);}
     }
-    controls=matrix.findChild<QQuickWidget*>("numericGraphSettings");
-    matrix.set_display_mode("image2d");
-    if(controls && controls->rootObject()) {
-        SpectrogramAxisMetadata metadata;
-        metadata.column_coordinates=true;metadata.columns={100,200};metadata.column_title_key="Frequency, Hz (Z)";
-        metadata.time_coordinates=true;metadata.ages={1,0};metadata.time_title_key="Time delay, seconds (X)";
-        record(recorder,"graphs.axes.coordinates.available",matrix,controls,"Publish physical source coordinate capabilities",[&]{
-            matrix.image_view()->set_axis_metadata(metadata);
-        },[&]{return matrix.physical_frequency() && matrix.physical_time()?QStringList{}:QStringList{"Physical coordinate capabilities unavailable"};});
-        bool routedFrequency=false,routedTime=false;
-        record(recorder,"graphs.axes.positions",matrix,controls,"Choose index axes through QML selectors",[&]{
-            routedFrequency=activate(named(controls->rootObject(),"frequencyAxisMode"),1);
-            routedTime=activate(named(controls->rootObject(),"timeAxisMode"),1);
-        },[&]{return routedFrequency && routedTime && matrix.preferences().value("frequency_axis_mode")=="positions"
-                && matrix.preferences().value("time_axis_mode")=="positions"?QStringList{}:QStringList{"Index-axis selection did not route"};},"qt_local_signal");
-        const auto saved=matrix.preferences();
+
+void audit_missing_matrix_coordinates(Recorder& recorder,GraphPanel& matrix,QQuickWidget*& controls) {
+const auto saved=matrix.preferences();
         record(recorder,"graphs.axes.coordinates.unavailable",matrix,controls,"Remove source coordinates and retain explicit index preferences",[&]{
             matrix.image_view()->set_axis_metadata({});
         },[&]{
             QStringList failures;
             if(matrix.physical_frequency() || matrix.physical_time())failures<<"Missing coordinates still advertised as physical";
             if(matrix.preferences()!=saved)failures<<"Capability loss rewrote explicit preferences";
-            for(const QString name:{"frequencyAxisMode","timeAxisMode"}) {
+            for(const QString& name:{"frequencyAxisMode","timeAxisMode"}) {
                 auto* selector=named(controls->rootObject(),name);
                 auto enabled=selector?selector->property("itemEnabled").value<QJSValue>():QJSValue{};
                 if(!enabled.isCallable() || enabled.call({QJSValue(0)}).toBool())failures<<name+": unavailable physical option enabled";
@@ -365,80 +375,24 @@ void audit_graphs(Recorder& recorder) {
         },[&]{return matrix.active_spectrogram() && matrix.active_spectrogram()->paused()?QStringList{}:QStringList{"Pause lost across mode/restore"};});
     }
 
-    auto* values=metrics.metrics_view();
-    auto* metricControls=metrics.findChild<QQuickWidget*>("numericGraphSettings");
-    if(values && metricControls && metricControls->rootObject()) {
-        record(recorder,"graphs.metrics.exact",metrics,metricControls,"Present exact signed/unsigned scalar text without numeric rounding",[&]{
-            values->set_inputs({{0,"Literal <b>name</b>"},{1,"Unsigned maximum"}});
-            values->set_value(0,"-9007199254740993");values->set_value(1,"18446744073709551615");
-        },[&]{
-            QStringList failures;
-            for(const auto pair:{qMakePair(QString("metricValue_0"),QString("-9007199254740993")),
-                                qMakePair(QString("metricValue_1"),QString("18446744073709551615"))})
-                if(!settle([&]{auto* item=named(values->rootObject(),pair.first);return item && item->property("text").toString()==pair.second;}))
-                    failures<<pair.first+": exact text not displayed";
-            return failures;
-        });
-        recorder.evidence("graphs.metrics.exactValues",{{"signed",values->exact_value(0)},{"unsigned",values->exact_value(1)}});
-    }
-    for(const QString theme:{"light","dark"})for(const QString language:{"ru","en"}) {
-        const auto vectorPrefs=vector.preferences(),matrixPrefs=matrix.preferences(),metricPrefs=metrics.preferences();
-        record(recorder,"graphs.appearance."+theme+"."+language,matrix,controls,"Refresh theme/language while retaining graph settings",[&]{
-            ui::Theme::instance().set(theme);ui::Language::instance().set(language);QCoreApplication::processEvents();
-        },[&]{
-            QStringList failures;
-            if(vector.preferences()!=vectorPrefs || matrix.preferences()!=matrixPrefs || metrics.preferences()!=metricPrefs)
-                failures<<"Appearance refresh changed graph preferences";
-            if(controls && controls->rootObject()) {
-                auto* selector=named(controls->rootObject(),"numericDisplayMode");
-                if(!selector || !settle([&]{return selector->property("displayText").toString()==matrix.modeLabel(matrix.display_mode());}))
-                    failures<<"Mode label did not refresh to current language";
-            }
-            if(values && (values->exact_value(0)!="-9007199254740993" || values->exact_value(1)!="18446744073709551615"))
-                failures<<"Appearance refresh altered exact metric text";
-            return failures;
-        });
-        recorder.evidence("graphs.appearance.vector."+theme+"."+language,state(vector,vector.findChild<QQuickWidget*>("numericGraphSettings")));
-        recorder.evidence("graphs.appearance.metrics."+theme+"."+language,state(metrics,metricControls));
-    }
-    recorder.evidence("graphs.scope",{{"modesWithNoTransitionViolations",modesVisited},{"expectedModes",7},
-        {"dispatch","QML signal dispatch plus presentation public API; no mouse/keyboard, no native hit test"},
-        {"native3dAccepted",false},{"performanceMeasured",false}});
-    recorder.coverage("graphs.mode_and_conditional_settings","partial","All seven actual modes; QML signal routing, axis enablement, source capabilities, pause, restore, RU/EN and Light/Dark state. Native input/hit targets and visual acceptance excluded.");
-    recorder.coverage("graphs.invalid_input_feedback","partial","Boundary rejection is checked. Native typing, validator intermediate states and usability of rejection feedback need separate acceptance.");
-    recorder.coverage("graphs.native_surface_rendering","not_covered","Software/offscreen run establishes QML state only; native GPU rendering and hardware interaction require separate authorized scenario.");
-    if(!originalTheme.isEmpty())ui::Theme::instance().set(originalTheme);
-    ui::Language::instance().set(originalLanguage);
+void audit_matrix_controls(Recorder& recorder,GraphPanel& matrix,QQuickWidget*& controls) {
 
-    // Exercise hit testing, popup lifecycle and actual TextInput validation, not handlers.
-    ui::Language::instance().set("en");
-    GraphPanel input("auditInput",new LineChartView,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
-    QQuickWidget* inputHost=nullptr;
-    if(prepare(input,recorder,"graphs.input",inputHost)) {
-        auto* root=inputHost->rootObject();
-        auto* selector=named(root,"numericDisplayMode");
-        const auto press=[&](QQuickItem* target){
-            if(!target || !target->isVisible() || !target->isEnabled())throw std::runtime_error("Input target unavailable");
-            const auto point=target->mapToScene(QPointF(target->width()/2,target->height()/2)).toPoint();
-            if(!inputHost->rect().contains(point))throw std::runtime_error("Input target outside host viewport");
-            QTest::mouseClick(inputHost,Qt::LeftButton,Qt::NoModifier,point);QCoreApplication::processEvents();
-        };
-        const auto popup=[&](){return selector?selector->property("popup").value<QObject*>():nullptr;};
-        record(recorder,"graphs.input.mode.popup",input,inputHost,"Click display selector and open its popup",[&]{press(selector);},[&]{
-            return popup() && popup()->property("visible").toBool()?QStringList{}:QStringList{"Mouse click did not open mode popup"};
-        },"qt_input_mouse");
-        const QString oldMode=input.display_mode();
-        record(recorder,"graphs.input.mode.escape",input,inputHost,"Escape closes mode popup without choosing another mode",[&]{
-            QTest::keyClick(inputHost,Qt::Key_Escape);
-        },[&]{return popup() && !popup()->property("visible").toBool() && input.display_mode()==oldMode?QStringList{}:QStringList{"Escape did not cancel popup"};},"qt_input_keyboard");
-        const int expectedIndex=(input.modes().indexOf(oldMode)+1)%input.modes().size();bool opened=false;
-        record(recorder,"graphs.input.mode.choose",input,inputHost,"Open selector and choose next mode with keyboard",[&]{
-            press(selector);opened=popup() && popup()->property("visible").toBool();
-            QTest::keyClick(inputHost,Qt::Key_Down);QTest::keyClick(inputHost,Qt::Key_Return);
-        },[&]{return opened && input.display_mode()==input.modes()[expectedIndex]
-            && selector && selector->property("currentIndex").toInt()==expectedIndex
-            && popup() && !popup()->property("visible").toBool()?QStringList{}:QStringList{"Keyboard mode choice did not commit exact next mode and close popup"};},"qt_input_mouse_keyboard");
-        input.set_display_mode("line");QCoreApplication::processEvents();
+        SpectrogramAxisMetadata metadata;
+        metadata.column_coordinates=true;metadata.columns={100,200};metadata.column_title_key="Frequency, Hz (Z)";
+        metadata.time_coordinates=true;metadata.ages={1,0};metadata.time_title_key="Time delay, seconds (X)";
+        record(recorder,"graphs.axes.coordinates.available",matrix,controls,"Publish physical source coordinate capabilities",[&]{
+            matrix.image_view()->set_axis_metadata(metadata);
+        },[&]{return matrix.physical_frequency() && matrix.physical_time()?QStringList{}:QStringList{"Physical coordinate capabilities unavailable"};});
+        bool routedFrequency=false,routedTime=false;
+        record(recorder,"graphs.axes.positions",matrix,controls,"Choose index axes through QML selectors",[&]{
+            routedFrequency=activate(named(controls->rootObject(),"frequencyAxisMode"),1);
+            routedTime=activate(named(controls->rootObject(),"timeAxisMode"),1);
+        },[&]{return routedFrequency && routedTime && matrix.preferences().value("frequency_axis_mode")=="positions"
+                && matrix.preferences().value("time_axis_mode")=="positions"?QStringList{}:QStringList{"Index-axis selection did not route"};},"qt_local_signal");
+        audit_missing_matrix_coordinates(recorder,matrix,controls);
+}
+
+void audit_graph_axis_input(GraphPanel& input,Recorder& recorder,QQuickWidget*& inputHost,auto& root,auto& press) {
         auto* yAxis=axis(root,"minimum");
         auto* autoBox=checkBox(yAxis,"Auto");
         const bool wasAuto=input.preferences().value("auto_range").toBool();
@@ -472,8 +426,132 @@ void audit_graphs(Recorder& recorder) {
                 {"acceptableInput",editors[0]->property("acceptableInput").toBool()},{"storedMinimum",QJsonValue::fromVariant(input.preferences().value("minimum"))}});
         } else recorder.finding("graphs.input.bounds.missing","error","construction","Numeric editors missing","Two actual numeric editors required for typing probe");
     }
+
+void audit_graph_mode_input(GraphPanel& input,Recorder& recorder,QQuickWidget*& inputHost) {
+
+        auto* root=inputHost->rootObject();
+        auto* selector=named(root,"numericDisplayMode");
+        const auto press=[&](QQuickItem* target){
+            if(!target || !target->isVisible() || !target->isEnabled())throw std::runtime_error("Input target unavailable");
+            const auto point=target->mapToScene(QPointF(target->width()/2,target->height()/2)).toPoint();
+            if(!inputHost->rect().contains(point))throw std::runtime_error("Input target outside host viewport");
+            QTest::mouseClick(inputHost,Qt::LeftButton,Qt::NoModifier,point);QCoreApplication::processEvents();
+        };
+        const auto popup=[&](){return selector?selector->property("popup").value<QObject*>():nullptr;};
+        record(recorder,"graphs.input.mode.popup",input,inputHost,"Click display selector and open its popup",[&]{press(selector);},[&]{
+            return popup() && popup()->property("visible").toBool()?QStringList{}:QStringList{"Mouse click did not open mode popup"};
+        },"qt_input_mouse");
+        const QString oldMode=input.display_mode();
+        record(recorder,"graphs.input.mode.escape",input,inputHost,"Escape closes mode popup without choosing another mode",[&]{
+            QTest::keyClick(inputHost,Qt::Key_Escape);
+        },[&]{return popup() && !popup()->property("visible").toBool() && input.display_mode()==oldMode?QStringList{}:QStringList{"Escape did not cancel popup"};},"qt_input_keyboard");
+        const int expectedIndex=(input.modes().indexOf(oldMode)+1)%input.modes().size();bool opened=false;
+        record(recorder,"graphs.input.mode.choose",input,inputHost,"Open selector and choose next mode with keyboard",[&]{
+            press(selector);opened=popup() && popup()->property("visible").toBool();
+            QTest::keyClick(inputHost,Qt::Key_Down);QTest::keyClick(inputHost,Qt::Key_Return);
+        },[&]{return opened && input.display_mode()==input.modes().at(expectedIndex)
+            && selector && selector->property("currentIndex").toInt()==expectedIndex
+            && popup() && !popup()->property("visible").toBool()?QStringList{}:QStringList{"Keyboard mode choice did not commit exact next mode and close popup"};},"qt_input_mouse_keyboard");
+        input.set_display_mode("line");QCoreApplication::processEvents();
+audit_graph_axis_input(input,recorder,inputHost,root,press);
+}
+
+void audit_graph_input(Recorder& recorder,auto& originalLanguage,auto& originalTheme) {
+    // Exercise hit testing, popup lifecycle and actual TextInput validation, not handlers.
+    ui::Language::instance().set("en");
+    GraphPanel input("auditInput",new LineChartView,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
+    QQuickWidget* inputHost=nullptr;
+    if(prepare(input,recorder,"graphs.input",inputHost)) {audit_graph_mode_input(input,recorder,inputHost);}
     recorder.coverage("graphs.local_pointer_keyboard","partial","Real Qt mouse/key dispatch: mode popup, Escape, keyboard choice, Auto checkbox and invalid typing. Owned widget before/after PNGs; software/offscreen, no native window/GPU acceptance.");
     if(!originalTheme.isEmpty())ui::Theme::instance().set(originalTheme);
     ui::Language::instance().set(originalLanguage);
+}
+
+void audit_one_appearance(Recorder& recorder,GraphPanel& vector,GraphPanel& matrix,GraphPanel& metrics,QQuickWidget*& controls,auto& values,auto& metricControls,auto& theme,auto& language) {
+
+        const auto vectorPrefs=vector.preferences(),matrixPrefs=matrix.preferences(),metricPrefs=metrics.preferences();
+        record(recorder,"graphs.appearance."+theme+"."+language,matrix,controls,"Refresh theme/language while retaining graph settings",[&]{
+            ui::Theme::instance().set(theme);ui::Language::instance().set(language);QCoreApplication::processEvents();
+        },[&]{
+            QStringList failures;
+            if(vector.preferences()!=vectorPrefs || matrix.preferences()!=matrixPrefs || metrics.preferences()!=metricPrefs)
+                failures<<"Appearance refresh changed graph preferences";
+            if(controls && controls->rootObject()) {
+                auto* selector=named(controls->rootObject(),"numericDisplayMode");
+                if(!selector || !settle([&]{return selector->property("displayText").toString()==matrix.modeLabel(matrix.display_mode());}))
+                    failures<<"Mode label did not refresh to current language";
+            }
+            if(values && (values->exact_value(0)!="-9007199254740993" || values->exact_value(1)!="18446744073709551615"))
+                failures<<"Appearance refresh altered exact metric text";
+            return failures;
+        });
+        recorder.evidence("graphs.appearance.vector."+theme+"."+language,state(vector,vector.findChild<QQuickWidget*>("numericGraphSettings")));
+        recorder.evidence("graphs.appearance.metrics."+theme+"."+language,state(metrics,metricControls));
+    }
+
+void audit_graph_appearance(Recorder& recorder,GraphPanel& vector,GraphPanel& matrix,GraphPanel& metrics,auto& originalTheme,auto& originalLanguage,auto& modesVisited,QQuickWidget*& controls,auto& values,auto& metricControls) {
+    for(const QString& theme:{"light","dark"})for(const QString& language:{"ru","en"}) {audit_one_appearance(recorder,vector,matrix,metrics,controls,values,metricControls,theme,language);}
+    recorder.evidence("graphs.scope",{{"modesWithNoTransitionViolations",modesVisited},{"expectedModes",7},
+        {"dispatch","QML signal dispatch plus presentation public API; no mouse/keyboard, no native hit test"},
+        {"native3dAccepted",false},{"performanceMeasured",false}});
+    recorder.coverage("graphs.mode_and_conditional_settings","partial","All seven actual modes; QML signal routing, axis enablement, source capabilities, pause, restore, RU/EN and Light/Dark state. Native input/hit targets and visual acceptance excluded.");
+    recorder.coverage("graphs.invalid_input_feedback","partial","Boundary rejection is checked. Native typing, validator intermediate states and usability of rejection feedback need separate acceptance.");
+    recorder.coverage("graphs.native_surface_rendering","not_covered","Software/offscreen run establishes QML state only; native GPU rendering and hardware interaction require separate authorized scenario.");
+    if(!originalTheme.isEmpty())ui::Theme::instance().set(originalTheme);
+    ui::Language::instance().set(originalLanguage);
+
+audit_graph_input(recorder,originalLanguage,originalTheme);
+}
+
+void audit_metrics_and_inputs(Recorder& recorder,GraphPanel& vector,GraphPanel& matrix,GraphPanel& metrics,auto& originalTheme,auto& originalLanguage,auto& modesVisited,QQuickWidget*& controls) {
+    auto* values=metrics.metrics_view();
+    auto* metricControls=metrics.findChild<QQuickWidget*>("numericGraphSettings");
+    if(values && metricControls && metricControls->rootObject()) {
+        record(recorder,"graphs.metrics.exact",metrics,metricControls,"Present exact signed/unsigned scalar text without numeric rounding",[&]{
+            values->set_inputs({{0,"Literal <b>name</b>"},{1,"Unsigned maximum"}});
+            values->set_value(0,"-9007199254740993");values->set_value(1,"18446744073709551615");
+        },[&]{
+            QStringList failures;
+            for(const auto& pair:{qMakePair(QString("metricValue_0"),QString("-9007199254740993")),
+                                qMakePair(QString("metricValue_1"),QString("18446744073709551615"))})
+                if(!settle([&]{auto* item=named(values->rootObject(),pair.first);return item && item->property("text").toString()==pair.second;}))
+                    failures<<pair.first+": exact text not displayed";
+            return failures;
+        });
+        recorder.evidence("graphs.metrics.exactValues",{{"signed",values->exact_value(0)},{"unsigned",values->exact_value(1)}});
+    }
+audit_graph_appearance(recorder,vector,matrix,metrics,originalTheme,originalLanguage,modesVisited,controls,values,metricControls);
+}
+
+void audit_matrix_and_metrics(Recorder& recorder,GraphPanel& vector,GraphPanel& matrix,GraphPanel& metrics,auto& originalTheme,auto& originalLanguage,auto& modesVisited,QQuickWidget*& controls) {
+    controls=matrix.findChild<QQuickWidget*>("numericGraphSettings");
+    matrix.set_display_mode("image2d");
+    if(controls && controls->rootObject()) {audit_matrix_controls(recorder,matrix,controls);}
+
+audit_metrics_and_inputs(recorder,vector,matrix,metrics,originalTheme,originalLanguage,modesVisited,controls);
+}
+
+void audit_graphs(Recorder& recorder) {
+    if(QGuiApplication::platformName()!=QStringLiteral("offscreen")) {
+        recorder.coverage("graphs","not_covered","Graph probe requires the isolated offscreen platform.");
+        return;
+    }
+    const QString originalTheme=ui::Theme::instance().code(),originalLanguage=ui::Language::instance().code();
+    ui::Language::instance().set("en");
+    GraphPanel vector("auditVector",new LineChartView,{{"kind","FFTView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"line","points","bars","pie"},{},true}));
+    GraphPanel matrix("auditMatrix",new LineChartView,{{"kind","SpectrogramView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},false}));
+    GraphPanel metrics("auditMetrics",new LineChartView,{{"kind","ScalarView"}},nullptr,nullptr,presentation::plot_capabilities(presentation::PlotDescriptor{{"metrics","signedbar"},{},false}));
+    // This fixture supplies physical coordinates explicitly below.
+    matrix.set_axis_permissions({true, true});
+    int modesVisited=0;
+    for(auto* panel:{&vector,&matrix,&metrics}) {audit_panel_modes(panel,recorder,modesVisited);}
+    // A single scalar mode is inspected, not falsely presented as an enabled mode-selection action.
+    recorder.evidence("graphs.mode.metrics.selection",{{"selectorAction","not_applicable_single_mode"}});
+    vector.set_display_mode("line");
+    auto* controls=vector.findChild<QQuickWidget*>("numericGraphSettings");
+    if(controls && controls->rootObject()) {audit_vector_controls(recorder,vector,controls);}
+
+    {audit_automatic_display(recorder);}
+audit_matrix_and_metrics(recorder,vector,matrix,metrics,originalTheme,originalLanguage,modesVisited,controls);
 }
 }

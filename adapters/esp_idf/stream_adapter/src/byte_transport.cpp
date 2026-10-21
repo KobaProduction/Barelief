@@ -33,18 +33,27 @@ Status UartTransport::attach(uart_port_t port, QueueHandle_t events) noexcept {
     detach();if(port<0 || port>=UART_NUM_MAX || !events)return Status::invalid_argument;
     port_=port;events_=events;state_=TransportState::connected;return Status::ok;
 }
-IoResult UartTransport::read(std::span<std::uint8_t> out) noexcept {
-    if(state_!=TransportState::connected)return {Status::disconnected,0};
+namespace {
+Status uart_event_status(const uart_event_t& event) noexcept {
+    if(event.type==UART_FIFO_OVF || event.type==UART_BUFFER_FULL)return Status::overflow;
+    if(event.type==UART_PARITY_ERR || event.type==UART_FRAME_ERR)return Status::malformed;
+    return Status::ok;
+}
+Status drain_uart_events(QueueHandle_t events) noexcept {
     uart_event_t event;
     // Bounded service: the firmware supplies a queue of <=8 events.
-    for(int i=0;i<8 && xQueueReceive(events_,&event,0)==pdTRUE;++i) {
-        if(event.type==UART_FIFO_OVF || event.type==UART_BUFFER_FULL) {
-            ++overflows_;state_=TransportState::failed;return {Status::overflow,0};
-        }
-        if(event.type==UART_PARITY_ERR || event.type==UART_FRAME_ERR) {
-            state_=TransportState::failed;return {Status::malformed,0};
-        }
+    for(int i=0;i<8 && xQueueReceive(events,&event,0)==pdTRUE;++i) {
+        const auto status=uart_event_status(event);
+        if(status!=Status::ok)return status;
     }
+    return Status::ok;
+}
+}
+IoResult UartTransport::read(std::span<std::uint8_t> out) noexcept {
+    if(state_!=TransportState::connected)return {Status::disconnected,0};
+    const auto status=drain_uart_events(events_);
+    if(status==Status::overflow)++overflows_;
+    if(status!=Status::ok){state_=TransportState::failed;return {status,0};}
     if(out.empty())return {Status::ok,0};
     const auto n=uart_read_bytes(port_,out.data(),std::min<std::size_t>(out.size(),256),0);
     if(n<0){state_=TransportState::failed;return {Status::disconnected,0};}

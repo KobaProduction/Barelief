@@ -24,6 +24,25 @@ protected:
     qint64 readData(char *out,qint64 size) override{if(fault)return -1;auto count=std::min(size,qint64(received.size()));std::copy_n(received.data(),count,out);received.remove(0,count);return count;}
     qint64 writeData(const char *bytes,qint64 size) override{if(fault)return -1;auto count=std::min(chunk,size);sent.append(bytes,count);pending+=count;return count;}
 };
+static void serial_and_tcp_cases(const QByteArray& payload) {
+    QtSerialByteTransport serial;SerialEndpoint endpoint;require(serial.open(endpoint)==Status::invalid_argument,"serial requires explicit port");
+    endpoint.port_name="__invalid_serial_endpoint__";require(serial.open(endpoint)==Status::unavailable&&serial.state()==bdsp_protocol::TransportState::failed,"serial failed open state");serial.close();
+    QTcpServer server;require(server.listen(QHostAddress::LocalHost,0),"listen");QTcpSocket client;QtTcpByteTransport tcp(client);client.connectToHost(QHostAddress::LocalHost,server.serverPort());
+    require(wait([&]{return server.hasPendingConnections()&&tcp.state()==bdsp_protocol::TransportState::connected;}),"async TCP connect");
+    auto *peer=server.nextPendingConnection();QtTcpByteTransport peer_transport(*peer);QtPacketChannel tx(client,tcp),rx(*peer,peer_transport);int tcp_count=0;
+    QObject::connect(&rx,&QtPacketChannel::packetReceived,[&](quint8 id,QByteArray bytes){require(id==7&&bytes==payload,"TCP packet content");++tcp_count;});
+    require(tx.send_packet(7,payload)==Status::ok&&wait([&]{return tcp_count==1;}),"TCP PacketStream loopback");client.abort();require(wait([&]{return tcp.state()==bdsp_protocol::TransportState::disconnected;}),"TCP disconnect state");
+}
+static void bounded_uart_cases(const QByteArray& payload) {
+    FakeUart bounded_uart;QtDeviceByteTransport bounded_io(bounded_uart);QtPacketChannel bounded_channel(bounded_uart,bounded_io,nullptr,16);
+    int overflows=0,precise_overflows=0,recovered=0;QObject::connect(&bounded_channel,&QtPacketChannel::protocolError,[&](Status status){if(status==Status::overflow)++overflows;});
+    QObject::connect(&bounded_channel,&QtPacketChannel::parsingError,[&](BDSP::parse_packet_status_t status){if(status==BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR)++precise_overflows;});
+    QObject::connect(&bounded_channel,&QtPacketChannel::packetReceived,[&](quint8,QByteArray packet){require(packet=="new","resynchronized packet content");++recovered;});
+    std::array<std::uint8_t,700> wire{};auto encoded=bdsp_protocol::encode_packet(7,{reinterpret_cast<const std::uint8_t *>(payload.data()),std::size_t(payload.size())},wire);
+    require(bool(encoded),"encode overflow fixture");bounded_uart.inject(QByteArray(reinterpret_cast<const char *>(wire.data()),encoded.written_bytes));
+    require(overflows==1&&precise_overflows==1&&recovered==0&&bounded_channel.overflow_count()==1,"bounded incoming overflow reported");
+    encoded=bdsp_protocol::encode_packet(7,{reinterpret_cast<const std::uint8_t *>("new"),3},wire);bounded_uart.inject(QByteArray(reinterpret_cast<const char *>(wire.data()),encoded.written_bytes));require(recovered==1,"overflow resynchronizes on packet delimiter");
+}
 int main(int argc,char **argv){QCoreApplication app(argc,argv);try{
     FakeUart uart; QtDeviceByteTransport transport(uart,6); QtPacketChannel channel(uart,transport);
     int count=0; QByteArray last;
@@ -34,7 +53,7 @@ int main(int argc,char **argv){QCoreApplication app(argc,argv);try{
     require(channel.send_packet(7,payload)==Status::overflow,"bounded outgoing overflow");
     for(int i=0;channel.pending_bytes()&&i<1000;++i)uart.writable();
     require(channel.pending_bytes()==0,"partial UART flush completes");
-    for(char byte:uart.sent)uart.inject(QByteArray(1,byte));
+    const auto sentBytes=uart.sent;for(char byte:sentBytes)uart.inject(QByteArray(1,byte));
     require(count==1&&last==payload,"fragmented UART framing roundtrip");
     uart.chunk=0;require(channel.send_packet(7,payload)==Status::ok,"queue blocked write");channel.reset();
     require(channel.pending_bytes()==0,"reconnect drops old queued bytes");
@@ -45,20 +64,7 @@ int main(int argc,char **argv){QCoreApplication app(argc,argv);try{
     uart.open(QIODevice::ReadWrite);uart.pending=0;uart.fault=true;
     require(channel.send_packet(7,QByteArray("fault"))==Status::unavailable&&channel.pending_bytes()==0,"failed device write is not reported as accepted");
     uart.received="error";require(transport.read(bytes).status==Status::unavailable,"failed device read diagnostic");uart.fault=false;uart.received.clear();
-    FakeUart bounded_uart;QtDeviceByteTransport bounded_io(bounded_uart);QtPacketChannel bounded_channel(bounded_uart,bounded_io,nullptr,16);
-    int overflows=0,precise_overflows=0,recovered=0;QObject::connect(&bounded_channel,&QtPacketChannel::protocolError,[&](Status status){if(status==Status::overflow)++overflows;});
-    QObject::connect(&bounded_channel,&QtPacketChannel::parsingError,[&](BDSP::parse_packet_status_t status){if(status==BDSP::EXCEEDING_THE_MAXIMUM_PACKET_SIZE_ERROR)++precise_overflows;});
-    QObject::connect(&bounded_channel,&QtPacketChannel::packetReceived,[&](quint8,QByteArray packet){require(packet=="new","resynchronized packet content");++recovered;});
-    std::array<std::uint8_t,700> wire{};auto encoded=bdsp_protocol::encode_packet(7,{reinterpret_cast<const std::uint8_t *>(payload.data()),std::size_t(payload.size())},wire);
-    require(bool(encoded),"encode overflow fixture");bounded_uart.inject(QByteArray(reinterpret_cast<const char *>(wire.data()),encoded.written_bytes));
-    require(overflows==1&&precise_overflows==1&&recovered==0&&bounded_channel.overflow_count()==1,"bounded incoming overflow reported");
-    encoded=bdsp_protocol::encode_packet(7,{reinterpret_cast<const std::uint8_t *>("new"),3},wire);bounded_uart.inject(QByteArray(reinterpret_cast<const char *>(wire.data()),encoded.written_bytes));require(recovered==1,"overflow resynchronizes on packet delimiter");
-    QtSerialByteTransport serial;SerialEndpoint endpoint;require(serial.open(endpoint)==Status::invalid_argument,"serial requires explicit port");
-    endpoint.port_name="__invalid_serial_endpoint__";require(serial.open(endpoint)==Status::unavailable&&serial.state()==bdsp_protocol::TransportState::failed,"serial failed open state");serial.close();
-    QTcpServer server;require(server.listen(QHostAddress::LocalHost,0),"listen");QTcpSocket client;QtTcpByteTransport tcp(client);client.connectToHost(QHostAddress::LocalHost,server.serverPort());
-    require(wait([&]{return server.hasPendingConnections()&&tcp.state()==bdsp_protocol::TransportState::connected;}),"async TCP connect");
-    auto *peer=server.nextPendingConnection();QtTcpByteTransport peer_transport(*peer);QtPacketChannel tx(client,tcp),rx(*peer,peer_transport);int tcp_count=0;
-    QObject::connect(&rx,&QtPacketChannel::packetReceived,[&](quint8 id,QByteArray bytes){require(id==7&&bytes==payload,"TCP packet content");++tcp_count;});
-    require(tx.send_packet(7,payload)==Status::ok&&wait([&]{return tcp_count==1;}),"TCP PacketStream loopback");client.abort();require(wait([&]{return tcp.state()==bdsp_protocol::TransportState::disconnected;}),"TCP disconnect state");
+    bounded_uart_cases(payload);
+    serial_and_tcp_cases(payload);
     std::cout<<"Desktop fake UART fragments, bounded partial writes, reset, explicit Serial endpoint and TCP loopback passed\n";
 }catch(const std::exception &e){std::cerr<<e.what()<<'\n';return 1;}}

@@ -1,6 +1,7 @@
 // Retained SDK helper behavior through the canonical numeric API.
 // Transport/replay fences live in embedded_numeric_session_tests.
 #include <embedded_support/synthetic_pipeline.h>
+#include "test_assertions.h"
 #include <dsp_kernels/dsp.h>
 #include <cmath>
 #include <cstdio>
@@ -16,7 +17,7 @@ void* operator new(std::size_t n){if(tracking)++allocations;auto* p=std::malloc(
 void operator delete(void* p) noexcept {std::free(p);}
 void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 namespace {
-#define CHECK(x) do{if(!(x)){++failures;std::printf("FAIL %d: %s\n",__LINE__,#x);}}while(false)
+#define CHECK(x) test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures)
 struct Capture {
     sc::Semantic semantic=sc::Semantic::PCM;
     std::size_t channels=1,elements=256,frames=0;

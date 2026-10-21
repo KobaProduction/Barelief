@@ -57,29 +57,64 @@ static void check(bool condition, const char *message) {
         throw std::runtime_error(message);
     }
 }
-int main() {
-    QJsonObject rendering{{"version",1},{"extension",42},{"defaults",QJsonObject{{"gradient","green_red"},{"extra",23},{"axis_grid",true},{"floor_grid",false},{"light_strength",1.2345},{"mesh_width",1.2345}}}};
-    gui_fixture::App fixture(numeric_test_graph(),{{"theme","system"},{"language","ru"},{"graph_rendering",rendering}});
-    fixture.apply();
-    auto& app=*fixture.application;
-    const auto path=QString::fromLocal8Bit(fixture.path);QFile file(path);
-    check(file.open(QIODevice::ReadOnly),"read canonical baseline");const auto originalBytes=file.readAll();file.close();
-    try {
-        MainWindow *window = nullptr;
-        for (auto *widget : QApplication::topLevelWidgets())
-            if (auto *candidate = qobject_cast<MainWindow *>(widget))
-                window = candidate;
-        check(window, "MainWindow missing");
-        QTest::qWait(100);
-        fixture.editor->graph_view_requested(10);
+static WorkspaceDock* primary_graph_dock(MainWindow* window,int node) {
+    for(const auto docks=window->workspaceDocks();auto* dock:docks)
+        if(dock->property("graphNode").isValid() && dock->property("graphNode").toInt()==node &&
+           dock->property("viewInstance").toInt()==0)return dock;
+    check(false,"Current primary graph dock missing");return nullptr;
+}
+static void rename_actions(gui_fixture::App& fixture,CoreApplication& app,WorkspaceDock* namedGraph,const QString& namedGraphKey,const QString& defaultGraphTitle,const QByteArray& processingBytesBeforeRename,quint64 revisionBeforeRename,int undoBeforeRename,const auto& renameTo) {
+        renameTo(QString::fromUtf8("Мой спектр"));
+        auto* renameModel=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
+        auto* namedNode=renameModel?dynamic_cast<QtNodes::DataFlowGraphModel*>(&renameModel->graphModel())->delegateModel<AudioNodeModel>(10):nullptr;
+        check(namedNode && namedNode->caption()==QString::fromUtf8("Мой спектр"),"Graph sidebar rename must update the processing-editor block caption");
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр") &&
+              namedGraph->toggleViewAction()->text()==namedGraph->windowTitle() &&
+              app._ctx.file_configs.ui.graph_views[namedGraphKey].toObject().value("display_name")==QString::fromUtf8("Мой спектр"),
+              "Custom graph name not reflected or persisted");
+        ui::Language::instance().set("en");
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Language replaced custom graph name");
+        renameTo("Cancelled",false);
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Cancel renamed graph");
+        renameTo(QString(257,'x'));
+        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Oversize graph name accepted");
+        auto* renameScene=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
+        check(renameScene,"Pipeline rename scene missing");
+        emit renameScene->nodeSelected(10);
+        auto* pipelineRename=fixture.editor->findChild<QPushButton*>("pipelineRenameGraph");
+        check(pipelineRename,"Pipeline sidebar rename control missing");
+        renameTo("Pipeline title",true,pipelineRename);
+        check(namedGraph->windowTitle()=="Pipeline title","Pipeline sidebar did not rename the representation");
+        renameTo("");
+        check(!app._ctx.file_configs.ui.graph_views[namedGraphKey].toObject().contains("display_name"),"Empty graph name did not restore default");
+        ui::Language::instance().set("ru");
+        check(namedGraph->windowTitle()==defaultGraphTitle,"Default graph name no longer localized");
+        QTest::qWait(400);
+        domain::NumericProcessingGraph processingAfterRename;QByteArray processingBytesAfterRename;check(fixture.editor->numeric_draft(processingAfterRename) && bool(desktop::encode_numeric_graph(processingAfterRename,processingBytesAfterRename)),"Read processing after presentation rename");
+        if(processingBytesAfterRename!=processingBytesBeforeRename || fixture.editor->history().count()!=undoBeforeRename+3 || app.presenter().client().snapshot().graph_revision!=revisionBeforeRename)std::fprintf(stderr,"Rename diagnostic processing_equal=%d undo=%d expected=%d revision=%llu expected=%llu pending=%d\n",int(processingBytesAfterRename==processingBytesBeforeRename),fixture.editor->history().count(),undoBeforeRename+3,(unsigned long long)app.presenter().client().snapshot().graph_revision,(unsigned long long)revisionBeforeRename,int(app.presenter().graph_request_pending()));
+        check(processingBytesAfterRename==processingBytesBeforeRename && fixture.editor->history().count()==undoBeforeRename+3 &&
+              app.presenter().client().snapshot().graph_revision==revisionBeforeRename,"Three accepted renames must be presentation-only undo commands without changing the applied graph revision");
+        fixture.editor->history().undo();
+        check(namedGraph->windowTitle()=="Pipeline title" && namedNode && namedNode->caption()=="Pipeline title","Graph rename undo must synchronize block caption and graph title");
+        fixture.editor->history().redo();
+        check(namedGraph->windowTitle()==defaultGraphTitle,"Graph rename redo restores the translated default");}
+
+static void drive_graph_rename(const QString& name,bool accept,QObject* context) {
+            QTimer::singleShot(0,context,[name,accept]{
+                const auto topLevels=QApplication::topLevelWidgets();for(auto* widget:topLevels)if(auto* dialog=qobject_cast<QInputDialog*>(widget)) {
+                    dialog->setTextValue(name);if(accept)dialog->accept();else dialog->reject();
+                }
+            });
+}
+static void graph_names(gui_fixture::App& fixture,CoreApplication& app,MainWindow* window) {
         WorkspaceDock* namedGraph=nullptr;
-        for(auto* dock:window->workspaceDocks())
+        for(const auto docks=window->workspaceDocks();auto* dock:docks)
             if(dock->property("graphNode").toInt()==10)namedGraph=dock;
-        for(auto* dock:window->workspaceDocks())
-            if(dock->property("graphViewKey").toString()=="fft" && dock->property("graphNode").toInt()==10)namedGraph=dock;
         check(namedGraph,"Rename graph fixture missing");
         const auto namedGraphKey=namedGraph->property("graphViewKey").toString();
-        check(namedGraphKey=="fft","Rename regression must exercise the primary non-hex graph key");
+        check(!namedGraphKey.isEmpty() && namedGraph->objectName()=="nodeView_"+namedGraphKey &&
+              namedGraph->property("viewInstance").toInt()==0 &&
+              namedGraph->property("graphKind").toString()=="AudioLineView","Rename regression must exercise the current primary spectral graph");
         const auto defaultGraphTitle=namedGraph->windowTitle();
         auto* graphPanel=qobject_cast<GraphPanel*>(namedGraph->widget());
         auto* graphSettings=graphPanel?graphPanel->findChild<QQuickWidget*>("numericGraphSettings"):nullptr;
@@ -99,71 +134,23 @@ int main() {
         const auto revisionBeforeRename=app.presenter().client().snapshot().graph_revision;
         const auto undoBeforeRename=fixture.editor->history().count();
         const auto renameTo=[&](const QString& name,bool accept=true,QPushButton* origin=nullptr) {
-            QTimer::singleShot(0,[name,accept]{
-                for(auto* widget:QApplication::topLevelWidgets())if(auto* dialog=qobject_cast<QInputDialog*>(widget)) {
-                    dialog->setTextValue(name);if(accept)dialog->accept();else dialog->reject();
-                }
-            });
+            drive_graph_rename(name,accept,graphPanel);
             if(origin)origin->click();else graphPanel->rename();
             QCoreApplication::processEvents();
         };
-        renameTo(QString::fromUtf8("Мой спектр"));
-        auto* renameModel=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
-        auto* namedNode=renameModel?dynamic_cast<QtNodes::DataFlowGraphModel*>(&renameModel->graphModel())->delegateModel<AudioNodeModel>(10):nullptr;
-        check(namedNode && namedNode->caption()==QString::fromUtf8("Мой спектр"),"Graph sidebar rename must update the processing-editor block caption");
-        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр") &&
-              namedGraph->toggleViewAction()->text()==namedGraph->windowTitle() &&
-              app._ctx.file_configs.ui.graph_views[namedGraphKey].toObject()["display_name"]==QString::fromUtf8("Мой спектр"),
-              "Custom graph name not reflected or persisted");
-        ui::Language::instance().set("en");
-        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Language replaced custom graph name");
-        renameTo("Cancelled",false);
-        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Cancel renamed graph");
-        renameTo(QString(257,'x'));
-        check(namedGraph->windowTitle()==QString::fromUtf8("Мой спектр"),"Oversize graph name accepted");
-        auto* renameScene=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
-        check(renameScene,"Pipeline rename scene missing");
-        renameScene->nodeSelected(10);
-        auto* pipelineRename=fixture.editor->findChild<QPushButton*>("pipelineRenameGraph");
-        check(pipelineRename,"Pipeline sidebar rename control missing");
-        renameTo("Pipeline title",true,pipelineRename);
-        check(namedGraph->windowTitle()=="Pipeline title","Pipeline sidebar did not rename the representation");
-        renameTo("");
-        check(!app._ctx.file_configs.ui.graph_views[namedGraphKey].toObject().contains("display_name"),"Empty graph name did not restore default");
-        ui::Language::instance().set("ru");
-        check(namedGraph->windowTitle()==defaultGraphTitle,"Default graph name no longer localized");
-        QTest::qWait(400);
-        domain::NumericProcessingGraph processingAfterRename;QByteArray processingBytesAfterRename;check(fixture.editor->numeric_draft(processingAfterRename) && bool(desktop::encode_numeric_graph(processingAfterRename,processingBytesAfterRename)),"Read processing after presentation rename");
-        if(processingBytesAfterRename!=processingBytesBeforeRename || fixture.editor->history().count()!=undoBeforeRename+3 || app.presenter().client().snapshot().graph_revision!=revisionBeforeRename)std::fprintf(stderr,"Rename diagnostic processing_equal=%d undo=%d expected=%d revision=%llu expected=%llu pending=%d\n",int(processingBytesAfterRename==processingBytesBeforeRename),fixture.editor->history().count(),undoBeforeRename+3,(unsigned long long)app.presenter().client().snapshot().graph_revision,(unsigned long long)revisionBeforeRename,int(app.presenter().graph_request_pending()));
-        check(processingBytesAfterRename==processingBytesBeforeRename && fixture.editor->history().count()==undoBeforeRename+3 &&
-              app.presenter().client().snapshot().graph_revision==revisionBeforeRename,"Three accepted renames must be presentation-only undo commands without changing the applied graph revision");
-        fixture.editor->history().undo();
-        check(namedGraph->windowTitle()=="Pipeline title" && namedNode && namedNode->caption()=="Pipeline title","Graph rename undo must synchronize block caption and graph title");
-        fixture.editor->history().redo();
-        check(namedGraph->windowTitle()==defaultGraphTitle,"Graph rename redo restores the translated default");
-        // Offscreen does not restore the parent window's active context after a modal dialog.
-        window->activateWindow();window->setFocus();QTest::qWait(20);
-        auto *settings = window->findChild<SettingsWidget *>();
-        check(settings, "Settings missing");
-        auto* renderTimer=window->findChild<QTimer*>("numericRenderTimer");
-        auto* guiMode=settings->findChild<QComboBox*>("guiFpsMode");auto* guiRate=settings->findChild<QSpinBox*>("guiTargetFps");
-        check(renderTimer && renderTimer->isActive() && renderTimer->timerType()==Qt::PreciseTimer && guiMode && guiRate,"Numeric rendering must use the global cadence and a precise timer");
-        const auto rateGraph=fixture.editor->document();const auto rateRevision=app.presenter().client().snapshot().graph_revision;
-        const auto rateUndo=fixture.editor->history().index();const auto previousCadence=app._ctx.file_configs.ui.graph_rendering;
-        SettingsWidget::DisplayRates simulatedDisplay{{60,120,165,165},165};std::vector<double> modeRequests;bool rejectMode=false;
-        const auto simulatedProvider=[&](QScreen*){return simulatedDisplay;};
-        settings->set_display_current_rate_provider([&](QScreen*){return simulatedDisplay.current;});
-        settings->set_display_rate_provider(simulatedProvider);
-        window->set_display_refresh_rate_provider([&](QScreen*){return simulatedDisplay.current;});
-        settings->set_display_mode_requester([&](QScreen*,double rate){modeRequests.push_back(rate);if(rejectMode)return false;simulatedDisplay.current=rate>0?rate:*std::max_element(simulatedDisplay.supported.begin(),simulatedDisplay.supported.end());return true;});
+        rename_actions(fixture,app,namedGraph,namedGraphKey,defaultGraphTitle,processingBytesBeforeRename,revisionBeforeRename,undoBeforeRename,renameTo);
+
+}
+
+static void supported_cadences(CoreApplication& app,QComboBox* guiMode,QSpinBox* guiRate,QTimer* renderTimer,SettingsWidget::DisplayRates& simulatedDisplay,std::vector<double>& modeRequests,bool& rejectMode,SettingsWidget* settings) {
         check(guiMode->count()==6 && guiMode->findData(-2)>=0 && guiMode->findData(0)>=0 &&
               guiMode->findData(-1)>=0 && guiMode->findData(30)<0 && guiMode->findData(100)<0 &&
               guiMode->findData(170)<0 && guiMode->findData(165)>0,
               "Cadence choices must contain System, Maximum, Custom and only distinct supported screen modes");
         check(guiMode->currentData().toInt()==0 && guiMode->currentText()==ui::text("Maximum") && guiMode->findText(ui::text("Screen refresh rate"))<0 && guiRate->value()==165 && renderTimer->interval()==qMax(1,1000/165),"Default cadence must select Maximum and use the actual OS screen rate");
         check(guiRate->suffix().isEmpty() && guiRate->prefix().isEmpty() && guiRate->text()=="165","Editable cadence must contain only a number");
-        int removedCadenceRows=0;
-        const auto cadenceRowsConnection=QObject::connect(guiMode->model(),&QAbstractItemModel::rowsRemoved,settings,[&removedCadenceRows]{++removedCadenceRows;});
+        int removedCadenceRows=0;QObject cadenceWitness;
+        const auto cadenceRowsConnection=QObject::connect(guiMode->model(),&QAbstractItemModel::rowsRemoved,&cadenceWitness,[&removedCadenceRows]{++removedCadenceRows;});
         for(const int hz:{60,120,165}){
             guiMode->setCurrentIndex(guiMode->findData(hz));
             check(renderTimer->interval()==qMax(1,1000/hz),"Fixed global cadence did not reach the numeric projection scheduler");
@@ -179,6 +166,9 @@ int main() {
         check(modeRequests.size()==requestsBeforeCustom,"Manual GUI cadence must not request an unsupported OS display mode");
         check(removedCadenceRows==0,"Selecting a cadence must not rebuild the active popup model synchronously");
         QObject::disconnect(cadenceRowsConnection);
+}
+
+static void screen_cadence_changes(CoreApplication& app,MainWindow* window,SettingsWidget* settings,QComboBox* guiMode,QSpinBox* guiRate,QTimer* renderTimer,SettingsWidget::DisplayRates& simulatedDisplay,std::vector<double>& modeRequests,const auto& simulatedProvider) {
         simulatedDisplay={{60,144},144};settings->set_display_rate_provider(simulatedProvider);
         check(guiMode->findData(165)<0 && guiMode->findData(144)>0 && guiMode->findData(170)<0 && guiMode->currentData().toInt()==-1 && guiRate->value()==170 && renderTimer->interval()==qMax(1,1000/170),"Screen changes must rebuild choices and preserve an explicit custom override");
         guiMode->setCurrentIndex(guiMode->findData(0));
@@ -188,15 +178,34 @@ int main() {
         check(guiMode->currentData().toInt()==0 && guiRate->value()==360 && renderTimer->interval()==qMax(1,1000/360) && guiMode->findData(360)>0,"Screen cadence above 240 Hz must preserve the current physical refresh rate");
         guiMode->setCurrentIndex(guiMode->findData(360));
         check(guiRate->maximum()==1000 && guiRate->minimum()==1 && guiRate->value()==360 && renderTimer->interval()==qMax(1,1000/360),"Supported 360 Hz dropdown selection was silently capped");
-        for(auto* panel:window->findChildren<GraphPanel*>())check(panel->render_fps()==360,"Renderer cadence above 240 Hz was silently capped");
+        for(const auto panels=window->findChildren<GraphPanel*>();auto* panel:panels)check(panel->render_fps()==360,"Renderer cadence above 240 Hz was silently capped");
         auto restoredCadence=app._ctx.file_configs.ui.graph_rendering;restoredCadence["gui_fps_mode"]="fixed";restoredCadence["gui_target_fps"]=170;app._ctx.file_configs.ui.graph_rendering=restoredCadence;
-        settings->refresh_graph_preferences();settings->surface_settings_changed();
+        settings->refresh_graph_preferences();emit settings->surface_settings_changed();
         check(guiMode->currentData().toInt()==-1 && guiRate->value()==170 && renderTimer->interval()==qMax(1,1000/170),"Reloaded explicit fixed override must synchronize the existing cadence controls");
         auto unavailableDisplayRate=app._ctx.file_configs.ui.graph_rendering;unavailableDisplayRate["gui_fps_mode"]="display";unavailableDisplayRate["gui_target_fps"]=240;app._ctx.file_configs.ui.graph_rendering=unavailableDisplayRate;
-        settings->refresh_graph_preferences();settings->surface_settings_changed();
+        settings->refresh_graph_preferences();emit settings->surface_settings_changed();
         check(guiMode->currentData().toInt()==0 && guiRate->value()==360 && renderTimer->interval()==qMax(1,1000/360),"A physical rate unavailable on the current monitor must display its Maximum fallback, not a manual cadence");
-        app._ctx.file_configs.ui.graph_rendering=previousCadence;settings->set_display_mode_requester({});settings->set_display_current_rate_provider({});settings->set_display_rate_provider({});window->set_display_refresh_rate_provider({});settings->refresh_graph_preferences();settings->surface_settings_changed();
+}
+
+static void render_cadence(gui_fixture::App& fixture,CoreApplication& app,MainWindow* window,SettingsWidget* settings) {
+        auto* renderTimer=window->findChild<QTimer*>("numericRenderTimer");
+        auto* guiMode=settings->findChild<QComboBox*>("guiFpsMode");auto* guiRate=settings->findChild<QSpinBox*>("guiTargetFps");
+        check(renderTimer && renderTimer->isActive() && renderTimer->timerType()==Qt::PreciseTimer && guiMode && guiRate,"Numeric rendering must use the global cadence and a precise timer");
+        const auto rateGraph=fixture.editor->document();const auto rateRevision=app.presenter().client().snapshot().graph_revision;
+        const auto rateUndo=fixture.editor->history().index();const auto previousCadence=app._ctx.file_configs.ui.graph_rendering;
+        SettingsWidget::DisplayRates simulatedDisplay{{60,120,165,165},165};std::vector<double> modeRequests;bool rejectMode=false;
+        const auto simulatedProvider=[&](QScreen*){return simulatedDisplay;};
+        settings->set_display_current_rate_provider([&](QScreen*){return simulatedDisplay.current;});
+        settings->set_display_rate_provider(simulatedProvider);
+        window->set_display_refresh_rate_provider([&](QScreen*){return simulatedDisplay.current;});
+        settings->set_display_mode_requester([&](QScreen*,double rate){modeRequests.push_back(rate);if(rejectMode)return false;simulatedDisplay.current=rate>0?rate:*std::max_element(simulatedDisplay.supported.begin(),simulatedDisplay.supported.end());return true;});
+        supported_cadences(app,guiMode,guiRate,renderTimer,simulatedDisplay,modeRequests,rejectMode,settings);
+        screen_cadence_changes(app,window,settings,guiMode,guiRate,renderTimer,simulatedDisplay,modeRequests,simulatedProvider);
+        app._ctx.file_configs.ui.graph_rendering=previousCadence;settings->set_display_mode_requester({});settings->set_display_current_rate_provider({});settings->set_display_rate_provider({});window->set_display_refresh_rate_provider({});settings->refresh_graph_preferences();emit settings->surface_settings_changed();
         check(fixture.editor->document()==rateGraph && app.presenter().client().snapshot().graph_revision==rateRevision && fixture.editor->history().index()==rateUndo,"GUI render cadence changed analysis graph/revision/Undo");
+}
+
+static void settings_sections(CoreApplication& app,MainWindow* window,SettingsWidget* settings) {
         settings->select_section(SettingsWidget::Graphs);
         auto *tabs = settings->findChild<QTabWidget *>("settingsSections");
         check(tabs && tabs->count() == 6 && tabs->currentIndex() == 2, "Graphs section order");
@@ -227,33 +236,37 @@ int main() {
                                  "showWindowFunction", "showFFT", "showMel", "showSpectrogram"})
             check(!settings->findChild<QCheckBox *>(name),
                   "Project graph visibility control remains in global General settings");
-        auto* spectrogramDock=window->workspaceDock("spectrogramDock");
+}
+
+static void precision_and_movement(CoreApplication& app,SettingsWidget* settings,MainWindow* window) {
+        auto* spectrogramDock=primary_graph_dock(window,8);
         check(spectrogramDock && spectrogramDock->toggleViewAction()->isCheckable(),
               "Workspace graph visibility action disappeared with Settings controls");
         auto *precision = settings->findChild<QSlider *>("surface_axis_precision");
         check(precision && precision->minimum() == 0 && precision->maximum() == 8,
               "Global axis precision slider missing");
-        auto legacyView = app._ctx.file_configs.ui.graph_views["spectrogram"].toObject();
+        const auto surfaceKey=primary_graph_dock(window,8)->property("graphViewKey").toString();
+        auto legacyView = app._ctx.file_configs.ui.graph_views[surfaceKey].toObject();
         auto legacyOverride = legacyView["surface_override"].toObject();
         legacyOverride["enabled"] = true;
         auto legacyValues = legacyOverride["values"].toObject();
         legacyValues["axis_precision"] = 2;
         legacyOverride["values"] = legacyValues;
         legacyView["surface_override"] = legacyOverride;
-        app._ctx.file_configs.ui.graph_views["spectrogram"] = legacyView;
+        app._ctx.file_configs.ui.graph_views[surfaceKey] = legacyView;
         precision->setValue(8);
-        check(SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering, legacyView)["axis_precision"]
+        check(SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering, legacyView).value("axis_precision")
                           .toInt() == 8 &&
-                  app._ctx.file_configs.ui.graph_views["spectrogram"]
-                          .toObject()["surface_override"]
-                          .toObject()["values"]
-                          .toObject()["axis_precision"]
+                  app._ctx.file_configs.ui.graph_views[surfaceKey]
+                          .toObject().value("surface_override")
+                          .toObject().value("values")
+                          .toObject().value("axis_precision")
                           .toInt() == 2,
               "Global precision priority rewrote legacy override");
         // Retain metadata but restore style inheritance for the following global checks.
         legacyOverride["enabled"] = false;
         legacyView["surface_override"] = legacyOverride;
-        app._ctx.file_configs.ui.graph_views["spectrogram"] = legacyView;
+        app._ctx.file_configs.ui.graph_views[surfaceKey] = legacyView;
         auto *movement = settings->findChild<QSlider *>("commonMovementSpeed");
         auto *movementReset = settings->findChild<QPushButton *>("resetCommonMovementSpeed");
         check(movement && movementReset && movement->minimum() == 50 && movement->maximum() == 1000,
@@ -265,6 +278,39 @@ int main() {
               "Movement preference modified saved camera state");
         movementReset->click();
         check(CameraControls::movementSpeed(app._ctx.file_configs.ui.camera_controls) == 3, "Movement reset baseline");
+}
+
+static void surface_aspect_preferences(CoreApplication& app,SettingsWidget* settings) {
+        auto* aspectMode=settings->findChild<QComboBox*>("surface_scene_aspect_mode");
+        auto* timeAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_time_aspect");
+        auto* bandAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_band_aspect");
+        check(aspectMode && timeAspect && bandAspect && aspectMode->currentIndex()==0 &&
+              timeAspect->value()==2 && bandAspect->value()==1,"Scene aspect defaults/form missing");
+        timeAspect->setValue(3.25);bandAspect->setValue(.75);
+        auto appearance=SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering);
+        check(appearance["scene_time_aspect"].toDouble()==3.25 && appearance["scene_band_aspect"].toDouble()==.75,
+              "Global scene ratios did not persist");
+        aspectMode->setCurrentIndex(1);
+        check(!timeAspect->isEnabled() && !bandAspect->isEnabled() &&
+              SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("scene_aspect_mode")=="sample_counts",
+              "Sample count mode/disabled custom ratios not synchronized");
+        aspectMode->setCurrentIndex(0);
+        check(timeAspect->isEnabled() && bandAspect->isEnabled(),"Fixed aspect controls not restored");
+        auto *meshWidth = settings->findChild<QSlider *>("surface_mesh_width");
+        auto *meshContrast = settings->findChild<QSlider *>("surface_mesh_contrast");
+        check(
+            meshWidth && meshContrast &&
+                std::abs(SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("mesh_width").toDouble() -
+                         1.2345) < 1e-8,
+            "Unrelated edits rounded mesh thickness");
+        meshWidth->setValue(250);
+        meshContrast->setValue(35);
+        check(SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("mesh_width").toDouble() == 2.5 &&
+                  SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("mesh_contrast").toDouble() ==
+                      .35,
+              "Mesh controls do not persist");}
+
+static void global_surface_preferences(CoreApplication& app,SettingsWidget* settings) {
         auto *mesh = settings->findChild<QCheckBox *>("surface_mesh_grid");
         auto *brightness = settings->findChild<QSlider *>("surface_brightness");
         check(mesh && brightness, "Global surface style controls missing");
@@ -284,7 +330,7 @@ int main() {
         check(valueLabel && reset && valueLabel->text() == "140%", "Slider number/default missing");
         reset->click();
         check(brightness->value() == 100 &&
-                  SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["brightness"].toDouble() == 1.0,
+                  SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("brightness").toDouble() == 1.0,
               "Slider reset did not apply baseline");
         brightness->setValue(140);
         auto *space = settings->findChild<QCheckBox *>("surface_space_grid");
@@ -296,61 +342,17 @@ int main() {
         auto *lighting = settings->findChild<QCheckBox *>("surface_light");
         check(lighting, "Lighting checkbox missing");
         QTest::mouseClick(lighting, Qt::LeftButton, Qt::NoModifier, QPoint(9, lighting->height() / 2));
-        check(!SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["light"].toBool(),
+        check(!SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("light").toBool(),
               "Lighting checkbox indicator is not clickable");
         lighting->setChecked(true);
         check(reset->text() == QString::fromUtf8("Сброс") && brightness->tickPosition() == QSlider::NoTicks,
               "Compact slider/reset translation missing");
-        auto* aspectMode=settings->findChild<QComboBox*>("surface_scene_aspect_mode");
-        auto* timeAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_time_aspect");
-        auto* bandAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_band_aspect");
-        check(aspectMode && timeAspect && bandAspect && aspectMode->currentIndex()==0 &&
-              timeAspect->value()==2 && bandAspect->value()==1,"Scene aspect defaults/form missing");
-        timeAspect->setValue(3.25);bandAspect->setValue(.75);
-        auto appearance=SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering);
-        check(appearance["scene_time_aspect"].toDouble()==3.25 && appearance["scene_band_aspect"].toDouble()==.75,
-              "Global scene ratios did not persist");
-        aspectMode->setCurrentIndex(1);
-        check(!timeAspect->isEnabled() && !bandAspect->isEnabled() &&
-              SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["scene_aspect_mode"]=="sample_counts",
-              "Sample count mode/disabled custom ratios not synchronized");
-        aspectMode->setCurrentIndex(0);
-        check(timeAspect->isEnabled() && bandAspect->isEnabled(),"Fixed aspect controls not restored");
-        auto *meshWidth = settings->findChild<QSlider *>("surface_mesh_width");
-        auto *meshContrast = settings->findChild<QSlider *>("surface_mesh_contrast");
-        check(
-            meshWidth && meshContrast &&
-                std::abs(SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["mesh_width"].toDouble() -
-                         1.2345) < 1e-8,
-            "Unrelated edits rounded mesh thickness");
-        meshWidth->setValue(250);
-        meshContrast->setValue(35);
-        check(SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["mesh_width"].toDouble() == 2.5 &&
-                  SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["mesh_contrast"].toDouble() ==
-                      .35,
-              "Mesh controls do not persist");
-        const QString key =
-            QString::fromLatin1(QJsonDocument(QJsonArray{app.presenter().device_id(), app.presenter().graph_id(), 8})
-                                    .toJson(QJsonDocument::Compact)
-                                    .toHex());
-        auto preservedView = app._ctx.file_configs.ui.graph_views[key].toObject();
-        preservedView["view_extension"] = 91;
-        auto preservedOverride = preservedView["surface_override"].toObject();
-        preservedOverride["override_extension"] = 92;
-        preservedView["surface_override"] = preservedOverride;
-        app._ctx.file_configs.ui.graph_views[key] = preservedView;
-        const auto beforeCancelViews = app._ctx.file_configs.ui.graph_views;
-        const auto beforeCancelSchema = app._ctx.file_configs.ui.graph_rendering;
-        QTimer::singleShot(0, settings, [&] {
-            if (auto *dialog = settings->findChild<QDialog *>("gradientEditor"))
-                dialog->reject();
-        });
-        settings->edit_color_scale(key);
-        check(app._ctx.file_configs.ui.graph_views == beforeCancelViews &&
-                  app._ctx.file_configs.ui.graph_rendering == beforeCancelSchema,
-              "Color editor Cancel mutated settings");
-        bool edited = false;
-        QTimer::singleShot(0, settings, [&] {
+        surface_aspect_preferences(app,settings);
+
+}
+
+static void edit_gradient_dialog(SettingsWidget* settings,bool& edited) {
+
             auto *dialog = settings->findChild<QDialog *>("gradientEditor");
             if (!dialog)
                 return;
@@ -390,41 +392,51 @@ int main() {
             }
             QTimer::singleShot(0, dialog, [&] {
                 if (auto *picker = qobject_cast<QColorDialog *>(QApplication::activeModalWidget())) {
-                    picker->setCurrentColor(QColor("#2255bb"));
+                    picker->setCurrentColor(QColor(0x22,0x55,0xbb));
                     picker->accept();
                 }
             });
             qobject_cast<QPushButton *>(table->cellWidget(0, 1))->click();
             edited = table->cellWidget(0, 1)->property("stopColor").toString() == "#2255bb";
             buttons->button(QDialogButtonBox::Save)->click();
+}
+
+static QJsonArray color_scale_editor(CoreApplication& app,SettingsWidget* settings,const QString& key) {
+        const auto beforeCancelViews = app._ctx.file_configs.ui.graph_views;
+        const auto beforeCancelSchema = app._ctx.file_configs.ui.graph_rendering;
+        QTimer::singleShot(0, settings, [&] {
+            if (auto *dialog = settings->findChild<QDialog *>("gradientEditor"))
+                dialog->reject();
+        });
+        settings->edit_color_scale(key);
+        check(app._ctx.file_configs.ui.graph_views == beforeCancelViews &&
+                  app._ctx.file_configs.ui.graph_rendering == beforeCancelSchema,
+              "Color editor Cancel mutated settings");
+        bool edited = false;
+        QTimer::singleShot(0, settings, [&] {edit_gradient_dialog(settings,edited);
         });
         settings->edit_color_scale(key);
         const auto editedView = app._ctx.file_configs.ui.graph_views[key].toObject();
         const auto stops =
-            SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering, editedView)["gradient_stops"]
+            SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering, editedView).value("gradient_stops")
                 .toArray();
         check(editedView["view_extension"].toInt() == 91 &&
-                  editedView["surface_override"].toObject()["override_extension"].toInt() == 92,
+                  editedView["surface_override"].toObject().value("override_extension").toInt() == 92,
               "Color editor lost unknown view/override metadata");
         check(
-            SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["gradient_stops"].toArray().isEmpty(),
+            SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("gradient_stops").toArray().isEmpty(),
             "Per-graph color scale leaked to global defaults");
-        check(edited && stops.size() >= 2 && stops[0].toObject()["color"] == "#2255bb",
+        check(edited && stops.size() >= 2 && stops[0].toObject().value("color") == "#2255bb",
               "Real color picker/add/remove/save did not change gradient");
         check(SurfaceSettings::normalizedStops({QJsonObject{{"position", 0}, {"color", "#000000"}},
                                                 QJsonObject{{"position", 0}, {"color", "#ffffff"}},
                                                 QJsonObject{{"position", 1}, {"color", "#ffffff"}}})
                   .isEmpty(),
               "Duplicate gradient positions accepted");
-        auto *surface = window->workspaceDock("spectrogramDock")->findChild<SpectrogramGraph*>();
-        check(surface, "Surface missing");
-        check(!surface->surface_settings()["mesh_grid"].toBool() &&
-                  surface->surface_settings()["brightness"].toDouble() == 1.4,
-              "Global settings did not reach renderer API");
-        check(surface->surface_settings()["gradient_stops"].toArray() == stops,
-              "Per-graph color scale did not reach renderer");
-        // Exercise the same shared control used beside a native spectrogram,
-        // through its real surface API and per-view persistence signal.
+return stops;
+}
+
+static void precise_aspect_values() {
         ui::SceneAspectControl preciseAspect;
         const QJsonObject preciseOptions{{"scene_time_aspect",2.123456789},{"scene_band_aspect",.75},
             {"extension",43},{"y_range_mode","manual"},{"y_min",-.123456789},{"y_max",3.23456789}};
@@ -439,6 +451,20 @@ int main() {
               preciseResult["scene_band_aspect"].toDouble()==1.5 && preciseResult["extension"].toInt()==43 &&
               preciseResult["y_min"].toDouble()==-.123456789 && preciseResult["y_max"].toDouble()==3.23456789,
               "Editing band ratio quantized time ratio or changed unknown metadata/manual Y");
+}
+
+static void per_view_aspects(CoreApplication& app,MainWindow* window,SettingsWidget* settings,const QString& key,const QJsonArray& stops) {
+auto* bandAspect=settings->findChild<QDoubleSpinBox*>("surface_scene_band_aspect");auto* aspectMode=settings->findChild<QComboBox*>("surface_scene_aspect_mode");auto* brightness=settings->findChild<QSlider*>("surface_brightness");
+        auto *surface = primary_graph_dock(window,8)->findChild<SpectrogramGraph*>();
+        check(surface, "Surface missing");
+        check(!surface->surface_settings().value("mesh_grid").toBool() &&
+                  surface->surface_settings().value("brightness").toDouble() == 1.4,
+              "Global settings did not reach renderer API");
+        check(surface->surface_settings().value("gradient_stops").toArray() == stops,
+              "Per-graph color scale did not reach renderer");
+        // Exercise the same shared control used beside a native spectrogram,
+        // through its real surface API and per-view persistence signal.
+        precise_aspect_values();
         ui::SceneAspectControl localAspect;
         int localWrites=0;
         localAspect.changed=[&]{
@@ -453,7 +479,7 @@ int main() {
             app._ctx.file_configs.ui.graph_views[key].toObject());
         check(localWrites==1 && aspectView["scene_band_aspect"].toDouble()==1.5 &&
               aspectView["scene_time_aspect"].toDouble()==3.25 &&
-              SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering)["scene_band_aspect"].toDouble()==.75,
+              SurfaceSettings::effective(app._ctx.file_configs.ui.graph_rendering).value("scene_band_aspect").toDouble()==.75,
               "Per-view visual aspect was not isolated from global defaults");
         check(surface->projected_scene_geometry().scaleX==3.25f &&
               surface->projected_scene_geometry().scaleZ==1.5f,"Effective visual ratios did not reach geometry");
@@ -462,8 +488,8 @@ int main() {
         bandAspect->setValue(1.5);
         auto colourOnly=surface->surface_settings();colourOnly["gradient_layout"]="linear";
         surface->set_surface_settings(colourOnly);emit surface->surface_settings_changed(colourOnly);
-        const auto retainedAspect=app._ctx.file_configs.ui.graph_views[key].toObject()["surface_override"]
-            .toObject()["values"].toObject();
+        const auto retainedAspect=app._ctx.file_configs.ui.graph_views[key].toObject().value("surface_override")
+            .toObject().value("values").toObject();
         check(retainedAspect["scene_aspect_mode"]=="fixed" && retainedAspect["scene_time_aspect"].toDouble()==3.25 &&
               retainedAspect["scene_band_aspect"].toDouble()==1.5,
               "Unrelated colour edit removed pinned geometry after coincidental global equality");
@@ -475,13 +501,17 @@ int main() {
               surface->projected_scene_geometry().scaleX==3.25f,
               "Changing global aspect mode disabled explicit fixed per-view geometry");
         aspectMode->setCurrentIndex(0);bandAspect->setValue(.75);
-        const auto editedOverride = app._ctx.file_configs.ui.graph_views[key].toObject()["surface_override"].toObject();
+        const auto editedOverride = app._ctx.file_configs.ui.graph_views[key].toObject().value("surface_override").toObject();
         brightness->setValue(150);
-        check(app._ctx.file_configs.ui.graph_views[key].toObject()["surface_override"].toObject() == editedOverride,
+        check(app._ctx.file_configs.ui.graph_views[key].toObject().value("surface_override").toObject() == editedOverride,
               "Editing global style overwrote a graph override");
-        check(surface->surface_settings()["brightness"].toDouble() == 1.5,
+        check(surface->surface_settings().value("brightness").toDouble() == 1.5,
               "Per-graph color scale pinned unrelated global lighting defaults");
         brightness->setValue(140);
+}
+
+static void interval_persistence(CoreApplication& app,MainWindow* window,const QString& key,const QString& path,QFile& file,const QByteArray& originalBytes) {
+auto* surface=primary_graph_dock(window,8)->findChild<SpectrogramGraph*>();
         const auto intervalPanels=window->findChildren<GraphPanel*>();
         check(!intervalPanels.empty(),"Chart panels missing before interval Save/load");
         const auto chartIntervalKey=intervalPanels.front()->objectName().chopped(QStringLiteral("GraphPanel").size());
@@ -491,7 +521,7 @@ int main() {
         // through the same persistence boundary used by a native user edit.
         auto intervalOptions=surface->surface_settings();intervalOptions["auto_range_interval_seconds"]=6.5;
         surface->set_surface_settings(intervalOptions);emit surface->surface_settings_changed(intervalOptions);
-        check(app._ctx.file_configs.ui.graph_views[chartIntervalKey].toObject()["auto_range_interval_seconds"].toDouble()==7.5,
+        check(app._ctx.file_configs.ui.graph_views[chartIntervalKey].toObject().value("auto_range_interval_seconds").toDouble()==7.5,
               "Chart interval edit did not update presentation preferences");
         check(file.open(QIODevice::ReadOnly), "Read config failed");
         check(file.readAll() == originalBytes, "Autosave disabled wrote file");
@@ -502,46 +532,21 @@ int main() {
         ConfigManager manager(path);desktop::NumericProjectDocument source;domain::NumericProcessingGraph graph;
         check(manager.loadNumeric(source,graph),"canonical roundtrip load");FileSaveApplicationConfig loaded;
         check(manager.readNumericSettings(source,loaded),"canonical settings projection");
-        check(loaded.ui.graph_views[chartIntervalKey].toObject()["auto_range_interval_seconds"].toDouble()==7.5 &&
-              loaded.ui.graph_views[key].toObject()["surface_override"].toObject()["values"].toObject()["auto_range_interval_seconds"].toDouble()==6.5,
+        check(loaded.ui.graph_views[chartIntervalKey].toObject().value("auto_range_interval_seconds").toDouble()==7.5 &&
+              loaded.ui.graph_views[key].toObject().value("surface_override").toObject().value("values").toObject().value("auto_range_interval_seconds").toDouble()==6.5,
               "Per-graph auto range intervals did not survive explicit Save/load");
         check(loaded.ui.graph_rendering==app._ctx.file_configs.ui.graph_rendering,"settings roundtrip");
-        check(loaded.ui.graph_rendering["extension"].toInt()==42 && loaded.ui.graph_rendering["defaults"].toObject()["extra"].toInt()==23,"unknown rendering descendants lost");
-        surface->surface_settings_error("Test shadow unavailable");
+        check(loaded.ui.graph_rendering["extension"].toInt()==42 && loaded.ui.graph_rendering["defaults"].toObject().value("extra").toInt()==23,"unknown rendering descendants lost");
+        emit surface->surface_settings_error("Test shadow unavailable");
         auto *status = window->findChild<QLabel *>("surfaceSettingsStatus");
         check(status && status->text().contains("Test shadow unavailable"), "Renderer failure not visible");
-        surface->surface_settings_error({});
+        emit surface->surface_settings_error({});
         check(status->isHidden(), "Renderer status did not clear");
-        // Legacy gradient migration is unsupported by the canonical-only document contract.
-        auto *statusTheme = window->findChild<QComboBox *>("statusTheme");
-        check(statusTheme, "Status theme selector missing");
-        statusTheme->setCurrentIndex(statusTheme->findData("light"));
-        check(app._ctx.file_configs.ui.theme == "light" &&
-                  settings->findChild<QComboBox *>("interfaceTheme")->currentIndex() == 2,
-              "Status/settings theme not synchronized");
-        statusTheme->setCurrentIndex(statusTheme->findData("dark"));
-        check(app._ctx.file_configs.ui.theme == "dark", "Status dark theme not persisted in memory");
-        check(!window->findChild<QLabel *>("graphApplyStatus"), "Global applied status indicator must be removed");
-        auto* diagnosticEditor=window->findChild<SchemeEditorWidget*>();check(diagnosticEditor,"Editor diagnostics missing");
-        auto* validation=diagnosticEditor->toolbar()->findChild<QLabel*>("pipelineValidation");check(validation,"Editor warning indicator missing");
-        emit app.presenter().apply_status_changed("Error: test");
-        check(!validation->isHidden() && validation->toolTip().contains("test"),"Error is absent from editor toolbar");
-        const auto errorTooltip=validation->toolTip();
-        emit app.presenter().apply_status_changed("Running");
-        check(!validation->isHidden() && validation->toolTip()==errorTooltip,"Routine status cleared editor error");
-        check(!window->findChild<QLabel*>("savedPipelineWarning"),"Duplicate schema warning remains in global strip");
-        auto *renderStatus = window->findChild<QLabel *>("renderStatus");
-        check(!renderStatus,"Aggregate FPS remains in main window");
-        auto *pipelineToggle = window->findChild<QToolButton *>("pipelineToggle");
-        check(pipelineToggle, "Pipeline toggle missing");
-        check(pipelineToggle->text() == QString::fromUtf8("Поток данных"), "Data Flow rename missing");
-        check(pipelineToggle->defaultAction()->shortcut() == QKeySequence("Alt+D"),
-              "Data Flow shortcut conflicts with camera Ctrl");
-        auto *themeButton = window->findChild<QToolButton *>("themeMenuButton");
-        check(themeButton && themeButton->menu() && themeButton->text() == QString::fromUtf8("Тема"),
-              "Theme menu missing");
-        for (auto *action : window->findChildren<QAction *>())
-            for (const auto &shortcut : action->shortcuts()) {
+}
+
+static void inspect_control_shortcuts(MainWindow* window) {
+        for (const auto actions=window->findChildren<QAction *>();auto *action : actions)
+            for (const auto shortcuts=action->shortcuts();const auto &shortcut : shortcuts) {
                 if(!shortcut.isEmpty() && (shortcut[0].keyboardModifiers() & Qt::ControlModifier))
                     std::fprintf(stderr,"Ctrl action name=%s shortcut=%s context=%d parent=%s\n",qPrintable(action->objectName()),qPrintable(shortcut.toString()),int(action->shortcutContext()),action->parent()?action->parent()->metaObject()->className():"null");
                 check(shortcut.isEmpty() || !(shortcut[0].keyboardModifiers() & Qt::ControlModifier) ||
@@ -560,11 +565,43 @@ int main() {
                             shortcut == QKeySequence(QKeySequence::Paste))),
                       "Unexpected application Ctrl shortcut remains");
             }
+}
+static void status_and_shortcuts(CoreApplication& app,MainWindow* window,SettingsWidget* settings) {
+        // Legacy gradient migration is unsupported by the canonical-only document contract.
+        auto *statusTheme = window->findChild<QComboBox *>("statusTheme");
+        check(statusTheme, "Status theme selector missing");
+        statusTheme->setCurrentIndex(statusTheme->findData("light"));
+        check(app._ctx.file_configs.ui.theme == "light" &&
+                  settings->findChild<QComboBox *>("interfaceTheme")->currentIndex() == 2,
+              "Status/settings theme not synchronized");
+        statusTheme->setCurrentIndex(statusTheme->findData("dark"));
+        check(app._ctx.file_configs.ui.theme == "dark", "Status dark theme not persisted in memory");
+        check(!window->findChild<QLabel *>("graphApplyStatus"), "Global applied status indicator must be removed");
+        auto* diagnosticEditor=window->findChild<SchemeEditorWidget*>();check(diagnosticEditor,"Editor diagnostics missing");
+        auto* validation=diagnosticEditor->toolbar()->findChild<QLabel*>("pipelineValidation");check(validation,"Editor warning indicator missing");
+        auto& presenter=app.presenter();emit presenter.apply_status_changed("Error: test");
+        check(!validation->isHidden() && validation->toolTip().contains("test"),"Error is absent from editor toolbar");
+        const auto errorTooltip=validation->toolTip();
+        emit presenter.apply_status_changed("Running");
+        check(!validation->isHidden() && validation->toolTip()==errorTooltip,"Routine status cleared editor error");
+        check(!window->findChild<QLabel*>("savedPipelineWarning"),"Duplicate schema warning remains in global strip");
+        auto *renderStatus = window->findChild<QLabel *>("renderStatus");
+        check(!renderStatus,"Aggregate FPS remains in main window");
+        auto *pipelineToggle = window->findChild<QToolButton *>("pipelineToggle");
+        check(pipelineToggle, "Pipeline toggle missing");
+        check(pipelineToggle->text() == QString::fromUtf8("Поток данных"), "Data Flow rename missing");
+        check(pipelineToggle->defaultAction()->shortcut() == QKeySequence("Alt+D"),
+              "Data Flow shortcut conflicts with camera Ctrl");
+        auto *themeButton = window->findChild<QToolButton *>("themeMenuButton");
+        check(themeButton && themeButton->menu() && themeButton->text() == QString::fromUtf8("Тема"),
+              "Theme menu missing");
+        inspect_control_shortcuts(window);
         auto *saveShortcut = window->findChild<QAction *>("saveSettings");
         check(saveShortcut && saveShortcut->shortcut() == QKeySequence(QKeySequence::Save),
               "Save settings Ctrl+S missing");
-        auto &theme = ui::Theme::instance();
-        const auto revision = app.presenter().client().snapshot().graph_revision;
+}
+
+static void themed_controls(CoreApplication& app,MainWindow* window,auto& theme) {
         for (const auto *mode : {"dark", "light"}) {
             theme.set(mode);
             QTest::qWait(20);
@@ -591,9 +628,11 @@ int main() {
                           "Pipeline text contrast");
                 }
         }
-        // Test the actual popup viewport, not just the combo button palette.
-        settings->select_section(SettingsWidget::Graphs);
-        auto popupPixels = [&](QComboBox *combo, bool dark) {
+}
+
+static void popup_pixels(QComboBox* combo,bool dark) {
+auto& theme=ui::Theme::instance();
+
             auto *view = combo->view();
             if (!view->isVisible())
                 qCritical("Popup visibility combo=%s theme=%s buttonVisible=%d enabled=%d windowVisible=%d",
@@ -634,7 +673,45 @@ int main() {
                         readable = true;
                 }
             check(readable, "Popup item text is unreadable");
-        };
+}
+
+static void popup_reopen_transitions(QComboBox* combo,auto& theme) {
+            theme.set("system");
+            auto* hints=QGuiApplication::styleHints();
+            emit hints->colorSchemeChanged(Qt::ColorScheme::Dark);
+            QTest::qWait(200);
+            popup_pixels(combo, true);
+            emit hints->colorSchemeChanged(Qt::ColorScheme::Light);
+            QTest::qWait(200);
+            popup_pixels(combo, false);
+            combo->hidePopup();
+            theme.set("dark");
+            combo->showPopup();
+            QTest::qWait(200);
+            popup_pixels(combo, true);
+            combo->hidePopup();
+            theme.set("light");
+            combo->showPopup();
+            QTest::qWait(200);
+            popup_pixels(combo, false);
+            if (auto *model = qobject_cast<QStandardItemModel *>(combo->model())) {
+                auto *item = model->item(1);
+                const auto flags = item->flags();
+                item->setFlags(flags & ~Qt::ItemIsEnabled);
+                QTest::qWait(200);
+                popup_pixels(combo, false);
+                theme.set("dark");
+                QTest::qWait(200);
+                popup_pixels(combo, true);
+                item->setFlags(flags);
+            }
+            combo->hidePopup();
+}
+
+static void popup_theme_transitions(SettingsWidget* settings,auto& theme) {
+        // Test the actual popup viewport, not just the combo button palette.
+        settings->select_section(SettingsWidget::Graphs);
+
         for (const char *name : {"guiFpsMode"}) {
             auto *combo = settings->findChild<QComboBox *>(name);
             check(combo && combo->isEnabled(), "Popup combo unavailable");
@@ -653,88 +730,40 @@ int main() {
                   qPrintable(QApplication::activeWindow() ? QApplication::activeWindow()->objectName()
                                                           : QString("none")));
             QTest::qWait(200);
-            popupPixels(combo, false);
+            popup_pixels(combo, false);
             qInfo("Switch open popup dark");
             theme.set("dark");
             QTest::qWait(200);
-            popupPixels(combo, true);
+            popup_pixels(combo, true);
             qInfo("Switch open popup light");
             theme.set("light");
             QTest::qWait(200);
-            popupPixels(combo, false);
+            popup_pixels(combo, false);
             combo->view()->window()->grab().save(QCoreApplication::applicationDirPath() + "/../" + QString(name) +
                                                  "-light-popup.png");
-            theme.set("system");
-            QGuiApplication::styleHints()->colorSchemeChanged(Qt::ColorScheme::Dark);
-            QTest::qWait(200);
-            popupPixels(combo, true);
-            QGuiApplication::styleHints()->colorSchemeChanged(Qt::ColorScheme::Light);
-            QTest::qWait(200);
-            popupPixels(combo, false);
-            combo->hidePopup();
-            theme.set("dark");
-            combo->showPopup();
-            QTest::qWait(200);
-            popupPixels(combo, true);
-            combo->hidePopup();
-            theme.set("light");
-            combo->showPopup();
-            QTest::qWait(200);
-            popupPixels(combo, false);
-            if (auto *model = qobject_cast<QStandardItemModel *>(combo->model())) {
-                auto *item = model->item(1);
-                const auto flags = item->flags();
-                item->setFlags(flags & ~Qt::ItemIsEnabled);
-                QTest::qWait(200);
-                popupPixels(combo, false);
-                theme.set("dark");
-                QTest::qWait(200);
-                popupPixels(combo, true);
-                item->setFlags(flags);
-            }
-            combo->hidePopup();
+            popup_reopen_transitions(combo,theme);
         }
         qInfo("Actual popup pixels: GUI cadence light-dark-light while open, system events, newly "
               "opened, disabled text PASS");
+}
+
+static void system_theme_hints(auto& theme) {
         theme.set("system");
         auto *hints = QGuiApplication::styleHints();
-        hints->colorSchemeChanged(Qt::ColorScheme::Dark);
+        emit hints->colorSchemeChanged(Qt::ColorScheme::Dark);
         QTest::qWait(20);
         check(QApplication::palette().color(QPalette::Window).lightness() < 128, "System dark change");
-        hints->colorSchemeChanged(Qt::ColorScheme::Light);
+        emit hints->colorSchemeChanged(Qt::ColorScheme::Light);
         QTest::qWait(20);
         check(QApplication::palette().color(QPalette::Window).lightness() > 128, "System light change");
         theme.set("dark");
-        hints->colorSchemeChanged(Qt::ColorScheme::Light);
+        emit hints->colorSchemeChanged(Qt::ColorScheme::Light);
         check(theme.code() == "dark" && QApplication::palette().color(QPalette::Window).lightness() < 128,
               "Explicit theme overridden");
-        hints->colorSchemeChanged(hints->colorScheme());
-        auto *registryHost = window->findChild<QLineEdit *>("registryHost");
-        auto *registryStatus = window->findChild<QLabel *>("engineRegistryStatus");
-        auto *discover = window->findChild<QPushButton *>("discoverEngines");
-        auto *devices = window->findChild<presentation::ProcessorDirectoryModel *>();
-        const auto oldRegistry = app._ctx.file_configs.raw_document.value("aggregator");
-        check(registryHost && registryStatus && discover && devices && devices->processors().size() == 1,
-              "Registry local/observer state invalid");
-        auto *selector = window->findChild<QToolButton *>("engineSelectorButton");
-        auto *list = window->findChild<QTreeWidget *>("processorManagerList");
-        check(selector && selector->menu() && list && list->topLevelItemCount() == 1,
-              "Processor manager integration missing");
-        emit selector->menu()->aboutToShow();
-        check(selector->menu()->actions().last() == window->findChild<QAction *>("openEngineRegistry"),
-              "Processor menu lacks connection management");
-        window->findChild<QLineEdit *>("processorHost")->setText("invalid-address");
-        window->findChild<QPushButton *>("connectProcessor")->click();
-        check(registryStatus->text() == ui::text("Processor address must be an IP address") && devices->processors().size() == 1,
-              "Invalid processor endpoint was added");
-        registryHost->setText("not-an-ip");
-        discover->click();
-        check(registryStatus->text().contains(QString::fromUtf8("IP-адрес")) &&
-                  oldRegistry == app._ctx.file_configs.raw_document.value("aggregator"),
-              "Discovery error hidden or discovery rewrote settings");
-        check(selector->text() == QString::fromUtf8("Обработка в приложении"),
-              "Local processor explanation missing");
-        {
+        emit hints->colorSchemeChanged(hints->colorScheme());
+}
+
+static void live_registry_settings(CoreApplication& app,MainWindow* window,QLineEdit* registryHost,QLabel* registryStatus,QPushButton* discover,presentation::ProcessorDirectoryModel* devices,QTreeWidget* list,const QJsonValue& oldRegistry)         {
             const auto waitRegistry = [](auto predicate) {
                 QElapsedTimer timer;
                 timer.start();
@@ -775,6 +804,77 @@ int main() {
                   "Registry connection rewrote user preferences");
             devices->disconnect_registry();
         }
+
+static void registry_settings(CoreApplication& app,MainWindow* window) {
+        auto *registryHost = window->findChild<QLineEdit *>("registryHost");
+        auto *registryStatus = window->findChild<QLabel *>("engineRegistryStatus");
+        auto *discover = window->findChild<QPushButton *>("discoverEngines");
+        auto *devices = window->findChild<presentation::ProcessorDirectoryModel *>();
+        const auto oldRegistry = app._ctx.file_configs.raw_document.value("aggregator");
+        check(registryHost && registryStatus && discover && devices && devices->processors().size() == 1,
+              "Registry local/observer state invalid");
+        auto *selector = window->findChild<QToolButton *>("engineSelectorButton");
+        auto *list = window->findChild<QTreeWidget *>("processorManagerList");
+        check(selector && selector->menu() && list && list->topLevelItemCount() == 1,
+              "Processor manager integration missing");
+        emit selector->menu()->aboutToShow();
+        check(selector->menu()->actions().last() == window->findChild<QAction *>("openEngineRegistry"),
+              "Processor menu lacks connection management");
+        window->findChild<QLineEdit *>("processorHost")->setText("invalid-address");
+        window->findChild<QPushButton *>("connectProcessor")->click();
+        check(registryStatus->text() == ui::text("Processor address must be an IP address") && devices->processors().size() == 1,
+              "Invalid processor endpoint was added");
+        registryHost->setText("not-an-ip");
+        discover->click();
+        check(registryStatus->text().contains(QString::fromUtf8("IP-адрес")) &&
+                  oldRegistry == app._ctx.file_configs.raw_document.value("aggregator"),
+              "Discovery error hidden or discovery rewrote settings");
+        check(selector->text() == QString::fromUtf8("Обработка в приложении"),
+              "Local processor explanation missing");
+        live_registry_settings(app,window,registryHost,registryStatus,discover,devices,list,oldRegistry);
+}
+
+int main() {
+    QJsonObject rendering{{"version",1},{"extension",42},{"defaults",QJsonObject{{"gradient","green_red"},{"extra",23},{"axis_grid",true},{"floor_grid",false},{"light_strength",1.2345},{"mesh_width",1.2345}}}};
+    gui_fixture::App fixture(numeric_test_graph(),{{"theme","system"},{"language","ru"},{"graph_rendering",rendering}});
+    fixture.apply();
+    auto& app=*fixture.application;
+    const auto path=QString::fromLocal8Bit(fixture.path);QFile file(path);
+    check(file.open(QIODevice::ReadOnly),"read canonical baseline");const auto originalBytes=file.readAll();file.close();
+    try {
+        MainWindow *window = nullptr;
+        for (const auto widgets=QApplication::topLevelWidgets();auto *widget : widgets)
+            if (auto *candidate = qobject_cast<MainWindow *>(widget))
+                window = candidate;
+        check(window, "MainWindow missing");
+        QTest::qWait(100);
+        emit fixture.editor->graph_view_requested(10);
+        graph_names(fixture,app,window);
+        // Offscreen does not restore the parent window's active context after a modal dialog.
+        window->activateWindow();window->setFocus();QTest::qWait(20);
+        auto *settings = window->findChild<SettingsWidget *>();
+        check(settings, "Settings missing");
+        render_cadence(fixture,app,window,settings);
+        settings_sections(app,window,settings);
+        precision_and_movement(app,settings,window);
+        global_surface_preferences(app,settings);
+        const QString key=primary_graph_dock(window,8)->property("graphViewKey").toString();
+        auto preservedView = app._ctx.file_configs.ui.graph_views[key].toObject();
+        preservedView["view_extension"] = 91;
+        auto preservedOverride = preservedView["surface_override"].toObject();
+        preservedOverride["override_extension"] = 92;
+        preservedView["surface_override"] = preservedOverride;
+        app._ctx.file_configs.ui.graph_views[key] = preservedView;
+        const auto stops=color_scale_editor(app,settings,key);
+        per_view_aspects(app,window,settings,key,stops);
+        interval_persistence(app,window,key,path,file,originalBytes);
+        status_and_shortcuts(app,window,settings);
+        auto &theme = ui::Theme::instance();
+        const auto revision = app.presenter().client().snapshot().graph_revision;
+        themed_controls(app,window,theme);
+        popup_theme_transitions(settings,theme);
+        system_theme_hints(theme);
+        registry_settings(app,window);
         check(app.presenter().client().snapshot().graph_revision == revision, "Presentation changed processing graph");
         qInfo("Graphs global/per-node/apply/manual-save/unknown-field roundtrip and light/dark/system/menu/QtNodes "
               "contrast PASS");

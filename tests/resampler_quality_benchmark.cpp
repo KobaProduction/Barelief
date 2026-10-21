@@ -1,4 +1,5 @@
 #include <dsp_kernels/prepared_resampler.h>
+#include "resampler_quality_oracle.h"
 #include "speex_backend.h"
 #include "../examples/esp32_resampler_benchmark/common/packet_benchmark.h"
 #include <algorithm>
@@ -41,14 +42,13 @@ void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 namespace {
 using dsp_kernels::PreparedResampler;
 using dsp_kernels::ResamplerMode;
-constexpr double pi=std::numbers::pi, amplitude=.08;
+using resampler_test_oracle::pi;
+using resampler_test_oracle::amplitude;
 constexpr std::size_t packet=256;
 std::filesystem::path spectrum_directory;
-struct Tone { double frequency, phase, sine=0, cosine=0; };
-struct Fit {std::vector<Tone> tones;double residual=0, fitted=0, dc=0;};
+using resampler_test_oracle::fit;
 void require(bool condition,const char* message){if(!condition)throw std::runtime_error(message);}
 double db(double ratio){return 20*std::log10(std::max(ratio,1e-30));}
-double fold(double frequency,unsigned rate){return std::abs(frequency-rate*std::round(frequency/rate));}
 double wrap(double phase){return std::remainder(phase,2*pi);}
 const char* name(ResamplerMode mode){switch(mode){
     case ResamplerMode::ExistingFir:return "full_fir";
@@ -76,29 +76,6 @@ std::vector<float> process(PreparedResampler& op,const std::vector<float>& input
         result.insert(result.end(),output.begin(),output.begin()+written);at+=count;
     }
     require(result.size()==2*c.output_rate,"Unexpected output count");return result;
-}
-// Integer-Hz probes on an exactly one-second segment give orthogonal sine/cosine
-// bases. Measure phase freely; do not align an IIR with an invented fixed delay.
-Fit fit(const std::vector<float>& output,unsigned rate,const std::vector<double>& frequencies,double phase_offset=0){
-    require(output.size()>=2*rate,"Insufficient settling/measurement duration");
-    Fit result;std::set<double> aliases;
-    for(std::size_t k=0;k<frequencies.size();++k){const auto f=fold(frequencies[k],rate);
-        require(f>0 && f<rate/2. && f==std::floor(f) && aliases.insert(f).second,"Nonorthogonal tone probe");
-        Tone tone{f,.13*k+phase_offset};
-        for(std::size_t i=rate;i<2*rate;++i){const auto angle=2*pi*f*double(i)/rate;
-            tone.sine+=double(output[i])*std::sin(angle);tone.cosine+=double(output[i])*std::cos(angle);}
-        tone.sine*=2./rate;tone.cosine*=2./rate;
-        result.fitted+=(tone.sine*tone.sine+tone.cosine*tone.cosine)/2;
-        result.tones.push_back(tone);
-    }
-    for(std::size_t i=rate;i<2*rate;++i)result.dc+=output[i];result.dc/=rate;
-    // Direct residual avoids subtracting almost equal powers near Float32 floor.
-    for(std::size_t i=rate;i<2*rate;++i){double residual=output[i]-result.dc;
-        for(const auto& tone:result.tones){const auto angle=2*pi*tone.frequency*double(i)/rate;
-            residual-=tone.sine*std::sin(angle)+tone.cosine*std::cos(angle);}
-        result.residual+=residual*residual;
-    }
-    result.residual=std::sqrt(result.residual/rate);result.fitted=std::sqrt(result.fitted);return result;
 }
 void fit_control(){
     const unsigned rate=36000;const std::vector<double> frequencies{100,230,900,2700,5300,7500,9900};
@@ -191,46 +168,88 @@ void rate_study(std::ostream& file,bool timing_only,std::span<const unsigned> ou
     }
 }
 }
-int main(int argc,char** argv){try{
-    require(argc==2 || ((argc==3 || argc==4) && (std::string(argv[2])=="--rate-study" || std::string(argv[2])=="--rate-study-timing")),
-        "Usage: resampler_quality_benchmark output.jsonl [--rate-study|--rate-study-timing [even_output_rates_csv]]");
-    std::vector<unsigned> study_rates{35000,35200,35280,35700,36000,36750,36960,37000};
-    if(argc==4){study_rates.clear();std::string_view remaining(argv[3]);
-        require(!remaining.empty() && remaining.back()!=',',"Empty study output rate");
-        while(!remaining.empty()){
-            const auto comma=remaining.find(',');const auto token=remaining.substr(0,comma);unsigned rate=0;
-            const auto parsed=std::from_chars(token.data(),token.data()+token.size(),rate);
-            require(parsed.ec==std::errc{} && parsed.ptr==token.data()+token.size() && rate>32000 && rate<44100 && rate%2==0,
+namespace {
+std::vector<unsigned> selected_study_rates(int argc, char **argv) {
+    std::vector<unsigned> study_rates{35000, 35200, 35280, 35700, 36000, 36750, 36960, 37000};
+    if (argc != 4)
+        return study_rates;
+    study_rates.clear();
+    std::string_view remaining(argv[3]);
+    require(!remaining.empty() && remaining.back() != ',', "Empty study output rate");
+    while (!remaining.empty()) {
+        const auto comma = remaining.find(',');
+        const auto token = remaining.substr(0, comma);
+        unsigned rate = 0;
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), rate);
+        require(parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size() && rate > 32000 && rate < 44100 &&
+                    rate % 2 == 0,
                 "Study rates must be even integer Hz in (32000,44100)");
-            require(study_rates.size()<32 && std::find(study_rates.begin(),study_rates.end(),rate)==study_rates.end(),"Duplicate or excessive study rates");
-            study_rates.push_back(rate);if(comma==std::string_view::npos)break;remaining.remove_prefix(comma+1);
-        }
+        require(study_rates.size() < 32 && std::find(study_rates.begin(), study_rates.end(), rate) == study_rates.end(),
+                "Duplicate or excessive study rates");
+        study_rates.push_back(rate);
+        if (comma == std::string_view::npos)
+            break;
+        remaining.remove_prefix(comma + 1);
     }
-    fit_control();
-    spectrum_directory=std::filesystem::path(argv[1]).parent_path()/"spectra";
-    std::filesystem::create_directories(spectrum_directory);
-    std::ofstream file(argv[1]);require(bool(file),"Cannot open output");file<<std::setprecision(17);
-    file<<"{\"kind\":\"methodology\",\"packet\":256,\"signal_seconds\":2,\"settling_seconds\":1,\"measurement_seconds\":1,\"control_tones\":7,\"sweep_tones\":1,\"sweep_phases\":2,\"amplitude_per_tone\":0.08,\"fit_control\":true}\n";
-    if(argc>=3){rate_study(file,std::string(argv[2])=="--rate-study-timing",study_rates);
-        file.flush();require(bool(file),"Study output write failed");std::cout<<"RESAMPLER_RATE_STUDY_PASS\n";return 0;}
-    const auto& factory=desktop_resampling::speex_backend_factory();
-    for(unsigned in:{48000u,44100u})for(unsigned out:{36000u})
-        for(auto mode:{ResamplerMode::ExistingFir,ResamplerMode::CompactFir,ResamplerMode::SpeexDsp,
-                      ResamplerMode::IirExperimental,ResamplerMode::LinearDiagnostic}){
-            PreparedResampler op;require(op.prepare({mode,in,out,1,5},&factory),"Preparation failed");
-            const auto resources=op.resources();
-            file<<"{\"kind\":\"resources\",\"method\":\""<<name(mode)<<"\",\"in\":"<<in<<",\"out\":"<<out
-                <<",\"fixed_delay_input_samples\":"<<resources.fixed_delay_input_samples<<",\"frequency_dependent_delay\":"
-                <<(resources.frequency_dependent_delay?"true":"false")
-                <<",\"owned_bytes\":"<<resources.owned_bytes<<",\"coefficient_bytes\":"<<resources.coefficient_bytes
-                <<",\"state_bytes\":"<<resources.state_bytes<<"}\n";
-            probe(file,op,in,out,mode,"pass_control",{230,900,2700,5300,9900,15000,16000},true);
-            probe(file,op,in,out,mode,"spectrum",{5300});
-            sweep(file,op,in,out,mode,false);sweep(file,op,in,out,mode,true);
-            for(double center:{900.,5300.,9900.,16000.}){
-                for(int delta:{-1,0,1})probe(file,op,in,out,mode,"delay",{center+delta});
-            }
-            std::cout<<name(mode)<<' '<<in<<"->"<<out<<" done\n"<<std::flush;
+
+    return study_rates;
+}
+} // namespace
+int main(int argc, char **argv) {
+    try {
+        require(argc == 2 || ((argc == 3 || argc == 4) && (std::string(argv[2]) == "--rate-study" ||
+                                                           std::string(argv[2]) == "--rate-study-timing")),
+                "Usage: resampler_quality_benchmark output.jsonl [--rate-study|--rate-study-timing "
+                "[even_output_rates_csv]]");
+        const auto study_rates = selected_study_rates(argc, argv);
+        fit_control();
+        spectrum_directory = std::filesystem::path(argv[1]).parent_path() / "spectra";
+        std::filesystem::create_directories(spectrum_directory);
+        std::ofstream file(argv[1]);
+        require(bool(file), "Cannot open output");
+        file << std::setprecision(17);
+        file << "{\"kind\":\"methodology\",\"packet\":256,\"signal_seconds\":2,\"settling_seconds\":1,\"measurement_"
+                "seconds\":1,\"control_tones\":7,\"sweep_tones\":1,\"sweep_phases\":2,\"amplitude_per_tone\":0.08,"
+                "\"fit_control\":true}\n";
+        if (argc >= 3) {
+            rate_study(file, std::string(argv[2]) == "--rate-study-timing", study_rates);
+            file.flush();
+            require(bool(file), "Study output write failed");
+            std::cout << "RESAMPLER_RATE_STUDY_PASS\n";
+            return 0;
         }
-    file.flush();require(bool(file),"Output write failed");std::cout<<"RESAMPLER_QUALITY_PASS\n";return 0;
-}catch(const std::exception& e){std::cerr<<"RESAMPLER_QUALITY_FAIL: "<<e.what()<<'\n';return 1;}}
+        const auto &factory = desktop_resampling::speex_backend_factory();
+        for (unsigned in : {48000u, 44100u})
+            for (unsigned out : {36000u})
+                for (auto mode : {ResamplerMode::ExistingFir, ResamplerMode::CompactFir, ResamplerMode::SpeexDsp,
+                                  ResamplerMode::IirExperimental, ResamplerMode::LinearDiagnostic}) {
+                    PreparedResampler op;
+                    require(op.prepare({mode, in, out, 1, 5}, &factory), "Preparation failed");
+                    const auto resources = op.resources();
+                    file << "{\"kind\":\"resources\",\"method\":\"" << name(mode) << "\",\"in\":" << in
+                         << ",\"out\":" << out
+                         << ",\"fixed_delay_input_samples\":" << resources.fixed_delay_input_samples
+                         << ",\"frequency_dependent_delay\":"
+                         << (resources.frequency_dependent_delay ? "true" : "false")
+                         << ",\"owned_bytes\":" << resources.owned_bytes
+                         << ",\"coefficient_bytes\":" << resources.coefficient_bytes
+                         << ",\"state_bytes\":" << resources.state_bytes << "}\n";
+                    probe(file, op, in, out, mode, "pass_control", {230, 900, 2700, 5300, 9900, 15000, 16000}, true);
+                    probe(file, op, in, out, mode, "spectrum", {5300});
+                    sweep(file, op, in, out, mode, false);
+                    sweep(file, op, in, out, mode, true);
+                    for (double center : {900., 5300., 9900., 16000.}) {
+                        for (int delta : {-1, 0, 1})
+                            probe(file, op, in, out, mode, "delay", {center + delta});
+                    }
+                    std::cout << name(mode) << ' ' << in << "->" << out << " done\n" << std::flush;
+                }
+        file.flush();
+        require(bool(file), "Output write failed");
+        std::cout << "RESAMPLER_QUALITY_PASS\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << "RESAMPLER_QUALITY_FAIL: " << e.what() << '\n';
+        return 1;
+    }
+}

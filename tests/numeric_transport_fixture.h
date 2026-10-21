@@ -54,16 +54,22 @@ struct Replies {
 };
 inline EngineCommand command(EngineCommand::Kind kind){EngineCommand c;c.kind=kind;return c;}
 inline void connect(NumericRemoteEndpoint& remote){remote.connect_remote();require(wait([&]{return remote.snapshot().epoch!=0;}),"CONTROL2 connection");}
+template<class State> inline FrameStamp feed_stamp(const State& state,std::uint64_t sequence) {
+    FrameStamp stamp;stamp.epoch=state.epoch;stamp.graph_revision=state.graph_revision;
+    stamp.producer_epoch=state.epoch;stamp.generation=1;stamp.sequence=stamp.source_sequence=sequence;
+    stamp.stream_id="fixture";stamp.timestamp_ticks=std::int64_t(sequence);return stamp;
+}
 template<class Engine> inline void feed(Engine& engine,std::size_t elements,std::uint64_t sequence,std::uint64_t value,int node=0){
     auto c=contract(elements);std::vector<std::uint64_t> values(elements,value);
     for(std::size_t i=0;i<elements;++i)values[i]+=i;
-    PlaneLayout plane{0,{8,0}};FrameStamp stamp;
-    const auto state=engine.snapshot();stamp.epoch=state.epoch;stamp.graph_revision=state.graph_revision;
-    stamp.producer_epoch=state.epoch;stamp.generation=1;stamp.sequence=stamp.source_sequence=sequence;stamp.stream_id="fixture";
-    stamp.timestamp_ticks=std::int64_t(sequence);
+    PlaneLayout plane{0,{8,0}};
+    const auto stamp=feed_stamp(engine.snapshot(),sequence);
     DataFrameView frame{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{elements,1}}};
-    const auto status=engine.feed_numeric(node,frame);if(status!=Status::ok)std::fprintf(stderr,"canonical ingress node=%d sequence=%llu status=%d\n",node,(unsigned long long)sequence,int(status));require(status==Status::ok,"canonical ingress feed");
+    const auto status=engine.feed_numeric(node,frame);
+    if(status!=Status::ok)std::fprintf(stderr,"canonical ingress node=%d sequence=%llu status=%d\n",node,(unsigned long long)sequence,int(status));
+    require(status==Status::ok,"canonical ingress feed");
 }
+
 inline std::uint64_t value(const DeliveredNumericFrame& frame,std::size_t index=0){
     require(frame.frame&&frame.status==Status::ok&&frame.frame.view().stamp.available,"available numeric delivery");
     const auto view=std::get<NumericView>(frame.frame.view().payload);std::uint64_t result=0;

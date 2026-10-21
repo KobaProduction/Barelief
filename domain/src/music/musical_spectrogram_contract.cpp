@@ -68,7 +68,7 @@ struct MusicalLayout {
     const ConfiguredProcessingNode& node;
     MusicalParameters params{node};
     NumericContract input;
-    OwnedProcessingContract annotated;
+    OwnedProcessingContract annotated{};
     bool broadband=node.kind!="NoteSpectrum",notes=node.kind!="BroadbandRow";
     NumericUnit output_unit=NumericUnit::Values;
     double note_first=0,note_last=0;
@@ -87,20 +87,22 @@ struct MusicalLayout {
             if(node.kind=="MusicalSpectrogram")return Status::invalid_argument;
             if(input.quantity!=Quantity::Unspecified || input.unit!=NumericUnit::Values)return Status::incompatible_contract;
             output_unit=NumericUnit::Values;
-        } else if(representation=="magnitude") {
-            if(input.quantity!=Quantity::SpectrumMagnitude || input.unit!=NumericUnit::RawAmplitude)return Status::incompatible_contract;
-            output_unit=NumericUnit::RawAmplitude;
-        } else if(representation=="peak_amplitude") {
-            if(input.quantity!=Quantity::SpectrumPeakAmplitude || input.unit!=NumericUnit::RawAmplitude)return Status::incompatible_contract;
-            output_unit=NumericUnit::RawAmplitude;
-        } else if(representation=="power") {
-            if(input.quantity!=Quantity::SpectrumPower || input.unit!=NumericUnit::SquaredAmplitude)return Status::incompatible_contract;
-            output_unit=NumericUnit::SquaredAmplitude;
-        } else if(representation=="psd") {
-            if(input.quantity!=Quantity::SpectrumPsd || input.unit!=NumericUnit::SquaredAmplitudePerHertz)return Status::incompatible_contract;
-            output_unit=NumericUnit::SquaredAmplitudePerHertz;
-        } else return Status::invalid_argument;
+        } else return classify_spectrum_quantity(representation);
         return Status::ok;
+    }
+    Status classify_spectrum_quantity(std::string_view representation) {
+        struct Rule {std::string_view id;Quantity quantity;NumericUnit unit;};
+        constexpr Rule rules[]{
+            {"magnitude",Quantity::SpectrumMagnitude,NumericUnit::RawAmplitude},
+            {"peak_amplitude",Quantity::SpectrumPeakAmplitude,NumericUnit::RawAmplitude},
+            {"power",Quantity::SpectrumPower,NumericUnit::SquaredAmplitude},
+            {"psd",Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz}};
+        for(const auto& rule:rules)if(representation==rule.id) {
+            if(input.quantity!=rule.quantity || input.unit!=rule.unit)return Status::incompatible_contract;
+            output_unit=rule.unit;
+            return Status::ok;
+        }
+        return Status::invalid_argument;
     }
     std::uint64_t selected_bins(const Section& section,bool last) const {
         const auto& axis=input.coordinates[0];
@@ -126,16 +128,29 @@ struct MusicalLayout {
         }
         total+=sections[index];return total<=UINT32_MAX?Status::ok:Status::exhausted;
     }
-    Status prepare_sections() {
+    Status prepare_note_section() {
         if(notes) {
             if(!valid_note_settings(params,note_first,note_last))return Status::invalid_argument;
             total=std::uint64_t(note_last-note_first+1);sections[3]=std::size_t(total);
         }
-        if(!broadband)return Status::ok;
+        return Status::ok;
+    }
+    Status prepare_broadband_sections() {
         if(!params.weights(std::size_t(input.shape.extents[0].maximum)))return Status::invalid_argument;
         constexpr std::array<std::string_view,3> prefixes{"low","mid","high"};double previous_high=-1;
         for(std::size_t i=0;i<prefixes.size();++i){const auto status=append_section(prefixes[i],i,previous_high);if(status!=Status::ok)return status;}
         return Status::ok;
+    }
+    Status prepare_sections() {
+        const auto note_status=prepare_note_section();
+        if(note_status!=Status::ok)return note_status;
+        return broadband?prepare_broadband_sections():Status::ok;
+    }
+    Status prepare() {
+        auto status=annotate();if(status!=Status::ok)return status;
+        if(!valid_shape(input) || !valid_frequency_axis(input.coordinates[0]))return Status::incompatible_contract;
+        status=classify_quantity();if(status!=Status::ok)return status;
+        return prepare_sections();
     }
     NumericContract row() const {
         auto value=input;value.semantic=Semantic::Numeric;value.history_element=Semantic::Numeric;
@@ -167,10 +182,7 @@ Status musical_spectrogram_output_contracts(const ConfiguredProcessingNode& node
     std::array<OwnedProcessingContract,4>& outputs,std::array<std::size_t,4>* section_counts) noexcept {
     if(node.kind!="MusicalSpectrogram" && node.kind!="BroadbandRow" && node.kind!="NoteSpectrum")return Status::invalid_argument;
     MusicalLayout layout{node,MusicalParameters{node},supplied};
-    auto status=layout.annotate();if(status!=Status::ok)return status;
-    if(!valid_shape(layout.input) || !valid_frequency_axis(layout.input.coordinates[0]))return Status::incompatible_contract;
-    status=layout.classify_quantity();if(status!=Status::ok)return status;
-    status=layout.prepare_sections();if(status!=Status::ok)return status;
+    auto status=layout.prepare();if(status!=Status::ok)return status;
     std::array<OwnedProcessingContract,4> candidate;
     status=layout.materialize(candidate);if(status!=Status::ok)return status;
     outputs=std::move(candidate);if(section_counts)*section_counts=layout.sections;return Status::ok;

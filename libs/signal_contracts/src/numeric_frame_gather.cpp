@@ -55,15 +55,18 @@ Status project_matrix_row(const NumericGatherRequest& request,Description& descr
     return Status::ok;
 }
 
+Status validate_projected_contract(const NumericGatherRequest& r,Description& d) {
+    d.planes=d.output.channel_order.size();
+    auto status=validate_gather_channels(r,d);if(status!=Status::ok)return status;
+    status=validate_contract(d.output,r.limits.frame);if(status!=Status::ok)return status;
+    return storage_width(d.output,d.width);
+}
 Status project_gather_contract(const NumericGatherRequest& r,Description& d) {
     auto status=validate_contract(r.input,r.limits.frame);if(status!=Status::ok)return status;
     d.output=r.input;
     if(r.matrix_row){status=project_matrix_row(r,d);if(status!=Status::ok)return status;}
     if(!r.selected_channels.empty())d.output.channel_order=r.selected_channels;
-    d.planes=d.output.channel_order.size();
-    status=validate_gather_channels(r,d);if(status!=Status::ok)return status;
-    status=validate_contract(d.output,r.limits.frame);if(status!=Status::ok)return status;
-    return storage_width(d.output,d.width);
+    return validate_projected_contract(r,d);
 }
 Status gather_element_stride(const Description& d,std::size_t& stride) noexcept {
     stride=d.width;
@@ -149,15 +152,21 @@ Status gather_metadata_limits(const NumericGatherRequest& request,const Descript
     return Status::ok;
 }
 
-Status plan_output_metadata(const NumericGatherRequest& r,Description& d) {
+Status plan_history_metadata(const NumericGatherRequest& r,Description& d) {
     auto& q=d.requirements;
-    const auto coordinates=plan_coordinate_metadata(d);
-    if(coordinates!=Status::ok)return coordinates;
     d.time=q.output_metadata_bytes;
     if(r.matrix_row && r.input.coordinates[0].mode!=CoordinateMode::None &&
        !add(q.output_metadata_bytes,8))return Status::overflow;
     d.mask=q.output_metadata_bytes;
     if(r.matrix_row && !add(q.output_metadata_bytes,1))return Status::overflow;
+    return Status::ok;
+}
+Status plan_output_metadata(const NumericGatherRequest& r,Description& d) {
+    auto& q=d.requirements;
+    const auto coordinates=plan_coordinate_metadata(d);
+    if(coordinates!=Status::ok)return coordinates;
+    const auto history=plan_history_metadata(r,d);
+    if(history!=Status::ok)return history;
     d.stream=q.output_metadata_bytes;
     if(!add(q.output_metadata_bytes,r.limits.frame.max_string_bytes))return Status::overflow;
     q.scratch_bytes=q.payload_bytes;
@@ -395,15 +404,18 @@ void locate_history_row() noexcept {
         locate_history_row();
         return select_history_mask();
     }
+    Status validate_explicit_coordinate_axis(std::size_t axis,std::span<const std::byte> bytes) const noexcept {
+        std::size_t size=0;
+        if(!mul(source->actual[axis],8,size))return Status::overflow;
+        if(bytes.size()!=size)return Status::invalid_argument;
+        const auto selected=(!history || axis==1)?bytes:bytes.subspan(row.logical*8,8);
+        return finite_coordinates(selected)?Status::ok:Status::malformed;
+    }
 Status validate_coordinate_axis(std::size_t axis,std::size_t& total) const noexcept {
         const auto bytes=source->coordinates.axes[axis];
         if(input_contract.coordinates[axis].mode==CoordinateMode::ExplicitFloat64LE) {
-            std::size_t size=0;
-            if(!mul(source->actual[axis],8,size))return Status::overflow;
-            if(bytes.size()!=size)return Status::invalid_argument;
-            if(!history || axis==1) {
-                if(!finite_coordinates(bytes))return Status::malformed;
-            }else if(!finite_coordinates(bytes.subspan(row.logical*8,8)))return Status::malformed;
+            const auto status=validate_explicit_coordinate_axis(axis,bytes);
+            if(status!=Status::ok)return status;
         }else if(!bytes.empty())return Status::invalid_argument;
         return add(total,bytes.size())?Status::ok:Status::overflow;
     }

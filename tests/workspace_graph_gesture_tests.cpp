@@ -6,9 +6,10 @@
 #include <QProcess>
 #include <QtTest/QTest>
 #include <cstdio>
+#include <vector>
 using namespace gui_fixture;
 static int opened(MainWindow* window,WorkspaceDock* flow=nullptr){
-    int count=0;for(auto* dock:window->workspaceDocks())
+    int count=0;for(const auto docks=window->workspaceDocks();auto* dock:docks)
         if(dock->property("graphNode").isValid() && !dock->isClosed() && (!flow || dock->sharesHost(flow)))++count;
     return count;
 }
@@ -30,16 +31,77 @@ static void placement(WorkspaceDock* dock,int value){
     auto* action=dock->findChild<QAction*>("graphPlacement");check(action && action->menu(),"Graph placement menu absent");
     action->menu()->actions()[value]->trigger();workspace_drag::settle();
 }
+static void floating_pipeline_replacement(App& app,WorkspaceDock* flow,WorkspaceDock* external,WorkspaceDock* externalAgain) {
+    placement(flow,0);check(flow->isFloating(),"Explicit pipeline detach failed");
+    const auto beforePipelineOnly=app.window->workspaceDocks().size();click_node(app,10);
+    check(opened(app.window,flow)==0 && app.window->workspaceDocks().size()==beforePipelineOnly,"Floating pipeline-only click consumed graphs from another host");
+    auto* floatingSlot=app.open(10,1,0);check(floatingSlot->sharesHost(flow),"Explicit tab in floating pipeline targeted another host");
+    click_node(app,11);check(floatingSlot->isClosed() && opened(app.window,flow)==1,"Floating pipeline click replaced a graph outside its own host");
+    WorkspaceDock* selected=nullptr;for(const auto docks=app.window->workspaceDocks();auto* dock:docks)
+        if(dock->sharesHost(flow) && !dock->isClosed() && dock->property("graphNode").isValid())selected=dock;
+    check(selected && selected->property("graphNode").toInt()==11 && selected->dockAreaWidget()->currentDockWidget()==selected,"Floating pipeline selected the wrong endpoint");
+    check(external->isFloating() && externalAgain->isFloating() && !external->sharesHost(flow),"Floating pipeline replacement consumed graph-only host");
+}
+
+static void pipeline_slot_replacement(App& app,WorkspaceDock* first,WorkspaceDock* inactive,WorkspaceDock* adjacent,WorkspaceDock* external,WorkspaceDock* externalAgain,const QVariantMap& binding) {
+    select_tab(first);const auto beforeFocus=app.window->workspaceDocks().size();
+    click_node(app,11);check(inactive->dockAreaWidget()->currentDockWidget()==inactive && !first->isClosed() && app.window->workspaceDocks().size()==beforeFocus,"Click did not focus an existing inactive tab");
+    click_node(app,9);auto* raw=app.node_dock(9);check(!raw->isClosed() && inactive->isClosed() && raw->dockAreaWidget()==first->dockAreaWidget() && !adjacent->isClosed(),"New endpoint did not replace last selected slot only");
+    click_node(app,8);auto* surface=app.node_dock(8);check(!surface->isClosed() && raw->isClosed(),"Second endpoint did not replace slot");
+    const auto beforeReturn=opened(app.window);
+    click_node(app,9);check(!raw->isClosed() && surface->isClosed() && opened(app.window)==beforeReturn && raw->dockAreaWidget()->currentDockWidget()==raw,"Returning closed same-group endpoint implicitly added a tab");
+    check(external->isFloating() && externalAgain->isFloating() && external->property("numericEndpoint").toMap()==binding,"Pipeline clicks consumed an external graph-only host");
+}
+
+static std::pair<QByteArray,QByteArray> persist_joined_tabs(App& app,WorkspaceDock* first,WorkspaceDock* external) {
+    app.window->findChild<QAction*>("saveSettings")->trigger();
+    QFile persisted(QString::fromLocal8Bit(app.path));check(persisted.open(QIODevice::ReadOnly),"Read saved gesture workspace");
+    const auto joinedProject=persisted.readAll();persisted.close();
+    select_tab(first);app.window->findChild<QAction*>("saveSettings")->trigger();
+    check(persisted.open(QIODevice::ReadOnly),"Read first-active gesture workspace");
+    const auto firstActiveProject=persisted.readAll();persisted.close();select_tab(external);
+    return {joinedProject,firstActiveProject};
+}
+struct DropTabGeometry {int index;bool hidden,visible;QRect barBounds,containerBounds;};
+static std::vector<DropTabGeometry> target_tab_geometry(WorkspaceDock* target) {
+    auto* bar=target->dockAreaWidget()->titleBar()->tabBar();
+    std::vector<DropTabGeometry> result;
+    for(int i=0;i<bar->count();++i){
+        auto* tab=bar->tab(i);
+        result.push_back({i,tab->isHidden(),tab->isVisibleTo(bar),QRect(bar->mapFromGlobal(tab->mapToGlobal(QPoint())),tab->size()),tab->geometry()});
+    }
+    return result;
+}
+static std::vector<DropTabGeometry> insert_external_tab(WorkspaceDock* source,WorkspaceDock* target) {
+    std::vector<DropTabGeometry> geometry;
+    auto* widget=source->tabWidget();
+    workspace_drag::drag_to(widget,widget->rect().center(),[&]{
+        const auto point=workspace_drag::insertion(target,1);
+        geometry=target_tab_geometry(target);
+        return point;
+    });
+    return geometry;
+}
+static void check_inserted_tab(WorkspaceDock* external,const QPointer<ads::CFloatingDockContainer>& oldHost,const std::vector<DropTabGeometry>& geometry) {
+    auto* area=external->dockAreaWidget();
+    auto* active=area?area->currentDockWidget():nullptr;
+    const int index=area?area->dockWidgets().indexOf(external):-1;
+    if(!oldHost.isNull() || active!=external || index!=1){
+        qWarning()<<"Drag insertion diagnostic"<<"old host alive"<<!oldHost.isNull()<<"active"<<active<<"expected"<<external<<"index"<<index;
+        for(const auto& tab:geometry)qWarning()<<"Drop target tab"<<tab.index<<"hidden"<<tab.hidden<<"visibleToBar"<<tab.visible<<"barBounds"<<tab.barBounds<<"containerBounds"<<tab.containerBounds;
+    }
+    check(oldHost.isNull() && active==external && index==1,"Drop lost exact insertion/active tab or leaked source host");
+}
 static QJsonObject initial_session(){
     App app;app.apply();auto* flow=app.dock("dataFlowDock");
     const auto baseline=app.presenter().client().snapshot();
-    for(auto* dock:app.window->workspaceDocks())if(dock!=flow)dock->toggleView(false);
+    for(const auto docks=app.window->workspaceDocks();auto* dock:docks)if(dock!=flow)dock->toggleView(false);
     const auto inventory=app.window->workspaceDocks().size();
     click_node(app,10);check(opened(app.window)==0 && app.window->workspaceDocks().size()==inventory,"Pipeline-only click created a graph");
     auto* first=app.open(10,2,0);auto* inactive=app.open(11,1,0);auto* adjacent=app.open(10,2,0);
     check(first!=adjacent && first->dockAreaWidget()==inactive->dockAreaWidget() && adjacent->dockAreaWidget()!=first->dockAreaWidget(),"Explicit tab/adjacent actions lost distinct instances");
-    const QRect flowBounds(flow->mapTo(app.window,QPoint()),flow->size());
-    const QRect graphBounds(first->mapTo(app.window,QPoint()),first->size());
+    const QRect flowBounds(app.window->mapFromGlobal(flow->mapToGlobal(QPoint())),flow->size());
+    const QRect graphBounds(app.window->mapFromGlobal(first->mapToGlobal(QPoint())),first->size());
     check(flowBounds.top()>graphBounds.bottom(),"Pipeline default is not below internal graphs");
     auto* external=app.open(12,0,0);auto* externalAgain=app.open(12,0,0);
     check(external!=externalAgain && external->isFloating() && externalAgain->isFloating() && !external->sharesHost(externalAgain),"Repeated external actions reused an instance/host");
@@ -50,38 +112,18 @@ static QJsonObject initial_session(){
     auto& views=app.application->_ctx.file_configs.ui.graph_views;
     auto prefs=views.value(key).toObject();prefs["extension"]=QJsonObject{{"keep",42}};views[key]=prefs;
     QPointer<QWidget> renderer=external->widget();QPointer<ads::CFloatingDockContainer> oldHost=external->floatingDockContainer();
-    workspace_drag::tab(external,workspace_drag::insertion(first,1));
+    const auto dropGeometry=insert_external_tab(external,first);
     check(!external->isFloating() && external->sharesHost(flow) && external->dockAreaWidget()==first->dockAreaWidget(),"Floating graph did not join existing pipeline tab group");
-    check(oldHost.isNull() && external->dockAreaWidget()->currentDockWidget()==external && external->dockAreaWidget()->dockWidgets().indexOf(external)==1,"Drop lost exact insertion/active tab or leaked source host");
+    check_inserted_tab(external,oldHost,dropGeometry);
     check(external->objectName()==identity && external->property("viewInstance")==instance && external->widget()==renderer && external->property("numericEndpoint").toMap()==binding && views.value(key).toObject().value("extension")==prefs.value("extension"),"Gesture changed instance/renderer/settings/port binding");
     check(external->dockAreaWidget()->titleBar()->findChild<QToolButton*>("tabsMenuButton")->isVisible(),"Joined group missing tab list");
     workspace_drag::tab_list(external);
     const auto firstIdentity=first->objectName(),inactiveIdentity=inactive->objectName();
-    app.window->findChild<QAction*>("saveSettings")->trigger();
-    QFile persisted(QString::fromLocal8Bit(app.path));check(persisted.open(QIODevice::ReadOnly),"Read saved gesture workspace");
-    const auto joinedProject=persisted.readAll();persisted.close();
-    select_tab(first);app.window->findChild<QAction*>("saveSettings")->trigger();
-    check(persisted.open(QIODevice::ReadOnly),"Read first-active gesture workspace");
-    const auto firstActiveProject=persisted.readAll();persisted.close();select_tab(external);
+    const auto [joinedProject,firstActiveProject]=persist_joined_tabs(app,first,external);
     workspace_drag::tab(external,QPoint(1700,1000));check(external->isFloating() && !first->isFloating() && !inactive->isFloating(),"Reverse detach moved other tabs");
     check(external->widget()==renderer && external->property("numericEndpoint").toMap()==binding,"Reverse detach changed renderer/binding");
-    select_tab(first);const auto beforeFocus=app.window->workspaceDocks().size();
-    click_node(app,11);check(inactive->dockAreaWidget()->currentDockWidget()==inactive && !first->isClosed() && app.window->workspaceDocks().size()==beforeFocus,"Click did not focus an existing inactive tab");
-    auto* raw=app.dock("rawSamplesDock");auto* surface=app.dock("spectrogramDock");
-    click_node(app,9);check(!raw->isClosed() && inactive->isClosed() && raw->dockAreaWidget()==first->dockAreaWidget() && !adjacent->isClosed(),"New endpoint did not replace last selected slot only");
-    click_node(app,8);check(!surface->isClosed() && raw->isClosed(),"Second endpoint did not replace slot");
-    const auto beforeReturn=opened(app.window);
-    click_node(app,9);check(!raw->isClosed() && surface->isClosed() && opened(app.window)==beforeReturn && raw->dockAreaWidget()->currentDockWidget()==raw,"Returning closed same-group endpoint implicitly added a tab");
-    check(external->isFloating() && externalAgain->isFloating() && external->property("numericEndpoint").toMap()==binding,"Pipeline clicks consumed an external graph-only host");
-    placement(flow,0);check(flow->isFloating(),"Explicit pipeline detach failed");
-    const auto beforePipelineOnly=app.window->workspaceDocks().size();click_node(app,10);
-    check(opened(app.window,flow)==0 && app.window->workspaceDocks().size()==beforePipelineOnly,"Floating pipeline-only click consumed graphs from another host");
-    auto* floatingSlot=app.open(10,1,0);check(floatingSlot->sharesHost(flow),"Explicit tab in floating pipeline targeted another host");
-    click_node(app,11);check(floatingSlot->isClosed() && opened(app.window,flow)==1,"Floating pipeline click replaced a graph outside its own host");
-    WorkspaceDock* selected=nullptr;for(auto* dock:app.window->workspaceDocks())
-        if(dock->sharesHost(flow) && !dock->isClosed() && dock->property("graphNode").isValid())selected=dock;
-    check(selected && selected->property("graphNode").toInt()==11 && selected->dockAreaWidget()->currentDockWidget()==selected,"Floating pipeline selected the wrong endpoint");
-    check(external->isFloating() && externalAgain->isFloating() && !external->sharesHost(flow),"Floating pipeline replacement consumed graph-only host");
+    pipeline_slot_replacement(app,first,inactive,adjacent,external,externalAgain,binding);
+    floating_pipeline_replacement(app,flow,external,externalAgain);
     const auto final=app.presenter().client().snapshot();
     check(final.graph_revision==baseline.graph_revision && final.epoch==baseline.epoch && final.statuses.value("analyzer").state==pipeline::State::Running,"Workspace gesture changed continuous processing");
     return {{"joinedProject",QString::fromLatin1(joinedProject.toBase64())},{"firstActiveProject",QString::fromLatin1(firstActiveProject.toBase64())},

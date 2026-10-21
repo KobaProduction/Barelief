@@ -43,14 +43,23 @@ void frontend_mismatches(const ProfileCompatibility& a,const ProfileCompatibilit
     if(profile_window_scaling(a).sum!=profile_window_scaling(b).sum)reasons.push_back(Reason::CoherentGain);
     if(profile_window_scaling(a).sum_squares!=profile_window_scaling(b).sum_squares)reasons.push_back(Reason::PowerGain);
 }
+void resampler_mismatches(const ProfileCompatibility& a,const ProfileCompatibility& b,std::vector<Reason>& reasons) {
+    if(a.resampler_mode!=b.resampler_mode)reasons.push_back(Reason::ResamplerMode);
+    if(a.resampler_quality!=b.resampler_quality)reasons.push_back(Reason::ResamplerQuality);
+    if(a.resampler_design_version!=b.resampler_design_version)reasons.push_back(Reason::ResamplerDesignVersion);
+}
 void policy_mismatches(const ProfileCompatibility& a,const ProfileCompatibility& b,std::vector<Reason>& reasons) {
     if(a.include_dc!=b.include_dc)reasons.push_back(Reason::DcLayout);
     if(a.include_nyquist!=b.include_nyquist)reasons.push_back(Reason::NyquistLayout);
     if(a.channel_policy!=b.channel_policy)reasons.push_back(Reason::ChannelPolicy);
     if(a.channel_index!=b.channel_index)reasons.push_back(Reason::ChannelIndex);
-    if(a.resampler_mode!=b.resampler_mode)reasons.push_back(Reason::ResamplerMode);
-    if(a.resampler_quality!=b.resampler_quality)reasons.push_back(Reason::ResamplerQuality);
-    if(a.resampler_design_version!=b.resampler_design_version)reasons.push_back(Reason::ResamplerDesignVersion);
+    resampler_mismatches(a,b,reasons);
+}
+void calibration_mismatches(const ProfileCompatibility& actual,const ProfileCompatibility& expected,ProfileMatchScope scope,std::vector<Reason>& reasons) {
+    if(scope==ProfileMatchScope::Exact){
+        if(actual.reference!=expected.reference)reasons.push_back(Reason::Reference);
+        if(actual.floor_db!=expected.floor_db)reasons.push_back(Reason::Floor);
+    }
 }
 bool valid_presence(const FrequencyProfile& p) {
     return p.frequency_presence.empty() || (p.frequency_presence.size()==p.gains.size() &&
@@ -92,10 +101,7 @@ std::vector<ProfileMismatchReason> profile_mismatches(const FrequencyProfile& p,
     if(problem){reasons.push_back(*problem);return reasons;}
     if(!valid_expected_frontend(expected,p.compatibility,scope))return {Reason::InvalidSettings};
     frontend_mismatches(p.compatibility,expected,reasons);policy_mismatches(p.compatibility,expected,reasons);
-    if(scope==ProfileMatchScope::Exact){
-        if(p.compatibility.reference!=expected.reference)reasons.push_back(Reason::Reference);
-        if(p.compatibility.floor_db!=expected.floor_db)reasons.push_back(Reason::Floor);
-    }
+    calibration_mismatches(p.compatibility,expected,scope,reasons);
     payload_mismatches(p,expected.fft_size/2+1,reasons);
     return reasons;
 }
@@ -122,11 +128,15 @@ struct ProfileAccumulator {
         }
         return true;
     }
-    bool add(const CompositionStatistics& track,std::string& error) {
+    bool validate_track(const CompositionStatistics& track,std::string& error) const {
         if(track.active_frames>track.frames || !std::isfinite(track.rms) || track.rms<0 || track.mean_spectrum.size()!=value.mean_spectrum.size()){
             error="Invalid composition statistics";return false;
         }
         if(!std::all_of(track.mean_spectrum.begin(),track.mean_spectrum.end(),[](double v){return std::isfinite(v) && v>=0;})){error="Invalid spectrum statistics";return false;}
+        return true;
+    }
+    bool add(const CompositionStatistics& track,std::string& error) {
+        if(!validate_track(track,error))return false;
         if(!track.active_frames)return true;
         if(!add_presence(track,error))return false;
         ++active;
@@ -179,12 +189,18 @@ bool PreparedFrequencyNormalizer::prepare_manual(std::size_t bins,float gain) {
     if(!bins||bins>max_fft_samples/2+1||!std::isfinite(gain)||gain<0||gain>1000000) return false;
     gains_.assign(bins,gain); return true;
 }
-bool PreparedFrequencyNormalizer::process(std::span<const float> input,std::span<float> output) const noexcept {
-    if(input.size()!=gains_.size()||output.size()!=input.size()||gains_.empty()) return false;
+namespace {
+bool normalizer_alias_safe(std::span<const float> input,std::span<float> output) noexcept {
     if(input.data()!=output.data()) {
         const auto a=reinterpret_cast<std::uintptr_t>(input.data()), b=reinterpret_cast<std::uintptr_t>(output.data());
         const auto bytes=input.size_bytes(); if(a<b+bytes && b<a+bytes) return false;
     }
+    return true;
+}
+}
+bool PreparedFrequencyNormalizer::process(std::span<const float> input,std::span<float> output) const noexcept {
+    if(input.size()!=gains_.size()||output.size()!=input.size()||gains_.empty()) return false;
+    if(!normalizer_alias_safe(input,output))return false;
     for(std::size_t k=0;k<input.size();++k)
         if(!std::isfinite(input[k])||input[k]<0||double(input[k])*gains_[k]>std::numeric_limits<float>::max()) return false;
     for(std::size_t k=0;k<input.size();++k) output[k]=input[k]*gains_[k];

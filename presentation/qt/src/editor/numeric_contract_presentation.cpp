@@ -98,13 +98,16 @@ QString destination_integer_range(const DTypeDescriptor& target) {
     } else high=bits==64?QString::number(std::numeric_limits<quint64>::max()):QString::number((quint64{1}<<bits)-1);
     return ui::text("Destination range: %1 … %2").arg(low,high);
 }
+void append_destination_effects(const DTypeDescriptor& source,const DTypeDescriptor& target,QStringList& result) {
+    if(source.ieee && !target.ieee)result<<ui::text("Fractional values require rounding; exact mode rejects them");
+    if(!target.signed_value && !target.ieee && (source.signed_value || source.ieee))result<<ui::text("Negative values are outside the destination range");
+    if(target.ieee)result<<ui::text("Some values lose precision in the destination mantissa");
+    if(!target.ieee)result<<destination_integer_range(target);
+}
 QString conversion_effects(DType from,DType to) {
     if(domain::dtype_conversion_is_exact(from,to))return ui::text("Every finite source value is preserved exactly");
     const auto* a=dtype_descriptor(from);const auto* b=dtype_descriptor(to);if(!a || !b)return ui::text("Incompatible connection");QStringList result;
-    if(a->ieee && !b->ieee)result<<ui::text("Fractional values require rounding; exact mode rejects them");
-    if(!b->signed_value && !b->ieee && (a->signed_value || a->ieee))result<<ui::text("Negative values are outside the destination range");
-    if(b->ieee)result<<ui::text("Some values lose precision in the destination mantissa");
-    if(!b->ieee)result<<destination_integer_range(*b);
+    append_destination_effects(*a,*b,result);
     result<<ui::text("Overflow is rejected or saturated according to the selected policy; no wrap");
     return result.join('\n');
 }

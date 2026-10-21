@@ -205,6 +205,23 @@ static void replace_clipboard_connections(QJsonObject document,const QJsonArray&
     result->setText(QString::fromUtf8(corrected));
     QApplication::clipboard()->setMimeData(result);
 }
+static bool validate_clipboard_graph(const QJsonObject& document,QJsonArray& connections) {
+    const auto nodes=document.value("nodes").toArray();
+    NumericEditorGraphModel candidate(clipboard_registry());
+    for(const auto value:nodes)if(!add_clipboard_node(value,candidate))return false;
+    domain::NumericProcessingGraph checked;if(!candidate.export_numeric_graph(checked,nullptr,false))return false;
+    if(!valid_clipboard_groups(document.value("groups"),nodes,candidate))return false;
+    const auto document_connections=document.value("connections").toArray();
+    if(!copy_clipboard_connections(document_connections,candidate,connections))return false;
+    return true;
+}
+static bool install_trimmed_clipboard(QJsonObject& document,const QJsonArray& connections) {
+    // QtNodes Copy includes incident edges to unselected nodes. Its Paste then
+    // remaps absent endpoints to ID 0, producing invalid links/failed insertion.
+    if(connections==document.value("connections").toArray()) return true;
+    replace_clipboard_connections(document,connections);
+    return true;
+}
 static bool trim_clipboard_connections() {
     const auto *mime=QApplication::clipboard()->mimeData();
     if(!mime) return false;
@@ -213,19 +230,9 @@ static bool trim_clipboard_connections() {
       if(bytes.size()>16*1024*1024)return false;
     auto document=QJsonDocument::fromJson(bytes).object();
     if(!valid_clipboard_document(document))return false;
-    const auto nodes=document.value("nodes").toArray();
-    NumericEditorGraphModel candidate(clipboard_registry());
-    for(const auto value:nodes)if(!add_clipboard_node(value,candidate))return false;
-    domain::NumericProcessingGraph checked;if(!candidate.export_numeric_graph(checked,nullptr,false))return false;
-    if(!valid_clipboard_groups(document.value("groups"),nodes,candidate))return false;
     QJsonArray connections;
-    const auto document_connections=document.value("connections").toArray();
-    if(!copy_clipboard_connections(document_connections,candidate,connections))return false;
-    // QtNodes Copy includes incident edges to unselected nodes. Its Paste then
-    // remaps absent endpoints to ID 0, producing invalid links/failed insertion.
-    if(connections==document.value("connections").toArray()) return true;
-    replace_clipboard_connections(document,connections);
-    return true;
+    if(!validate_clipboard_graph(document,connections))return false;
+    return install_trimmed_clipboard(document,connections);
 }
 
 class LocalizedDataFlowScene final : public DataFlowGraphicsScene {
@@ -243,15 +250,18 @@ public:
             connect(action,&QAction::triggered,this,[graph,edge,mode]{graph->edit_connection_policy(edge,mode);});
         }
     }
+    void append_connection_details(QMenu* menu,NumericEditorGraphModel& model,QtNodes::ConnectionId edge) {
+        auto* graph=&model;
+            auto* from=graph->delegateModel<AudioNodeModel>(edge.outNodeId);auto* to=graph->delegateModel<AudioNodeModel>(edge.inNodeId);
+            if(!from || !to)return;
+            auto* detail=menu->addAction(from->caption()+" → "+to->caption()+"\n"+from->portCaption(QtNodes::PortType::Out,edge.outPortIndex)+" → "+to->portCaption(QtNodes::PortType::In,edge.inPortIndex));detail->setEnabled(false);
+            add_connection_policies(menu,graph,edge);
+    }
     void add_connection_details(QMenu* menu,QPointF scene_position) {
         const auto hit_items=items(scene_position);
         for(auto* item:hit_items)if(auto* wire=qgraphicsitem_cast<QtNodes::ConnectionGraphicsObject*>(item)) {
             auto* graph=dynamic_cast<NumericEditorGraphModel*>(&graphModel());if(!graph)break;
-            const auto edge=wire->connectionId();
-            auto* from=graph->delegateModel<AudioNodeModel>(edge.outNodeId);auto* to=graph->delegateModel<AudioNodeModel>(edge.inNodeId);
-            if(!from || !to)break;
-            auto* detail=menu->addAction(from->caption()+" → "+to->caption()+"\n"+from->portCaption(QtNodes::PortType::Out,edge.outPortIndex)+" → "+to->portCaption(QtNodes::PortType::In,edge.inPortIndex));detail->setEnabled(false);
-            add_connection_policies(menu,graph,edge);
+            append_connection_details(menu,*graph,wire->connectionId());
             break;
         }
     }
@@ -415,6 +425,12 @@ class ProfiledGraphicsView final : public GraphicsView {
     void set_navigation_speed(float speed) {
         _navigation_speed=std::isfinite(speed) ? std::clamp(speed,0.5f,10.0f) : 3.0f;
     }
+    void apply_standard_shortcut(QAction* action,const QString& stable) {
+                if(stable=="Copy Selection") action->setShortcuts({QKeySequence(QKeySequence::Copy)});
+                if(stable=="Paste Selection") action->setShortcuts({QKeySequence(QKeySequence::Paste)});
+                if(stable=="Cut Selection") action->setShortcuts({QKeySequence(QKeySequence::Cut)});
+                if(stable=="Delete Selection") action->setShortcuts({QKeySequence(Qt::Key_Delete),QKeySequence(Qt::Key_Backspace)});
+    }
     void configure_graph_shortcuts() {
         const auto graph_actions=actions();
         for(auto *action:graph_actions)configure_graph_shortcut(action);
@@ -429,10 +445,7 @@ class ProfiledGraphicsView final : public GraphicsView {
             const auto stable=action->text();
             if(auto label=labels.value(stable,nullptr)) {
                 ui::bind(action,"text",label);
-                if(stable=="Copy Selection") action->setShortcuts({QKeySequence(QKeySequence::Copy)});
-                if(stable=="Paste Selection") action->setShortcuts({QKeySequence(QKeySequence::Paste)});
-                if(stable=="Cut Selection") action->setShortcuts({QKeySequence(QKeySequence::Cut)});
-                if(stable=="Delete Selection") action->setShortcuts({QKeySequence(Qt::Key_Delete),QKeySequence(Qt::Key_Backspace)});
+                apply_standard_shortcut(action,stable);
             }
     }
     void clear_shared_history_shortcut(QAction* action) {
@@ -749,17 +762,23 @@ class ProfiledGraphicsView final : public GraphicsView {
             if(event->button()==Qt::MiddleButton) finish_middle_pan();
             event->accept(); return;
         }
+        release_graph_interaction(event);
+    }
+    void release_graph_interaction(QMouseEvent* event) {
         const bool wiring=scene()->mouseGrabberItem() && scene()->mouseGrabberItem()->type()==QtNodes::ConnectionGraphicsObject::Type;
         const auto undoIndex=static_cast<DataFlowGraphicsScene*>(scene())->undoStack().index();
         GraphicsView::mouseReleaseEvent(event);
         if(wiring && static_cast<DataFlowGraphicsScene*>(scene())->undoStack().index()==undoIndex && on_connection_rejected)on_connection_rejected();
-        if(event->button()==Qt::LeftButton && !_press_alt && _pressed_node!=QtNodes::InvalidNodeId && !editing_control_focused() &&
-           (_last_pointer-_press_pointer).manhattanLength()<QApplication::startDragDistance() && on_graph_clicked)
-            on_graph_clicked(_pressed_node,_press_alt);
+        dispatch_graph_click(event);
         _pressed_node=QtNodes::InvalidNodeId;
         remember_camera();
         if (synchronize_positions) synchronize_positions();
         if (on_interaction) on_interaction();
+    }
+    void dispatch_graph_click(QMouseEvent* event) {
+        if(event->button()==Qt::LeftButton && !_press_alt && _pressed_node!=QtNodes::InvalidNodeId && !editing_control_focused() &&
+           (_last_pointer-_press_pointer).manhattanLength()<QApplication::startDragDistance() && on_graph_clicked)
+            on_graph_clicked(_pressed_node,_press_alt);
     }
     void finish_reorder_release(QMouseEvent* event) {
         commit_port_reorder();
@@ -1536,6 +1555,10 @@ QWidget* SchemeEditorWidget::execution_settings_widget(QWidget* parent) {
     ui::bind(rate,"toolTip","Analysis rate, Hz (integer or numerator/denominator)");
     auto* layout=new QVBoxLayout(settings);layout->setContentsMargins(0,0,0,0);
     layout->addWidget(ui::make<QLabel>("Analysis rate, Hz",settings));layout->addWidget(rate);
+    bind_execution_rate(rate);
+    return settings;
+}
+void SchemeEditorWidget::bind_execution_rate(QLineEdit* rate) {
     auto* numericRate=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());
     auto refreshRate=[this,numericRate,rate]{refresh_execution_rate_text(numericRate,rate);};
     refreshRate();connect(numericRate,&NumericEditorGraphModel::atomic_edit_finished,rate,refreshRate);
@@ -1544,7 +1567,6 @@ QWidget* SchemeEditorWidget::execution_settings_widget(QWidget* parent) {
         if(!edit_execution_rate(rate,numericRate))set_status(ui::text("Invalid execution interval"));
         refreshRate();
     });
-    return settings;
 }
 void SchemeEditorWidget::refresh_execution_rate_text(NumericEditorGraphModel* graph,QLineEdit* rate) {
     if(!graph)return;
@@ -1777,8 +1799,7 @@ bool SchemeEditorWidget::decode_graph_adapters(const QJsonObject& node_adapters,
 }
 bool SchemeEditorWidget::apply_graph_adapters(const AdapterMap& checked,QString* error) {
     auto& graph=*_application.state().data_flow_graph;
-    AdapterMap previous;
-    for(auto it=checked.begin();it!=checked.end();++it)previous[it.key()]=graph.delegateModel<AudioNodeModel>(it.key())->adapter();
+    const auto previous=snapshot_adapters(checked);
     const auto prior=_loading;_loading=true;
     for(auto it=checked.begin();it!=checked.end();++it)graph.delegateModel<AudioNodeModel>(it.key())->set_adapter(it.value());
     if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(&graph);numeric && !numeric->synchronize_native_sources(error)) {
@@ -1787,6 +1808,12 @@ bool SchemeEditorWidget::apply_graph_adapters(const AdapterMap& checked,QString*
     }
     _loading=prior;
     return true;
+}
+SchemeEditorWidget::AdapterMap SchemeEditorWidget::snapshot_adapters(const AdapterMap& checked) const {
+    auto& graph=*_application.state().data_flow_graph;
+    AdapterMap previous;
+    for(auto it=checked.begin();it!=checked.end();++it)previous[it.key()]=graph.delegateModel<AudioNodeModel>(it.key())->adapter();
+    return previous;
 }
 void SchemeEditorWidget::restore_previous_adapters(const AdapterMap& previous) {
     auto& graph=*_application.state().data_flow_graph;

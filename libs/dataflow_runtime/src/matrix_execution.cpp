@@ -25,20 +25,25 @@ Status frequency_coordinates(std::span<std::byte> destination, std::size_t bins,
     return Status::ok;
 }
 
+Status copy_axis_coordinates(const PlanNode& node,const NumericView& source,std::size_t axis,std::size_t bytes,std::span<std::byte> destination) noexcept {
+            const auto source_axis = node.operation == ProcessingOperation::MatrixTranspose ? 1 - axis : axis;
+            if (source.coordinates.axes[source_axis].size() != bytes) return Status::incompatible_contract;
+            std::copy_n(source.coordinates.axes[source_axis].begin(), bytes, destination.begin());
+    return Status::ok;
+}
+Status prepare_axis_coordinates(const PlanNode& node,State& state,const NumericView& source,std::size_t axis,std::size_t count,std::size_t bytes,std::span<std::byte> destination,Ratio interval) noexcept {
+    if(node.operation==ProcessingOperation::MatrixFFT && axis==1)
+        return frequency_coordinates(destination,count,state.left.size(),interval);
+    return copy_axis_coordinates(node,source,axis,bytes,destination);
+}
 Status coordinates(const PlanNode& node, State& state, const NumericView& source,
                    MutableNumericView& output, Ratio interval) noexcept {
     for (std::size_t axis = 0; axis < 2; ++axis) {
         if (output.contract->coordinates[axis].mode != CoordinateMode::ExplicitFloat64LE) continue;
         auto& destination = state.numeric_outputs[0].coordinates[axis];
         const auto bytes = output.actual[axis] * sizeof(double);
-        if (node.operation == ProcessingOperation::MatrixFFT && axis == 1) {
-            const auto status = frequency_coordinates(destination, output.actual[axis], state.left.size(), interval);
-            if (status != Status::ok) return status;
-        } else {
-            const auto source_axis = node.operation == ProcessingOperation::MatrixTranspose ? 1 - axis : axis;
-            if (source.coordinates.axes[source_axis].size() != bytes) return Status::incompatible_contract;
-            std::copy_n(source.coordinates.axes[source_axis].begin(), bytes, destination.begin());
-        }
+        const auto status=prepare_axis_coordinates(node,state,source,axis,output.actual[axis],bytes,destination,interval);
+        if(status!=Status::ok)return status;
         output.coordinates.axes[axis] = {destination.data(), bytes};
     }
     return Status::ok;
@@ -73,6 +78,17 @@ Status window_coefficients(const PlanNode& node, State& state, std::size_t colum
     return Status::ok;
 }
 
+Status window_element(const NumericView& source,MutableNumericView& output,std::size_t row,std::size_t column,float coefficient) noexcept {
+            float value = 0;
+            auto status = load_element(source, {0, row, column}, value);
+            if (status != Status::ok) return status;
+            if (!std::isfinite(value)) return Status::invalid_argument;
+            const auto windowed = value * coefficient;
+            if (!std::isfinite(windowed)) return Status::overflow;
+            status = store_element(output, {0, row, column}, windowed);
+            if (status != Status::ok) return status;
+    return Status::ok;
+}
 Status window_rows(const PlanNode& node, State& state, const NumericView& source,
                    MutableNumericView& output) noexcept {
     std::span<const float> coefficients;
@@ -80,23 +96,13 @@ Status window_rows(const PlanNode& node, State& state, const NumericView& source
     if (status != Status::ok) return status;
     for (std::size_t row = 0; row < source.actual[0]; ++row) {
         for (std::size_t column = 0; column < source.actual[1]; ++column) {
-            float value = 0;
-            status = load_element(source, {0, row, column}, value);
-            if (status != Status::ok) return status;
-            if (!std::isfinite(value)) return Status::invalid_argument;
-            const auto windowed = value * coefficients[column];
-            if (!std::isfinite(windowed)) return Status::overflow;
-            status = store_element(output, {0, row, column}, windowed);
-            if (status != Status::ok) return status;
+            status=window_element(source,output,row,column,coefficients[column]);if(status!=Status::ok)return status;
         }
     }
     return Status::ok;
 }
 
-Status row_center(const PlanNode& node, const NumericView& source, std::size_t row, double& center) noexcept {
-    if (node.center_method == 2) { center = node.center_offset; return Status::ok; }
-    if (node.center_method > 2) return Status::invalid_argument;
-    if (!source.actual[1]) { center = 0; return Status::ok; }
+Status measured_row_center(const PlanNode& node,const NumericView& source,std::size_t row,double& center) noexcept {
     double sum = 0, minimum = std::numeric_limits<float>::max(), maximum = -minimum;
     for (std::size_t column = 0; column < source.actual[1]; ++column) {
         float value = 0;
@@ -111,31 +117,37 @@ Status row_center(const PlanNode& node, const NumericView& source, std::size_t r
     center = node.center_method == 0 ? sum / double(source.actual[1]) : (minimum + maximum) * .5;
     return std::isfinite(center) ? Status::ok : Status::overflow;
 }
+Status row_center(const PlanNode& node, const NumericView& source, std::size_t row, double& center) noexcept {
+    if (node.center_method == 2) { center = node.center_offset; return Status::ok; }
+    if (node.center_method > 2) return Status::invalid_argument;
+    if (!source.actual[1]) { center = 0; return Status::ok; }
+    return measured_row_center(node,source,row,center);
+}
 
-Status center_rows(const PlanNode& node, const NumericView& source, MutableNumericView& output) noexcept {
-    for (std::size_t row = 0; row < source.actual[0]; ++row) {
-        double center = 0;
-        auto status = row_center(node, source, row, center);
-        if (status != Status::ok) return status;
-        for (std::size_t column = 0; column < source.actual[1]; ++column) {
+Status center_element(const NumericView& source,MutableNumericView& output,std::size_t row,std::size_t column,double center) noexcept {
             float value = 0;
-            status = load_element(source, {0, row, column}, value);
+            auto status = load_element(source, {0, row, column}, value);
             if (status != Status::ok) return status;
             if (!std::isfinite(value)) return Status::invalid_argument;
             const auto centered = double(value) - center;
             if (!std::isfinite(centered) || std::abs(centered) > std::numeric_limits<float>::max()) return Status::overflow;
             status = store_element(output, {0, row, column}, float(centered));
             if (status != Status::ok) return status;
+    return Status::ok;
+}
+Status center_rows(const PlanNode& node, const NumericView& source, MutableNumericView& output) noexcept {
+    for (std::size_t row = 0; row < source.actual[0]; ++row) {
+        double center = 0;
+        auto status = row_center(node, source, row, center);
+        if (status != Status::ok) return status;
+        for (std::size_t column = 0; column < source.actual[1]; ++column) {
+            status=center_element(source,output,row,column,center);if(status!=Status::ok)return status;
         }
     }
     return Status::ok;
 }
 
-Status fft_rows(State& state, const NumericView& source, MutableNumericView& output) noexcept {
-    const auto used = std::min(source.actual[1], state.left.size());
-    const auto first = source.actual[1] - used;
-    auto& fft = std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel);
-    for (std::size_t row = 0; row < source.actual[0]; ++row) {
+Status load_fft_row(State& state,const NumericView& source,std::size_t row,std::size_t first,std::size_t used) noexcept {
         std::fill(state.left.begin(), state.left.end(), 0.f);
         for (std::size_t column = 0; column < used; ++column) {
             float value = 0;
@@ -144,11 +156,23 @@ Status fft_rows(State& state, const NumericView& source, MutableNumericView& out
             if (!std::isfinite(value)) return Status::invalid_argument;
             state.left[column] = value;
         }
+    return Status::ok;
+}
+Status store_fft_row(std::span<const float> values,std::size_t row,MutableNumericView& output) noexcept {
+    for(std::size_t bin=0;bin<values.size();++bin) {
+        const auto status=store_element(output,{0,row,bin},values[bin]);
+        if(status!=Status::ok)return status;
+    }
+    return Status::ok;
+}
+Status fft_rows(State& state, const NumericView& source, MutableNumericView& output) noexcept {
+    const auto used = std::min(source.actual[1], state.left.size());
+    const auto first = source.actual[1] - used;
+    auto& fft = std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel);
+    for (std::size_t row = 0; row < source.actual[0]; ++row) {
+        const auto loaded=load_fft_row(state,source,row,first,used);if(loaded!=Status::ok)return loaded;
         if (!fft.process(state.left, state.values)) return Status::overflow;
-        for (std::size_t bin = 0; bin < state.values.size(); ++bin) {
-            const auto status = store_element(output, {0, row, bin}, state.values[bin]);
-            if (status != Status::ok) return status;
-        }
+        const auto stored=store_fft_row(state.values,row,output);if(stored!=Status::ok)return stored;
     }
     return Status::ok;
 }
@@ -164,15 +188,7 @@ Status matrix_operation(const PlanNode& node,State& state,const NumericView& sou
         default: return Status::invalid_argument;
     }
 }
-}
-Status execute_matrix(const PlanNode& node, State& state, const DataFrameView& current,
-                      const FrameLimits& limits, Ratio execution_interval) noexcept {
-    const auto& source = std::get<NumericView>(current.payload);
-    auto output = mutable_output(node, state, 0);
-    output.actual = source.actual;
-    if (node.operation == ProcessingOperation::MatrixTranspose) std::swap(output.actual[0], output.actual[1]);
-    if (node.operation == ProcessingOperation::MatrixFFT) output.actual[1] = state.values.size();
-
+Status render_matrix(const PlanNode& node,State& state,const DataFrameView& current,const NumericView& source,MutableNumericView& output,const FrameLimits& limits,Ratio execution_interval) noexcept {
     auto status = coordinates(node, state, source, output, execution_interval);
     if (status != Status::ok) return status;
     if (!node.node.enabled) {
@@ -183,5 +199,16 @@ Status execute_matrix(const PlanNode& node, State& state, const DataFrameView& c
     else status=matrix_operation(node,state,source,output);
     if (status == Status::ok) state.numeric_frames[0] = {current.stamp, output.view()};
     return status;
+}
+}
+Status execute_matrix(const PlanNode& node, State& state, const DataFrameView& current,
+                      const FrameLimits& limits, Ratio execution_interval) noexcept {
+    const auto& source = std::get<NumericView>(current.payload);
+    auto output = mutable_output(node, state, 0);
+    output.actual = source.actual;
+    if (node.operation == ProcessingOperation::MatrixTranspose) std::swap(output.actual[0], output.actual[1]);
+    if (node.operation == ProcessingOperation::MatrixFFT) output.actual[1] = state.values.size();
+
+    return render_matrix(node,state,current,source,output,limits,execution_interval);
 }
 } // namespace dataflow_runtime::detail
