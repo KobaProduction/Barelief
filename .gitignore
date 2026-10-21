@@ -41,3 +41,9 @@ __pycache__/
 /.serena/
 /compile_commands.json
 /.cache/clangd/
+
+# ESP-IDF examples: generated target-specific configuration and component resolution.
+# Keep sdkconfig.defaults in version control; regenerate the files below as needed.
+/examples/**/sdkconfig
+/examples/**/sdkconfig.old
+/examples/**/dependencies.lock
