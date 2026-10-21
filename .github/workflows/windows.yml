@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Keep only the latest desktop/portable CI run per branch or PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: windows-2022
@@ -65,7 +69,7 @@ jobs:
       - name: System dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zlib1g-dev libpulse-dev pulseaudio pulseaudio-utils libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+          sudo apt-get install -y xvfb xauth openbox fonts-dejavu-core zlib1g-dev libpulse-dev pulseaudio pulseaudio-utils libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
       - name: Select supported Python for aqtinstall
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
@@ -108,7 +112,8 @@ jobs:
           name: barelief-linux-ubuntu-24.04
           path: packages/*.deb
           if-no-files-found: error
-      - name: Test
+      - name: Test headless
+        if: matrix.gui == 'OFF'
         env:
           QT_QPA_PLATFORM: offscreen
           QT_QUICK_BACKEND: software
@@ -117,6 +122,15 @@ jobs:
         run: |
           set -o pipefail
           ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration' 2>&1 | tee linux-test.log
+      - name: Test GUI using virtual X11 display
+        if: matrix.gui == 'ON'
+        env:
+          QT_QPA_PLATFORM: xcb
+          QSG_RHI_BACKEND: opengl
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -o pipefail
+          xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24 +extension GLX' bash -c 'openbox >/tmp/barelief-openbox.log 2>&1 & sleep 1; exec ctest --test-dir build --output-on-failure --no-tests=error -L "quick|integration"' 2>&1 | tee linux-test.log
       - name: Verify PulseAudio virtual capture endpoints
         run: |
           pactl info

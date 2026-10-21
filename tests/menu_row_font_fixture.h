@@ -5,13 +5,17 @@
 #include <stdexcept>
 #include <QWidget>
 
-// Windows offscreen does not discover system fonts, unlike the desktop QPA.
-// Use the same explicit native font baseline as owned widget-layout captures.
+// Pin a native font with Cyrillic coverage on each desktop test platform.
+// This makes layout metrics independent of the QPA's fallback font selection.
 inline QFont menu_row_fixture_font() {
-    const QString windowsDirectory = qEnvironmentVariable("WINDIR", "C:/Windows");
-    const int id = QFontDatabase::addApplicationFont(QDir(windowsDirectory).filePath("Fonts/segoeui.ttf"));
+#ifdef Q_OS_WIN
+    const QString fontFile = QDir(qEnvironmentVariable("WINDIR", "C:/Windows")).filePath("Fonts/segoeui.ttf");
+#else
+    const QString fontFile = QStringLiteral("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+#endif
+    const int id = QFontDatabase::addApplicationFont(fontFile);
     const auto families = QFontDatabase::applicationFontFamilies(id);
-    if (id < 0 || families.isEmpty()) throw std::runtime_error("Menu layout fixture cannot load native Windows font");
+    if (id < 0 || families.isEmpty()) throw std::runtime_error("Menu layout fixture cannot load native platform font");
     const QFont font(families.front(), 9);
     if (!QFontMetrics(font).inFontUcs4(0x0416)) throw std::runtime_error("Menu layout font lacks Cyrillic glyphs");
     return font;
