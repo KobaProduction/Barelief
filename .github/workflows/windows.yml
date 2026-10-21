@@ -86,7 +86,7 @@ jobs:
       - name: Configure
         run: |
           set -o pipefail
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DPORTABLE_DSP_MAX_FFT_SIZE=16384 -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
       - name: Build
         run: |
           set -o pipefail
