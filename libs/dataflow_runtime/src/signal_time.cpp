@@ -6,7 +6,7 @@ bool spectral_vector(const NumericContract& c) noexcept {return c.shape.axes[0]=
 struct WideUnsigned {std::uint64_t high=0,low=0;};
 WideUnsigned multiply_wide(std::uint64_t a,std::uint64_t b) noexcept {
     const std::uint64_t al=a&0xffffffffULL,ah=a>>32,bl=b&0xffffffffULL,bh=b>>32;
-    const auto first=al*bl,second=ah*bl+(first>>32),third=al*bh+(second&0xffffffffULL);
+    const std::uint64_t first=al*bl,second=ah*bl+(first>>32),third=al*bh+(second&0xffffffffULL);
     return {ah*bh+(second>>32)+(third>>32),(third<<32)|(first&0xffffffffULL)};
 }
 // Exact comparison of nonnegative diagnostic durations, including ratios

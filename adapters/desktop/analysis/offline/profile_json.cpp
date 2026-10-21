@@ -4,7 +4,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSaveFile>
+#ifdef _WIN32
 #include <QtZlib/zlib.h>
+#else
+#include <zlib.h>
+#endif
 #include <cmath>
 #include <bit>
 #include <type_traits>

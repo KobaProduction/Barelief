@@ -13,6 +13,16 @@ set(CPACK_VERBATIM_VARIABLES YES)
 # Desktop distributions are installed as one application, not SDK components.
 set(CPACK_MONOLITHIC_INSTALL ON)
 set(CPACK_GENERATOR "ZIP")
+if(UNIX AND NOT APPLE AND BUILD_GUI)
+    # Bundle the Qt runtime under /opt so the installer never overwrites Qt
+    # libraries supplied by the operating system.
+    set(CPACK_GENERATOR "TGZ;DEB")
+    set(CPACK_PACKAGING_INSTALL_PREFIX "/opt/barelief")
+    set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Koba Production")
+    set(CPACK_DEBIAN_PACKAGE_SECTION "graphics")
+    set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libpulse0, libgl1, libxkbcommon0, libxcb1")
+endif()
 if(WIN32 AND BUILD_GUI)
     set(CPACK_GENERATOR "ZIP;NSIS")
     set(CPACK_NSIS_DISPLAY_NAME "Barelief")
