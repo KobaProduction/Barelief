@@ -66,11 +66,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y zlib1g-dev libpulse-dev pulseaudio pulseaudio-utils libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0
+      - name: Select supported Python for aqtinstall
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
       - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
         with:
           version: '6.10.2'
           arch: linux_gcc_64
-          modules: qtcharts qtdatavis3d qtserialport qtsvg qttools qtshadertools
+          modules: qtcharts qtdatavis3d qtserialport
+          setup-python: 'false'
           aqtversion: '==3.3.0'
       - name: Virtual audio devices
         run: |

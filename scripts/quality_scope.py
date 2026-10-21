@@ -144,6 +144,11 @@ def _changed_names(data: bytes) -> tuple[set[str], bool]:
 
 
 def _shared_change(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    # Desktop CI job changes do not alter the local compilation database or
+    # the source policy. They remain covered by CI and quality-tool regressions.
+    if normalized == ".github/workflows/windows.yml":
+        return False
     path = Path(name)
     return (path.name in {"CMakeLists.txt", "DEPS", "AGENTS.md", ".clang-tidy", ".clang-format",
                           ".pre-commit-config.yaml", "CMakePresets.json", "CMakeUserPresets.json"}

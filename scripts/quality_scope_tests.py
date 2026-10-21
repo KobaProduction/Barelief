@@ -304,6 +304,18 @@ class ScopeTests(unittest.TestCase):
                 self.committed = diff
                 self.assertTrue(self.select().full)
 
+    def test_desktop_ci_only_avoids_full_cpp_lint(self):
+        self.committed = b"M\0.github/workflows/windows.yml\0"
+        result = self.select()
+        self.assertFalse(result.full)
+        self.assert_names(result, [])
+        self.committed += b"M\0src/a.cpp\0"
+        self.assert_names(self.select(), ["src/a.cpp"])
+
+    def test_quality_ci_changes_still_force_full_cpp_lint(self):
+        self.committed = b"M\0.github/workflows/code-quality.yml\0"
+        self.assertTrue(self.select().full)
+
     def test_shared_configuration_and_scripts_force_full(self):
         for name in ("DEPS", "nested/DEPS", "CMakeLists.txt", "cmake/foo.cmake", "scripts/check.py",
                      ".pre-commit-config.yaml", ".clang-tidy", ".github/workflows/ci.yml", "version.h.in"):
