@@ -138,6 +138,14 @@ jobs:
             if test -n "$failures"; then
               echo "::error title=Linux CTest failures::$failures"
             fi
+            for test in music_profile_tests console_config_tests; do
+              if grep -Eq "${test}.*(\\*\\*\\*Failed|\\*\\*\\*Timeout)" linux-test.log; then
+                details=$(awk -v test="$test" '$0 ~ "Testing: " test {inside=1} inside && /^Output:$/ {output=1; next} output && /<end of output>/ {exit} output {print}' build/Testing/Temporary/LastTest.log | tail -12 | tr '\n' ' ' | cut -c 1-750 || true)
+                if test -n "$details"; then
+                  echo "::error title=Linux $test output::$details"
+                fi
+              fi
+            done
           fi
       - name: Upload Linux failure diagnostics
         if: failure()

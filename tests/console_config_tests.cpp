@@ -110,7 +110,11 @@ int main(int argc, char** argv) {
             if(config_index>=0){input_path=arguments.value(config_index+1);QFile input(input_path);require(input.open(QIODevice::ReadOnly),"read CLI input");input_before=input.readAll();}
             QProcess process;
             process.setProcessChannelMode(QProcess::MergedChannels);
-            process.start(QCoreApplication::applicationDirPath() + "/pipeline_cli.exe", arguments);
+            QString executable=QCoreApplication::applicationDirPath()+"/pipeline_cli";
+#ifdef _WIN32
+            executable+=".exe";
+#endif
+            process.start(executable, arguments);
             require(process.waitForFinished(10000), "CLI timeout");
             if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != expected) {
                 const auto output = process.readAll();
