@@ -91,18 +91,6 @@ jobs:
         run: |
           set -o pipefail
           cmake --build build --parallel 4 2>&1 | tee linux-build.log
-      - name: Test
-        env:
-          QT_QPA_PLATFORM: offscreen
-          QT_QUICK_BACKEND: software
-          QT_OPENGL: software
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration'
-      - name: Verify PulseAudio virtual capture endpoints
-        run: |
-          pactl info
-          pactl list short sinks | grep -F qa
-          pactl list short sources | grep -F qa.monitor
       - name: Package Linux installer
         if: matrix.gui == 'ON'
         run: |
@@ -120,10 +108,24 @@ jobs:
           name: barelief-linux-ubuntu-24.04
           path: packages/*.deb
           if-no-files-found: error
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+          QT_OPENGL: software
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -o pipefail
+          ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration' 2>&1 | tee linux-test.log
+      - name: Verify PulseAudio virtual capture endpoints
+        run: |
+          pactl info
+          pactl list short sinks | grep -F qa
+          pactl list short sources | grep -F qa.monitor
       - name: Report Linux CI failure
         if: failure()
         run: |
-          for file in linux-configure.log linux-build.log linux-package.log; do
+          for file in linux-configure.log linux-build.log linux-package.log linux-test.log; do
             if test -f "$file"; then
               diagnostic=$(grep -E 'CMake Error|fatal error:|error:|FAILED:|CPack Error' "$file" | tail -5 | tr '\n' ' ' | cut -c 1-700 || true)
               if test -n "$diagnostic"; then
@@ -131,3 +133,21 @@ jobs:
               fi
             fi
           done
+          if test -f linux-test.log; then
+            failures=$(grep -E '\*\*\*Failed|\*\*\*Timeout|The following tests FAILED|Tests Failed' linux-test.log | tail -10 | tr '\n' ' ' | cut -c 1-700 || true)
+            if test -n "$failures"; then
+              echo "::error title=Linux CTest failures::$failures"
+            fi
+          fi
+      - name: Upload Linux failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: barelief-linux-${{ matrix.gui }}-diagnostics
+          path: |
+            linux-configure.log
+            linux-build.log
+            linux-package.log
+            linux-test.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: warn

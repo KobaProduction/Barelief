@@ -388,6 +388,12 @@ static bool parameter_alternatives_roundtrip(const NumericProcessingGraph& graph
     CHECK(decode_numeric_graph(encoded,restored));
     return parameter_alternatives_equal(graph,restored);
 }
+static bool file_bytes_equal(const QString& path,const QByteArray& expected) {
+    QFile file(path);
+    CHECK(file.open(QIODevice::ReadOnly));
+    CHECK(file.readAll()==expected);
+    return true;
+}
 #ifdef _WIN32
 static bool locked_save_refused(NumericProjectDocument& document,const QString& path) {
     const auto wide=path.toStdWString();
@@ -397,12 +403,6 @@ static bool locked_save_refused(NumericProjectDocument& document,const QString& 
     const auto result=save_numeric_project(document);
     CloseHandle(lock);
     CHECK(!result);
-    return true;
-}
-static bool file_bytes_equal(const QString& path,const QByteArray& expected) {
-    QFile file(path);
-    CHECK(file.open(QIODevice::ReadOnly));
-    CHECK(file.readAll()==expected);
     return true;
 }
 static bool commit_failure_preserves_document(NumericProjectDocument& document,const QString& path) {
