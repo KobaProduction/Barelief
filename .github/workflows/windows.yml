@@ -84,9 +84,13 @@ jobs:
           pactl set-default-sink qa
           pactl set-default-source qa.monitor
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
+        run: |
+          set -o pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
       - name: Build
-        run: cmake --build build --parallel 4 2>&1 | tee linux-build.log
+        run: |
+          set -o pipefail
+          cmake --build build --parallel 4 2>&1 | tee linux-build.log
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
@@ -102,6 +106,7 @@ jobs:
       - name: Package Linux installer
         if: matrix.gui == 'ON'
         run: |
+          set -o pipefail
           mkdir -p packages
           cpack -G DEB --config build/CPackConfig.cmake -B packages 2>&1 | tee linux-package.log
           package=$(find packages -maxdepth 1 -type f -name '*.deb' -print -quit)

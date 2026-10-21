@@ -23,7 +23,7 @@
 namespace pipeline {
 bool test_signal_sample_time_ns(std::uint64_t samples,std::uint32_t rate,std::int64_t origin_ns,std::int64_t& timestamp_ns) noexcept {
     if(!rate)return false;
-    const auto seconds=samples/rate,fraction=(samples%rate)*1000000000ULL/rate;
+    const std::uint64_t seconds=samples/rate,fraction=(samples%rate)*1000000000ULL/rate;
     const auto maximum=std::uint64_t(origin_ns>0?std::numeric_limits<std::int64_t>::max()-origin_ns:std::numeric_limits<std::int64_t>::max());
     if(fraction>maximum || seconds>(maximum-fraction)/1000000000ULL)return false;
     timestamp_ns=origin_ns+std::int64_t(seconds*1000000000ULL+fraction);return true;
