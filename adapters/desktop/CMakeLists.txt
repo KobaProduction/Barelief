@@ -1,4 +1,5 @@
 add_library(graph_document_adapter STATIC src/numeric_project_document.cpp)
+target_compile_definitions(graph_document_adapter PRIVATE BARELIEF_DEV_TELEMETRY=$<BOOL:${BARELIEF_DEV_TELEMETRY}>)
 target_include_directories(graph_document_adapter PUBLIC include)
 target_link_libraries(graph_document_adapter PUBLIC graph_application project_storage Qt6::Core)
 target_link_libraries(graph_document_adapter PRIVATE numeric_array_codec)

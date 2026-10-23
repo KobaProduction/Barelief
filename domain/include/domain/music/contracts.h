@@ -3,6 +3,11 @@
 
 namespace domain {
 struct ProcessingDiagnostic;
+constexpr std::size_t rhythm_output_count=12;
+signal_contracts::Status rhythm_features_output_contract(const ConfiguredProcessingNode&,
+    const signal_contracts::NumericContract&,OwnedProcessingContract&) noexcept;
+signal_contracts::Status rhythm_output_contracts(const ConfiguredProcessingNode&,
+    const signal_contracts::NumericContract&,std::array<OwnedProcessingContract,rhythm_output_count>&) noexcept;
 ProcessingDiagnostic frequency_normalizer_diagnostic(const ConfiguredProcessingNode&,
     const signal_contracts::NumericContract&) noexcept;
 

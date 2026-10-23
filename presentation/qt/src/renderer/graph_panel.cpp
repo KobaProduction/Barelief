@@ -7,6 +7,8 @@
 #include <barelief/spectrograms/spectrogram_graph.h>
 #include <barelief/surface_settings.h>
 #include <barelief/quick/quick_ui.h>
+#include <barelief/quick/scene_host.h>
+#include <QQmlContext>
 #include <barelief/ui_text.h>
 #include <QStackedWidget>
 #include <QSplitter>
@@ -108,7 +110,8 @@ GraphPanel::GraphPanel(const QString& id,AbstractChartView* chart,QJsonObject pr
     _default_display_mode=_allowed_modes.contains(_chart->plot_style())?_chart->plot_style():_allowed_modes.front();
     restore_presentation(_preferences);
     _default_display_mode=_display_mode;
-    ui::quick::initialize(_settings,this,QUrl("qrc:/common/GraphPanel.qml"));
+    _settings->rootContext()->setContextProperty("graphModel",this);
+    _settings->setSource(QUrl("qrc:/common/GraphPanel.qml"));
     start_information_timer();set_render_visible(true);
 }
 void GraphPanel::build_layout(){
@@ -116,7 +119,10 @@ void GraphPanel::build_layout(){
     _splitter=new QSplitter(this);_splitter->setChildrenCollapsible(false);outer->addWidget(_splitter);
     build_renderers();
     ui::quick::configure();
-    _settings=new QQuickWidget(_splitter);_settings->setObjectName("numericGraphSettings");_settings->setMinimumWidth(160);
+    _settings=new ui::quick::SceneHost(presentation::RenderPreparationPolicy::plot_host,_splitter);
+    _settings->setObjectName("numericGraphSettings");_settings->setMinimumWidth(160);
+    // Retain the existing texture scene identity for widget-based UI probes.
+    if(auto* texture=_settings->findChild<QQuickWidget*>())texture->setObjectName(_settings->objectName());
     _splitter->setStretchFactor(0,1);_splitter->setStretchFactor(1,0);
 }
 void GraphPanel::build_renderers(){

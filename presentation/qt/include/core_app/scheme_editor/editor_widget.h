@@ -130,6 +130,7 @@ protected:
     void setup_capture_status(QHBoxLayout*);
     void bind_apply_timer();
     void bind_save_timer();
+    void presentation_changed();
     void setup_processing_rate(QHBoxLayout*);
     void setup_zoom_control(QHBoxLayout*);
     QPushButton* setup_center_control(QHBoxLayout*);
@@ -178,6 +179,9 @@ protected:
     bool _live_apply_pending = false;
     bool _immediate_apply_pending = false;
     QTimer _apply_timer, _save_timer;
+    bool _draft_notification_pending = false;
+    void mark_draft_modified();
+    void notify_draft_change();
     QJsonObject _last_processing_document;
     QJsonObject _last_adapter_metadata;
     QJsonObject _document_template;
@@ -196,6 +200,7 @@ protected:
     void refresh_node_timing(QtNodes::NodeId,QLabel*);
     void append_node_diagnostics(QtNodes::NodeId);
     void inspect_node(QtNodes::NodeId id);
+    void inspect_selected_node(QtNodes::NodeId id);
     void inspect_connection(QtNodes::ConnectionId);
     QSplitter *_splitter = nullptr;
     int _inspector_width = 280;
@@ -209,6 +214,8 @@ protected:
     QElapsedTimer _preview_clock;
     std::map<pipeline::EndpointIdentity,qint64> _preview_times;
     QJsonObject _active_processing_document;
+    bool _preview_processing_matches = false;
+    std::string _preview_graph_id;
     QJsonObject _active_source_adapters;
     void record_active_source_adapters(const QJsonObject&);
     bool preview_source_active(QtNodes::NodeId) const;

@@ -112,6 +112,7 @@ Status prepare_salience(OperationKernelState& kernel,PlanNode&,const ResolvedPro
 }
 }
 Status prepare_music_operation(OperationKernelState& kernel,PlanNode& plan,State& state,const ResolvedProcessingNode& node) {
+    if(node.kind=="RhythmFeatures"){kernel.quantized8.resize(kernel.output.size());return Status::ok;}
     if(node.kind=="MusicalSpectrogram" || node.kind=="BroadbandRow" || node.kind=="NoteSpectrum")return prepare_spectrogram(kernel,plan,state,node);
     if(node.kind=="NoteSalience")return prepare_salience(kernel,plan,node);
     return Status::unavailable;

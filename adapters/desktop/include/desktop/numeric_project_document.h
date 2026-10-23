@@ -6,6 +6,7 @@
 #include <QString>
 #include <QJsonObject>
 #include <optional>
+#include <span>
 
 namespace desktop {
 QString numeric_project_path(const QString& explicit_path = {});
@@ -50,6 +51,9 @@ NumericDocumentResult read_numeric_application_settings(const NumericProjectDocu
 // Caller supplies its route admission bound; failure leaves out unchanged.
 NumericDocumentResult read_numeric_network_settings(const NumericProjectDocument&, std::size_t maximum_routes, QJsonObject&);
 NumericDocumentResult stage_numeric_draft(const NumericProjectDocument&, const domain::NumericProcessingGraph&, NumericProjectDocument&);
+// Replace only the supplied stable node IDs. Connectivity and unrelated nodes
+// remain source-owned; an empty update keeps an aliased document untouched.
+NumericDocumentResult stage_numeric_nodes(const NumericProjectDocument&,std::span<const domain::ConfiguredProcessingNode>,NumericProjectDocument&);
 struct NumericDraftPresentation {
     QJsonObject positions; // Decimal node-ID keys -> {x,y}; known UI projection only.
     QJsonObject node_presentations; // Decimal node-ID keys -> registered presentation deltas: inline_parameters, display_name, scalar_inputs (full port-ID map).

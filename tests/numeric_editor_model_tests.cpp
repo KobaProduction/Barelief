@@ -844,6 +844,7 @@ void delivery_diagnostics(NumericEditorGraphModel& graph,QUndoStack& undo){
         const auto source=graph.addNode("AudioSource"),view=graph.addNode("Converter");auto* target=graph.delegateModel<AudioNodeModel>(view);
 
         const QtNodes::ConnectionId edge{source,0,view,0};graph.addConnection(edge);
+        check(graph.connection_visual_state(edge)==0,"Exact connection is observed before its contract changes");
         auto changed=*target->numeric_node();
         check(numeric_editor::set_dtype(changed,domain::PortDirection::Input,0,signal_contracts::DType::UInt16) && graph.edit_node(view,changed),
               "Connected converter retains an explicit UInt16 input contract");
@@ -1607,6 +1608,14 @@ int run(){
 }
 };
 
+static int connection_diagnostics_only(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry) {
+    NumericEditorGraphModel graph(registry);QUndoStack undo;graph.set_undo_stack(&undo);
+    delivery_diagnostics(graph,undo);
+    std::printf("connection diagnostics failures=%d\n",failures);return failures?1:0;
+}
+static void native_clock_editor_cases(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry) {
+    native_source_contract(registry);source_rate_undo(registry);clock_rate_dependency(registry);resampler_editor(registry);
+}
 int main(int argc,char** argv){
 
     QApplication app(argc,argv);
@@ -1618,12 +1627,12 @@ int main(int argc,char** argv){
     if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-path")return native_history_path(argv[2]);
 
 
-    coefficient_port_identity(app);
-
-    axis_range_controls();
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
 
     for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    if(argc==2 && QString::fromLocal8Bit(argv[1])=="--connection-diagnostics")return connection_diagnostics_only(registry);
+    coefficient_port_identity(app);
+    axis_range_controls();
     sparse_port_publication(registry);
 
     source_rate_dependencies(registry);
@@ -1648,10 +1657,7 @@ int main(int argc,char** argv){
 
     preview_extraction(registry);
 
-    native_source_contract(registry);
-    source_rate_undo(registry);
-    clock_rate_dependency(registry);
-    resampler_editor(registry);
+    native_clock_editor_cases(registry);
 
     EditorDocumentScenario document(registry);
     if(const auto result=document.run();result)return result;

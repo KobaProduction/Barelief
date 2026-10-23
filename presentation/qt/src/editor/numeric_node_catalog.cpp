@@ -75,6 +75,8 @@ constexpr std::array operation_groups{
     OperationGroup{"NoteSalience","Music analysis","Features"},
     OperationGroup{"MusicalSpectrogram","Music analysis","Features"},
     OperationGroup{"SpectralQuantize","Music analysis","Features"},
+    OperationGroup{"RhythmFeatures","Music analysis","Features"},
+    OperationGroup{"RhythmAnalyzer","Music analysis","Features"},
     OperationGroup{"ScalarReduce","Signal analysis","Measurements"},
     OperationGroup{"ChannelComparison","Signal analysis","Measurements"},
     OperationGroup{"Mixer","Signal processing","Mixing"},

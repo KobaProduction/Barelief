@@ -625,7 +625,7 @@ void NumericEngine::update_numeric_tap(std::uint64_t token,std::vector<EndpointI
 void NumericEngine::unsubscribe_numeric_tap(std::uint64_t token) {std::lock_guard lock(impl_->mutex);if(auto it=impl_->delivery.taps.find(token);it!=impl_->delivery.taps.end()){it->second.active->store(false,std::memory_order_release);impl_->delivery.taps.erase(it);}}
 Status NumericEngine::query_numeric(const EndpointIdentity& endpoint,DeliveredNumericFrame& out,std::uint64_t* ordinal,std::uint64_t* filled_count,bool* is_history) {
     if(is_history)*is_history=false;
-    const auto wait_start=core::perf::enabled.load(std::memory_order_relaxed)?core::perf::now():0;
+    const auto wait_start=(core::perf::enabled.load(std::memory_order_relaxed) || core::telemetry::enabled())?core::perf::now():0;
     std::lock_guard lock(impl_->mutex);
     if(wait_start)core::perf::record(core::perf::Stage::NumericQueryWait,wait_start,core::perf::now()-wait_start);
     core::perf::Scope hold(core::perf::Stage::NumericQueryHold);

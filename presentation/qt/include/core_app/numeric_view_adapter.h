@@ -37,6 +37,9 @@ private:
         pipeline::HistoryPresentation history;
         signal_contracts::Status status=signal_contracts::Status::unavailable;
         bool history_mode=false;
+        // Occupancy is supplied by NumberAccumulator's owning snapshot.
+        // The GUI does not append or retain its own scalar history.
+        std::optional<std::size_t> vector_history_filled;
         NumericMatrixSnapshot matrix_snapshot;
         NumericMatrixSnapshotPool matrix_pool;
         bool matrix_projected=false;
@@ -66,7 +69,7 @@ private:
     struct FrameProjection {std::vector<float> values;pipeline::FloatProjectionReport report;QString exact;};
     signal_contracts::Status project_frame(State&,const signal_contracts::NumericView&,std::size_t,FrameProjection&);
     signal_contracts::Status publish_frame(State&,const signal_contracts::NumericView&,FrameProjection&,NumericRenderTarget);
-    signal_contracts::Status configure_vector(const signal_contracts::NumericView&,std::size_t,NumericRenderTarget);
+    signal_contracts::Status configure_vector(const signal_contracts::NumericView&,std::size_t,NumericRenderTarget,std::optional<std::size_t> filled);
     signal_contracts::Status vector_coordinates(const signal_contracts::NumericView&,NumericRenderTarget,
         std::vector<double>&,QString&);
     signal_contracts::Status render_matrix(State&,const signal_contracts::NumericView&,const std::vector<float>&,const pipeline::FloatProjectionReport&,NumericRenderTarget);

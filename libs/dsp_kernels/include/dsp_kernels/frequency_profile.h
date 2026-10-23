@@ -24,9 +24,12 @@ struct ProfileCompatibility {
     unsigned resampler_quality = 5;
     std::uint32_t resampler_design_version = PreparedResampler::design_version;
 };
+enum class ProfileGainMode { MeanEqualization, PeakNormalization };
 struct ProfileTraining {
+    // Legacy profiles without a mode remain mean-based.
+    ProfileGainMode gain_mode = ProfileGainMode::MeanEqualization;
     double silence_rms = 0.0001;
-    double min_gain = 0.1, max_gain = 10;
+    double min_gain = 0.1, max_gain = 100;
     std::size_t smoothing_radius = 8;
     std::size_t hop = 273;
     // Nonzero numerator selects rational live-equivalent cadence; zero uses explicit hop.
@@ -37,6 +40,7 @@ struct CompositionStatistics {
     std::uint64_t frames = 0, active_frames = 0, samples = 0;
     double rms = 0;
     std::vector<double> mean_spectrum;
+    std::vector<double> peak_spectrum;
     std::vector<double> frequency_presence;
 };
 struct FrequencyProfile {
@@ -44,6 +48,7 @@ struct FrequencyProfile {
     ProfileTraining training;
     std::vector<float> gains;
     std::vector<double> mean_spectrum;
+    std::vector<double> peak_spectrum;
     std::vector<double> frequency_presence;
     std::vector<CompositionStatistics> compositions;
 };
@@ -61,6 +66,11 @@ std::vector<ProfileMismatchReason> profile_mismatches(const FrequencyProfile&,
 WindowScaling profile_window_scaling(const ProfileCompatibility&) noexcept;
 bool valid_profile_settings(const ProfileCompatibility&, const ProfileTraining&, std::string& error);
 bool validate_profile(const FrequencyProfile&, const ProfileCompatibility& expected, std::string& error);
+// Independent per-bin normalization of observed spectral maxima to 1.0.
+// Coefficients are boost-only (>=1) and bounded by max_gain; bins below the
+// measured floor stay at unity. Never change output on an invalid input.
+bool build_frequency_peak_compensation_curve(std::span<const double> peak_spectrum,
+    double floor, double max_gain, std::vector<float>& output);
 // Equal composition weighting; a composition with no active windows contributes nothing.
 bool build_frequency_profile(const ProfileCompatibility&, const ProfileTraining&,
     std::span<const CompositionStatistics>, FrequencyProfile& output, std::string& error);

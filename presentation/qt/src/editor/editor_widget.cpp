@@ -1,3 +1,4 @@
+#include <core/telemetry.h>
 #include "barelief/ui_text.h"
 #include "core/performance.h"
 #include "core_app/scheme_editor/editor_widget.h"
@@ -76,6 +77,15 @@ static bool graph_available(const AudioNodeModel*);
 #include <queue>
 #include <algorithm>
 #include <array>
+namespace {
+class InspectorStepTrace {
+    const char* step;
+    QElapsedTimer timer;
+public:
+    explicit InspectorStepTrace(const char* name):step(name){if(qEnvironmentVariableIsSet("CORE_APP_TRACE_SAVES"))timer.start();}
+    ~InspectorStepTrace(){if(timer.isValid())qInfo().noquote()<<"BARELIEF_INSPECTOR_PHASE"<<step<<"ms="<<timer.nsecsElapsed()/1e6;}
+};
+}
 #include <vector>
 #include <cmath>
 
@@ -459,7 +469,9 @@ class ProfiledGraphicsView final : public GraphicsView {
     }
     QPointF camera_center() const { return _center; }
     QRectF camera_bounds(double scale,QPointF center,bool restore) {
-        auto bounds=nodeScene()->itemsBoundingRect();
+        // QGraphicsScene maintains these bounds as items move. Panning must
+        // not rescan every node, connection and embedded control per pointer event.
+        auto bounds=nodeScene()->sceneRect();
         if(bounds.isEmpty())bounds=QRectF(-100,-100,200,200);
         const auto half=QSizeF(viewport()->size())/(2*scale);
         // Preserve the reachable viewport anchor while panning.
@@ -471,16 +483,23 @@ class ProfiledGraphicsView final : public GraphicsView {
         bounds.adjust(-margin,-margin,margin,margin);
         return bounds;
     }
+    QPointF constrained_camera_center(double scale,QPointF center,bool restore) {
+        const auto bounds=camera_bounds(scale,center,restore);
+        const auto half=QSizeF(viewport()->size())/(2*scale);
+        // Qt recalculates content size and scroll bars even for equal bounds.
+        // Ordinary panning changes the center, not these retained scene bounds.
+        if(sceneRect()!=bounds)setSceneRect(bounds);
+        center.setX(std::clamp(center.x(),bounds.left()+half.width(),bounds.right()-half.width()));
+        center.setY(std::clamp(center.y(),bounds.top()+half.height(),bounds.bottom()-half.height()));
+        return center;
+    }
     void camera(double scale, QPointF center, bool restore = true) {
+        core::perf::Scope profile(core::perf::Stage::EditorNavigation);
         _restoring = true;
         // setupScale skips equal scales; reset also removes old zoom translations.
         const bool scaleChangedNow=std::abs(scale-getScale())>1e-9;
         if(scaleChangedNow) { QTransform transform; transform.scale(scale,scale); setTransform(transform); }
-        const auto bounds=camera_bounds(scale,center,restore);
-        const auto half=QSizeF(viewport()->size())/(2*scale);
-        setSceneRect(bounds);
-        center.setX(std::clamp(center.x(),bounds.left()+half.width(),bounds.right()-half.width()));
-        center.setY(std::clamp(center.y(),bounds.top()+half.height(),bounds.bottom()-half.height()));
+        center=constrained_camera_center(scale,center,restore);
         centerOn(center); _center = center;
         _restoring = false;
         if(scaleChangedNow) emit scaleChanged(getScale());
@@ -691,6 +710,7 @@ class ProfiledGraphicsView final : public GraphicsView {
             painter->drawLine(QLineF(rect.left(),y,rect.right(),y));
     }
     void drawBackground(QPainter *painter, const QRectF &rect) override {
+        BARELIEF_PROFILE_FUNCTION();
         // Use the current palette instead of the brush cached by QtNodes at
         // construction. Sparse cosmetic lines stay subdued at every zoom.
         const auto palette = QApplication::palette();
@@ -1072,6 +1092,7 @@ void SchemeEditorWidget::bind_view_camera_saving() {
         connect(scroll, &QScrollBar::sliderMoved, this, [this] { if (!_loading) _save_timer.start(); });
 }
 void SchemeEditorWidget::synchronize_moved_positions() {
+    BARELIEF_PROFILE_FUNCTION();
     if(_loading)return;
     auto& graph=*_application.state().data_flow_graph;
     std::map<QtNodes::NodeId,QPointF> moved;
@@ -1126,10 +1147,12 @@ void SchemeEditorWidget::bind_apply_timer() {
 void SchemeEditorWidget::bind_save_timer() {
     _last_processing_document = processing_document(_application.state().data_flow_graph->save());
     _last_adapter_metadata=graph_adapter_metadata();
-    _save_timer.setSingleShot(true); _save_timer.setInterval(350);
+    // Merge notifications from the current event. Persistence owns a background
+    // snapshot; it must not block a gesture or wait for an inactivity timeout.
+    _save_timer.setSingleShot(true); _save_timer.setInterval(0);
     connect(&_save_timer, &QTimer::timeout, this, [this] {
         save_view();
-        if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());numeric && numeric->has_numeric_nodes()){emit numeric_draft_changed();return;}
+        if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());numeric){notify_draft_change();return;}
         if (_application.state().file_configs.ui.autosave_enabled) emit _application.on_config_updated();
     });
 }
@@ -1210,7 +1233,7 @@ void SchemeEditorWidget::setup_inspector(QSplitter* splitter) {
     inspector->setWidget(contents); inspect_node(QtNodes::InvalidNodeId);
 }
 void SchemeEditorWidget::bind_scene_selection() {
-    connect(_scene,&DataFlowGraphicsScene::nodeSelected,this,&SchemeEditorWidget::inspect_node);
+    connect(_scene,&DataFlowGraphicsScene::nodeSelected,this,&SchemeEditorWidget::inspect_selected_node);
     connect(_scene,&DataFlowGraphicsScene::nodeDoubleClicked,this,[this](QtNodes::NodeId id) {
         auto *model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id);
         if(graph_available(model))
@@ -1226,6 +1249,10 @@ void SchemeEditorWidget::bind_scene_selection() {
     localized_scene->focus_graph=[request_graph](int id) { request_graph(QtNodes::NodeId(id),false); };
     localized_scene->open_graph=[this](int id,int placement) { emit graph_open_requested(id,placement); };
     connect(_scene,&QGraphicsScene::selectionChanged,this,&SchemeEditorWidget::inspect_scene_selection);
+}
+void SchemeEditorWidget::inspect_selected_node(QtNodes::NodeId id) {
+    // Repeated presses retain the form, edit focus and preview subscription.
+    if(id!=_inspected_node)inspect_node(id);
 }
 void SchemeEditorWidget::inspect_scene_selection() {
     const auto selected=_scene->selectedItems();
@@ -1298,15 +1325,15 @@ void SchemeEditorWidget::refresh_graph_indicators() {
 }
 void SchemeEditorWidget::bind_graph_changes() {
     auto& model=*_application.state().data_flow_graph;
-    connect(_scene, &DataFlowGraphicsScene::modified, this, &SchemeEditorWidget::changed);
-    connect(&model, &DataFlowGraphModel::nodeUpdated, this, &SchemeEditorWidget::changed);
-    connect(&model, &DataFlowGraphModel::nodePositionUpdated, this, &SchemeEditorWidget::changed);
+    connect(_scene, &DataFlowGraphicsScene::modified, this, &SchemeEditorWidget::presentation_changed);
+    connect(&model, &DataFlowGraphModel::nodePositionUpdated, this, &SchemeEditorWidget::presentation_changed);
     connect(&model, &DataFlowGraphModel::nodeCreated, this, &SchemeEditorWidget::changed);
     connect(&model, &DataFlowGraphModel::nodeDeleted, this, &SchemeEditorWidget::changed);
     connect(&model, &DataFlowGraphModel::connectionCreated, this, &SchemeEditorWidget::changed);
     connect(&model, &DataFlowGraphModel::connectionDeleted, this, &SchemeEditorWidget::changed);
     if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(&model)){
         connect(numeric,&NumericEditorGraphModel::atomic_edit_finished,this,&SchemeEditorWidget::changed);
+        connect(numeric,&NumericEditorGraphModel::persistence_topology_changed,this,&SchemeEditorWidget::changed);
         connect(numeric,&NumericEditorGraphModel::immediate_apply_requested,this,[this]{
             if(_loading || !_live_apply_pending || _unsupported_document)return;
             _immediate_apply_pending=true;
@@ -1319,6 +1346,7 @@ void SchemeEditorWidget::bind_connection_diagnostics() {
     connect(&model,&DataFlowGraphModel::connectionCreated,this,&SchemeEditorWidget::refresh_connection_diagnostics);
     connect(&model,&DataFlowGraphModel::nodeUpdated,this,&SchemeEditorWidget::refresh_connection_diagnostics);
     connect(&ui::Language::instance(),&ui::Language::changed,this,&SchemeEditorWidget::refresh_connection_diagnostics);
+    connect(&ui::Theme::instance(),&ui::Theme::changed,this,&SchemeEditorWidget::refresh_connection_diagnostics);
     refresh_connection_diagnostics();
     if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(&model))
         connect(numeric,&NumericEditorGraphModel::connection_diagnostics_changed,this,
@@ -1337,7 +1365,12 @@ void SchemeEditorWidget::refresh_node_connection_diagnostics(NumericEditorGraphM
         auto* from=graph->delegateModel<AudioNodeModel>(edge.outNodeId);
         auto* to=graph->delegateModel<AudioNodeModel>(edge.inNodeId);
         auto* wire=_scene->connectionGraphicsObject(edge);
-        if(from && to && wire){wire->setToolTip({});wire->update();}
+        if(from && to && wire){
+            // Panning only translates a completed wire. Retain its raster at
+            // the current device scale, just as QtNodes retains node bodies.
+            if(wire->cacheMode()!=QGraphicsItem::DeviceCoordinateCache)wire->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
+            wire->setToolTip({});wire->update();
+        }
     }
 }
 void SchemeEditorWidget::setup_editor_display(QHBoxLayout* bar) {
@@ -1363,7 +1396,7 @@ void SchemeEditorWidget::set_editor_display_setting(const QString& key,int value
         node->setGeometryChanged();_scene->nodeGeometry().recomputeSize(id);
         node->updateQWidgetEmbedPos();node->moveConnections();node->update();
     }
-    save_view();_application.state().editor_draft_modified=true;_save_timer.start();
+    save_view();mark_draft_modified();
 }
 void SchemeEditorWidget::initialize_document() {
     setObjectName("pipelineEditor");
@@ -1394,6 +1427,11 @@ void SchemeEditorWidget::configure_view() {
     _view->setResizeAnchor(QGraphicsView::NoAnchor);
     _view->setSceneRect(-10000000,-10000000,20000000,20000000);
     _view->setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
+    // This background is a flat fill and a sparse grid. QtNodes' full-size
+    // background pixmap costs more to scroll/copy than to draw, especially at DPR 2.
+    _view->setCacheMode(QGraphicsView::CacheNone);
+    _view->viewport()->setAutoFillBackground(false);
+    _view->viewport()->setAttribute(Qt::WA_OpaquePaintEvent);
     _view->setInteractive(!_unsupported_document);
 }
 void SchemeEditorWidget::initialize_preview_tracking() {
@@ -1445,11 +1483,13 @@ void SchemeEditorWidget::bind_preview_delivery() {
     });
 }
 void SchemeEditorWidget::on_numeric_preview(const pipeline::DeliveredNumericFrame& frame) {
+    core::perf::Scope profile(core::perf::Stage::NodePreview);
     if(!accept_preview(frame,frame.status==signal_contracts::Status::ok))return;
     if(auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(frame.context->endpoint.node))
         model->preview(frame);
 }
 void SchemeEditorWidget::on_history_preview(const pipeline::DeliveredNumericHistoryRow& row) {
+    core::perf::Scope profile(core::perf::Stage::NodePreview);
     if(!accept_preview(row.compact,row.event==pipeline::NumericHistoryEvent::Row))return;
     if(row.compact.context && row.compact.context->contract) {
         const auto contract=row.compact.context->contract.view();
@@ -1459,10 +1499,11 @@ void SchemeEditorWidget::on_history_preview(const pipeline::DeliveredNumericHist
             if(auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(
                    row.compact.context->endpoint.node))model->preview(row);
     }
-    _application.client().request_numeric_snapshots();
+    if(row.compact.context)_application.client().request_numeric_snapshot(row.compact.context->endpoint);
 }
 void SchemeEditorWidget::on_snapshot_preview(const pipeline::DeliveredNumericFrame& frame,
                                               quint64 ordinal,quint64 filled_count) {
+    core::perf::Scope profile(core::perf::Stage::NodePreview);
     if(!accept_preview(frame,false))return;
     if(auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(frame.context->endpoint.node))
         model->preview_history_snapshot(frame,ordinal,filled_count);
@@ -1513,8 +1554,7 @@ void SchemeEditorWidget::restore_saved_camera(quint64 generation) {
     if(_document_template.value("layout_pending").toBool()) {
         layout_nodes(false);
         _document_template.remove("layout_pending");
-        _application.state().editor_draft_modified=true;
-        _save_timer.start();
+        mark_draft_modified();
     }
     apply_saved_camera(saved);
     _loading=false;
@@ -1701,20 +1741,24 @@ static const char* preview_activity_key(pipeline::State state,bool draft_active)
     return nullptr;
 }
 void SchemeEditorWidget::refresh_preview_activity() {
+    // Both documents change on editor/control events. Never compare the whole
+    // processing graph for each realtime delivery, including throttled previews.
+    _preview_processing_matches=_last_processing_document==_active_processing_document;
+    _preview_graph_id=_active_processing_document.value("graph_id").toString().toStdString();
     const auto state=_application.client().snapshot().statuses.value("analyzer").state;
-    const auto* key=preview_activity_key(state,_last_processing_document==_active_processing_document);
+    const auto* key=preview_activity_key(state,_preview_processing_matches);
     const QString activity=key?QString::fromLatin1(key):QString{};
     for(auto id:_application.state().data_flow_graph->allNodeIds())if(auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id))model->set_preview_activity(activity.isEmpty() && !preview_source_active(id)?QStringLiteral("Draft not active"):activity);
 }
 void SchemeEditorWidget::sync_preview_subscription() {
     refresh_preview_activity();
     std::vector<pipeline::EndpointIdentity> endpoints;
-    domain::NumericProcessingGraph draft;
-    if(isVisible() && _last_processing_document==_active_processing_document && numeric_draft(draft))
-        for(const auto& node:draft.nodes)if(_preview_nodes.contains(QtNodes::NodeId(node.id)) && preview_source_active(QtNodes::NodeId(node.id))) {
+    const auto& active=_application.applied_numeric_graph();
+    if(isVisible() && _preview_processing_matches && active)
+        for(const auto& node:active->nodes)if(_preview_nodes.contains(QtNodes::NodeId(node.id)) && preview_source_active(QtNodes::NodeId(node.id))) {
             domain::ResolvedProcessingNode resolved;if(!domain::resolve_processing_node(node,numeric_editor::limits(),resolved))continue;
             const auto& ports=resolved.role==domain::NodeRole::Sink?node.inputs:node.outputs;
-            for(const auto& port:ports)endpoints.push_back({draft.graph_id,node.id,port.direction,port.id});
+            for(const auto& port:ports)endpoints.push_back({active->graph_id,node.id,port.direction,port.id});
         }
     _application.set_editor_numeric_endpoints(std::move(endpoints));
 }
@@ -1749,15 +1793,15 @@ void SchemeEditorWidget::apply_initial_layout(quint64 generation) {
        _view->viewport()->height()<2)return;
     _initial_layout_pending=false;_loading=true;
     layout_nodes(false);if(_initial_layout_fit)fit_nodes();_loading=false;
-    save_view();_application.state().editor_draft_modified=true;_save_timer.start();
+    save_view();mark_draft_modified();
 }
 bool SchemeEditorWidget::preview_matches_active(const pipeline::DeliveredNumericFrame& frame) const {
-    if(!isVisible() || !frame.context || _last_processing_document!=_active_processing_document)return false;
+    if(!isVisible() || !frame.context || !_preview_processing_matches)return false;
     if(!_preview_nodes.contains(QtNodes::NodeId(frame.context->endpoint.node)))return false;
     const auto snapshot=_application.client().snapshot();
     if(snapshot.statuses.value("analyzer").state!=pipeline::State::Running)return false;
     return frame.delivery.epoch==snapshot.epoch && frame.delivery.graph_revision==snapshot.graph_revision &&
-           frame.context->endpoint.graph_id==_active_processing_document.value("graph_id").toString().toStdString();
+           frame.context->endpoint.graph_id==_preview_graph_id;
 }
 bool SchemeEditorWidget::preview_port_available(const pipeline::DeliveredNumericFrame& frame) const {
     auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(frame.context->endpoint.node);
@@ -1867,7 +1911,7 @@ void SchemeEditorWidget::finish_draft_import(NumericEditorGraphModel* numeric) {
     for(auto id:nodes)wire_source_model(id);
     _last_processing_document=processing_document(numeric->save());
     _last_adapter_metadata=graph_adapter_metadata();
-    _loading=false;_application.state().editor_draft_modified=false;set_status({});
+    _loading=_draft_notification_pending=false;_application.state().editor_draft_modified=false;set_status({});
     emit execution_settings_changed();
     sync_preview_subscription();
 }
@@ -1943,18 +1987,22 @@ void SchemeEditorWidget::append_node_diagnostics(QtNodes::NodeId id) {
     _inspector_layout->addWidget(diagnostics);
 }
 void SchemeEditorWidget::inspect_node(QtNodes::NodeId id) {
+    BARELIEF_PROFILE_FUNCTION();
+    const InspectorStepTrace trace("inspect_node");
     if(!_inspector_layout)return;
     _inspected_node=id;_preview_nodes.clear();clear_inspector();
     auto* model=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id);
     if(model)populate_node_inspector(model,id);
     else populate_empty_inspector();
-    _inspector_layout->addStretch();sync_preview_subscription();
+    _inspector_layout->addStretch();
+    {const InspectorStepTrace subscriptions("subscriptions");sync_preview_subscription();}
 }
 void SchemeEditorWidget::populate_node_inspector(AudioNodeModel* model,QtNodes::NodeId id) {
+    if(qEnvironmentVariableIsSet("CORE_APP_TRACE_SAVES"))qInfo().noquote()<<"BARELIEF_INSPECTOR_NODE"<<id<<model->name();
     _preview_nodes.insert(id);model->clear_preview();
-    append_inspector_title(model);append_input_summary(model);
-    _inspector_layout->addWidget(model->preview_widget(this));
-    _inspector_layout->addWidget(model->parameter_widget(this));
+    {const InspectorStepTrace trace("summary");append_inspector_title(model);append_input_summary(model);}
+    {const InspectorStepTrace trace("preview");_inspector_layout->addWidget(model->preview_widget(_inspector->widget()));}
+    {const InspectorStepTrace trace("form");_inspector_layout->addWidget(model->parameter_widget(_inspector->widget()));}
     append_rename_action(model,id);append_node_diagnostics(id);
 }
 void SchemeEditorWidget::populate_empty_inspector() {
@@ -2281,7 +2329,7 @@ void SchemeEditorWidget::finish_document_load(bool active, bool switch_device) {
 void SchemeEditorWidget::record_loaded_document(bool active,bool switch_device) {
     if (active || switch_device) {
         _last_adapter_metadata = graph_adapter_metadata();
-        _application.state().editor_draft_modified = false;
+        _draft_notification_pending=false;_application.state().editor_draft_modified = false;
         _last_processing_document = processing_document(_application.state().data_flow_graph->save());
     } else changed();
     if (switch_device && !_unsupported_document) { _live_apply_pending = true; schedule_apply(); }
@@ -2378,6 +2426,12 @@ void SchemeEditorWidget::apply() {
 }
 void SchemeEditorWidget::wire_source_model(QtNodes::NodeId id) {
     if(auto *node=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id)){
+        if(node->property("editorSaveEventsBound").toBool())return;
+        node->setProperty("editorSaveEventsBound",true);
+        connect(node,&AudioNodeModel::parameter_values_changed,this,&SchemeEditorWidget::changed);
+        connect(node,&AudioNodeModel::parameter_structure_changed,this,&SchemeEditorWidget::changed);
+        connect(node,&AudioNodeModel::adapter_changed,this,&SchemeEditorWidget::changed);
+        connect(node,&AudioNodeModel::presentation_changed,this,&SchemeEditorWidget::presentation_changed);
         connect(node,&AudioNodeModel::activity_changed,this,[this,id]{if(auto* item=_scene->nodeGraphicsObject(id))item->update();});
         connect(node,&AudioNodeModel::numeric_edit_rejected,this,[this](const QString& error){set_status(ui::text("Not applied: ")+error);});
     }
@@ -2414,14 +2468,27 @@ SchemeEditorWidget::~SchemeEditorWidget() {
     static_cast<ProfiledGraphicsView *>(_view)->synchronize_positions = {};
 }
 void SchemeEditorWidget::changed() {
+    BARELIEF_PROFILE_FUNCTION();
     if(auto* numeric=dynamic_cast<NumericEditorGraphModel*>(_application.state().data_flow_graph.get());numeric && numeric->atomic_edit_in_progress())return;
     if (_loading) return;
-    _application.state().editor_draft_modified = true;
-    _save_timer.start();
+    mark_draft_modified();
     const auto processing = processing_document(_application.state().data_flow_graph->save());
     const auto adapters=graph_adapter_metadata();const bool adapters_changed=adapters!=_last_adapter_metadata;_last_adapter_metadata=adapters;
     if(processing!=_last_processing_document)record_processing_edit(processing);
     if(adapters_changed)record_adapter_edit();
+}
+void SchemeEditorWidget::mark_draft_modified() {
+    _application.state().editor_draft_modified=true;
+    _draft_notification_pending=true;
+    _save_timer.start();
+}
+void SchemeEditorWidget::notify_draft_change() {
+    if(!std::exchange(_draft_notification_pending,false))return;
+    emit numeric_draft_changed();
+}
+void SchemeEditorWidget::presentation_changed() {
+    if(_loading)return;
+    mark_draft_modified();
 }
 void SchemeEditorWidget::record_processing_edit(const QJsonObject& processing) {
     _live_apply_pending=true;_immediate_apply_pending=false;
@@ -2453,7 +2520,7 @@ void SchemeEditorWidget::flush_presentation() {
     auto &sync = static_cast<ProfiledGraphicsView *>(_view)->synchronize_positions;
     if (sync) sync();
     _save_timer.stop(); save_view();
-    if(_application.state().editor_draft_modified)emit numeric_draft_changed();
+    notify_draft_change();
 }
 void SchemeEditorWidget::arrange_nodes() {
     layout_nodes(true);
@@ -2463,6 +2530,10 @@ class EditorGraphLayout {
 public:
     EditorGraphLayout(DataFlowGraphModel& graph, DataFlowGraphicsScene& scene) : _graph(graph), _scene(scene) {}
     std::map<QtNodes::NodeId, QPointF> positions() {
+        // Known startup graph: arrange the audio frontend, measured gain,
+        // 48+48 spectral composition and rhythm monitoring as separate lanes.
+        // This affects only a freshly opened example, never a saved user layout.
+        if (arrange_curated_graph())return std::move(_positions);
         build_edges();
         assign_layers();
         std::map<int, std::vector<QtNodes::NodeId>> columns;
@@ -2472,6 +2543,28 @@ public:
         return std::move(_positions);
     }
 private:
+    bool arrange_curated_graph() {
+        if (!_graph.nodeExists(1111) || !_graph.nodeExists(1102) ||
+            !_graph.nodeExists(1007) || !_graph.nodeExists(1005))return false;
+        const std::vector<std::vector<QtNodes::NodeId>> columns{
+            {1,13,16},{200},{332},{2,9,1000,1003},{3,1001},
+            {4},{5,1004},{1005,15,1110,10},{6,1006},
+            {1008,1010,1007,11,12},{1111},{7},
+            {8,1009,1011,1102},{1103,1105},{1106}};
+        double x=0;
+        for(const auto& ids:columns)x+=place_curated_column(ids,x)+92;
+        return true;
+    }
+    double place_curated_column(const std::vector<QtNodes::NodeId>& ids,double x) {
+        double y=0,width=0;
+        for(const auto id:ids)if(auto* item=_scene.nodeGraphicsObject(id)){
+            const auto bounds=item->boundingRect();
+            _positions[id]=QPointF(x-bounds.left(),y-bounds.top());
+            width=std::max(width,bounds.width());
+            y+=bounds.height()+84;
+        }
+        return width;
+    }
     void build_edges() {
         for (const auto id : _graph.allNodeIds()) { _incoming[id] = 0; _layer[id] = 0; }
         const auto connections = _graph.save().value("connections").toArray();

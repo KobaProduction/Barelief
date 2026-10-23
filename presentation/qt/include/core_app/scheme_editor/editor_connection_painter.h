@@ -5,6 +5,7 @@
 #include <QtNodes/internal/ConnectionGraphicsObject.hpp>
 #include <QApplication>
 #include <QFontMetricsF>
+#include <core/telemetry.h>
 
 class EditorConnectionPainter final : public QtNodes::DefaultConnectionPainter {
 public:
@@ -18,9 +19,14 @@ public:
         return stroke;
     }
     void paint(QPainter* painter,const QtNodes::ConnectionGraphicsObject& wire) const override {
+        BARELIEF_PROFILE_FUNCTION();
         const auto* model=dynamic_cast<const NumericEditorGraphModel*>(&wire.graphModel());
         if(!model || wire.connectionState().requiresPort() || wire.connectionState().frozen()){DefaultConnectionPainter::paint(painter,wire);return;}
-        const int state=model->connection_visual_state(wire.connectionId());
+        paint_ready_wire(*painter,wire,model->connection_visual_state(wire.connectionId()));
+    }
+private:
+    static void paint_ready_wire(QPainter& target,const QtNodes::ConnectionGraphicsObject& wire,int state) {
+        auto* painter=&target;
         const auto path=connection_curve(wire);
         painter->save();painter->setRenderHint(QPainter::Antialiasing);painter->setBrush(Qt::NoBrush);
         if(wire.isSelected() || wire.connectionState().hovered())paint_halo(*painter,path);
@@ -28,7 +34,6 @@ public:
         if(state)paint_badge(*painter,path.pointAtPercent(.5),state);
         painter->restore();
     }
-private:
     static QPainterPath connection_curve(const QtNodes::ConnectionGraphicsObject& wire) {
         const auto controls=wire.pointsC1C2();
         QPainterPath path(wire.out());path.cubicTo(controls.first,controls.second,wire.in());return path;

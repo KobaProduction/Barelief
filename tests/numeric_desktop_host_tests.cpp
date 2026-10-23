@@ -12,6 +12,66 @@
 #include <atomic>
 #include <thread>
 using namespace transport_fixture;
+// Regression: a scalar history (NumberAccumulator -> VectorLineView) must be
+// queryable as a 1-D owning snapshot, not only matrix Spectrogram histories.
+static domain::NumericProcessingGraph matrix_query_graph();
+static void feed_query_matrix(NumericDesktopHost&,const domain::NumericProcessingGraph&);
+static void selective_snapshot_query() {
+ NumericDesktopHost host;auto g=matrix_query_graph();auto other=g.nodes[1];other.id=2;
+ g.nodes.push_back(std::move(other));g.edges.push_back({0,2,0,0});
+ {Replies replies(host);replies.accepted(apply(g));}
+ const auto first=sink(g);const EndpointIdentity second{g.graph_id,2,domain::PortDirection::Input,0};
+ require(host.subscribe_numeric_frames({first,second}),"selective snapshot subscription");
+ std::array<unsigned,4> delivered{};
+ host.set_numeric_frame_handler([&](auto frame){if(frame.context && frame.frame && frame.status==Status::ok)++delivered[frame.context->endpoint.node];});
+ feed_query_matrix(host,g);
+ require(wait([&]{return delivered[1] && delivered[2];}),"selective fixture current values");settle(30);delivered={};
+ for(unsigned i=0;i<100;++i)host.request_numeric_snapshot(first);
+ require(wait([&]{return delivered[1]!=0;}),"targeted cold return without new ingress");settle(30);
+ require(delivered[1]==1 && delivered[2]==0,"targeted refresh repeated or queried an unrelated endpoint");
+ host.request_numeric_snapshots();
+ require(wait([&]{return delivered[1]>1 && delivered[2]!=0;}),"full cold recovery lost selected endpoints");
+}
+static void number_accumulator_vector_history_snapshot() {
+ auto g=graph("number-accumulator-preview");
+ const domain::ProcessingAdmissionLimits admission{32,64,16,16,256,65536,
+     bdsp_protocol::numeric_control::desktop_limits().frame};
+ domain::NodeFactorySettings settings;settings.history_capacity=4;
+ domain::ConfiguredProcessingNode history;
+ require(bool(domain::make_processing_node("NumberAccumulator",2,admission,history,settings)),
+         "NumberAccumulator existing factory");
+ history.parameters=domain::HistoryProcessingParameters{4};
+ require(bool(domain::configure_processing_input(history,g.nodes[0].outputs[0].contract.view(),admission)),
+         "NumberAccumulator scalar input contracts");
+ g.nodes[1].inputs[0].contract=history.outputs[0].contract;
+ g.nodes.push_back(std::move(history));
+ g.edges={{0,2,0,0},{2,1,0,0}};
+ NumericDesktopHost host;{Replies replies(host);replies.accepted(apply(g));}
+ require(host.subscribe_numeric_frames({sink(g)}),"subscribe scalar History vector sink");
+ for(std::uint64_t i=1;i<=6;++i)feed(*host.local_engine(),1,i,i);
+ DeliveredNumericFrame snapshot;std::uint64_t ordinal=0,filled=0;
+ require(host.query_numeric(sink(g),snapshot,&ordinal,&filled)==Status::ok,
+         "Scalar History must be registered for snapshot query");
+ require(filled==4 && ordinal==6,"NumberAccumulator preserves capacity and exact ordinal");
+ const auto& view=std::get<NumericView>(snapshot.frame.view().payload);
+ require(view.contract->semantic==Semantic::History && view.contract->shape.rank==Rank::Vector &&
+         view.actual[0]==4,"NumberAccumulator emits vector history");
+ for(std::size_t index=0;index<4;++index){
+     std::uint64_t actual=0;
+     require(load_element(view,{0,index,0},actual)==Status::ok && actual==index+3,
+             "One incoming number shifts existing history values");
+ }
+ bool delivered=false;
+ host.set_numeric_history_snapshot_handler([&](auto frame,std::uint64_t received_ordinal,
+                                                 std::uint64_t received_filled){
+     if(frame.context && frame.context->endpoint==sink(g) &&
+        received_ordinal==6 && received_filled==4 && frame.status==Status::ok)
+         delivered=true;
+ });
+ host.request_numeric_snapshots();
+ require(wait([&]{return delivered;}),"GUI must receive refreshed vector History snapshot");
+ selective_snapshot_query();
+}
 static void event_preview_pending_and_reentrancy(){
  NumericEngine engine;auto g=graph("event.preview");{Replies replies(engine);replies.accepted(apply(g));}
  require(engine.subscribe_numeric_frames({sink(g)}),"event preview subscription");
@@ -416,4 +476,4 @@ static void active_remote_rebind(){NumericDesktopHost producer;auto g=graph();g.
  std::array<std::uint64_t,60> source_sequences{};auto deliver=[&](std::uint64_t sequence,std::uint64_t expected){for(int i=0;i<60;++i){require(wait([&]{feed(producer,1,++source_sequences[i],expected,i);auto found=retained.find(100+i);return found!=retained.end()&&value(found->second)==expected;}),"active rebind selected port delivery");}};
  deliver(1,20);require(retained.size()==60,"active rebind60 renderer owners");require(receiver.subscribe_numeric_frames(selected),"same60 active arena admission refused");deliver(2,21);for(const auto& [node,f]:retained)require(value(f)==21,"same60 rebind lost retained renderer or latest delivery");
 }
-int main(int argc,char**argv){std::setvbuf(stderr,nullptr,_IONBF,0);std::fprintf(stderr,"phase main before Qt\n");QCoreApplication app(argc,argv);std::fprintf(stderr,"phase Qt ready\n");try{if(argc>1&&QByteArray(argv[1])=="--wide-preview"){wide_host_preview_fairness();return 0;}wide_host_preview_fairness();event_preview_pending_and_reentrancy();cadence_fixture::preview_cadence();asynchronous_snapshot_query();slow_history_preview_preserves_taps();for(bool remote:{false,true})for(auto tag:{Semantic::Numeric,Semantic::History})ordinary_matrix_query(remote,tag);if(argc>1&&QByteArray(argv[1])=="--eviction-gap"){evicted_endpoint_gap();return 0;}std::fprintf(stderr,"phase eviction\n");evicted_endpoint_gap();std::fprintf(stderr,"phase saturation\n");local_delivery_saturation();std::fprintf(stderr,"phase capacity\n");capacity();std::fprintf(stderr,"phase live\n");live_replies();std::fprintf(stderr,"phase reentrant\n");reentrant("stop");reentrant("apply");reentrant("subscribe");std::fprintf(stderr,"phase lifetime\n");lifetime();std::fprintf(stderr,"phase rebind\n");newest_and_rebind();all_selected_ports(false);all_selected_ports(true);all_selected_cold_matrices();std::fprintf(stderr,"phase active_remote_rebind\n");active_remote_rebind();std::fprintf(stderr,"phase owning History ingress\n");owning_history_ingress();std::fprintf(stderr,"phase history local\n");history_resume(false);std::fprintf(stderr,"phase history remote\n");history_resume(true);std::puts("worker admission/live completion/reentrant data fences/lifetime/newest/rebind/all selected ports/active60 rebind/local and remote History resume PASS");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}
+int main(int argc,char**argv){std::setvbuf(stderr,nullptr,_IONBF,0);QCoreApplication app(argc,argv);try{if(argc>1&&QByteArray(argv[1])=="--vector-history"){number_accumulator_vector_history_snapshot();return 0;}number_accumulator_vector_history_snapshot();if(argc>1&&QByteArray(argv[1])=="--wide-preview"){wide_host_preview_fairness();return 0;}wide_host_preview_fairness();event_preview_pending_and_reentrancy();cadence_fixture::preview_cadence();asynchronous_snapshot_query();slow_history_preview_preserves_taps();for(bool remote:{false,true})for(auto tag:{Semantic::Numeric,Semantic::History})ordinary_matrix_query(remote,tag);if(argc>1&&QByteArray(argv[1])=="--eviction-gap"){evicted_endpoint_gap();return 0;}std::fprintf(stderr,"phase eviction\n");evicted_endpoint_gap();std::fprintf(stderr,"phase saturation\n");local_delivery_saturation();std::fprintf(stderr,"phase capacity\n");capacity();std::fprintf(stderr,"phase live\n");live_replies();std::fprintf(stderr,"phase reentrant\n");reentrant("stop");reentrant("apply");reentrant("subscribe");std::fprintf(stderr,"phase lifetime\n");lifetime();std::fprintf(stderr,"phase rebind\n");newest_and_rebind();all_selected_ports(false);all_selected_ports(true);all_selected_cold_matrices();std::fprintf(stderr,"phase active_remote_rebind\n");active_remote_rebind();std::fprintf(stderr,"phase owning History ingress\n");owning_history_ingress();std::fprintf(stderr,"phase history local\n");history_resume(false);std::fprintf(stderr,"phase history remote\n");history_resume(true);std::puts("worker admission/live completion/reentrant data fences/lifetime/newest/rebind/all selected ports/active60 rebind/local and remote History resume PASS");return 0;}catch(const std::exception&e){std::fprintf(stderr,"%s\n",e.what());return 1;}}

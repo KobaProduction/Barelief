@@ -22,14 +22,14 @@ enum class NodeKind {
     MatrixImageView, MatrixSurfaceView,
     AudioLineView, AudioPointView, AudioBarView, AudioPieView,
     AudioImageView, AudioSurfaceView,
-    NumberAccumulator
+    NumberAccumulator, RhythmAnalyzer, RhythmFeatures
 };
 enum class NodeRole { Source, Processor, Sink, Unknown };
 NodeRole node_role(NodeKind) noexcept;
 bool is_view(NodeKind) noexcept;
 bool is_scalar_view(NodeKind) noexcept;
 // Registered kinds; retired enum slots are not reused.
-constexpr std::size_t node_kind_count=80;
+constexpr std::size_t node_kind_count=82;
 std::string_view kind_id(NodeKind kind) noexcept;
 std::optional<NodeKind> node_kind(std::string_view canonical_id) noexcept;
 enum class AudioSource { SystemOutput = 0, Microphone = 1 };

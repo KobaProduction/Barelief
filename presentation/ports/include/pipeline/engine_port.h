@@ -77,6 +77,9 @@ public:
     virtual void set_numeric_history_snapshot_handler(std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)>) {}
     // Presentation requests complete current values; processing owns all history.
     virtual void request_numeric_snapshots() {}
+    // Refresh one changed endpoint without re-querying unrelated subscribers.
+    // Endpoints without selective resync retain their full-snapshot fallback.
+    virtual void request_numeric_snapshot(const EndpointIdentity&) {request_numeric_snapshots();}
     // Cold presentation policy. Processing and loss-sensitive taps keep their
     // own cadence; implementations may coalesce preview delivery between ticks.
     virtual void set_numeric_preview_cadence_hz(int) {}

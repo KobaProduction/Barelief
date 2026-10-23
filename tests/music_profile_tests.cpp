@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <stdexcept>
 
@@ -51,6 +52,62 @@ void cadence_oracle(){
     const auto scaling=dsp_kernels::profile_window_scaling(frontend);
     require(scaling.samples==512 && scaling.sum==dsp_kernels::window_sum(512,frontend.window),"declared window C scaling");
     require(scaling.sum_squares==dsp_kernels::window_square_sum(512,frontend.window),"declared window E scaling");
+}
+void compensation_curve_oracle() {
+    using namespace dsp_kernels;
+    const std::array<double,6> peaks{0,.5,.1,.25,0,1.2};
+    std::vector<float> gains;
+    require(build_frequency_peak_compensation_curve(peaks,1e-6,10,gains),
+            "Per-bin peak compensation must prepare");
+    require(gains==std::vector<float>({1,2,10,4,1,1}),
+            "Each bin is independently normalized: .5->2, .1->10, .25->4");
+    PreparedFrequencyNormalizer normalizer;
+    require(normalizer.prepare(gains),"Prepared peak normalizer");
+    const std::vector<float> input{0,.5f,.1f,.25f,0,1.2f};std::vector<float> output(input.size());
+    require(normalizer.process(input,output),"Apply peak normalization");
+    require(std::abs(output[1]-1)<1e-6 && std::abs(output[2]-1)<1e-6 &&
+            std::abs(output[3]-1)<1e-6 && output[5]==input[5],
+            "Measured maxima are normalized to unity without attenuating values above one");
+    require(build_frequency_peak_compensation_curve(peaks,1e-6,5,gains) &&
+            gains[1]==2 && gains[2]==5 && gains[3]==4,"Maximum boost clips only required gains");
+    const auto unchanged=gains;
+    auto broken=peaks;broken[2]=std::numeric_limits<double>::quiet_NaN();
+    require(!build_frequency_peak_compensation_curve(broken,0,5,gains) && gains==unchanged,
+            "Nonfinite measurements must preserve destination");
+    require(!build_frequency_peak_compensation_curve(peaks,0,.5,gains) && gains==unchanged,
+            "Invalid maximum amplification must be rejected");
+    const std::array<double,4> all_silent{};
+    require(build_frequency_peak_compensation_curve(all_silent,1e-6,5,gains) &&
+            std::all_of(gains.begin(),gains.end(),[](float v){return v==1;}),
+            "Silent peak bins are not amplified");
+    ProfileCompatibility c;c.fft_size=512;
+    ProfileTraining training;training.gain_mode=ProfileGainMode::PeakNormalization;
+    training.hop=256;training.smoothing_radius=0;training.max_gain=10;
+    CompositionStatistics track;track.source="peak-one";track.frames=track.active_frames=2;
+    track.mean_spectrum.assign(257,.05);track.peak_spectrum.assign(257,.5);
+    track.peak_spectrum[1]=.5;track.peak_spectrum[2]=.1;
+    auto second=track;second.source="peak-two";second.peak_spectrum[1]=.25;
+    second.peak_spectrum[2]=.2;second.mean_spectrum[1]=.01;
+    FrequencyProfile profile;std::string error;
+    require(build_frequency_profile(c,training,std::array{track,second},profile,error),
+            "Measured per-bin peak profile must build");
+    require(profile.peak_spectrum[1]==.5 && profile.peak_spectrum[2]==.2 &&
+            profile.gains[1]==2 && profile.gains[2]==5,
+            "Global maximum across tracks, not average, drives independent gains");
+    desktop_analysis::offline::ProfileDocument original;original.profile=profile;
+    desktop_analysis::offline::ProfileDocument restored;QString diagnostic;
+    require(desktop_analysis::offline::decode_profile(
+            desktop_analysis::offline::encode_profile(original),restored,diagnostic) &&
+            restored.profile.training.gain_mode==ProfileGainMode::PeakNormalization &&
+            restored.profile.peak_spectrum==profile.peak_spectrum &&
+            restored.profile.compositions[1].peak_spectrum==second.peak_spectrum,
+            "Persisted peak mode and per-track peaks must round-trip");
+    training.gain_mode=ProfileGainMode::MeanEqualization;
+    track.mean_spectrum.assign(257,1);track.mean_spectrum[1]=10;track.peak_spectrum.clear();
+    FrequencyProfile mean_profile;
+    require(build_frequency_profile(c,training,std::span(&track,1),mean_profile,error) &&
+            mean_profile.gains[1]<1 && mean_profile.peak_spectrum.empty(),
+            "Legacy mean equalization remains independent and may attenuate");
 }
 void profile_mismatch_reasons(){
     using namespace dsp_kernels;
@@ -195,7 +252,7 @@ static void library_transfer(const QTemporaryDir& temp,const auto& single,QStrin
 using namespace dsp_kernels;using namespace desktop_analysis::offline;
         // A library-sized export fixture contains no decoded music and must not
         // invoke the scanner. This measures JSON/file transfer separately.
-        auto library=single.document;library.preserved.remove("analysis_run");library.profile.compatibility.fft_size=4096;library.profile.gains.assign(2049,1);library.profile.mean_spectrum.assign(2049,1);library.profile.frequency_presence.assign(2049,1);library.profile.compositions.clear();library.previews.clear();
+        auto library=single.document;library.preserved.remove("analysis_run");library.profile.compatibility.fft_size=4096;library.profile.training.gain_mode=ProfileGainMode::MeanEqualization;library.profile.gains.assign(2049,1);library.profile.mean_spectrum.assign(2049,1);library.profile.peak_spectrum.clear();library.profile.frequency_presence.assign(2049,1);library.profile.compositions.clear();library.previews.clear();
         std::uint32_t rng=17;
         for(unsigned i=0;i<643;++i){CompositionStatistics track;track.source="synthetic-export-fixture/"+std::string(160,'x')+"/track-"+std::to_string(i)+".wav";track.frames=track.active_frames=10;track.samples=48000;track.rms=.1;
             track.mean_spectrum.resize(2049);for(auto& value:track.mean_spectrum){rng=rng*1664525u+1013904223u;value=double(rng)/4294967296.;}
@@ -276,6 +333,9 @@ using namespace dsp_kernels;using namespace desktop_analysis::offline;
         b=a;b.frames=b.active_frames=1000;b.mean_spectrum.assign(257,8);quiet=a;quiet.active_frames=0;quiet.mean_spectrum.assign(257,0);
         FrequencyProfile p;std::string error;require(build_frequency_profile(c,t,std::array{a,b,quiet},p,error),"Profile build failed");
         require(std::abs(p.mean_spectrum[40]-5)<1e-12,"Long tracks bias equal composition weighting");
+        require(p.gains[0]==1 && p.gains[1]==1 &&
+                std::all_of(p.gains.begin(),p.gains.end(),[](float gain){return gain>=1;}),
+                "Scanned frequency profile must never attenuate the source spectrum");
         FrequencyProfile sentinel=p;require(!build_frequency_profile(c,t,std::array{quiet},p,error),"All silence accepted");require(p.gains==sentinel.gains,"Rejected build mutated profile");
         ProfileDocument doc;doc.profile=sentinel;doc.preserved["future_hint"]=QJsonObject{{"keep",42}};doc.preserved["metadata"]=QJsonObject{{"future_metadata","yes"}};
         doc.preserved["training"]=QJsonObject{{"future_training","yes"}};doc.preserved["compositions"]=QJsonArray{QJsonObject{{"future_track","yes"}}};
@@ -284,7 +344,7 @@ return doc;
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);using namespace dsp_kernels;using namespace desktop_analysis::offline;
     try {
-        cadence_oracle();mel_coordinates_oracle();profile_mismatch_reasons();malformed_preview_normalization();
+        cadence_oracle();mel_coordinates_oracle();compensation_curve_oracle();profile_mismatch_reasons();malformed_preview_normalization();
         ProfileCompatibility c;c.fft_size=512;ProfileTraining t;t.hop=256;t.smoothing_radius=2;
         auto doc=weighting_profile(c,t);
         auto encoded=encode_profile(doc);ProfileDocument loaded;QString json_error;require(decode_profile(encoded,loaded,json_error),"Export reload failed");

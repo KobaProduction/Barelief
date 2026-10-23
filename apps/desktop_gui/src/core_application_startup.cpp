@@ -231,6 +231,7 @@ void CoreApplication::_restore_startup_draft(StartupState& state,SchemeEditorWid
     _restore_startup_presentation(state,editor,presentation);
 }
 void CoreApplication::_bind_configuration_events(StartupState& state) {
+    connect(this,&QCoreApplication::aboutToQuit,this,&CoreApplication::_flush_autosave);
     _configuration_load_error=state.startup_error;
     _configuration_project_dirty = !state.existing_config;
     _configuration_save_error = state.startup_error;
@@ -265,11 +266,12 @@ void CoreApplication::_start_runtime(StartupState& state) {
         });
 }
 void CoreApplication::_start_heartbeat() {
+#if BARELIEF_DEV_TELEMETRY
     auto *heartbeat = new QTimer(this);
     heartbeat->setTimerType(Qt::PreciseTimer);
     heartbeat->setInterval(17);
     connect(heartbeat, &QTimer::timeout, this, [last = uint64_t{0}]() mutable {
-        if (!core::perf::enabled.load(std::memory_order_relaxed)) {
+        if (!core::perf::enabled.load(std::memory_order_relaxed) && !core::telemetry::enabled()) {
             last = 0;
             return;
         }
@@ -279,6 +281,7 @@ void CoreApplication::_start_heartbeat() {
         last = now;
     });
     heartbeat->start();
+#endif
 }
 
 void CoreApplication::_restore_startup_presentation(StartupState& state,SchemeEditorWidget* editor,const desktop::NumericDraftPresentation& presentation) {

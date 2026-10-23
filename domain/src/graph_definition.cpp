@@ -83,7 +83,9 @@ constexpr NodeDescriptor nodes[]{
     {NodeKind::AudioPieView,"AudioPieView",NodeRole::Sink,true},
     {NodeKind::AudioImageView,"AudioImageView",NodeRole::Sink,true},
     {NodeKind::AudioSurfaceView,"AudioSurfaceView",NodeRole::Sink,true},
-    {NodeKind::NumberAccumulator,"NumberAccumulator",NodeRole::Processor}
+    {NodeKind::NumberAccumulator,"NumberAccumulator",NodeRole::Processor},
+    {NodeKind::RhythmAnalyzer,"RhythmAnalyzer",NodeRole::Processor},
+    {NodeKind::RhythmFeatures,"RhythmFeatures",NodeRole::Processor}
 };
 static_assert(std::size(nodes)==node_kind_count);
 bool configured_ports_valid(const NodeDefinition& node) noexcept {

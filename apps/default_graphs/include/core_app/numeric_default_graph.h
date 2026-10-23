@@ -11,6 +11,7 @@ domain::NumericProcessingGraph numeric_generator_graph(std::uint32_t sample_rate
 domain::NumericProcessingGraph numeric_startup_graph();
 // PC research pipeline, separate from startup and user projects.
 domain::NumericProcessingGraph numeric_music_graph();
+domain::NumericProcessingGraph numeric_rhythm_graph();
 
 struct NumericExampleSection {
     domain::NodeId view;
@@ -21,6 +22,10 @@ struct NumericExampleStreamNames {
     domain::NodeId selector;
     std::vector<const char*> labels;
 };
+struct NumericExampleScalarNames {
+    domain::NodeId view;
+    std::vector<const char*> labels;
+};
 struct NumericExampleGraph {
     const char* id;
     const char* title_key;
@@ -28,6 +33,7 @@ struct NumericExampleGraph {
     std::vector<domain::NodeId> audio_matrix_views;
     std::vector<NumericExampleSection> sections;
     std::vector<NumericExampleStreamNames> streams;
+    std::vector<NumericExampleScalarNames> scalar_names;
 };
 std::vector<NumericExampleGraph> numeric_example_graphs();
 NumericExampleGraph numeric_startup_example();

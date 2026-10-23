@@ -17,6 +17,25 @@ QJsonArray sections_for(const NumericExampleGraph& example,domain::NodeId view) 
             {"begin",qint64(section.begin)},{"count",qint64(section.count)}});
     return result;
 }
+void apply_scalar_labels(NumericEditorGraphModel* model,const NumericExampleScalarNames& names) {
+    auto* node=model->delegateModel<AudioNodeModel>(names.view);
+    if(!node)return;
+    QJsonObject inputs;
+    for(std::size_t port=0;port<names.labels.size();++port)
+        inputs[QString::number(port)]=QJsonObject{{"enabled",true},{"display_name",ui::text(names.labels[port])}};
+    auto presentation=node->presentation();
+    presentation["scalar_inputs"]=inputs;
+    node->set_presentation(presentation);
+}
+void apply_stream_labels(NumericEditorGraphModel* model,const NumericExampleStreamNames& stream) {
+    auto* node=model->delegateModel<AudioNodeModel>(stream.selector);
+    if(!node)return;
+    QJsonArray labels;
+    for(const auto* label:stream.labels)labels.append(ui::text(label));
+    auto presentation=node->presentation();
+    presentation["stream_names"]=labels;
+    node->set_presentation(presentation);
+}
 }
 
 QJsonObject example_view_preferences(const NumericExampleGraph& example,const QString& device,const QString& graph) {
@@ -43,13 +62,6 @@ QJsonObject example_presentation(const NumericExampleGraph& example,const QStrin
 }
 void apply_example_labels(NumericEditorGraphModel* model,const NumericExampleGraph& example) {
     if(!model)return;
-    for(const auto& stream:example.streams) {
-        auto* node=model->delegateModel<AudioNodeModel>(stream.selector);
-        if(!node)continue;
-        QJsonArray labels;
-        for(const auto* label:stream.labels)labels.append(ui::text(label));
-        auto presentation=node->presentation();
-        presentation["stream_names"]=labels;
-        node->set_presentation(presentation);
-    }
+    for(const auto& names:example.scalar_names)apply_scalar_labels(model,names);
+    for(const auto& stream:example.streams)apply_stream_labels(model,stream);
 }

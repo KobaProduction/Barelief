@@ -26,12 +26,13 @@ PreparedOperationKernel::PreparedOperationKernel(const PreparedOperationKernel& 
 PreparedOperationKernel& PreparedOperationKernel::operator=(const PreparedOperationKernel& other){if(this!=&other)value_=std::make_unique<OperationKernelState>(*other.value_);return *this;}
 PreparedOperationKernel::PreparedOperationKernel(PreparedOperationKernel&&) noexcept=default;
 PreparedOperationKernel& PreparedOperationKernel::operator=(PreparedOperationKernel&&) noexcept=default;
-void PreparedOperationKernel::reset() noexcept {value_->pending={};value_->product_pending=false;std::copy(value_->factor_initial_ready.begin(),value_->factor_initial_ready.end(),value_->factor_ready.begin());if(auto* broad=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation))broad->reset();}
+void PreparedOperationKernel::reset() noexcept {value_->pending={};value_->product_pending=false;std::copy(value_->factor_initial_ready.begin(),value_->factor_initial_ready.end(),value_->factor_ready.begin());if(auto* broad=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation))broad->reset();if(value_->rhythm)value_->rhythm->reset();}
 void PreparedOperationKernel::invalidate_product_lane(std::size_t lane) noexcept {
     if(lane>=value_->factor_ready.size())return;
     value_->factor_ready[lane]=false;value_->product_pending=false;
 }
 bool PreparedOperationKernel::copy_state_from(const PreparedOperationKernel& other) noexcept {
+    if(value_->rhythm)return other.value_->rhythm && value_->rhythm->copy_state_from(*other.value_->rhythm);
     auto* current=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation);
     const auto* before=std::get_if<dsp_kernels::BroadbandFeatures>(&other.value_->operation);
     return !current || (before && current->copy_state_from(*before));
@@ -67,6 +68,7 @@ std::optional<bool> numeric_operation_resources(const ResolvedProcessingNode& n,
     return numeric_add(resources.payload_bytes,std::size_t(std::get<NumericContract>(right).shape.extents[0].maximum)*sizeof(float));
 }
 std::optional<bool> feature_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result) {
+    if(n.kind=="RhythmFeatures")return numeric_add(resources.payload_bytes,output);
     if(n.kind=="BroadbandFeatures")return numeric_add(resources.scratch_bytes,input*sizeof(float)+output*48+8);
     if(n.kind=="SpectralQuantize")return numeric_add(resources.payload_bytes,output*(result.dtype==DType::UInt8?1:2));
     if(n.kind=="FrequencyNormalizer")return numeric_add(resources.scratch_bytes,input*sizeof(float));
@@ -91,9 +93,8 @@ bool music_operation_resources(const ResolvedProcessingNode& node,ProcessingReso
     return numeric_add(resources.scratch_bytes,input*sizeof(float)+output*(48+std::size_t(harmonics)*40));
 }
 }
-bool music_support(const ResolvedProcessingNode& node,ProcessingResources& resources,const NumericRuntimeProfile& profile) noexcept {
-    const auto input=std::get<NumericContract>(node.inputs.front().contract.view());
-    const auto output=std::get<NumericContract>(node.outputs.front().contract.view());
+namespace {
+bool operation_support(const ResolvedProcessingNode& node,ProcessingResources& resources,const NumericRuntimeProfile& profile,const NumericContract& input,const NumericContract& output) noexcept {
     const auto in=std::size_t(input.shape.extents[0].maximum)*(input.shape.rank==Rank::Matrix?std::size_t(input.shape.extents[1].maximum):1);
     const auto out=std::size_t(output.shape.extents[0].maximum)*(output.shape.rank==Rank::Matrix?std::size_t(output.shape.extents[1].maximum):1);
     const bool fourier=node.kind=="Fourier" || node.kind=="RealFourier" || node.kind=="RFFT";
@@ -103,12 +104,23 @@ bool music_support(const ResolvedProcessingNode& node,ProcessingResources& resou
     if(const auto signal=signal_operation_resources(node,resources,in,out,output))return *signal;
     return music_operation_resources(node,resources,in,out,input);
 }
-Status prepare_music(PlanNode& node,State& state,const ResolvedProcessingNode& n,const NumericRuntimeProfile& profile){
-    state.kernel.emplace<PreparedOperationKernel>();auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
+void prepare_operation_buffers(OperationKernelState& kernel,const PlanNode& node) {
     const auto input=std::get<NumericContract>(node.numeric_input);
     const auto output=std::get<NumericContract>(node.numeric_outputs[0]);
     kernel.input.resize(std::size_t(input.shape.extents[0].maximum)*(input.shape.rank==Rank::Matrix?std::size_t(input.shape.extents[1].maximum):1));
     kernel.output.resize(std::size_t(output.shape.extents[0].maximum)*(output.shape.rank==Rank::Matrix?std::size_t(output.shape.extents[1].maximum):1));
+}
+}
+bool music_support(const ResolvedProcessingNode& node,ProcessingResources& resources,const NumericRuntimeProfile& profile) noexcept {
+    if(node.kind=="RhythmAnalyzer")return numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) && numeric_add(resources.scratch_bytes,dsp_kernels::rhythm::Analyzer::workspace_bytes()+96);
+    const auto input=std::get<NumericContract>(node.inputs.front().contract.view());
+    const auto output=std::get<NumericContract>(node.outputs.front().contract.view());
+    return operation_support(node,resources,profile,input,output);
+}
+Status prepare_music(PlanNode& node,State& state,const ResolvedProcessingNode& n,const NumericRuntimeProfile& profile){
+    state.kernel.emplace<PreparedOperationKernel>();auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
+    if(n.kind=="RhythmAnalyzer")return prepare_rhythm(kernel,n);
+    prepare_operation_buffers(kernel,node);
     const auto numeric=prepare_numeric_operation(kernel,node,n,profile);
     if(numeric!=Status::unavailable)return numeric;
     const auto signal=prepare_signal_operation(kernel,node,n);
@@ -168,13 +180,19 @@ Status execute_common_music(OperationKernelState& kernel,const PlanNode& node,St
     if(status==Status::ok)state.numeric_frames[0]={current.stamp,destination.view()};
     return status;
 }
-}
-Status execute_music(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
-    auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
+Status execute_loaded_music(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
     const auto& source=std::get<NumericView>(current.payload);
-    const auto read=read_operation_input(kernel,source,limits);if(read!=Status::ok)return read;
+    if(node.node.kind==NodeKind::RhythmFeatures)return execute_rhythm_features(kernel,node,state,current);
     if(node.node.kind==NodeKind::SpectralQuantize){const auto copied=copy_quantizer_coordinates(source,state);if(copied!=Status::ok)return copied;}
     if(std::holds_alternative<dsp_kernels::MusicalSpectrogram>(kernel.operation))return execute_musical_spectrogram(kernel,node,state,current);
     return execute_common_music(kernel,node,state,current,limits);
+}
+}
+Status execute_music(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
+    auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
+    if(kernel.rhythm)return execute_rhythm(kernel,node,state,current,limits);
+    const auto& source=std::get<NumericView>(current.payload);
+    const auto read=read_operation_input(kernel,source,limits);if(read!=Status::ok)return read;
+    return execute_loaded_music(kernel,node,state,current,limits);
 }
 }

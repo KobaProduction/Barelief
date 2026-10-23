@@ -59,6 +59,7 @@ void CoreApplication::_bind_editor_actions(StartupState& state) {
     _presenter->set_graph_adapter_provider([guard=QPointer<SchemeEditorWidget>(editor)]{return guard?guard->graph_adapter_metadata():QJsonObject{};});
     _restore_startup_draft(state,editor);
     connect(editor,&SchemeEditorWidget::numeric_draft_changed,this,[this]{_ctx.editor_draft_modified=true;_save_configuration(false);});
+    _bind_incremental_saves();
 }
 void CoreApplication::_populate_example_menu(SchemeEditorWidget* editor) {
     auto* menu=_main_window->findChild<QMenu*>("pipelinePresetsMenu");if(!menu)return;

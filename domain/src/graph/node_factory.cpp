@@ -106,7 +106,7 @@ void initialize_polar(Factory& f,std::string_view kind) {
 NumericContract music_input(Factory& f,std::string_view kind) {
     auto input=f.spectrum(true);input.quantity=Quantity::SpectrumPower;input.unit=NumericUnit::SquaredAmplitude;
     if(kind=="RFFT")input=f.vector(Semantic::Windowed,f.settings.fft_size);
-    if(kind=="SpectrumProjection") {
+    if(kind=="SpectrumProjection" || kind=="RhythmFeatures") {
         input.quantity=Quantity::SpectrumComplex;input.unit=NumericUnit::RawAmplitude;
         input.shape.rank=Rank::Matrix;input.shape.axes[1]=Axis::Component;input.shape.extents[1]={2,2};
         input.coordinates[1]={CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}};
@@ -138,6 +138,13 @@ void initialize_music(Factory& f,std::string_view kind) {
     }
     if(kind=="BroadbandFeatures")initialize_broadband_boundaries(f);
     f.io(input,input,1,one_of(kind,{"MusicalSpectrogram","NoteSpectrum"})?4:1);
+}
+void initialize_rhythm(Factory& f) {
+    auto input=f.vector(Semantic::History,512,Axis::Time);
+    input.dtype=DType::UInt8;input.representation.alignment=alignof(std::uint8_t);
+    input.shape.rank=Rank::Matrix;input.shape.axes[1]=Axis::Band;input.shape.extents[1]={64,64};
+    f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
+    f.io(input,f.scalar(),1,rhythm_output_count);
 }
 void initialize_generator(Factory& f) {
     auto input=f.scalar(DType::UInt32);f.io(input,f.vector(Semantic::Numeric,f.settings.fft_size));
@@ -265,11 +272,16 @@ bool initialize_numerical(Factory& f,std::string_view kind) {
     if(one_of(kind,{"ArrayLength","SampleRate","WindowGain","FrequencyStep"})){initialize_metadata(f,kind);return true;}
     return false;
 }
+bool initialize_music_family(Factory& f,std::string_view kind) {
+    if(kind=="RhythmAnalyzer"){initialize_rhythm(f);return true;}
+    if(one_of(kind,{"RhythmFeatures","RFFT","SpectrumProjection","FrequencyNormalizer","BroadbandFeatures","NoteSalience","MusicalSpectrogram","BroadbandRow","NoteSpectrum","SpectralQuantize"})){initialize_music(f,kind);return true;}
+    return false;
+}
 bool initialize_operations(Factory& f,std::string_view kind) {
+    if(initialize_music_family(f,kind))return true;
     if(initialize_numerical(f,kind))return true;
     if(kind=="Spectrogram"){initialize_history(f);return true;}
     if(kind=="NumberAccumulator"){initialize_number_accumulator(f);return true;}
-    if(one_of(kind,{"RFFT","SpectrumProjection","FrequencyNormalizer","BroadbandFeatures","NoteSalience","MusicalSpectrogram","BroadbandRow","NoteSpectrum","SpectralQuantize"})){initialize_music(f,kind);return true;}
     if(one_of(kind,{"Window","StereoFFT","SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude","PcmResampler","Mixer","ChannelComparison"})){initialize_signal(f,kind);return true;}
     return false;
 }

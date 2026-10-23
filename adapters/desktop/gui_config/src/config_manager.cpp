@@ -1,3 +1,5 @@
+#include <core/diagnostic_saves.h>
+#include <core/telemetry.h>
 
 
 #include "core_app/config_manager.h"
@@ -12,6 +14,8 @@
 #include <QSettings>
 #include <QFileInfo>
 #include <QCryptographicHash>
+#include <QElapsedTimer>
+#include <QDebug>
 #include <utility>
 
 namespace {
@@ -47,6 +51,7 @@ bool ConfigManager::readNumericSettings(const desktop::NumericProjectDocument& d
 }
 
 bool ConfigManager::numericSettingsDelta(const desktop::NumericProjectDocument& document,const FileSaveApplicationConfig& config,QJsonObject& out,QString* error) const {
+    BARELIEF_PROFILE_FUNCTION();
     FileSaveApplicationConfig before;if(!readNumericSettings(document,before,error))return false;
     QJsonObject baseline,current;_save_aggregator_config(baseline,before);_save_ui_config(baseline,before);_save_wled_ar_server_config(baseline,before);
     _save_aggregator_config(current,config);_save_ui_config(current,config);_save_wled_ar_server_config(current,config);
@@ -55,8 +60,17 @@ bool ConfigManager::numericSettingsDelta(const desktop::NumericProjectDocument& 
 
 bool ConfigManager::saveNumericPreferences(desktop::NumericProjectDocument& document,
                                          const FileSaveApplicationConfig& config, QString* error) const {
+    const bool trace=core::diagnostics::trace_saves();
+    QElapsedTimer timer;if(trace)timer.start();
     QJsonObject settings;
     if (!numericSettingsDelta(document, config, settings, error)) return false;
+    // Pure workspace notifications can arrive without any actual settings
+    // change. Do not rewrite the entire project for a no-op notification.
+    // A real autosave toggle is included in numericSettingsDelta.
+    if (settings.isEmpty()){
+        if(trace)qInfo().noquote()<<"BARELIEF_SAVE_TRACE preferences=no_change ms="<<timer.nsecsElapsed()/1e6;
+        return true;
+    }
     desktop::NumericDraftPresentation delta;
     auto preferences = settings.value("ui").toObject();
     // A source may omit this preference and inherit true. Re-enabling autosave
@@ -68,6 +82,8 @@ bool ConfigManager::saveNumericPreferences(desktop::NumericProjectDocument& docu
     if (result) result = desktop::save_numeric_project(candidate, _config_path);
     if (error) *error = result.path.isEmpty() ? result.error : result.path + ": " + result.error;
     if (result) document = std::move(candidate);
+    if(trace)qInfo().noquote()<<"BARELIEF_SAVE_TRACE preferences=written success="<<bool(result)
+                            <<" ms="<<timer.nsecsElapsed()/1e6;
     return static_cast<bool>(result);
 }
 

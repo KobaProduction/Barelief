@@ -376,6 +376,53 @@ static void explicit_vector_coordinates(NumericContract& contract,presentation::
     contract.semantic=Semantic::Numeric;deliver(contract,12);
     CHECK(frequency.x_title()=="Value index (X)" && line.x_title()=="Value index (X)");
 }
+void number_history_vector_line_projection() {
+    // The generic NumberAccumulator returns a Float32 History vector, not a
+    // Spectrogram matrix. Its time coordinates must follow ring rotation.
+    Storage storage;
+    NumericContract c;
+    c.dtype=DType::Float32;c.channel_order=channels;
+    c.semantic=Semantic::History;c.history_element=Semantic::Scalar;
+    c.representation.alignment=alignof(float);
+    c.shape={Rank::Vector,{Axis::Time,Axis::None},{ExtentBounds{0,4},ExtentBounds{}}};
+    c.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
+    auto ctx=context(c,91);
+    presentation::NumericViewAdapter adapter({1,{4,1,128,{true,4}},{true,4}});
+    CHECK(adapter.bind(ctx->endpoint)==Status::ok);
+    // Physical values are ring-rotated; the HistoryWriter already exports
+    // the corresponding seconds in logical chronological order.
+    const std::array<float,4> values{90,100,70,80};
+    const std::array<double,4> seconds{0,1,2,3};
+    const PlaneLayout plane{0,{sizeof(float),0}};
+    NumericView numeric{&c,std::as_bytes(std::span(values)),std::span(&plane,1),
+                        {4,1},{4,2,{}},{{std::as_bytes(std::span(seconds)),{}}}};
+    FrameStamp stamp;stamp.producer_epoch=9;stamp.sequence=4;stamp.timestamp_ticks=4;
+    // Full history snapshots use retain_frame (rather than the live-frame
+    // delivery function, which deliberately rejects ring storage).
+    pipeline::DeliveredNumericFrame frame{ctx,{1,1},{},Status::ok};
+    const auto retained=retain_frame({stamp,numeric},limits,storage.p,storage.m,frame.frame);
+    CHECK(retained==Status::ok);
+    LineChartView chart;render_fixture::Target target{&chart,nullptr,nullptr,true};
+    target.axes={true,true};
+    const std::array<float,4> partial_values{70,80,0,0};
+    const std::array<double,4> partial_seconds{0,0,1,2};
+    NumericView partial_view{&c,std::as_bytes(std::span(partial_values)),
+        std::span(&plane,1),{4,1},{4,2,{}},
+        {{std::as_bytes(std::span(partial_seconds)),{}}}};
+    auto partial_stamp=stamp;partial_stamp.sequence=3;
+    pipeline::DeliveredNumericFrame partial{ctx,{1,1},{},Status::ok};
+    CHECK(retain_frame({partial_stamp,partial_view},limits,storage.p,storage.m,partial.frame)==Status::ok);
+    CHECK(adapter.accept_history_snapshot(partial,3,2)==Status::ok);
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+    CHECK(chart.value_count()==2 && chart.peak_value()==80);
+    CHECK(chart.projected_x_coordinate(0)==1 && chart.projected_x_coordinate(1)==2);
+    CHECK(adapter.accept_history_snapshot(frame,4,4)==Status::ok);
+    CHECK(adapter.render(ctx->endpoint,0,target)==Status::ok);
+    CHECK(chart.value_count()==4 && chart.peak_value()==100);
+    CHECK(chart.x_title()=="Time, seconds (X)");
+    CHECK(chart.projected_x_coordinate(0)==0 && chart.projected_x_coordinate(1)==1 &&
+          chart.projected_x_coordinate(2)==2 && chart.projected_x_coordinate(3)==3);
+}
 void vector_coordinate_axes() {
     Storage storage;
     NumericContract contract;contract.dtype=DType::Float32;contract.semantic=Semantic::Numeric;
@@ -982,7 +1029,7 @@ int main(int argc,char** argv) {
     piano_projection();
     for(bool pooled:{false,true}) {
         presentation::RenderPreparationPolicy::snapshot_pool=pooled;
-        universal_numeric_ranks();temporal_matrix_axes();hidden_scalar_and_contract_transition();hidden_history_and_markers();cold_history_resynchronization();shared_matrix_ownership();atomic_pause_snapshot();vector_coordinate_axes();fft_product_and_phase_axes();actual_scene_aspect_projection();scalar_timed_readout();fixed_capacity_history_and_resize();
+        universal_numeric_ranks();temporal_matrix_axes();hidden_scalar_and_contract_transition();hidden_history_and_markers();cold_history_resynchronization();shared_matrix_ownership();atomic_pause_snapshot();number_history_vector_line_projection();vector_coordinate_axes();fft_product_and_phase_axes();actual_scene_aspect_projection();scalar_timed_readout();fixed_capacity_history_and_resize();
     }
     std::printf("numeric view adapter regressions: %d failures\n",failures);return failures?1:0;
 }

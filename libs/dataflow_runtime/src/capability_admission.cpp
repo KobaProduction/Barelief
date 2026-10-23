@@ -57,7 +57,7 @@ class ResourceAdmission {
         return !scalar || numeric_add(out.resources.plan_bytes,n.inputs.size()*sizeof(PlanNode::ScalarInput));
     }
     bool music() noexcept {
-        const bool musical=n.kind=="MusicalSpectrogram" || n.kind=="NoteSpectrum" || n.kind=="NoteSalience";
+        const bool musical=n.kind=="MusicalSpectrogram" || n.kind=="NoteSpectrum" || n.kind=="NoteSalience" || n.kind=="RhythmAnalyzer" || n.kind=="RhythmFeatures";
         if(musical && !p.music_enabled)return false;
         if((n.operation==ProcessingOperation::MusicTransform || paired_processing(n.operation)) && !music_support(n,out.resources,p))return false;
         return !paired_processing(n.operation) || numeric_add(out.resources.plan_bytes,sizeof(PlanNode::EndpointPlan)+n.inputs.size()*sizeof(PlanNode::ScalarInput));

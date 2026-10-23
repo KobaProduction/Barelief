@@ -67,9 +67,14 @@ bool valid_presence(const FrequencyProfile& p) {
 }
 bool valid_coefficients(const FrequencyProfile& p) {
     if(p.mean_spectrum.size()!=p.gains.size())return false;
+    if(!p.peak_spectrum.empty() && p.peak_spectrum.size()!=p.gains.size())return false;
+    if(p.training.gain_mode==ProfileGainMode::PeakNormalization && p.peak_spectrum.size()!=p.gains.size())return false;
     for(std::size_t k=0;k<p.gains.size();++k)
-        if(!signal_contracts::valid_profile_gain(p.gains[k]) || p.gains[k]<p.training.min_gain*(1-1e-6) || p.gains[k]>p.training.max_gain*(1+1e-6) ||
-            !std::isfinite(p.mean_spectrum[k]) || p.mean_spectrum[k]<0)return false;
+        if(!signal_contracts::valid_profile_gain(p.gains[k]) ||
+            p.gains[k]<(p.training.gain_mode==ProfileGainMode::PeakNormalization?1.:p.training.min_gain)*(1-1e-6) ||
+            p.gains[k]>p.training.max_gain*(1+1e-6) ||
+            !std::isfinite(p.mean_spectrum[k]) || p.mean_spectrum[k]<0 ||
+            (!p.peak_spectrum.empty() && (!std::isfinite(p.peak_spectrum[k]) || p.peak_spectrum[k]<0)))return false;
     return true;
 }
 bool valid_expected_frontend(ProfileCompatibility expected,const ProfileCompatibility& stored,ProfileMatchScope scope) {
@@ -114,10 +119,10 @@ namespace {
 struct ProfileAccumulator {
     FrequencyProfile value;
     std::size_t active=0;
-    bool has_presence=true;
+    bool has_presence=true,has_peaks=true;
     explicit ProfileAccumulator(const ProfileCompatibility& c,const ProfileTraining& t) {
         value.compatibility=c;value.training=t;
-        value.mean_spectrum.assign(c.fft_size/2+1,0);value.frequency_presence.assign(c.fft_size/2+1,0);
+        value.mean_spectrum.assign(c.fft_size/2+1,0);value.peak_spectrum.assign(c.fft_size/2+1,0);value.frequency_presence.assign(c.fft_size/2+1,0);
     }
     bool add_presence(const CompositionStatistics& track,std::string& error) {
         if(track.frequency_presence.size()!=value.frequency_presence.size()){has_presence=false;return true;}
@@ -139,6 +144,15 @@ struct ProfileAccumulator {
         if(!validate_track(track,error))return false;
         if(!track.active_frames)return true;
         if(!add_presence(track,error))return false;
+        if(track.peak_spectrum.size()==value.peak_spectrum.size()){
+            for(std::size_t k=0;k<track.peak_spectrum.size();++k){
+                const auto peak=track.peak_spectrum[k];
+                if(!std::isfinite(peak) || peak<0){error="Invalid composition peak";return false;}
+                value.peak_spectrum[k]=std::max(value.peak_spectrum[k],peak);
+            }
+        }else if(value.training.gain_mode==ProfileGainMode::PeakNormalization){
+            error="Peak normalization requires measured per-bin track maxima";return false;
+        }else has_peaks=false;
         ++active;
         for(std::size_t k=0;k<track.mean_spectrum.size();++k)value.mean_spectrum[k]+=track.mean_spectrum[k];
         return true;
@@ -148,35 +162,60 @@ struct ProfileAccumulator {
         for(auto& v:value.mean_spectrum)v/=double(active);
         if(has_presence)for(auto& v:value.frequency_presence)v/=double(active);
         else value.frequency_presence.clear();
+        if(!has_peaks)value.peak_spectrum.clear();
         return true;
     }
 };
-std::vector<double> smoothed_spectrum(const FrequencyProfile& p) {
-    const auto bins=p.mean_spectrum.size(),radius=p.training.smoothing_radius;
+std::vector<double> smoothed_spectrum(std::span<const double> mean,std::size_t radius) {
+    const auto bins=mean.size();
     std::vector<double> smoothed(bins);
     for(std::size_t k=0;k<bins;++k){
         const auto first=k?std::max(std::size_t{1},k>radius?k-radius:0):0;
         const auto last=std::min(bins-1,k+radius);
-        smoothed[k]=std::accumulate(p.mean_spectrum.begin()+first,p.mean_spectrum.begin()+last+1,0.0)/double(last-first+1);
+        smoothed[k]=std::accumulate(mean.begin()+first,mean.begin()+last+1,0.0)/double(last-first+1);
     }
     return smoothed;
 }
-void prepare_profile_gains(FrequencyProfile& p) {
-    const auto smoothed=smoothed_spectrum(p);const auto bins=smoothed.size();
-    const auto& c=p.compatibility;const auto& training=p.training;
-    const auto target=std::accumulate(smoothed.begin()+1,smoothed.end(),0.0)/double(bins-1);
-    const bool amplitude=c.projection.representation==SpectrumProjection::Magnitude || c.projection.representation==SpectrumProjection::PeakAmplitude;
-    const auto floor=c.reference*std::pow(10.,c.floor_db/(amplitude?20.:10.));
-    p.gains.resize(bins);
-    for(std::size_t k=0;k<bins;++k)p.gains[k]=float(std::clamp(k && smoothed[k]>floor?target/smoothed[k]:1.,training.min_gain,training.max_gain));
 }
+bool build_frequency_peak_compensation_curve(std::span<const double> peaks,double floor,
+                                             double max_gain,std::vector<float>& output) {
+    if(peaks.size()<2 || !std::isfinite(floor) || floor<0 ||
+       !std::isfinite(max_gain) || max_gain<1 || max_gain>1000000 ||
+       !std::all_of(peaks.begin(),peaks.end(),[](double v){return std::isfinite(v) && v>=0;}))return false;
+    std::vector<float> curve(peaks.size(),1.f);
+    for(std::size_t k=1;k<peaks.size();++k){
+        if(peaks[k]>floor)
+            curve[k]=float(std::clamp(1./peaks[k],1.,max_gain));
+    }
+    output=std::move(curve);
+    return true;
 }
 bool build_frequency_profile(const ProfileCompatibility& c,const ProfileTraining& training,std::span<const CompositionStatistics> tracks,FrequencyProfile& output,std::string& error) {
     if(!valid_profile_settings(c,training,error))return false;
+    if(training.gain_mode==ProfileGainMode::PeakNormalization && training.max_gain<1){
+        error="Peak normalization requires max_gain >= 1";return false;
+    }
     ProfileAccumulator accumulator(c,training);
     for(const auto& track:tracks)if(!accumulator.add(track,error))return false;
     if(!accumulator.finish(error))return false;
-    prepare_profile_gains(accumulator.value);accumulator.value.compositions.assign(tracks.begin(),tracks.end());
+    const bool amplitude=c.projection.representation==SpectrumProjection::Magnitude ||
+                         c.projection.representation==SpectrumProjection::PeakAmplitude;
+    const double floor=c.reference*std::pow(10.,c.floor_db/(amplitude?20.:10.));
+    if(training.gain_mode==ProfileGainMode::PeakNormalization){
+        if(!build_frequency_peak_compensation_curve(accumulator.value.peak_spectrum,floor,
+                                                    training.max_gain,accumulator.value.gains)){
+            error="Could not normalize measured peak spectrum";return false;
+        }
+    }else{
+        const auto smoothed=smoothed_spectrum(accumulator.value.mean_spectrum,training.smoothing_radius);
+        const auto bins=smoothed.size();
+        const auto target=std::accumulate(smoothed.begin()+1,smoothed.end(),0.0)/double(bins-1);
+        accumulator.value.gains.resize(bins);
+        for(std::size_t k=0;k<bins;++k)
+            accumulator.value.gains[k]=float(std::clamp(k && smoothed[k]>floor?target/smoothed[k]:1.,
+                                                       training.min_gain,training.max_gain));
+    }
+    accumulator.value.compositions.assign(tracks.begin(),tracks.end());
     if(!validate_profile(accumulator.value,c,error))return false;
     output=std::move(accumulator.value);return true;
 }

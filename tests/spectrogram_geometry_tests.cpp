@@ -92,6 +92,9 @@ static int cached_projection_case(const int* crop,bool reverseTime,bool reverseB
         for(size_t band=3;band<14;++band)for(size_t age=5;age<20;++age){
             const auto direct=scene.point(age,band,valueAt(band,age));
             const auto cached=pointCache.point(scene,age,band,valueAt(band,age));
+            bool sampled=false;
+            const auto lazy=pointCache.point_or_sample(scene,age,band,[&]{sampled=true;return valueAt(band,age);});
+            if(!check(lazy==direct && !sampled,"Cached normal lookup must not evaluate the source/scale again"))return 1;
             const auto dx=scene.point(age+1,band,valueAt(band,age+1))-scene.point(age-1,band,valueAt(band,age-1));
             const auto dz=scene.point(age,band+1,valueAt(band+1,age))-scene.point(age,band-1,valueAt(band-1,age));
             const auto cachedDx=pointCache.point(scene,age+1,band,valueAt(band,age+1))-pointCache.point(scene,age-1,band,valueAt(band,age-1));
@@ -99,6 +102,9 @@ static int cached_projection_case(const int* crop,bool reverseTime,bool reverseB
             if(!check(direct==cached && QVector3D::crossProduct(dx,dz).normalized()==QVector3D::crossProduct(cachedDx,cachedDz).normalized(),
                       "Projection cache preserves exact positions and normals"))return 1;
         }
+        bool sampled=false;
+        const auto outside=pointCache.point_or_sample(scene,0,0,[&]{sampled=true;return valueAt(0,0);});
+        if(!check(sampled && outside==scene.point(0,0,valueAt(0,0)),"Uncached point must retain exact source projection"))return 1;
 
 return 0;
 }

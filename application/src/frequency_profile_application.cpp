@@ -139,9 +139,19 @@ bool same_endpoints(const ProfileRoute& left,const ProfileRoute& right) {
         left.gain_count==right.gain_count;
 }
 bool shared_coefficients(const NumericProcessingGraph& graph,const ProfileRoute& route) {
-    return std::ranges::count_if(graph.edges,[&](const auto& edge){
-        return edge.from==route.coefficients;
-    })>1;
+    // Views observe the same coefficient data without applying the profile
+    // to another processing branch; they must not block re-training.
+    // Reject all other shared processing consumers, including a second multiply.
+    for(const auto& edge:graph.edges){
+        if(edge.from!=route.coefficients)continue;
+        if(edge.to==route.arithmetic && edge.input_port==route.coefficient_input &&
+           edge.output_port==route.coefficient_output)continue;
+        const auto* consumer=find_node(graph,edge.to);
+        if(!consumer)return true;
+        const auto kind=node_kind(consumer->kind);
+        if(!kind || !is_view(*kind))return true;
+    }
+    return false;
 }
 void put(ConfiguredProcessingNode& node,const char* key,ProcessingParameterValue value) {
     auto& fields=std::get<TransformProcessingParameters>(node.parameters).values;

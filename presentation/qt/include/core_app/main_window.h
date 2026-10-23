@@ -70,7 +70,6 @@ class MainWindow final : public WorkspaceWindow {
     QTimer _numeric_render_timer;
     bool _numeric_render_dirty=false;
     bool _numeric_render_queued=false;
-    bool _numeric_snapshot_dirty=false;
     QMap<QString, WorkspaceDock *> _panels;
     QMap<QString, bool> _render_visible;
     QByteArray _default_workspace_state;
@@ -199,6 +198,7 @@ class MainWindow final : public WorkspaceWindow {
                                    bool auto_gain,double gain_floor,bool UIApplicationConfig::*flag);
     void setup_spectrogram();
     void bind_spectrogram_state();
+    void store_spectrogram_presentation(const QJsonObject& state);
     std::pair<SettingsWidget *,QMenu *> setup_settings_dialog();
     QMenu *setup_settings_menu(QDialog *dialog,SettingsWidget *settings_widget);
     void bind_settings_signals(SettingsWidget *settings_widget);

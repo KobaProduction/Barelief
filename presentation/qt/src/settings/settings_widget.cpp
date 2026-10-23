@@ -288,7 +288,7 @@ void SettingsWidget::connect_preference_signals() {
         _context.file_configs.ui.autosave_enabled = checked;
         // Disabling autosave stops writes immediately; manual Save persists it.
         // Enabling autosave persists the accumulated UI preferences.
-        _on_config_change(checked);
+        _on_config_change();
     });
 }
 void SettingsWidget::connect_wled_signals() {

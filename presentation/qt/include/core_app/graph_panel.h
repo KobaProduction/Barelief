@@ -10,7 +10,7 @@ class NumericPianoView;
 class NumericMetricsView;
 class SpectrogramGraph;
 class QStackedWidget;
-class QQuickWidget;
+namespace ui::quick { class SceneHost; }
 class QSplitter;
 class QTimer;
 struct PlotCapabilities {
@@ -149,7 +149,7 @@ private:
     NumericPianoView* _piano=nullptr;
     NumericMetricsView* _metrics=nullptr;
     QStackedWidget* _renderers=nullptr;
-    QQuickWidget* _settings=nullptr;
+    ui::quick::SceneHost* _settings=nullptr;
     QSplitter* _splitter=nullptr;
     QTimer* _information_timer=nullptr;
     QString _display_mode="line",_default_display_mode="line",_id;

@@ -7,6 +7,7 @@
 #include <core_app/scheme_editor/node_parameter_model.h>
 #include <barelief/ui_text.h>
 #include <barelief/numeric_image_view.h>
+#include <barelief/charts/line.h>
 #include <desktop/numeric_project_document.h>
 #include <dataflow_runtime/runtime.h>
 #include <QApplication>
@@ -67,6 +68,8 @@ void dialog_cadence_contract(){
     const auto target=capture_cadence(true,true);require(target.interval_numerator==1 && target.interval_denominator==119,"target interval preserved explicitly");
     const auto fixed=capture_cadence(true,false);require(fixed.interval_numerator==0 && fixed.hop==128,"fixed choice replaces rational target mode");
     const auto standalone=capture_cadence(false,true);require(standalone.interval_numerator==1 && standalone.interval_denominator==120,"standalone declared interval is explicit");
+    require(standalone.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization,
+            "Standalone analyzer defaults to peak normalization");
 }
 void put(ConfiguredProcessingNode& n,const char* key,ProcessingParameterValue v){auto& p=std::get<TransformProcessingParameters>(n.parameters).values;for(auto& f:p)if(f.key==key){f.value=std::move(v);return;}p.push_back({key,std::move(v)});}
 ConfiguredProcessingNode& get(NumericProcessingGraph& g,NodeId id){return *std::find_if(g.nodes.begin(),g.nodes.end(),[&](const auto& n){return n.id==id;});}
@@ -340,7 +343,11 @@ void normalization_dialog_scan(MusicAnalysisDialog& dialog,const auto& target,co
     auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
     auto* applyButton=dialog.findChild<QPushButton*>("musicApplyProfile");require(applyButton && applyButton->isEnabled(),"actual batch dialog prepares applicable profile");
     auto* statistics=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");require(statistics && std::size_t(statistics->rowCount())==target.options.compatibility.fft_size/2 && !statistics->item(1,5)->text().isEmpty(),"per-bin mean, gains and frequency occurrence shown");
-    require(!dialog.findChild<QLabel*>("musicMeanValue")->text().isEmpty(),"aggregate mean shown");applyButton->click();
+    require(!dialog.findChild<QLabel*>("musicMeanValue")->text().isEmpty(),"aggregate mean shown");
+    auto* curve=dynamic_cast<LineChartView*>(dialog.findChild<QWidget*>("musicGainCurve"));
+    require(curve && curve->value_scale().mode==ValueDisplayScale::Mode::Linear,
+            "Trained coefficients remain linear; only measured spectra render as dB");
+    applyButton->click();
 }
 
 QString normalization_wave_fixture(const QTemporaryDir& directory) {
@@ -382,11 +389,55 @@ void dialog_and_persistence(const NumericProcessingGraph& initial){
 
 }
 }
+void resampler_live_edit_regression(){
+    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
+    for(const auto& kind:numeric_editor::catalog())
+        registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    NumericEditorGraphModel model(registry);QString error;
+    require(model.set_numeric_graph(numeric_startup_graph(),&error),"Startup example loads in editor");
+    auto original=model.numeric_graph();auto changed=get(original,332);
+    // This example contains measured 32768-Hz coefficients: changing Fs alone
+    // is incompatible and must be rejected atomically, without stale edges.
+    put(changed,"output_rate",NumericLiteral{std::uint64_t{48000}});
+    require(!model.edit_node(QtNodes::NodeId(332),changed),
+            "Incompatible sample-rate edit must be rejected");
+    require(model.numeric_graph().edges==original.edges,
+            "Rejected incompatible rate change must preserve graph edges");
+    original=model.numeric_graph();changed=get(original,332);
+    put(changed,"mode",std::string{"existing_fir"});
+    // The backend mode can change without affecting contracts. Check its
+    // undoable round-trip separately, then restore the measured Speex backend.
+    require(model.edit_node(QtNodes::NodeId(332),changed),
+            "FIR backend can be selected without breaking data connections");
+    original=model.numeric_graph();changed=get(original,332);
+    put(changed,"mode",std::string{"speex"});
+    require(model.edit_node(QtNodes::NodeId(332),changed),
+            "Measured Speex backend can be restored without breaking links");
+    require(model.numeric_graph().nodes.size()==numeric_startup_graph().nodes.size(),
+            "Speex parameter edit preserves all nodes");
+    const auto graph=model.numeric_graph();
+    const auto source=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.id==332;});
+    require(source!=graph.nodes.end(),"Resampler remains in edited example");
+    std::size_t checked=0;
+    for(const auto& edge:graph.edges)if(edge.from==332){
+        const auto target=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& node){return node.id==edge.to;});
+        require(target!=graph.nodes.end(),"Downstream node remains after reconfiguration");
+        const auto out=std::find_if(source->outputs.begin(),source->outputs.end(),[&](const auto& port){return port.id==edge.output_port;});
+        const auto in=std::find_if(target->inputs.begin(),target->inputs.end(),[&](const auto& port){return port.id==edge.input_port;});
+        require(out!=source->outputs.end()&&in!=target->inputs.end(),"All resampler edges retain their ports");
+        if(!domain::processing_ports_compatible(*out,*in))
+            std::fprintf(stderr,"Speex edge mismatch %lld:%d -> %lld:%d\n",
+                static_cast<long long>(edge.from),int(edge.output_port),static_cast<long long>(edge.to),int(edge.input_port));
+        require(domain::processing_ports_compatible(*out,*in),"Changed sample-rate must propagate to connected inputs");
+        ++checked;
+    }
+    require(checked>=3,"Resampler drives window, rate binding and line view");
+}
 int main(int argc,char** argv){QApplication app(argc,argv);
 #ifdef _WIN32
     QFontDatabase::addApplicationFont(QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"));app.setFont(QFont("Segoe UI",9));
 #endif
-    try{dialog_cadence_contract();explicit_preview_coordinates();loaded_frontend_baseline();typed_mismatch_messages();binary_coefficients();representations();profile_route_isolation();incompatible_routes();runtime_arrays(false);runtime_arrays(true);dialog_and_persistence(numeric_startup_graph());
+    try{resampler_live_edit_regression();dialog_cadence_contract();explicit_preview_coordinates();loaded_frontend_baseline();typed_mismatch_messages();binary_coefficients();representations();profile_route_isolation();incompatible_routes();runtime_arrays(false);runtime_arrays(true);dialog_and_persistence(numeric_startup_graph());
     if(argc>=3 && QByteArray(argv[1])=="--source"){const auto path=QString::fromLocal8Bit(argv[2]);QFile file(path);require(file.open(QIODevice::ReadOnly),"open user config read-only");const auto original=file.readAll();file.close();desktop::NumericProjectDocument project;NumericProcessingGraph graph;
         require(bool(desktop::load_numeric_project(path,project,graph)),"read actual user graph");
         if(argc==4){desktop_analysis::offline::ProfileDocument loaded;QString error;require(desktop_analysis::offline::load_profile(QString::fromLocal8Bit(argv[3]),loaded,error),"read actual profile without scanning audio");

@@ -65,7 +65,9 @@ signals:
     void connection_diagnostics_changed();
     void atomic_edit_finished();
     void immediate_apply_requested();
+    void persistence_topology_changed();
 private:
+    int compute_connection_visual_state(QtNodes::ConnectionId) const;
     bool connection_endpoints_available(QtNodes::ConnectionId) const;
     bool connection_would_cycle(QtNodes::ConnectionId) const;
     bool bind_configuration_clock(const domain::ConfiguredProcessingNode&,domain::ConfiguredProcessingNode&,
@@ -124,6 +126,7 @@ private:
     signal_contracts::Ratio _execution_interval{1,120};
     domain::ProcessingVersions _versions;
     std::map<std::tuple<QtNodes::NodeId,QtNodes::PortIndex,QtNodes::NodeId,QtNodes::PortIndex>,std::uint8_t> _edge_policies;
+    mutable std::map<std::tuple<QtNodes::NodeId,QtNodes::PortIndex,QtNodes::NodeId,QtNodes::PortIndex>,int> _connection_visual_states;
     bool _allow_connection_clock_adaptation=true;
     bool _atomic_edit_in_progress=false;
 };

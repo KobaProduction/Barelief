@@ -731,9 +731,15 @@ class QmlGraphScenario {
         require(surface().physical_frequency() && surface().physical_time() && !cameraPanelNotifications().isEmpty(),
                 "physical axis capabilities not published");
         cameraPanelNotifications().clear();
+        QSignalSpy settingsUpdates(surfaceView,&SpectrogramGraph::quick_state_changed);
+        const auto previousSettings=surfaceView->quick_state();
         cameraAxes.ages = {0, 2, 4, 6, 8, 10, 12, 14};
         surfaceView->set_axis_metadata(cameraAxes);
         require(cameraPanelNotifications().isEmpty(), "streaming axis timestamps rebuilt sidebar controls");
+        require(surfaceView->projected_axis_metadata().ages==cameraAxes.ages,
+                "streaming coordinates did not reach the renderer");
+        require(surfaceView->quick_state()==previousSettings && settingsUpdates.isEmpty(),
+                "streaming coordinates republished unchanged surface settings");
         cameraAxes.column_coordinates = false;
         surfaceView->set_axis_metadata(cameraAxes);
         require(!surface().physical_frequency() && cameraPanelNotifications().size() == 1,

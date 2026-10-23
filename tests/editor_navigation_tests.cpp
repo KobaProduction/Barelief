@@ -15,6 +15,7 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QImage>
+#include <QPointer>
 #include <QLineF>
 #include <QKeyEvent>
 #include <QElapsedTimer>
@@ -69,7 +70,11 @@ static void canvas_input_navigation(SchemeEditorWidget& editor,QtNodes::Graphics
 static void camera_navigation(SchemeEditorWidget& editor,QtNodes::GraphicsView* view,QtNodes::DataFlowGraphicsScene* scene,QScrollArea* inspector,GuiPresenter& presenter,QSignalSpy& applied,const auto& center,const auto& near) {
         scene->clearSelection();scene->nodeGraphicsObject(1)->setSelected(true);emit scene->nodeSelected(1);QCoreApplication::processEvents();auto* text=inspector->findChild<QLineEdit*>("adapterStreamId");require(text,"Current inspector text input missing");const auto beforeTyping=editor.history().count();text->setFocus(Qt::OtherFocusReason);QTest::keyClick(text,Qt::Key_A,Qt::AltModifier);require(editor.history().count()==beforeTyping,"Arrange intercepts inspector input");
         view->setFocus(Qt::OtherFocusReason);view->centerOn(90000,90000);QElapsedTimer quiet;quiet.start();auto replies=applied.count();for(int i=0;i<300 && (quiet.elapsed()<500 || presenter.graph_request_pending());++i){QTest::qWait(10);if(applied.count()!=replies || presenter.graph_request_pending()){replies=applied.count();quiet.restart();}}require(!presenter.graph_request_pending() && quiet.elapsed()>=500,"Pending source edit before navigation");const auto graphBeforeNavigation=editor.document();const auto runtimeBeforeNavigation=presenter.client().snapshot();applied.clear();
+        editor.flush_presentation();
+        QSignalSpy navigationSaves(&editor,&SchemeEditorWidget::numeric_draft_changed);
         canvas_input_navigation(editor,view,text,center,near);
+        editor.flush_presentation();editor.flush_presentation();
+        require(navigationSaves.isEmpty(),"Camera navigation or repeated snapshot flush requests project persistence");
         editor_grid_palette(view,scene);
         // Offscreen hide/show leaves the fixture window inactive. Run keyboard
         // routing first, then independently verify camera restoration without activation.
@@ -157,6 +162,16 @@ static void inspector_camera_stability(SchemeEditorWidget& editor,QtNodes::Graph
         auto* handle=splitter->handle(2);auto clickHandle=[&]{const auto point=handle->rect().center();for(const auto type:{QEvent::MouseButtonPress,QEvent::MouseButtonRelease}){QMouseEvent event(type,point,handle->mapToGlobal(point),Qt::LeftButton,type==QEvent::MouseButtonPress?Qt::LeftButton:Qt::NoButton,Qt::NoModifier);QApplication::sendEvent(handle,&event);}QCoreApplication::processEvents();};const auto expandedCenter=center();clickHandle();require(splitter->sizes().at(2)==0 && near(expandedCenter),"Inspector collapse loses camera");scene->nodeGraphicsObject(1)->setSelected(true);emit scene->nodeSelected(1);QCoreApplication::processEvents();require(splitter->sizes().at(2)==0,"Selection reopens collapsed inspector");clickHandle();require(splitter->sizes().at(2)>0 && near(expandedCenter),"Inspector does not restore width/camera");
 }
 
+static void repeated_node_selection_keeps_form(NumericEditorGraphModel& graph,
+    QtNodes::DataFlowGraphicsScene* scene,QScrollArea* inspector) {
+    const auto nodes=graph.allNodeIds();require(!nodes.empty(),"Inspector regression needs a node");
+    const auto id=*nodes.begin();scene->nodeSelected(id);
+    QPointer<QWidget> card=inspector->findChild<QWidget*>("pipelineDataStatus");
+    require(card,"Selected node preview missing");
+    scene->nodeSelected(id);QCoreApplication::sendPostedEvents(nullptr,QEvent::DeferredDelete);
+    require(card && inspector->findChild<QWidget*>("pipelineDataStatus")==card,
+        "Clicking an already selected node recreated its form and preview");
+}
 int main(int argc,char** argv){
     if(!test_fixture::isolated_gui_platform())return 2;
     QApplication app(argc,argv);
@@ -167,6 +182,7 @@ int main(int argc,char** argv){
         auto* view=editor.findChild<QtNodes::GraphicsView*>();auto* scene=editor.findChild<QtNodes::DataFlowGraphicsScene*>();auto* inspector=editor.findChild<QScrollArea*>("pipelineInspector");auto* splitter=editor.findChild<QSplitter*>("pipelineSplitter");require(view && scene && inspector && splitter && splitter->count()==3,"Navigation components missing");
         auto center=[&]{return view->mapToScene(view->viewport()->rect().center());};auto near=[&](QPointF expected,double pixels=4){return QLineF(expected,center()).length()<pixels/view->getScale();};
         inspector_camera_stability(editor,view,scene,inspector,splitter,center,near);
+        repeated_node_selection_keeps_form(*graph,scene,inspector);
         history_shortcuts(editor,graph,view,scene,center);
         camera_navigation(editor,view,scene,inspector,presenter,applied,center,near);
         std::puts("canonical editor navigation: inspector/scoped shortcuts, camera resize/zoom/pan/RU physical keys, stop fences and central grid themes PASS");return 0;

@@ -17,6 +17,8 @@
 #include <QTimer>
 #include <QSignalBlocker>
 #include <QVariant>
+#include <QElapsedTimer>
+#include <QDebug>
 #include <type_traits>
 #include <algorithm>
 
@@ -70,6 +72,7 @@ NodeParameterForm::NodeParameterForm(NodeParameterModel* model,bool inline_form,
     setProperty("scrollSafeControls",true);setProperty("inlineForm",inline_form);
     setSizePolicy(inline_form?QSizePolicy::Preferred:QSizePolicy::Ignored,QSizePolicy::Preferred);
     connect(model,&NodeParameterModel::structureChanged,this,[this]{scheduleRebuild();});
+    connect(model,&NodeParameterModel::presentationChanged,this,[this]{ensurePinnedFields();});
     connect(&ui::Language::instance(),&ui::Language::changed,this,[this]{if(_model)emit _model->valuesChanged();});
     rebuild();
 }
@@ -81,6 +84,7 @@ void NodeParameterForm::scheduleRebuild() {
 void NodeParameterForm::clearRows() {
     for(const auto& connection:_bindings)disconnect(connection);
     _bindings.clear();
+    _materialized_fields.clear();
     const auto children=findChildren<QWidget*>(QString{},Qt::FindDirectChildrenOnly);
     for(auto* child:children)delete child;
     delete layout();
@@ -113,15 +117,22 @@ ui::CollapsibleSection* NodeParameterForm::createPlacement() {
 bool NodeParameterForm::showsField(const Field& field) const {
     if((field.section==NodeParameterModel::Section::Contract)!=_contracts_only)return false;
     if(!_inline_form && field.hide_inspector)return false;
-    return !_inline_form || !field.hide_inline;
+    return !_inline_form || (!field.hide_inline && (_materialized_fields.contains(field.key) || _model->onBlock(field.key)));
+}
+void NodeParameterForm::ensurePinnedFields() {
+    if(!_inline_form || !_model)return;
+    for(const auto& field:_model->fields())
+        if(showsField(field) && !_materialized_fields.contains(field.key)){scheduleRebuild();return;}
 }
 NodeParameterForm::ControlBinding NodeParameterForm::literalControl(const Field& field) {
     auto* box=new QWidget(this);auto* horizontal=new QHBoxLayout(box);
     horizontal->setContentsMargins(0,0,0,0);
     if(!_inline_form)horizontal->setDirection(QBoxLayout::TopToBottom);
-    auto* type=literalTypeEditor(box,field);auto* edit=new QLineEdit(box);
+    auto* edit=new QLineEdit(box);
     edit->setObjectName(field.key);box->setFocusProxy(edit);
-    horizontal->addWidget(type);horizontal->addWidget(edit);box->setObjectName(field.key+"_field");
+    box->setObjectName(field.key+"_field");
+    if(field.literal_type){horizontal->addWidget(edit);return {box,numeric_editor::bind_literal_input(_model,field.key,*field.literal_type,edit)};}
+    auto* type=literalTypeEditor(box,field);horizontal->addWidget(type);horizontal->addWidget(edit);
     return {box,numeric_editor::bind_literal_input(_model,field.key,type,edit)};
 }
 void NodeParameterForm::refreshChoices(const QString& key,QComboBox* combo) {
@@ -280,6 +291,7 @@ QVBoxLayout* NodeParameterForm::createSection(QVBoxLayout* root,NodeParameterMod
     title->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Preferred);content->addWidget(title);root->addWidget(section);return content;
 }
 void NodeParameterForm::appendField(QVBoxLayout* root,QMap<int,QVBoxLayout*>& sections,ui::CollapsibleSection* placement,const Field& field) {
+    _materialized_fields.insert(field.key);
     auto control=createControl(field);configureControl(control.widget,field);
     auto* row=new ui::FieldRow(field.label,control.widget,this);configureRow(row,field);
     auto* show=addPlacement(placement,row,field);
@@ -309,6 +321,10 @@ void NodeParameterForm::appendFields(QVBoxLayout* root,ui::CollapsibleSection* p
     QMap<int,QVBoxLayout*> sections;
     for(const auto& descriptor:_model->fields()) {
         // An edit can synchronously replace the model's field list.
-        const auto field=descriptor;if(showsField(field))appendField(root,sections,placement,field);
+        const auto field=descriptor;
+        QElapsedTimer timer;if(qEnvironmentVariableIsSet("CORE_APP_TRACE_SAVES"))timer.start();
+        if(showsField(field))appendField(root,sections,placement,field);
+        if(timer.isValid() && timer.nsecsElapsed()>5000000)
+            qInfo().noquote()<<"BARELIEF_INSPECTOR_FIELD"<<field.key<<"ms="<<timer.nsecsElapsed()/1e6;
     }
 }

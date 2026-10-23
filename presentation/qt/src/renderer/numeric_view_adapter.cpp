@@ -23,7 +23,10 @@ Status regular_coordinates(const AxisCoordinates& declared,size_t size,std::vect
 Status explicit_coordinates(const NumericView& view,size_t axis,size_t size,std::vector<double>& output) {
     const auto bytes=view.coordinates.axes[axis];
     if(bytes.size()!=size*8)return Status::malformed;
-    for(size_t i=0;i<size;++i)output[i]=pipeline::decode_coordinate(bytes.subspan(i*8,8));
+    // HistoryWriter already exports an oldest-to-newest coordinate span,
+    // even when numeric samples use a wrapped ring. Do not rotate twice.
+    for(size_t i=0;i<size;++i)
+        output[i]=pipeline::decode_coordinate(bytes.subspan(i*8,8));
     return Status::ok;
 }
 Status coordinates(const NumericView& view,size_t axis,size_t size,std::vector<double>& output) {
@@ -44,7 +47,7 @@ Status NumericViewAdapter::bind(const pipeline::EndpointIdentity& endpoint,std::
 }
 void NumericViewAdapter::unbind(const pipeline::EndpointIdentity& endpoint,std::size_t plane){states_.erase(Key{endpoint,plane});}
 void NumericViewAdapter::clear() noexcept {
-    for(auto& [key,state]:states_){state.matrix_snapshot.clear();state.matrix_pool.clear();state.matrix_projected=false;state.latest={};state.history.clear();state.context.reset();state.status=Status::unavailable;state.history_mode=false;state.fence_seen=false;}
+    for(auto& [key,state]:states_){state.matrix_snapshot.clear();state.matrix_pool.clear();state.matrix_projected=false;state.latest={};state.history.clear();state.context.reset();state.status=Status::unavailable;state.history_mode=false;state.vector_history_filled.reset();state.fence_seen=false;}
 }
 void NumericViewAdapter::clear_render_target(NumericRenderTarget target) {
     if(target.metrics)target.metrics->clear_values();
@@ -84,7 +87,7 @@ bool NumericViewAdapter::reset_frame_state(State& state,const pipeline::Delivere
     if(changed || state.history_mode)state.history.clear();
     state.context=input.context;
     state.matrix_snapshot.clear();state.matrix_projected=false;
-    state.history_mode=false;state.status=input.status;
+    state.history_mode=false;state.vector_history_filled.reset();state.status=input.status;
     return changed;
 }
 bool NumericViewAdapter::stale_frame_sequence(const State& state,const pipeline::DeliveredNumericFrame& input,bool changed) const {
@@ -118,9 +121,27 @@ Status NumericViewAdapter::accept(const pipeline::DeliveredNumericHistoryRow& in
 }
 Status NumericViewAdapter::accept_history_snapshot(const pipeline::DeliveredNumericFrame& input,std::uint64_t ordinal,std::uint64_t filled_count) {
     if(!input.context || !input.context->contract)return Status::invalid_argument;
+    const auto contract=input.context->contract.view();
+    const auto* numeric=std::get_if<NumericContract>(&contract);
+    const bool vector_history=numeric && numeric->semantic==Semantic::History &&
+        numeric->shape.rank==Rank::Vector;
     Status result=Status::unavailable;
     for(auto& [key,state]:states_)if(key.endpoint==input.context->endpoint) {
-        result=accept_snapshot_for_state(key,state,input,ordinal,filled_count);
+        if(!vector_history) {
+            result=accept_snapshot_for_state(key,state,input,ordinal,filled_count);
+            continue;
+        }
+        // The processing node already owns the ring. Remember only its
+        // occupancy so the plot omits unfilled slots from the 512-cell window.
+        const auto status=accept_frame_for_state(key,state,input);
+        if(status) {
+            result=*status;
+            if(result==Status::ok && input.frame) {
+                const auto snapshot=input.frame.view();
+                if(const auto* view=std::get_if<NumericView>(&snapshot.payload))
+                    state.vector_history_filled=std::size_t(std::min<std::uint64_t>(filled_count,view->actual[0]));
+            }
+        }
     }
     return result;
 }
@@ -229,11 +250,23 @@ Status scalar_readout(const NumericView& numeric,std::size_t plane,NumericRender
     target.chart->set_scalar_readout(scalar?QString::fromStdString(pipeline::exact_scalar_text(current)):QString{},scalar,true);return Status::ok;
 }
 }
-Status NumericViewAdapter::configure_vector(const NumericView& numeric,std::size_t plane,NumericRenderTarget target){
+Status NumericViewAdapter::configure_vector(const NumericView& numeric,std::size_t plane,
+                                           NumericRenderTarget target,std::optional<std::size_t> filled){
     auto status=scalar_readout(numeric,plane,target);if(status!=Status::ok)return status;
     QString title=target.presentation.vector_x_title;std::vector<double> values;
-    status=vector_coordinates(numeric,target,values,title);
-    if(status!=Status::ok)return status;
+    if(filled && numeric.contract->semantic==Semantic::History &&
+       numeric.contract->shape.rank==Rank::Vector){
+        if(*filled>numeric.actual[0])return Status::malformed;
+        if(target.axes.time && numeric.contract->coordinates[0].mode!=CoordinateMode::None){
+            status=coordinates(numeric,0,numeric.actual[0],values);
+            if(status!=Status::ok)return status;
+            values.erase(values.begin(),values.end()-std::ptrdiff_t(*filled));
+            if(!values.empty())title="Time, seconds (X)";
+        }
+    }else{
+        status=vector_coordinates(numeric,target,values,title);
+        if(status!=Status::ok)return status;
+    }
     if(!target.chart->set_x_coordinates(values))return Status::malformed;
     if(target.chart->set_value_source)target.chart->set_value_source(target.presentation.value_scale.source_decibels,target.presentation.value_scale.factor);
     target.chart->set_axis_title_keys(title,target.presentation.value_title);return Status::ok;
@@ -243,7 +276,16 @@ Status NumericViewAdapter::vector_coordinates(const NumericView& numeric,Numeric
     if(numeric.contract->shape.rank==Rank::Scalar)return Status::ok;
     if(target.frequency_grid.explicit_input)
         return explicit_vector_coordinates(numeric,target,limits_.vectors.max_elements,values,title);
-    if(target.axes.frequency)return coordinates(numeric,0,numeric.actual[0],values);
+    const bool timed_history=target.axes.time && numeric.contract &&
+        numeric.contract->semantic==Semantic::History &&
+        numeric.contract->coordinates[0].unit==NumericUnit::Seconds &&
+        numeric.contract->coordinates[0].mode!=CoordinateMode::None;
+    if(target.axes.frequency || timed_history) {
+        const auto status=coordinates(numeric,0,numeric.actual[0],values);
+        if(status==Status::ok && timed_history && !values.empty())
+            title="Time, seconds (X)";
+        return status;
+    }
     return Status::ok;
 }
 void NumericViewAdapter::prepare_matrix_snapshot(State& state,std::size_t rows,std::size_t columns,const std::vector<float>& projection,const pipeline::FloatProjectionReport& report){
@@ -341,7 +383,16 @@ Status NumericViewAdapter::project_frame(State& state,const NumericView& numeric
         if(columns && numeric.actual[0]>limits_.vectors.max_elements/columns)return Status::buffer_too_small;
         projection.values.resize(numeric.actual[0]*columns);
     }
-    return pipeline::project_numeric_float(numeric,plane,limits_.vectors,projection.values,projection.report);
+    const auto status=pipeline::project_numeric_float(numeric,plane,limits_.vectors,projection.values,projection.report);
+    if(status!=Status::ok)return status;
+    if(state.vector_history_filled && rank==Rank::Vector &&
+       numeric.contract->semantic==Semantic::History){
+        const auto filled=*state.vector_history_filled;
+        if(filled>projection.values.size())return Status::malformed;
+        projection.values.erase(projection.values.begin(),
+                                projection.values.end()-std::ptrdiff_t(filled));
+    }
+    return Status::ok;
 }
 Status NumericViewAdapter::publish_frame(State& state,const NumericView& numeric,FrameProjection& projection,NumericRenderTarget target){
     if(target.chart)target.chart->update(projection.values);
@@ -363,7 +414,7 @@ Status NumericViewAdapter::render_numeric_frame(State& state,const pipeline::End
     std::size_t plane,const NumericView& numeric,NumericRenderTarget target) {
     if(!target_accepts_rank(target,numeric.contract->shape.rank))return projection_failure(target,endpoint.port,Status::incompatible_contract);
     if(target.metrics){const auto status=render_metric(numeric,plane,endpoint.port,target);return status==Status::ok?status:projection_failure(target,endpoint.port,status);}
-    if(target.chart){const auto status=configure_vector(numeric,plane,target);if(status!=Status::ok)return projection_failure(target,endpoint.port,status);}
+    if(target.chart){const auto status=configure_vector(numeric,plane,target,state.vector_history_filled);if(status!=Status::ok)return projection_failure(target,endpoint.port,status);}
     FrameProjection projection;const auto status=project_frame(state,numeric,plane,projection);
     if(status!=Status::ok)return frame_projection_failure(target,endpoint.port,status,projection.exact);
     const auto published=publish_frame(state,numeric,projection,target);

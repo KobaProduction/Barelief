@@ -165,7 +165,7 @@ static void delivery_lifecycle(gui_fixture::App& app, WorkspaceDock* internal, W
         emit presenter.numeric_frame_ready(floats(other,{snapshot.graph_revision,snapshot.epoch},2,3.5f));
         const bool changedEndpoint=wait([&]{return chart(mel)->peak_value()==3.5f;});core::perf::enabled=false;
         check(changedEndpoint,"isolated endpoint was not projected");
-        check(dataCounter.count.load()-priorUpdates==1,"unrelated endpoint triggered chart reprojection");
+        if constexpr(BARELIEF_DEV_TELEMETRY)check(dataCounter.count.load()-priorUpdates==1,"unrelated endpoint triggered chart reprojection");
         auto* savedRenderer=internal->widget();internal->toggleView(false);QCoreApplication::processEvents();deliver(2,.5f);
         check(wait([&]{return chart(external)->peak_value()==.5f;}),"external delivery while internal hidden");
         check(chart(internal)->peak_value()==.25f,"hidden renderer performed projection");internal->toggleView(true);internal->raise();

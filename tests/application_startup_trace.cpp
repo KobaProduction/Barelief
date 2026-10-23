@@ -1,6 +1,7 @@
 #include "performance_report.h"
 #include "renderer_probe_telemetry.h"
 #include "synthetic_capture.h"
+#include "gui_interaction_trace.h"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
@@ -32,6 +33,7 @@
 #include <core_app/main_window.h>
 #include <core_app/numeric_default_graph.h>
 #include <core_app/scheme_editor/numeric_editor_model.h>
+#include <core_app/scheme_editor/editor_widget.h>
 #include <core_app/workspace/workspace_window.h>
 #include <cstdio>
 #include <desktop/numeric_project_document.h>
@@ -264,7 +266,7 @@ QJsonArray surfaces(MainWindow *window) {
         if (surface) {
             state["paint_fps"] = surface->display_fps();
             state["surface"] = QJsonObject::fromVariantMap(surface->axis_layout_telemetry());
-            auto *host = surface->findChild<QQuickWidget *>("spectrogramQuickView");
+            const ui::quick::SceneReference host(surface->findChild<QWidget *>("spectrogramQuickView"));
             if (host && host->rootObject())
                 if (auto *overlay = host->rootObject()->findChild<SurfaceOverlayItem *>("spectrogramOverlay")) {
                     state["overlay_paint_engine"] = overlay->paintEngineType();
@@ -308,7 +310,7 @@ struct StartupOptions {
 
     bool snapshotPool = presentation::RenderPreparationPolicy::snapshot_pool, cameraMotion = false, maximized = false,
          actualCapture = false;
-    QString meshMode = "inline", overlayTarget;
+    QString meshMode = "pooled", overlayTarget;
     QList<int> jointNodes;
     int sliceMode = -1, focusNode = 0;
     QString source, output, plotStyle = "line", graphicsBackend = "opengl", plotHost = "widget", pianoHost = "window";
@@ -396,7 +398,7 @@ struct StartupOptions {
         else if (key == "--measure-ms") {
             bool ok = false;
             measurementMs = value.toInt(&ok);
-            if (!ok || measurementMs < 2000 || measurementMs > 8000)
+            if (!ok || measurementMs < 2000 || measurementMs > 120000)
                 return 2;
         } else if (key == "--snapshot-pool") {
             if (value != "0" && value != "1")
@@ -588,7 +590,7 @@ struct StartupObservation : StartupOptions {
     double spectrumFirstEnergy = -1;
     bool spectrumEnergyChanged = false;
     QPointer<SpectrogramGraph> focusedSurfaceBaseline;
-    quint64 focusedSurfaceInitialFrames = 0, focusedSurfaceInitialSnapshots = 0;
+    quint64 focusedSurfaceInitialFrames = 0, focusedSurfaceInitialSnapshots = 0, focusedSurfaceFrames = 0;
     quint64 firstGraphMs = 0;
     double sampleSeconds = 0;
     QJsonObject initialSnapshot;
@@ -598,6 +600,7 @@ struct StartupObservation : StartupOptions {
     quint64 cameraInputs = 0, cameraPanelNotifications = 0, cameraPublications = 0;
     QPointer<SpectrogramGraph> movingSurface;
     QObject observerContext;
+    std::unique_ptr<GuiInteractionTrace> interactions;
 
     bool positionApplied = false, simplePainted = false, suppressionApplied = false, sliceApplied = false;
     bool focusedVectorPainted = false, focusedPianoPainted = false, focusedSurfaceRendered = false;
@@ -626,12 +629,16 @@ struct StartupObservation : StartupOptions {
         for (int id : std::as_const(jointNodes)) {
             WorkspaceDock *target = nullptr;
             for (const auto docks = window->workspaceDocks(); auto *dock : docks)
-                if (dock->property("graphNode").toInt() == id && dock->property("viewInstance").toInt() == 0) {
+                if (dock->property("graphNode").toInt() == id) {
                     target = dock;
-                    break;
+                    if(dock->property("viewInstance").toInt()==0)break;
                 }
-            if (!target)
+            if (!target) {
+                // Open the requested graph through the same editor action as
+                // a user, including graphs absent from the restored layout.
+                if(auto* editor=window->data_flow_editor())emit editor->graph_view_requested(id);
                 return false;
+            }
             targets.append(target);
         }
         for (const auto docks = window->workspaceDocks(); auto *dock : docks)
@@ -645,6 +652,11 @@ struct StartupObservation : StartupOptions {
             dock->setAsCurrentTab();
             jointDocks.append(dock);
         }
+        if(qEnvironmentVariable("BARELIEF_TRACE_GESTURES")=="flight")
+            if(auto* editor=window->workspaceDock("dataFlowDock")) {
+                window->addDockWidget(Qt::BottomDockWidgetArea,editor);editor->show();editor->setAsCurrentTab();
+                window->resizeDocks({editor},{window->height()/2},Qt::Vertical);
+            }
         return true;
     }
     bool focusTarget() {
@@ -706,7 +718,7 @@ struct StartupObservation : StartupOptions {
         auto *surface = panel->active_spectrogram();
         surface->reset_camera();
         if (!overlayTarget.isEmpty()) {
-            auto *host = surface->findChild<QQuickWidget *>("spectrogramQuickView");
+            const ui::quick::SceneReference host(surface->findChild<QWidget *>("spectrogramQuickView"));
             if (host && host->rootObject())
                 if (auto *overlay = host->rootObject()->findChild<SurfaceOverlayItem *>("spectrogramOverlay"))
                     overlay->setRenderTarget(overlayTarget == "image" ? QQuickPaintedItem::Image
@@ -714,7 +726,7 @@ struct StartupObservation : StartupOptions {
         }
         surface->quick_action("selection", sliceMode);
         if (sliceMode) {
-            auto *host = surface->findChild<QQuickWidget *>("spectrogramQuickView");
+            const ui::quick::SceneReference host(surface->findChild<QWidget *>("spectrogramQuickView"));
             auto *canvas = host && host->rootObject()
                                ? host->rootObject()->findChild<SurfaceQuickItem *>("spectrogramContainer")
                                : nullptr;
@@ -773,6 +785,7 @@ struct StartupObservation : StartupOptions {
             previewEngine, [&] { appliedPreviewInterval = previewEngine->numeric_preview_interval_ms(); },
             Qt::BlockingQueuedConnection);
         prepareRenderObservers();
+        if(qEnvironmentVariableIsSet("BARELIEF_TRACE_GESTURES"))interactions=std::make_unique<GuiInteractionTrace>(window,measurementMs,window->data_flow_editor());
         sampleSeconds = elapsed.nsecsElapsed() / 1e9;
         measuring = true;
         renderMeasuring = true;
@@ -784,6 +797,7 @@ struct StartupObservation : StartupOptions {
         std::fprintf(stderr, "TRACE_MEASUREMENT_STARTED\n");
         std::fflush(stderr);
         startCameraMotion();
+        GuiInteractionTrace::mark("measurement.begin");
         measurementEnd.start(measurementMs);
     }
     bool observedSourceValid() const {
@@ -796,8 +810,18 @@ struct StartupObservation : StartupOptions {
                                         (focusedPianoPainted && frames.count > 0)))
                 : (histories.count > 0 && histories.ordinal > 0);
     }
+    void stopWorkerProbe() {
+        workerMeasuring.store(false, std::memory_order_release);
+        if (!worker || !workerTimer)return;
+        QMetaObject::invokeMethod(worker,[&] {
+            workerPreviewInterval=worker->numeric_preview_interval_ms();
+            worker->unsubscribe_numeric_tap(workerTapId);
+            workerTimer->stop();delete workerTimer;workerTimer=nullptr;
+        },Qt::BlockingQueuedConnection);
+    }
     void endMeasurement() {
 
+        GuiInteractionTrace::mark("measurement.end");
         cameraTimer.stop();
         if (movingSurface)
             movingSurface->quick_pointer(2, 200, 200, Qt::RightButton, Qt::NoButton, Qt::NoModifier);
@@ -806,20 +830,10 @@ struct StartupObservation : StartupOptions {
         gui_event_profile::enabled = false;
         core::perf::enabled = false;
         sampleSeconds = elapsed.nsecsElapsed() / 1e9 - sampleSeconds;
-        workerMeasuring.store(false, std::memory_order_release);
+        if(interactions)interactions->stop(QDir(output).filePath("interactions.json"));
         // Barrier waits for any observer callback already in progress before
         // reading worker-owned counters or destroying captured stack values.
-        if (worker)
-            QMetaObject::invokeMethod(
-                worker,
-                [&] {
-                    workerPreviewInterval = worker->numeric_preview_interval_ms();
-                    worker->unsubscribe_numeric_tap(workerTapId);
-                    workerTimer->stop();
-                    delete workerTimer;
-                    workerTimer = nullptr;
-                },
-                Qt::BlockingQueuedConnection);
+        stopWorkerProbe();
         saveTraceGroups();
         auto renderers = rendererReport();
         const auto actual = app._ctx.file_configs.ui.graph_rendering;
@@ -833,7 +847,7 @@ struct StartupObservation : StartupOptions {
         sourceValid = observedSourceValid();
         observeJointViews();
         valid =
-            jointRendered && firstGraphMs && sourceValid &&
+            jointRendered && firstGraphMs && sourceValid && (!interactions || interactions->populated_pipeline()) &&
             (!(simpleSpectrum || focusNode) || vectorSceneRendered || focusedSurfaceRendered || focusedPianoPainted) &&
             positionApplied && (!hideEditor || !editorDock || editorDock->isHidden()) && sliceApplied &&
             (!suppressPlotPaint || (suppressionApplied && suppressedPaintDelta == 0 && plotPublications.count > 0));
@@ -870,8 +884,10 @@ struct StartupObservation : StartupOptions {
                 window = w;
         if (!window)
             return 3;
-        window->setAttribute(Qt::WA_ShowWithoutActivating);
-        window->setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+        if(qEnvironmentVariable("BARELIEF_TRACE_GESTURES")!="flight") {
+            window->setAttribute(Qt::WA_ShowWithoutActivating);
+            window->setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+        }
         // This own-window policy is set before CoreApplication::exec shows it.
         window->setWindowTitle("Owned full application startup trace");
 
@@ -903,6 +919,8 @@ struct StartupObservation : StartupOptions {
             });
         if (focusNode)
             QTimer::singleShot(1500, &observerContext, [&] { focusNodeApplied = focusTarget(); });
+        if(qEnvironmentVariable("BARELIEF_TRACE_GESTURES")=="flight")
+            QTimer::singleShot(1900,&observerContext,[&]{window->raise();window->activateWindow();});
     }
     void observeWorker() {
         pianoPaints.measuring = &measuring;
@@ -996,6 +1014,7 @@ struct StartupObservation : StartupOptions {
     void armMeasurement() {
         measurementStart.setSingleShot(true);
         measurementEnd.setSingleShot(true);
+        measurementEnd.setTimerType(Qt::PreciseTimer);
         QObject::connect(&measurementStart, &QTimer::timeout, &observerContext, [&] { beginMeasurement(); });
         measurementStart.start(2000);
         QObject::connect(&measurementEnd, &QTimer::timeout, &observerContext, [&] { endMeasurement(); });
@@ -1083,9 +1102,9 @@ struct StartupObservation : StartupOptions {
 
         QList<QWidget *> quickHosts;
         for (const auto range15 = window->findChildren<QQuickWidget *>(); auto *host : range15)
-            if (host->objectName() != "plotTextureHost")
+            if (!qobject_cast<ui::quick::SceneHost *>(host->parentWidget()))
                 quickHosts.append(host);
-        for (const auto range16 = window->findChildren<QuickPlotWidget *>(); auto *host : range16)
+        for (const auto range16 = window->findChildren<ui::quick::SceneHost *>(); auto *host : range16)
             quickHosts.append(host);
         for (auto *quick : quickHosts) {
             connectScene(quick);
@@ -1093,9 +1112,8 @@ struct StartupObservation : StartupOptions {
     }
     void connectScene(QWidget *quick) {
 
-        auto *plotHost = dynamic_cast<QuickPlotWidget *>(quick);
         auto state = std::make_unique<Scene>();
-        state->window = plotHost ? plotHost->quickWindow() : static_cast<QQuickWidget *>(quick)->quickWindow();
+        state->window = ui::quick::SceneReference(quick)->quickWindow();
         auto *target = state.get();
         for (const auto docks = window->workspaceDocks(); auto *dock : docks)
             if (dock->isAncestorOf(quick)) {
@@ -1291,6 +1309,8 @@ struct StartupObservation : StartupOptions {
                 if (auto *panel = qobject_cast<GraphPanel *>(dock->widget()))
                     if (auto *surface = panel->active_spectrogram()) {
                         const auto state = surface->axis_layout_telemetry();
+                        const auto completed=state.value("renderedFrames").toULongLong();
+                        focusedSurfaceFrames=completed>=focusedSurfaceInitialFrames?completed-focusedSurfaceInitialFrames:0;
                         focusedSurfaceRendered =
                             focusedSurfaceBaseline && focusedSurfaceBaseline == surface && surface->isVisible() &&
                             state.value("renderedFrames").toULongLong() > focusedSurfaceInitialFrames &&
@@ -1322,7 +1342,18 @@ struct StartupObservation : StartupOptions {
         if (auto *panel = qobject_cast<GraphPanel *>(dock->widget()))
             if (auto *piano = panel->piano_view())
                 progressed = pianoProgress(dock->property("graphNode").toInt(), piano);
+        if(auto* panel=qobject_cast<GraphPanel*>(dock->widget());panel && panel->display_mode()=="metrics")
+            progressed=metricsProgress(panel->metrics_view());
         return progressed;
+    }
+    bool metricsProgress(NumericMetricsView* metrics) const {
+        if(!metrics || !metrics->input_count())return false;
+        const auto* model=metrics->metrics_model();bool available=false;
+        for(int row=0;row<model->rowCount();++row)
+            available|=model->data(model->index(row),NumericMetricsModel::AvailableRole).toBool();
+        return available && std::any_of(scenes.begin(),scenes.end(),[&](const auto& scene){
+            return scene->window==metrics->quickWindow() && scene->completed.load()>0;
+        });
     }
     void observeSimpleViews() {
 
@@ -1372,6 +1403,8 @@ struct StartupObservation : StartupOptions {
         report.insert("source_valid", sourceValid);
         report.insert("focused_vector_painted", focusedVectorPainted);
         report.insert("focused_surface_rendered", focusedSurfaceRendered);
+        report.insert("focused_surface_completed_frames",double(focusedSurfaceFrames));
+        report.insert("focused_surface_fps",sampleSeconds>0?focusedSurfaceFrames/sampleSeconds:0);
         report.insert("vector_scene_rendered", vectorSceneRendered);
         report.insert("capture_lanes", int(lanes));
         report.insert("capture_sample_rate", int(rate));
@@ -1474,13 +1507,16 @@ struct StartupObservation : StartupOptions {
     }
     void captureFramebuffers(QJsonObject &report) {
         // Capture only owned renderer framebuffers, after timing gates close.
+        if(auto* editor=window->data_flow_editor())
+            if(auto* view=editor->findChild<QGraphicsView*>())
+                report["pipeline_framebuffer_saved"]=view->viewport()->grab().save(QDir(output).filePath("pipeline.png"));
         for (const auto range21 = window->findChildren<GraphPanel *>(); auto *panel : range21)
             if (panel->isVisible()) {
                 if (auto *piano = panel->piano_view())
                     report["piano_framebuffer_saved"] =
                         piano->grabFramebuffer().save(QDir(output).filePath("piano.png"));
                 if (auto *surface = panel->active_spectrogram())
-                    if (auto *host = surface->findChild<QQuickWidget *>("spectrogramQuickView"))
+                    if (const ui::quick::SceneReference host(surface->findChild<QWidget *>("spectrogramQuickView"));host)
                         report["surface_framebuffer_saved"] =
                             host->grabFramebuffer().save(QDir(output).filePath("surface.png"));
             }
@@ -1528,6 +1564,8 @@ struct StartupObservation : StartupOptions {
     }
 };
 int StartupOptions::run() {
+    core::telemetry::Session telemetry;
+    core::telemetry::thread_name("GUI");
     const auto original = read(source);
     if (original.isEmpty() || QFile::exists(QDir(output).filePath("project.json")) || !QDir().mkpath(output))
         return 2;

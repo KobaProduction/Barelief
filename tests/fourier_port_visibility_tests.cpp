@@ -4,6 +4,7 @@
 #include <core_app/scheme_editor/node_parameter_form.h>
 #include <barelief/ui_text.h>
 #include <core_app/numeric_default_graph.h>
+#include <core_app/example_presentation.h>
 #include <dataflow_runtime/runtime.h>
 #include <QApplication>
 #include <QUndoStack>
@@ -158,6 +159,42 @@ void shipped_window_dependency_branches(){
         NumericEditorGraphModel editor(registry());check(editor.set_numeric_graph(example.graph),"spectral-mix complete branch imports in actual GUI model");
     }
 }
+void rhythm_node_ports(){
+    const auto models=registry();
+    for(const auto* language:{"ru","en"}){
+        ui::Language::instance().set(language);
+        NumericEditorGraphModel editor(models);
+        const auto id=editor.addNode("RhythmAnalyzer");
+        auto* model=editor.delegateModel<AudioNodeModel>(id);
+        check(model && model->nPorts(QtNodes::PortType::Out)==domain::rhythm_output_count,"all rhythm outputs visible");
+        check(model->portCaption(QtNodes::PortType::Out,0).contains(ui::text("Candidate tempo, BPM")),"localized candidate caption");
+        check(model->portCaption(QtNodes::PortType::Out,1).contains(ui::text("Accepted tempo, BPM")),"accepted tempo separate from candidate");
+        check(model->parameter_model()->field("feature_rate_fps") && model->parameter_model()->field("mode"),"rhythm settings registered");
+        NumericEditorGraphModel example(models);
+        check(example.set_numeric_graph(numeric_rhythm_graph()),"rhythm example imports in actual GUI model");
+        const auto saved=example.save();NumericEditorGraphModel restored(models);restored.load(saved);
+        check(restored.numeric_graph().nodes.size()==example.numeric_graph().nodes.size(),"rhythm example survives save/load");
+    }
+}
+void rhythm_example_labels(){
+    const auto examples=numeric_example_graphs();
+    const auto found=std::find_if(examples.begin(),examples.end(),[](const auto& value){return std::string_view(value.id)=="rhythm-research";});
+    check(found!=examples.end(),"rhythm example registered");
+    for(const auto* language:{"ru","en"}){
+        ui::Language::instance().set(language);
+        NumericEditorGraphModel editor(registry());check(editor.set_numeric_graph(found->graph),"loopback rhythm example imports");
+        apply_example_labels(&editor,*found);
+        const auto* metrics=editor.delegateModel<AudioNodeModel>(1103);
+        check(metrics && metrics->numeric_node()->inputs.size()==domain::rhythm_output_count,"one metric view consumes all rhythm outputs");
+        const auto labels=metrics->presentation().value("scalar_inputs").toObject();
+        for(unsigned port=0;port<domain::rhythm_output_count;++port)
+            check(labels.value(QString::number(port)).toObject().value("display_name").toString()==ui::text(found->scalar_names[0].labels[port]),"localized metric names assigned");
+        const auto* selector=editor.delegateModel<AudioNodeModel>(200);
+        check(selector && selector->selected_input()==1 && selector->numeric_node()->inputs.size()==4,"Loopback selected by default and microphone absent");
+        const auto saved=editor.save();NumericEditorGraphModel restored(registry());restored.load(saved);
+        check(restored.delegateModel<AudioNodeModel>(1103)->presentation().value("scalar_inputs").toObject()==labels,"metric labels survive save/load");
+    }
+}
 }
 int main(int argc,char** argv){
     std::fputs("Fourier visibility: QApplication\n",stderr);QApplication app(argc,argv);
@@ -167,6 +204,6 @@ int main(int argc,char** argv){
     auto r=registry();std::fputs("Fourier visibility: complex ports\n",stderr);ports(r,"Fourier");
     std::fputs("Fourier visibility: real ports\n",stderr);ports(r,"RealFourier");
     musical_layout_caption();std::fputs("Fourier visibility: normalization controls\n",stderr);spectrum_normalization_controls();normalization_widget();
-    std::fputs("Fourier visibility: shipped graphs\n",stderr);shipped_window_dependency_branches();
+    std::fputs("Fourier visibility: shipped graphs\n",stderr);shipped_window_dependency_branches();rhythm_node_ports();rhythm_example_labels();
     std::puts("PASS Fourier DC visibility, normalization controls, musical layout and shipped window dependencies");
 }

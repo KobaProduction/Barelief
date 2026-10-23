@@ -10,9 +10,11 @@ find_package(Qt6 REQUIRED COMPONENTS Core Network SerialPort)
 
 add_library(runtime_performance INTERFACE)
 target_include_directories(runtime_performance INTERFACE ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
+include(${CMAKE_SOURCE_DIR}/cmake/dev_telemetry.cmake)
 
 add_library(${LIB_NAME} STATIC)
 target_link_libraries(${LIB_NAME} PUBLIC qt_engine_ports)
+target_link_libraries(${LIB_NAME} PUBLIC runtime_performance)
 
 
 target_sources(${LIB_NAME} PRIVATE

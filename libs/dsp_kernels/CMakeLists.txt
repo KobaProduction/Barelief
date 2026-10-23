@@ -26,6 +26,11 @@ target_compile_definitions(dsp_kernels PUBLIC PORTABLE_DSP_MAX_FFT_SIZE=${PORTAB
 target_sources(dsp_kernels PRIVATE src/prepared_resampler.cpp)
 target_sources(dsp_kernels PRIVATE src/musical_features.cpp)
 target_sources(dsp_kernels PRIVATE src/frequency_profile.cpp)
+target_sources(dsp_kernels PRIVATE
+    src/rhythm/analyzer.cpp src/rhythm/math.cpp src/rhythm/observer.cpp
+    src/rhythm/tracking.cpp src/rhythm/autocorrelation.cpp
+    src/rhythm/hierarchy.cpp src/rhythm/ranking.cpp
+    src/rhythm/decision.cpp src/rhythm/publication.cpp src/rhythm/packing.cpp)
 target_include_directories(dsp_kernels PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)

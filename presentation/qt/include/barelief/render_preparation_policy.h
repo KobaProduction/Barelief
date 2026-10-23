@@ -9,6 +9,8 @@ struct RenderPreparationPolicy {
     static inline PlotHost plot_host = PlotHost::TextureWidget;
     static inline PlotHost piano_host = PlotHost::TextureWidget;
     static inline bool snapshot_pool = true;
-    static inline MeshPreparation mesh = MeshPreparation::Inline;
+    // CPU mesh construction must not occupy the GUI/rendering thread. The
+    // shared pool bounds concurrency and keeps only the latest pending input.
+    static inline MeshPreparation mesh = MeshPreparation::Pooled;
 };
 }

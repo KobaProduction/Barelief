@@ -99,8 +99,8 @@ template<class T> bool valid_values(const std::vector<T>& values) {
     return std::all_of(values.begin(),values.end(),[](auto value){return std::isfinite(value) && value>=0;});
 }
 bool valid_composition(const CompositionStatistics& track,std::size_t bins) {
-    if(track.active_frames>track.frames || !std::isfinite(track.rms) || track.rms<0 || (!track.mean_spectrum.empty() && track.mean_spectrum.size()!=bins) || (!track.frequency_presence.empty() && track.frequency_presence.size()!=bins))return false;
-    return valid_values(track.mean_spectrum) && valid_values(track.frequency_presence) &&
+    if(track.active_frames>track.frames || !std::isfinite(track.rms) || track.rms<0 || (!track.mean_spectrum.empty() && track.mean_spectrum.size()!=bins) || (!track.peak_spectrum.empty() && track.peak_spectrum.size()!=bins) || (!track.frequency_presence.empty() && track.frequency_presence.size()!=bins))return false;
+    return valid_values(track.mean_spectrum) && valid_values(track.peak_spectrum) && valid_values(track.frequency_presence) &&
         std::none_of(track.frequency_presence.begin(),track.frequency_presence.end(),[](double value){return value>1;});
 }
 bool valid_preview(const SpectrogramPreview& image,const CompositionStatistics& track,const ProfileCompatibility& frontend,std::size_t bins) {
@@ -111,7 +111,7 @@ bool valid_preview(const SpectrogramPreview& image,const CompositionStatistics& 
 bool validate_saved_composition(const ProfileDocument& document,std::size_t index,std::size_t& bytes,QString& error) {
     const auto& profile=document.profile;const auto& track=profile.compositions[index];
     if(!valid_composition(track,profile.gains.size())){error="Invalid saved composition statistics";return false;}
-    bytes+=(track.mean_spectrum.size()+track.frequency_presence.size())*sizeof(double);
+    bytes+=(track.mean_spectrum.size()+track.peak_spectrum.size()+track.frequency_presence.size())*sizeof(double);
     if(index<document.previews.size() && document.previews[index].rows){
         const auto& image=document.previews[index];
         if(!valid_preview(image,track,profile.compatibility,profile.gains.size())){error="Invalid saved composition preview";return false;}
@@ -124,7 +124,7 @@ bool valid_document(const ProfileDocument& document,QString& error) {
     const auto& profile=document.profile;std::string validation;
     if(!validate_profile(profile,profile.compatibility,validation)){error=QString::fromStdString(validation);return false;}
     if(profile.compositions.size()>4096 || (!document.previews.empty() && document.previews.size()!=profile.compositions.size())){error="Invalid saved composition count";return false;}
-    std::size_t bytes=profile.gains.size()*sizeof(float)+(profile.mean_spectrum.size()+profile.frequency_presence.size())*sizeof(double);
+    std::size_t bytes=profile.gains.size()*sizeof(float)+(profile.mean_spectrum.size()+profile.peak_spectrum.size()+profile.frequency_presence.size())*sizeof(double);
     for(std::size_t i=0;i<profile.compositions.size();++i)if(!validate_saved_composition(document,i,bytes,error))return false;
     return true;
 }
@@ -189,6 +189,11 @@ class ProfileDecoder {
         std::size_t numerator=0,denominator=0;
         if(!count(object,"interval_numerator",numerator) || !count(object,"interval_denominator",denominator))return fail("Missing analysis cadence");
         t.interval_numerator=numerator;t.interval_denominator=denominator;
+        // Missing field indicates an older mean-equalization profile.
+        const auto mode=object.value("gain_mode");
+        if(mode.isUndefined() || mode.toString()=="mean_equalization")t.gain_mode=ProfileGainMode::MeanEqualization;
+        else if(mode.toString()=="peak_normalization")t.gain_mode=ProfileGainMode::PeakNormalization;
+        else return fail("Unknown frequency gain mode",ProfileReadIssue::Frontend,"gain_mode");
         std::string validation;
         if(valid_profile_settings(frontend(),t,validation))return true;
         error_=QString::fromStdString(validation);diagnostic_={ProfileReadIssue::Frontend,QStringLiteral("training")};return false;
@@ -228,6 +233,7 @@ class ProfileDecoder {
         const auto grid=source_.value("metadata").toObject().value("grid").toObject();double start=0,step=0;std::size_t declared=0;
         if(grid.value("kind").toString()!="rfft_hz_dc_nyquist" || !number(grid,"start_hz",start) || start!=0 || !number(grid,"step_hz",step) || step!=c.sample_rate/double(c.fft_size) || !count(grid,"bins",declared) || declared!=bins)return fail("Invalid frequency grid",ProfileReadIssue::Layout,"grid");
         if(!coefficient_vector("gains",p.gains,bins) || !coefficient_vector("mean_spectrum",p.mean_spectrum,bins))return false;
+        if(source_.contains("peak_spectrum") && !vector(source_.value("peak_spectrum"),p.peak_spectrum,bins,budget_))return fail("Invalid peak spectrum");
         if(source_.contains("frequency_presence") && !vector(source_.value("frequency_presence"),p.frequency_presence,bins,budget_))return fail("Invalid frequency presence");
         return true;
     }
@@ -253,6 +259,7 @@ class ProfileDecoder {
         if(!composition_metadata(object,track))return false;
         const auto bins=frontend().fft_size/2+1;
         if(object.contains("mean_spectrum") && !vector(object.value("mean_spectrum"),track.mean_spectrum,bins,budget_))return fail("Invalid composition spectrum statistics");
+        if(object.contains("peak_spectrum") && !vector(object.value("peak_spectrum"),track.peak_spectrum,bins,budget_))return fail("Invalid composition peak spectrum");
         if(object.contains("frequency_presence") && !vector(object.value("frequency_presence"),track.frequency_presence,bins,budget_))return fail("Invalid composition frequency presence");
         if(!preview(object,track.samples))return false;
         candidate_.profile.compositions.push_back(std::move(track));return true;
@@ -297,7 +304,9 @@ QJsonObject encode_metadata(const ProfileCompatibility& c,QJsonObject object){
 QJsonObject encode_training(const ProfileTraining& t,QJsonObject object){
     object["silence_rms"]=t.silence_rms;object["min_gain"]=t.min_gain;object["max_gain"]=t.max_gain;object["smoothing_radius"]=double(t.smoothing_radius);
     object["interval_numerator"]=double(t.interval_numerator);object["interval_denominator"]=double(t.interval_denominator);
-    object["hop"]=double(t.hop);object["weighting"]="equal_active_composition";return object;
+    object["hop"]=double(t.hop);object["weighting"]="equal_active_composition";
+    object["gain_mode"]=t.gain_mode==ProfileGainMode::PeakNormalization?"peak_normalization":"mean_equalization";
+    return object;
 }
 QJsonObject encode_preview(const SpectrogramPreview& preview,QJsonObject object){
     object["rows"]=double(preview.rows);object["bands"]=double(preview.bands);object["duration_seconds"]=preview.duration_seconds;object["frequency_reduction"]="mean_contiguous_fft_bins";
@@ -306,6 +315,7 @@ QJsonObject encode_preview(const SpectrogramPreview& preview,QJsonObject object)
 QJsonObject encode_composition(const CompositionStatistics& track,const SpectrogramPreview* preview,QJsonObject object){
     object["source"]=QString::fromStdString(track.source);object["frames"]=double(track.frames);object["active_frames"]=double(track.active_frames);object["samples"]=double(track.samples);object["rms"]=track.rms;
     if(!track.mean_spectrum.empty())object["mean_spectrum"]=array(track.mean_spectrum,object.value("mean_spectrum"));else object.remove("mean_spectrum");
+    if(!track.peak_spectrum.empty())object["peak_spectrum"]=array(track.peak_spectrum,object.value("peak_spectrum"));else object.remove("peak_spectrum");
     if(!track.frequency_presence.empty())object["frequency_presence"]=array(track.frequency_presence,object.value("frequency_presence"));else object.remove("frequency_presence");
     if(preview && preview->rows)object["preview"]=encode_preview(*preview,object.value("preview").toObject());else object.remove("preview");
     return object;
@@ -336,6 +346,7 @@ QByteArray encode_profile(const ProfileDocument& document){
     object["metadata"]=encode_metadata(profile.compatibility,object.value("metadata").toObject());
     object["training"]=encode_training(profile.training,object.value("training").toObject());
     object["gains"]=array(profile.gains,object.value("gains"));object["mean_spectrum"]=array(profile.mean_spectrum,object.value("mean_spectrum"));
+    if(!profile.peak_spectrum.empty())object["peak_spectrum"]=array(profile.peak_spectrum,object.value("peak_spectrum"));else object.remove("peak_spectrum");
     object["compositions"]=encode_compositions(document,object.value("compositions").toArray());
     if(!profile.frequency_presence.empty())object["frequency_presence"]=array(profile.frequency_presence,object.value("frequency_presence"));else object.remove("frequency_presence");
     return QJsonDocument(object).toJson(QJsonDocument::Compact);

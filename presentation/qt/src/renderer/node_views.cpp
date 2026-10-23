@@ -191,10 +191,14 @@ void MainWindow::on_node_renderer_changed(GraphPanel *panel,const QString& key) 
 
 void MainWindow::update_node_view_preferences(const QString& key,const QJsonObject& updates) {
     auto preferences = _application.state().file_configs.ui.graph_views[key].toObject();
+    const auto before=preferences;
     for (auto it = updates.begin(); it != updates.end(); ++it)
         preferences[it.key()] = it.value();
+    if(preferences==before)return;
     _application.state().file_configs.ui.graph_views[key] = preferences;
-    if (updates.size() != 1 || !updates.contains("camera")) _numeric_render_dirty = true;
+    // Camera navigation is retained in memory and persisted with Save/close.
+    if(updates.size()==1 && updates.contains("camera"))return;
+    _numeric_render_dirty = true;
     _workspace_save_timer.start();
 }
 
@@ -852,29 +856,16 @@ void MainWindow::request_numeric_render(const pipeline::EndpointIdentity& endpoi
 }
 void MainWindow::consume_numeric_history(const pipeline::DeliveredNumericHistoryRow& row) {
     core::perf::Scope profile(core::perf::Stage::NumericHistoryReceive);
-    // A compact transport event invalidates the displayed snapshot. History
-    // belongs to its processing node; the graph never appends rows itself.
-    if(_numeric_snapshot_dirty)return;
-    _numeric_snapshot_dirty=true;
-    // The transport already paces notifications. Request the owning snapshot
-    // after this delivery burst instead of waiting an entire GUI polling tick.
-    QMetaObject::invokeMethod(this,[this]{
-        if(!_numeric_snapshot_dirty)return;
-        _numeric_snapshot_dirty=false;
-        _application.client().request_numeric_snapshots();
-    },Qt::QueuedConnection);
+    // The host coalesces owning queries off GUI. A changed History must not
+    // refresh every scalar metric or a different graph's history as well.
+    if(row.compact.context)_application.client().request_numeric_snapshot(row.compact.context->endpoint);
 }
 void MainWindow::consume_numeric_history_snapshot(const pipeline::DeliveredNumericFrame& frame,quint64 ordinal,quint64 filled_count) {
     core::perf::Scope profile(core::perf::Stage::NumericSnapshotReceive);
-    bool vector_history=false;
-    if(frame.context && frame.context->contract) {
-        const auto contract=frame.context->contract.view();
-        const auto* numeric=std::get_if<signal_contracts::NumericContract>(&contract);
-        vector_history=numeric && numeric->semantic==signal_contracts::Semantic::History &&
-            numeric->shape.rank==signal_contracts::Rank::Vector;
-    }
-    if(vector_history)_numeric_views.accept(frame);
-    else _numeric_views.accept_history_snapshot(frame,ordinal,filled_count);
+    // Both Spectrogram (matrix) and NumberAccumulator (vector) publish
+    // graph-owned History snapshots. Preserve the filled_count for either:
+    // plotting the full allocated vector would include unfilled time slots.
+    _numeric_views.accept_history_snapshot(frame,ordinal,filled_count);
     // A completed snapshot is ready for projection now. The renderer owns its
     // cadence; a second GUI timer wait only adds latency to this response.
     if(frame.context)request_numeric_render(frame.context->endpoint);
@@ -892,10 +883,6 @@ void MainWindow::render_numeric_views(bool consumeQueuedFrames,bool changedOnly)
 void MainWindow::prepare_numeric_render() {
     for (const auto& queue : _vector_delivery_queues)
         if (queue.count) _numeric_render_dirty = true;
-    if (_numeric_snapshot_dirty) {
-        _numeric_snapshot_dirty = false;
-        _application.client().request_numeric_snapshots();
-    }
 }
 void MainWindow::consume_queued_vector_frames(std::vector<pipeline::EndpointIdentity>& changed) {
     for (auto& queue : _vector_delivery_queues) {
@@ -974,8 +961,9 @@ void MainWindow::apply_render_rate() {
     for (const auto docks = graph_docks(); auto *dock : docks)
         if (dock->isVisible())
             _render_fps = std::max(_render_fps,SurfaceSettings::renderFps(prefs,refresh_rate(dock->screen())));
-    // Preview delivery has jitter headroom; processing clock is independent.
-    _application.set_numeric_preview_cadence_hz(std::min(240,_render_fps * 2));
+    // Match the requested display cadence within the desktop preview budget.
+    // Producer clocks and History retention remain independent of rendering.
+    _application.set_numeric_preview_cadence_hz(std::clamp(_render_fps,1,240));
     _numeric_render_timer.setInterval(qMax(1,1000 / qMax(1,_render_fps)));
     update_render_precision(prefs,refresh_rates);
 }

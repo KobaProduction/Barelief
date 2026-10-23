@@ -70,7 +70,7 @@ class TrackAnalysis {
         weights_.resize(n);window_.resize(n);windowed_.resize(n);raw_.resize(2*bins);spectrum_.resize(bins);
         dsp_kernels::window(weights_,c.window);
         if(!fft_.prepare(n) || !projection_.prepare(n,c.sample_rate,profile_window_scaling(c),c.projection))return fail("Spectrum preparation failed");
-        statistics_.mean_spectrum.assign(bins,0);statistics_.frequency_presence.assign(bins,0);
+        statistics_.mean_spectrum.assign(bins,0);statistics_.peak_spectrum.assign(bins,0);statistics_.frequency_presence.assign(bins,0);
         decoded_.resize(chunk);converted_.resize(PreparedResampler::maximum_output(chunk,decoder_.sample_rate(),std::uint32_t(c.sample_rate)));
         const bool amplitude=c.projection.representation==SpectrumProjection::Magnitude || c.projection.representation==SpectrumProjection::PeakAmplitude;
         presence_floor_=c.reference*std::pow(10.,c.floor_db/(amplitude?20.:10.));
@@ -118,6 +118,7 @@ class TrackAnalysis {
         ++statistics_.active_frames;
         for(std::size_t bin=0;bin<spectrum_.size();++bin){
             statistics_.mean_spectrum[bin]+=spectrum_[bin];
+            statistics_.peak_spectrum[bin]=std::max(statistics_.peak_spectrum[bin],double(spectrum_[bin]));
             statistics_.frequency_presence[bin]+=spectrum_[bin]>presence_floor_?1.:0.;
         }
     }

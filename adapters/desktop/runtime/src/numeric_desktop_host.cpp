@@ -5,8 +5,10 @@
 #include <control/numeric_control_server.h>
 #include <pipeline/numeric_engine.h>
 #include <aggregator/aggregator_client.h>
+#include <core/performance.h>
 #include <QThread>
 #include <QPointer>
+#include <QElapsedTimer>
 #include <QUuid>
 #include <mutex>
 #include <algorithm>
@@ -18,7 +20,7 @@ struct NumericDesktopHost::Impl {
  std::unique_ptr<EnginePort> endpoint;NumericEngine* local=nullptr;
  NumericRoutingAdapter* routing=nullptr;std::unique_ptr<AggregatorClient> registry;
  std::unique_ptr<NumericControlServer> server;
- mutable std::mutex mutex;EngineSnapshot cache;bool pending=false,retired=false;
+ mutable std::mutex mutex;EngineSnapshot cache;bool pending=false,retired=false,snapshot_dirty=true;
  std::size_t outstanding=0;std::array<quint64,128> submitted{};std::uint64_t data_generation=0;
  std::atomic<PortDeliveryMode> delivery_mode{PortDeliveryMode::Unsupported};
  NumericDeliveryMailbox<EngineReply,128> replies;
@@ -35,7 +37,8 @@ struct NumericDesktopHost::Impl {
  std::vector<EndpointIdentity> selected;
  struct ResumeBaseline {EndpointIdentity endpoint;std::uint64_t ordinal,producer_epoch,generation;};
  std::vector<ResumeBaseline> resumed_ordinals;
- bool history_resync=false,resync_inflight=false;quint64 resync_request=0;
+ bool history_resync=false,resync_inflight=false,resync_all=false;quint64 resync_request=0;
+ std::vector<EndpointIdentity> resync_endpoints;
  struct LocalSnapshotQuery {std::vector<EndpointIdentity> endpoints;std::uint64_t generation;std::size_t next=0;};
  std::shared_ptr<LocalSnapshotQuery> local_query;bool local_query_ready=false;
  std::uint64_t resumed_generation=0;
@@ -50,8 +53,9 @@ struct NumericDesktopHost::Impl {
   if(value.epoch!=cache.epoch||value.graph_revision!=cache.graph_revision||
       (value.statuses.value("analyzer").state==State::Stopped&&cache.statuses.value("analyzer").state!=State::Stopped)){
    ++data_generation;frames.clear();histories.clear();history_snapshots.clear();history_resync=false;
+   resync_all=false;resync_endpoints.clear();
    std::fill(preview_service_age.begin(),preview_service_age.end(),0);preview_service_serial=0;
-  }cache=std::move(value);
+  }cache=std::move(value);snapshot_dirty=true;
  }
  void publish(EngineSnapshot value){delivery_mode=endpoint->port_delivery_mode();std::lock_guard lock(mutex);update_cache_locked(std::move(value));schedule_locked();}
  void publish(EngineReply value){auto live=endpoint->snapshot();std::lock_guard lock(mutex);update_cache_locked(std::move(live));
@@ -94,7 +98,7 @@ struct NumericDesktopHost::Impl {
   coalesce_preview(value.context->endpoint);
   if(!reserve_preview_slot(incoming))return;
   frames.push(std::move(value));schedule_locked();}
- void publish(DeliveredNumericHistoryRow value){std::lock_guard lock(mutex);if(histories.size()==8){histories.pop();history_resync=true;}histories.push(std::move(value));schedule_locked();}
+ void publish(DeliveredNumericHistoryRow value){std::lock_guard lock(mutex);if(histories.size()==8){histories.pop();history_resync=true;resync_all=true;resync_endpoints.clear();}histories.push(std::move(value));schedule_locked();}
  void publish_history_snapshot(DeliveredNumericFrame value,std::uint64_t ordinal,std::uint64_t filled_count){std::lock_guard lock(mutex);if(history_snapshots.size()==8)history_snapshots.pop();history_snapshots.push({std::move(value),ordinal,filled_count});schedule_locked();}
  // One worker job and one coalesced pending resync, irrespective of GUI rate.
  // Only owning frames cross back; borrowed processing views stay in query_numeric.
@@ -178,8 +182,12 @@ struct NumericDesktopHost::Impl {
  }
  void begin_history_resync(std::uint64_t& generation,bool& resume,std::vector<EndpointIdentity>& endpoints) {
   std::lock_guard lock(mutex);generation=data_generation;
-  if(history_resync&&!resync_inflight){resume=true;history_resync=false;histories.clear();resync_inflight=true;
-   if(local)endpoints=selected;}
+  if(history_resync&&!resync_inflight){resume=true;history_resync=false;resync_inflight=true;
+   // A full recovery covers discarded notices. Selective recovery must keep
+   // notices for other endpoints, including their final isolated update.
+   if(resync_all)histories.clear();
+   if(local)endpoints=resync_all?selected:std::move(resync_endpoints);
+   resync_all=false;resync_endpoints.clear();}
  }
  void request_history_resync(bool resume,std::vector<EndpointIdentity> endpoints,std::uint64_t generation) {
   if(resume&&local)query_local_snapshots(std::make_shared<LocalSnapshotQuery>(LocalSnapshotQuery{std::move(endpoints),generation}));
@@ -232,14 +240,14 @@ struct NumericDesktopHost::Impl {
     else continuation=local_query;}}
   if(continuation)query_local_snapshots(std::move(continuation));
  }
- bool drain_history_deliveries(const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard,std::uint64_t resumeGeneration) {
-  for(std::size_t i=0;i<8;++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}
+ bool drain_history_deliveries(const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard,std::uint64_t resumeGeneration,const QElapsedTimer& budget) {
+  for(std::size_t i=0;i<8&&!budget.hasExpired(2);++i){std::optional<HistorySnapshot> full;{std::lock_guard lock(mutex);full=history_snapshots.pop();}
    if(!full)break;restore_history_snapshot(std::move(*full),resumeGeneration,handlers);if(!guard)return false;}
   return true;
  }
- bool drain_owning_deliveries(const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard,std::uint64_t resumeGeneration) {
-  if(!drain_history_deliveries(handlers,guard,resumeGeneration))return false;
-  for(std::size_t i=0;i<128;++i){auto batch=pop_delivery_batch();
+ bool drain_owning_deliveries(const DrainHandlers& handlers,QPointer<NumericDesktopHost> guard,std::uint64_t resumeGeneration,const QElapsedTimer& budget) {
+  if(!drain_history_deliveries(handlers,guard,resumeGeneration,budget))return false;
+  for(std::size_t i=0;i<128&&!budget.hasExpired(2);++i){auto batch=pop_delivery_batch();
    if(!batch.reply&&!batch.frame&&!batch.history)break;
    if(!deliver_batch(std::move(batch),handlers,guard))return false;}
   return true;
@@ -251,14 +259,32 @@ struct NumericDesktopHost::Impl {
   request_history_resync(resume,std::move(endpoints),resumeGeneration);
   return resumeGeneration;
  }
+ std::optional<EngineSnapshot> take_pending_snapshot() {
+  std::lock_guard lock(mutex);pending=false;
+  if(!snapshot_dirty)return std::nullopt;
+  snapshot_dirty=false;return cache;
+ }
+ void finish_drain() {
+  bool snapshots_empty;
+  {std::lock_guard lock(mutex);snapshots_empty=history_snapshots.size()==0;
+   if(replies.size()||frames.size()||histories.size()||!snapshots_empty||snapshot_dirty)schedule_locked();}
+  if(snapshots_empty){
+   continue_local_query();
+   // Releasing the owning batch may unblock a coalesced local request.
+   // Start it in this drain instead of waiting for another GUI event turn.
+   if(local)prepare_history_resync();
+  }
+ }
  void drain(){QPointer<NumericDesktopHost> guard(&owner);const auto handlers=capture_handlers();
-  EngineSnapshot state;{std::lock_guard lock(mutex);pending=false;state=cache;}
-  if(handlers.snapshot&&handlers.snapshot_version==snapshot_generation)handlers.snapshot(state);if(!guard)return;
+  core::perf::Scope profile(core::perf::Stage::GuiDeliveryDrain);
+  const auto state=take_pending_snapshot();
+  if(state&&handlers.snapshot&&handlers.snapshot_version==snapshot_generation)handlers.snapshot(*state);if(!guard)return;
+  QElapsedTimer budget;budget.start();
   const auto resumeGeneration=prepare_history_resync();
-  if(!drain_owning_deliveries(handlers,guard,resumeGeneration))return;
+  if(!drain_owning_deliveries(handlers,guard,resumeGeneration,budget))return;
   // A worker batch cannot overwrite other selected endpoints while the GUI is
   // paused. Advance only after this bounded owning batch has been consumed.
-  continue_local_query();
+  finish_drain();
  }
  void initialize_remote(QString host,quint16 port,const std::optional<desktop::SerialEndpoint>& serial) {
   if(serial)endpoint=std::make_unique<NumericRemoteEndpoint>(*serial);
@@ -291,6 +317,7 @@ struct NumericDesktopHost::Impl {
   std::lock_guard lock(mutex);
   selected=std::move(endpoints);preview_service_age.assign(selected.size(),0);preview_service_serial=0;
   ++data_generation;frames.clear();histories.clear();history_snapshots.clear();history_resync=!selected.empty();
+  resync_all=history_resync;resync_endpoints.clear();
   schedule_locked();return true;
  }
  ~Impl(){ {std::lock_guard lock(mutex);retired=true;}call([this]{server.reset();endpoint.reset();registry.reset();routing=nullptr;local=nullptr;});thread.quit();thread.wait();}
@@ -316,12 +343,24 @@ quint64 NumericDesktopHost::submit(EngineCommand command){
   {std::lock_guard lock(impl_->mutex);if(id)*std::find(impl_->submitted.begin(),impl_->submitted.end(),quint64{0})=id;else --impl_->outstanding;}
   impl_->publish(impl_->endpoint->snapshot());});return id;
 }
-void NumericDesktopHost::set_snapshot_handler(std::function<void(EngineSnapshot)> f){++impl_->snapshot_generation;impl_->snapshot_handler=std::move(f);}
+void NumericDesktopHost::set_snapshot_handler(std::function<void(EngineSnapshot)> f){
+ ++impl_->snapshot_generation;impl_->snapshot_handler=std::move(f);
+ std::lock_guard lock(impl_->mutex);impl_->snapshot_dirty=true;impl_->schedule_locked();
+}
 void NumericDesktopHost::set_reply_handler(std::function<void(EngineReply)> f){++impl_->reply_generation;impl_->reply_handler=std::move(f);}
 void NumericDesktopHost::set_numeric_frame_handler(std::function<void(DeliveredNumericFrame)> f){++impl_->frame_generation;impl_->frame_handler=std::move(f);}
 void NumericDesktopHost::set_numeric_history_handler(std::function<void(DeliveredNumericHistoryRow)> f){++impl_->history_generation;impl_->history_handler=std::move(f);}
 void NumericDesktopHost::set_numeric_history_snapshot_handler(std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)> f){++impl_->history_snapshot_generation;impl_->history_snapshot_handler=std::move(f);}
-void NumericDesktopHost::request_numeric_snapshots(){std::lock_guard lock(impl_->mutex);impl_->history_resync=true;impl_->schedule_locked();}
+void NumericDesktopHost::request_numeric_snapshots(){std::lock_guard lock(impl_->mutex);impl_->history_resync=true;impl_->resync_all=true;impl_->resync_endpoints.clear();impl_->schedule_locked();}
+void NumericDesktopHost::request_numeric_snapshot(const EndpointIdentity& endpoint){
+ std::lock_guard lock(impl_->mutex);
+ if(std::find(impl_->selected.begin(),impl_->selected.end(),endpoint)==impl_->selected.end())return;
+ impl_->history_resync=true;
+ if(!impl_->local){impl_->resync_all=true;impl_->resync_endpoints.clear();}
+ else if(!impl_->resync_all && std::find(impl_->resync_endpoints.begin(),impl_->resync_endpoints.end(),endpoint)==impl_->resync_endpoints.end())
+  impl_->resync_endpoints.push_back(endpoint);
+ impl_->schedule_locked();
+}
 void NumericDesktopHost::set_numeric_preview_cadence_hz(int hz){impl_->call([this,hz]{impl_->endpoint->set_numeric_preview_cadence_hz(hz);});}
 EngineSnapshot NumericDesktopHost::snapshot()const{std::lock_guard lock(impl_->mutex);return impl_->cache;}
 bool NumericDesktopHost::configure_network(QJsonObject config,QString* error){bool ok=false;QString e;impl_->call([&]{ok=impl_->endpoint->configure_network(std::move(config),&e);});if(error)*error=e;return ok;}

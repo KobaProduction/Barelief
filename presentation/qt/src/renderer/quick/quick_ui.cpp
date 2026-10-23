@@ -74,6 +74,9 @@ bool UiBridge::eventFilter(QObject* watched,QEvent* event){
 QString UiBridge::text(const QString& source) const {return ui::text(source.toUtf8().constData());}
 void configure(){
     static const bool configured=[](){
+        // Qt's platform update idle delay would pace an already paced frame
+        // again. Keep event coalescing, but let our deadlines control cadence.
+        if(!qEnvironmentVariableIsSet("QT_QPA_UPDATE_IDLE_TIME"))qputenv("QT_QPA_UPDATE_IDLE_TIME","0");
         initialize_barelief_resources();
         qmlRegisterType<VectorPlotItem>("Numeric.Graphs",1,0,"VectorPlot");
         qmlRegisterType<VectorGeometryItem>("Numeric.Graphs",1,0,"VectorGeometry");

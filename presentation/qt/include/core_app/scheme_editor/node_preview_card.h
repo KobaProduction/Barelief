@@ -72,7 +72,7 @@ private:
         text.labels.append(ui::text(preview.count_source.toUtf8().constData()));
         text.counts.append(available?QString::number(preview.count):QStringLiteral("—"));
         text.values.append(available && !preview.exact_value.isEmpty()?preview.exact_value:QStringLiteral("—"));
-        text.details.append(port+" · "+preview.description+(preview.sequence_seen?"\n"+ui::text("Frame %1; timestamp %2 ticks").arg(preview.sequence).arg(preview.timestamp_ticks):QString{}));
+        if(!compact_)text.details.append(port+" · "+preview.description+(preview.sequence_seen?"\n"+ui::text("Frame %1; timestamp %2 ticks").arg(preview.sequence).arg(preview.timestamp_ticks):QString{}));
     }
     void display_text(const PreviewText& text) {
         status_->setText(text.statuses.isEmpty()?(enabled_?QString{}:ui::text("Bypass")+" · ")+ui::text("Waiting for data"):text.statuses.join('\n'));
@@ -89,7 +89,8 @@ private:
         PreviewText text;
         for(const auto& preview:values_)append_preview(preview,text);
         display_text(text);refresh_visibility();
-        updateGeometry();
+        // QLabel/layout notifications already invalidate geometry when visible
+        // text changes. An unconditional invalidation relayouts the node on every frame.
         setAccessibleName(ui::text("Data status"));setAccessibleDescription(status_->text()+", "+count_label_->text()+": "+count_->text()+", "+value_label_->text()+": "+value_->text());update();
     }
 };

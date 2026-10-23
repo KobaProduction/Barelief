@@ -3,6 +3,7 @@
 #include <algorithm>
 namespace numeric_editor {
 bool music_operation(std::string_view kind) {
+    if(kind=="RhythmAnalyzer" || kind=="RhythmFeatures")return true;
     return kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="ArrayConcat" || kind=="MusicalSpectrogram" || kind=="ArrayFill" || kind=="ArrayMultiply" || kind=="AmplitudePhase" || kind=="ComplexPolar" || kind=="Fourier" || kind=="RealFourier" || kind=="RFFT" || kind=="SpectrumProjection" || kind=="FrequencyNormalizer" ||
         kind=="BroadbandFeatures" || kind=="NoteSalience" || kind=="SpectralQuantize";
 }

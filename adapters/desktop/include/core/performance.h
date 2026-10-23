@@ -1,4 +1,5 @@
 #pragma once
+#include <core/telemetry.h>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -20,7 +21,8 @@ enum class Stage { CaptureDecode, CaptureDispatch, Feed, FeedLock, WindowSnapsho
     NumericClockTick, NumericPreviewTick, NumericPreviewProduce,
     Quick2dSync, Quick2dRender, Quick2dFrame, Quick2dPublish,
     Quick2dCompose, Quick2dPaint, QtBackingStoreSync, PresenterSnapshot, CaptureStatus, QuickSurfaceOverlayPaint, Quick2dGeometry, NumericPreviewWake, NumericPreviewTimerWait,
-    CaptureCallback, NumericCaptureLock, NumericCaptureWork, NumericInputProcess, NumericSelectedOutput, Count };
+    CaptureCallback, NumericCaptureLock, NumericCaptureWork, NumericInputProcess, NumericSelectedOutput,
+    GuiDeliveryDrain, EditorNavigation, ProjectSaveCapture, ProjectSaveWrite, Count };
 inline constexpr std::array<const char *,static_cast<size_t>(Stage::Count)> names{
     "capture.decode","capture.dispatch","audio.feed","audio.feed_lock","dsp.window_snapshot",
     "dsp.stereo_fft","dsp.stereo_mel","pipeline.graph","history.push","gui.publish_spectrum",
@@ -34,7 +36,8 @@ inline constexpr std::array<const char *,static_cast<size_t>(Stage::Count)> name
     "numeric.clock_tick", "numeric.preview_tick", "numeric.preview_produce",
     "quick2d.sync", "quick2d.render", "quick2d.frame", "quick2d.publish_to_sync",
     "quick2d.widget_paint", "quick2d.vector_paint", "qt.window_update", "gui.presenter_snapshot", "gui.capture_status", "quick.surface_overlay_paint", "quick2d.geometry", "numeric.preview_wake", "numeric.preview_timer_wait",
-    "capture.callback", "numeric.capture_lock", "numeric.capture_work", "numeric.input_process", "numeric.selected_output"};
+    "capture.callback", "numeric.capture_lock", "numeric.capture_work", "numeric.input_process", "numeric.selected_output",
+    "gui.delivery_drain", "editor.navigation", "project.save_capture", "project.save_write"};
 inline constexpr size_t histogram_bins=512, event_capacity=65536;
 inline constexpr uint64_t bin_ns=250000;
 struct Counter {
@@ -59,7 +62,16 @@ inline uint64_t percentile_upper_ns(const Counter &counter, unsigned percentile)
 struct Event { Stage stage{}; uint64_t start=0,duration=0; uint32_t thread=0; std::atomic<bool> ready{false}; };
 inline std::array<Counter,static_cast<size_t>(Stage::Count)> counters{};
 inline std::array<Event,event_capacity> events{};
+#if BARELIEF_DEV_TELEMETRY
 inline std::atomic<bool> enabled{false};
+#else
+struct DisabledFlag {
+    constexpr bool load(std::memory_order = std::memory_order_relaxed) const noexcept{return false;}
+    constexpr operator bool() const noexcept{return false;}
+    void operator=(bool) noexcept{}
+};
+inline DisabledFlag enabled;
+#endif
 inline std::atomic<uint64_t> event_count{0};
 // GUI-thread-only producer; exported on that same thread after measurement.
 struct SlowGuiEvent { uint64_t duration; int type; std::array<char, 64> receiver; };
@@ -81,15 +93,32 @@ inline void record_event(Stage stage,uint64_t start,uint64_t duration) noexcept 
     event.thread=thread;event.ready.store(true,std::memory_order_release);
 }
 inline void record(Stage stage,uint64_t start,uint64_t duration) noexcept {
-    if (!enabled.load(std::memory_order_relaxed)) return;
+#if BARELIEF_DEV_TELEMETRY
+    telemetry::metric(names[static_cast<size_t>(stage)],double(duration)/1e6);
+    const bool bounded=enabled.load(std::memory_order_relaxed);
+    if (!bounded && !telemetry::enabled()) return;
     record_counter(stage,duration);
-    record_event(stage,start,duration);
+    if(bounded)record_event(stage,start,duration);
+#else
+    (void)stage;(void)start;(void)duration;
+#endif
 }
 inline void duration(Stage stage,uint64_t value) noexcept { record(stage,now()-value,value); }
+#if BARELIEF_DEV_TELEMETRY
+inline const auto stage_sources=[] {
+    std::array<___tracy_source_location_data,static_cast<size_t>(Stage::Count)> result{};
+    for(size_t i=0;i<result.size();++i)result[i]={names[i],names[i],__FILE__,0,0};
+    return result;
+}();
 class Scope {
+    telemetry::Zone zone_;
     Stage _stage; uint64_t _start;
 public:
-    explicit Scope(Stage stage) noexcept : _stage(stage),_start(enabled.load(std::memory_order_relaxed) ? now() : 0) {}
+    explicit Scope(Stage stage) noexcept : zone_(stage_sources[static_cast<size_t>(stage)]),
+        _stage(stage),_start((enabled.load(std::memory_order_relaxed) || telemetry::enabled()) ? now() : 0) {}
     ~Scope() { if(_start) record(_stage,_start,now()-_start); }
 };
+#else
+struct Scope { explicit Scope(Stage) noexcept{} };
+#endif
 }

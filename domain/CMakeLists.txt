@@ -9,6 +9,7 @@ add_library(domain_numeric STATIC src/numeric/array_generator_contract.cpp
 add_library(domain_signal STATIC src/signal/fourier_contracts.cpp
     src/signal/parameter_contracts.cpp)
 add_library(domain_music STATIC src/music/spectral_features_contract.cpp
+    src/music/rhythm_contract.cpp
     src/music/frequency_normalizer_contract.cpp
     src/music/musical_spectrogram_contract.cpp)
 add_library(graph_domain STATIC src/graph_validation.cpp src/graph/processing_contracts.cpp

@@ -12,8 +12,10 @@
 #include <QDir>
 #include <core/performance.h>
 #include <core_app/gui_event_profile.h>
+#include "core_application_state.h"
 #include <barelief/ui_text.h>
 #include <array>
+#include <optional>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -21,6 +23,7 @@
 #include <qt_windows.h>
 #endif
 
+#if BARELIEF_DEV_TELEMETRY
 namespace {
 uint64_t gui_thread_cycles() noexcept {
 #ifdef Q_OS_WIN
@@ -32,8 +35,26 @@ uint64_t gui_thread_cycles() noexcept {
 }
 }
 
+#endif
 Q_LOGGING_CATEGORY(core_app_main, "core_app.main")
+#if BARELIEF_DEV_TELEMETRY
 namespace {
+struct GuiTelemetryScope {
+    static inline const ___tracy_source_location_data source{"Qt event","CoreApplication::notify",__FILE__,__LINE__,0};
+    core::telemetry::Zone zone{source};
+    std::optional<core::perf::Scope> event_time,backing_store;
+    GuiTelemetryScope(QObject* receiver,QEvent* event) {
+        const bool bounded=core::perf::enabled.load(std::memory_order_relaxed);
+        if(core::telemetry::enabled() && receiver) {
+            const auto* name=receiver->metaObject()->className();zone.text(name,std::strlen(name));
+        }
+        if(!bounded)event_time.emplace(core::perf::Stage::GuiEvent);
+        if(!core::telemetry::enabled() || !receiver)return;
+        const auto* name=receiver->metaObject()->className();
+        if(!bounded && event->type()==QEvent::UpdateRequest && std::strcmp(name,"MainWindow")==0)
+            backing_store.emplace(core::perf::Stage::QtBackingStoreSync);
+    }
+};
 struct GuiEventScope {
     decltype(core::perf::now()) start;
     std::array<char,64> name{};
@@ -61,10 +82,16 @@ struct GuiEventScope {
     }
 };
 }
+#endif
 bool CoreApplication::notify(QObject* receiver,QEvent* event) {
+#if BARELIEF_DEV_TELEMETRY
+    GuiTelemetryScope telemetry(receiver,event);
     if(!core::perf::enabled.load(std::memory_order_relaxed) || QThread::currentThread()!=thread())return QApplication::notify(receiver,event);
     GuiEventScope measurement(receiver,event);
     const auto result=QApplication::notify(receiver,event);measurement.record();return result;
+#else
+    return QApplication::notify(receiver,event);
+#endif
 }
 CoreApplication::CoreApplication(int &argc, char *argv[]) : CoreApplication(argc, argv, {}) {}
 
@@ -107,6 +134,8 @@ CoreApplication::~CoreApplication() {
     // every widget is alive. Destructor flush callbacks must not recurse into
     // a partially destroyed window afterward.
     if(_main_window)_main_window->close();
+    _flush_autosave();
+    if(_save_thread){_save_thread->quit();_save_thread->wait();}
     if(_presenter)disconnect(_presenter.get(),&GuiPresenter::on_config_updated,this,nullptr);
     auto *window=_main_window;
     _main_window = nullptr;

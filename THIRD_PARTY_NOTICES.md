@@ -28,3 +28,7 @@ The licenses directory is installed beside this notice. Barelief's About dialog
 includes the application license and this dependency index without network access.
 
 Release packages require review of their actual dependency manifest before publication.
+
+Developer-only tooling: Tracy Profiler 0.14.1 — BSD-3-Clause, Bartosz Taudul
+and contributors (https://github.com/wolfpld/tracy). Downloaded only for the
+telemetry-enabled desktop configuration; excluded from release installers.

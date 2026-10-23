@@ -76,6 +76,7 @@ std::optional<ProcessingOperation> numerical_operation(NodeKind k) noexcept {
     return {};
 }
 std::optional<ProcessingOperation> signal_operation(NodeKind k) noexcept {
+    if(k==NodeKind::RhythmAnalyzer || k==NodeKind::RhythmFeatures)return ProcessingOperation::MusicTransform;
     if(k==NodeKind::SpectrumPeak)return ProcessingOperation::SpectrumPeak;
     if(k==NodeKind::SampleClock)return ProcessingOperation::Clock;
     if(k==NodeKind::Mixer)return ProcessingOperation::Mixer;
@@ -426,13 +427,14 @@ void fixed_arity(NodeResolution& state) {
     if(op==ProcessingOperation::ChannelComparison || op==ProcessingOperation::ArrayConcat)state.input_count=2;
     paired_arity(state);
     if(state.kind==NodeKind::MusicalSpectrogram || state.kind==NodeKind::NoteSpectrum)state.output_count=4;
+    if(state.kind==NodeKind::RhythmAnalyzer)state.output_count=rhythm_output_count;
     if(op==ProcessingOperation::History)state.output_count=2;
 }
 ProcessingDiagnostic selector_arity(NodeResolution& state) {
     const bool scalar=state.kind && is_scalar_view(*state.kind);
     if(state.operation!=ProcessingOperation::InputSelector && !scalar)return {};
     state.input_count=state.inputs.size();
-    if(!state.input_count || state.input_count>(scalar?8:65536))return state.error(ProcessingError::InvalidPort);
+    if(!state.input_count || state.input_count>(scalar?max_variadic_inputs:65536))return state.error(ProcessingError::InvalidPort);
     if(state.operation==ProcessingOperation::InputSelector)state.output_count=state.outputs.size();
     return {};
 }

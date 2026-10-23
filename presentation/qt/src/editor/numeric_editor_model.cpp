@@ -27,7 +27,13 @@ std::optional<signal_contracts::ClockContract> synchronization_clock(const domai
 }
 
 NumericEditorGraphModel::NumericEditorGraphModel(std::shared_ptr<QtNodes::NodeDelegateModelRegistry> registry):DataFlowGraphModel(std::move(registry)) {
-
+    const auto invalidate=[this]{_connection_visual_states.clear();};
+    connect(this,&NumericEditorGraphModel::nodeUpdated,this,invalidate);
+    connect(this,&NumericEditorGraphModel::nodeCreated,this,invalidate);
+    connect(this,&NumericEditorGraphModel::nodeDeleted,this,invalidate);
+    connect(this,&NumericEditorGraphModel::connectionCreated,this,invalidate);
+    connect(this,&NumericEditorGraphModel::connectionDeleted,this,invalidate);
+    connect(this,&NumericEditorGraphModel::connection_diagnostics_changed,this,invalidate);
 }
 bool NumericEditorGraphModel::has_numeric_nodes() const {return true;}
 void NumericEditorGraphModel::set_admission_limits(std::optional<domain::ProcessingAdmissionLimits> limits) {
@@ -188,7 +194,7 @@ QString NumericEditorGraphModel::connection_status(QtNodes::ConnectionId edge) c
 bool NumericEditorGraphModel::edit_connection_policy(QtNodes::ConnectionId edge,std::uint8_t value) {
     if(value>3 || configuration_binding(edge) || !connectionExists(edge) || connection_policy(edge)==value)return false;
     const auto before=connection_policy(edge);
-    auto apply=[this,edge](std::uint8_t v){_edge_policies[edge_key(edge)]=v;emit nodeUpdated(edge.inNodeId);};
+    auto apply=[this,edge](std::uint8_t v){_edge_policies[edge_key(edge)]=v;emit persistence_topology_changed();emit nodeUpdated(edge.inNodeId);};
     class Edit final:public QUndoCommand{std::function<void(bool)> action;public:Edit(std::function<void(bool)> a):action(std::move(a)){setText(ui::text("Connection conversion"));}void redo()override{action(true);}void undo()override{action(false);}};
     if(_undo)_undo->push(new Edit([apply,before,value](bool forward){apply(forward?value:before);}));else apply(value);
     return true;
@@ -201,13 +207,24 @@ QString NumericEditorGraphModel::connection_failure(QtNodes::ConnectionId edge) 
     return connection_visual_state(edge)==3?ui::text("Incompatible connection: check dtype, shape, layout, clock and coordinates"):QString{};
 }
 int NumericEditorGraphModel::connection_visual_state(QtNodes::ConnectionId edge) const {
+    const auto key=edge_key(edge);
+    const auto cached=_connection_visual_states.find(key);
+    if(cached!=_connection_visual_states.end())return cached->second;
+    const auto state=compute_connection_visual_state(edge);
+    // Incomplete/transient queries must not grow a cache beyond the live graph.
+    if(connectionExists(edge))_connection_visual_states.emplace(key,state);
+    return state;
+}
+int NumericEditorGraphModel::compute_connection_visual_state(QtNodes::ConnectionId edge) const {
     if(const auto binding=configuration_binding(edge))return binding->output==binding->input?0:3;
     const auto [source,target]=connection_models(edge);
     const auto [output,input]=data_connection_ports(edge);
     if(!source || !target || !output || !input)return 3;
+    // Runtime failures belong to the port/node diagnostics, not to the
+    // physical connection contract: an exact data link must stay visible.
+    if(domain::processing_ports_compatible(*output,*input))return 0;
     if(!source->diagnostic_failure(domain::PortDirection::Output,output->id).isEmpty() ||
        !target->diagnostic_failure(domain::PortDirection::Input,input->id).isEmpty())return 3;
-    if(domain::processing_ports_compatible(*output,*input))return 0;
     if(!domain::processing_ports_dtype_convertible(*output,*input))return 3;
     return domain::dtype_conversion_is_exact(std::get<signal_contracts::NumericContract>(output->contract.view()).dtype,
         std::get<signal_contracts::NumericContract>(input->contract.view()).dtype)?1:2;
@@ -440,9 +457,9 @@ void NumericEditorGraphModel::replace_clock_graph(const domain::NumericProcessin
 }
 bool NumericEditorGraphModel::edit_execution_interval(signal_contracts::Ratio value) {
     if(!domain::valid_execution_interval(value))return false;
-    auto common=std::gcd(std::uint64_t(value.numerator),value.denominator);value.numerator/=std::int64_t(common);value.denominator/=common;
+    const auto common=std::gcd(std::uint64_t(value.numerator),value.denominator);value={value.numerator/std::int64_t(common),value.denominator/common};
     if(value==_execution_interval)return true;const auto before=_execution_interval;
-    auto apply=[this](signal_contracts::Ratio interval){_execution_interval=interval;emit atomic_edit_finished();};
+    auto apply=[this](signal_contracts::Ratio interval){_execution_interval=interval;emit persistence_topology_changed();emit atomic_edit_finished();};
     if(!_undo){apply(value);return true;}
     _undo->push(new GraphParameterEdit(ui::text("Analysis rate, Hz"),[apply,before,value](bool forward){apply(forward?value:before);}));return true;
 }
@@ -520,7 +537,10 @@ bool prepare_parameter_edit(domain::NumericProcessingGraph& graph,domain::Config
     if(!update_sample_clock_consumers(graph,changed))return false;
     const bool valid_configuration=resolve_edited_configuration(graph);
     const bool valid_parameters=resolve_edited_parameters(graph,changed.id);
-    if(changed.kind=="SampleClock" && (!valid_configuration || !valid_parameters))return false;
+    // Never commit a partially updated resampler: otherwise outgoing ports
+    // retain stale sample rates/shapes and editor links become invalid.
+    if((changed.kind=="SampleClock" || changed.kind=="PcmResampler") &&
+       (!valid_configuration || !valid_parameters))return false;
     return true;
 }
 }

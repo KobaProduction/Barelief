@@ -211,6 +211,11 @@ const char* spectrum_peak_port_title(const QString& kind, QtNodes::PortType dire
 }
 
 QString AudioNodeModel::music_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+    if(_kind=="RhythmAnalyzer"){
+        static constexpr std::array captions{"Candidate tempo, BPM","Accepted tempo, BPM","Decision score (not probability)","Tempo status: 0 unknown, 1 ambiguous, 2 determined","Beat phase, 0...1","Next beat, source seconds","Tempo change, BPM/s","Spectral activity","Periodicity support","ACF cost units (not time)","Accent strength","Grid status: 0 unknown, 1 ambiguous, 2 determined"};
+        const auto id=port_id(type,port);
+        return ui::text(type==QtNodes::PortType::In?"R4 spectrogram: 512 x 64/96 UInt8":captions.at(id))+"\n"+dataType(type,port).name;
+    }
     if((_kind=="BroadbandRow" || _kind=="NoteSpectrum") && type==QtNodes::PortType::Out) {
         const auto id=port_id(type,port);
         if(_kind=="NoteSpectrum" && id==domain::note_first_output)
@@ -530,13 +535,21 @@ void AudioNodeModel::populate_selector_menu(QMenu* menu) {
     if(!_numeric || (_kind!="InputSelector" && _kind!="ArrayMultiply"))return;
     if(domain::data_outputs(*_numeric).size()>1)append_stream_menu(menu);else append_input_menu(menu);
 }
+namespace {
+void append_saved_visual_port(const AudioNodeModel& node,QtNodes::PortType side,const QJsonValue& value,
+                             std::vector<QtNodes::PortIndex>& order,std::vector<bool>& seen) {
+    const int id=value.toInt(-1);if(id<0 || id>65535)return;
+    const auto index=node.port_index(side,domain::PortId(id));
+    if(index<seen.size() && !seen[index]){order.push_back(index);seen[index]=true;}
+}
+}
 std::vector<QtNodes::PortIndex> AudioNodeModel::visual_port_order(QtNodes::PortType side) const {
     std::vector<QtNodes::PortIndex> order;
+    const auto count=nPorts(side);order.reserve(count);
+    std::vector<bool> seen(count,false);
     const auto saved_order=_presentation.value(side==QtNodes::PortType::In?"input_port_order":"output_port_order").toArray();
-    for(const auto value:saved_order){
-        const int id=value.toInt(-1);const auto index=id>=0 && id<=65535?port_index(side,domain::PortId(id)):QtNodes::InvalidPortIndex;if(index!=QtNodes::InvalidPortIndex && std::find(order.begin(),order.end(),index)==order.end())order.push_back(index);
-    }
-    for(unsigned id=0;id<nPorts(side);++id)if(std::find(order.begin(),order.end(),id)==order.end())order.push_back(id);
+    for(const auto value:saved_order)append_saved_visual_port(*this,side,value,order,seen);
+    for(unsigned id=0;id<count;++id)if(!seen[id])order.push_back(id);
     return order;
 }
 namespace {
@@ -1146,6 +1159,8 @@ QString static_node_caption(const QString& kind) {
         {"AmplitudePhase","Spectrum amplitude and phase"},
         {"WindowGain","Window coefficient sum"},
         {"BroadbandRow","Broadband row"},
+        {"RhythmFeatures","Rhythm features (R4 diagnostic)"},
+        {"RhythmAnalyzer","Rhythm analyzer (experimental)"},
         {"PianoView","Piano: note activity"},
         {"NoteSpectrum","Note spectrum"},
         {"ArrayConcat","Join arrays"},

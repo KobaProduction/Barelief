@@ -392,7 +392,16 @@ std::optional<bool> derive_signal_metadata(ConfiguredProcessingNode& node,const 
     if(node.kind=="ArrayLength" || node.kind=="SampleRate")return numeric_metadata_output_contract(input,node.kind=="SampleRate",node.outputs[0].contract)==Status::ok;
     return {};
 }
+bool derive_rhythm(ConfiguredProcessingNode& node,const NumericContract& input) {
+    std::array<OwnedProcessingContract,rhythm_output_count> outputs;
+    if(rhythm_output_contracts(node,input,outputs)!=Status::ok)return false;
+    node.outputs.clear();
+    for(PortId i=0;i<rhythm_output_count;++i)node.outputs.push_back({i,PortDirection::Output,std::move(outputs[i])});
+    return true;
+}
 std::optional<bool> derive_music(ConfiguredProcessingNode& node,const NumericContract& input) {
+    if(node.kind=="RhythmFeatures")return rhythm_features_output_contract(node,input,node.outputs[0].contract)==Status::ok;
+    if(node.kind=="RhythmAnalyzer")return derive_rhythm(node,input);
     if(node.kind=="MusicalSpectrogram" || node.kind=="BroadbandRow" || node.kind=="NoteSpectrum")return derive_musical_rows(node,input);
     if(node.kind!="RFFT" && node.kind!="SpectrumProjection" && node.kind!="FrequencyNormalizer" && node.kind!="BroadbandFeatures" && node.kind!="NoteSalience" && node.kind!="SpectralQuantize")return {};
     return music_output_contract(node,input,node.outputs[0].contract)==Status::ok;

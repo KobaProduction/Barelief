@@ -2,6 +2,7 @@
 add_library(desktop_numeric_defaults STATIC
     src/example_builder.cpp
     src/numeric_default_graph.cpp
+    src/numeric_rhythm_graph.cpp
     src/numeric_music_graph.cpp)
 set_target_properties(desktop_numeric_defaults PROPERTIES
     AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)

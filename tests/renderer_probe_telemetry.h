@@ -24,6 +24,11 @@ public:
             {"context_swap_interval",context->format().swapInterval()},
             {"render_thread_id",QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()),16)},
             {"render_thread_is_gui",QThread::currentThread()==qApp->thread()}};
+#ifdef Q_OS_WIN
+        using GetSwapInterval=int (__stdcall*)();
+        const auto interval=reinterpret_cast<GetSwapInterval>(context->getProcAddress("wglGetSwapIntervalEXT"));
+        identity_["driver_swap_interval"]=interval?interval():-1;
+#endif
     }
     QJsonObject snapshot() const {QMutexLocker lock(&mutex_);return identity_;}
 private:

@@ -20,7 +20,8 @@ bool parameter_is_primary(const QString& kind,const QString& key) {
         {"BroadbandRow",{"input_representation","peak_weight"}},
         {"MusicalSpectrogram",{"first_midi","last_midi","input_representation","peak_weight"}},
         {"NoteSpectrum",{"first_midi","last_midi","input_representation","peak_weight"}},
-        {"SpectralQuantize",{"bits"}},{"Number",{"value"}},{"Fs",{"value"}},{"UInt32Constant",{"value"}}
+        {"SpectralQuantize",{"bits"}},{"Number",{"value"}},{"Fs",{"value"}},{"UInt32Constant",{"value"}},
+        {"RhythmAnalyzer",{"feature_rate_fps","feature_bins","mode"}},{"RhythmFeatures",{"feature_bins"}}
     };
     return fields.value(kind).contains(key);
 }
@@ -31,6 +32,7 @@ QString numeric_array_text(const domain::NumericArray& array) {
 }
 QString parameter_title(const QString& key) {
 static const QMap<QString, const char *> titles{{"profile","Frequency profile"},{"window_function","Window function"},
+{"feature_rate_fps","Feature cadence, frames/s"},{"feature_bins","R4 feature bands"},{"budget_ops","ACF budget, cost units"},
 {"input","Input contract"},{"grid","Frequency grid"},{"training","Training settings"},{"resampler","Resampler settings"},
 {"input_representation","Input representation"},{"peak_weight","Peak weighting"},{"power_bandwidth_hz","Power bandwidth, Hz"},
 {"frontend_declared","Declared audio frontend"}, {"include_dc","Include DC"}, {"include_nyquist","Include Nyquist"},
@@ -118,6 +120,9 @@ ParameterChoices generic_parameter_choices(const QString& key) {
 }
 }
 ParameterChoices parameter_choices(const QString& kind,const QString& key) {
+    if((kind=="RhythmAnalyzer" || kind=="RhythmFeatures") && key=="feature_bins")return {{"64","96"},{"64 bands","96 bands"}};
+    if(kind=="RhythmAnalyzer" && key=="feature_rate_fps")return {{"30","45","60"},{"30 fps","45 fps","60 fps"}};
+    if(kind=="RhythmAnalyzer" && key=="mode")return {{"gated","fixed-light","fixed-full"},{"Gated refinement","Light only","Full refinement"}};
     static const QMap<QString,ParameterChoices> specs{
       {"FrequencyNormalizer/mode",{{"off","manual","profile"},{"Off","Manual","Loaded profile"}}},
       {"ArrayMultiply/operation",{{"multiply","add"},{"Multiply","Add"}}},

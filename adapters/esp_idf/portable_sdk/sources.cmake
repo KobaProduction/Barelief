@@ -39,6 +39,7 @@ set(PORTABLE_SDK_SOURCES
     domain/src/numeric/matrix_contracts.cpp domain/src/signal/fourier_contracts.cpp
     domain/src/signal/parameter_contracts.cpp domain/src/music/spectral_features_contract.cpp
     domain/src/music/frequency_normalizer_contract.cpp
+    domain/src/music/rhythm_contract.cpp
     domain/src/graph/processing_contracts.cpp
     domain/src/numeric_parameter_bindings.cpp
     domain/src/music/musical_spectrogram_contract.cpp
@@ -58,6 +59,7 @@ set(PORTABLE_SDK_SOURCES
     libs/dataflow_runtime/src/numeric_array_execution.cpp
     libs/dataflow_runtime/src/signal_operation_execution.cpp
     libs/dataflow_runtime/src/music_operation_execution.cpp
+    libs/dataflow_runtime/src/rhythm_execution.cpp
     libs/dataflow_runtime/src/prepared_operation_process.cpp
     libs/dataflow_runtime/src/pcm_packet_queue.cpp
     libs/dataflow_runtime/src/runtime_queries.cpp
@@ -84,6 +86,11 @@ set(PORTABLE_SDK_SOURCES
     libs/dsp_kernels/src/dsp.cpp libs/dsp_kernels/src/rfft_split.cpp libs/dsp_kernels/src/backend_tables.cpp libs/dsp_kernels/src/scalar_reduce.cpp
     libs/dsp_kernels/src/prepared_resampler.cpp libs/dsp_kernels/src/musical_features.cpp
     libs/dsp_kernels/src/frequency_profile.cpp
+    libs/dsp_kernels/src/rhythm/analyzer.cpp libs/dsp_kernels/src/rhythm/math.cpp
+    libs/dsp_kernels/src/rhythm/observer.cpp libs/dsp_kernels/src/rhythm/tracking.cpp
+    libs/dsp_kernels/src/rhythm/autocorrelation.cpp libs/dsp_kernels/src/rhythm/hierarchy.cpp
+    libs/dsp_kernels/src/rhythm/ranking.cpp libs/dsp_kernels/src/rhythm/decision.cpp
+    libs/dsp_kernels/src/rhythm/publication.cpp libs/dsp_kernels/src/rhythm/packing.cpp
     libs/dsp_kernels/src/kernel_support.cpp libs/dsp_kernels/src/numeric_convert.cpp
     libs/dsp_kernels/src/numeric_reduce.cpp
     libs/embedded_support/src/profile.cpp libs/embedded_support/src/session.cpp

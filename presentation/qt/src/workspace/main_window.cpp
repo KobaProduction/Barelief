@@ -575,8 +575,6 @@ void MainWindow::set_configuration_save_state(ConfigurationSaveState state, cons
     _configuration_save_status->setToolTip(error.isEmpty() ? path : path + "\n" + error);
     _configuration_save_status->setProperty("saveState", int(state));
     _configuration_save_status->setAccessibleName(ui::text(key));
-    // Persistence is synchronous: paint the pending state before entering disk I/O.
-    if (state == ConfigurationSaveState::Saving) _configuration_save_status->repaint();
 }
 
 LineChartView *MainWindow::make_line_panel(const char *id,const char *title,double minimum,double maximum,
@@ -621,21 +619,25 @@ void MainWindow::setup_spectrogram() {
     add_panel("spectrogram", "Spectrogram graph", _spectrogram_view, &UIApplicationConfig::show_spectrogram);
 }
 
+void MainWindow::store_spectrogram_presentation(const QJsonObject& state) {
+    auto prefs=_application.state().file_configs.ui.graph_views.value("spectrogram").toObject();
+    if(prefs.value("renderer").toObject()==state)return;
+    prefs["renderer"]=state;
+    _application.state().file_configs.ui.graph_views["spectrogram"]=prefs;
+    _camera_save_timer.start();
+}
 void MainWindow::bind_spectrogram_state() {
     _camera_save_timer.setSingleShot(true);
-    _camera_save_timer.setInterval(500);
+    _camera_save_timer.setInterval(1500);
     connect(&_camera_save_timer, &QTimer::timeout, this, [this] {
+        if(QGuiApplication::mouseButtons()!=Qt::NoButton){_camera_save_timer.start();return;}
         emit settings_change_requested({ui::SettingsChangeScope::ProjectPresentation,false});
     });
-    connect(_spectrogram_view, &SpectrogramGraph::presentation_changed, this, [this](const QJsonObject &state) {
-        auto prefs = _application.state().file_configs.ui.graph_views.value("spectrogram").toObject();
-        prefs["renderer"] = state;
-        _application.state().file_configs.ui.graph_views["spectrogram"] = prefs;
-        _camera_save_timer.start();
-    });
+    connect(_spectrogram_view, &SpectrogramGraph::presentation_changed,
+        this, &MainWindow::store_spectrogram_presentation);
     connect(_spectrogram_view, &SpectrogramGraph::camera_changed, this, [this](const QJsonObject &state) {
+        // Navigation does not dirty the project; Save/close captures this state.
         _application.state().file_configs.ui.camera = state;
-        _camera_save_timer.start();
     });
     connect(_spectrogram_view, &SpectrogramGraph::side_panel_resized, this, [this](float ratio) {
         _application.state().file_configs.ui.spectrogram_side_panel_ratio = ratio;
@@ -827,11 +829,27 @@ void MainWindow::setup_workspace_layout() {
     });
     connect(qApp, &QGuiApplication::screenRemoved, this, [this] { recover_offscreen_panels(); });
 }
+namespace {
+QJsonObject workspace_save_state(const UIApplicationConfig& ui) {
+    auto views=ui.graph_views;
+    for(auto it=views.begin();it!=views.end();++it) {
+        auto preferences=it.value().toObject();preferences.remove("camera");
+        it.value()=preferences;
+    }
+    return {{"workspace",ui.workspace},{"graph_views",views}};
+}
+}
 void MainWindow::setup_workspace_save_timer() {
     _workspace_save_timer.setSingleShot(true);
-    _workspace_save_timer.setInterval(350);
-    connect(&_workspace_save_timer, &QTimer::timeout, this, [this] {
+    _workspace_save_timer.setInterval(2000);
+    connect(&_workspace_save_timer, &QTimer::timeout, this,
+        [this,last=workspace_save_state(_application.state().file_configs.ui)]() mutable {
+        // A move/resize is not complete while the mouse is held down.
+        if(QGuiApplication::mouseButtons()!=Qt::NoButton){_workspace_save_timer.start();return;}
         save_workspace();
+        auto current=workspace_save_state(_application.state().file_configs.ui);
+        if(current==last)return;
+        last=std::move(current);
         emit settings_change_requested({ui::SettingsChangeScope::SessionWorkspace,false});
     });
 }

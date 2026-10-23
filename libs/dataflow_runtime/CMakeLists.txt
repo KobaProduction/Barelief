@@ -27,6 +27,7 @@ add_library(dataflow_runtime STATIC
     src/numeric_array_execution.cpp
     src/signal_operation_execution.cpp
     src/music_operation_execution.cpp
+    src/rhythm_execution.cpp
     src/prepared_operation_process.cpp
     src/pcm_packet_queue.cpp
     src/transform_execution.cpp

@@ -1,3 +1,4 @@
+#include <core/diagnostic_saves.h>
 #include <desktop/numeric_project_document.h>
 #include <project_storage/numeric_array_codec.h>
 #include <QCoreApplication>
@@ -9,6 +10,10 @@
 #include <QJsonDocument>
 #include <QStringView>
 #include <QSet>
+#include <QElapsedTimer>
+#include <QDebug>
+#include <QCache>
+#include <QMap>
 #include <QUuid>
 #include <bit>
 #include <charconv>
@@ -23,6 +28,17 @@
 
 namespace desktop {
 namespace {
+class DocumentPhaseTrace {
+    const char* phase;
+    QElapsedTimer timer;
+public:
+    explicit DocumentPhaseTrace(const char* name):phase(name) {
+        if(core::diagnostics::trace_saves())timer.start();
+    }
+    ~DocumentPhaseTrace() {
+        if(timer.isValid())qInfo().noquote()<<"BARELIEF_SAVE_PHASE"<<phase<<"ms="<<timer.nsecsElapsed()/1e6;
+    }
+};
 using namespace domain;
 using namespace signal_contracts;
 using namespace project_storage;
@@ -716,7 +732,7 @@ class NodePresentationReader {
     }
     NumericDocumentResult scalar(Handle entry,unsigned count,QJsonObject& values) const {
         const auto key=text(node(source,entry).key);bool valid=false;const auto id=key.toUInt(&valid);
-        if(count>8 || !valid || id>65535 || QString::number(id)!=key)return failure("Invalid scalar input ID");
+        if(count>domain::max_variadic_inputs || !valid || id>65535 || QString::number(id)!=key)return failure("Invalid scalar input ID");
         QJsonObject input;
         auto result=check_node_presentation(source,entry,&input);
         if(result)result=scalar_enabled(entry,input);
@@ -880,7 +896,7 @@ NumericDocumentResult check_numeric_graph(const Source& source,Handle graph,cons
     const auto typed=check_registered_parameter_types(known,path);
     return typed?check_graph_extensions(source,graph,path):typed;
 }
-NumericDocumentResult check_graph(const Source& source,Handle graph,QString path,std::uint32_t schema,bool allow_visual=false) {
+NumericDocumentResult validate_graph(const Source& source,Handle graph,const QString& path,std::uint32_t schema,bool allow_visual) {
     auto result=object_keys(source,graph,{"version","processing_version","graph_id","execution_interval","nodes","connections","configuration_bindings"},path);
     if(!result)return result;
     result=check_graph_versions(source,graph,path,schema);
@@ -890,6 +906,21 @@ NumericDocumentResult check_graph(const Source& source,Handle graph,QString path
     if(!result)return result;
     if(visual)return check_visual_graph(source,graph);
     return check_numeric_graph(source,graph,path);
+}
+NumericDocumentResult check_graph(const Source& source,Handle graph,QString path,std::uint32_t schema,bool allow_visual=false) {
+    // Only exact immutable bytes with the same admission policy share a result.
+    // Failures remain uncached so diagnostics retain the caller's source path.
+    // The byte budget bounds retention even for large profile/preset graphs.
+    thread_local QCache<QByteArray,bool> validated(8*1024*1024);
+    auto key=bytes(node(source,graph).raw);
+    key.prepend(allow_visual?'v':'n');key.prepend(QByteArray::number(schema)+':');
+    if(validated.contains(key))return {};
+    auto result=validate_graph(source,graph,path,schema,allow_visual);
+    if(result && key.size()<=validated.maxCost()) {
+        const auto cost=key.size()+qsizetype(sizeof(bool));
+        validated.insert(key,new bool(true),cost);
+    }
+    return result;
 }
 bool registered_display_member(std::string_view context,std::string_view key);
 NumericDocumentResult check_display_dictionary(const Source& source,Handle handle,const QString& path) {
@@ -1072,6 +1103,7 @@ public:
     }
 };
 NumericDocumentResult check_project(const Source& source,std::uint32_t& schema) {
+    const DocumentPhaseTrace trace("validate_project");
     return ProjectSchemaValidator(source,schema).validate();
 }
 QJsonValue snapshot_leaf(const Source& s,Handle h,NumericDocumentResult& result) {
@@ -1384,7 +1416,7 @@ class GraphReplacement {
     const NumericProjectDocument& source;
     const NumericProcessingGraph& graph;
     std::string_view section;
-    NumericProjectDocument staged,candidate;
+    NumericProjectDocument candidate;
     Source fresh;
     QByteArray snapshot,replacement,insertion;
     Handle root,old;
@@ -1392,33 +1424,34 @@ class GraphReplacement {
         // The document edition belongs to the source owner; graph admission
         // validates only graph and processing semantics.
         auto result=encode_numeric_graph(graph,snapshot);
-        if(result)result=clone_numeric_project(source,staged);
+        std::uint32_t schema=0;
+        if(result)result=check_project(source.source,schema);
         if(!result)return result;
         const auto diagnostic=parse_project_source(view(snapshot),fresh);
         return diagnostic?NumericDocumentResult{}:source_error(diagnostic);
     }
     NumericDocumentResult replacement_bytes() {
-        root=staged.source.root();
-        old=member(staged.source,root,section);
+        root=source.source.root();
+        old=member(source.source,root,section);
         replacement=snapshot;
         if(!old.source)return {};
-        const auto id=member(staged.source,old,"graph_id");
-        if(id.source && node(staged.source,id).decoded!=graph.graph_id)
+        const auto id=member(source.source,old,"graph_id");
+        if(id.source && node(source.source,id).decoded!=graph.graph_id)
             return failure("Graph identity changed; explicit new project required",text(section)+".graph_id");
         NumericDocumentResult result;
-        replacement=merge(staged.source,old,fresh,fresh.root(),"graph",result);
+        replacement=merge(source.source,old,fresh,fresh.root(),"graph",result);
         return result;
     }
     DocumentEdit edit() {
-        if(old.source)return {EditKind::Replace,old,{}, {},node(staged.source,old).raw,view(replacement)};
+        if(old.source)return {EditKind::Replace,old,{}, {},node(source.source,old).raw,view(replacement)};
         auto quoted=QJsonDocument(QJsonArray{text(section)}).toJson(QJsonDocument::Compact);
         quoted=quoted.mid(1,quoted.size()-2);
         insertion=quoted+":"+replacement;
-        return {EditKind::Insert,{},root,{},node(staged.source,root).raw,view(insertion)};
+        return {EditKind::Insert,{},root,{},node(source.source,root).raw,view(insertion)};
     }
     NumericDocumentResult publish(NumericProjectDocument& out) {
         const auto change=edit();
-        const auto diagnostic=stage_project_edits(staged.source,std::span(&change,1),candidate.source);
+        const auto diagnostic=stage_project_edits(source.source,std::span(&change,1),candidate.source);
         if(!diagnostic)return source_error(diagnostic,text(section));
         std::uint32_t schema=0;
         const auto result=check_project(candidate.source,schema);
@@ -1442,6 +1475,7 @@ NumericDocumentResult stage_project_graph(const NumericProjectDocument& source,c
 }
 }
 NumericDocumentResult stage_numeric_draft(const NumericProjectDocument& source,const NumericProcessingGraph& graph,NumericProjectDocument& out) {
+    const DocumentPhaseTrace trace("stage_draft");
     return stage_project_graph(source,graph,"scene_graph",out);
 }
 NumericDocumentResult create_numeric_project(const NumericProcessingGraph& graph,const NumericDraftPresentation& presentation,NumericProjectDocument& out) {
@@ -2065,6 +2099,45 @@ public:
         return batch.commit(out);
     }
 };
+class NodeSettingsDelta {
+    PresentationEditBatch batch;
+    QMap<qint64,Handle> index;
+    bool index_nodes() {
+        const auto& source=batch.source();
+        const auto graph=member(source,source.root(),"scene_graph"),nodes=member(source,graph,"nodes");
+        for(auto child=node(source,nodes).first_child;child.source;child=node(source,child).next_sibling) {
+            std::int64_t id=-1;if(!batch.diagnostic(read_int64(source,member(source,child,"id"),id)))return false;
+            if(index.contains(id))return batch.fail("Ambiguous node ID");
+            index[id]=child;
+        }
+        return true;
+    }
+    bool replace(const ConfiguredProcessingNode& configured) {
+        const auto found=index.value(configured.id);
+        if(!found.source)return batch.fail("Updated node is absent");
+        return replace_node(found,configured);
+    }
+    bool replace_node(Handle old,const ConfiguredProcessingNode& configured) {
+        if(node(batch.source(),member(batch.source(),old,"kind")).decoded!=configured.kind)return batch.fail("Node kind changed; graph replacement required");
+        QByteArray encoded;batch.result=encode_numeric_node(configured,encoded);if(!batch.result)return false;
+        Source fresh;if(!batch.diagnostic(parse_project_source(view(encoded),fresh)))return false;
+        const auto replacement=merge(batch.source(),old,fresh,fresh.root(),"nodes",batch.result);
+        return batch.result && batch.append({}, {},old,replacement);
+    }
+public:
+    explicit NodeSettingsDelta(const NumericProjectDocument& source,std::size_t count):batch(source,count){}
+    NumericDocumentResult stage(std::span<const ConfiguredProcessingNode> nodes,NumericProjectDocument& out) {
+        if(!index_nodes())return batch.result;
+        for(const auto& configured:nodes)if(!replace(configured))return batch.result;
+        return batch.commit(out);
+    }
+};
+}
+NumericDocumentResult stage_numeric_nodes(const NumericProjectDocument& source,std::span<const ConfiguredProcessingNode> nodes,NumericProjectDocument& out) {
+    if(nodes.size()>8192)return failure("Node update limit");
+    std::uint32_t schema=0;auto result=check_project(source.source,schema);if(!result)return result;
+    if(nodes.empty() && &source==&out)return {};
+    return NodeSettingsDelta(source,nodes.size()).stage(nodes,out);
 }
 namespace {
 NumericDocumentResult stage_applied_presentation(const NumericProjectDocument& source,const NumericDraftPresentation& presentation,NumericProjectDocument& out) {
@@ -2085,6 +2158,7 @@ NumericDocumentResult stage_application_presentation(const NumericProjectDocumen
 }
 }
 NumericDocumentResult stage_numeric_presentation(const NumericProjectDocument& source,const NumericDraftPresentation& presentation,NumericProjectDocument& out) {
+    const DocumentPhaseTrace trace("stage_presentation");
     if(presentation.applied_graph)return stage_applied_presentation(source,presentation,out);
     if(!presentation.application_settings.isEmpty())return stage_application_presentation(source,presentation,out);
     const auto count=std::size_t(presentation.positions.size())+std::size_t(presentation.node_presentations.size())+std::size_t(presentation.node_adapters.size());
@@ -2173,6 +2247,7 @@ class NumericSaveTransaction {
         return before_commit.read(existing.size()+1)==existing;
     }
     NumericDocumentResult commit() {
+        const DocumentPhaseTrace trace("file_commit");
         QSaveFile file(resolved);
         file.setDirectWriteFallback(false);
         if(!file.open(QIODevice::WriteOnly))return failure(file.errorString(),resolved);
@@ -2200,6 +2275,7 @@ public:
 };
 }
 NumericDocumentResult save_numeric_project(NumericProjectDocument& source,const QString& path,const NumericSaveConsent* consent) {
+    const DocumentPhaseTrace trace("atomic_file_save");
     return NumericSaveTransaction(source,path,consent).save();
 }
 } // namespace desktop

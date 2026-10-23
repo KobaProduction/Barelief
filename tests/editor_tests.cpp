@@ -248,7 +248,12 @@ static void check_dimensional_field(AudioNodeModel& node,QWidget& form,QWidget& 
     // Contract extents live in the dedicated contracts form, outside the inspector.
     auto* fieldForm=model->field(key)->section==NodeParameterModel::Section::Contract?&contracts:&form;
     auto* type=fieldForm->findChild<QComboBox*>(key+"_type");auto* edit=fieldForm->findChild<QLineEdit*>(key);
-    require(type && edit && type->isHidden() && type->currentIndex()==1,"Size type chooser must be fixed to UInt64");
+    require(!type && edit && model->field(key)->literal_type==1,"Fixed UInt64 field must not create a redundant type chooser");
+    if(edit->isEnabled()) {
+        edit->setText(text);edit->setModified(true);emit edit->textEdited(text);
+        QMetaObject::invokeMethod(edit,"editingFinished",Qt::DirectConnection);
+        require(!edit->isModified() && node.save()==saved,qPrintable(QString("Fixed UInt64 editor does not commit an exact no-op: %1/%2").arg(node.name(),key)));
+    }
     for(int unsupported:{0,2,3})require(!model->editLiteral(key,text,unsupported) && node.save()==saved,"Size editor accepted unsupported literal representation");
 }
 static void check_dimensional_node(const QString& kind){
@@ -360,6 +365,9 @@ class GroupedLayoutChecks {
         check_caption(id);
         for(auto side:{QtNodes::PortType::In,QtNodes::PortType::Out}){
             const auto numeric=side==QtNodes::PortType::In?node->numeric_node()->inputs.size():node->numeric_node()->outputs.size();
+            const auto painted=geometry().port_positions(id,side);
+            for(unsigned port=0;port<painted.size();++port)
+                require(QLineF(painted[port],geometry().portPosition(id,side,port)).length()<1e-8,"Painted ports differ from wire and hit-test positions");
             for(unsigned port=0;port<numeric;++port)check_port(*node,id,side,port,channels);
         }
     }
@@ -1014,6 +1022,19 @@ static void widget_acceptance_checks(){
         exact_document_checks(editor,*graph,presenter,state,typedSave,applied);
         preview_lifecycle_checks(editor,*graph,presenter,applied);
 }
+static void lazy_inline_fields_checks(){
+    AudioNodeModel node("Converter");std::unique_ptr<QWidget> body(node.embeddedWidget());
+    const auto processing=node.numeric_node()->parameters;
+    require(!body->findChild<QLineEdit*>("numericNan"),"Unpinned field eagerly creates an editor");
+    require(node.set_parameter_on_block("numericNan",true),"Pinning a lazy field failed");QCoreApplication::processEvents();
+    QPointer<QLineEdit> edit=body->findChild<QLineEdit*>("numericNan");require(edit,"Pinned field was not materialized");
+    edit->setText("-");edit->setModified(true);emit edit->textEdited(edit->text());
+    require(node.set_parameter_on_block("numericNan",false),"Unpinning field failed");QCoreApplication::processEvents();
+    require(edit && body->findChild<QWidget*>("numericNan_row")->isHidden(),"Unpinning destroys the retained draft editor");
+    require(node.set_parameter_on_block("numericNan",true),"Repinning field failed");QCoreApplication::processEvents();
+    require(edit && body->findChild<QLineEdit*>("numericNan")==edit && edit->text()=="-","Repinning loses the draft or rebuilds its editor");
+    require(domain::same_processing_parameters(processing,node.numeric_node()->parameters),"Presentation edits change numeric processing settings");
+}
 static void model_acceptance_checks(){
     QStringList failures;
     const std::pair<const char*,void (*)()> checks[]{
@@ -1021,12 +1042,16 @@ static void model_acceptance_checks(){
         {"dimensional editors",dimensional_editor_acceptance_checks},{"grouped layout",grouped_layout_acceptance_checks},
         {"bypass controls",bypass_controls_checks},{"canonical parameters",canonical_parameter_checks},
         {"selector repair",selector_repair_and_names_checks},{"preview model",preview_model_checks}};
+    run_editor_check("lazy inline fields",lazy_inline_fields_checks,failures);
     for(const auto& [name,check]:checks)run_editor_check(name,check,failures);
     require(failures.isEmpty(),qPrintable(failures.join('\n')));
 }
 int main(int argc,char** argv) {
     QApplication app(argc,argv);
     try {
+        if(argc==2 && QByteArray(argv[1])=="--grouped-layout"){
+            grouped_layout_acceptance_checks();qInfo("Grouped layout and painted port routing PASS");return 0;
+        }
         QStringList failures;
         run_editor_check("model acceptance",model_acceptance_checks,failures);
         run_editor_check("widget acceptance",widget_acceptance_checks,failures);

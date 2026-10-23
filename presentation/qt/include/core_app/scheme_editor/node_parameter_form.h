@@ -2,6 +2,7 @@
 #include <QWidget>
 #include <QPointer>
 #include <QMap>
+#include <QSet>
 #include <vector>
 #include <core_app/scheme_editor/node_parameter_model.h>
 class QVBoxLayout;
@@ -23,9 +24,11 @@ class NodeParameterForm final : public QWidget {
     bool _placement_expanded = false;
     CompositeFactory _composite_factory;
     std::vector<QMetaObject::Connection> _bindings;
+    QSet<QString> _materialized_fields;
     using Field=NodeParameterModel::Field;
     struct ControlBinding {QWidget* widget=nullptr;std::function<void()> refresh;};
     void scheduleRebuild();
+    void ensurePinnedFields();
     void clearRows();
     void addBypass(QVBoxLayout*);
     void bindBypass(QCheckBox*);

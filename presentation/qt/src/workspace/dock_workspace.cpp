@@ -1,3 +1,4 @@
+#include <core/telemetry.h>
 #include "core_app/main_window.h"
 #include "core_app/graph_panel.h"
 #include <core_app/plot_composition.h>
@@ -220,6 +221,7 @@ void MainWindow::save_workspace_flags(const QJsonObject& visibility) {
     ui.show_window_function=visibility["windowFunction"].toBool();
 }
 void MainWindow::save_workspace() {
+    BARELIEF_PROFILE_FUNCTION();
     QJsonObject visibility;
     save_panel_visibility(visibility);
     auto &ui = _application.state().file_configs.ui;
@@ -456,7 +458,9 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 void MainWindow::moveEvent(QMoveEvent *event) {
     QMainWindow::moveEvent(event);
-    apply_render_rate();
+    // QWindow::screenChanged and QScreen::refreshRateChanged already update
+    // render cadence. Reconfiguring every plot for each mouse-move event
+    // stalls the GUI thread and unnecessarily resets numeric preview pacing.
     if (!_restoring_layout)
         _workspace_save_timer.start();
 }

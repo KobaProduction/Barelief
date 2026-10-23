@@ -51,11 +51,16 @@ public:
     std::vector<double> values;double fs=0,reference=1;bool gain=false,magnitude=false;
     explicit Curve(QWidget* parent){setParent(parent);setMinimumHeight(170);set_render_fps(30);}
     void update(){
-        ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Decibels;scale.factor=magnitude?20:10;scale.reference=reference;
-        set_value_scale(scale);set_range(gain?-40:-120,gain?40:20);
+        ValueDisplayScale scale;scale.mode=gain?ValueDisplayScale::Mode::Linear:ValueDisplayScale::Mode::Decibels;
+        scale.factor=magnitude?20:10;scale.reference=reference;
+        set_value_scale(scale);
+        // Normalizer gains are dimensionless multipliers, never stored in dB.
+        // The dB projection is used only when displaying a measured spectrum.
+        const auto high=gain && !values.empty()?*std::max_element(values.begin(),values.end()):1.;
+        set_range(gain?0.:-120.,gain?std::max(1.2,high*1.08):20.);
         std::vector<float> data(values.begin(),values.end());std::vector<double> x(values.size());
         for(std::size_t i=0;i<x.size();++i)x[i]=double(i)*fs/(2*double(std::max(std::size_t{1},x.size()-1)));
-        set_x_coordinates(x);set_axis_titles(ui::text("Frequency, Hz"),ui::text(gain?"Gain, dB":"Mean spectrum, dB"));
+        set_x_coordinates(x);set_axis_titles(ui::text("Frequency, Hz"),ui::text(gain?"Linear gain, x":"Mean spectrum, dB"));
         LineChartView::update(data);
     }
 };
@@ -102,7 +107,7 @@ struct MusicAnalysisDialog::State {
     AnalysisServices services;
     std::optional<ProfileReadDiagnostic> profile_load_diagnostic;
     AnalysisOptions baseline_options;
-    MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *silence,*minimum,*maximum,*reference,*floor;
+    MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum,*gain_mode;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *silence,*minimum,*maximum,*reference,*floor;
     QPushButton *run,*cancel,*save,*load,*add,*folder,*clear,*apply,*reload_targets,*new_scan,*show_results;QLabel *status,*average,*file_count,*result_summary,*preview_title,*dc,*mode_title,*scan_summary,*memory;QStackedWidget* pages;QProgressBar* progress;QTableWidget *statistics,*frequencies;Curve *mean,*gains,*track_mean;Spectrogram* image;QCheckBox* normalized,*compensate;QTimer* timer;
     QComboBox* target;MusicAnalysisDialog::Targets read_targets;MusicAnalysisDialog::Apply apply_profile;std::vector<FrequencyProfileTarget> targets;
     QComboBox* cadence;QLabel* cadence_interval;
@@ -165,13 +170,17 @@ struct MusicAnalysisDialog::State {
         }
     }
     enum class Mode{Setup,Scanning,Results};Mode mode=Mode::Setup;
-    explicit State(MusicAnalysisDialog* dialog):owner(dialog){}
+    explicit State(MusicAnalysisDialog* dialog):owner(dialog){
+        baseline_options.training.gain_mode=dsp_kernels::ProfileGainMode::PeakNormalization;
+        baseline_options.compatibility.projection.representation=dsp_kernels::SpectrumProjection::PeakAmplitude;
+    }
     void set_mode(Mode value){
         mode=value;const bool busy=mode==Mode::Scanning,results=mode==Mode::Results;
         pages->setCurrentIndex(results?1:0);
         mode_title->setText(ui::text(results?"Scan results":busy?"Scanning":"Scan settings"));
         update_action_availability(busy,results);update_target_availability(results);
-        for(QWidget* widget:std::initializer_list<QWidget*>{rate,size,window,spectrum,compensate,workers,hop,smooth,silence,minimum,maximum,reference,floor,files,preview_rows,preview_bands})widget->setEnabled(!busy&&!results);
+        for(QWidget* widget:std::initializer_list<QWidget*>{rate,size,window,spectrum,compensate,workers,hop,smooth,gain_mode,silence,minimum,maximum,reference,floor,files,preview_rows,preview_bands})widget->setEnabled(!busy&&!results);
+        minimum->setEnabled(!busy&&!results&&gain_mode->currentIndex()==0);
         update_cadence_controls();update_frontend_summary();
         if(results && result_files->currentItem())request_preview(result_files->currentItem()->text());
     }
@@ -229,7 +238,10 @@ struct MusicAnalysisDialog::State {
         frontend.projection={dsp_kernels::SpectrumProjection(spectrum->currentData().toInt()),compensate->isChecked()};frontend.reference=reference->value();frontend.floor_db=floor->value();
     }
     void collect_training(dsp_kernels::ProfileTraining& training)const {
-        training.smoothing_radius=std::size_t(smooth->value());training.silence_rms=silence->value();training.min_gain=minimum->value();training.max_gain=maximum->value();
+        training.gain_mode=gain_mode->currentIndex()==1?dsp_kernels::ProfileGainMode::PeakNormalization:dsp_kernels::ProfileGainMode::MeanEqualization;
+        training.smoothing_radius=std::size_t(smooth->value());training.silence_rms=silence->value();
+        training.min_gain=training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1.:minimum->value();
+        training.max_gain=maximum->value();
     }
     void set_busy(bool busy){if(busy)profile_load_diagnostic.reset();set_mode(busy?Mode::Scanning:has_profile?Mode::Results:Mode::Setup);}
     void refresh() {
@@ -258,9 +270,21 @@ struct MusicAnalysisDialog::State {
     void refresh_frequency_statistics(){
         const auto& p=document.profile;
         frequencies->setRowCount(int(p.gains.empty()?0:p.gains.size()-1));double total=0;
-        for(std::size_t k=1;k<p.gains.size();++k){const auto before=p.mean_spectrum[k];total+=before;const QStringList row{QString::number(k),QString::number(k*p.compatibility.sample_rate/p.compatibility.fft_size,'g',10),QString::number(before,'g',10),QString::number(p.gains[k],'g',9),QString::number(before*p.gains[k],'g',10),p.frequency_presence.size()==p.gains.size()?QString::number(100*p.frequency_presence[k],'f',2):QString{}};
+        const bool peak=p.training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization && p.peak_spectrum.size()==p.gains.size();
+        frequencies->horizontalHeaderItem(2)->setText(ui::text(peak?"Peak spectrum":"Mean spectrum"));
+        frequencies->horizontalHeaderItem(4)->setText(ui::text(peak?"Corrected peak":"Corrected mean"));
+        for(std::size_t k=1;k<p.gains.size();++k){const auto before=peak?p.peak_spectrum[k]:p.mean_spectrum[k];total+=before;const QStringList row{QString::number(k),QString::number(k*p.compatibility.sample_rate/p.compatibility.fft_size,'g',10),QString::number(before,'g',10),QString::number(p.gains[k],'g',9),QString::number(before*p.gains[k],'g',10),p.frequency_presence.size()==p.gains.size()?QString::number(100*p.frequency_presence[k],'f',2):QString{}};
             for(int column=0;column<row.size();++column)frequencies->setItem(int(k-1),column,new QTableWidgetItem(row[column]));}
-        average->setText(p.gains.size()>1?ui::text("Mean over positive frequency bins: %1; DC is kept separate").arg(total/double(p.gains.size()-1),0,'g',10):QString{});
+        QString summary=p.gains.size()>1?ui::text(peak?"Average observed peak across positive bins: %1; DC is kept separate":"Mean over positive frequency bins: %1; DC is kept separate").arg(total/double(p.gains.size()-1),0,'g',10):QString{};
+        if(peak && p.gains.size()>1){
+            const auto cap=p.training.max_gain;
+            const auto capped=std::count_if(p.gains.begin()+1,p.gains.end(),[cap](float value){
+                return cap>1 && double(value)>=cap*(1-1e-6);
+            });
+            summary+=ui::text(" | Linear gain limit: x%1; bins at limit: %2 / %3")
+                .arg(cap,0,'g',9).arg(capped).arg(p.gains.size()-1);
+        }
+        average->setText(summary);
         dc->setText(p.mean_spectrum.empty()?QString{}:ui::text("DC (0 Hz), mean spectrum: %1").arg(p.mean_spectrum[0],0,'g',10));
     }
     void refresh_result_summary(){
@@ -281,7 +305,9 @@ struct MusicAnalysisDialog::State {
     void show_training_options(const dsp_kernels::ProfileTraining& training){
         interval_numerator=training.interval_numerator?training.interval_numerator:1;interval_denominator=training.interval_denominator;
         cadence->setCurrentIndex(training.interval_numerator?1:0);hop->setValue(int(training.hop));
-        smooth->setValue(int(training.smoothing_radius));silence->setValue(training.silence_rms);minimum->setValue(training.min_gain);maximum->setValue(training.max_gain);
+        gain_mode->setCurrentIndex(training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1:0);
+        smooth->setValue(int(training.smoothing_radius));silence->setValue(training.silence_rms);minimum->setValue(training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1.:training.min_gain);maximum->setValue(training.max_gain);
+        minimum->setEnabled(mode==Mode::Setup&&gain_mode->currentIndex()==0);
     }
     void restore_source_files(){
         QSignalBlocker block(files);files->clear();QStringList paths;
@@ -373,7 +399,7 @@ struct MusicAnalysisDialog::State {
     void build_spectrum(){
         auto& s=*this;auto* dialog=owner;
     s.window=new QComboBox(dialog);s.window->setObjectName("musicWindow");s.window->addItems({"Hann","Hamming","Blackman",ui::text("Rectangular"),ui::text("Bartlett"),"Blackman-Harris",ui::text("Flat top")});left->addRow(label("Window function",dialog),s.window);
-    s.spectrum=new QComboBox(dialog);s.spectrum->setObjectName("musicSpectrum");for(const auto value:dsp_kernels::amplitude_spectrum_projections())s.spectrum->addItem(ui::text(presentation::spectrum_projection_caption(value)),int(value));s.spectrum->setCurrentIndex(s.spectrum->findData(int(dsp_kernels::SpectrumProjection::Power)));left->addRow(label("Spectral representation",dialog),s.spectrum);
+    s.spectrum=new QComboBox(dialog);s.spectrum->setObjectName("musicSpectrum");for(const auto value:dsp_kernels::amplitude_spectrum_projections())s.spectrum->addItem(ui::text(presentation::spectrum_projection_caption(value)),int(value));s.spectrum->setCurrentIndex(s.spectrum->findData(int(dsp_kernels::SpectrumProjection::PeakAmplitude)));left->addRow(label("Spectral representation",dialog),s.spectrum);
     s.compensate=new QCheckBox(dialog);s.compensate->setObjectName("musicSpectrumCompensation");s.compensate->setChecked(true);left->addRow(label(presentation::spectrum_compensation_caption,dialog),s.compensate);
 
     }
@@ -408,8 +434,17 @@ struct MusicAnalysisDialog::State {
     void build_training(){
         auto& s=*this;auto* dialog=owner;
     auto scalar=[&](double low,double high,double value,int decimals){auto* b=new QDoubleSpinBox(dialog);b->setDecimals(decimals);b->setRange(low,high);b->setValue(value);return b;};
-    s.silence=scalar(0,1,.0001,6);right->addRow(label("Silence threshold, PCM RMS",dialog),s.silence);s.minimum=scalar(.000001,1000000,.1,6);right->addRow(label("Minimum linear gain",dialog),s.minimum);
-    s.maximum=scalar(.000001,1000000,10,6);right->addRow(label("Maximum linear gain",dialog),s.maximum);s.reference=scalar(.000001,1000000,1,6);right->addRow(label("Spectrum reference",dialog),s.reference);s.floor=scalar(-300,-1,-120,1);right->addRow(label("Spectrum floor, dB",dialog),s.floor);
+    s.gain_mode=new QComboBox(dialog);s.gain_mode->setObjectName("musicGainMode");
+    s.gain_mode->addItems({ui::text("Mean-spectrum equalization"),ui::text("Per-bin peak normalization to 1.0")});
+    s.gain_mode->setCurrentIndex(1);right->addRow(label("Gain calculation method",dialog),s.gain_mode);
+    s.silence=scalar(0,1,.0001,6);right->addRow(label("Silence threshold, PCM RMS",dialog),s.silence);
+    s.minimum=scalar(.000001,1000000,1,6);s.minimum->setEnabled(false);
+    right->addRow(label("Minimum linear gain (mean mode)",dialog),s.minimum);
+    QObject::connect(s.gain_mode,&QComboBox::currentIndexChanged,dialog,[&s]{
+        s.minimum->setValue(s.gain_mode->currentIndex()==0?.1:1.);
+        s.minimum->setEnabled(s.mode==State::Mode::Setup&&s.gain_mode->currentIndex()==0);
+    });
+    s.maximum=scalar(1,1000000,100,6);right->addRow(label("Maximum linear gain",dialog),s.maximum);s.reference=scalar(.000001,1000000,1,6);right->addRow(label("Spectrum reference",dialog),s.reference);s.floor=scalar(-300,-1,-120,1);right->addRow(label("Spectrum floor, dB",dialog),s.floor);
 
     }
     void build_progress(){
@@ -559,6 +594,8 @@ struct MusicAnalysisDialog::State {
     void refresh_control_labels(){
         auto& s=*this;
         s.cadence->setItemText(0,ui::text("Fixed sample hop"));s.cadence->setItemText(1,ui::text("Declared time interval"));
+        s.gain_mode->setItemText(0,ui::text("Mean-spectrum equalization"));
+        s.gain_mode->setItemText(1,ui::text("Per-bin peak normalization to 1.0"));
         for(std::size_t i=0;i<s.targets.size();++i)s.target->setItemText(int(i),frequency_profile_target_caption(s.targets[i]));
         if(s.applied_status)s.status->setText(ui::text("Profile applied to the scheme; save the project to keep the coefficients"));
         if(s.profile_load_diagnostic)s.status->setText(profile_read_issue_text(*s.profile_load_diagnostic));
@@ -574,6 +611,12 @@ struct MusicAnalysisDialog::State {
     void refresh_table_labels(){
         auto& s=*this;
         s.frequencies->setHorizontalHeaderLabels({ui::text("Bin"),ui::text("Frequency, Hz"),ui::text("Mean spectrum"),ui::text("Linear gain"),ui::text("Corrected mean"),ui::text("Presence, %")});s.frequencies->horizontalHeaderItem(5)->setToolTip(ui::text("Share of active windows above the spectral floor; equal weight per active file"));
+        const auto& p=s.document.profile;
+        if(s.has_profile){
+            const bool peak=p.training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization;
+            s.frequencies->horizontalHeaderItem(2)->setText(ui::text(peak?"Peak spectrum":"Mean spectrum"));
+            s.frequencies->horizontalHeaderItem(4)->setText(ui::text(peak?"Corrected peak":"Corrected mean"));
+        }
         s.statistics->setHorizontalHeaderLabels({ui::text("Composition"),"RMS",ui::text("Active windows"),ui::text("Total windows"),ui::text("Duration, s")});
     }
 

@@ -81,7 +81,7 @@ inline QJsonObject normalizedCadence(QJsonObject schema) {
     const QJsonValue fps = schema.value("gui_target_fps");
     const auto mode = schema.value("gui_fps_mode");
     if (mode != "screen" && mode != "maximum" && mode != "display")
-        schema["gui_fps_mode"] = mode=="fixed" || fps.isDouble()?"fixed":"maximum";
+        schema["gui_fps_mode"] = mode=="fixed" || fps.isDouble()?"fixed":"screen";
     schema["gui_target_fps"] =
         fps.isDouble() && std::isfinite(fps.toDouble()) ? int(std::clamp(std::round(fps.toDouble()), 1.0, 1000.0)) : 60;
     return schema;
@@ -120,9 +120,9 @@ inline QJsonObject defaults() {
             {"reverse_bands", false},
             {"reverse_amplitude", false},
             {"gradient_stops", QJsonArray{}},
-            {"mesh_width", 1.0},
+            {"mesh_width", 0.67},
             {"mesh_color", "auto"},
-            {"mesh_contrast", 1.0}};
+            {"mesh_contrast", 0.2}};
 }
 inline void fillMissing(QJsonObject& value,const QJsonObject& base) {
     for (auto it = base.begin(); it != base.end(); ++it)

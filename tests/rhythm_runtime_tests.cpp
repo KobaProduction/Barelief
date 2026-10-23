@@ -1,0 +1,147 @@
+#include <dataflow_runtime/runtime.h>
+#include <domain/graph/node_factory.h>
+#include <dsp_kernels/rhythm.h>
+#include <core_app/numeric_default_graph.h>
+#ifdef BARELIEF_TEST_DESKTOP_SPEEX
+#include <speex_backend.h>
+#endif
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <source_location>
+#include <cmath>
+
+namespace {
+using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
+constexpr FrameLimits frames{1,65536,1048576,65536,1024,65536};
+constexpr ProcessingAdmissionLimits limits{64,128,16,32,1048576,4194304,frames};
+template<class T> void check(const T& condition,const std::source_location where=std::source_location::current()) {
+    if(!condition){std::fprintf(stderr,"rhythm runtime check failed line %u\n",where.line());std::exit(1);}
+}
+NumericRuntimeProfile profile() {
+    NumericRuntimeProfile p{limits,{{4194304,4194304,4194304,131072},0,16777216},{65536,8,1048576,1048576,1048576},{true,true,true}};
+    p.music_enabled=true;return p;
+}
+ConfiguredProcessingNode analyzer_node() {
+    ConfiguredProcessingNode node;
+    check(make_processing_node("RhythmAnalyzer",2,limits,node,NodeFactorySettings{32768,4096,256,512}));
+    return node;
+}
+NumericProcessingGraph graph() {
+    auto analyzer=analyzer_node();ConfiguredProcessingNode source;
+    source.id=1;source.kind="NetworkInput";source.parameters=EndpointProcessingParameters{};
+    auto input=std::get<NumericContract>(analyzer.inputs[0].contract.view());
+    input.shape={Rank::Vector,{Axis::Band,Axis::None},{ExtentBounds{64,64},ExtentBounds{}}};input.semantic=Semantic::Numeric;
+    OwnedProcessingContract owned;check(own_processing_contract(input,frames,65536,owned)==Status::ok);
+    source.outputs={{0,PortDirection::Output,owned}};
+    ConfiguredProcessingNode history;check(make_processing_node("Spectrogram",3,limits,history,NodeFactorySettings{32768,4096,256,512}));
+    check(configure_processing_input(history,input,limits));
+    check(configure_processing_input(analyzer,history.outputs[0].contract.view(),limits));
+    NumericProcessingGraph result;result.graph_id="rhythm-runtime";result.execution_interval={1,60};
+    result.nodes={source,history,analyzer};result.edges={{1,3,0,0},{3,2,0,0}};return result;
+}
+struct Observation {
+    std::array<float,rhythm_output_count> values{};
+    std::array<bool,rhythm_output_count> available{};
+    static void receive(void* user,const NumericPortFrameView& event) {
+        if(event.identity.node!=2 || event.direction!=PortDirection::Output)return;
+        auto& self=*static_cast<Observation*>(user);const auto port=event.identity.port;
+        check(port<rhythm_output_count);check(event.status==Status::ok || event.status==Status::unavailable);
+        check(validate_view(event.frame,frames)==event.status);
+        self.available[port]=event.frame.stamp.available;
+        const auto& view=std::get<NumericView>(event.frame.payload);
+        self.values[port]=0;
+        if(!view.storage.empty())check(load_element(view,{0,0,0},self.values[port])==Status::ok);
+        if(!self.available[port])check(self.values[port]==0);
+    }
+};
+struct Fixture {
+    NumericProcessingGraph definition=graph();
+    NumericContract contract=std::get<NumericContract>(definition.nodes[0].outputs[0].contract.view());
+    std::shared_ptr<const PreparedGraph> plan;
+    std::unique_ptr<RuntimeContext> context;
+    std::array<std::uint8_t,64> storage{};
+    PlaneLayout plane{0,{1,0}};
+    Observation result;
+    Fixture(){check(PreparedGraph::prepare_numeric(definition,profile(),plan,context)==Status::ok);}
+    void step(unsigned index,bool available=true) {
+        storage.fill(index%30==0?200:0);
+        NumericView view{&contract,std::as_bytes(std::span{storage}),{&plane,1},{64,1}};
+        if(!available)view.storage={};
+        FrameStamp stamp;stamp.sequence=index;stamp.epoch=1;stamp.producer_epoch=1;stamp.available=available;
+        stamp.timestamp_ticks=std::int64_t(std::llround(double(index)*32768/60));
+        const auto status=plan->process_numeric_ports(1,{stamp,view},*context,{}, {Observation::receive,nullptr,nullptr,&result});
+        if(status!=Status::ok && (available || status!=Status::unavailable))std::fprintf(stderr,"frame %u status %u\n",index,unsigned(status));
+        check(status==Status::ok || (!available && status==Status::unavailable));
+    }
+};
+void ring_and_unavailable() {
+    Fixture f;
+    for(unsigned i=0;i<620;++i)f.step(i);
+    check(f.result.available[0] && f.result.values[0]>=60 && f.result.values[0]<=180);
+    check(!f.result.available[1]);check(f.result.values[3]==1);check(!f.result.available[4]);
+    f.step(620,false);check(!f.result.available[0] && !f.result.available[1]);
+    f.step(621);check(!f.result.available[0]);check(f.result.values[3]==0);
+}
+void refuses_wrong_input() {
+    auto node=analyzer_node();auto input=std::get<NumericContract>(node.inputs[0].contract.view());
+    std::array<OwnedProcessingContract,rhythm_output_count> output;
+    input.dtype=DType::Float32;check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    input.dtype=DType::UInt8;input.shape.extents[1]={65,65};check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    input.shape.extents[1]={64,64};input.clock.sample_rate=48000;check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    auto p=profile();p.music_enabled=false;std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
+    check(PreparedGraph::prepare_numeric(graph(),p,plan,context)!=Status::ok);
+}
+void example_is_preparable() {
+    const auto example=numeric_rhythm_graph();
+    unsigned real_fourier=0,duplicate_rfft=0;bool shared_history=false,combined_96=false,quantized=false;
+    bool no_custom_features=true,existing_broadband=false,existing_notes=false,measured_profile=false;
+    for(const auto& node:example.nodes){
+        real_fourier+=unsigned(node.kind=="RealFourier");
+        duplicate_rfft+=unsigned(node.kind=="RFFT");
+        no_custom_features=no_custom_features && node.kind!="RhythmFeatures" && node.id!=1101;
+        if(node.id==6 && !node.outputs.empty()){
+            const auto& c=std::get<NumericContract>(node.outputs[0].contract.view());
+            existing_broadband=c.shape.extents[0]==ExtentBounds{48,48};
+        }
+        if(node.id==1006 && !node.outputs.empty()){
+            const auto& c=std::get<NumericContract>(node.outputs[0].contract.view());
+            existing_notes=c.shape.extents[0]==ExtentBounds{48,48};
+        }
+        if(node.id==7 && !node.outputs.empty()){
+            const auto& c=std::get<NumericContract>(node.outputs[0].contract.view());
+            combined_96=c.dtype==DType::UInt8 && c.shape.extents[0].maximum==512 &&
+                c.shape.extents[1]==ExtentBounds{96,96};
+        }
+        if(node.id==1005){
+            const auto& parameters=std::get<TransformProcessingParameters>(node.parameters).values;
+            for(const auto& f:parameters)if(f.key=="values"){
+                if(const auto* profile=std::get_if<NumericArray>(&f.value))
+                    measured_profile=profile->values.size()==2048 && profile->values[0]>1;
+            }
+        }
+    }
+    for(const auto& edge:example.edges){
+        if(edge.from==7 && edge.to==1102)shared_history=true;
+        if(edge.from==1007 && edge.to==1111)quantized=true;
+    }
+    check(real_fourier==1 && duplicate_rfft==0 && shared_history && combined_96 &&
+          quantized && no_custom_features && existing_broadband && existing_notes && measured_profile);
+    std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
+    // The shipped desktop example uses the external SpeexDSP backend.
+    // Portable SDK tests retain the same topology with its allowed FIR fallback.
+    auto p=profile();p.experimental_resampling_enabled=true;
+#ifdef BARELIEF_TEST_DESKTOP_SPEEX
+    p.resampler_backend=&desktop_resampling::speex_backend_factory();
+    check(PreparedGraph::prepare_numeric(example,p,plan,context)==Status::ok);
+#else
+    auto portable=example;
+    for(auto& node:portable.nodes)if(node.kind=="PcmResampler"){
+        auto& params=std::get<TransformProcessingParameters>(node.parameters).values;
+        for(auto& entry:params)if(entry.key=="mode")entry.value=std::string{"existing_fir"};
+    }
+    check(PreparedGraph::prepare_numeric(portable,p,plan,context)==Status::ok);
+#endif
+}
+}
+int main(){ring_and_unavailable();refuses_wrong_input();example_is_preparable();}

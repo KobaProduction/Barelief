@@ -1,5 +1,6 @@
 #include "performance_report.h"
 #include <core_app/graph_panel.h>
+#include <core_app/plot_composition.h>
 #include <core_app/numeric_default_graph.h>
 #include <core_app/numeric_view_adapter.h>
 #include <desktop/numeric_project_document.h>
@@ -86,7 +87,7 @@ static void feed_native_pcm(const std::shared_ptr<Capture>& capture,std::uint64_
 }
 
 static void native_worker_lifecycle(GraphPanel& panel,SpectrogramGraph* surface,const auto& pumpFor) {
-        if(presentation::RenderPreparationPolicy::mesh==presentation::MeshPreparation::Worker) {
+        if(presentation::RenderPreparationPolicy::mesh!=presentation::MeshPreparation::Inline) {
             // A completed older packet may be shown, but the latest ingress
             // must catch up even when no further data arrives to wake the view.
             require(surface->set_axis_metadata({}),"worker numeric metadata reset");
@@ -167,7 +168,14 @@ static void native_selection(SpectrogramGraph* surface,SurfaceQuickItem* rendere
         require(picked,"could not select a visible native sample");rendered();age=surface->axis_layout_telemetry().value("selectedAge").toInt();band=surface->axis_layout_telemetry().value("selectedBand").toInt();
         const auto readout=surface->axis_layout_telemetry().value("selectionReadoutRows").toStringList();require(readout.size()==3,"point readout must contain all three coordinates");
         const QLocale locale("en_US");const auto precision=surface->surface_settings().value("axis_precision").toInt();
-        require(readout[0]==ui::text("Time delay (s): %1").arg(axisReadoutLabel(physical.age(age),locale,precision))&&readout[1]==ui::text("Frequency (Hz)")+": "+axisReadoutLabel(physical.column(band),locale,precision),"point coordinate values differ from source axes");
+        auto timeTitle=ui::text(physical.time_title_key.toUtf8().constData());
+        if(timeTitle.endsWith(" (X)"))timeTitle.chop(4);
+        const auto timeValue=axisReadoutLabel(physical.age(age),locale,precision);
+        const auto timeRow=physical.age_axis?ui::text("Time delay (s): %1").arg(timeValue):timeTitle+": "+timeValue;
+        const auto frequencyRow=ui::text(spectrogramCoordinateName(physical.column_title_key))+": "+axisReadoutLabel(physical.column(band),locale,precision);
+        if(readout[0]!=timeRow || readout[1]!=frequencyRow)
+            std::fprintf(stderr,"selection actual=%s expected=%s\n",qPrintable(readout.join(" | ")),qPrintable(timeRow+" | "+frequencyRow));
+        require(readout[0]==timeRow&&readout[1]==frequencyRow,"point coordinate values differ from source axes");
         auto state=surface->presentation_state();state["selection"]=2;surface->set_presentation_state(state);rendered();
         require(surface->axis_layout_telemetry().value("sliceSampleCount").toInt()==50,"time slice missing");const auto indices=surface->axis_layout_telemetry().value("sliceEndpointIndices").toPoint();const auto coordinates=surface->axis_layout_telemetry().value("sliceEndpointCoordinates").toPointF();
         require(std::abs(coordinates.x()-physical.column(indices.x()))<1e-6&&std::abs(coordinates.y()-physical.column(indices.y()))<1e-6,"time slice coordinates differ from native frequency axis");save("physical-time-slice");
@@ -251,7 +259,7 @@ static auto native_physical_axes(GraphPanel& panel,SpectrogramGraph* surface,con
         require(physical.time_coordinates&&physical.ages.size()==400&&physical.age(0)==0&&
                 std::abs(physical.age(399)-expectedHistoryDelay)<=delayTolerance,
                 "seconds selector differs from exact graph cadence/source-sample timing");
-        physicalTelemetry=surface->axis_layout_telemetry();require(physicalTelemetry.value("bandAxisTitle")=="Frequency, Hz (Z)"&&physicalTelemetry.value("timeAxisTitle")=="Time delay, seconds (X)","native renderer titles not physical");
+        physicalTelemetry=surface->axis_layout_telemetry();require(physicalTelemetry.value("bandAxisTitle")==physical.column_title_key&&physicalTelemetry.value("timeAxisTitle")==physical.time_title_key,"native renderer titles differ from projected physical axes");
         const auto frequencyTicks=physicalTelemetry.value("bandAxisTickValues").toList(),delayTicks=physicalTelemetry.value("timeAxisTickValues").toList();
         const auto maximumTick=[](const QVariantList& values){double maximum=-1;for(const auto& value:values)maximum=std::max(maximum,value.toDouble());return maximum;};
         require(maximumTick(frequencyTicks)>1000 && std::abs(maximumTick(delayTicks)-expectedHistoryDelay)<=delayTolerance,
@@ -421,8 +429,10 @@ static std::pair<int,int> native_projection_scenarios(NumericEngine& engine,cons
 }
 static int native_mode_option(int argc,char** argv) {
     if(argc>2) {
-        if(QString::fromLocal8Bit(argv[2])!="worker")return 2;
-        presentation::RenderPreparationPolicy::mesh=presentation::MeshPreparation::Worker;
+        const auto mode=QString::fromLocal8Bit(argv[2]);
+        if(mode!="worker" && mode!="inline" && mode!="pooled")return 2;
+        presentation::RenderPreparationPolicy::mesh=mode=="worker"?presentation::MeshPreparation::Worker:
+            mode=="inline"?presentation::MeshPreparation::Inline:presentation::MeshPreparation::Pooled;
         presentation::RenderPreparationPolicy::snapshot_pool=true;
     }
     return 0;
@@ -443,7 +453,7 @@ int main(int argc,char** argv){
     QTimer safety;arm_native_safety(safety,app);
     try{
         ui::Language::instance().set("en");
-        require(argc==2 || argc==3,"provide an artifact directory and optional worker mode");QDir artifacts(QString::fromLocal8Bit(argv[1]));require(artifacts.mkpath("."),"artifact directory");
+        require(argc==2 || argc==3,"provide an artifact directory and optional mesh mode");QDir artifacts(QString::fromLocal8Bit(argv[1]));require(artifacts.mkpath("."),"artifact directory");
         auto capture=std::make_shared<Capture>();NumericEngine engine([capture](auto){return std::make_unique<Source>(capture);});
         const auto graph=numeric_default_graph();bool reply=false,accepted=false;
         prepare_native_engine(engine,capture,graph,reply,accepted);
@@ -456,7 +466,8 @@ int main(int argc,char** argv){
         presentation::NumericViewAdapter adapter({1,{400,50,1048576,{true,32768}},{true,32768}});require(adapter.bind(history)==Status::ok,"bind actual History");
         QWidget dockHost;
         configure_native_dock_host(dockHost);
-        GraphPanel panel("nativeAxes",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","surface3d"}},nullptr);
+        GraphPanel panel("nativeAxes",new LineChartView,{{"kind","SpectrogramView"},{"display_mode","surface3d"}},nullptr,nullptr,
+            presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","surface3d"},{},false}));
         SpectrogramGraph* surface=nullptr;QQuickWidget* host=nullptr;SurfaceQuickItem* renderer=nullptr;
         prepare_native_panel(panel,adapter,history,frame,ordinal,filled,graph,surface,host,renderer);
         auto save=[&](const QString& name){save_native_frame(host,surface,artifacts,name);};

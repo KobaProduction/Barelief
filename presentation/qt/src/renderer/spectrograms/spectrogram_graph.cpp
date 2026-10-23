@@ -11,6 +11,7 @@
 #include "barelief/quick3d/surface_overlay_commands.h"
 #include "barelief/quick3d/surface_overlay_item.h"
 #include "barelief/quick/quick_ui.h"
+#include "barelief/quick/scene_host.h"
 #include <barelief/rendering/qt_frame_pump.h>
 #include <barelief/rendering/latest_preparation.h>
 #include <QQuickWidget>
@@ -113,11 +114,14 @@ class CpuMeshBuilder {
         }
         return true;
     }
+    QVector3D cachedPoint(size_t band,size_t age) const{
+        return result.point_cache.point_or_sample(scene,age,band,[this,band,age]{return sample(band,age);});
+    }
     QVector3D normal(size_t band,size_t age) const{
         const auto left=age?age-1:age,right=std::min(age+1,input.history-1);
         const auto lower=band?band-1:band,upper=std::min(band+1,input.bands-1);
-        const auto dx=result.point_cache.point(scene,right,band,sample(band,right))-result.point_cache.point(scene,left,band,sample(band,left));
-        const auto dz=result.point_cache.point(scene,age,upper,sample(upper,age))-result.point_cache.point(scene,age,lower,sample(lower,age));
+        const auto dx=cachedPoint(band,right)-cachedPoint(band,left);
+        const auto dz=cachedPoint(upper,age)-cachedPoint(lower,age);
         const auto value=QVector3D::crossProduct(dx,dz).normalized();
         return scene.reverseTime!=scene.reverseBands?-value:value;
     }
@@ -271,18 +275,21 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
             if(key!="verifyGeometryUpload")result.insert(QString::fromUtf8(key),property(key.constData()));
         result["displayFps"]=fps();
         result["submissionToken"]=qulonglong(submission_token);
+        result["meshPreparationPending"]=mesh_preparation_pending;
         result["renderFrameStartNs"]=qulonglong(last_frame);
         return result;
     }
     void frameConsumed(const QVariantMap& values){
         const auto received=core::perf::now();
+        mesh_preparation_pending=values.value("meshPreparationPending").toBool();
         bool validStart=false;
         const auto frameStart=values.value("renderFrameStartNs").toULongLong(&validStart);
         // Retain the actual paint start for diagnostics across the render/GUI
         // boundary; invalid or stale feedback falls back to receipt time.
         last_frame=validStart && frameStart && frameStart<=received && frameStart>=last_frame ? frameStart : received;
         for(auto it=values.begin();it!=values.end();++it)setProperty(it.key().toUtf8().constData(),it.value());
-        frame_pump.complete(values.value("submissionToken").toULongLong());
+        if(!mesh_preparation_pending)
+            frame_pump.complete(values.value("submissionToken").toULongLong());
     }
     bool incompatibleInput(const SpectrogramRenderer& source) const{
         return history_capacity!=source.history_capacity || configured_bands!=source.configured_bands ||
@@ -367,6 +374,12 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         frame_pump.setVisible(render_visible && visible && !canvas.isNull());
         frame_pump.request();
     }
+    void resumePreparedFrame() {
+        // Continue the outstanding submission: CPU preparation already paid
+        // its frame deadline. Starting a second paced request halves throughput.
+        if(!render_visible || !visible || !canvas)return;
+        if(mesh_preparation_pending)canvas->update();else requestUpdate();
+    }
     void setRenderFps(int fps) {frame_pump.setRate(fps);}
     void setRenderVisible(bool value) {
         if(render_visible==value)return;
@@ -436,6 +449,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
   private:
     barelief::rendering::QtFramePump frame_pump;
     quint64 request_time=0,last_frame=0,submission_token=0;
+    bool mesh_preparation_pending=false;
     GLfloat line_range[2]{1,1};
     std::unique_ptr<QOpenGLTimerQuery> gpu_query;
     bool gpu_pending=false, gpu_attempted=false;
@@ -451,6 +465,9 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     std::unique_ptr<QOpenGLTexture> label_texture;
     QOpenGLBuffer label_buffer{QOpenGLBuffer::VertexBuffer};
     QString label_signature;
+    QString atlas_style;
+    QStringList atlas_labels;
+    int atlas_title_offset=0;
     bool axis_text_valid=false;
     SpectrogramAxisMetadata axis_text_metadata;
     std::array<float,9> axis_text_scene{};
@@ -483,6 +500,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     quint64 mesh_submitted_revision=std::numeric_limits<quint64>::max();
     quint64 mesh_submitted_generation=std::numeric_limits<quint64>::max();
     CpuMeshResult mesh_result;
+    std::optional<CpuMeshInput> uploaded_input;
     QPointer<SpectrogramRenderer> mesh_wake_target;
     quint64 mesh_generation=0,clear_generation=0,seen_clear_generation=0;
     QElapsedTimer clock;
@@ -497,7 +515,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     }
     void destroyMeshResources(){
         buffer.destroy();edge_buffer.destroy();surface_buffer.destroy();floor_buffer.destroy();program.reset();
-        grid_signature.clear();axis_policy_signature.clear();capacity=edge_capacity=surface_capacity=0;topology_uploaded=false;upload=true;
+        grid_signature.clear();axis_policy_signature.clear();capacity=edge_capacity=surface_capacity=0;topology_uploaded=false;upload=true;uploaded_input.reset();
     }
     void destroyLabelResources(){
         label_texture.reset();label_program.reset();label_buffer.destroy();label_signature.clear();
@@ -651,7 +669,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         if(!((!pooled&&!ready)||(pooled&&(revision!=mesh_submitted_revision||mesh_generation!=mesh_submitted_generation))))return;
         const auto target=mesh_wake_target;QObject* dispatcher=QCoreApplication::instance();
         if(mesh_worker->submit({data,scene,bandSize(),historySize(),mesh_generation,axes,projection_status},[dispatcher,target]{
-            QMetaObject::invokeMethod(dispatcher,[target]{if(target)target->requestUpdate();},Qt::QueuedConnection);
+            QMetaObject::invokeMethod(dispatcher,[target]{if(target)target->resumePreparedFrame();},Qt::QueuedConnection);
         })){
             mesh_submitted_revision=revision;mesh_submitted_generation=mesh_generation;
             setProperty("meshWorkerJobs",property("meshWorkerJobs").toULongLong()+1);
@@ -733,14 +751,36 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         QMetaObject::invokeMethod(QCoreApplication::instance(),[target]{if(target)target->requestUpdate();},Qt::QueuedConnection);
     }
 
+    bool hasUploadedMeshInput() const{
+        // Presentation restoration can request an upload without changing the
+        // mesh input. A pooled worker will not resubmit that same revision;
+        // keep drawing its already uploaded geometry instead of waiting forever.
+        return mesh_worker && topology_uploaded && mesh_result.valid &&
+           mesh_result.input.generation==mesh_generation &&
+           mesh_result.input.data.storage_identity()==data.storage_identity();
+    }
     bool prepareMesh(RestoreNewest& newest){
         if(!upload)return true;
+        if(hasUploadedMeshInput()){upload=false;return true;}
         core::perf::Scope trace(core::perf::Stage::SpectrogramGeometry);
-        if(!prepareMeshResult())return false;
+        if(!prepareMeshResult())return reuseUploadedMesh(newest);
+        acceptPreparedMesh(newest);return true;
+    }
+    bool reuseUploadedMesh(RestoreNewest& newest){
+        if(!mesh_worker || !topology_uploaded || !uploaded_input || uploaded_input->generation!=mesh_generation)return false;
+        // Camera motion can draw the retained GPU mesh while the next data
+        // packet is prepared. Keep that mesh's axes/status with its samples.
+        newest.retain();data=uploaded_input->data;axes=uploaded_input->axes;
+        projection_status=uploaded_input->projection_status;
+        setProperty("meshRetainedDraws",property("meshRetainedDraws").toULongLong()+1);
+        return true;
+    }
+    void acceptPreparedMesh(RestoreNewest& newest){
         const bool older=mesh_result.input.data.storage_identity()!=data.storage_identity();
         if(mesh_worker)adoptPreparedInput(newest);
         const bool changed=acceptMeshTopology();describeAcceptedMesh();uploadMesh(changed);
-        upload=older;if(older)wakeNewestMesh();return true;
+        uploaded_input=mesh_result.input;
+        upload=older;if(older)wakeNewestMesh();
     }
     void adoptPreparedInput(RestoreNewest& newest){
         newest.retain();data=mesh_result.input.data;axes=mesh_result.input.axes;
@@ -803,9 +843,9 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         program->setUniformValue("gridPass",true);
         const auto setting=options["mesh_color"].toString("auto");const QColor color=setting=="auto"?palette().color(QPalette::Shadow):QColor(setting);
         program->setUniformValue("gridColor",QVector3D(color.redF(),color.greenF(),color.blueF()));
-        program->setUniformValue("gridOpacity",float(options["mesh_contrast"].toDouble(1)));
+        program->setUniformValue("gridOpacity",float(options["mesh_contrast"].toDouble(.2)));
         glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthFunc(GL_LEQUAL);glDepthMask(GL_FALSE);
-        const auto width=std::clamp(float(options["mesh_width"].toDouble(1)),line_range[0],line_range[1]);
+        const auto width=std::clamp(float(options["mesh_width"].toDouble(.67)),line_range[0],line_range[1]);
         glLineWidth(width);setProperty("meshActualWidth",width);
     }
     void drawWireframe(){
@@ -988,16 +1028,61 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
         for(int index=0;index<cached_label_texts.size();++index)paintAtlasGlyph(painter,frame,index);
         painter.end();
     }
+    void uploadLabelAtlas(const QImage& image){
+        if(!label_texture || label_texture->width()!=image.width() || label_texture->height()!=image.height()){
+            label_texture=std::make_unique<QOpenGLTexture>(QOpenGLTexture::Target2D);
+            label_texture->setFormat(QOpenGLTexture::RGBA8_UNorm);
+            label_texture->setSize(image.width(),image.height());label_texture->setMipLevels(1);
+            label_texture->allocateStorage(QOpenGLTexture::RGBA,QOpenGLTexture::UInt8);
+            label_texture->setMinificationFilter(QOpenGLTexture::Linear);label_texture->setMagnificationFilter(QOpenGLTexture::Linear);
+            label_texture->setWrapMode(QOpenGLTexture::ClampToEdge);
+            setProperty("labelTextureAllocations",property("labelTextureAllocations").toULongLong()+1);
+        }
+        // Changing time labels updates existing storage. Recreating a texture
+        // here forced allocation and driver synchronization on the render path.
+        const auto pixels=image.flipped(Qt::Vertical);
+        label_texture->setData(QOpenGLTexture::RGBA,QOpenGLTexture::UInt8,pixels.constBits());
+    }
     void prepareLabelAtlas(const SurfaceFrame& frame){
         const auto signature=cached_label_texts.join('|')+font().toString()+frame.ink.name()+frame.background.name();
         if(signature==label_signature && label_dpr==devicePixelRatioF())return;
-        core::perf::Scope trace(core::perf::Stage::SpectrogramAtlas);describeAtlasBuild();prepareAtlasLayout();
+        core::perf::Scope trace(core::perf::Stage::SpectrogramAtlas);describeAtlasBuild();
+        const auto priorCell=atlas_cell;prepareAtlasLayout();
         const auto dpr=devicePixelRatioF();const auto rows=(cached_label_texts.size()+2)/3;
-        QImage image(qRound(3*atlas_cell.width()*dpr),qRound(rows*atlas_cell.height()*dpr),QImage::Format_RGBA8888);
-        image.setDevicePixelRatio(dpr);image.fill(Qt::transparent);paintAtlasImage(image,frame);
-        label_texture=std::make_unique<QOpenGLTexture>(image.flipped(Qt::Vertical));
-        label_texture->setMinificationFilter(QOpenGLTexture::Linear);label_texture->setMagnificationFilter(QOpenGLTexture::Linear);
-        label_texture->setWrapMode(QOpenGLTexture::ClampToEdge);label_signature=signature;label_dpr=dpr;
+        const QSize pixels(qRound(3*atlas_cell.width()*dpr),qRound(rows*atlas_cell.height()*dpr));
+        const auto style=font().toString()+frame.ink.name(QColor::HexArgb)+frame.background.name(QColor::HexArgb);
+        if(canPatchAtlas(style,priorCell,pixels))updateAtlasCells(frame,dpr);
+        else rebuildAtlasImage(frame,pixels,dpr);
+        rememberAtlas(style,signature,dpr);
+    }
+    void rememberAtlas(const QString& style,const QString& signature,qreal dpr){
+        atlas_labels=cached_label_texts;atlas_style=style;atlas_title_offset=cached_title_offset;
+        label_signature=signature;label_dpr=dpr;
+    }
+    bool canPatchAtlas(const QString& style,QSize priorCell,QSize pixels) const {
+        return label_texture && atlas_style==style && label_dpr==devicePixelRatioF() && priorCell==atlas_cell &&
+            atlas_title_offset==cached_title_offset && atlas_labels.size()==cached_label_texts.size() &&
+            label_texture->width()==pixels.width() && label_texture->height()==pixels.height();
+    }
+    void rebuildAtlasImage(const SurfaceFrame& frame,QSize pixels,qreal dpr){
+        QImage image(pixels,QImage::Format_RGBA8888);image.setDevicePixelRatio(dpr);
+        image.fill(Qt::transparent);paintAtlasImage(image,frame);uploadLabelAtlas(image);
+        setProperty("labelAtlasFullUploads",property("labelAtlasFullUploads").toULongLong()+1);
+    }
+    void updateAtlasCell(const SurfaceFrame& frame,int index,qreal dpr){
+        const int left=qRound((index%3)*atlas_cell.width()*dpr),top=qRound((index/3)*atlas_cell.height()*dpr);
+        const QSize size(qRound((index%3+1)*atlas_cell.width()*dpr)-left,qRound((index/3+1)*atlas_cell.height()*dpr)-top);
+        QImage image(size,QImage::Format_RGBA8888);image.setDevicePixelRatio(dpr);image.fill(Qt::transparent);
+        QPainter painter(&image);painter.setFont(font());painter.setPen(frame.ink);painter.translate(-left/dpr,-top/dpr);
+        paintAtlasGlyph(painter,frame,index);painter.end();const auto pixels=image.flipped(Qt::Vertical);
+        label_texture->setData(left,label_texture->height()-top-size.height(),0,size.width(),size.height(),1,
+            QOpenGLTexture::RGBA,QOpenGLTexture::UInt8,pixels.constBits());
+    }
+    void updateAtlasCells(const SurfaceFrame& frame,qreal dpr){
+        for(int index=0;index<cached_label_texts.size();++index)if(atlas_labels[index]!=cached_label_texts[index]){
+            updateAtlasCell(frame,index,dpr);
+            setProperty("labelAtlasCellUploads",property("labelAtlasCellUploads").toULongLong()+1);
+        }
     }
     struct AxisLabelFrame {
         const SurfaceFrame& surface;
@@ -1215,7 +1300,7 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     }
 
     bool beginGpuTimer(){
-        if(!core::perf::enabled)return false;initializeGpuTimer();
+        if(!core::perf::enabled && !core::telemetry::active())return false;initializeGpuTimer();
         if(gpu_query && gpu_pending && gpu_query->isResultAvailable()){
             core::perf::duration(core::perf::Stage::SpectrogramGpu,gpu_query->waitForResult());gpu_pending=false;
         }
@@ -1249,11 +1334,12 @@ class SpectrogramRenderer final : public QObject, protected QOpenGLFunctions {
     }
 
     void paintGL(){
+        mesh_preparation_pending=false;
         if(!render_visible)return;
         core::perf::Scope trace(core::perf::Stage::SpectrogramRender);if(!beginFrame())return;
         const auto background=options.value("background_mode")=="custom"?QColor(options.value("background_color").toString()):palette().color(QPalette::Window);
         const auto ink=spectrogramTextColor(background);setProperty("sceneBackgroundColor",background);setProperty("sceneWallColor",background);
-        RestoreNewest newest(*this);if(!prepareMesh(newest))return;
+        RestoreNewest newest(*this);if(!prepareMesh(newest)){mesh_preparation_pending=true;return;}
         SurfaceFrame frame(*this,background,ink);renderFramePasses(frame);
     }
 };
@@ -1320,7 +1406,7 @@ SpectrogramGraph::~SpectrogramGraph() {
     // Destroy QML bindings while both their graphModel context object and
     // backend state are still alive. QObject child cleanup would otherwise
     // happen after the SpectrogramGraph/model part has been destroyed.
-    auto* view=_quick_view;
+    auto* view=m_container;
     _quick_view=nullptr;_quick_item=nullptr;m_container=nullptr;
     if(view){view->removeEventFilter(this);delete view;}
     delete m_spectrogram_graph;
@@ -1349,19 +1435,27 @@ void SpectrogramGraph::create_surface_view(const QSize& minimum,const QSize& max
     static const int registered=qmlRegisterType<SurfaceQuickItem>("Barelief.Surface",1,0,"SurfaceCanvas");
     static const int overlayRegistered=qmlRegisterType<SurfaceOverlayItem>("Barelief.Surface",1,0,"SurfaceOverlay");
     Q_UNUSED(registered);Q_UNUSED(overlayRegistered);
-    _quick_view=new QQuickWidget(this);_quick_view->setObjectName("spectrogramQuickView");
-    _quick_view->setMinimumSize(minimum);_quick_view->setMaximumSize(maximum);m_container=_quick_view;
+    if(presentation::RenderPreparationPolicy::plot_host==presentation::PlotHost::NativeWindow)
+        m_container=new ui::quick::SceneHost(presentation::PlotHost::NativeWindow,this);
+    else m_container=_quick_view=new QQuickWidget(this);
+    m_container->setObjectName("spectrogramQuickView");
+    m_container->setMinimumSize(minimum);m_container->setMaximumSize(maximum);
 }
 bool SpectrogramGraph::bind_surface_canvas(){
-    ui::quick::initialize(_quick_view,this,QUrl("qrc:/surface3d/SurfaceView.qml"));
-    _quick_item=_quick_view->rootObject()?_quick_view->rootObject()->findChild<SurfaceQuickItem*>("spectrogramContainer"):nullptr;
+    if(auto* host=qobject_cast<ui::quick::SceneHost*>(m_container)){
+        host->rootContext()->setContextProperty("graphModel",this);
+        host->setSource(QUrl("qrc:/surface3d/SurfaceView.qml"));
+        host->quickWindow()->installEventFilter(this);
+    }else ui::quick::initialize(_quick_view,this,QUrl("qrc:/surface3d/SurfaceView.qml"));
+    const ui::quick::SceneReference scene(m_container);
+    _quick_item=scene->rootObject()?scene->rootObject()->findChild<SurfaceQuickItem*>("spectrogramContainer"):nullptr;
     if(!_quick_item){delete m_spectrogram_graph;m_spectrogram_graph=nullptr;return false;}
     _quick_item->setBackend(m_spectrogram_graph);m_spectrogram_graph->canvas=_quick_item;
-    desktop_input::attach_touchpad(_quick_view,[this](QPoint point){
+    desktop_input::attach_touchpad(m_container,[this](QPoint point){
         return _render_visible && _quick_item && point.x()<_quick_item->width() &&
             !(m_spectrogram_graph->selection>=2 && m_spectrogram_graph->property("sliceSampleCount").toInt()>0 && m_spectrogram_graph->sliceOverlay.rect(m_spectrogram_graph->size()).contains(point));
     });
-    _quick_view->installEventFilter(this);return true;
+    m_container->installEventFilter(this);return true;
 }
 void SpectrogramGraph::connect_surface_changes(){
     connect(&ui::Theme::instance(),&ui::Theme::changed,this,[this]{
@@ -1386,7 +1480,7 @@ void SpectrogramGraph::restore_surface_state(){
 bool SpectrogramGraph::initialize(const QSize& minimum,const QSize& maximum){
     if(_initialization_attempted)return m_spectrogram_graph;_initialization_attempted=true;
     auto* layout=new QVBoxLayout(this);layout->setContentsMargins(0,0,0,0);
-    create_surface_model();create_surface_view(minimum,maximum);layout->addWidget(_quick_view);
+    create_surface_model();create_surface_view(minimum,maximum);layout->addWidget(m_container);
     if(!bind_surface_canvas())return false;
     connect_surface_changes();restore_surface_state();return true;
 }
@@ -1465,8 +1559,11 @@ bool SpectrogramGraph::apply_axis_metadata(const SpectrogramAxisMetadata& value)
     const bool scaleChanged=_source_axis_metadata.value_scale!=value.value_scale,sourceChanged=_source_axis_metadata!=value;
     _source_axis_metadata=value;const auto displayed=value.displayed(_frequency_axis_mode,_time_axis_mode);
     if(_axis_metadata==displayed){if(sourceChanged)emit axis_metadata_changed();return true;}
+    const bool titlesChanged=std::tie(_axis_metadata.time_title_key,_axis_metadata.column_title_key,_axis_metadata.value_title_key)!=
+        std::tie(displayed.time_title_key,displayed.column_title_key,displayed.value_title_key);
     _axis_metadata=displayed;sync_axis_metadata(scaleChanged);
-    if(sourceChanged)emit axis_metadata_changed();emit quick_state_changed();return true;
+    if(sourceChanged)emit axis_metadata_changed();
+    if(titlesChanged)emit quick_state_changed();return true;
 }
 
 bool SpectrogramGraph::set_axis_metadata(const SpectrogramAxisMetadata& value){
@@ -1976,7 +2073,7 @@ void SpectrogramGraph::quick_range(int axis,double low,double high,bool automati
 void SpectrogramGraph::quick_viewport(double width,double height) {
     if(!m_spectrogram_graph||!std::isfinite(width)||!std::isfinite(height))return;
     const QSize viewport(std::max(1,qRound(width)),std::max(1,qRound(height)));
-    const auto dpr=_quick_view?_quick_view->devicePixelRatioF():devicePixelRatioF();
+    const auto dpr=m_container?m_container->devicePixelRatioF():devicePixelRatioF();
     if(m_spectrogram_graph->viewport==viewport && m_spectrogram_graph->dpr==dpr)return;
     m_spectrogram_graph->viewport=viewport;
     m_spectrogram_graph->dpr=dpr;

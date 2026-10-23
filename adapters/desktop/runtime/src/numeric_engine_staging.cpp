@@ -316,7 +316,11 @@ Status DeliveryHub::stage(const domain::NumericProcessingGraph& graph,const doma
     return Status::ok;
 }
 void DeliveryHub::stage_history_port(const std::shared_ptr<NumericDeliveryContext>& context,const DataContract& data,Staged& staged) {
-    if(const auto* numeric=std::get_if<NumericContract>(&data);numeric && numeric->shape.rank==Rank::Matrix) {
+    // NumberAccumulator publishes a one-dimensional History; unlike an
+    // ordinary vector, it must be queryable as an owning history snapshot.
+    if(const auto* numeric=std::get_if<NumericContract>(&data);numeric &&
+       (numeric->shape.rank==Rank::Matrix ||
+        (numeric->semantic==Semantic::History && numeric->shape.rank==Rank::Vector))) {
         const auto prior=history_ordinals.find(context->endpoint);
         const auto old=contexts.find(context->endpoint);
         const bool compatible=old!=contexts.end() && same_contract(old->second->contract.view(),data);

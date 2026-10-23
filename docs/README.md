@@ -22,6 +22,7 @@
 - [Контроль сложности функций и Git hooks](reference/code-quality.md).
 - [Работа с интерфейсом](guides/interface.md) и [графиками](guides/graphs.md).
 - [Runtime API](reference/runtime-api.md).
+- [Оптимизация обработки, доставки и графиков](reference/optimizations.md).
 - [FFT: raw комплексный выход и реализации](reference/fft.md).
 - [Музыкальный спектр и частотные профили](guides/music-spectrum.md).
 - [Формат проекта](reference/project-format.md).

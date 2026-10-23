@@ -165,6 +165,12 @@ public:
         return scene.point(age,band,value);
     }
     bool enabled() const {return enabled_;}
+    template<class Sample>
+    QVector3D point_or_sample(const SpectrogramSceneGeometry& scene,size_t age,size_t band,Sample sample) const {
+        if(enabled_ && band>=band_begin_ && band<band_end_ && age>=age_begin_ && age<age_end_)
+            return points_[(band-band_begin_)*columns_+age-age_begin_];
+        return scene.point(age,band,sample());
+    }
 private:
     void configure_bounds(size_t bandBegin,size_t bandEnd,size_t ageBegin,size_t ageEnd,size_t bands,size_t history) {
         band_begin_=bandBegin?bandBegin-1:0;

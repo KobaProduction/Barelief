@@ -193,6 +193,7 @@ Status materialize_music_contract(const ConfiguredProcessingNode& node,const Num
 }
 }
 Status music_output_contract(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& owner) noexcept {
+    if(node.kind=="RhythmFeatures")return rhythm_features_output_contract(node,input,owner);
     if(node.kind=="MusicalSpectrogram") {
         std::array<OwnedProcessingContract,4> outputs;const auto status=musical_spectrogram_output_contracts(node,input,outputs);
         if(status==Status::ok)owner=std::move(outputs[0]);

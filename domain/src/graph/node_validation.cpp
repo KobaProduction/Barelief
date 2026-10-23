@@ -525,8 +525,12 @@ ProcessingDiagnostic validate_musical_rows(const OperationValidation& context) n
     if(musical_spectrogram_output_contracts(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return expected_outputs(context,expected);
 }
-ProcessingDiagnostic validate_musictransform(const OperationValidation& context) noexcept {
-    if(!context.input || !context.output)return context.error(ProcessingError::InvalidParameters);
+ProcessingDiagnostic validate_rhythm(const OperationValidation& context) noexcept {
+    std::array<OwnedProcessingContract,rhythm_output_count> expected;
+    if(context.node.outputs.size()!=rhythm_output_count || rhythm_output_contracts(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
+    return expected_outputs(context,expected);
+}
+ProcessingDiagnostic validate_music_operation(const OperationValidation& context) noexcept {
     if(context.kind==NodeKind::FrequencyNormalizer){
         const auto diagnostic=frequency_normalizer_diagnostic(context.configured,*context.input);
         if(!diagnostic)return diagnostic;
@@ -536,6 +540,11 @@ ProcessingDiagnostic validate_musictransform(const OperationValidation& context)
     OwnedProcessingContract expected;
     if(music_output_contract(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return same_physical_contract(expected.view(),*context.output)?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
+}
+ProcessingDiagnostic validate_musictransform(const OperationValidation& context) noexcept {
+    if(!context.input || !context.output)return context.error(ProcessingError::InvalidParameters);
+    if(context.kind==NodeKind::RhythmAnalyzer)return validate_rhythm(context);
+    return validate_music_operation(context);
 }
 ProcessingDiagnostic validate_transform_geometry(const OperationValidation& context) {
     const auto& input=*context.input;const auto& output=*context.output;

@@ -73,7 +73,16 @@ constexpr ParameterDescriptor quantize[]{
         {"bits",C::Processing,V::Integer,8,16,8,{}},
         {"min_value",C::Processing,V::Number,-1e30,1e30,0,{}},
         {"max_value",C::Processing,V::Number,-1e30,1e30,1,{}}};
+constexpr ParameterDescriptor rhythm[]{
+    {"feature_rate_fps",C::Processing,V::Integer,30,60,60,{}},
+    {"feature_bins",C::Processing,V::Integer,64,96,64,{}},
+    {"sample_rate",C::Processing,V::Number,1,4294967295.,32768,{}},
+    {"mode",C::Processing,V::String,0,0,0,"gated"},
+    {"budget_ops",C::Processing,V::Integer,0,4294967295.,30000,{}}};
+constexpr ParameterDescriptor rhythm_features[]{{"feature_bins",C::Processing,V::Integer,64,96,64,{}}};
 constexpr ParameterSet sets[]{
+    {NodeKind::RhythmAnalyzer,rhythm},
+    {NodeKind::RhythmFeatures,rhythm_features},
     {NodeKind::SpectrumProjection,projection},
     {NodeKind::FrequencyNormalizer,normalizer},
     {NodeKind::MusicalSpectrogram,musical_row},

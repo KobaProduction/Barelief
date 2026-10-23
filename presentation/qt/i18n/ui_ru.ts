@@ -2,6 +2,33 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Rhythm analysis: candidates, confidence and phase</source><translation>Анализ ритма: кандидаты, достоверность и фаза</translation></message>
+    <message><source>Rhythm analyzer (experimental)</source><translation>Анализатор ритма (экспериментальный)</translation></message>
+    <message><source>Rhythm features (R4 diagnostic)</source><translation>Признаки ритма (диагностический профиль R4)</translation></message>
+    <message><source>Candidate tempo, BPM</source><translation>Кандидат темпа, BPM</translation></message>
+    <message><source>Accepted tempo, BPM</source><translation>Принятый темп, BPM</translation></message>
+    <message><source>Decision score (not probability)</source><translation>Оценка решения (не вероятность)</translation></message>
+    <message><source>Tempo status: 0 unknown, 1 ambiguous, 2 determined</source><translation>Статус темпа: 0 неизвестен, 1 неоднозначен, 2 определён</translation></message>
+    <message><source>Beat phase, 0...1</source><translation>Фаза доли, 0…1</translation></message>
+    <message><source>Next beat, source seconds</source><translation>Следующая доля, секунды источника</translation></message>
+    <message><source>Tempo change, BPM/s</source><translation>Изменение темпа, BPM/с</translation></message>
+    <message><source>Spectral activity</source><translation>Спектральная активность</translation></message>
+    <message><source>Periodicity support</source><translation>Поддержка периодичности</translation></message>
+    <message><source>ACF cost units (not time)</source><translation>Стоимость ACF (не время)</translation></message>
+    <message><source>Accent strength</source><translation>Сила акцента</translation></message>
+    <message><source>Grid status: 0 unknown, 1 ambiguous, 2 determined</source><translation>Статус сетки: 0 неизвестна, 1 неоднозначна, 2 определена</translation></message>
+    <message><source>R4 spectrogram: 512 x 64/96 UInt8</source><translation>Спектрограмма R4: 512 × 64/96 UInt8</translation></message>
+    <message><source>Feature cadence, frames/s</source><translation>Частота признаков, кадров/с</translation></message>
+    <message><source>R4 feature bands</source><translation>Полосы признаков R4</translation></message>
+    <message><source>ACF budget, cost units</source><translation>Бюджет ACF, единицы стоимости</translation></message>
+    <message><source>Gated refinement</source><translation>Уточнение по необходимости</translation></message>
+    <message><source>Light only</source><translation>Только лёгкий анализ</translation></message>
+    <message><source>Full refinement</source><translation>Полное уточнение</translation></message>
+    <message><source>64 bands</source><translation>64 полосы</translation></message>
+    <message><source>96 bands</source><translation>96 полос</translation></message>
+    <message><source>30 fps</source><translation>30 кадров/с</translation></message>
+    <message><source>45 fps</source><translation>45 кадров/с</translation></message>
+    <message><source>60 fps</source><translation>60 кадров/с</translation></message>
     <message><source>FFT size does not match</source><translation>Размер FFT не совпадает</translation></message>
     <message><source>Sample rate does not match</source><translation>Частота дискретизации не совпадает</translation></message>
     <message><source>Spectrum layout does not match</source><translation>Структура спектра не совпадает</translation></message>

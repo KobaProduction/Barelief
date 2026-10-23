@@ -1064,10 +1064,14 @@ class NodeDisplayNameScenario {
         return true;
     }
     bool scalar_labels() {
-        delta.node_presentations["7"]=QJsonObject{{"scalar_inputs",QJsonObject{
+        QJsonObject labels{
             {"0",QJsonObject{{"display_name","Count"},{"enabled",false}}},
-            {"3",QJsonObject{{"display_name","Peak"},{"enabled",true}}}}}};
+            {"3",QJsonObject{{"display_name","Peak"},{"enabled",true}}}};
+        for(unsigned id=0;id<12;++id)if(!labels.contains(QString::number(id)))
+            labels[QString::number(id)]=QJsonObject{{"display_name",QString("Metric %1").arg(id)},{"enabled",true}};
+        delta.node_presentations["7"]=QJsonObject{{"scalar_inputs",labels}};
         if(!stage_and_project(document))return false;
+        CHECK(view()["scalar_inputs"].toObject().size()==12);
         CHECK(view()["scalar_inputs"].toObject().value("0").toObject().value("enabled")==false);
         return true;
     }
@@ -1684,6 +1688,18 @@ class PreferencesOnlyScenario {
         CHECK(manager.readNumericSettings(document,restored,&error));CHECK(restored.ui.theme=="dark"&&restored.ui.language=="ru");
         CHECK(!read_numeric_draft(document,draft));return true;
     }
+    bool unchanged_preferences_never_write() {
+        QFile file(path);CHECK(file.open(QIODevice::ReadOnly));
+        const auto before=file.readAll();file.close();
+        const auto modified=QFileInfo(path).lastModified();
+        // Simulate repeated dock/camera notifications: they must not trigger
+        // complete canonical-project rewrites if the UI data is unchanged.
+        for(int i=0;i<20;++i)CHECK(manager.saveNumericPreferences(document,settings,&error));
+        CHECK(file.open(QIODevice::ReadOnly));const auto after=file.readAll();file.close();
+        CHECK(after==before && document.disk_baseline==before);
+        CHECK(QFileInfo(path).lastModified()==modified);
+        return true;
+    }
     bool externally_replace_destination() {
         QFile external(path);CHECK(external.open(QIODevice::WriteOnly|QIODevice::Truncate));CHECK(external.write(future)==future.size());external.close();
         baseline=document.disk_baseline;settings.ui.theme="light";return true;
@@ -1697,7 +1713,7 @@ class PreferencesOnlyScenario {
 public:
     bool run() {
         return initialize()&&save_applied_only_source()&&save_preferences_without_draft()&&applied_graph_preserved()
-            &&opaque_lexemes_preserved()&&settings_restored()&&externally_replace_destination()
+            &&opaque_lexemes_preserved()&&settings_restored()&&unchanged_preferences_never_write()&&externally_replace_destination()
             &&refuse_conflicting_preferences()&&refused_candidate_unpublished()&&file_bytes_equal(path,future);
     }
 };
@@ -2083,8 +2099,33 @@ public:
 };
 static bool document_version_boundary() { DocumentVersionBoundaryScenario scenario;return scenario.run(); }
 
+static bool selective_node_settings() {
+    auto graph=sample();auto other=graph.nodes.front();other.id=8;graph.nodes.push_back(other);
+    NumericProjectDocument source;CHECK(create_numeric_project(graph,{},source));
+    QByteArray raw(source.source.bytes().data(),qsizetype(source.source.bytes().size()));
+    raw.replace("\"id\":7","\"id\":7,\"future\":1e9999");
+    CHECK(read_numeric_project(raw,source));
+    const auto original=std::string(source.source.bytes());
+    project_storage::NodeHandle scene,nodes;
+    CHECK(project_storage::find_unique_member(source.source,source.source.root(),"scene_graph",scene));
+    CHECK(project_storage::find_unique_member(source.source,scene,"nodes",nodes));
+    project_storage::NodeView array,first,second;
+    CHECK(source.source.view(nodes,array));CHECK(source.source.view(array.first_child,first));
+    CHECK(source.source.view(first.next_sibling,second));const auto untouched=std::string(second.raw);
+    auto changed=graph.nodes.front();changed.enabled=false;
+    NumericProjectDocument staged;CHECK(stage_numeric_nodes(source,std::span(&changed,1),staged));
+    NumericProcessingGraph result;CHECK(read_numeric_draft(staged,result));
+    CHECK(!result.nodes[0].enabled && result.nodes[1].enabled);
+    CHECK(staged.source.bytes().find("\"future\":1e9999")!=std::string_view::npos);
+    CHECK(staged.source.bytes().find(untouched)!=std::string_view::npos);
+    CHECK(source.source.bytes()==original);
+    const auto before=std::string(staged.source.bytes());changed.id=999;
+    CHECK(!stage_numeric_nodes(source,std::span(&changed,1),staged));CHECK(staged.source.bytes()==before);
+    return true;
+}
 static int run_document_scenarios() {
     int failures=0;
+    failures+=!selective_node_settings();
     for(auto test:{malformed_position_projection,typed_array_storage_roundtrip,typed_array_storage_refusal,string_encoded_array_project_roundtrip,malformed_string_array_project_refused,confirmed_replacement,explicit_binding_storage,exact_clipboard_and_file,refusal_and_output_rollback,unsupported_version_diagnostics,alternatives_and_commit_failure,draft_applied_and_atomic_publication,editor_snapshot_boundary,retained_layout_identity_oracles,settings_arrays_and_opaque_refusal,fresh_project_and_node_presentation,node_display_name_persistence,preset_display_snapshot_roundtrip,node_adapter_storage_and_projection,presentation_vertical,visual_preset_options_refusal,network_projection_boundary,document_version_boundary})failures+=!test();
     return failures;
 }

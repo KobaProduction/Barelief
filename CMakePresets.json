@@ -1,12 +1,19 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 30, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 30,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
-      "cacheVariables": { "BUILD_TESTING": true, "CMAKE_EXPORT_COMPILE_COMMANDS": true }
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
     },
     {
       "name": "desktop",
@@ -27,14 +34,30 @@
       "displayName": "Desktop Release",
       "inherits": "desktop",
       "binaryDir": "${sourceDir}/cmake-build-release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BARELIEF_DEV_TELEMETRY": false
+      }
     },
     {
       "name": "debug",
       "displayName": "Desktop Debug",
       "inherits": "desktop",
       "binaryDir": "${sourceDir}/cmake-build-debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BARELIEF_DEV_TELEMETRY": true
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Desktop Dev with on-demand telemetry",
+      "inherits": "desktop",
+      "binaryDir": "${sourceDir}/cmake-build-dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BARELIEF_DEV_TELEMETRY": true
+      }
     },
     {
       "name": "sdk",
@@ -53,37 +76,166 @@
     }
   ],
   "buildPresets": [
-    { "name": "release", "configurePreset": "release" },
-    { "name": "debug", "configurePreset": "debug" },
-    { "name": "sdk", "configurePreset": "sdk" }
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "sdk",
+      "configurePreset": "sdk"
+    },
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    }
   ],
   "testPresets": [
     {
       "name": "quick-tests",
       "hidden": true,
-      "output": { "outputOnFailure": true },
+      "output": {
+        "outputOnFailure": true
+      },
       "filter": {
-        "include": { "label": "quick" },
-        "exclude": { "label": "integration|audit|native|long" }
+        "include": {
+          "label": "quick"
+        },
+        "exclude": {
+          "label": "integration|audit|native|long"
+        }
       }
     },
-    { "name": "release", "inherits": "quick-tests", "configurePreset": "release" },
-    { "name": "debug", "inherits": "quick-tests", "configurePreset": "debug" },
-    { "name": "sdk", "inherits": "quick-tests", "configurePreset": "sdk" },
-    { "name": "release-kernel", "configurePreset": "release", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "kernel" }, "exclude": { "label": "integration|audit|native" } } },
-    { "name": "release-node", "configurePreset": "release", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "node" }, "exclude": { "label": "integration|audit|native|long" } } },
-    { "name": "release-integration", "configurePreset": "release", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "integration" }, "exclude": { "label": "audit|native" } } },
-    { "name": "release-ui", "configurePreset": "release", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "ui" }, "exclude": { "label": "audit|native" } } },
-    { "name": "release-audit", "configurePreset": "release", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "audit" } } },
-    { "name": "release-long", "configurePreset": "release", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "long" }, "exclude": { "label": "audit|native" } } },
-    { "name": "release-all", "configurePreset": "release", "output": { "outputOnFailure": true } },
-    { "name": "debug-all", "configurePreset": "debug", "output": { "outputOnFailure": true } },
-    { "name": "sdk-all", "configurePreset": "sdk", "output": { "outputOnFailure": true } }
+    {
+      "name": "release",
+      "inherits": "quick-tests",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "inherits": "quick-tests",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "sdk",
+      "inherits": "quick-tests",
+      "configurePreset": "sdk"
+    },
+    {
+      "name": "release-kernel",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "kernel"
+        },
+        "exclude": {
+          "label": "integration|audit|native"
+        }
+      }
+    },
+    {
+      "name": "release-node",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "node"
+        },
+        "exclude": {
+          "label": "integration|audit|native|long"
+        }
+      }
+    },
+    {
+      "name": "release-integration",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "integration"
+        },
+        "exclude": {
+          "label": "audit|native"
+        }
+      }
+    },
+    {
+      "name": "release-ui",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "ui"
+        },
+        "exclude": {
+          "label": "audit|native"
+        }
+      }
+    },
+    {
+      "name": "release-audit",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "audit"
+        }
+      }
+    },
+    {
+      "name": "release-long",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "long"
+        },
+        "exclude": {
+          "label": "audit|native"
+        }
+      }
+    },
+    {
+      "name": "release-all",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-all",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "sdk-all",
+      "configurePreset": "sdk",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "quick-tests",
+      "configurePreset": "dev"
+    }
   ]
 }

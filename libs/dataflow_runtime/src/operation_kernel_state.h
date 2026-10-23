@@ -4,10 +4,13 @@
 #include <dsp_kernels/dsp.h>
 #include <dsp_kernels/musical_features.h>
 #include <dsp_kernels/frequency_profile.h>
+#include <dsp_kernels/rhythm.h>
 namespace dataflow_runtime::detail {
 
 
 struct OperationKernelState {
+    std::optional<dsp_kernels::rhythm::Analyzer> rhythm;
+    double rhythm_sample_rate=0;
     std::variant<std::monostate,dsp_kernels::FFT,dsp_kernels::PreparedRfft,dsp_kernels::PreparedSpectrumProjection,
         dsp_kernels::BroadbandFeatures,dsp_kernels::NoteSalience,dsp_kernels::MusicalSpectrogram,dsp_kernels::SpectralQuantizer,dsp_kernels::PreparedFrequencyNormalizer> operation;
     std::vector<float> input,output;
@@ -31,6 +34,9 @@ signal_contracts::Status prepare_numeric_operation(OperationKernelState&,PlanNod
 signal_contracts::Status prepare_signal_operation(OperationKernelState&,PlanNode&,const domain::ResolvedProcessingNode&);
 signal_contracts::Status prepare_signal_features(OperationKernelState&,PlanNode&,State&,const domain::ResolvedProcessingNode&);
 signal_contracts::Status prepare_music_operation(OperationKernelState&,PlanNode&,State&,const domain::ResolvedProcessingNode&);
+signal_contracts::Status prepare_rhythm(OperationKernelState&,const domain::ResolvedProcessingNode&);
+signal_contracts::Status execute_rhythm(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
+signal_contracts::Status execute_rhythm_features(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&) noexcept;
 signal_contracts::Status accept_array_product(OperationKernelState&,const PlanNode&,State&,std::size_t,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
 signal_contracts::Status execute_musical_spectrogram(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&) noexcept;
 signal_contracts::Status process_prepared_operation(OperationKernelState&,bool discontinuity) noexcept;

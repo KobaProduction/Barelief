@@ -1,3 +1,4 @@
+#include <core/diagnostic_saves.h>
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
 #include <core_app/scheme_editor/editor_widget.h>
@@ -10,10 +11,25 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScopedValueRollback>
+#include <QElapsedTimer>
+#include <QDebug>
 #include <QStatusBar>
 #include <utility>
 
 #include "core_application_state.h"
+namespace {
+class SavePhaseTrace {
+    const char* phase;
+    QElapsedTimer timer;
+public:
+    explicit SavePhaseTrace(const char* name):phase(name) {
+        if(core::diagnostics::trace_saves())timer.start();
+    }
+    ~SavePhaseTrace() {
+        if(timer.isValid())qInfo().noquote()<<"BARELIEF_SAVE_PHASE"<<phase<<"ms="<<timer.nsecsElapsed()/1e6;
+    }
+};
+}
 void CoreApplication::_update_configuration_save_status() {
     if(!_main_window)return;
     using State=MainWindow::ConfigurationSaveState;
@@ -26,17 +42,17 @@ QString CoreApplication::_configuration_error() const {
     return _configuration_load_error+(extra?"\n"+_configuration_save_error:QString{});
 }
 bool CoreApplication::_save_ui_preferences(bool force) {
-    _configuration_preferences_dirty=true;_update_configuration_save_status();
+    _configuration_preferences_dirty=true;++_preferences_save_revision;_update_configuration_save_status();
+    if(!force && _configuration_load_error.isEmpty()){_queue_autosave();return true;}
+    if(force){_autosave_queued=false;_finish_autosave();}
     if(!_main_window || _saving_configuration)return false;
     if(!force && !_ctx.file_configs.ui.autosave_enabled)return true;
-    _configuration_save_error.clear();
     QString error;
     const bool recovery=!_configuration_load_error.isEmpty();
-    const bool saved=recovery?_config_manager.saveWorkspaceRecovery(_ctx.file_configs,&error):_persist_ui_preferences(error);
-    return _finish_preferences_save(saved,error,recovery);
+    return _finish_preferences_save(recovery?_config_manager.saveWorkspaceRecovery(_ctx.file_configs,&error):_persist_ui_preferences(error),error,recovery);
 }
 bool CoreApplication::_finish_preferences_save(bool saved,const QString& error,bool recovery) {
-    if(saved)_configuration_preferences_dirty=false;
+    if(saved){_configuration_preferences_dirty=false;_configuration_save_error.clear();}
     else _configuration_save_error=error;
     _update_configuration_save_status();
     if(!saved && !recovery)_show_save_failure(_config_manager.getConfigPath(),error);
@@ -58,12 +74,14 @@ bool CoreApplication::_report_save_failure(const QString& error,const QString& p
 }
 bool CoreApplication::_save_configuration(bool force,const QString& saveAsPath) {
     if(!_main_window)return false;
-    _configuration_project_dirty=true;_update_configuration_save_status();
+    _configuration_project_dirty=true;++_project_save_revision;_update_configuration_save_status();
+    if(!force){_queue_autosave();return true;}
+    _autosave_queued=false;_finish_autosave();
     if(_saving_configuration)return true;
-    if(!force && !_ctx.file_configs.ui.autosave_enabled)return true;
     _configuration_save_error.clear();
     const QScopedValueRollback saving(_saving_configuration,true);
     _update_configuration_save_status();
+    const SavePhaseTrace trace("manual_project_save");
     return _save_current_project(force,saveAsPath);
 }
 bool CoreApplication::_save_current_project(bool force,const QString& saveAsPath) {
@@ -117,6 +135,7 @@ bool CoreApplication::_confirm_configuration_overwrite(const QString& target) {
     return dialog.clickedButton()==overwrite;
 }
 bool CoreApplication::_collect_save_draft(SaveState& state) {
+    const SavePhaseTrace trace("capture_draft");
     auto* model=dynamic_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get());
     if(!model || (!_numeric_draft_loaded && !model->has_numeric_nodes()))return _report_save_failure(QStringLiteral("Canonical numeric editor is unavailable"),state.path);
     auto* editor=_main_window->data_flow_editor();
@@ -133,6 +152,7 @@ bool CoreApplication::_prepare_save_document(SaveState& state) {
     return result?true:_report_save_failure(result.error,state.path);
 }
 bool CoreApplication::_collect_save_presentation(const desktop::NumericProjectDocument& document,desktop::NumericDraftPresentation& delta,QString& error) {
+    const SavePhaseTrace trace("capture_presentation");
     desktop::NumericDraftPresentation before;
     const auto read=desktop::read_numeric_presentation(document,before);
     if(!read){error=read.error;return false;}
@@ -163,6 +183,7 @@ QJsonObject CoreApplication::_persisted_node_presentation(const QJsonObject& pre
         {"stream_names",presentation.value("stream_names").toArray()}};
 }
 void CoreApplication::_commit_saved_project(SaveState& state) {
+    _clear_save_changes();
     auto& document=state.new_document?*state.new_document:*_numeric_document;
     _config_manager.setConfigPath(document.active_path);
     if(state.new_document)_numeric_document=std::move(state.new_document);

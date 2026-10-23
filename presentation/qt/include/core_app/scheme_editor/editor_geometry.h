@@ -15,6 +15,7 @@
 #include <QPolygonF>
 #include "embedded_widget_layout.h"
 #include <cmath>
+#include <core/telemetry.h>
 
 // Presentation ordering only: every geometry API still addresses stable port indices.
 class EditorNodeGeometry final : public QtNodes::DefaultHorizontalNodeGeometry {
@@ -84,6 +85,21 @@ public:
         const auto p=portPosition(id,side,port);QFontMetricsF metrics(label_font());
         return {side==QtNodes::PortType::In?16.0:double(size(id).width())-16-text_width(id,side),p.y()-metrics.height()*label(id,side,port).split('\n').size()/2.0};
     }
+    std::vector<QPointF> port_positions(QtNodes::NodeId id,QtNodes::PortType side) const {
+        const auto ports=count(id,side);auto* delegate=model(id);
+        const auto order=delegate?delegate->visual_port_order(side):std::vector<QtNodes::PortIndex>{};
+        const auto channels=delegate?delegate->grouped_channels(side):0;
+        const bool stream=delegate && delegate->name()=="InputSelector" && side==QtNodes::PortType::In;
+        const double spacing=stream?QFontMetricsF(label_font()).height()+16:pitch();
+        const auto offset=[spacing,channels](unsigned position){return position*spacing+(channels?position/channels*12.:0.);};
+        const auto box=size(id);const double span=ports?offset(ports-1):0;
+        std::vector<QPointF> positions(ports);
+        for(unsigned visual=0;visual<ports;++visual){
+            const auto port=order.empty()?visual:order[visual];
+            positions[port]={side==QtNodes::PortType::In?0.:double(box.width()),box.height()/2.+offset(visual)-span/2.};
+        }
+        return positions;
+    }
     AudioNodeModel* model(QtNodes::NodeId id) const {
         auto* graph=dynamic_cast<QtNodes::DataFlowGraphModel*>(&_graphModel);return graph?graph->delegateModel<AudioNodeModel>(id):nullptr;
     }
@@ -91,11 +107,11 @@ public:
         const auto* delegate=model(id);if(!delegate || !delegate->parameter_model()->supportsBypass())return {};
         return {double(size(id).width())-88,4,80,std::max(22.,captionRect(id).height())};
     }
-    QRectF selectorButtonRect(QtNodes::NodeId id,QtNodes::PortIndex port) const {
+    QRectF selectorButtonRect(QtNodes::NodeId id,QtNodes::PortIndex port,const QPointF* supplied=nullptr) const {
         auto* node=model(id);if(!node || node->name()!="InputSelector" || port>=count(id,QtNodes::PortType::In) || node->configuration_role(QtNodes::PortType::In,port))return {};
         const auto channels=node->grouped_channels(QtNodes::PortType::In);
         if(channels && node->port_id(QtNodes::PortType::In,port)%channels!=0)return {};
-        const QFontMetricsF metrics(label_font());const auto pin=portPosition(id,QtNodes::PortType::In,port);
+        const QFontMetricsF metrics(label_font());const auto pin=supplied?*supplied:portPosition(id,QtNodes::PortType::In,port);
         return {20,pin.y()-(metrics.height()+10)/2,metrics.horizontalAdvance(label(id,QtNodes::PortType::In,port))+18,metrics.height()+10};
     }
     QtNodes::PortIndex selectorButtonHit(QtNodes::NodeId id,QPointF point) const {
@@ -113,15 +129,20 @@ private:
 class EditorNodePainter final : public QtNodes::DefaultNodePainter {
 public:
     void paint(QPainter* painter,QtNodes::NodeGraphicsObject& node) const override {
+        BARELIEF_PROFILE_FUNCTION();
         drawNodeRect(painter,node);drawNodeCaption(painter,node);drawNodeLabel(painter,node);
         const auto& geometry=static_cast<EditorNodeGeometry&>(node.nodeScene()->nodeGeometry());
         painter->save();painter->setFont(geometry.label_font());
         for(auto side:{QtNodes::PortType::In,QtNodes::PortType::Out})
-            for(unsigned port=0;port<geometry.count(node.nodeId(),side);++port)paint_port(*painter,node,geometry,side,port);
+            paint_ports(*painter,node,geometry,side);
         paint_node_controls(*painter,node,geometry);
         painter->restore();drawProcessingIndicator(painter,node);drawValidationIcon(painter,node);
     }
 private:
+    static void paint_ports(QPainter& painter,QtNodes::NodeGraphicsObject& node,const EditorNodeGeometry& geometry,QtNodes::PortType side) {
+        const auto positions=geometry.port_positions(node.nodeId(),side);
+        for(unsigned port=0;port<positions.size();++port)paint_port(painter,node,geometry,side,port,positions[port]);
+    }
     static void paint_pin(QPainter& painter,const QPointF& pin,double radius,bool configuration) {
         if(!configuration){painter.drawEllipse(pin,radius,radius);return;}
         QPolygonF diamond;
@@ -146,24 +167,25 @@ private:
         QApplication::style()->drawControl(QStyle::CE_PushButton,&option,&painter);
         paint_selector_marker(painter,button,selected);
     }
-    static void paint_port_label(QPainter& painter,QtNodes::NodeId id,const EditorNodeGeometry& geometry,QtNodes::PortType side,unsigned port) {
+    static void paint_port_label(QPainter& painter,QtNodes::NodeId id,const EditorNodeGeometry& geometry,QtNodes::PortType side,unsigned port,const QPointF& pin) {
         painter.setPen(QApplication::palette().color(QPalette::WindowText));
-        const auto position=geometry.portTextPosition(id,side,port);const QFontMetricsF metrics(painter.font());
+        const QFontMetricsF metrics(painter.font());
         const auto lines=geometry.label(id,side,port).split('\n');
+        const double top=pin.y()-metrics.height()*lines.size()/2.0;
         for(int i=0;i<lines.size();++i){
-            const double x=side==QtNodes::PortType::Out?geometry.size(id).width()-16-metrics.horizontalAdvance(lines[i]):position.x();
-            painter.drawText(QPointF(x,position.y()+metrics.ascent()+i*metrics.height()),lines[i]);
+            const double x=side==QtNodes::PortType::Out?geometry.size(id).width()-16-metrics.horizontalAdvance(lines[i]):16.;
+            painter.drawText(QPointF(x,top+metrics.ascent()+i*metrics.height()),lines[i]);
         }
     }
-    static void paint_port(QPainter& painter,QtNodes::NodeGraphicsObject& node,const EditorNodeGeometry& geometry,QtNodes::PortType side,unsigned port) {
+    static void paint_port(QPainter& painter,QtNodes::NodeGraphicsObject& node,const EditorNodeGeometry& geometry,QtNodes::PortType side,unsigned port,const QPointF& pin) {
         const bool connected=!node.graphModel().connections(node.nodeId(),side,port).empty();
         const auto palette=QApplication::palette();
         painter.setPen(QPen(palette.color(QPalette::Text),1));painter.setBrush(palette.color(connected?QPalette::Highlight:QPalette::Base));
         auto* delegate=geometry.model(node.nodeId());
-        paint_pin(painter,geometry.portPosition(node.nodeId(),side,port),geometry.radius(),delegate && delegate->configuration_role(side,port).has_value());
-        const auto button=side==QtNodes::PortType::In?geometry.selectorButtonRect(node.nodeId(),port):QRectF{};
+        paint_pin(painter,pin,geometry.radius(),delegate && delegate->configuration_role(side,port).has_value());
+        const auto button=side==QtNodes::PortType::In?geometry.selectorButtonRect(node.nodeId(),port,&pin):QRectF{};
         if(!button.isEmpty()){paint_selector(painter,node.nodeId(),geometry,port,button);return;}
-        paint_port_label(painter,node.nodeId(),geometry,side,port);
+        paint_port_label(painter,node.nodeId(),geometry,side,port,pin);
     }
     static void paint_bypass(QPainter& painter,const AudioNodeModel& delegate,const QRectF& bypass) {
         if(bypass.isEmpty())return;

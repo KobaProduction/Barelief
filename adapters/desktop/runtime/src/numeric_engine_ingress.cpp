@@ -38,7 +38,7 @@ FrameStamp SourceIngress::input_stamp(CaptureInput& input) const {
     return stamp;
 }
 void SourceIngress::capture(domain::NodeId node,std::uint64_t fence,const AudioFrame& frame) {
-        const auto lock_start=core::perf::enabled.load(std::memory_order_relaxed)?core::perf::now():0;
+        const auto lock_start=(core::perf::enabled.load(std::memory_order_relaxed) || core::telemetry::enabled())?core::perf::now():0;
         std::lock_guard lock(mutex);
         if(lock_start)core::perf::duration(core::perf::Stage::NumericCaptureLock,core::perf::now()-lock_start);
         core::perf::Scope capture_trace(core::perf::Stage::NumericCaptureWork);

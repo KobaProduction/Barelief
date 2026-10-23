@@ -148,6 +148,10 @@ static QByteArray read(const QString& path) {
 static bool wait_until(const std::function<bool()>& predicate,int timeout=3000) {
     QElapsedTimer timer;timer.start();while(timer.elapsed()<timeout){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(5);}return predicate();
 }
+static bool wait_for_saved(MainWindow* window) {
+    return wait_until([&]{auto* status=window->findChild<QLabel*>("configurationSaveStatus");
+        return status && status->property("saveState").toInt()==int(MainWindow::ConfigurationSaveState::Saved);});
+}
 static bool separated_layout(MainWindow* window,NumericEditorGraphModel* model) {
     auto* editor=window->findChild<SchemeEditorWidget*>();if(!editor)return false;
     auto* scene=editor->findChild<QtNodes::DataFlowGraphicsScene*>();if(!scene)return false;
@@ -1994,6 +1998,7 @@ static int default_restart(auto& next,auto& document,auto& graph,auto& error,Cor
 
 static int default_repeated_preset(auto& next,auto& document,auto& graph,auto& manager,auto& error,CoreApplication& app,MainWindow*& window,SchemeEditorWidget*& editor,auto& settings,auto& startup_revision) {
 CHECK(editor->save_preset("repeat"));
+    CHECK(wait_for_saved(window));
     CHECK(manager.loadNumeric(document,graph,&error));
     CHECK(manager.readNumericSettings(document,settings,&error));
     CHECK(settings.ui.pipeline_presets.size()==3);
@@ -2018,11 +2023,13 @@ static int default_load_presets(auto& next,auto& document,auto& graph,auto& mana
 
 static int default_named_presets(auto& path,auto& next,auto& document,auto& graph,auto& manager,auto& error,auto& presentation,CoreApplication& app,NumericEditorGraphModel*& model,MainWindow*& window,SchemeEditorWidget*& editor,auto& startup_revision,auto& settings) {
 CHECK(editor->save_preset("first"));
+    CHECK(wait_for_saved(window));
     CHECK(manager.loadNumeric(document,graph,&error));
     CHECK(manager.readNumericSettings(document,settings,&error));
     CHECK(settings.ui.pipeline_presets.size()==2);
     const auto first_bytes=read(path);
     CHECK(editor->save_preset("second"));
+    CHECK(wait_for_saved(window));
     CHECK(read(path)!=first_bytes);
     CHECK(manager.loadNumeric(document,graph,&error));
     CHECK(manager.readNumericSettings(document,settings,&error));
@@ -2053,6 +2060,7 @@ static int default_autosave(auto& path,auto& next,auto& document,auto& graph,aut
     model->setNodeData(7,QtNodes::NodeRole::Position,QPointF(99,88));
     app._ctx.editor_draft_modified=true;
     emit editor->numeric_draft_changed(); // Actual autosave callback, not execution.
+    CHECK(wait_for_saved(window));
     CHECK(manager.loadNumeric(document,graph,&error)); CHECK(!graph.nodes[0].enabled);
     CHECK(read(path).contains("1e9999") && read(path).contains("18446744073709551615"));
     CHECK(desktop::read_numeric_presentation(document,presentation));

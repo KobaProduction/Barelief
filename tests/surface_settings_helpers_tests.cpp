@@ -148,13 +148,17 @@ int main() {
                    custom["extension"].toInt() == 99,
                "Custom settings and precision preserved"))
         return 1;
+    const auto defaultAppearance=defaults();
+    if(!check(defaultAppearance["mesh_width"].toDouble()==.67 &&
+              defaultAppearance["mesh_contrast"].toDouble()==.2,
+              "Subtle spectrogram grid defaults"))return 1;
     const auto invalid = normalized(QJsonObject{{"axis_precision", 1e300}, {"y_min", 4}, {"y_max", 2}});
-    if(!check(normalizedCadence({}).value("gui_fps_mode")=="maximum" && renderFps({},165)==165 && renderFps({},360)==360 &&
+    if(!check(normalizedCadence({}).value("gui_fps_mode")=="screen" && renderFps({},165)==165 && renderFps({},360)==360 &&
               renderFps(QJsonObject{{"gui_fps_mode","display"},{"gui_target_fps",120}},165)==165 &&
               renderFps(QJsonObject{{"gui_fps_mode","maximum"}},360)==360 &&
               renderFps(QJsonObject{{"gui_fps_mode","fixed"},{"gui_target_fps",170}},165)==170 &&
               renderFps(QJsonObject{{"gui_target_fps",170}},165)==170,
-              "Missing cadence selects Maximum, physical modes follow actual OS refresh, explicit manual preferences survive"))return 1;
+              "Missing cadence follows OS refresh, explicit maximum and manual preferences survive"))return 1;
     if (!check(invalid["axis_precision"].toInt() == 8 && invalid["y_min"].toDouble() == 0 &&
                    invalid["y_max"].toDouble() == 1 && renderFps(QJsonObject{{"gui_target_fps", 1e300}}) == 1000 &&
                    renderFps(QJsonObject{{"gui_target_fps", 0}}) == 1 && renderFps({},1000)==1000 &&

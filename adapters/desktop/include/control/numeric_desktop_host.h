@@ -35,6 +35,7 @@ public:
  void set_numeric_history_handler(std::function<void(DeliveredNumericHistoryRow)>)override;
  void set_numeric_history_snapshot_handler(std::function<void(DeliveredNumericFrame,std::uint64_t,std::uint64_t)>)override;
  void request_numeric_snapshots() override;
+ void request_numeric_snapshot(const EndpointIdentity&) override;
  void set_numeric_preview_cadence_hz(int) override;
  void configure_registry(QHostAddress,quint16,int timeout_ms=1000);
  void disconnect_registry();
