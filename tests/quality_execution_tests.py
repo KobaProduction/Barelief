@@ -21,18 +21,20 @@ class ResourceBudgetTests(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
-    def test_auto_uses_half_the_logical_cpus(self):
-        self.assertEqual(resolve_jobs(cpu_count=22), 11)
-        self.assertEqual(resolve_jobs(cpu_count=32), 16)
+    def test_auto_fallback_uses_75_percent(self):
+        self.assertEqual(resolve_jobs(cpu_count=22), 16)
+        self.assertEqual(resolve_jobs(cpu_count=32), 24)
+        self.assertEqual(resolve_jobs(cpu_count=3), 2)
 
     def test_auto_keeps_at_least_one_worker(self):
-        for count in [1, 2, 3]:
+        for count in [1, 2]:
             with self.subTest(cpu_count=count):
                 self.assertEqual(resolve_jobs(cpu_count=count), 1)
 
-    def test_auto_ignores_current_load(self):
-        with patch.object(os, "cpu_count", return_value=22):
-            self.assertEqual(resolve_jobs(), 11)
+    def test_auto_uses_detected_performance_cores(self):
+        budget = quality_execution.CpuBudget(12, "performance-cores", tuple(range(12)))
+        with patch.object(quality_execution, "detect_budget", return_value=budget):
+            self.assertEqual(resolve_jobs(), 12)
 
     def test_cli_override_precedes_environment(self):
         with patch.dict(os.environ, {"QUALITY_JOBS": "19"}):

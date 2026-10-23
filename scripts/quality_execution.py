@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Callable, Mapping, Sequence
 
+from quality_cpu import CpuBudget, detect_budget
+
 
 @dataclass(frozen=True)
 class CommandTask:
@@ -27,6 +29,7 @@ def resolve_jobs(
     requested: int | None = None,
     *,
     cpu_count: int | None = None,
+    budget: CpuBudget | None = None,
 ) -> int:
     if requested is None:
         configured = os.environ.get("QUALITY_JOBS", "auto").strip()
@@ -39,15 +42,13 @@ def resolve_jobs(
         if requested <= 0:
             raise ValueError("quality jobs must be a positive integer")
         return requested
-    available_cpus = cpu_count
-    if available_cpus is None:
-        available_cpus = os.cpu_count() or 1
-    return max(1, available_cpus // 2)
+    return (budget or detect_budget(cpu_count)).workers
 
 
 class _JobOutput:
-    def __init__(self, total: int, workers: int, tool: str, progress: Callable[[str], None] | None):
+    def __init__(self, total: int, workers: int, tool: str, progress: Callable[[str], None] | None, budget: CpuBudget):
         self.total = total
+        self.budget = budget
         self.completed = 0
         self.failed = 0
         self.running = 0
@@ -71,6 +72,7 @@ class _JobOutput:
             "event": event, "total": self.total,
             "completed": self.completed, "failed": self.failed,
             "running": self.running, "jobs": self.workers, "tool": self.tool,
+            "cpu_mode": self.budget.mode, "cpu_sets": self.budget.cpus,
             "started_at": self.started_at,
             "elapsed_seconds": round(time.monotonic() - self.started, 3),
             **details,
@@ -104,6 +106,7 @@ def _execute_task(
     processes: set[subprocess.Popen[bytes]],
     process_lock: threading.Lock,
     cancelled: threading.Event,
+    budget: CpuBudget,
 ) -> int:
     if cancelled.is_set():
         return 130
@@ -122,6 +125,13 @@ def _execute_task(
                         start_new_session=os.name != "nt",
                     )
                     processes.add(process)
+                    try:
+                        budget.apply(process)
+                    except OSError:
+                        process.kill()
+                        process.wait()
+                        processes.discard(process)
+                        raise
             result = process.wait() if process else 130
             if process:
                 with process_lock:
@@ -158,12 +168,14 @@ def run_jobs(
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    workers = resolve_jobs(jobs)
+    budget = detect_budget()
+    workers = resolve_jobs(jobs, budget=budget)
     if not tasks:
         return 0
     workers = min(workers, len(tasks))
     tool = Path(tasks[0].command[0]).stem
-    output = _JobOutput(len(tasks), workers, tool, progress)
+    print(f"[quality] CPU mode={budget.mode}; workers={workers}; selected CPUs={budget.cpus or 'OS scheduler'}", flush=True)
+    output = _JobOutput(len(tasks), workers, tool, progress, budget)
     processes: set[subprocess.Popen[bytes]] = set()
     process_lock = threading.Lock()
     cancelled = threading.Event()
@@ -172,7 +184,7 @@ def run_jobs(
     failed = False
     try:
         futures = [executor.submit(
-            _execute_task, task, output, processes, process_lock, cancelled
+            _execute_task, task, output, processes, process_lock, cancelled, budget
         ) for task in tasks]
         for future in as_completed(futures):
             try:

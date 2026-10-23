@@ -25,7 +25,7 @@ def arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--extra-arg", action="append", default=[],
                         help="Pass a compiler argument to Clazy, for example --target for a MinGW database")
     parser.add_argument("--jobs", type=int, default=None,
-                        help="Worker count override; default uses QUALITY_JOBS or half the logical CPUs")
+                        help="Worker count override; default uses QUALITY_JOBS or performance cores (75%% fallback)")
     parser.add_argument("--full", action="store_true", help="Check all applicable current-tree Qt translation units")
     parser.add_argument("--scope", choices=("auto", "full"), default="auto",
                         help="Select Git-aware affected scope or force the complete current tree")
@@ -157,8 +157,7 @@ def run(args: argparse.Namespace) -> int:
                "-p", str(Path(args.build_path).resolve()),
                *("--extra-arg=" + value for value in args.extra_arg)]
     tasks = [CommandTask(label=name, command=[*command, name], env=environment) for name in files]
-    return run_jobs(tasks, jobs=args.jobs,
-                    progress=report_progress)
+    return run_jobs(tasks, jobs=args.jobs, progress=report_progress)
 
 
 def main():

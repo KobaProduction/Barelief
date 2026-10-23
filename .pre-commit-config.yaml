@@ -10,7 +10,7 @@ repos:
         additional_dependencies: [identify==2.6.20, clang-tidy==22.1.8]
         entry: python scripts/verify_quality_tools.py
         pass_filenames: false
-        files: '^(\.pre-commit-config\.yaml|(?:tests/)?\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution|compile_context)(_tests)?|run_(clazy|clang_tidy)|verify_quality_tools)\.py|tests/(quality_execution|quality_compile_context|run_clazy|run_clang_tidy)_tests\.py)$'
+        files: '^(\.pre-commit-config\.yaml|(?:tests/)?\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution|cpu|compile_context)(_tests)?|run_(clazy|clang_tidy)|verify_quality_tools)\.py|tests/(quality_execution|quality_cpu|quality_compile_context|run_clazy|run_clang_tidy)_tests\.py)$'
       - id: checkdeps
         name: Chromium checkdeps (module boundaries)
         language: python
