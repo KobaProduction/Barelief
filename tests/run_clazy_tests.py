@@ -87,7 +87,6 @@ class ClazyGateTests(unittest.TestCase):
         tasks = dispatch.call_args.args[0]
         self.assertEqual(len(tasks), len(self.sources))
         self.assertEqual(dispatch.call_args.kwargs["jobs"], 7)
-        self.assertEqual(dispatch.call_args.kwargs["memory_per_worker_bytes"], 1024 ** 3)
         for task, source in zip(tasks, self.sources):
             self.assertEqual(task.command[-1], str(source))
             self.assertIn("--only-qt", task.command)

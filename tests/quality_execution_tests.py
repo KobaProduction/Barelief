@@ -21,20 +21,23 @@ class ResourceBudgetTests(unittest.TestCase):
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
-    def test_auto_scales_above_four_for_large_machine(self):
-        self.assertEqual(resolve_jobs(cpu_count=32, memory_bytes=64 * 1024**3), 32)
+    def test_auto_uses_half_the_logical_cpus(self):
+        self.assertEqual(resolve_jobs(cpu_count=22), 11)
+        self.assertEqual(resolve_jobs(cpu_count=32), 16)
 
-    def test_ram_limits_concurrency(self):
-        self.assertEqual(resolve_jobs(cpu_count=32, memory_bytes=4 * 1024**3), 4)
-        self.assertEqual(resolve_jobs(cpu_count=32, memory_bytes=1), 1)
+    def test_auto_keeps_at_least_one_worker(self):
+        for count in [1, 2, 3]:
+            with self.subTest(cpu_count=count):
+                self.assertEqual(resolve_jobs(cpu_count=count), 1)
 
-    def test_cpu_limits_concurrency(self):
-        self.assertEqual(resolve_jobs(cpu_count=3, memory_bytes=64 * 1024**3), 3)
+    def test_auto_ignores_current_load(self):
+        with patch.object(os, "cpu_count", return_value=22):
+            self.assertEqual(resolve_jobs(), 11)
 
     def test_cli_override_precedes_environment(self):
         with patch.dict(os.environ, {"QUALITY_JOBS": "19"}):
-            self.assertEqual(resolve_jobs(7, cpu_count=2, memory_bytes=1), 7)
-            self.assertEqual(resolve_jobs(cpu_count=2, memory_bytes=1), 19)
+            self.assertEqual(resolve_jobs(7, cpu_count=2), 7)
+            self.assertEqual(resolve_jobs(cpu_count=2), 19)
 
     def test_invalid_overrides_fail(self):
         for value in ["0", "-2", "two"]:
@@ -43,8 +46,6 @@ class ResourceBudgetTests(unittest.TestCase):
                     resolve_jobs()
         with self.assertRaises(ValueError):
             resolve_jobs(0)
-        with self.assertRaises(ValueError):
-            resolve_jobs(memory_per_worker_bytes=0)
 
 
 class ProcessSchedulerTests(unittest.TestCase):

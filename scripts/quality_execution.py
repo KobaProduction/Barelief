@@ -2,7 +2,6 @@
 
 import codecs
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-import ctypes
 from dataclasses import dataclass
 import json
 import os
@@ -24,40 +23,11 @@ class CommandTask:
     env: Mapping[str, str] | None = None
 
 
-def available_memory_bytes() -> int | None:
-    if os.name == "nt":
-        class MemoryStatus(ctypes.Structure):
-            _fields_ = [
-                ("length", ctypes.c_ulong), ("load", ctypes.c_ulong),
-                ("total_physical", ctypes.c_ulonglong),
-                ("available_physical", ctypes.c_ulonglong),
-                ("total_page", ctypes.c_ulonglong),
-                ("available_page", ctypes.c_ulonglong),
-                ("total_virtual", ctypes.c_ulonglong),
-                ("available_virtual", ctypes.c_ulonglong),
-                ("available_extended", ctypes.c_ulonglong),
-            ]
-
-        status = MemoryStatus()
-        status.length = ctypes.sizeof(status)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return int(status.available_physical)
-        return None
-    try:
-        return int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
-    except (AttributeError, OSError, ValueError):
-        return None
-
-
 def resolve_jobs(
     requested: int | None = None,
-    memory_per_worker_bytes: int = 768 * 1024 * 1024,
     *,
     cpu_count: int | None = None,
-    memory_bytes: int | None = None,
 ) -> int:
-    if memory_per_worker_bytes <= 0:
-        raise ValueError("memory_per_worker_bytes must be positive")
     if requested is None:
         configured = os.environ.get("QUALITY_JOBS", "auto").strip()
         if configured and configured != "auto":
@@ -71,14 +41,8 @@ def resolve_jobs(
         return requested
     available_cpus = cpu_count
     if available_cpus is None:
-        available_cpus = getattr(os, "process_cpu_count", os.cpu_count)() or 1
-    memory = memory_bytes if memory_bytes is not None else available_memory_bytes()
-    if memory is None:
-        return max(1, available_cpus)
-    # Leave headroom for the GUI, IDE and operating system. Explicit --jobs or
-    # QUALITY_JOBS overrides this estimate when the operator knows the workload.
-    memory_workers = memory * 3 // 4 // memory_per_worker_bytes
-    return max(1, min(available_cpus, memory_workers))
+        available_cpus = os.cpu_count() or 1
+    return max(1, available_cpus // 2)
 
 
 class _JobOutput:
@@ -187,7 +151,6 @@ def _execute_task(
 def run_jobs(
     tasks: Sequence[CommandTask],
     jobs: int | None = None,
-    memory_per_worker_bytes: int = 768 * 1024 * 1024,
     progress: Callable[[str], None] | None = None,
 ) -> int:
     # Redirected Windows Python streams otherwise use the ANSI code page, which
@@ -195,7 +158,7 @@ def run_jobs(
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    workers = resolve_jobs(jobs, memory_per_worker_bytes)
+    workers = resolve_jobs(jobs)
     if not tasks:
         return 0
     workers = min(workers, len(tasks))
