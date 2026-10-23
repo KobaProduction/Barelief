@@ -21,7 +21,7 @@ repos:
         name: Clazy (production Qt C++)
         language: python
         entry: python scripts/run_clazy.py
-        args: [--extra-arg=--target=x86_64-w64-windows-gnu]
+        args: [-p=cmake-build-dev, --extra-arg=--target=x86_64-w64-windows-gnu]
         pass_filenames: false
         always_run: true
         require_serial: true
@@ -30,7 +30,7 @@ repos:
         language: python
         additional_dependencies: [clang-tidy==22.1.8]
         entry: python scripts/run_clang_tidy.py
-        args: [-p=cmake-build-release, --extra-arg-before=-xc++, --extra-arg-before=-std=c++23]
+        args: [-p=cmake-build-dev, --extra-arg-before=-xc++, --extra-arg-before=-std=c++23]
         pass_filenames: false
         always_run: true
         require_serial: true
@@ -39,7 +39,7 @@ repos:
         stages: [manual]
         language: python
         entry: python scripts/run_clazy.py
-        args: [--scope=full, --code-scope=tests, --extra-arg=--target=x86_64-w64-windows-gnu]
+        args: [--scope=full, --code-scope=tests, -p=cmake-build-dev, --extra-arg=--target=x86_64-w64-windows-gnu]
         pass_filenames: false
         always_run: true
         require_serial: true
@@ -49,7 +49,7 @@ repos:
         language: python
         additional_dependencies: [clang-tidy==22.1.8]
         entry: python scripts/run_clang_tidy.py
-        args: [--scope=full, --code-scope=tests, -p=cmake-build-release, --extra-arg-before=-xc++, --extra-arg-before=-std=c++23]
+        args: [--scope=full, --code-scope=tests, -p=cmake-build-dev, --extra-arg-before=-xc++, --extra-arg-before=-std=c++23]
         pass_filenames: false
         always_run: true
         require_serial: true

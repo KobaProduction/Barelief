@@ -100,6 +100,10 @@ double automatic_y_minimum(bool decibels,bool spectrum){
     if(decibels)return -120;
     return spectrum?0:-.001;
 }
+void initialize_settings_scene(ui::quick::SceneHost& settings,QObject* model) {
+    settings.rootContext()->setContextProperty("graphModel",model);
+    settings.setSource(QUrl("qrc:/common/GraphPanel.qml"));
+}
 }
 GraphPanel::GraphPanel(const QString& id,AbstractChartView* chart,QJsonObject prefs,QWidget* parent,SpectrogramGraph* surface,PlotCapabilities capabilities)
     :QWidget(parent),_chart(chart),_surface(surface),_id(id),_preferences(std::move(prefs)) {
@@ -110,8 +114,7 @@ GraphPanel::GraphPanel(const QString& id,AbstractChartView* chart,QJsonObject pr
     _default_display_mode=_allowed_modes.contains(_chart->plot_style())?_chart->plot_style():_allowed_modes.front();
     restore_presentation(_preferences);
     _default_display_mode=_display_mode;
-    _settings->rootContext()->setContextProperty("graphModel",this);
-    _settings->setSource(QUrl("qrc:/common/GraphPanel.qml"));
+    initialize_settings_scene(*_settings,this);
     start_information_timer();set_render_visible(true);
 }
 void GraphPanel::build_layout(){

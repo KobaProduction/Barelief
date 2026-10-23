@@ -19,6 +19,18 @@
 #include <utility>
 
 namespace {
+class PreferenceSaveTrace {
+    QElapsedTimer timer_;
+public:
+    PreferenceSaveTrace(){if(core::diagnostics::trace_saves())timer_.start();}
+    void no_change() const {
+        if(timer_.isValid())qInfo().noquote()<<"BARELIEF_SAVE_TRACE preferences=no_change ms="<<timer_.nsecsElapsed()/1e6;
+    }
+    void written(bool success) const {
+        if(timer_.isValid())qInfo().noquote()<<"BARELIEF_SAVE_TRACE preferences=written success="<<success
+                                            <<" ms="<<timer_.nsecsElapsed()/1e6;
+    }
+};
 QJsonObject changed_settings_fields(const QJsonObject& before,const QJsonObject& after) {
     QJsonObject result;
     for(auto it=after.begin();it!=after.end();++it){
@@ -27,6 +39,23 @@ QJsonObject changed_settings_fields(const QJsonObject& before,const QJsonObject&
             ?QJsonValue(changed_settings_fields(before.value(it.key()).toObject(),it.value().toObject())):it.value();
     }
     return result;
+}
+bool commit_preferences(desktop::NumericProjectDocument& document,const desktop::NumericDraftPresentation& delta,
+                        const QString& path,QString* error) {
+    desktop::NumericProjectDocument candidate;
+    auto result=desktop::stage_numeric_presentation(document,delta,candidate);
+    if(result)result=desktop::save_numeric_project(candidate,path);
+    if(error)*error=result.path.isEmpty()?result.error:result.path+": "+result.error;
+    if(result)document=std::move(candidate);
+    return static_cast<bool>(result);
+}
+desktop::NumericDraftPresentation preferences_delta(const QJsonObject& settings,bool autosave) {
+    desktop::NumericDraftPresentation delta;
+    auto preferences=settings.value("ui").toObject();
+    // Re-enabling an inherited true preference must still be explicit.
+    preferences["autosave_enabled"]=autosave;
+    delta.application_settings["ui"]=preferences;
+    return delta;
 }
 }
 
@@ -60,30 +89,19 @@ bool ConfigManager::numericSettingsDelta(const desktop::NumericProjectDocument& 
 
 bool ConfigManager::saveNumericPreferences(desktop::NumericProjectDocument& document,
                                          const FileSaveApplicationConfig& config, QString* error) const {
-    const bool trace=core::diagnostics::trace_saves();
-    QElapsedTimer timer;if(trace)timer.start();
+    const PreferenceSaveTrace trace;
     QJsonObject settings;
     if (!numericSettingsDelta(document, config, settings, error)) return false;
     // Pure workspace notifications can arrive without any actual settings
     // change. Do not rewrite the entire project for a no-op notification.
     // A real autosave toggle is included in numericSettingsDelta.
     if (settings.isEmpty()){
-        if(trace)qInfo().noquote()<<"BARELIEF_SAVE_TRACE preferences=no_change ms="<<timer.nsecsElapsed()/1e6;
+        trace.no_change();
         return true;
     }
-    desktop::NumericDraftPresentation delta;
-    auto preferences = settings.value("ui").toObject();
-    // A source may omit this preference and inherit true. Re-enabling autosave
-    // after an in-memory disable still expresses an explicit persistence choice.
-    preferences["autosave_enabled"] = config.ui.autosave_enabled;
-    delta.application_settings["ui"] = preferences;
-    desktop::NumericProjectDocument candidate;
-    auto result = desktop::stage_numeric_presentation(document, delta, candidate);
-    if (result) result = desktop::save_numeric_project(candidate, _config_path);
-    if (error) *error = result.path.isEmpty() ? result.error : result.path + ": " + result.error;
-    if (result) document = std::move(candidate);
-    if(trace)qInfo().noquote()<<"BARELIEF_SAVE_TRACE preferences=written success="<<bool(result)
-                            <<" ms="<<timer.nsecsElapsed()/1e6;
+    const auto delta=preferences_delta(settings,config.ui.autosave_enabled);
+    const bool result=commit_preferences(document,delta,_config_path,error);
+    trace.written(result);
     return static_cast<bool>(result);
 }
 

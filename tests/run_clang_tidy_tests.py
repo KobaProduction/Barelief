@@ -22,6 +22,33 @@ def options(**overrides):
     return argparse.Namespace(**(values | overrides))
 
 
+class LocalProfileTests(unittest.TestCase):
+    def test_explicit_local_profiles_are_validated_and_root_relative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory).resolve()
+            self.assertEqual(run_clang_tidy.local_profiles(root),{})
+            folder=root / '.agent-workspace';folder.mkdir()
+            path=folder / 'quality-contexts.json'
+            path.write_text(json.dumps({'context_build_paths':['build-sdk'], 'embedded_executable':'tools/clang-tidy.exe'}))
+            config=run_clang_tidy.local_profiles(root)
+            self.assertEqual(config['context_build_paths'],['build-sdk'])
+            self.assertEqual(config['embedded_executable'],str(root / 'tools/clang-tidy.exe'))
+            for invalid in ([], {'unexpected':1}, {'context_build_paths':'build'}, {'context_build_paths':['']}, {'embedded_executable':42}):
+                path.write_text(json.dumps(invalid))
+                with self.subTest(config=invalid),self.assertRaises(ValueError):
+                    run_clang_tidy.local_profiles(root)
+
+    def test_environment_and_cli_override_local_tool_selection(self):
+        config={'context_build_paths':['local-build'],'embedded_executable':'local-tool'}
+        with patch.object(run_clang_tidy,'local_profiles',return_value=config),patch.dict(
+                os.environ,{'QUALITY_CONTEXT_BUILD_PATHS':'env-build','ESP_CLANG_TIDY':'env-tool'}):
+            args=run_clang_tidy.arguments([])
+            self.assertEqual(args.context_build_path,['env-build'])
+            self.assertEqual(args.embedded_executable,'env-tool')
+            args=run_clang_tidy.arguments(['--embedded-executable','cli-tool'])
+            self.assertEqual(args.embedded_executable,'cli-tool')
+
+
 class ScopeDispatchTests(unittest.TestCase):
     def setUp(self):
         self.environment = patch.dict(os.environ, {"QUALITY_FULL": "0"})

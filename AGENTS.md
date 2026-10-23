@@ -202,7 +202,8 @@
   `docs/reference/code-quality.md`. Макросы учитываются линтером; `CHECK`
   передаёт результат обычной функции отчёта без скрытой логики сценария.
   Для корректных include/defines предварительно
-  подготовьте `cmake-build-release/compile_commands.json` через release preset.
+  подготовьте `cmake-build-dev/compile_commands.json` через dev preset с
+  `-DBUILD_QUALITY_HEADER_AUDIT=ON`: этот профиль включает также dev-only Tracy.
   Число физических строк не ограничивается. Python и QML в эту проверку не входят.
 - Декомпозируйте по ответственности. Не обходите пределы сжатием строк,
   переносом логики в макросы/инициализаторы/глобальный scope, отключением hook,
@@ -237,8 +238,9 @@
   или ввод. Завершайте только собственные тестовые процессы, не пользовательское
   приложение. App telemetry/offscreen не выдавайте за нативную визуальную приёмку.
 
-- Обычная сборка использует CMake presets `release`, `debug`, `sdk` и только
-  `cmake-build-release`, `cmake-build-debug`, `cmake-build-sdk` соответственно.
+- Сборка использует CMake presets `release`, `debug`, `dev`, `sdk` и только
+  `cmake-build-release`, `cmake-build-debug`, `cmake-build-dev`, `cmake-build-sdk`
+  соответственно. `dev` нужен для профилирования и C++ lint; установщик — `release`.
   Configure: `cmake --preset release`; build: `cmake --build --preset release`.
   Запускайте приложения прямо из `cmake-build-release/bin`: CMake размещает DLL
   и Qt plugins рядом с targets. Не копируйте exe в другую build-папку.

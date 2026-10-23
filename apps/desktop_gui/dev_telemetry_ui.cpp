@@ -67,6 +67,6 @@ void add_menu(MainWindow& window) {
 }
 }
 void install_dev_telemetry_ui() {
-    for(auto* widget:QApplication::topLevelWidgets())
+    for(const auto widgets=QApplication::topLevelWidgets();auto* widget:widgets)
         if(auto* window=qobject_cast<MainWindow*>(widget)){add_menu(*window);return;}
 }

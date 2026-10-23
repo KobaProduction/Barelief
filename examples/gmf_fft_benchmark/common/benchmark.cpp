@@ -338,32 +338,40 @@ void dump_output(const std::vector<float>& out,unsigned route,unsigned id) {
         if(start%128==0) yield();
     }
 }
+bool spectrum_route(std::size_t n,const Signal& s,std::vector<float>& out,unsigned route) {
+    if(route<2) {
+        dsp_kernels::PreparedRfft plan;
+        return plan.prepare(n,route==1) && plan.process(s.input,out);
+    }
+    Gmf plan;
+    if(!plan.prepare(n,route==3) || !plan.forward(s.pcm))return false;
+    plan.decode(out);return true;
+}
+bool dump_signal_spectra(std::size_t n,const Signal& s,std::vector<float>& out,unsigned id) {
+    {auto ref=oracle(s.input);if(!validate_oracle(s.input,ref))return false;}
+    dump_input(s,id);
+    for(unsigned route=0;route<4;++route) {
+        if(!spectrum_route(n,s,out,route))return false;
+        dump_output(out,route,id);
+        if(!gmf_probe_guards_ok() || !platform_heap_ok())return false;
+    }
+    return true;
+}
+bool dump_spectra(std::size_t n,const std::array<const char*,3>& names) {
+    std::vector<float> out(n+2);
+    for(unsigned id=0;id<names.size();++id) {
+        auto s=signal(n,names[id]);
+        if(!dump_signal_spectra(n,s,out,id))return false;
+    }
+    return true;
+}
 bool run_spectra() {
     constexpr std::size_t n=4096;
     constexpr std::array names{"safeweak-60","safeweak-80","safenoise"};
     std::printf("spectra N=4096 signals=safeweak-60,safeweak-80,safenoise routes=RFFT2,RFFT4,GMF_Q15,GMF_HP serialization=hex_integer_words\n");
     {dsp_kernels::PreparedRfft r2,r4;if(!r2.prepare(n)||!r4.prepare(n,true)) return false;}
     const auto before=free_heap();
-    {
-        std::vector<float> out(n+2);
-        for(unsigned id=0;id<names.size();++id) {
-            auto s=signal(n,names[id]);
-            {auto ref=oracle(s.input);if(!validate_oracle(s.input,ref)) return false;}
-            dump_input(s,id);
-            for(unsigned route=0;route<4;++route) {
-                if(route<2) {
-                    dsp_kernels::PreparedRfft plan;
-                    if(!plan.prepare(n,route==1)||!plan.process(s.input,out)) return false;
-                } else {
-                    Gmf plan;
-                    if(!plan.prepare(n,route==3)||!plan.forward(s.pcm)) return false;
-                    plan.decode(out);
-                }
-                dump_output(out,route,id);
-                if(!gmf_probe_guards_ok()||!platform_heap_ok()) return false;
-            }
-        }
-    }
+    if(!dump_spectra(n,names))return false;
     std::printf("cleanup free_before=%u free_after=%u live_gmf=%u guards=%d\n",unsigned(before),unsigned(free_heap()),unsigned(gmf_probe_live_bytes()),gmf_probe_guards_ok());
     return before==free_heap()&&gmf_probe_live_bytes()==0&&gmf_probe_guards_ok();
 }

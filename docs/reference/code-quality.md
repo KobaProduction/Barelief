@@ -86,8 +86,9 @@ python -m venv .agent-workspace/quality-venv
 ./.agent-workspace/quality-venv/Scripts/python.exe -m pre_commit install --hook-type pre-push
 ```
 
-Перед проверкой подготовьте release-сборку обычным способом. CMake preset
-включает экспорт `cmake-build-release/compile_commands.json`; clang-tidy
+Перед проверкой подготовьте dev-сборку: `cmake --preset dev -DBUILD_QUALITY_HEADER_AUDIT=ON`,
+затем `cmake --build --preset dev`. Hooks и CI используют
+`cmake-build-dev/compile_commands.json`; clang-tidy
 использует оттуда include paths и defines. Generated Qt headers должны быть
 созданы сборкой. Сам pre-push не собирает приложение.
 
@@ -326,7 +327,13 @@ variants are not silently discarded.
 
 Use repeatable `--context-build-path <build-directory>` for additional configured
 profiles; `QUALITY_CONTEXT_BUILD_PATHS` accepts the platform path separator (semicolon
-on Windows). The primary database remains `cmake-build-release/compile_commands.json`.
+on Windows). The primary hook database is `cmake-build-dev/compile_commands.json`,
+so optional desktop telemetry is checked in its real enabled build context.
+For persistent checkout-local selection, use ignored
+`.agent-workspace/quality-contexts.json` with `context_build_paths` (an array of
+explicit build paths) and optional `embedded_executable` (a tool path).
+Relative paths resolve from the repository root. Environment variables override
+these defaults; missing databases and invalid configuration still fail the gate.
 For GMF use the existing `examples/gmf_fft_benchmark/host` composition and its pinned
 `GMF_FFT_SOURCE_DIR`; firmware sources use their actual ESP-IDF build profiles.
 Profiles are explicit, not discovered by searching old build directories. No synthetic

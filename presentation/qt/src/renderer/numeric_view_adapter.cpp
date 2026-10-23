@@ -6,6 +6,23 @@
 namespace presentation {
 using namespace signal_contracts;
 namespace {
+bool is_vector_history(const NumericContract& contract) {
+    return contract.semantic==Semantic::History && contract.shape.rank==Rank::Vector;
+}
+bool is_vector_history(const pipeline::DeliveredNumericFrame& input) {
+    const auto contract=input.context->contract.view();
+    const auto* numeric=std::get_if<NumericContract>(&contract);
+    return numeric && is_vector_history(*numeric);
+}
+Status remember_vector_history_fill(const pipeline::DeliveredNumericFrame& input,std::uint64_t filled_count,
+    Status status,std::optional<std::size_t>& occupancy) {
+    if(status!=Status::ok || !input.frame)return status;
+    // The processing node owns the ring; the GUI remembers only occupancy.
+    const auto snapshot=input.frame.view();
+    if(const auto* view=std::get_if<NumericView>(&snapshot.payload))
+        occupancy=std::size_t(std::min<std::uint64_t>(filled_count,view->actual[0]));
+    return status;
+}
 void caption(NumericCaptionPort* target,const char* source,QStringList args={},bool loss=false,bool unavailable=false) {
     if(target && target->caption)target->caption(source,std::move(args),loss,unavailable);
 }
@@ -121,27 +138,15 @@ Status NumericViewAdapter::accept(const pipeline::DeliveredNumericHistoryRow& in
 }
 Status NumericViewAdapter::accept_history_snapshot(const pipeline::DeliveredNumericFrame& input,std::uint64_t ordinal,std::uint64_t filled_count) {
     if(!input.context || !input.context->contract)return Status::invalid_argument;
-    const auto contract=input.context->contract.view();
-    const auto* numeric=std::get_if<NumericContract>(&contract);
-    const bool vector_history=numeric && numeric->semantic==Semantic::History &&
-        numeric->shape.rank==Rank::Vector;
+    const bool vector_history=is_vector_history(input);
     Status result=Status::unavailable;
     for(auto& [key,state]:states_)if(key.endpoint==input.context->endpoint) {
         if(!vector_history) {
             result=accept_snapshot_for_state(key,state,input,ordinal,filled_count);
             continue;
         }
-        // The processing node already owns the ring. Remember only its
-        // occupancy so the plot omits unfilled slots from the 512-cell window.
-        const auto status=accept_frame_for_state(key,state,input);
-        if(status) {
-            result=*status;
-            if(result==Status::ok && input.frame) {
-                const auto snapshot=input.frame.view();
-                if(const auto* view=std::get_if<NumericView>(&snapshot.payload))
-                    state.vector_history_filled=std::size_t(std::min<std::uint64_t>(filled_count,view->actual[0]));
-            }
-        }
+        if(const auto status=accept_frame_for_state(key,state,input))
+            result=remember_vector_history_fill(input,filled_count,*status,state.vector_history_filled);
     }
     return result;
 }
@@ -249,24 +254,25 @@ Status scalar_readout(const NumericView& numeric,std::size_t plane,NumericRender
     if(scalar && pipeline::read_numeric_literal(numeric,{plane,0,0},current)!=Status::ok)return Status::malformed;
     target.chart->set_scalar_readout(scalar?QString::fromStdString(pipeline::exact_scalar_text(current)):QString{},scalar,true);return Status::ok;
 }
+Status history_vector_coordinates(const NumericView& numeric,const NumericRenderTarget& target,
+    std::size_t filled,std::vector<double>& values,QString& title) {
+    if(filled>numeric.actual[0])return Status::malformed;
+    if(!target.axes.time || numeric.contract->coordinates[0].mode==CoordinateMode::None)return Status::ok;
+    const auto status=coordinates(numeric,0,numeric.actual[0],values);
+    if(status!=Status::ok)return status;
+    values.erase(values.begin(),values.end()-std::ptrdiff_t(filled));
+    if(!values.empty())title="Time, seconds (X)";
+    return Status::ok;
+}
 }
 Status NumericViewAdapter::configure_vector(const NumericView& numeric,std::size_t plane,
                                            NumericRenderTarget target,std::optional<std::size_t> filled){
     auto status=scalar_readout(numeric,plane,target);if(status!=Status::ok)return status;
     QString title=target.presentation.vector_x_title;std::vector<double> values;
-    if(filled && numeric.contract->semantic==Semantic::History &&
-       numeric.contract->shape.rank==Rank::Vector){
-        if(*filled>numeric.actual[0])return Status::malformed;
-        if(target.axes.time && numeric.contract->coordinates[0].mode!=CoordinateMode::None){
-            status=coordinates(numeric,0,numeric.actual[0],values);
-            if(status!=Status::ok)return status;
-            values.erase(values.begin(),values.end()-std::ptrdiff_t(*filled));
-            if(!values.empty())title="Time, seconds (X)";
-        }
-    }else{
-        status=vector_coordinates(numeric,target,values,title);
-        if(status!=Status::ok)return status;
-    }
+    status=filled && is_vector_history(*numeric.contract)
+        ?history_vector_coordinates(numeric,target,*filled,values,title)
+        :vector_coordinates(numeric,target,values,title);
+    if(status!=Status::ok)return status;
     if(!target.chart->set_x_coordinates(values))return Status::malformed;
     if(target.chart->set_value_source)target.chart->set_value_source(target.presentation.value_scale.source_decibels,target.presentation.value_scale.factor);
     target.chart->set_axis_title_keys(title,target.presentation.value_title);return Status::ok;
@@ -371,28 +377,36 @@ Status frame_projection_failure(NumericRenderTarget target,std::uint16_t port,St
     if(target.chart){target.chart->set_scalar_readout(exact,true,true);caption(target.chart,"Renderer projection unavailable",{},false,true);}
     return status;
 }
+Status prepare_scalar_projection(const NumericView& numeric,std::size_t plane,
+    std::vector<float>& values,QString& exact) {
+    NumericLiteral value;
+    const auto status=pipeline::read_numeric_literal(numeric,{plane,0,0},value);
+    if(status!=Status::ok)return status;
+    exact=QString::fromStdString(pipeline::exact_scalar_text(value));values.resize(1);
+    return Status::ok;
+}
+Status resize_projection(const NumericView& numeric,std::size_t plane,std::size_t maximum,
+    std::vector<float>& values,QString& exact) {
+    const auto rank=numeric.contract->shape.rank;
+    if(rank==Rank::Scalar)return prepare_scalar_projection(numeric,plane,values,exact);
+    const auto columns=rank==Rank::Matrix?numeric.actual[1]:std::size_t{1};
+    if(columns && numeric.actual[0]>maximum/columns)return Status::buffer_too_small;
+    values.resize(numeric.actual[0]*columns);return Status::ok;
+}
+Status trim_history_projection(const NumericView& numeric,std::optional<std::size_t> filled,std::vector<float>& values) {
+    if(!filled || !is_vector_history(*numeric.contract))return Status::ok;
+    if(*filled>values.size())return Status::malformed;
+    values.erase(values.begin(),values.end()-std::ptrdiff_t(*filled));
+    return Status::ok;
+}
 }
 Status NumericViewAdapter::project_frame(State& state,const NumericView& numeric,std::size_t plane,FrameProjection& projection){
     const auto rank=numeric.contract->shape.rank;
     if(rank==Rank::Matrix && state.matrix_projected){projection.report.inexact_elements=state.matrix_inexact_elements;return Status::ok;}
-    if(rank==Rank::Scalar){
-        NumericLiteral value;const auto status=pipeline::read_numeric_literal(numeric,{plane,0,0},value);if(status!=Status::ok)return status;
-        projection.exact=QString::fromStdString(pipeline::exact_scalar_text(value));projection.values.resize(1);
-    }else{
-        const auto columns=rank==Rank::Matrix?numeric.actual[1]:std::size_t{1};
-        if(columns && numeric.actual[0]>limits_.vectors.max_elements/columns)return Status::buffer_too_small;
-        projection.values.resize(numeric.actual[0]*columns);
-    }
+    if(const auto status=resize_projection(numeric,plane,limits_.vectors.max_elements,projection.values,projection.exact);status!=Status::ok)return status;
     const auto status=pipeline::project_numeric_float(numeric,plane,limits_.vectors,projection.values,projection.report);
     if(status!=Status::ok)return status;
-    if(state.vector_history_filled && rank==Rank::Vector &&
-       numeric.contract->semantic==Semantic::History){
-        const auto filled=*state.vector_history_filled;
-        if(filled>projection.values.size())return Status::malformed;
-        projection.values.erase(projection.values.begin(),
-                                projection.values.end()-std::ptrdiff_t(filled));
-    }
-    return Status::ok;
+    return trim_history_projection(numeric,state.vector_history_filled,projection.values);
 }
 Status NumericViewAdapter::publish_frame(State& state,const NumericView& numeric,FrameProjection& projection,NumericRenderTarget target){
     if(target.chart)target.chart->update(projection.values);

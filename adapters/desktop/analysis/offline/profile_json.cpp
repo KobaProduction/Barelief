@@ -183,20 +183,26 @@ class ProfileDecoder {
         if(!spectral_layout(object))return false;
         return resampler(object) && channels(object) && projection(object);
     }
+    bool training_gain_mode(const QJsonObject& object){
+        auto& t=candidate_.profile.training;
+        const auto mode=object.value("gain_mode");
+        if(mode.isUndefined() || mode.toString()=="mean_equalization")t.gain_mode=ProfileGainMode::MeanEqualization;
+        else if(mode.toString()=="peak_normalization")t.gain_mode=ProfileGainMode::PeakNormalization;
+        else return fail("Unknown frequency gain mode",ProfileReadIssue::Frontend,"gain_mode");
+        return true;
+    }
+    bool validate_training(){
+        std::string validation;
+        if(valid_profile_settings(frontend(),candidate_.profile.training,validation))return true;
+        error_=QString::fromStdString(validation);diagnostic_={ProfileReadIssue::Frontend,QStringLiteral("training")};return false;
+    }
     bool training(){
         const auto object=source_.value("training").toObject();auto& t=candidate_.profile.training;
         if(!number(object,"silence_rms",t.silence_rms) || !number(object,"min_gain",t.min_gain) || !number(object,"max_gain",t.max_gain) || !count(object,"smoothing_radius",t.smoothing_radius) || !count(object,"hop",t.hop) || object.value("weighting").toString()!="equal_active_composition")return fail("Invalid training settings");
         std::size_t numerator=0,denominator=0;
         if(!count(object,"interval_numerator",numerator) || !count(object,"interval_denominator",denominator))return fail("Missing analysis cadence");
         t.interval_numerator=numerator;t.interval_denominator=denominator;
-        // Missing field indicates an older mean-equalization profile.
-        const auto mode=object.value("gain_mode");
-        if(mode.isUndefined() || mode.toString()=="mean_equalization")t.gain_mode=ProfileGainMode::MeanEqualization;
-        else if(mode.toString()=="peak_normalization")t.gain_mode=ProfileGainMode::PeakNormalization;
-        else return fail("Unknown frequency gain mode",ProfileReadIssue::Frontend,"gain_mode");
-        std::string validation;
-        if(valid_profile_settings(frontend(),t,validation))return true;
-        error_=QString::fromStdString(validation);diagnostic_={ProfileReadIssue::Frontend,QStringLiteral("training")};return false;
+        return training_gain_mode(object) && validate_training();
     }
     template<class T> bool binary_coefficients(const QJsonObject& value,const char* key,std::vector<T>& output,std::size_t bins) {
         QByteArray raw;
@@ -312,11 +318,15 @@ QJsonObject encode_preview(const SpectrogramPreview& preview,QJsonObject object)
     object["rows"]=double(preview.rows);object["bands"]=double(preview.bands);object["duration_seconds"]=preview.duration_seconds;object["frequency_reduction"]="mean_contiguous_fft_bins";
     object["values"]=array(preview.values,object.value("values"));object["time_seconds"]=array(preview.time_seconds,object.value("time_seconds"));object["frequency_hz"]=array(preview.frequency_hz,object.value("frequency_hz"));return object;
 }
+template<class T> void encode_optional_array(QJsonObject& object,const char* key,const std::vector<T>& values){
+    if(values.empty())object.remove(key);
+    else object[key]=array(values,object.value(key));
+}
 QJsonObject encode_composition(const CompositionStatistics& track,const SpectrogramPreview* preview,QJsonObject object){
     object["source"]=QString::fromStdString(track.source);object["frames"]=double(track.frames);object["active_frames"]=double(track.active_frames);object["samples"]=double(track.samples);object["rms"]=track.rms;
-    if(!track.mean_spectrum.empty())object["mean_spectrum"]=array(track.mean_spectrum,object.value("mean_spectrum"));else object.remove("mean_spectrum");
-    if(!track.peak_spectrum.empty())object["peak_spectrum"]=array(track.peak_spectrum,object.value("peak_spectrum"));else object.remove("peak_spectrum");
-    if(!track.frequency_presence.empty())object["frequency_presence"]=array(track.frequency_presence,object.value("frequency_presence"));else object.remove("frequency_presence");
+    encode_optional_array(object,"mean_spectrum",track.mean_spectrum);
+    encode_optional_array(object,"peak_spectrum",track.peak_spectrum);
+    encode_optional_array(object,"frequency_presence",track.frequency_presence);
     if(preview && preview->rows)object["preview"]=encode_preview(*preview,object.value("preview").toObject());else object.remove("preview");
     return object;
 }

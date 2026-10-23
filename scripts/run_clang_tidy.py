@@ -12,14 +12,34 @@ from quality_compile_context import exact_header_filter, contexts_for, embedded_
 from quality_scope import partition_scope, select_scope
 
 
-def arguments() -> argparse.Namespace:
+def local_profiles(root: Path) -> dict:
+    path=root / ".agent-workspace/quality-contexts.json"
+    if not path.is_file():
+        return {}
+    config=json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(config,dict) or set(config)-{"context_build_paths","embedded_executable"}:
+        raise ValueError("Invalid local quality profile configuration: " + str(path))
+    paths=config.get("context_build_paths",[])
+    if not isinstance(paths,list) or any(not isinstance(value,str) or not value.strip() for value in paths):
+        raise ValueError("Local quality context_build_paths must be a list of nonempty paths")
+    executable=config.get("embedded_executable")
+    if executable is not None:
+        if not isinstance(executable,str) or not executable.strip():
+            raise ValueError("Local quality embedded_executable must be a nonempty path")
+        config["embedded_executable"]=str((root / executable).resolve())
+    return config
+
+
+def arguments(argv=None) -> argparse.Namespace:
+    config=local_profiles(Path(__file__).resolve().parent.parent)
+    contexts=[path for path in os.environ.get("QUALITY_CONTEXT_BUILD_PATHS", "").split(os.pathsep) if path]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", default=os.environ.get("CLANG_TIDY"))
     parser.add_argument("-p", "--build-path", default="cmake-build-release")
     parser.add_argument("--jobs", type=int)
     parser.add_argument("--context-build-path", action="append",
-                        default=[path for path in os.environ.get("QUALITY_CONTEXT_BUILD_PATHS", "").split(os.pathsep) if path])
-    parser.add_argument("--embedded-executable", default=os.environ.get("ESP_CLANG_TIDY"))
+                        default=contexts or config.get("context_build_paths",[]))
+    parser.add_argument("--embedded-executable", default=os.environ.get("ESP_CLANG_TIDY") or config.get("embedded_executable"))
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--scope", choices=["auto", "full"], default="auto")
     parser.add_argument("--code-scope", choices=["production", "tests", "all"], default="production")
@@ -28,7 +48,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--extra-arg", action="append", default=[])
     parser.add_argument("--extra-arg-before", action="append", default=[])
     parser.add_argument("files", nargs="*")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def selected_files(args: argparse.Namespace, root: Path) -> tuple[str, ...]:

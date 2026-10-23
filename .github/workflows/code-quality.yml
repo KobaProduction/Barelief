@@ -42,9 +42,9 @@ jobs:
           $toolchain = Join-Path (Split-Path (Split-Path $env:QT_ROOT_DIR)) 'Tools/mingw1310_64/bin'
           $env:PATH = "$toolchain;$env:PATH"
           $env:QT_ROOT = $env:QT_ROOT_DIR
-          cmake --preset release -DBUILD_QUALITY_HEADER_AUDIT=ON -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe"
+          cmake --preset dev -DBUILD_QUALITY_HEADER_AUDIT=ON -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          cmake --build --preset release --parallel 4
+          cmake --build --preset dev --parallel 4
       - name: clang-tidy
         run: python -m pre_commit run clang-tidy --all-files --hook-stage pre-push
       - name: Clazy

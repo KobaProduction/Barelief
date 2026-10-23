@@ -267,14 +267,24 @@ struct MusicAnalysisDialog::State {
             const QStringList row{QString::fromStdString(s.source),QString::number(s.rms,'g',6),QString::number(s.active_frames),QString::number(s.frames),QString::number(double(s.samples)/p.compatibility.sample_rate,'f',2)};
             for(int k=0;k<row.size();++k)statistics->setItem(int(i),k,new QTableWidgetItem(row[k]));}
     }
-    void refresh_frequency_statistics(){
+    void append_frequency_statistics_row(std::size_t k,double before){
+        const auto& p=document.profile;
+        const QStringList row{QString::number(k),QString::number(k*p.compatibility.sample_rate/p.compatibility.fft_size,'g',10),QString::number(before,'g',10),QString::number(p.gains[k],'g',9),QString::number(before*p.gains[k],'g',10),p.frequency_presence.size()==p.gains.size()?QString::number(100*p.frequency_presence[k],'f',2):QString{}};
+        for(int column=0;column<row.size();++column)frequencies->setItem(int(k-1),column,new QTableWidgetItem(row[column]));
+    }
+    double populate_frequency_statistics(bool peak){
         const auto& p=document.profile;
         frequencies->setRowCount(int(p.gains.empty()?0:p.gains.size()-1));double total=0;
-        const bool peak=p.training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization && p.peak_spectrum.size()==p.gains.size();
         frequencies->horizontalHeaderItem(2)->setText(ui::text(peak?"Peak spectrum":"Mean spectrum"));
         frequencies->horizontalHeaderItem(4)->setText(ui::text(peak?"Corrected peak":"Corrected mean"));
-        for(std::size_t k=1;k<p.gains.size();++k){const auto before=peak?p.peak_spectrum[k]:p.mean_spectrum[k];total+=before;const QStringList row{QString::number(k),QString::number(k*p.compatibility.sample_rate/p.compatibility.fft_size,'g',10),QString::number(before,'g',10),QString::number(p.gains[k],'g',9),QString::number(before*p.gains[k],'g',10),p.frequency_presence.size()==p.gains.size()?QString::number(100*p.frequency_presence[k],'f',2):QString{}};
-            for(int column=0;column<row.size();++column)frequencies->setItem(int(k-1),column,new QTableWidgetItem(row[column]));}
+        for(std::size_t k=1;k<p.gains.size();++k){
+            const auto before=peak?p.peak_spectrum[k]:p.mean_spectrum[k];total+=before;
+            append_frequency_statistics_row(k,before);
+        }
+        return total;
+    }
+    QString frequency_statistics_summary(bool peak,double total) const {
+        const auto& p=document.profile;
         QString summary=p.gains.size()>1?ui::text(peak?"Average observed peak across positive bins: %1; DC is kept separate":"Mean over positive frequency bins: %1; DC is kept separate").arg(total/double(p.gains.size()-1),0,'g',10):QString{};
         if(peak && p.gains.size()>1){
             const auto cap=p.training.max_gain;
@@ -284,7 +294,13 @@ struct MusicAnalysisDialog::State {
             summary+=ui::text(" | Linear gain limit: x%1; bins at limit: %2 / %3")
                 .arg(cap,0,'g',9).arg(capped).arg(p.gains.size()-1);
         }
-        average->setText(summary);
+        return summary;
+    }
+    void refresh_frequency_statistics(){
+        const auto& p=document.profile;
+        const bool peak=p.training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization && p.peak_spectrum.size()==p.gains.size();
+        const auto total=populate_frequency_statistics(peak);
+        average->setText(frequency_statistics_summary(peak,total));
         dc->setText(p.mean_spectrum.empty()?QString{}:ui::text("DC (0 Hz), mean spectrum: %1").arg(p.mean_spectrum[0],0,'g',10));
     }
     void refresh_result_summary(){
@@ -431,21 +447,29 @@ struct MusicAnalysisDialog::State {
     s.memory=new QLabel(dialog);s.memory->setWordWrap(true);layout->addWidget(s.memory);
 
     }
+    QDoubleSpinBox* make_training_scalar(double low,double high,double value,int decimals){
+        auto* box=new QDoubleSpinBox(owner);box->setDecimals(decimals);box->setRange(low,high);box->setValue(value);return box;
+    }
+    void build_gain_mode(){
+        gain_mode=new QComboBox(owner);gain_mode->setObjectName("musicGainMode");
+        gain_mode->addItems({ui::text("Mean-spectrum equalization"),ui::text("Per-bin peak normalization to 1.0")});
+        gain_mode->setCurrentIndex(1);right->addRow(label("Gain calculation method",owner),gain_mode);
+    }
+    void build_gain_limits(){
+        minimum=make_training_scalar(.000001,1000000,1,6);minimum->setEnabled(false);
+        right->addRow(label("Minimum linear gain (mean mode)",owner),minimum);
+        QObject::connect(gain_mode,&QComboBox::currentIndexChanged,owner,[this]{
+            minimum->setValue(gain_mode->currentIndex()==0?.1:1.);
+            minimum->setEnabled(mode==Mode::Setup&&gain_mode->currentIndex()==0);
+        });
+        maximum=make_training_scalar(1,1000000,100,6);right->addRow(label("Maximum linear gain",owner),maximum);
+    }
     void build_training(){
-        auto& s=*this;auto* dialog=owner;
-    auto scalar=[&](double low,double high,double value,int decimals){auto* b=new QDoubleSpinBox(dialog);b->setDecimals(decimals);b->setRange(low,high);b->setValue(value);return b;};
-    s.gain_mode=new QComboBox(dialog);s.gain_mode->setObjectName("musicGainMode");
-    s.gain_mode->addItems({ui::text("Mean-spectrum equalization"),ui::text("Per-bin peak normalization to 1.0")});
-    s.gain_mode->setCurrentIndex(1);right->addRow(label("Gain calculation method",dialog),s.gain_mode);
-    s.silence=scalar(0,1,.0001,6);right->addRow(label("Silence threshold, PCM RMS",dialog),s.silence);
-    s.minimum=scalar(.000001,1000000,1,6);s.minimum->setEnabled(false);
-    right->addRow(label("Minimum linear gain (mean mode)",dialog),s.minimum);
-    QObject::connect(s.gain_mode,&QComboBox::currentIndexChanged,dialog,[&s]{
-        s.minimum->setValue(s.gain_mode->currentIndex()==0?.1:1.);
-        s.minimum->setEnabled(s.mode==State::Mode::Setup&&s.gain_mode->currentIndex()==0);
-    });
-    s.maximum=scalar(1,1000000,100,6);right->addRow(label("Maximum linear gain",dialog),s.maximum);s.reference=scalar(.000001,1000000,1,6);right->addRow(label("Spectrum reference",dialog),s.reference);s.floor=scalar(-300,-1,-120,1);right->addRow(label("Spectrum floor, dB",dialog),s.floor);
-
+        build_gain_mode();
+        silence=make_training_scalar(0,1,.0001,6);right->addRow(label("Silence threshold, PCM RMS",owner),silence);
+        build_gain_limits();
+        reference=make_training_scalar(.000001,1000000,1,6);right->addRow(label("Spectrum reference",owner),reference);
+        floor=make_training_scalar(-300,-1,-120,1);right->addRow(label("Spectrum floor, dB",owner),floor);
     }
     void build_progress(){
         auto& s=*this;auto* dialog=owner;

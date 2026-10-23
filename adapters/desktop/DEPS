@@ -1,0 +1,2 @@
+# Tracy is an optional desktop diagnostic dependency, never a portable one.
+include_rules = ['+tracy']

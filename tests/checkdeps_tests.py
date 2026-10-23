@@ -44,6 +44,13 @@ class Boundaries(unittest.TestCase):
             with self.subTest(module=module, include=include):
                 self.assertTrue(self.allowed(module, '#include ' + include))
 
+    def test_tracy_is_confined_to_desktop_adapter(self):
+        include = '#include <tracy/TracyC.h>'
+        self.assertTrue(self.allowed('adapters/desktop', include))
+        for module in ('domain', 'application', 'libs/dsp_kernels', 'libs/dataflow_runtime', 'presentation/qt'):
+            with self.subTest(module=module):
+                self.assertFalse(self.allowed(module, include))
+
     def test_c_and_header_fragments_are_not_skipped(self):
         for extension in ('.c', '.cpp', '.hpp', '.inc', '.inl'):
             self.assertTrue(CppChecker.IsCppFile('probe' + extension))

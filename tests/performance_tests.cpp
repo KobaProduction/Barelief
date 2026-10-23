@@ -19,6 +19,12 @@ int main() {
     record(Stage::FFT,1,1000);
     if(counters[static_cast<size_t>(Stage::FFT)].count!=0) return 1;
     enabled=true;
+#if !BARELIEF_DEV_TELEMETRY
+    record(Stage::FFT,1,1000);
+    if(enabled || counters[static_cast<size_t>(Stage::FFT)].count!=0 || event_count!=0)return 9;
+    std::puts("Release instrumentation remains disabled even when requested");
+    return histogram_percentiles();
+#endif
     std::vector<std::thread> workers;
     for(int thread=0;thread<4;++thread) workers.emplace_back([] {
         for(int i=0;i<10000;++i) record(Stage::FFT,1,1000);
