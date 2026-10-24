@@ -6,6 +6,8 @@ set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Barelief | Signal Processing & Visualizat
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/KobaProduction/Barelief")
 set(CPACK_PACKAGE_CONTACT "https://github.com/KobaProduction/Barelief/issues")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "Koba Production/Barelief")
+# Keep upgrade discovery stable when the Windows install path uses backslashes.
+set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "Koba Production/Barelief")
 set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_FILE_NAME "Barelief-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(CPACK_PACKAGE_EXECUTABLES "Barelief" "Barelief")
@@ -26,6 +28,8 @@ if(UNIX AND NOT APPLE AND BUILD_GUI)
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 endif()
 if(WIN32 AND BUILD_GUI)
+    # NSIS strips forward slashes from InstallDir instead of treating them as separators.
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "Koba Production\\Barelief")
     set(CPACK_GENERATOR "ZIP;NSIS")
     set(CPACK_NSIS_DISPLAY_NAME "Barelief")
     set(CPACK_NSIS_PACKAGE_NAME "Barelief")
