@@ -72,6 +72,7 @@ add_desktop_check(numeric_project_document_tests graph_document_adapter)
 add_desktop_check(numeric_source_format_tests desktop_source_formats)
 target_link_libraries(numeric_source_format_tests PRIVATE graph_document_adapter desktop_numeric_defaults)
 add_desktop_check(music_profile_tests desktop_analysis)
+add_desktop_check(music_scan_tests desktop_analysis)
 set_tests_properties(music_profile_tests PROPERTIES TIMEOUT 60)
 add_desktop_check(music_profile_control_tests desktop_numeric_remote)
 set_tests_properties(music_profile_control_tests PROPERTIES TIMEOUT 60)
@@ -90,6 +91,9 @@ if(BUILD_GUI)
     set_tests_properties(music_gui_tests PROPERTIES TIMEOUT 120
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
     add_test(NAME music_gui_native32000 COMMAND music_gui_tests --native32000)
+    add_test(NAME music_scanner_gui COMMAND music_gui_tests --scanner-only)
+    set_tests_properties(music_scanner_gui PROPERTIES TIMEOUT 30 LABELS "numeric;ui;integration"
+        ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
     set_tests_properties(music_gui_native32000 PROPERTIES TIMEOUT 120
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
     set_tests_properties(music_analysis_dialog_tests PROPERTIES TIMEOUT 30

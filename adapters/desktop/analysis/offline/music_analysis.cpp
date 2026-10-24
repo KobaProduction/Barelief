@@ -61,6 +61,7 @@ class TrackAnalysis {
         const auto& c=frontend();
         if(!decoder_.open(path,error_,c.channel_policy,c.channel_index))return false;
         statistics_.source=path.toStdString();
+        statistics_.measured_max_hz=std::min(c.sample_rate,double(decoder_.sample_rate()))/2;
         expected_=std::uint64_t(std::ceil(double(decoder_.length())*c.sample_rate/decoder_.sample_rate()));
         return resampler_.prepare({c.resampler_mode,decoder_.sample_rate(),std::uint32_t(c.sample_rate),1,c.resampler_quality},
                                    &desktop_resampling::speex_backend_factory()) || fail("Cannot prepare the declared resampler");
@@ -70,11 +71,15 @@ class TrackAnalysis {
         weights_.resize(n);window_.resize(n);windowed_.resize(n);raw_.resize(2*bins);spectrum_.resize(bins);
         dsp_kernels::window(weights_,c.window);
         if(!fft_.prepare(n) || !projection_.prepare(n,c.sample_rate,profile_window_scaling(c),c.projection))return fail("Spectrum preparation failed");
-        statistics_.mean_spectrum.assign(bins,0);statistics_.peak_spectrum.assign(bins,0);statistics_.frequency_presence.assign(bins,0);
+        prepare_statistics(bins);
         decoded_.resize(chunk);converted_.resize(PreparedResampler::maximum_output(chunk,decoder_.sample_rate(),std::uint32_t(c.sample_rate)));
         const bool amplitude=c.projection.representation==SpectrumProjection::Magnitude || c.projection.representation==SpectrumProjection::PeakAmplitude;
         presence_floor_=c.reference*std::pow(10.,c.floor_db/(amplitude?20.:10.));
         return true;
+    }
+    void prepare_statistics(std::size_t bins) {
+        statistics_.mean_spectrum.assign(bins,0);statistics_.peak_spectrum.assign(bins,0);statistics_.frequency_presence.assign(bins,0);
+        statistics_.quiet_mean_spectrum.assign(bins,0);statistics_.quiet_peak_spectrum.assign(bins,0);
     }
     bool prepare_cadence() {
         const auto& c=frontend();const auto& training=options_.training;
@@ -107,15 +112,29 @@ class TrackAnalysis {
             preview_->frequency_hz[band]=.5*double(first+last-1)*preview_->bin_hz;
         }
     }
-    bool active_window() const {
+    double window_rms() const {
         double energy=0;for(float value:window_)energy+=double(value)*value;
         const auto real=std::min<std::uint64_t>(written_,window_.size());
-        return real && std::sqrt(energy/double(real))>options_.training.silence_rms;
+        return real?std::sqrt(energy/double(real)):0;
+    }
+    void accumulate_quiet(double rms) {
+        ++statistics_.quiet_frames;statistics_.quiet_rms+=rms*rms;
+        for(std::size_t bin=0;bin<spectrum_.size();++bin){
+            statistics_.quiet_mean_spectrum[bin]+=spectrum_[bin];
+            statistics_.quiet_peak_spectrum[bin]=std::max(statistics_.quiet_peak_spectrum[bin],double(spectrum_[bin]));
+        }
     }
     void accumulate_statistics() {
         ++statistics_.frames;
-        if(!active_window())return;
+        const auto rms=window_rms();
+        statistics_.maximum_frame_rms=std::max(statistics_.maximum_frame_rms,rms);
+        if(!rms){++statistics_.digital_silence_frames;return;}
+        if(!statistics_.active_frames || rms<statistics_.minimum_frame_rms)statistics_.minimum_frame_rms=rms;
+        if(rms<=options_.training.silence_rms)accumulate_quiet(rms);
         ++statistics_.active_frames;
+        accumulate_spectrum();
+    }
+    void accumulate_spectrum() {
         for(std::size_t bin=0;bin<spectrum_.size();++bin){
             statistics_.mean_spectrum[bin]+=spectrum_[bin];
             statistics_.peak_spectrum[bin]=std::max(statistics_.peak_spectrum[bin],double(spectrum_[bin]));
@@ -178,6 +197,10 @@ class TrackAnalysis {
         if(!statistics_.active_frames)return;
         for(auto& value:statistics_.mean_spectrum)value/=double(statistics_.active_frames);
         for(auto& value:statistics_.frequency_presence)value/=double(statistics_.active_frames);
+        if(statistics_.quiet_frames){
+            statistics_.quiet_rms=std::sqrt(statistics_.quiet_rms/double(statistics_.quiet_frames));
+            for(auto& value:statistics_.quiet_mean_spectrum)value/=double(statistics_.quiet_frames);
+        }
     }
     void finish_preview() {
         if(!preview_)return;
@@ -213,6 +236,10 @@ PreviewResult analyze_music_preview(const QString& path,const AnalysisOptions& o
     result.cancelled=cancel.load();if(result.cancelled)result.success=false;return result;
 }
 namespace {
+AnalysisOptions measurement_options(const AnalysisOptions& input) {
+    auto result=input;result.training.gain_mode=ProfileGainMode::MeanEqualization;
+    result.training.min_gain=1;result.training.max_gain=1;result.training.smoothing_radius=0;return result;
+}
 bool valid_analysis_options(const QStringList& files,const AnalysisOptions& options,QString& error) {
     std::string validation;
     if(files.empty() || files.size()>4096 || !valid_profile_settings(options.compatibility,options.training,validation) || options.workers<1 || options.workers>50 || options.preview_time_bins<1 || options.preview_time_bins>2048 || options.preview_frequency_bins<1 || options.preview_frequency_bins>2048){
@@ -221,6 +248,7 @@ bool valid_analysis_options(const QStringList& files,const AnalysisOptions& opti
     const auto rows=options.preview_time_bins,bands=std::min(options.preview_frequency_bins,options.compatibility.fft_size/2+1);
     const auto bytes=std::uint64_t(files.size())*(rows*bands*sizeof(float)+(rows+bands)*sizeof(double)+rows*sizeof(std::uint64_t));
     if(bytes>512ull*1024*1024){error="Preview memory exceeds 512 MiB; reduce preview resolution or the file list";return false;}
+    if(std::uint64_t(files.size())*5*(options.compatibility.fft_size/2+1)*sizeof(double)>512ull*1024*1024){error="Spectral statistics exceed 512 MiB; reduce FFT size or the file list";return false;}
     return true;
 }
 class AnalysisBatch {
@@ -236,8 +264,8 @@ class AnalysisBatch {
     void analyze(std::size_t index) {
         try{analyze_track(files_[qsizetype(index)],options_,cancel_,statistics_[index],&previews_[index],errors_[index]);}
         catch(const std::exception& error){errors_[index]=QString::fromUtf8(error.what());}
-        const auto completed=done_.fetch_add(1)+1;
-        if(progress_){std::lock_guard lock(callback_mutex_);progress_(completed,std::size_t(files_.size()));}
+        std::lock_guard lock(callback_mutex_);const auto completed=done_.fetch_add(1)+1;
+        if(progress_)progress_(completed,std::size_t(files_.size()));
     }
     void work() {
         while(!cancel_.load()){
@@ -255,6 +283,8 @@ class AnalysisBatch {
         return valid;
     }
     void store_summary(AnalysisResult& result,const std::vector<CompositionStatistics>& valid) const {
+        const auto& t=options_.training;
+        result.document.preserved["scanner"]=QJsonObject{{"silence_rms",t.silence_rms},{"hop",double(t.hop)},{"interval_numerator",double(t.interval_numerator)},{"interval_denominator",double(t.interval_denominator)}};
         result.document.preserved["preview_settings"]=QJsonObject{{"time_cells",double(options_.preview_time_bins)},{"frequency_cells",double(options_.preview_frequency_bins)}};
         if(!result.document.previews.empty())result.preview=result.document.previews.front();
         QJsonArray failures;for(const auto& error:std::as_const(result.errors))failures.append(error);
@@ -276,7 +306,21 @@ public:
         if(result.success)store_summary(result,valid);
         else result.errors.append(QString::fromStdString(validation));
     }
+    void finish_scan(AnalysisResult& result) {
+        auto valid=collect(result);auto& p=result.document.profile;
+        p.compatibility=options_.compatibility;p.training=options_.training;
+        p.training.gain_mode=ProfileGainMode::MeanEqualization;p.training.min_gain=1;p.training.max_gain=1;
+        p.gains.assign(p.compatibility.fft_size/2+1,1);p.mean_spectrum.assign(p.gains.size(),0);
+        p.compositions=std::move(valid);result.success=!p.compositions.empty();
+        if(result.success)store_summary(result,p.compositions);
+    }
 };
+void run_scan_batch(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,
+    const AnalysisServices::Progress& progress,AnalysisResult& result) {
+    QElapsedTimer timer;timer.start();AnalysisBatch batch(files,options,cancel,progress);batch.run();
+    result.cancelled=cancel.load();result.wall_seconds=timer.nsecsElapsed()/1e9;
+    if(!result.cancelled)batch.finish_scan(result);
+}
 }
 AnalysisResult analyze_music_files(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,const AnalysisServices::Progress& progress) {
     AnalysisResult result;result.cancelled=cancel.load();if(result.cancelled)return result;
@@ -286,6 +330,14 @@ AnalysisResult analyze_music_files(const QStringList& files,const AnalysisOption
     AnalysisBatch batch(files,options,cancel,progress);batch.run();
     result.cancelled=cancel.load();result.wall_seconds=timer.nsecsElapsed()/1e9;
     if(!result.cancelled)batch.finish(result);
+    return result;
+}
+AnalysisResult scan_music_files(const QStringList& files,const AnalysisOptions& requested,const std::atomic_bool& cancel,const AnalysisServices::Progress& progress) {
+    AnalysisResult result;result.cancelled=cancel.load();if(result.cancelled)return result;
+    const auto options=measurement_options(requested);
+    QString error;
+    if(!valid_analysis_options(files,options,error)){result.errors.append(error);return result;}
+    run_scan_batch(files,options,cancel,progress,result);
     return result;
 }
 }

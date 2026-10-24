@@ -31,4 +31,8 @@ bool decode_profile(const QByteArray&, ProfileDocument& output, QString& error);
 QByteArray encode_profile(const ProfileDocument&);
 bool save_profile(const QString& path, const ProfileDocument&, QString& error);
 bool load_profile(const QString& path, ProfileDocument&, QString& error);
+QByteArray encode_music_scan(const ProfileDocument&);
+bool decode_music_scan(const QByteArray&,ProfileDocument&,QString& error);
+bool save_music_scan(const QString&,const ProfileDocument&,QString& error);
+bool load_music_scan(const QString&,ProfileDocument&,QString& error);
 }

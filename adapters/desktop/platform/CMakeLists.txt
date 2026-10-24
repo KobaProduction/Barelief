@@ -10,6 +10,8 @@ else()
 endif()
 add_library(desktop_analysis STATIC
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/profile_json.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/curve_json.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/scan_json.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/audio_decoder.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/resampler_comparison.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/music_analysis.cpp)

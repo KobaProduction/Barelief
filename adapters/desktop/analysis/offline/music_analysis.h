@@ -29,6 +29,9 @@ PreviewResult analyze_music_preview(const QString&,const AnalysisOptions&,const 
 QStringList scan_audio_files(const QString& folder, bool recursive=true);
 AnalysisResult analyze_music_files(const QStringList&, const AnalysisOptions&,
     const std::atomic_bool& cancelled, const std::function<void(std::size_t,std::size_t)>& progress={});
+// Measurement only: retains silent tracks and never builds normalization gains.
+AnalysisResult scan_music_files(const QStringList&, const AnalysisOptions&,
+    const std::atomic_bool& cancelled, const std::function<void(std::size_t,std::size_t)>& progress={});
 // Presentation supplies scheduling/cancellation; composition supplies these services.
 struct AnalysisServices {
     using Progress=std::function<void(std::size_t,std::size_t)>;
@@ -38,5 +41,8 @@ struct AnalysisServices {
     std::function<bool(const QString&,const ProfileDocument&,QString&)> save;
     std::function<bool(const QString&,ProfileDocument&,QString&)> load;
     std::function<bool(const QString&,ProfileDocument&,QString&,ProfileReadDiagnostic&)> load_diagnostic;
+    decltype(analyze_files) scan_files;
+    decltype(save) save_scan;
+    decltype(load) load_scan;
 };
 }

@@ -91,9 +91,9 @@ void compensation_curve_oracle() {
     FrequencyProfile profile;std::string error;
     require(build_frequency_profile(c,training,std::array{track,second},profile,error),
             "Measured per-bin peak profile must build");
-    require(profile.peak_spectrum[1]==.5 && profile.peak_spectrum[2]==.2 &&
-            profile.gains[1]==2 && profile.gains[2]==5,
-            "Global maximum across tracks, not average, drives independent gains");
+    require(profile.peak_spectrum[1]==.375 && std::abs(profile.peak_spectrum[2]-.15)<1e-12 &&
+            std::abs(profile.gains[1]-1/.375)<1e-6 && std::abs(profile.gains[2]-1/.15)<1e-6,
+            "Equal-track mean maxima drive peak gains independently of track duration");
     desktop_analysis::offline::ProfileDocument original;original.profile=profile;
     desktop_analysis::offline::ProfileDocument restored;QString diagnostic;
     require(desktop_analysis::offline::decode_profile(

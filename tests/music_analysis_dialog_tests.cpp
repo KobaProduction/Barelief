@@ -3,6 +3,7 @@
 #include <barelief/numeric_image_view.h>
 #include <QApplication>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
@@ -31,7 +32,7 @@ namespace {
 int failure(int code,int line){std::cerr<<"FAIL music dialog check "<<code<<" at line "<<line<<'\n';return code;}
 desktop_analysis::offline::AnalysisServices analysis_services(){
     using namespace desktop_analysis::offline;
-    return {analyze_music_files,analyze_music_preview,scan_audio_files,save_profile,load_profile};
+    return {analyze_music_files,analyze_music_preview,scan_audio_files,save_profile,load_profile,load_profile_diagnostic,scan_music_files,save_music_scan,load_music_scan};
 }
 void put16(QByteArray& bytes,unsigned v){bytes.append(char(v));bytes.append(char(v>>8));}
 void put32(QByteArray& bytes,unsigned v){put16(bytes,v);put16(bytes,v>>16);}
@@ -122,10 +123,13 @@ static int initial_scan(core_app::MusicAnalysisDialog& dialog,QApplication& app,
         if(run->palette().color(QPalette::Button)!=app.palette().color(QPalette::Button))return failure(2,__LINE__);
         if(size->findText("16384")<0)return failure(20,__LINE__);workers->setValue(50);
         size->setCurrentText("512");
+        dialog.findChild<QComboBox*>("musicSampleRate")->setCurrentText("32768");
         other=directory.filePath(QString("other-%1.wav").arg(theme));if(!QFile::copy(path,other))return failure(5,__LINE__);
         auto* files=dialog.findChild<QListWidget*>("musicFiles");files->addItem(path);files->addItem(other);files->setCurrentRow(1);
         if(!dialog.findChild<QLabel*>("musicFileCount")->text().contains('2'))return failure(6,__LINE__);run->click();
-        QElapsedTimer timer;timer.start();while(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled()&&timer.elapsed()<10000)app.processEvents();
+        QElapsedTimer timer;timer.start();while(!dialog.findChild<QPushButton*>("musicSaveScan")->isEnabled()&&timer.elapsed()<10000)app.processEvents();
+        if(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled())return failure(33,__LINE__);
+        dialog.findChild<QPushButton*>("musicBuildCurve")->click();
         if(run->isEnabled()||!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled()||size->isEnabled()||workers->isEnabled())return failure(4,__LINE__);
         auto* statistics=dialog.findChild<QTableWidget*>("musicCompositionStatistics");auto* progress=dialog.findChild<QProgressBar*>("musicProgress");
         if(!statistics || statistics->rowCount()!=2 || statistics->item(0,0)->text()!=other || progress->maximum()!=2 || progress->value()!=2)return failure(7,__LINE__);
@@ -170,6 +174,37 @@ static int theme_dialog(QApplication& app,const QTemporaryDir& directory,const Q
         // Closing an owned dialog while a new analysis is queued must cancel/join safely.
         cancel_queued_scan(dialog,run,cancel);return 0;
 }
+static bool scanner_settings_roundtrip(core_app::MusicAnalysisDialog& dialog,const QString& path,QString& error) {
+    desktop_analysis::offline::ProfileDocument saved;
+    if(!dialog.save_profile_to(path,error) || !desktop_analysis::offline::load_profile(path,saved,error))return false;
+    const auto& t=saved.profile.training;
+    return t.silence_rms==.125 && t.hop==128 && t.interval_numerator==0 && dialog.load_profile_from(path,error) &&
+        dialog.findChild<QDoubleSpinBox*>("musicQuietRms")->value()==.125 && dialog.findChild<QSpinBox*>("musicHop")->value()==128;
+}
+static int reuse_scan(QApplication& app,const QTemporaryDir& directory,const QString& source) {
+    using namespace desktop_analysis::offline;
+    const auto audio=directory.filePath("reuse.wav"),scan=directory.filePath("measurements.json");
+    if(!QFile::copy(source,audio))return failure(40,__LINE__);
+    auto services=analysis_services();std::atomic_int scans=0;
+    services.scan_files=[&](const auto& paths,const auto& options,const auto& cancel,const auto& progress){++scans;return scan_music_files(paths,options,cancel,progress);};
+    core_app::MusicAnalysisDialog dialog({}, {},std::move(services));dialog.findChild<QComboBox*>("musicFftSize")->setCurrentText("512");
+    dialog.findChild<QComboBox*>("musicCadenceMode")->setCurrentIndex(0);dialog.findChild<QSpinBox*>("musicHop")->setValue(128);
+    dialog.findChild<QDoubleSpinBox*>("musicQuietRms")->setValue(.125);
+    dialog.findChild<QListWidget*>("musicFiles")->addItem(audio);dialog.findChild<QPushButton*>("musicRun")->click();
+    QElapsedTimer timer;timer.start();while(!dialog.findChild<QPushButton*>("musicSaveScan")->isEnabled()&&timer.elapsed()<10000)app.processEvents();
+    QString error;if(!dialog.save_scan_to(scan,error) || !QFile::remove(audio) || !dialog.load_scan_from(scan,error))return failure(41,__LINE__);
+    for(int method=0;method<3;++method)for(int fit=0;fit<2;++fit){
+        dialog.findChild<QComboBox*>("musicAggregation")->setCurrentIndex(method);dialog.findChild<QComboBox*>("musicApproximation")->setCurrentIndex(fit);
+        dialog.findChild<QPushButton*>("musicBuildCurve")->click();
+        if(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || scans!=1)return failure(42,__LINE__);
+    }
+    if(!scanner_settings_roundtrip(dialog,directory.filePath("reuse-profile.json"),error))return failure(45,__LINE__);
+    dialog.findChild<QSpinBox*>("musicPolynomialDegree")->setValue(3);
+    if(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || dialog.findChild<QPushButton*>("musicApplyStep")->isEnabled())return failure(43,__LINE__);
+    dialog.findChild<QPushButton*>("musicBuildCurve")->click();dialog.findChild<QPushButton*>("musicApplyStep")->click();
+    if(dialog.findChild<QStackedWidget*>("musicPages")->currentIndex()!=2 || scans!=1)return failure(44,__LINE__);
+    return 0;
+}
 
 int main(int argc,char** argv) {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -179,6 +214,7 @@ int main(int argc,char** argv) {
     for(const auto* theme:{"light","dark"}) {
         if(const auto result=theme_dialog(app,directory,path,theme))return result;
     }
+    if(const auto result=reuse_scan(app,directory,path))return result;
     std::cout<<"music_analysis_dialog_tests PASS (offscreen widget lifecycle only)\n";
     return 0;
 }

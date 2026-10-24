@@ -1,4 +1,5 @@
 #include "profile_json.h"
+#include "curve_json.h"
 #include <signal_contracts/spectral_calibration.h>
 #include <QFile>
 #include <QJsonArray>
@@ -99,6 +100,13 @@ template<class T> bool valid_values(const std::vector<T>& values) {
     return std::all_of(values.begin(),values.end(),[](auto value){return std::isfinite(value) && value>=0;});
 }
 bool valid_composition(const CompositionStatistics& track,std::size_t bins) {
+    if(track.quiet_frames>track.active_frames || track.digital_silence_frames>track.frames-track.active_frames ||
+        !std::isfinite(track.quiet_rms) || track.quiet_rms<0 || !std::isfinite(track.measured_max_hz) || track.measured_max_hz<0 ||
+        !std::isfinite(track.minimum_frame_rms) || track.minimum_frame_rms<0 ||
+        !std::isfinite(track.maximum_frame_rms) || track.maximum_frame_rms<track.minimum_frame_rms)return false;
+    if((!track.quiet_mean_spectrum.empty() && track.quiet_mean_spectrum.size()!=bins) ||
+        (!track.quiet_peak_spectrum.empty() && track.quiet_peak_spectrum.size()!=bins) ||
+        !valid_values(track.quiet_mean_spectrum) || !valid_values(track.quiet_peak_spectrum))return false;
     if(track.active_frames>track.frames || !std::isfinite(track.rms) || track.rms<0 || (!track.mean_spectrum.empty() && track.mean_spectrum.size()!=bins) || (!track.peak_spectrum.empty() && track.peak_spectrum.size()!=bins) || (!track.frequency_presence.empty() && track.frequency_presence.size()!=bins))return false;
     return valid_values(track.mean_spectrum) && valid_values(track.peak_spectrum) && valid_values(track.frequency_presence) &&
         std::none_of(track.frequency_presence.begin(),track.frequency_presence.end(),[](double value){return value>1;});
@@ -110,8 +118,8 @@ bool valid_preview(const SpectrogramPreview& image,const CompositionStatistics& 
 }
 bool validate_saved_composition(const ProfileDocument& document,std::size_t index,std::size_t& bytes,QString& error) {
     const auto& profile=document.profile;const auto& track=profile.compositions[index];
-    if(!valid_composition(track,profile.gains.size())){error="Invalid saved composition statistics";return false;}
-    bytes+=(track.mean_spectrum.size()+track.peak_spectrum.size()+track.frequency_presence.size())*sizeof(double);
+    if(!valid_composition(track,profile.gains.size()) || track.measured_max_hz>profile.compatibility.sample_rate/2){error="Invalid saved composition statistics";return false;}
+    bytes+=(track.mean_spectrum.size()+track.peak_spectrum.size()+track.frequency_presence.size()+track.quiet_mean_spectrum.size()+track.quiet_peak_spectrum.size())*sizeof(double);
     if(index<document.previews.size() && document.previews[index].rows){
         const auto& image=document.previews[index];
         if(!valid_preview(image,track,profile.compatibility,profile.gains.size())){error="Invalid saved composition preview";return false;}
@@ -120,9 +128,15 @@ bool validate_saved_composition(const ProfileDocument& document,std::size_t inde
     if(bytes>1024ull*1024*1024){error="Decoded profile exceeds 1 GiB limit";return false;}
     return true;
 }
-bool valid_document(const ProfileDocument& document,QString& error) {
-    const auto& profile=document.profile;std::string validation;
+bool valid_document_coefficients(const FrequencyProfile& profile,QString& error) {
+    std::string validation;
     if(!validate_profile(profile,profile.compatibility,validation)){error=QString::fromStdString(validation);return false;}
+    if(!valid_frequency_curve(profile)){error="Invalid frequency function";return false;}
+    return true;
+}
+bool valid_document(const ProfileDocument& document,QString& error) {
+    const auto& profile=document.profile;
+    if(!valid_document_coefficients(profile,error))return false;
     if(profile.compositions.size()>4096 || (!document.previews.empty() && document.previews.size()!=profile.compositions.size())){error="Invalid saved composition count";return false;}
     std::size_t bytes=profile.gains.size()*sizeof(float)+(profile.mean_spectrum.size()+profile.peak_spectrum.size()+profile.frequency_presence.size())*sizeof(double);
     for(std::size_t i=0;i<profile.compositions.size();++i)if(!validate_saved_composition(document,i,bytes,error))return false;
@@ -264,11 +278,25 @@ class ProfileDecoder {
         CompositionStatistics track;
         if(!composition_metadata(object,track))return false;
         const auto bins=frontend().fft_size/2+1;
+        if(!composition_spectra(object,track,bins))return false;
+        if(!preview(object,track.samples))return false;
+        candidate_.profile.compositions.push_back(std::move(track));return true;
+    }
+    bool composition_spectra(const QJsonObject& object,CompositionStatistics& track,std::size_t bins){
         if(object.contains("mean_spectrum") && !vector(object.value("mean_spectrum"),track.mean_spectrum,bins,budget_))return fail("Invalid composition spectrum statistics");
         if(object.contains("peak_spectrum") && !vector(object.value("peak_spectrum"),track.peak_spectrum,bins,budget_))return fail("Invalid composition peak spectrum");
         if(object.contains("frequency_presence") && !vector(object.value("frequency_presence"),track.frequency_presence,bins,budget_))return fail("Invalid composition frequency presence");
-        if(!preview(object,track.samples))return false;
-        candidate_.profile.compositions.push_back(std::move(track));return true;
+        return quiet_statistics(object,track,bins);
+    }
+    bool quiet_statistics(const QJsonObject& object,CompositionStatistics& track,std::size_t bins){
+        if(!object.contains("quiet_statistics"))return true;
+        const auto quiet=object.value("quiet_statistics").toObject();std::size_t silent=0,counted=0;
+        if(!count(quiet,"digital_silence_frames",silent) || !count(quiet,"quiet_frames",counted) ||
+            !number(quiet,"quiet_rms",track.quiet_rms) || !number(quiet,"minimum_frame_rms",track.minimum_frame_rms) ||
+            !number(quiet,"maximum_frame_rms",track.maximum_frame_rms) || !number(quiet,"measured_max_hz",track.measured_max_hz))return fail("Invalid quiet-frame statistics");
+        track.digital_silence_frames=silent;track.quiet_frames=counted;
+        return vector(quiet.value("mean_spectrum"),track.quiet_mean_spectrum,bins,budget_) &&
+            vector(quiet.value("peak_spectrum"),track.quiet_peak_spectrum,bins,budget_);
     }
     bool compositions(){
         const auto value=source_.value("compositions");
@@ -284,9 +312,12 @@ public:
     ProfileDecoder(const QJsonObject& source,QString& error,ProfileReadDiagnostic& diagnostic)
         :source_(source),error_(error),diagnostic_(diagnostic){}
     bool decode(ProfileDocument& output){
-        if(!source_.value("version").isDouble() || source_.value("version").toDouble()!=3)return fail("Unsupported profile version");
+        const auto version=source_.value("version").toDouble();
+        if(!source_.value("version").isDouble() || (version!=3 && version!=4))return fail("Unsupported profile version");
         candidate_.preserved=source_;
-        if(!metadata() || !training() || !coefficients() || !compositions() || !valid_document(candidate_,error_))return false;
+        if(!metadata() || !training() || !coefficients() || !compositions())return false;
+        if(version==4 && (source_.value("kind").toString()!="barelief.frequency_profile" || !decode_curve(source_.value("function").toObject(),candidate_.profile)))return fail("Invalid frequency function");
+        if(!valid_document(candidate_,error_))return false;
         output=std::move(candidate_);diagnostic_={};return true;
     }
 };
@@ -322,11 +353,20 @@ template<class T> void encode_optional_array(QJsonObject& object,const char* key
     if(values.empty())object.remove(key);
     else object[key]=array(values,object.value(key));
 }
+void encode_quiet_statistics(const CompositionStatistics& track,QJsonObject& object){
+    if(!track.quiet_mean_spectrum.empty()){
+        auto quiet=object.value("quiet_statistics").toObject();
+        quiet["digital_silence_frames"]=double(track.digital_silence_frames);quiet["quiet_frames"]=double(track.quiet_frames);
+        quiet["quiet_rms"]=track.quiet_rms;quiet["minimum_frame_rms"]=track.minimum_frame_rms;quiet["maximum_frame_rms"]=track.maximum_frame_rms;quiet["measured_max_hz"]=track.measured_max_hz;
+        quiet["mean_spectrum"]=array(track.quiet_mean_spectrum,quiet.value("mean_spectrum"));quiet["peak_spectrum"]=array(track.quiet_peak_spectrum,quiet.value("peak_spectrum"));
+        object["quiet_statistics"]=quiet;
+    }
+}
 QJsonObject encode_composition(const CompositionStatistics& track,const SpectrogramPreview* preview,QJsonObject object){
     object["source"]=QString::fromStdString(track.source);object["frames"]=double(track.frames);object["active_frames"]=double(track.active_frames);object["samples"]=double(track.samples);object["rms"]=track.rms;
     encode_optional_array(object,"mean_spectrum",track.mean_spectrum);
     encode_optional_array(object,"peak_spectrum",track.peak_spectrum);
-    encode_optional_array(object,"frequency_presence",track.frequency_presence);
+    encode_optional_array(object,"frequency_presence",track.frequency_presence);encode_quiet_statistics(track,object);
     if(preview && preview->rows)object["preview"]=encode_preview(*preview,object.value("preview").toObject());else object.remove("preview");
     return object;
 }
@@ -338,6 +378,10 @@ QJsonArray encode_compositions(const ProfileDocument& document,const QJsonArray&
         tracks.append(encode_composition(document.profile.compositions[i],preview,before));
     }
     return tracks;
+}
+void encode_function(const FrequencyProfile& profile,QJsonObject& object){
+    object["version"]=profile.curve?4:3;
+    if(profile.curve){object["kind"]="barelief.frequency_profile";object["function"]=encode_curve(*profile.curve,object.value("function").toObject());}
 }
 }
 bool decode_profile_diagnostic(const QByteArray& bytes,ProfileDocument& output,QString& error,ProfileReadDiagnostic& diagnostic){
@@ -352,7 +396,7 @@ bool decode_profile(const QByteArray& bytes,ProfileDocument& output,QString& err
     ProfileReadDiagnostic diagnostic;return decode_profile_diagnostic(bytes,output,error,diagnostic);
 }
 QByteArray encode_profile(const ProfileDocument& document){
-    const auto& profile=document.profile;auto object=document.preserved;object["version"]=3;
+    const auto& profile=document.profile;auto object=document.preserved;encode_function(profile,object);
     object["metadata"]=encode_metadata(profile.compatibility,object.value("metadata").toObject());
     object["training"]=encode_training(profile.training,object.value("training").toObject());
     object["gains"]=array(profile.gains,object.value("gains"));object["mean_spectrum"]=array(profile.mean_spectrum,object.value("mean_spectrum"));

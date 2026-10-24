@@ -102,7 +102,7 @@ static int analysis_dialog_workflow(MainWindow* window,QMenu* tools,const QTempo
     auto* analysis=window->findChild<QDialog*>("musicAnalysisDialog");CHECK(analysis);
     auto* files=analysis->findChild<QListWidget*>("musicFiles");auto* analyze_run=analysis->findChild<QPushButton*>("musicRun");
     auto* analysis_status=analysis->findChild<QLabel*>("musicStatus");
-    auto* save=analysis->findChild<QPushButton*>("musicSaveProfile");
+    auto* save=analysis->findChild<QPushButton*>("musicSaveScan");
     auto* statistics=analysis->findChild<QTableWidget*>("musicCompositionStatistics");
     CHECK(files&&analyze_run&&analysis_status&&save&&statistics);
     const auto wav=directory.filePath("eight-changing-tones.wav");CHECK(write_tones(wav));files->addItem(wav);analyze_run->click();
@@ -110,6 +110,8 @@ static int analysis_dialog_workflow(MainWindow* window,QMenu* tools,const QTempo
     if(!completed)std::fprintf(stderr,"Music analysis results: run=%d save=%d rows=%d status=%s\n",int(analyze_run->isEnabled()),int(save->isEnabled()),statistics->rowCount(),qPrintable(analysis_status->text()));
     CHECK(completed);
     CHECK(!analyze_run->isEnabled()&&statistics->rowCount()==1);
+    analysis->findChild<QPushButton*>("musicBuildCurve")->click();
+    CHECK(analysis->findChild<QPushButton*>("musicSaveProfile")->isEnabled());
     delete analysis;
     return 0;
 }
@@ -547,9 +549,10 @@ static int catalog_contracts() {
 return 0;
 }
 
-static int parse_options(int argc,char** argv,unsigned& native_rate,QString& export_path,QString& image_dir) {
+static int parse_options(int argc,char** argv,unsigned& native_rate,QString& export_path,QString& image_dir,bool& scanner_only) {
     for(int i=1;i<argc;++i) {
         if(QByteArray(argv[i])=="--native32000")native_rate=32000;
+        else if(QByteArray(argv[i])=="--scanner-only")scanner_only=true;
         else if(QByteArray(argv[i])=="--export" && i+1<argc)export_path=QString::fromLocal8Bit(argv[++i]);
         else if(QByteArray(argv[i])=="--image-dir" && i+1<argc)image_dir=QString::fromLocal8Bit(argv[++i]);
         else {std::fprintf(stderr,"Unknown test option %s\n",argv[i]);return 1;}
@@ -635,6 +638,14 @@ static int prepare_music_window(CoreApplication& app,NumericEditorGraphModel* mo
 return 0;
 }
 
+static int scanner_gui_workflow(CoreApplication& app,const QTemporaryDir& directory,unsigned native_rate) {
+    auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
+    MainWindow* window=nullptr;QMenu* menu=nullptr;
+    if(const auto result=prepare_music_window(app,model,native_rate,window,menu))return result;
+    const auto result=analysis_dialog_workflow(window,window->findChild<QMenu*>("analysisToolsMenu"),directory);
+    if(!result)std::printf("Music scanner application menu workflow PASS (isolated offscreen)\n");
+    return result;
+}
 static int music_window_workflow(CoreApplication& app,const QTemporaryDir& directory,const QString& input_path,const QString& saved_path,const QByteArray& original,const domain::NumericProcessingGraph& initial_graph,unsigned native_rate,const QString& export_path,const QString& image_dir) {
     if(const auto result=catalog_contracts())return result;
     app._ctx.file_configs.ui.autosave_enabled=false;
@@ -651,8 +662,8 @@ return 0;
 int main(int argc,char** argv) {
     CHECK(test_fixture::isolated_gui_platform());
     QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
-    QString export_path,image_dir;unsigned native_rate=48000;
-    if(const auto result=parse_options(argc,argv,native_rate,export_path,image_dir))return result;
+    QString export_path,image_dir;unsigned native_rate=48000;bool scanner_only=false;
+    if(const auto result=parse_options(argc,argv,native_rate,export_path,image_dir,scanner_only))return result;
     QTemporaryDir directory;CHECK(directory.isValid());
     // Preserve existing evidence exports; each repeated test still exercises Save As.
     if(!export_path.isEmpty() && QFile::exists(export_path))export_path=directory.filePath("fresh-export.json");
@@ -662,6 +673,7 @@ int main(int argc,char** argv) {
     auto encoded=input_path.toLocal8Bit();char executable[]="music_gui_tests",option[]="--config";
     char* args[]{executable,option,encoded.data(),nullptr};int count=3;
     CoreApplication app(count,args,[](pipeline::AudioSourceKind kind)->std::unique_ptr<pipeline::IAudioSource>{return std::make_unique<MusicCapture>(kind);});
+    if(scanner_only)return scanner_gui_workflow(app,directory,native_rate);
     if(const auto result=music_window_workflow(app,directory,input_path,saved_path,original,initial_graph,native_rate,export_path,image_dir))return result;
     return 0;
 }

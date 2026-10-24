@@ -43,12 +43,12 @@ using namespace domain;using namespace signal_contracts;using namespace core_app
 void require(bool ok,const char* message){if(!ok)throw std::runtime_error(message);}
 desktop_analysis::offline::AnalysisServices analysis_services(){
     using namespace desktop_analysis::offline;
-    return {analyze_music_files,analyze_music_preview,scan_audio_files,save_profile,load_profile};
+    return {analyze_music_files,analyze_music_preview,scan_audio_files,save_profile,load_profile,load_profile_diagnostic,scan_music_files,save_music_scan,load_music_scan};
 }
 void select_cadence(MusicAnalysisDialog& dialog,bool with_target,bool rational){
     auto* cadence=dialog.findChild<QComboBox*>("musicCadenceMode");auto* hop=dialog.findChild<QSpinBox*>("musicHop");
     require(cadence && hop,"explicit cadence controls exist");
-    if(with_target)require(cadence->currentIndex()==1 && !hop->isEnabled(),"target rational cadence disables ignored hop");
+    if(with_target)require(cadence->currentIndex()==1 && !hop->isEnabled(),"scanner owns its rational cadence independently of target");
     cadence->setCurrentIndex(rational?1:0);hop->setValue(128);
     require(hop->isEnabled()!=rational,"only fixed mode edits hop");
 }
@@ -65,7 +65,7 @@ dsp_kernels::ProfileTraining capture_cadence(bool with_target,bool rational){
     require(result.wait_for(std::chrono::seconds(5))==std::future_status::ready,"injected analysis receives explicit cadence");return result.get();
 }
 void dialog_cadence_contract(){
-    const auto target=capture_cadence(true,true);require(target.interval_numerator==1 && target.interval_denominator==119,"target interval preserved explicitly");
+    const auto target=capture_cadence(true,true);require(target.interval_numerator==1 && target.interval_denominator==120,"graph target does not replace scanner cadence");
     const auto fixed=capture_cadence(true,false);require(fixed.interval_numerator==0 && fixed.hop==128,"fixed choice replaces rational target mode");
     const auto standalone=capture_cadence(false,true);require(standalone.interval_numerator==1 && standalone.interval_denominator==120,"standalone declared interval is explicit");
     require(standalone.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization,
@@ -309,10 +309,25 @@ void runtime_arrays(bool logarithmic){
     require(result.values==(logarithmic?std::array<float,4>{-50,-60,-120,-120}:std::array<float,4>{1,6,0,4}),"actual runtime applies numeric coefficients and preserves the silence floor");
     replace_runtime_coefficients(logarithmic,graph,profile,plan,state,result,fill,scalar,coefficients,feed,vector,samples);
 }
+void capture_profile_plots(MusicAnalysisDialog& dialog,const QString& evidence,const char* language,const char* theme){
+    for(const auto* name:{"musicMeanCurve","musicFittedCurve"}){
+        auto* chart=dynamic_cast<LineChartView*>(dialog.findChild<QWidget*>(name));require(chart && chart->value_count()==2049,"full scan and fitted data reach both charts");
+        QElapsedTimer deadline;deadline.start();
+        while(deadline.elapsed()<2000){QCoreApplication::processEvents();if(chart->presentation_model()->vectorPoints().size()>1)break;QThread::msleep(2);}
+        require(chart->presentation_model()->vectorPoints().size()>1,"wait for actual plot geometry before capture");
+        require(chart->grabFramebuffer().save(evidence+QString("/%1-%2-%3.png").arg(name,language,theme)),"save owned Quick plot framebuffer");
+    }
+}
 void normalization_dialog_images(MusicAnalysisDialog& dialog) {
     const auto evidence=QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).absoluteFilePath("../.agent-workspace/normalization-ui");require(QDir().mkpath(evidence),"create own-renderer image directory");
     for(const auto* language:{"ru","en"})for(const auto* theme:{"light","dark"}){ui::Language::instance().set(language);ui::Theme::instance().set(theme);dialog.findChild<QTabWidget*>()->setCurrentIndex(4);QCoreApplication::processEvents();
+        dialog.findChild<QPushButton*>("musicApplyStep")->click();QCoreApplication::processEvents();
+        require(dialog.grab().save(evidence+QString("/application-%1-%2.png").arg(language,theme)),"save owned application-stage renderer");
+        dialog.findChild<QPushButton*>("musicCurveStep")->click();QCoreApplication::processEvents();
         require(dialog.grab().save(evidence+QString("/analysis-%1-%2.png").arg(language,theme)),"save owned dialog renderer image");
+        dialog.findChild<QTabWidget*>()->setCurrentIndex(0);QCoreApplication::processEvents();
+        capture_profile_plots(dialog,evidence,language,theme);
+        require(dialog.grab().save(evidence+QString("/curve-comparison-%1-%2.png").arg(language,theme)),"save measured and approximated spectra");
         dialog.findChild<QTabWidget*>()->setCurrentIndex(2);QCoreApplication::processEvents();
         require(dialog.grab().save(evidence+QString("/results-preview-%1-%2.png").arg(language,theme)),"save owned cached-preview renderer");
         dialog.findChild<QTabWidget*>()->setCurrentIndex(5);QCoreApplication::processEvents();
@@ -340,14 +355,15 @@ void normalization_dialog_scan(MusicAnalysisDialog& dialog,const auto& target,co
     for(int i=0;i<choices->count();++i)require(choices->itemData(i).toInt()==int(kinds[std::size_t(i)]),"batch uses common representation registry and stable enum values");
     require(compensation->isChecked()==target.options.compatibility.projection.compensate,"batch compensation reflects the graph route");
     auto* files=dialog.findChild<QListWidget*>("musicFiles");files->addItem(wavPath);files->addItem(wavPath);
-    auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
+    auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveScan")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
+    dialog.findChild<QPushButton*>("musicBuildCurve")->click();
     auto* applyButton=dialog.findChild<QPushButton*>("musicApplyProfile");require(applyButton && applyButton->isEnabled(),"actual batch dialog prepares applicable profile");
-    auto* statistics=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");require(statistics && std::size_t(statistics->rowCount())==target.options.compatibility.fft_size/2 && !statistics->item(1,5)->text().isEmpty(),"per-bin mean, gains and frequency occurrence shown");
+    auto* statistics=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");require(statistics && std::size_t(statistics->rowCount())==2048 && !statistics->item(1,2)->text().isEmpty(),"scanner frequency measurements stay on its independent grid");
     require(!dialog.findChild<QLabel*>("musicMeanValue")->text().isEmpty(),"aggregate mean shown");
     auto* curve=dynamic_cast<LineChartView*>(dialog.findChild<QWidget*>("musicGainCurve"));
     require(curve && curve->value_scale().mode==ValueDisplayScale::Mode::Linear,
             "Trained coefficients remain linear; only measured spectra render as dB");
-    applyButton->click();
+    dialog.findChild<QPushButton*>("musicApplyStep")->click();applyButton->click();
 }
 
 QString normalization_wave_fixture(const QTemporaryDir& directory) {
@@ -391,7 +407,8 @@ void dialog_and_persistence(const NumericProcessingGraph& initial){
 }
 void resampler_live_edit_regression(){
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto& kind:numeric_editor::catalog())
+    const auto catalog=numeric_editor::catalog();
+    for(const auto& kind:catalog)
         registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     NumericEditorGraphModel model(registry);QString error;
     require(model.set_numeric_graph(numeric_startup_graph(),&error),"Startup example loads in editor");

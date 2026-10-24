@@ -13,6 +13,8 @@ class MusicAnalysisDialog final : public QDialog {
     ~MusicAnalysisDialog() override;
     bool save_profile_to(const QString& path,QString& error) const;
     bool load_profile_from(const QString& path,QString& error);
+    bool save_scan_to(const QString& path,QString& error) const;
+    bool load_scan_from(const QString& path,QString& error);
  private:
     struct State;
     std::unique_ptr<State> state_;

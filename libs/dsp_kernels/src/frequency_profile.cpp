@@ -6,6 +6,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include "frequency_curve_math.h"
 
 namespace dsp_kernels {
 WindowScaling profile_window_scaling(const ProfileCompatibility& c) noexcept {
@@ -145,7 +146,7 @@ struct ProfileAccumulator {
             for(std::size_t k=0;k<track.peak_spectrum.size();++k){
                 const auto peak=track.peak_spectrum[k];
                 if(!std::isfinite(peak) || peak<0){error="Invalid composition peak";return false;}
-                value.peak_spectrum[k]=std::max(value.peak_spectrum[k],peak);
+                value.peak_spectrum[k]+=peak;
             }
         }else if(value.training.gain_mode==ProfileGainMode::PeakNormalization){
             error="Peak normalization requires measured per-bin track maxima";return false;
@@ -162,11 +163,15 @@ struct ProfileAccumulator {
     }
     bool finish(std::string& error) {
         if(!active){error="No active audio windows above the silence threshold";return false;}
-        for(auto& v:value.mean_spectrum)v/=double(active);
-        if(has_presence)for(auto& v:value.frequency_presence)v/=double(active);
-        else value.frequency_presence.clear();
+        normalize_spectra();
+        if(!has_presence)value.frequency_presence.clear();
         if(!has_peaks)value.peak_spectrum.clear();
         return true;
+    }
+    void normalize_spectra() {
+        for(auto& v:value.mean_spectrum)v/=double(active);
+        for(auto& v:value.peak_spectrum)v/=double(active);
+        if(has_presence)for(auto& v:value.frequency_presence)v/=double(active);
     }
     bool collect(std::span<const CompositionStatistics> tracks,std::string& error) {
         for(const auto& track:tracks)if(!add(track,error))return false;
@@ -219,8 +224,7 @@ bool build_frequency_peak_compensation_curve(std::span<const double> peaks,doubl
        !std::all_of(peaks.begin(),peaks.end(),[](double v){return std::isfinite(v) && v>=0;}))return false;
     std::vector<float> curve(peaks.size(),1.f);
     for(std::size_t k=1;k<peaks.size();++k){
-        if(peaks[k]>floor)
-            curve[k]=float(std::clamp(1./peaks[k],1.,max_gain));
+        curve[k]=float(profile_curve_detail::regularized_gain(peaks[k],peaks[k],floor,max_gain));
     }
     output=std::move(curve);
     return true;

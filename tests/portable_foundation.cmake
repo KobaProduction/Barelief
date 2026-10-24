@@ -38,6 +38,7 @@ target_sources(esp_dsp_dispatch_tests PRIVATE ${CMAKE_SOURCE_DIR}/libs/dsp_kerne
 target_include_directories(esp_dsp_dispatch_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/fft_fake_esp_dsp ${CMAKE_SOURCE_DIR}/libs/dsp_kernels/include)
 add_foundation_test(musical_features_tests dsp_kernels)
+add_foundation_test(frequency_curve_tests dsp_kernels)
 add_foundation_test(rhythm_kernel_tests dsp_kernels)
 add_foundation_test(rhythm_runtime_tests dataflow_runtime)
 target_link_libraries(rhythm_runtime_tests PRIVATE desktop_numeric_defaults)

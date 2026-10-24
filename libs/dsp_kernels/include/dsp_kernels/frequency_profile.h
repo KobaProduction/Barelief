@@ -3,6 +3,7 @@
 #include <dsp_kernels/prepared_resampler.h>
 #include <cstdint>
 #include <string>
+#include <optional>
 
 namespace dsp_kernels {
 enum class ChannelPolicy { Mean, Select };
@@ -39,9 +40,31 @@ struct CompositionStatistics {
     std::string source;
     std::uint64_t frames = 0, active_frames = 0, samples = 0;
     double rms = 0;
+    // Raw nonzero windows are retained independently of the diagnostic threshold.
+    std::uint64_t digital_silence_frames = 0, quiet_frames = 0;
+    double quiet_rms = 0, minimum_frame_rms = 0, maximum_frame_rms = 0;
+    double measured_max_hz = 0;
+    std::vector<double> quiet_mean_spectrum, quiet_peak_spectrum;
     std::vector<double> mean_spectrum;
     std::vector<double> peak_spectrum;
     std::vector<double> frequency_presence;
+};
+enum class PeakAggregation { MeanTrackMaxima, GlobalMaximum, UpperPercentile };
+enum class CurveApproximation { Polynomial, PiecewiseSmooth };
+struct FrequencyCurveOptions {
+    PeakAggregation aggregation = PeakAggregation::MeanTrackMaxima;
+    CurveApproximation approximation = CurveApproximation::PiecewiseSmooth;
+    double percentile = 90, regularization_db = -120, max_gain = 100;
+    unsigned polynomial_degree = 6;
+    std::size_t segments = 64;
+};
+struct FrequencyCurve {
+    FrequencyCurveOptions options;
+    double minimum_hz = 0, maximum_hz = 0, fit_rmse_db = 0;
+    // Polynomial coefficients use Chebyshev basis on [-1,1] in linear Hz.
+    // Piecewise knots hold log amplitude, with monotone cubic Hermite slopes.
+    std::vector<double> coefficients, knot_hz, log_amplitude, slopes;
+    std::vector<double> measured_spectrum;
 };
 struct FrequencyProfile {
     ProfileCompatibility compatibility;
@@ -51,7 +74,16 @@ struct FrequencyProfile {
     std::vector<double> peak_spectrum;
     std::vector<double> frequency_presence;
     std::vector<CompositionStatistics> compositions;
+    std::optional<FrequencyCurve> curve;
 };
+// Cold operations only; processing continues to use the prepared ArrayMultiply.
+bool build_frequency_curve(const ProfileCompatibility&,std::span<const CompositionStatistics>,
+    const FrequencyCurveOptions&,FrequencyProfile&,std::string& error);
+bool valid_frequency_curve(const FrequencyProfile&);
+double frequency_curve_gain(const FrequencyProfile&,double hz) noexcept;
+double frequency_curve_amplitude(const FrequencyProfile&,double hz) noexcept;
+bool resample_frequency_profile(const FrequencyProfile&,const ProfileCompatibility&,
+    FrequencyProfile&,std::string& error);
 enum class ProfileMatchScope { Exact, SignalOnly };
 enum class ProfileMismatchReason {
     InvalidSettings, InvalidCadence, SampleRate, FftSize, Window,
@@ -60,15 +92,18 @@ enum class ProfileMismatchReason {
     ResamplerDesignVersion, Reference, Floor, FrequencyGridLength,
     FrequencyPresence, InvalidCoefficient
 };
-// Cold validation API; callers translate reasons instead of reimplementing matching.
+// Numeric coefficient validation; an optional offline function is checked separately
+// by valid_frequency_curve before persistence or resampling.
+// Callers translate reasons instead of reimplementing matching.
 std::vector<ProfileMismatchReason> profile_mismatches(const FrequencyProfile&,
     const ProfileCompatibility&,ProfileMatchScope scope=ProfileMatchScope::Exact);
 WindowScaling profile_window_scaling(const ProfileCompatibility&) noexcept;
 bool valid_profile_settings(const ProfileCompatibility&, const ProfileTraining&, std::string& error);
 bool validate_profile(const FrequencyProfile&, const ProfileCompatibility& expected, std::string& error);
 // Independent per-bin normalization of observed spectral maxima to 1.0.
-// Coefficients are boost-only (>=1) and bounded by max_gain; bins below the
-// measured floor stay at unity. Never change output on an invalid input.
+// Coefficients are boost-only (>=1) and bounded by max_gain. Confidence in
+// measured energy fades continuously to unity below the regularization floor.
+// Never change output on an invalid input.
 bool build_frequency_peak_compensation_curve(std::span<const double> peak_spectrum,
     double floor, double max_gain, std::vector<float>& output);
 // Equal composition weighting; a composition with no active windows contributes nothing.

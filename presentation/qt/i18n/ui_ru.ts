@@ -2,6 +2,64 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Legacy profile has incomplete track measurements; apply it on its original grid or scan music again.</source><translation>В старом профиле нет полной статистики треков; примените его на исходной сетке или выполните сканирование заново.</translation></message>
+    <message><source>Coefficients for current graph</source><translation>Коэффициенты для текущей схемы</translation></message>
+    <message><source>Measurements ready; build a curve</source><translation>Измерения готовы; постройте кривую</translation></message>
+    <message><source>Spectrum, dB</source><translation>Спектр, дБ</translation></message>
+    <message><source>Linear gain, x</source><translation>Линейное усиление, ×</translation></message>
+    <message><source> | Linear gain limit: x%1; bins at limit: %2 / %3</source><translation> | Предел усиления: ×%1; на пределе: %2 / %3</translation></message>
+    <message><source>Average observed peak across positive bins: %1; DC is kept separate</source><translation>Среднее измеренных пиков положительных бинов: %1; DC учитывается отдельно</translation></message>
+    <message><source>Minimum linear gain (mean mode)</source><translation>Минимальный коэффициент (среднее)</translation></message>
+    <message><source>Mean-spectrum equalization</source><translation>Выравнивание среднего спектра</translation></message>
+    <message><source>Per-bin peak normalization to 1.0</source><translation>Нормализация пиков до 1,0</translation></message>
+    <message><source>Gain calculation method</source><translation>Метод расчёта коэффициентов</translation></message>
+    <message><source>Insufficient measured frequencies for approximation</source><translation>Недостаточно измеренных частот для аппроксимации</translation></message>
+    <message><source>Curve requires calibrated peak amplitude measurements</source><translation>Для кривой нужны измерения калиброванной пиковой амплитуды</translation></message>
+    <message><source>Target requires the same calibrated peak amplitude units and channel policy</source><translation>Маршрут требует тех же единиц калиброванной пиковой амплитуды и политики каналов</translation></message>
+    <message><source>Selected track spectra</source><translation>Спектры выбранного трека</translation></message>
+    <message><source>Maximum amplitude</source><translation>Максимальная амплитуда</translation></message>
+    <message><source>Mean amplitude</source><translation>Средняя амплитуда</translation></message>
+    <message><source>Show quiet-frame statistics only</source><translation>Показать только статистику тихих кадров</translation></message>
+    <message><source>Original measurements</source><translation>Исходные измерения</translation></message>
+    <message><source>Fitted amplitude</source><translation>Аппроксимация амплитуды</translation></message>
+    <message><source>1. Music scan</source><translation>1. Сканирование музыки</translation></message>
+    <message><source>2. Build curve</source><translation>2. Построение кривой</translation></message>
+    <message><source>3. Application</source><translation>3. Применение</translation></message>
+    <message><source>Quiet-frame diagnostic threshold, PCM RMS</source><translation>Порог диагностики тихих кадров, RMS PCM</translation></message>
+    <message><source>Save scan</source><translation>Сохранить сканирование</translation></message>
+    <message><source>Load scan</source><translation>Загрузить сканирование</translation></message>
+    <message><source>Scan saved</source><translation>Результаты сканирования сохранены</translation></message>
+    <message><source>Scan loaded; build a curve to continue</source><translation>Сканирование загружено; постройте кривую</translation></message>
+    <message><source>Mean of track maxima</source><translation>Среднее максимумов треков</translation></message>
+    <message><source>Global maximum</source><translation>Глобальный максимум</translation></message>
+    <message><source>Upper percentile of track maxima</source><translation>Верхний процентиль максимумов треков</translation></message>
+    <message><source>Track aggregation</source><translation>Объединение треков</translation></message>
+    <message><source>Approximation</source><translation>Аппроксимация</translation></message>
+    <message><source>Polynomial in Hz</source><translation>Полином в Гц</translation></message>
+    <message><source>Piecewise smooth in Hz</source><translation>Кусочная гладкая функция в Гц</translation></message>
+    <message><source>Polynomial degree</source><translation>Степень полинома</translation></message>
+    <message><source>Curve segments</source><translation>Число участков кривой</translation></message>
+    <message><source>Upper percentile, %</source><translation>Верхний процентиль, %</translation></message>
+    <message><source>Legacy mean smoothing, bins</source><translation>Сглаживание среднего (старый метод), бины</translation></message>
+    <message><source>Regularization floor, dB</source><translation>Уровень регуляризации, дБ</translation></message>
+    <message><source>Build and compare curves</source><translation>Построить и сравнить кривые</translation></message>
+    <message><source>Settings changed; rebuild the curve</source><translation>Настройки изменены; перестройте кривую</translation></message>
+    <message><source>Curve could not be built: %1</source><translation>Не удалось построить кривую: %1</translation></message>
+    <message><source>Curve ready; measurements were reused without reading audio</source><translation>Кривая готова; использованы сохранённые измерения без чтения аудио</translation></message>
+    <message><source>Legacy profile requires an exact frontend match</source><translation>Старый профиль требует точного совпадения параметров анализа</translation></message>
+    <message><source>Fit RMS error: selected %1 dB; alternative %2 dB. Measured range: %3–%4 Hz.</source><translation>СКО аппроксимации: выбранная %1 дБ; другая %2 дБ. Измеренный диапазон: %3–%4 Гц.</translation></message>
+    <message><source>No declared coefficient route is available in the current graph</source><translation>В текущей схеме нет объявленного маршрута коэффициентов</translation></message>
+    <message><source>Coefficients will be evaluated at %1 Hz, FFT %2. Frequencies outside the measured range keep gain 1. Audio files are not read.</source><translation>Коэффициенты будут рассчитаны для %1 Гц и FFT %2. Вне измеренного диапазона усиление равно 1. Аудиофайлы не читаются.</translation></message>
+    <message><source>Only exact digital silence is excluded. Quiet frames remain in the measurements. Build and compare curves without scanning again; save measurements and ready profiles separately.</source><translation>Исключается только точная цифровая тишина. Тихие кадры сохраняются в измерениях. Стройте и сравнивайте кривые без повторного сканирования; сохраняйте измерения и готовые профили отдельно.</translation></message>
+    <message><source>Measured spectrum</source><translation>Измеренный спектр</translation></message>
+    <message><source>Measured spectrum and approximation</source><translation>Измеренный спектр и аппроксимация</translation></message>
+    <message><source>Fitted amplitude in Hz; compare with the original measurements</source><translation>Аппроксимация амплитуды в Гц; сравните с исходными измерениями</translation></message>
+    <message><source>Nonzero windows</source><translation>Ненулевые кадры</translation></message>
+    <message><source>Digital silence</source><translation>Цифровая тишина</translation></message>
+    <message><source>Quiet windows</source><translation>Тихие кадры</translation></message>
+    <message><source>Quiet RMS</source><translation>RMS тихих кадров</translation></message>
+    <message><source>Minimum frame RMS</source><translation>Минимальный RMS кадра</translation></message>
+    <message><source>No completed scan to save</source><translation>Нет завершённого сканирования для сохранения</translation></message>
     <message><source>Rhythm analysis: candidates, confidence and phase</source><translation>Анализ ритма: кандидаты, достоверность и фаза</translation></message>
     <message><source>Rhythm analyzer (experimental)</source><translation>Анализатор ритма (экспериментальный)</translation></message>
     <message><source>Rhythm features (R4 diagnostic)</source><translation>Признаки ритма (диагностический профиль R4)</translation></message>

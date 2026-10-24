@@ -127,6 +127,10 @@ QString mismatch_detail(ProfileReason reason,const ProfileFrontend& stored,const
 }
 }
 QString frequency_profile_incompatibility(const FrequencyProfileTarget& target,const dsp_kernels::FrequencyProfile& profile){
+    if(profile.curve){
+        dsp_kernels::FrequencyProfile adapted;std::string error;
+        return dsp_kernels::resample_frequency_profile(profile,target.options.compatibility,adapted,error)?QString{}:ui::text(error.c_str());
+    }
     QStringList reasons;
     for(const auto reason:dsp_kernels::profile_mismatches(profile,target.options.compatibility))reasons.append(mismatch_detail(reason,profile.compatibility,target.options.compatibility));
     return reasons.join('\n');
@@ -141,10 +145,8 @@ QString profile_refusal_text(application::ProfileApplyRefusal refusal){
     }
     return {};
 }
-}
-bool frequency_profile_edits(const domain::NumericProcessingGraph& graph,const FrequencyProfileTarget& selected,const dsp_kernels::FrequencyProfile& profile,
+bool accept_profile_edits(application::ProfileApplyResult result,const dsp_kernels::FrequencyProfile& profile,
     domain::ConfiguredProcessingNode& coefficients,domain::ConfiguredProcessingNode& arithmetic,QString& error){
-    auto result=application::apply_frequency_profile(graph,selected.route,profile.gains,DspProfileMatcher{&profile});
     const auto refusal=profile_refusal_text(result.refusal);
     if(!refusal.isEmpty()){error=refusal;return false;}
     if(result.refusal==application::ProfileApplyRefusal::ProfileMismatch){
@@ -157,5 +159,14 @@ bool frequency_profile_edits(const domain::NumericProcessingGraph& graph,const F
     coefficients=std::move(result.coefficients);
     arithmetic=std::move(result.arithmetic);
     return true;
+}
+}
+bool frequency_profile_edits(const domain::NumericProcessingGraph& graph,const FrequencyProfileTarget& selected,const dsp_kernels::FrequencyProfile& profile,
+    domain::ConfiguredProcessingNode& coefficients,domain::ConfiguredProcessingNode& arithmetic,QString& error){
+    dsp_kernels::FrequencyProfile adapted;std::string diagnostic;
+    if(!dsp_kernels::resample_frequency_profile(profile,selected.options.compatibility,adapted,diagnostic)){
+        error=frequency_profile_incompatibility(selected,profile);return false;
+    }
+    return accept_profile_edits(application::apply_frequency_profile(graph,selected.route,adapted.gains,DspProfileMatcher{&adapted}),adapted,coefficients,arithmetic,error);
 }
 }
