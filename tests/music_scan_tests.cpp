@@ -74,7 +74,7 @@ void malformed(const QString& path) {
     const auto original=scan.document.profile.gains;auto json=QJsonDocument::fromJson(encode_profile(scan.document)).object();
     auto function=json.value("function").toObject();function["maximum_hz"]=99999;json["function"]=function;QString error;
     assert(!decode_profile(QJsonDocument(json).toJson(),scan.document,error) && scan.document.profile.gains==original);
-    json["version"]=6;assert(!decode_profile(QJsonDocument(json).toJson(),scan.document,error));
+    json["version"]=7;assert(!decode_profile(QJsonDocument(json).toJson(),scan.document,error));
 }
 void native_and_fir(const QString& directory) {
     std::atomic_bool stop=false;auto o=options();
@@ -93,8 +93,22 @@ void native_and_fir(const QString& directory) {
     const auto bypass=scan_music_files({equal},o,stop);assert(with_fir.success && bypass.success);
     assert(with_fir.document.profile.compositions.front().peak_spectrum==bypass.document.profile.compositions.front().peak_spectrum);
 }
+void native_cadence_uses_track_clock(const QString& directory) {
+    auto o=options();o.compatibility.fft_size=512;o.compatibility.sample_rate=48000;
+    o.training.interval_numerator=1;o.training.interval_denominator=64;std::atomic_bool stop=false;
+    const auto path=signal_file(directory,"native-clock-32768.wav",.03f,32768);
+    const auto first=scan_music_files({path},o,stop);assert(first.success);
+    assert(first.document.profile.compatibility.sample_rate==32768);
+    o.compatibility.sample_rate=96000;const auto second=scan_music_files({path},o,stop);assert(second.success);
+    assert(first.document.profile.compositions[0].peak_spectrum==second.document.profile.compositions[0].peak_spectrum);
+    QString error;const auto stored=directory+"/native-clock.brscan";assert(save_music_scan(stored,second.document,error));
+    ProfileDocument restored;assert(load_music_scan(stored,restored,error) && restored.profile.compatibility.sample_rate==32768);
+    o.resample_input=true;assert(!scan_music_files({path},o,stop).success);
+}
 void legacy_scan_roundtrip(const QByteArray& bytes) {
     auto json=QJsonDocument::fromJson(bytes).object();auto tracks=json["compositions"].toArray();auto legacy=tracks[0].toObject();legacy.remove("rms_statistics");legacy.remove("analysis");tracks[0]=legacy;json["compositions"]=tracks;json["version"]=1;
+    auto metadata=json["metadata"].toObject();auto grid=metadata["grid"].toObject();
+    grid["kind"]="rfft_hz_dc_nyquist";grid["step_hz"]=metadata["sample_rate"].toDouble()/metadata["fft_size"].toDouble();metadata["grid"]=grid;json["metadata"]=metadata;
     ProfileDocument loaded;QString error;
     assert(decode_music_scan(QJsonDocument(json).toJson(),loaded,error) && loaded.profile.compositions.front().rms_statistics_version==0);
     auto scanner=json["scanner"].toObject();scanner["silence_rms"]=.035;json["scanner"]=scanner;
@@ -118,7 +132,7 @@ void quiet_bands_roundtrip(const QString& directory) {
     double mean=0;for(unsigned i=0;i<=60;++i)mean+=t.rms_bands[i].mean_spectrum[50];
     assert(std::abs(restored.quiet_mean_spectrum[50]-mean/61)<1e-15 && restored.quiet_peak_spectrum[50]>0);
     assert(bytes.size()<3*1024*1024);std::cout<<"102 occupied RMS groups: "<<bytes.size()<<" bytes per scan track\n";
-    auto json=QJsonDocument::fromJson(bytes).object();json["version"]=3;
+    auto json=QJsonDocument::fromJson(bytes).object();json["version"]=4;
     const auto before=loaded.profile.compositions.front().quiet_frames;assert(!decode_music_scan(QJsonDocument(json).toJson(),loaded,error) && loaded.profile.compositions.front().quiet_frames==before);
     legacy_scan_roundtrip(bytes);
 }
@@ -146,6 +160,6 @@ void compressed_formats() {
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);QTemporaryDir directory;assert(directory.isValid());
     const auto quiet=signal_file(directory.path(),"quiet.wav",1e-8f),zero=signal_file(directory.path(),"zero.wav",0);
-    retained_quiet_measurements(quiet);silence(zero);persistence(quiet,directory.path());malformed(quiet);compressed_formats();native_and_fir(directory.path());quiet_bands_roundtrip(directory.path());rms_boundaries();
+    retained_quiet_measurements(quiet);silence(zero);persistence(quiet,directory.path());malformed(quiet);compressed_formats();native_and_fir(directory.path());native_cadence_uses_track_clock(directory.path());quiet_bands_roundtrip(directory.path());rms_boundaries();
     std::cout<<"music_scan_tests PASS\n";
 }

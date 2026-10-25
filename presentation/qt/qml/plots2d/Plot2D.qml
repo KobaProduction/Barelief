@@ -83,11 +83,13 @@ Rectangle {
             objectName: "plotNavigation"
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+            hoverEnabled: true
             cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
             property real previousX: 0
             property real previousY: 0
             onPressed: function(mouse) {previousX=mouse.x;previousY=mouse.y}
             onPositionChanged: function(mouse) {
+                if(!pressed)graphModel.hover(mouse.x/width,mouse.y/height)
                 if(pressed) {
                     graphModel.navigate("pan",(mouse.x-previousX)/width,(mouse.y-previousY)/height)
                     previousX=mouse.x;previousY=mouse.y

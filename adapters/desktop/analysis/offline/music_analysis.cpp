@@ -236,12 +236,19 @@ bool analyze_track(const QString& path,const AnalysisOptions& options,const std:
                    CompositionStatistics& stats,SpectrogramPreview* preview,QString& error) {
     return TrackAnalysis(options,cancel,stats,preview,error).run(path);
 }
+bool valid_capture_settings(const AnalysisOptions& options,std::string& error) {
+    auto training=options.training;
+    // Native cadence can only be validated after opening the track. Validate
+    // common settings here; TrackAnalysis checks the actual sample clock.
+    if(!options.resample_input && training.interval_numerator){training.interval_numerator=0;training.hop=1;}
+    return valid_profile_settings(options.compatibility,training,error);
+}
 
 }
 PreviewResult analyze_music_preview(const QString& path,const AnalysisOptions& opt,const std::atomic_bool& cancel) {
     PreviewResult result;result.cancelled=cancel.load();if(result.cancelled)return result;
     result.preview.source=path;std::string validation;
-    if(!valid_profile_settings(opt.compatibility,opt.training,validation) || opt.preview_time_bins<1 || opt.preview_time_bins>2048 || opt.preview_frequency_bins<1 || opt.preview_frequency_bins>2048 ||
+    if(!valid_capture_settings(opt,validation) || opt.preview_time_bins<1 || opt.preview_time_bins>2048 || opt.preview_frequency_bins<1 || opt.preview_frequency_bins>2048 ||
        std::floor(opt.compatibility.sample_rate)!=opt.compatibility.sample_rate){result.error="Invalid preview options";return result;}
     CompositionStatistics statistics;
     try{result.success=analyze_track(path,opt,cancel,statistics,&result.preview,result.error);}
@@ -262,7 +269,7 @@ AnalysisOptions measurement_options(const AnalysisOptions& input) {
 }
 bool valid_analysis_options(const QStringList& files,const AnalysisOptions& options,QString& error) {
     std::string validation;
-    if(files.empty() || files.size()>4096 || !valid_profile_settings(options.compatibility,options.training,validation) || options.workers<1 || options.workers>50 || options.preview_time_bins<1 || options.preview_time_bins>2048 || options.preview_frequency_bins<1 || options.preview_frequency_bins>2048){
+    if(files.empty() || files.size()>4096 || !valid_capture_settings(options,validation) || options.workers<1 || options.workers>50 || options.preview_time_bins<1 || options.preview_time_bins>2048 || options.preview_frequency_bins<1 || options.preview_frequency_bins>2048){
         error=validation.empty()?QStringLiteral("Invalid analysis options"):QString::fromStdString(validation);return false;
     }
     const auto rows=options.preview_time_bins,bands=std::min(options.preview_frequency_bins,options.compatibility.fft_size/2+1);
@@ -331,6 +338,7 @@ public:
     void finish_scan(AnalysisResult& result) {
         auto valid=collect(result);auto& p=result.document.profile;
         p.compatibility=options_.compatibility;p.training=options_.training;
+        if(!options_.resample_input && !valid.empty())p.compatibility.sample_rate=valid.front().sample_rate;
         p.training.gain_mode=ProfileGainMode::MeanEqualization;p.training.min_gain=1;p.training.max_gain=1;
         p.gains.assign(p.compatibility.fft_size/2+1,1);p.mean_spectrum.assign(p.gains.size(),0);
         p.compositions=std::move(valid);result.success=!p.compositions.empty();

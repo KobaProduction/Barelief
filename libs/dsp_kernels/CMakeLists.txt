@@ -25,7 +25,7 @@ add_library(dsp_kernels STATIC src/dsp.cpp src/rfft_split.cpp src/backend_tables
 target_compile_definitions(dsp_kernels PUBLIC PORTABLE_DSP_MAX_FFT_SIZE=${PORTABLE_DSP_MAX_FFT_SIZE})
 target_sources(dsp_kernels PRIVATE src/prepared_resampler.cpp)
 target_sources(dsp_kernels PRIVATE src/musical_features.cpp)
-target_sources(dsp_kernels PRIVATE src/frequency_profile.cpp src/frequency_curve.cpp src/frequency_curve_fit.cpp src/frequency_measurements.cpp)
+target_sources(dsp_kernels PRIVATE src/frequency_profile.cpp src/frequency_curve.cpp src/frequency_curve_fit.cpp src/frequency_measurements.cpp src/frequency_measurement_grid.cpp)
 target_sources(dsp_kernels PRIVATE
     src/rhythm/analyzer.cpp src/rhythm/math.cpp src/rhythm/observer.cpp
     src/rhythm/tracking.cpp src/rhythm/autocorrelation.cpp

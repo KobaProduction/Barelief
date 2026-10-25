@@ -59,6 +59,32 @@ inline double quickPlotLeftMargin(const QVariantList& ticks,const QFont& font,in
     return std::min(std::max(82,longest+38),std::max(82,width/2));
 }
 
+// Physical-coordinate ticks for arbitrary numeric comparison plots.
+inline QVariantList quickPlotNiceTicks(double extent,const QFont& font,const std::function<double(double)>& coordinate,bool horizontal,bool nonlinear=false) {
+    const QFontMetrics metrics(font);
+    const auto first=coordinate(0),last=coordinate(1),span=std::abs(last-first);
+    if(!std::isfinite(span) || span<=0)return {};
+    const auto widest=metrics.horizontalAdvance(quick_plot_tick_detail::locale().toString(std::max(std::abs(first),std::abs(last)),'g',6))+12;
+    const auto capacity=std::max(1.,extent/(horizontal?std::max(46,widest):std::max(28,metrics.height()+10)));
+    if(nonlinear)return quickPlotTicks(extent,font,0,coordinate,horizontal,12,{},int(std::min(12.,capacity))+1);
+    const auto raw=span/capacity,power=std::pow(10.,std::floor(std::log10(raw)));
+    const auto factor=raw/power,step=(factor<=1?1:factor<=2?2:factor<=5?5:10)*power;
+    std::vector<double> positions,values;
+    for(auto value=std::ceil(std::min(first,last)/step)*step;value<=std::max(first,last)+step*1e-9;value+=step){
+        positions.push_back((value-first)/(last-first));values.push_back(std::abs(value)<step*1e-9?0:value);
+    }
+    return quick_plot_tick_detail::ticks(positions,axisTickLabels(values,quick_plot_tick_detail::locale(),0));
+}
+inline QVariantList quickPlotMinorGrid(const QVariantList& ticks,double extent) {
+    QVariantList grid=ticks;
+    for(qsizetype i=1;i<ticks.size();++i){
+        const auto first=ticks[i-1].toMap().value("position").toDouble(),last=ticks[i].toMap().value("position").toDouble();
+        const auto divisions=std::clamp(int(std::abs(last-first)*extent/12),1,5);
+        for(int k=1;k<divisions;++k)grid.append(QVariantMap{{"position",first+(last-first)*k/divisions}});
+    }
+    return grid;
+}
+
 // Explicit line and label counts are independent, including zero-label grids.
 inline QVariantList quickPlotGrid(const QVariantList& ticks,int requested) {
     if(requested==0)return ticks;

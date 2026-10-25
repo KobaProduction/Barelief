@@ -24,6 +24,7 @@ public:
     Q_INVOKABLE void navigate(const QString& action,double x,double y,double amount=1,int axes=3) {
         emit navigationRequested(action,x,y,amount,axes);
     }
+    Q_INVOKABLE void hover(double x,double y) {emit hoverRequested(x,y);}
     QVariantMap state() const {return state_;}
     QVariantMap axes() const {return axes_;}
     // Implicit sharing keeps one owned, immutable normalized geometry snapshot
@@ -35,6 +36,7 @@ public:
         typed_vector_=false;vector_points_.clear();publishState(std::move(state));
     }
 signals:
+    void hoverRequested(double x,double y);
     void changed();
     void axesChanged();
     void navigationRequested(const QString& action,double x,double y,double amount,int axes);

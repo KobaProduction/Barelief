@@ -29,14 +29,27 @@ QJsonObject codec_training(const QJsonObject& placeholder,const QJsonObject& sca
     if(diagnostics.contains("quiet_db"))training["silence_rms"]=std::pow(10.,diagnostics.value("quiet_db").toDouble()/20.);
     return training;
 }
+bool restore_codec_grid(QJsonObject& object,const QJsonObject& placeholder,QString& error) {
+    if(object.value("version").toInt()!=3)return true;
+    auto metadata=object.value("metadata").toObject();
+    if(metadata.value("grid").toObject().value("kind").toString()!="per_track_rfft_hz"){error="Invalid scan frequency grid";return false;}
+    auto grid=placeholder.value("metadata").toObject().value("grid").toObject();
+    grid["step_hz"]=metadata.value("sample_rate").toDouble()/metadata.value("fft_size").toDouble();
+    metadata["grid"]=grid;object["metadata"]=metadata;return true;
+}
+void restore_codec_payload(QJsonObject& object,const QJsonObject& placeholder,const QJsonObject& scanner) {
+    object["training"]=codec_training(placeholder,scanner,object.value("diagnostics").toObject());
+    object["gains"]=placeholder.value("gains");object["mean_spectrum"]=placeholder.value("mean_spectrum");
+    object["version"]=5;object["kind"]="barelief.frequency_profile";
+}
 bool restore_codec_fields(QJsonObject& object,QString& error) {
     const auto scanner=object.value("scanner").toObject();
     if(scanner.value("silence_policy").toString()!="exclude_exact_zero_only"){error="Unsupported scan silence policy";return false;}
     ProfileDocument defaults;defaults.profile.compatibility.fft_size=std::size_t(object.value("metadata").toObject().value("fft_size").toInt());
     if(defaults.profile.compatibility.fft_size<512 || defaults.profile.compatibility.fft_size>dsp_kernels::max_fft_samples){error="Invalid scan FFT size";return false;}
     const auto placeholder=QJsonDocument::fromJson(encode_profile(measurement_document(defaults))).object();
-    object["training"]=codec_training(placeholder,scanner,object.value("diagnostics").toObject());object["gains"]=placeholder.value("gains");object["mean_spectrum"]=placeholder.value("mean_spectrum");
-    object["version"]=5;object["kind"]="barelief.frequency_profile";
+    if(!restore_codec_grid(object,placeholder,error))return false;
+    restore_codec_payload(object,placeholder,scanner);
     return true;
 }
 bool complete_measurements(const ProfileDocument& document) {
@@ -49,7 +62,7 @@ bool complete_measurements(const ProfileDocument& document) {
 }
 bool valid_scan_header(const QJsonObject& object,QString& error) {
     const auto version=object.value("version").toDouble();
-    if(object.value("kind").toString()!="barelief.music_scan" || (version!=1 && version!=2)){error="Unsupported scan document";return false;}
+    if(object.value("kind").toString()!="barelief.music_scan" || (version!=1 && version!=2 && version!=3)){error="Unsupported scan document";return false;}
     return true;
 }
 bool parse_scan(const QByteArray& bytes,QJsonObject& object,QString& error) {
@@ -71,7 +84,9 @@ QJsonObject encode_scan_object(const ProfileDocument& input,ProfileArraySink* si
     const auto grouped=std::ranges::all_of(input.profile.compositions,[](const auto& t){return t.rms_statistics_version==1;});
     object["scanner"]=scanner_settings(object.value("training").toObject(),object.value("scanner").toObject(),grouped);
     for(const auto* key:{"training","gains","mean_spectrum","peak_spectrum","frequency_presence","function"})object.remove(key);
-    object["kind"]="barelief.music_scan";object["version"]=2;
+    object["kind"]="barelief.music_scan";object["version"]=3;
+    auto metadata=object.value("metadata").toObject(),grid=metadata.value("grid").toObject();
+    grid["kind"]="per_track_rfft_hz";grid.remove("step_hz");metadata["grid"]=grid;object["metadata"]=metadata;
     return object;
 }
 QByteArray encode_music_scan(const ProfileDocument& input){return QJsonDocument(encode_scan_object(input)).toJson(QJsonDocument::Compact);}

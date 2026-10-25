@@ -106,12 +106,11 @@ static int analysis_dialog_workflow(MainWindow* window,QMenu* tools,const QTempo
     auto* statistics=analysis->findChild<QTableWidget*>("musicCompositionStatistics");
     CHECK(files&&analyze_run&&analysis_status&&save&&statistics);
     const auto wav=directory.filePath("eight-changing-tones.wav");CHECK(write_tones(wav));files->addItem(wav);analyze_run->click();
-    const bool completed=wait_until([&]{return save->isEnabled()&&analysis_status->text().startsWith(ui::text("Analysis complete: %1 s audio / %2 s processing (%3×)").section("%1",0,0));});
+    const bool completed=wait_until([&]{return save->isEnabled()&&statistics->rowCount()==1;});
     if(!completed)std::fprintf(stderr,"Music analysis results: run=%d save=%d rows=%d status=%s\n",int(analyze_run->isEnabled()),int(save->isEnabled()),statistics->rowCount(),qPrintable(analysis_status->text()));
     CHECK(completed);
     CHECK(!analyze_run->isEnabled()&&statistics->rowCount()==1);
-    analysis->findChild<QPushButton*>("musicBuildCurve")->click();
-    CHECK(analysis->findChild<QPushButton*>("musicSaveProfile")->isEnabled());
+    CHECK(wait_until([&]{return analysis->findChild<QPushButton*>("musicSaveProfile")->isEnabled();}));
     delete analysis;
     return 0;
 }

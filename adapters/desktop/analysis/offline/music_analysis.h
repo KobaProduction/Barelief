@@ -3,8 +3,11 @@
 #include <QStringList>
 #include <atomic>
 #include <functional>
+#include <memory>
 
 namespace desktop_analysis::offline {
+struct CurveCorpus;
+struct CurveAnalysis;
 struct AnalysisOptions {
     dsp_kernels::ProfileCompatibility compatibility;
     dsp_kernels::ProfileTraining training;
@@ -45,5 +48,8 @@ struct AnalysisServices {
     decltype(analyze_files) scan_files;
     decltype(save) save_scan;
     decltype(load) load_scan;
+    // Pure curve computation; UI owns scheduling and publication of revisions.
+    std::function<CurveAnalysis(std::shared_ptr<const CurveCorpus>,
+        const dsp_kernels::FrequencyCurveOptions&,std::shared_ptr<const CurveAnalysis>)> curves;
 };
 }

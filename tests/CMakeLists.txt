@@ -80,7 +80,10 @@ add_desktop_check(music_profile_control_tests desktop_numeric_remote)
 set_tests_properties(music_profile_control_tests PROPERTIES TIMEOUT 60)
 if(BUILD_GUI)
     get_filename_component(music_qt_platform_path "${Qt6_DIR}/../../../plugins/platforms" ABSOLUTE)
-    add_desktop_check(music_analysis_dialog_tests core_app_components)
+    add_desktop_check(music_analysis_dialog_tests desktop_gui_composition)
+    add_desktop_check(music_workflow_tests desktop_gui_composition)
+    set_tests_properties(music_workflow_tests PROPERTIES TIMEOUT 60
+        ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")
     add_desktop_check(normalization_scheme_tests desktop_gui_composition)
     set_tests_properties(normalization_scheme_tests PROPERTIES TIMEOUT 60
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${music_qt_platform_path};QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1")

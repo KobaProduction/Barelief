@@ -75,7 +75,22 @@ struct FrequencyCurve {
     // Piecewise knots hold log amplitude, with monotone cubic Hermite slopes.
     std::vector<double> coefficients, knot_hz, log_amplitude, slopes;
     std::vector<double> measured_spectrum;
+    // Explicit physical coordinates. Empty only for imported v1 functions.
+    std::vector<double> measurement_hz, mean_amplitude, contributors;
+    double edge_hz = 0;
 };
+struct FrequencyMeasurements {
+    std::vector<double> hz, mean_amplitude, maxima, contributors;
+    double edge_hz = 0;
+};
+struct FrequencyProfile;
+// Native track grids are combined before any target graph grid is considered.
+bool combine_frequency_measurements(const ProfileCompatibility&,
+    std::span<const CompositionStatistics>, const FrequencyCurveOptions&,
+    FrequencyMeasurements&, std::string& error);
+bool fit_frequency_measurements(const ProfileCompatibility&, const FrequencyMeasurements&,
+    const FrequencyCurveOptions&, FrequencyProfile&, std::string& error);
+bool update_frequency_curve_gains(FrequencyProfile&, std::string& error);
 struct FrequencyProfile {
     ProfileCompatibility compatibility;
     ProfileTraining training;

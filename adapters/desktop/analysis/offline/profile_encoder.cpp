@@ -48,7 +48,8 @@ QJsonArray encode_rms_bands(const CompositionStatistics& t,const QJsonArray& pre
 }
 void encode_measurements(const CompositionStatistics& t,QJsonObject& o) {
     if(t.sample_rate){
-        auto a=o.value("analysis").toObject();a["source_sample_rate"]=t.source_sample_rate;a["sample_rate"]=t.sample_rate;o["analysis"]=a;
+        auto a=o.value("analysis").toObject();a["source_sample_rate"]=t.source_sample_rate;a["sample_rate"]=t.sample_rate;
+        a["fft_size"]=double(2*(t.mean_spectrum.size()-1));o["analysis"]=a;
     }
     if(t.rms_statistics_version){
         auto r=o.value("rms_statistics").toObject();r["version"]=int(t.rms_statistics_version);
@@ -115,19 +116,27 @@ QJsonArray encode_compositions(const ProfileDocument& document,const QJsonArray&
     }
     return tracks;
 }
-void encode_function(const FrequencyProfile& profile,QJsonObject& object){
+void encode_function(const FrequencyProfile& profile,QJsonObject& object,bool coefficients){
     const auto measured=std::ranges::any_of(profile.compositions,[](const auto& t){return t.sample_rate>0 || t.rms_statistics_version;});
-    object["version"]=measured?5:profile.curve?4:3;
+    object["version"]=profile.curve && !profile.curve->measurement_hz.empty()?6:measured?5:profile.curve?4:3;
     if(measured)object["kind"]="barelief.frequency_profile";
-    if(profile.curve){object["kind"]="barelief.frequency_profile";object["function"]=encode_curve(*profile.curve,object.value("function").toObject());}
+    if(profile.curve && coefficients){object["kind"]="barelief.frequency_profile";object["function"]=encode_curve(*profile.curve,object.value("function").toObject(),sink_);}
+}
+QJsonObject function_metadata(const FrequencyProfile& profile,QJsonObject metadata){
+    auto grid=metadata.value("grid").toObject();
+    for(const auto* key:{"start_hz","step_hz","bins"})grid.remove(key);
+    grid["kind"]="frequency_function_hz";grid["minimum_hz"]=profile.curve->minimum_hz;grid["maximum_hz"]=profile.curve->maximum_hz;
+    metadata["grid"]=grid;return metadata;
 }
 public:
     explicit ProfileEncoder(ProfileArraySink* sink):sink_(sink){}
 QJsonObject encode(const ProfileDocument& document,bool coefficients){
-    const auto& profile=document.profile;auto object=document.preserved;encode_function(profile,object);
+    const auto& profile=document.profile;auto object=document.preserved;encode_function(profile,object,coefficients);
     object["metadata"]=encode_metadata(profile.compatibility,object.value("metadata").toObject());
+    if(object.value("version").toInt()==6)object["metadata"]=function_metadata(profile,object.value("metadata").toObject());
     object["training"]=encode_training(profile.training,object.value("training").toObject());
-    if(coefficients)encode_coefficients(profile,object);
+    if(coefficients && object.value("version").toInt()!=6)encode_coefficients(profile,object);
+    else for(const auto* key:{"gains","mean_spectrum","peak_spectrum","frequency_presence"})object.remove(key);
     object["compositions"]=encode_compositions(document,object.value("compositions").toArray());
     return object;
 }

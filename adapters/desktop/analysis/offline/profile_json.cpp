@@ -70,6 +70,7 @@ bool read_measurements(const QJsonObject& o,CompositionStatistics& t,std::size_t
     if(o.contains("analysis")){
         const auto a=o.value("analysis").toObject();
         if(!number(a,"source_sample_rate",t.source_sample_rate) || !number(a,"sample_rate",t.sample_rate))return false;
+        if(a.contains("fft_size") && a.value("fft_size").toDouble()!=double(2*(bins-1)))return false;
     }
     return !o.contains("rms_statistics") || read_rms_bands(o.value("rms_statistics").toObject(),t,bins,budget,source);
 }
@@ -318,17 +319,28 @@ public:
         :source_(source),arrays_(arrays),error_(error),diagnostic_(diagnostic){}
     bool decode(ProfileDocument& output){
         const auto version=source_.value("version").toDouble();
-        if(!source_.value("version").isDouble() || (version!=3 && version!=4 && version!=5))return fail("Unsupported profile version");
+        if(!source_.value("version").isDouble() || (version!=3 && version!=4 && version!=5 && version!=6))return fail("Unsupported profile version");
         candidate_.preserved=source_;
-        if(!metadata() || !training() || !coefficients() || !compositions())return false;
-        if(version==4 && (source_.value("kind").toString()!="barelief.frequency_profile" || !decode_curve(source_.value("function").toObject(),candidate_.profile)))return fail("Invalid frequency function");
-        if(version==5 && !function_v5())return false;
+        if(!metadata() || !training() || (version!=6 && !coefficients()) || !compositions())return false;
+        if(!function(unsigned(version)))return false;
         if(!valid_document(candidate_,error_))return false;
         output=std::move(candidate_);diagnostic_={};return true;
     }
     bool function_v5(){
         if(source_.value("kind").toString()!="barelief.frequency_profile")return fail("Invalid frequency profile kind");
-        return !source_.contains("function") || decode_curve(source_.value("function").toObject(),candidate_.profile) || fail("Invalid frequency function");
+        return !source_.contains("function") || decode_curve(source_.value("function").toObject(),candidate_.profile,arrays_,&budget_) || fail("Invalid frequency function");
+    }
+    bool function(unsigned version){
+        if(version==4 && (source_.value("kind").toString()!="barelief.frequency_profile" || !decode_curve(source_.value("function").toObject(),candidate_.profile)))return fail("Invalid frequency function");
+        if(version>=5 && !function_v5())return false;
+        if(version==6 && !function_grid())return fail("Invalid frequency function");
+        return true;
+    }
+    bool function_grid(){
+        const auto& curve=candidate_.profile.curve;
+        const auto grid=source_.value("metadata").toObject().value("grid").toObject();
+        return curve && !curve->measurement_hz.empty() && grid.value("kind").toString()=="frequency_function_hz" &&
+            grid.value("minimum_hz").toDouble(-1)==curve->minimum_hz && grid.value("maximum_hz").toDouble(-1)==curve->maximum_hz;
     }
 };
 ProfileDocument ready_document(const ProfileDocument& source){

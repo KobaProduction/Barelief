@@ -14,6 +14,7 @@ include(${CMAKE_SOURCE_DIR}/presentation/qt/sources.cmake)
 set(HEADERS ${QT_RENDERER_HEADERS})
 set(SOURCES ${QT_RENDERER_SOURCES})
 target_sources(barelief PRIVATE ${HEADERS} ${SOURCES})
+target_sources(barelief PRIVATE src/renderer/numeric_series_view.cpp include/barelief/numeric_series_view.h)
 
 target_include_directories(barelief PUBLIC ${CMAKE_SOURCE_DIR}/presentation/qt/include)
 

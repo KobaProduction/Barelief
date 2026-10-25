@@ -8,6 +8,8 @@
 #include <barelief/ui_text.h>
 #include <barelief/numeric_image_view.h>
 #include <barelief/charts/line.h>
+#include <barelief/numeric_series_view.h>
+#include <QTableView>
 #include <desktop/numeric_project_document.h>
 #include <dataflow_runtime/runtime.h>
 #include <QApplication>
@@ -37,6 +39,8 @@
 #include <stdexcept>
 #include <future>
 #include <chrono>
+#include <QQuickWindow>
+#include <atomic>
 
 namespace {
 using namespace domain;using namespace signal_contracts;using namespace core_app;
@@ -309,12 +313,24 @@ void runtime_arrays(bool logarithmic){
     require(result.values==(logarithmic?std::array<float,4>{-50,-60,-120,-120}:std::array<float,4>{1,6,0,4}),"actual runtime applies numeric coefficients and preserves the silence floor");
     replace_runtime_coefficients(logarithmic,graph,profile,plan,state,result,fill,scalar,coefficients,feed,vector,samples);
 }
+void wait_for_plot_frame(NumericSeriesView& chart){
+    std::atomic_bool rendered=false;
+    const auto connection=QObject::connect(chart.quickWindow(),&QQuickWindow::afterRendering,&chart,[&]{rendered=true;},Qt::DirectConnection);
+    chart.quickWindow()->update();QElapsedTimer deadline;deadline.start();
+    while(!rendered && deadline.elapsed()<2000){QCoreApplication::processEvents();QThread::msleep(2);}
+    QObject::disconnect(connection);
+    require(rendered,"new plot frame follows the theme and language change");
+}
 void capture_profile_plots(MusicAnalysisDialog& dialog,const QString& evidence,const char* language,const char* theme){
-    for(const auto* name:{"musicMeanCurve","musicFittedCurve"}){
-        auto* chart=dynamic_cast<LineChartView*>(dialog.findChild<QWidget*>(name));require(chart && chart->value_count()==2049,"full scan and fitted data reach both charts");
+    for(const auto* name:{"musicMeanCurve","musicGainCurve"}){
+        auto* chart=dynamic_cast<NumericSeriesView*>(dialog.findChild<QWidget*>(name));require(chart,"shared numeric comparison plot");
         QElapsedTimer deadline;deadline.start();
-        while(deadline.elapsed()<2000){QCoreApplication::processEvents();if(chart->presentation_model()->vectorPoints().size()>1)break;QThread::msleep(2);}
-        require(chart->presentation_model()->vectorPoints().size()>1,"wait for actual plot geometry before capture");
+        while(deadline.elapsed()<2000){QCoreApplication::processEvents();if(!chart->numeric_raster().isNull())break;QThread::msleep(2);}
+        require(!chart->numeric_raster().isNull(),"wait for actual plot geometry before capture");
+        wait_for_plot_frame(*chart);
+        const auto pixels=chart->numeric_raster();
+        require(pixels.pixelColor(pixels.width()-1,0)==chart->palette().color(QPalette::Base),"numeric raster follows the current application palette");
+        require(chart->presentation_model()->state().value("title").toString().contains(ui::text(qstrcmp(name,"musicMeanCurve")==0?"Measurements":"Gain, dB")),"comparison names follow the current language");
         require(chart->grabFramebuffer().save(evidence+QString("/%1-%2-%3.png").arg(name,language,theme)),"save owned Quick plot framebuffer");
     }
 }
@@ -330,7 +346,7 @@ void normalization_dialog_images(MusicAnalysisDialog& dialog) {
         require(dialog.grab().save(evidence+QString("/curve-comparison-%1-%2.png").arg(language,theme)),"save measured and approximated spectra");
         dialog.findChild<QTabWidget*>()->setCurrentIndex(2);QCoreApplication::processEvents();
         require(dialog.grab().save(evidence+QString("/results-preview-%1-%2.png").arg(language,theme)),"save owned cached-preview renderer");
-        dialog.findChild<QTabWidget*>()->setCurrentIndex(5);QCoreApplication::processEvents();
+        dialog.findChild<QTabWidget*>()->setCurrentIndex(4);QCoreApplication::processEvents();
         require(dialog.grab().save(evidence+QString("/results-track-spectrum-%1-%2.png").arg(language,theme)),"save owned per-track spectrum renderer");
         dialog.findChild<QPushButton*>("musicNewScan")->click();QCoreApplication::processEvents();
         require(dialog.grab().save(evidence+QString("/setup-%1-%2.png").arg(language,theme)),"save owned scan-settings renderer");
@@ -351,18 +367,17 @@ void normalization_project_roundtrip(MusicAnalysisDialog& dialog,NumericEditorGr
 
 void normalization_dialog_scan(MusicAnalysisDialog& dialog,const auto& target,const QString& wavPath) {
     auto* choices=dialog.findChild<QComboBox*>("musicSpectrum");auto* compensation=dialog.findChild<QCheckBox*>("musicSpectrumCompensation");
-    const auto kinds=dsp_kernels::amplitude_spectrum_projections();require(choices && choices->count()==int(kinds.size()) && compensation,"batch exposes shared spectrum settings");
-    for(int i=0;i<choices->count();++i)require(choices->itemData(i).toInt()==int(kinds[std::size_t(i)]),"batch uses common representation registry and stable enum values");
-    require(compensation->isChecked()==target.options.compatibility.projection.compensate,"batch compensation reflects the graph route");
+    require(choices && choices->count()==1 && compensation && compensation->isChecked(),"scan stores calibrated peak amplitude independently of graph route");
+    require(choices->currentData().toInt()==int(dsp_kernels::SpectrumProjection::PeakAmplitude),"canonical amplitude statistics");
+    (void)target;
     auto* files=dialog.findChild<QListWidget*>("musicFiles");files->addItem(wavPath);files->addItem(wavPath);
-    auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveScan")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
-    dialog.findChild<QPushButton*>("musicBuildCurve")->click();
+    auto* run=dialog.findChild<QPushButton*>("musicRun");run->click();QElapsedTimer clock;clock.start();while(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && clock.elapsed()<15000){QCoreApplication::processEvents();QThread::msleep(2);}
     auto* applyButton=dialog.findChild<QPushButton*>("musicApplyProfile");require(applyButton && applyButton->isEnabled(),"actual batch dialog prepares applicable profile");
-    auto* statistics=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");require(statistics && std::size_t(statistics->rowCount())==2048 && !statistics->item(1,2)->text().isEmpty(),"scanner frequency measurements stay on its independent grid");
+    auto* statistics=dialog.findChild<QTableView*>("musicFrequencyStatistics");require(statistics && statistics->model()->rowCount()==2048 && !statistics->model()->data(statistics->model()->index(1,2)).toString().isEmpty(),"scanner frequency measurements stay on its independent grid");
     require(!dialog.findChild<QLabel*>("musicMeanValue")->text().isEmpty(),"aggregate mean shown");
-    auto* curve=dynamic_cast<LineChartView*>(dialog.findChild<QWidget*>("musicGainCurve"));
-    require(curve && curve->value_scale().mode==ValueDisplayScale::Mode::Linear,
-            "Trained coefficients remain linear; only measured spectra render as dB");
+    auto* curve=dynamic_cast<NumericSeriesView*>(dialog.findChild<QWidget*>("musicGainCurve"));
+    require(curve && curve->presentation_model()->axes().value("yTitle").toString()==ui::text("Gain, dB"),
+            "linear stored coefficients have a clearly labeled dB preview");
     dialog.findChild<QPushButton*>("musicApplyStep")->click();applyButton->click();
 }
 

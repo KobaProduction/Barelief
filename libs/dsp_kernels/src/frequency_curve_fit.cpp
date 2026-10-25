@@ -14,10 +14,10 @@ std::vector<double> basis(double x,unsigned degree) {
     for(unsigned j=2;j<=degree;++j)values[j]=2*x*values[j-1]-values[j-2];
     return values;
 }
-void add_equation(std::vector<std::vector<double>>& matrix,const std::vector<double>& row,double y) {
+void add_equation(std::vector<std::vector<double>>& matrix,const std::vector<double>& row,double y,double weight) {
     for(std::size_t i=0;i<row.size();++i){
-        for(std::size_t j=0;j<row.size();++j)matrix[i][j]+=row[i]*row[j];
-        matrix[i].back()+=row[i]*y;
+        for(std::size_t j=0;j<row.size();++j)matrix[i][j]+=weight*row[i]*row[j];
+        matrix[i].back()+=weight*row[i]*y;
     }
 }
 bool normalize_pivot(std::vector<std::vector<double>>& a,std::size_t column) {
@@ -40,7 +40,8 @@ bool eliminate(std::vector<std::vector<double>>& a,std::size_t column) {
 bool polynomial_equations(const FrequencyCurve& c,double bin_hz,std::vector<std::vector<double>>& a) {
     std::size_t observations=0;
     for(std::size_t k=1;k<c.measured_spectrum.size();++k)if(c.measured_spectrum[k]>0){
-        add_equation(a,basis(coordinate(c,k*bin_hz),unsigned(a.size()-1)),std::log(c.measured_spectrum[k]));
+        add_equation(a,basis(coordinate(c,measurement_hz(c,k,bin_hz)),unsigned(a.size()-1)),
+            std::log(c.measured_spectrum[k]),measurement_weight(c,k,bin_hz));
         ++observations;
     }
     return observations>=a.size();
@@ -56,10 +57,18 @@ bool polynomial(FrequencyCurve& c,double bin_hz) {
     std::vector<std::vector<double>> a(count,std::vector<double>(count+1));
     return polynomial_equations(c,bin_hz,a) && solve_polynomial(c,a);
 }
+bool append_endpoint(FrequencyCurve& c,std::size_t first,std::size_t last,double bin_hz) {
+    if(last==first+1 && c.measured_spectrum[first]>0){
+        c.knot_hz.push_back(measurement_hz(c,first,bin_hz));c.log_amplitude.push_back(std::log(c.measured_spectrum[first]));return true;
+    }
+    return false;
+}
 void append_knot(FrequencyCurve& c,std::size_t first,std::size_t last,double bin_hz) {
+    if(append_endpoint(c,first,last,bin_hz))return;
     double log_sum=0,hz_sum=0,count=0;
     for(auto k=first;k<last;++k)if(c.measured_spectrum[k]>0){
-        log_sum+=std::log(c.measured_spectrum[k]);hz_sum+=k*bin_hz;++count;
+        const auto weight=measurement_weight(c,k,bin_hz);
+        log_sum+=weight*std::log(c.measured_spectrum[k]);hz_sum+=weight*measurement_hz(c,k,bin_hz);count+=weight;
     }
     if(!count)return;
     c.knot_hz.push_back(hz_sum/count);c.log_amplitude.push_back(log_sum/count);
@@ -74,7 +83,22 @@ void prepare_slopes(FrequencyCurve& c) {
         c.slopes[i]=3*(left+right)/((left+2*right)/secants[i-1]+(2*left+right)/secants[i]);
     }
 }
+bool piecewise_explicit(FrequencyCurve& c,double bin_hz) {
+        const auto first=std::size_t(std::lower_bound(c.measurement_hz.begin(),c.measurement_hz.end(),c.minimum_hz)-c.measurement_hz.begin());
+        const auto last=std::size_t(std::lower_bound(c.measurement_hz.begin(),c.measurement_hz.end(),c.maximum_hz)-c.measurement_hz.begin());
+        append_knot(c,first,first+1,bin_hz);auto begin=first+1;
+        for(std::size_t segment=1;segment<=c.options.segments;++segment){
+            const auto edge=c.minimum_hz+(c.maximum_hz-c.minimum_hz)*double(segment)/double(c.options.segments);
+            const auto end=std::min(last,std::size_t(std::lower_bound(c.measurement_hz.begin(),c.measurement_hz.end(),edge)-c.measurement_hz.begin()));
+            if(end>begin)append_knot(c,begin,end,bin_hz);
+            begin=end;
+        }
+        append_knot(c,last,last+1,bin_hz);
+        if(c.knot_hz.size()<2)return false;
+        prepare_slopes(c);return true;
+}
 bool piecewise(FrequencyCurve& c,double bin_hz) {
+    if(!c.measurement_hz.empty())return piecewise_explicit(c,bin_hz);
     const auto first=std::size_t(std::ceil(c.minimum_hz/bin_hz)),last=std::size_t(std::floor(c.maximum_hz/bin_hz));
     append_knot(c,first,first+1,bin_hz);
     const auto width=std::max(std::size_t{1},(last-first+c.options.segments-1)/c.options.segments);
@@ -92,8 +116,8 @@ double cubic(const FrequencyCurve& c,std::size_t i,double hz) noexcept {
 double rmse(const FrequencyCurve& c,double bin_hz) {
     double sum=0,count=0;
     for(std::size_t k=1;k<c.measured_spectrum.size();++k)if(c.measured_spectrum[k]>0){
-        const auto delta=20/std::log(10.)*(fitted_log_amplitude(c,k*bin_hz)-std::log(c.measured_spectrum[k]));
-        sum+=delta*delta;++count;
+        const auto delta=20/std::log(10.)*(fitted_log_amplitude(c,measurement_hz(c,k,bin_hz))-std::log(c.measured_spectrum[k]));
+        const auto weight=measurement_weight(c,k,bin_hz);sum+=weight*delta*delta;count+=weight;
     }
     return count?std::sqrt(sum/count):0;
 }

@@ -2,6 +2,52 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Preview correction</source><translation>Коррекция предпросмотра</translation></message>
+    <message><source>Quiet frames only</source><translation>Только тихие кадры</translation></message>
+    <message><source>Select channel</source><translation>Выбрать канал</translation></message>
+    <message><source>Channel index (from zero)</source><translation>Индекс канала (от нуля)</translation></message>
+    <message><source>Insufficient or excessive measured frequencies for approximation</source><translation>Недостаточно измеренных частот либо превышен лимит точек аппроксимации</translation></message>
+    <message><source>Amplitude gain limit: x%1 (+%2 dB); points at limit: %3 / %4</source><translation>Предел усиления амплитуды: ×%1 (+%2 дБ); точек на пределе: %3 / %4</translation></message>
+    <message><source>Profile loaded without saved spectrograms. A new scan is required to collect them.</source><translation>Профиль загружен без спектрограмм. Для их получения нужно новое сканирование.</translation></message>
+    <message><source>Legacy profile: %1 Hz, FFT %2; exact frontend required</source><translation>Прежний профиль: %1 Гц, FFT %2; требуется точное совпадение тракта</translation></message>
+    <message><source>Ready profile: %1–%2 Hz. Load a scan to change curve construction.</source><translation>Готовый профиль: %1–%2 Гц. Для изменения построения загрузите сканирование.</translation></message>
+    <message><source>Measured upper frequency, Hz</source><translation>Измеренная верхняя частота, Гц</translation></message>
+    <message><source>Spectral regularization, dBFS</source><translation>Спектральная регуляризация, дБFS</translation></message>
+    <message><source>Point</source><translation>Точка</translation></message>
+    <message><source>Measured amplitude</source><translation>Измеренная амплитуда</translation></message>
+    <message><source>Calculated corrected amplitude</source><translation>Расчётная амплитуда после коррекции</translation></message>
+    <message><source>Contributing tracks</source><translation>Учитываемые треки</translation></message>
+    <message><source>Calculated corrected spectrum</source><translation>Расчётный спектр после коррекции</translation></message>
+    <message><source>Show calculated corrected spectrum</source><translation>Показать расчётный спектр после коррекции</translation></message>
+    <message><source>Reset plot view</source><translation>Сбросить масштаб графиков</translation></message>
+    <message><source>Raw FFT magnitude</source><translation>Модуль FFT</translation></message>
+    <message><source>Analysis and normalization</source><translation>Анализ и нормировка</translation></message>
+    <message><source>Music scan</source><translation>Сканирование музыки</translation></message>
+    <message><source>Unity (0 dB)</source><translation>Без усиления (0 дБ)</translation></message>
+    <message><source>Gain limit</source><translation>Предел усиления</translation></message>
+    <message><source>Polynomial</source><translation>Полином</translation></message>
+    <message><source>Piecewise smooth</source><translation>Кусочная гладкая</translation></message>
+    <message><source>Updating curve…</source><translation>Обновление кривой…</translation></message>
+    <message><source>Scan: %1 tracks; native track coordinates; FFT %2; %3; %4</source><translation>Сканирование: %1 треков; собственные частотные сетки; FFT %2; %3; %4</translation></message>
+    <message><source>FIR output sample rate, Hz</source><translation>Выходная частота КИХ, Гц</translation></message>
+    <message><source>Calibrated peak amplitude; FFT and window compensation</source><translation>Пиковая амплитуда с компенсацией FFT и окна</translation></message>
+    <message><source>Analysis rate, frames/s</source><translation>Темп анализа, кадров/с</translation></message>
+    <message><source>Native sample rate per track</source><translation>Исходная частота каждого трека</translation></message>
+    <message><source>Resample through FIR</source><translation>Пересчёт через КИХ</translation></message>
+    <message><source>PCM sample rate</source><translation>Частота PCM</translation></message>
+    <message><source>Advanced scan settings</source><translation>Дополнительные настройки сканирования</translation></message>
+    <message><source>Application to graph</source><translation>Применение к графу</translation></message>
+    <message><source>Corpus</source><translation>Корпус</translation></message>
+    <message><source>Plot display</source><translation>Отображение графиков</translation></message>
+    <message><source>Automatic spectrum range</source><translation>Автоматический диапазон спектра</translation></message>
+    <message><source>Display minimum, dB</source><translation>Минимум отображения, дБ</translation></message>
+    <message><source>Display maximum, dB</source><translation>Максимум отображения, дБ</translation></message>
+    <message><source>Logarithmic frequency axis</source><translation>Логарифмическая частотная ось</translation></message>
+    <message><source>No saved spectrogram for this track. A new scan is required.</source><translation>Для этого трека нет сохранённой спектрограммы. Нужно новое сканирование.</translation></message>
+    <message><source>Include track in corpus calculation</source><translation>Учитывать трек в расчёте корпуса</translation></message>
+    <message><source>Invalid frequency measurement collection</source><translation>Некорректный набор частотных измерений</translation></message>
+    <message><source>Invalid composition frequency grid</source><translation>Некорректная частотная сетка композиции</translation></message>
+    <message><source>No scan measurements</source><translation>Нет результатов сканирования</translation></message>
     <message><source>Barelief profile (*.brprofile)</source><translation>Профиль Barelief (*.brprofile)</translation></message>
     <message><source>Barelief profiles (*.brprofile *.json)</source><translation>Профили Barelief (*.brprofile *.json)</translation></message>
     <message><source>Barelief scan (*.brscan)</source><translation>Сканирование Barelief (*.brscan)</translation></message>
@@ -2245,7 +2291,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Note grid</source><translation>Нотная сетка</translation></message>
 <message><source>MIDI %1 to %2; A4 = %3 Hz; note salience</source><translation>MIDI от %1 до %2; A4 = %3 Гц; нотная активность</translation></message>
 <message><source>Input sample rate, Hz</source><translation>Входная частота дискретизации, Гц</translation></message>
-<message><source>Gain, dB</source><translation>Коэффициент, дБ</translation></message>
+<message><source>Gain, dB</source><translation>Усиление, дБ</translation></message>
 <message><source>Mean spectrum, dB</source><translation>Средний спектр, дБ</translation></message>
 <message><source>Elapsed time, s</source><translation>Прошедшее время, с</translation></message>
 <message><source>Select audio files first</source><translation>Сначала выберите аудиофайлы</translation></message>
