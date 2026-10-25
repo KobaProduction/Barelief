@@ -2,6 +2,7 @@
 #include "audio_decoder.h"
 #include <dsp_kernels/prepared_resampler.h>
 #include <dsp_kernels/sample_cadence.h>
+#include <dsp_kernels/frequency_measurements.h>
 #include <signal_contracts/spectral_calibration.h>
 #include <speex_backend.h>
 #include <QDirIterator>
@@ -40,6 +41,7 @@ std::vector<float> SpectrogramPreview::normalized(const std::vector<float>& gain
 namespace {
 class TrackAnalysis {
     const AnalysisOptions& options_;
+    ProfileCompatibility frontend_;
     const std::atomic_bool& cancel_;
     CompositionStatistics& statistics_;
     SpectrogramPreview* preview_;
@@ -55,16 +57,24 @@ class TrackAnalysis {
     double square_sum_=0, presence_floor_=0;
     bool draining_=false;
     static constexpr std::size_t chunk=4096;
-    const ProfileCompatibility& frontend() const {return options_.compatibility;}
+    const ProfileCompatibility& frontend() const {return frontend_;}
     bool fail(const char* message) {error_=QString::fromUtf8(message);return false;}
     bool prepare_decoder(const QString& path) {
         const auto& c=frontend();
         if(!decoder_.open(path,error_,c.channel_policy,c.channel_index))return false;
-        statistics_.source=path.toStdString();
-        statistics_.measured_max_hz=std::min(c.sample_rate,double(decoder_.sample_rate()))/2;
+        configure_track_frontend();statistics_.source=path.toStdString();
         expected_=std::uint64_t(std::ceil(double(decoder_.length())*c.sample_rate/decoder_.sample_rate()));
         return resampler_.prepare({c.resampler_mode,decoder_.sample_rate(),std::uint32_t(c.sample_rate),1,c.resampler_quality},
                                    &desktop_resampling::speex_backend_factory()) || fail("Cannot prepare the declared resampler");
+    }
+    void configure_track_frontend() {
+        const auto& c=frontend();
+        statistics_.source_sample_rate=decoder_.sample_rate();
+        if(!options_.resample_input){frontend_.sample_rate=decoder_.sample_rate();frontend_.resampler_mode=ResamplerMode::Bypass;}
+        statistics_.sample_rate=c.sample_rate;statistics_.rms_statistics_version=1;
+        statistics_.measured_max_hz=std::min(c.sample_rate,double(decoder_.sample_rate()))/2;
+        if(options_.resample_input && decoder_.sample_rate()!=c.sample_rate)
+            statistics_.measured_max_hz=.40*std::min(c.sample_rate,double(decoder_.sample_rate()));
     }
     bool prepare_spectrum() {
         const auto& c=frontend();const auto n=c.fft_size,bins=n/2+1;
@@ -86,7 +96,9 @@ class TrackAnalysis {
         if(training.interval_numerator){
             if(!cadence_.prepare(std::uint32_t(c.sample_rate),training.interval_numerator,training.interval_denominator))return fail("Invalid analysis cadence");
         }else cadence_.base=training.hop;
-        hop_=cadence_.next();filled_=c.fft_size-hop_;
+        hop_=cadence_.next();
+        if(cadence_.base+(cadence_.fraction?1:0)>c.fft_size)return fail("Native sample rate requires a shorter interval or larger FFT");
+        filled_=c.fft_size-hop_;
         const auto delay=resampler_.resources().fixed_delay_input_samples;
         if(decoder_.sample_rate()!=std::uint32_t(c.sample_rate))
             discard_=(std::uint64_t(delay)*std::uint32_t(c.sample_rate)+decoder_.sample_rate()-1)/decoder_.sample_rate();
@@ -130,6 +142,7 @@ class TrackAnalysis {
         statistics_.maximum_frame_rms=std::max(statistics_.maximum_frame_rms,rms);
         if(!rms){++statistics_.digital_silence_frames;return;}
         if(!statistics_.active_frames || rms<statistics_.minimum_frame_rms)statistics_.minimum_frame_rms=rms;
+        accumulate_rms_band(statistics_,rms,spectrum_);
         if(rms<=options_.training.silence_rms)accumulate_quiet(rms);
         ++statistics_.active_frames;
         accumulate_spectrum();
@@ -210,7 +223,7 @@ class TrackAnalysis {
     }
 public:
     TrackAnalysis(const AnalysisOptions& options,const std::atomic_bool& cancel,CompositionStatistics& stats,SpectrogramPreview* preview,QString& error):
-        options_(options),cancel_(cancel),statistics_(stats),preview_(preview),error_(error){}
+        options_(options),frontend_(options.compatibility),cancel_(cancel),statistics_(stats),preview_(preview),error_(error){}
     bool run(const QString& path) {
         if(!prepare_decoder(path) || !prepare_spectrum() || !prepare_cadence() || !prepare_preview(path))return false;
         if(!read_stream() || !drain() || cancel_.load())return false;
@@ -236,9 +249,16 @@ PreviewResult analyze_music_preview(const QString& path,const AnalysisOptions& o
     result.cancelled=cancel.load();if(result.cancelled)result.success=false;return result;
 }
 namespace {
+AnalysisOptions frontend_options(const AnalysisOptions& input) {
+    auto result=input;
+    if(!result.resample_input)result.compatibility.resampler_mode=ResamplerMode::Bypass;
+    return result;
+}
 AnalysisOptions measurement_options(const AnalysisOptions& input) {
-    auto result=input;result.training.gain_mode=ProfileGainMode::MeanEqualization;
-    result.training.min_gain=1;result.training.max_gain=1;result.training.smoothing_radius=0;return result;
+    auto result=frontend_options(input);result.training.gain_mode=ProfileGainMode::MeanEqualization;
+    result.training.min_gain=1;result.training.max_gain=1;result.training.smoothing_radius=0;
+    result.training.silence_rms=.0001;
+    return result;
 }
 bool valid_analysis_options(const QStringList& files,const AnalysisOptions& options,QString& error) {
     std::string validation;
@@ -248,7 +268,9 @@ bool valid_analysis_options(const QStringList& files,const AnalysisOptions& opti
     const auto rows=options.preview_time_bins,bands=std::min(options.preview_frequency_bins,options.compatibility.fft_size/2+1);
     const auto bytes=std::uint64_t(files.size())*(rows*bands*sizeof(float)+(rows+bands)*sizeof(double)+rows*sizeof(std::uint64_t));
     if(bytes>512ull*1024*1024){error="Preview memory exceeds 512 MiB; reduce preview resolution or the file list";return false;}
-    if(std::uint64_t(files.size())*5*(options.compatibility.fft_size/2+1)*sizeof(double)>512ull*1024*1024){error="Spectral statistics exceed 512 MiB; reduce FFT size or the file list";return false;}
+    const auto bins=options.compatibility.fft_size/2+1;
+    const auto statistics_bytes=5*bins*sizeof(double)+(rms_overflow_band+1)*(sizeof(CompositionStatistics::RmsBand)+2*bins*sizeof(float));
+    if(std::uint64_t(files.size())*statistics_bytes>512ull*1024*1024){error="Spectral statistics exceed 512 MiB; reduce FFT size or the file list";return false;}
     return true;
 }
 class AnalysisBatch {
@@ -277,14 +299,14 @@ class AnalysisBatch {
         std::vector<CompositionStatistics> valid;
         for(std::size_t i=0;i<statistics_.size();++i){
             if(!errors_[i].isEmpty()){result.errors.append(files_[qsizetype(i)]+": "+errors_[i]);continue;}
-            result.audio_seconds+=double(statistics_[i].samples)/options_.compatibility.sample_rate;
+            result.audio_seconds+=double(statistics_[i].samples)/measurement_rate(statistics_[i],options_.compatibility.sample_rate);
             valid.push_back(std::move(statistics_[i]));result.document.previews.push_back(std::move(previews_[i]));
         }
         return valid;
     }
     void store_summary(AnalysisResult& result,const std::vector<CompositionStatistics>& valid) const {
         const auto& t=options_.training;
-        result.document.preserved["scanner"]=QJsonObject{{"silence_rms",t.silence_rms},{"hop",double(t.hop)},{"interval_numerator",double(t.interval_numerator)},{"interval_denominator",double(t.interval_denominator)}};
+        result.document.preserved["scanner"]=QJsonObject{{"resample_input",options_.resample_input},{"hop",double(t.hop)},{"interval_numerator",double(t.interval_numerator)},{"interval_denominator",double(t.interval_denominator)}};
         result.document.preserved["preview_settings"]=QJsonObject{{"time_cells",double(options_.preview_time_bins)},{"frequency_cells",double(options_.preview_frequency_bins)}};
         if(!result.document.previews.empty())result.preview=result.document.previews.front();
         QJsonArray failures;for(const auto& error:std::as_const(result.errors))failures.append(error);
@@ -316,20 +338,20 @@ public:
     }
 };
 void run_scan_batch(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,
-    const AnalysisServices::Progress& progress,AnalysisResult& result) {
+    const AnalysisServices::Progress& progress,AnalysisResult& result,bool measurements_only=true) {
     QElapsedTimer timer;timer.start();AnalysisBatch batch(files,options,cancel,progress);batch.run();
     result.cancelled=cancel.load();result.wall_seconds=timer.nsecsElapsed()/1e9;
-    if(!result.cancelled)batch.finish_scan(result);
+    if(!result.cancelled){
+        if(measurements_only)batch.finish_scan(result);else batch.finish(result);
+    }
 }
 }
-AnalysisResult analyze_music_files(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,const AnalysisServices::Progress& progress) {
+AnalysisResult analyze_music_files(const QStringList& files,const AnalysisOptions& requested,const std::atomic_bool& cancel,const AnalysisServices::Progress& progress) {
     AnalysisResult result;result.cancelled=cancel.load();if(result.cancelled)return result;
+    const auto options=frontend_options(requested);
     QString error;
     if(!valid_analysis_options(files,options,error)){result.errors.append(error);return result;}
-    QElapsedTimer timer;timer.start();
-    AnalysisBatch batch(files,options,cancel,progress);batch.run();
-    result.cancelled=cancel.load();result.wall_seconds=timer.nsecsElapsed()/1e9;
-    if(!result.cancelled)batch.finish(result);
+    run_scan_batch(files,options,cancel,progress,result,false);
     return result;
 }
 AnalysisResult scan_music_files(const QStringList& files,const AnalysisOptions& requested,const std::atomic_bool& cancel,const AnalysisServices::Progress& progress) {

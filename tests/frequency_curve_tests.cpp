@@ -83,6 +83,24 @@ void malformed_and_legacy() {
     p.curve.reset();assert(resample_frequency_profile(p,p.compatibility,output,error));
     invalid=p.compatibility;invalid.sample_rate=44100;assert(!resample_frequency_profile(p,invalid,output,error));
 }
+void native_measurement_grids() {
+    std::array tracks{track(),track(),track()};const std::array rates{32768.,44100.,48000.};
+    for(std::size_t i=0;i<tracks.size();++i){
+        auto& t=tracks[i];t.sample_rate=t.source_sample_rate=rates[i];t.measured_max_hz=rates[i]/2;
+        for(std::size_t k=0;k<t.peak_spectrum.size();++k){
+            const auto hz=k*rates[i]/4096;t.peak_spectrum[k]=double(1u<<i)*(.1+hz/1e6);t.mean_spectrum[k]=t.peak_spectrum[k]/4;
+        }
+    }
+    const auto p=curve({},tracks);
+    for(std::size_t k=1;k<p.gains.size();++k){
+        const auto hz=k*48000./4096;double sum=0,count=0;
+        for(std::size_t i=0;i<rates.size();++i)if(hz<=rates[i]/2){sum+=double(1u<<i)*(.1+hz/1e6);++count;}
+        assert(std::abs(p.peak_spectrum[k]-sum/count)<1e-12);
+    }
+    FrequencyProfile legacy;std::string error;ProfileTraining training;
+    assert(build_frequency_profile(frontend(),training,tracks,legacy,error));
+    assert(std::abs(legacy.peak_spectrum[2000]-p.peak_spectrum[2000])<1e-12);
+}
 void holes_and_boundaries() {
     auto t=track();t.peak_spectrum[100]=0;const auto p=curve({},std::span(&t,1));
     const auto step=p.compatibility.sample_rate/p.compatibility.fft_size;
@@ -95,6 +113,6 @@ void holes_and_boundaries() {
 }
 }
 int main() {
-    aggregation();approximation_quality();floor_continuity();grids_and_support();malformed_and_legacy();holes_and_boundaries();
+    aggregation();approximation_quality();floor_continuity();grids_and_support();malformed_and_legacy();holes_and_boundaries();native_measurement_grids();
     std::cout<<"frequency_curve_tests PASS\n";
 }

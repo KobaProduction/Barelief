@@ -11,6 +11,7 @@
 #include <QMouseEvent>
 #include <barelief/ui_text.h>
 #include <offline/music_analysis.h>
+#include <dsp_kernels/frequency_measurements.h>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -121,12 +122,14 @@ struct MusicAnalysisDialog::State {
     Curve* fitted=nullptr;
     Curve* track_peak=nullptr;
     QCheckBox* quiet_track=nullptr;
+    QCheckBox* fir=nullptr;
+    QComboBox* quiet_level=nullptr;
     Curve* target_gains=nullptr;
     QTabWidget* tabs=nullptr;
     AnalysisServices services;
     std::optional<ProfileReadDiagnostic> profile_load_diagnostic;
     AnalysisOptions baseline_options;
-    MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum,*gain_mode;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *silence,*minimum,*maximum,*reference,*floor;
+    MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum,*gain_mode;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *minimum,*maximum,*reference,*floor;
     QPushButton *run,*cancel,*save,*load,*add,*folder,*clear,*apply,*reload_targets,*new_scan,*show_results;QLabel *status,*average,*file_count,*result_summary,*preview_title,*dc,*mode_title,*scan_summary,*memory;QStackedWidget* pages;QProgressBar* progress;QTableWidget *statistics,*frequencies;Curve *mean,*gains,*track_mean;Spectrogram* image;QCheckBox* normalized,*compensate;QTimer* timer;
     QComboBox* target;MusicAnalysisDialog::Targets read_targets;MusicAnalysisDialog::Apply apply_profile;std::vector<FrequencyProfileTarget> targets;
     QComboBox* cadence;QLabel* cadence_interval;
@@ -143,9 +146,16 @@ struct MusicAnalysisDialog::State {
         const auto& c=document.profile.compatibility;
         image->preview=preview;image->reference=c.reference;image->floor_db=c.floor_db;
         image->magnitude=c.projection.representation==dsp_kernels::SpectrumProjection::Magnitude || c.projection.representation==dsp_kernels::SpectrumProjection::PeakAmplitude;
-        image->data=preview_geometry_valid(preview)&&normalized->isChecked()?preview.normalized(document.profile.gains):preview.values;image->image_dirty=true;image->update();
+        image->data=corrected_preview();image->image_dirty=true;image->update();
         preview_title->setText(preview_pending || preview_future.valid()?ui::text("Building preview: %1").arg(preview_requested):
             preview.rows?ui::text("Preview: %1 (%2 s)").arg(preview.source).arg(preview.duration_seconds,0,'f',2):ui::text("Select a track to view its spectrogram"));
+    }
+    std::vector<float> corrected_preview() const {
+        if(!preview_geometry_valid(preview) || !normalized->isChecked())return preview.values;
+        auto frontend=document.profile.compatibility;frontend.sample_rate=preview.sample_rate;
+        dsp_kernels::FrequencyProfile adapted;std::string error;
+        if(!dsp_kernels::resample_frequency_profile(document.profile,frontend,adapted,error))return {};
+        return preview.normalized(adapted.gains);
     }
     void stop_preview(){
         preview_cancel->store(true);preview_pending=false;preview_requested.clear();preview_timer->stop();
@@ -155,6 +165,7 @@ struct MusicAnalysisDialog::State {
         if(!services.preview){preview_pending=false;return;}
         preview_pending=false;preview_cancel=std::make_shared<std::atomic_bool>(false);
         AnalysisOptions opt;opt.compatibility=document.profile.compatibility;opt.training=document.profile.training;
+        opt.resample_input=baseline_options.resample_input;
         const auto path=preview_requested;auto stop=preview_cancel;
         preview_future=std::async(std::launch::async,[path,opt,stop,service=services.preview]{return service(path,opt,*stop);});
     }
@@ -198,11 +209,16 @@ struct MusicAnalysisDialog::State {
         mode=value;const bool busy=mode==Mode::Scanning,results=mode==Mode::Results || mode==Mode::Application;
         show_mode_header(busy,results);
         update_action_availability(busy,results);update_target_availability(results);
-        for(QWidget* widget:std::initializer_list<QWidget*>{rate,size,window,spectrum,compensate,workers,hop,silence,reference,files,preview_rows,preview_bands})widget->setEnabled(!busy&&!results);
-        for(QWidget* widget:std::initializer_list<QWidget*>{smooth,gain_mode,minimum,maximum,floor,aggregation,approximation,degree,segments,percentile,build_curve})widget->setEnabled(!busy&&has_profile);
-        minimum->setEnabled(!busy&&has_profile&&gain_mode->currentIndex()==0);
+        for(QWidget* widget:std::initializer_list<QWidget*>{rate,size,window,spectrum,compensate,workers,hop,fir,reference,files,preview_rows,preview_bands})widget->setEnabled(!busy&&!results);
+        update_curve_availability(busy);
         update_cadence_controls();update_frontend_summary();
         if(mode==Mode::Results && result_files->currentItem())request_preview(result_files->currentItem()->text());
+    }
+    void update_curve_availability(bool busy){
+        const bool measurements=has_profile&&!document.profile.compositions.empty();
+        for(QWidget* widget:std::initializer_list<QWidget*>{smooth,gain_mode,minimum,maximum,floor,aggregation,approximation,degree,segments,percentile,build_curve})widget->setEnabled(!busy&&measurements);
+        quiet_level->setEnabled(!busy&&has_rms_groups());
+        minimum->setEnabled(!busy&&measurements&&gain_mode->currentIndex()==0);
     }
     void show_mode_header(bool busy,bool results){
         pages->setCurrentIndex(mode==Mode::Application?2:results?1:0);
@@ -229,23 +245,25 @@ struct MusicAnalysisDialog::State {
     }
     void update_memory(){
         const auto bytes=double(files->count())*preview_rows->value()*std::min(preview_bands->value(),size->currentText().toInt()/2+1)*4;
-        memory->setText(ui::text("Preview storage before compression: up to %1 MiB. FFT statistics retain every frequency bin.").arg(bytes/(1024*1024),0,'f',1));
+        const auto grouped=double(files->count())*(dsp_kernels::rms_overflow_band+1)*2*(size->currentText().toInt()/2+1)*sizeof(float);
+        memory->setText(ui::text("Preview storage before compression: up to %1 MiB. FFT statistics retain every frequency bin.").arg(bytes/(1024*1024),0,'f',1)+"\n"+ui::text("RMS group spectra before compression/Base64: up to %1 MiB. Only occupied groups are stored in the scan; ready profiles omit them.").arg(grouped/(1024*1024),0,'f',1));
     }
     void update_frontend_summary(){
         const auto frontend=options().compatibility;
         const auto channel=frontend.channel_policy==dsp_kernels::ChannelPolicy::Mean?ui::text("Mean channels"):ui::text("Selected channel %1").arg(frontend.channel_index);
-        frontend_status->setText(ui::text("Declared frontend: %1; %2 (quality %3)").arg(channel,ui::text(presentation::resampler_caption(frontend.resampler_mode))).arg(frontend.resampler_quality));
+        frontend_status->setText(fir->isChecked()?ui::text("Declared frontend: %1; %2 (quality %3)").arg(channel,ui::text(presentation::resampler_caption(frontend.resampler_mode))).arg(frontend.resampler_quality):ui::text("%1; native sample rate per track, no PCM resampling").arg(channel));
     }
     void show_track_mean(const QString& path){
         track_mean->values.clear();track_peak->values.clear();
         for(const auto& track:document.profile.compositions)if(QString::fromStdString(track.source)==path){
+            track_mean->fs=track_peak->fs=dsp_kernels::measurement_rate(track,document.profile.compatibility.sample_rate);
             track_mean->values=quiet_track->isChecked()?track.quiet_mean_spectrum:track.mean_spectrum;
             track_peak->values=quiet_track->isChecked()?track.quiet_peak_spectrum:track.peak_spectrum;break;
         }
         update_track_plot(track_mean);update_track_plot(track_peak);
     }
     void update_track_plot(Curve* plot){
-        const auto& c=document.profile.compatibility;plot->fs=c.sample_rate;plot->reference=c.reference;
+        const auto& c=document.profile.compatibility;plot->reference=c.reference;
         plot->magnitude=c.projection.representation==dsp_kernels::SpectrumProjection::Magnitude || c.projection.representation==dsp_kernels::SpectrumProjection::PeakAmplitude;plot->update();
     }
     void update_file_count(){file_count->setText(ui::text("Files in list: %1").arg(files->count()));update_memory();}
@@ -262,17 +280,18 @@ struct MusicAnalysisDialog::State {
     }
     AnalysisOptions options()const {
         auto o=baseline_options;
-        collect_frontend(o.compatibility);collect_cadence(o.training);o.training.silence_rms=silence->value();
+        collect_frontend(o.compatibility);collect_cadence(o.training);o.resample_input=fir->isChecked();
         o.workers=unsigned(workers->value());o.preview_time_bins=std::size_t(preview_rows->value());o.preview_frequency_bins=std::size_t(preview_bands->value());return o;
     }
     void collect_frontend(dsp_kernels::ProfileCompatibility& frontend)const {
         frontend.sample_rate=rate->currentText().toDouble();frontend.fft_size=size->currentText().toUInt();
+        frontend.resampler_mode=fir->isChecked()?baseline_resampler():dsp_kernels::ResamplerMode::Bypass;
         frontend.window=dsp_kernels::WindowFunction(window->currentIndex());
         frontend.projection={dsp_kernels::SpectrumProjection(spectrum->currentData().toInt()),compensate->isChecked()};frontend.reference=reference->value();
     }
     void collect_training(dsp_kernels::ProfileTraining& training)const {
         training.gain_mode=gain_mode->currentIndex()==1?dsp_kernels::ProfileGainMode::PeakNormalization:dsp_kernels::ProfileGainMode::MeanEqualization;
-        training.smoothing_radius=std::size_t(smooth->value());training.silence_rms=silence->value();
+        training.smoothing_radius=std::size_t(smooth->value());
         training.min_gain=training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1.:minimum->value();
         training.max_gain=maximum->value();
     }
@@ -288,7 +307,7 @@ struct MusicAnalysisDialog::State {
     }
     void refresh_scan_summary(){
         const auto& p=document.profile;
-        if(has_profile)scan_summary->setText(ui::text("Completed scan: %1 Hz; FFT %2; %3; %4; %5; %6 tracks").arg(p.compatibility.sample_rate,0,'g',10).arg(p.compatibility.fft_size).arg(window->itemText(int(p.compatibility.window)),ui::text(presentation::spectrum_projection_caption(p.compatibility.projection.representation))+" · "+ui::text(presentation::spectrum_compensation_caption)+": "+ui::text(p.compatibility.projection.compensate?"On":"Off"),cadence_caption(p.training)).arg(p.compositions.size()));
+        if(has_profile)scan_summary->setText(ui::text("Completed scan: curve grid %1 Hz; FFT %2; %3; %4; %5; %6 tracks").arg(p.compatibility.sample_rate,0,'g',10).arg(p.compatibility.fft_size).arg(window->itemText(int(p.compatibility.window)),ui::text(presentation::spectrum_projection_caption(p.compatibility.projection.representation))+" · "+ui::text(presentation::spectrum_compensation_caption)+": "+ui::text(p.compatibility.projection.compensate?"On":"Off"),cadence_caption(p.training)).arg(p.compositions.size()));
     }
     void refresh_curves(){
         const auto& p=document.profile;
@@ -298,7 +317,8 @@ struct MusicAnalysisDialog::State {
     void refresh_statistics(){
         const auto& p=document.profile;
         statistics->setRowCount(int(p.compositions.size()));for(std::size_t i=0;i<p.compositions.size();++i){const auto& s=p.compositions[i];
-            const QStringList row{QString::fromStdString(s.source),QString::number(s.rms,'g',6),QString::number(s.active_frames),QString::number(s.frames),QString::number(double(s.samples)/p.compatibility.sample_rate,'f',2),QString::number(s.digital_silence_frames),QString::number(s.quiet_frames),QString::number(s.quiet_rms,'g',6),QString::number(s.minimum_frame_rms,'g',6)};
+            const auto fs=dsp_kernels::measurement_rate(s,p.compatibility.sample_rate);
+            const QStringList row{QString::fromStdString(s.source),QString::number(s.rms,'g',6),QString::number(s.active_frames),QString::number(s.frames),QString::number(double(s.samples)/fs,'f',2),QString::number(s.digital_silence_frames),QString::number(s.quiet_frames),QString::number(s.quiet_rms,'g',6),QString::number(s.minimum_frame_rms,'g',6),QString::number(s.source_sample_rate?s.source_sample_rate:fs),QString::number(fs)};
             for(int k=0;k<row.size();++k)statistics->setItem(int(i),k,new QTableWidgetItem(row[k]));}
     }
     void append_frequency_statistics_row(std::size_t k,double before){
@@ -346,7 +366,7 @@ struct MusicAnalysisDialog::State {
             ui::text("Profile contains %1 files; contributed: %2; without active windows: %3. Original failure count was not recorded.").arg(processed).arg(active).arg(processed-active));
     }
     void show_options(const AnalysisOptions& o){
-        restoring_controls=true;baseline_options=o;show_frontend_options(o.compatibility);show_training_options(o.training);update_cadence_controls();update_frontend_summary();restoring_controls=false;
+        restoring_controls=true;baseline_options=o;fir->setChecked(o.resample_input);show_frontend_options(o.compatibility);show_training_options(o.training);update_cadence_controls();update_frontend_summary();restoring_controls=false;
     }
     void show_frontend_options(const dsp_kernels::ProfileCompatibility& c){
         rate->setCurrentText(QString::number(c.sample_rate,'g',12));size->setCurrentText(QString::number(c.fft_size));window->setCurrentIndex(int(c.window));
@@ -356,7 +376,7 @@ struct MusicAnalysisDialog::State {
         interval_numerator=training.interval_numerator?training.interval_numerator:1;interval_denominator=training.interval_denominator;
         cadence->setCurrentIndex(training.interval_numerator?1:0);hop->setValue(int(training.hop));
         gain_mode->setCurrentIndex(training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1:0);
-        smooth->setValue(int(training.smoothing_radius));silence->setValue(training.silence_rms);minimum->setValue(training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1.:training.min_gain);maximum->setValue(training.max_gain);
+        smooth->setValue(int(training.smoothing_radius));minimum->setValue(training.gain_mode==dsp_kernels::ProfileGainMode::PeakNormalization?1.:training.min_gain);maximum->setValue(training.max_gain);
         minimum->setEnabled(mode==Mode::Setup&&gain_mode->currentIndex()==0);
     }
     void restore_source_files(){
@@ -369,15 +389,20 @@ struct MusicAnalysisDialog::State {
         preview_rows->setValue(resolution.value("time_cells").toInt(256));preview_bands->setValue(resolution.value("frequency_cells").toInt(256));
     }
     void show_loaded_status(){
+        if(document.profile.curve && document.profile.compositions.empty()){status->setText(ui::text("Ready profile loaded. Load a scan to change curve settings."));return;}
         if(!can_save_scan()){status->setText(ui::text("Legacy profile has incomplete track measurements; apply it on its original grid or scan music again."));return;}
         const bool saved_previews=std::any_of(document.previews.begin(),document.previews.end(),[](const auto& item){return item.rows>0;});
         status->setText(saved_previews?ui::text("Profile loaded"):ui::text("Profile loaded without saved track previews. A new scan will collect all track results; previews currently require the source audio."));
     }
     void install_profile(ProfileDocument candidate,const QString& path){
         stop_preview();fit_quality->clear();applied_status=false;document=std::move(candidate);has_profile=true;curve_ready=true;preview={};profile_path=path;restore_source_files();
-        AnalysisOptions opt;opt.compatibility=document.profile.compatibility;opt.training=document.profile.training;show_options(opt);
+        restore_scan_options();restore_quiet_level();
         restore_preview_resolution();update_file_count();refresh();set_busy(false);show_loaded_status();
         restore_curve_options();
+    }
+    void restore_scan_options(){
+        AnalysisOptions opt;opt.compatibility=document.profile.compatibility;opt.training=document.profile.training;
+        opt.resample_input=document.preserved.value("scanner").toObject().value("resample_input").toBool(true);show_options(opt);
     }
     void select_target(){update_application_summary();}
     void refresh_targets(){QSignalBlocker block(target);target->clear();targets=read_targets?read_targets():std::vector<FrequencyProfileTarget>{};for(const auto& t:targets)target->addItem(t.label);set_mode(mode);}
@@ -408,7 +433,7 @@ struct MusicAnalysisDialog::State {
         }catch(const std::exception& e){status->setText(QString::fromUtf8(e.what()));}set_mode(has_profile&&document.profile.compositions.size()?Mode::Results:Mode::Setup);
     }
     void accept_analysis_result(AnalysisResult result){
-        if(result.success){document=std::move(result.document);preview=std::move(result.preview);has_profile=true;curve_ready=false;fit_quality->setText(ui::text("Measurements ready; build a curve"));refresh();
+        if(result.success){document=std::move(result.document);preview=std::move(result.preview);has_profile=true;curve_ready=false;fit_quality->setText(ui::text("Measurements ready; build a curve"));restore_quiet_level();refresh();
             status->setText(ui::text("Analysis complete: %1 s audio / %2 s processing (%3×)").arg(result.audio_seconds,0,'f',2).arg(result.wall_seconds,0,'f',3).arg(result.audio_seconds/std::max(.000001,result.wall_seconds),0,'f',1));}
         else status->setText(result.cancelled?ui::text("Analysis cancelled"):ui::text("Analysis failed"));
         if(!result.errors.empty())status->setText(status->text()+"\n"+result.errors.join('\n'));
@@ -446,7 +471,7 @@ struct MusicAnalysisDialog::State {
     void build_analysis_forms(){
         auto& s=*this;auto* dialog=owner;
     auto* settings=new QHBoxLayout;left=new QFormLayout;right=new QFormLayout;settings->addLayout(left);settings->addLayout(right);layout->addLayout(settings);
-    s.rate=new QComboBox(dialog);s.rate->addItems({"32768","32000","44100","48000"});s.rate->setEditable(true);s.rate->setObjectName("musicSampleRate");left->addRow(label("Analysis sample rate, Hz",dialog),s.rate);
+    s.rate=new QComboBox(dialog);s.rate->addItems({"32768","32000","44100","48000"});s.rate->setEditable(true);s.rate->setObjectName("musicSampleRate");left->addRow(label("Curve grid / FIR output rate, Hz",dialog),s.rate);
     build_fft_size();
     }
     void build_spectrum(){
@@ -501,7 +526,8 @@ struct MusicAnalysisDialog::State {
         maximum=make_training_scalar(1,1000000,100,6);maximum->setObjectName("musicMaximumGain");curve_form->addRow(label("Maximum linear gain",owner),maximum);
     }
     void build_training(){
-        silence=make_training_scalar(0,1,.0001,12);silence->setObjectName("musicQuietRms");right->addRow(label("Quiet-frame diagnostic threshold, PCM RMS",owner),silence);
+        fir=new QCheckBox(owner);fir->setObjectName("musicResampleInput");right->addRow(label("Resample PCM with FIR to selected rate",owner),fir);
+        QObject::connect(fir,&QCheckBox::toggled,owner,[this]{update_frontend_summary();});
         reference=make_training_scalar(.000001,1000000,1,6);right->addRow(label("Spectrum reference",owner),reference);
     }
     void build_progress(){
@@ -544,7 +570,7 @@ struct MusicAnalysisDialog::State {
     }
     void build_statistics(){
         auto& s=*this;auto* dialog=owner;
-    s.statistics=new QTableWidget(0,9,dialog);s.statistics->setObjectName("musicCompositionStatistics");set_statistics_headers();s.statistics->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);s.statistics->setEditTriggers(QAbstractItemView::NoEditTriggers);tabs->addTab(s.statistics,ui::text("Composition statistics"));layout->addWidget(tabs,1);
+    s.statistics=new QTableWidget(0,11,dialog);s.statistics->setObjectName("musicCompositionStatistics");set_statistics_headers();s.statistics->horizontalHeader()->setSectionResizeMode(0,QHeaderView::Stretch);s.statistics->setEditTriggers(QAbstractItemView::NoEditTriggers);tabs->addTab(s.statistics,ui::text("Composition statistics"));layout->addWidget(tabs,1);
     s.frequencies=new QTableWidget(0,6,dialog);s.frequencies->setObjectName("musicFrequencyStatistics");s.frequencies->setHorizontalHeaderLabels({ui::text("Bin"),ui::text("Frequency, Hz"),ui::text("Mean spectrum"),ui::text("Linear gain"),ui::text("Corrected mean"),ui::text("Presence, %")});s.frequencies->horizontalHeaderItem(5)->setToolTip(ui::text("Share of active windows above the spectral floor; equal weight per active file"));s.frequencies->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);s.frequencies->setEditTriggers(QAbstractItemView::NoEditTriggers);tabs->addTab(s.frequencies,ui::text("Frequency statistics"));
 
     }
@@ -682,7 +708,7 @@ struct MusicAnalysisDialog::State {
         set_statistics_headers();
     }
     void set_statistics_headers(){
-        statistics->setHorizontalHeaderLabels({ui::text("Composition"),"RMS",ui::text("Nonzero windows"),ui::text("Total windows"),ui::text("Duration, s"),ui::text("Digital silence"),ui::text("Quiet windows"),ui::text("Quiet RMS"),ui::text("Minimum frame RMS")});
+        statistics->setHorizontalHeaderLabels({ui::text("Composition"),"RMS",ui::text("Nonzero windows"),ui::text("Total windows"),ui::text("Duration, s"),ui::text("Digital silence"),ui::text("Quiet windows"),ui::text("Quiet RMS"),ui::text("Minimum frame RMS"),ui::text("Source Fs, Hz"),ui::text("Analysis Fs, Hz")});
     }
     void build_stage_navigation(){
         auto* storage=new QHBoxLayout;header->removeWidget(load);header->removeWidget(save);storage->addWidget(load);storage->addWidget(save);
@@ -695,7 +721,7 @@ struct MusicAnalysisDialog::State {
         auto* settings=new QHBoxLayout;curve_form=new QFormLayout;auto* methods=new QFormLayout;settings->addLayout(methods);settings->addLayout(curve_form);layout->addLayout(settings);
         aggregation=new QComboBox(owner);aggregation->setObjectName("musicAggregation");aggregation->addItems({ui::text("Mean of track maxima"),ui::text("Global maximum"),ui::text("Upper percentile of track maxima")});methods->addRow(label("Track aggregation",owner),aggregation);
         approximation=new QComboBox(owner);approximation->setObjectName("musicApproximation");approximation->addItems({ui::text("Polynomial in Hz"),ui::text("Piecewise smooth in Hz")});approximation->setCurrentIndex(1);methods->addRow(label("Approximation",owner),approximation);
-        build_fit_resolution(methods);build_curve_gain_controls();build_curve_actions();
+        build_fit_resolution(methods);build_curve_gain_controls();build_quiet_diagnostics();build_curve_actions();
     }
     void build_fit_resolution(QFormLayout* methods){
         degree=new QSpinBox(owner);degree->setObjectName("musicPolynomialDegree");degree->setRange(1,12);degree->setValue(6);methods->addRow(label("Polynomial degree",owner),degree);
@@ -711,6 +737,35 @@ struct MusicAnalysisDialog::State {
         auto* actions=new QHBoxLayout;build_curve=button("Build and compare curves","musicBuildCurve",owner);actions->addWidget(build_curve);fit_quality=new QLabel(owner);fit_quality->setObjectName("musicFitQuality");fit_quality->setWordWrap(true);actions->addWidget(fit_quality,1);layout->addLayout(actions);
         QObject::connect(build_curve,&QPushButton::clicked,owner,[this]{rebuild_curve();});
         build_curve_invalidation_events();
+    }
+    dsp_kernels::ResamplerMode baseline_resampler() const {
+        const auto mode=baseline_options.compatibility.resampler_mode;
+        return mode==dsp_kernels::ResamplerMode::Bypass?dsp_kernels::ResamplerMode::ExistingFir:mode;
+    }
+    bool has_rms_groups() const {
+        return !document.profile.compositions.empty() && std::ranges::all_of(document.profile.compositions,[](const auto& t){return t.rms_statistics_version==1;});
+    }
+    void build_quiet_diagnostics(){
+        quiet_level=new QComboBox(owner);quiet_level->setObjectName("musicQuietLevelDb");
+        for(int db=-200;db<=0;db+=2)quiet_level->addItem(QString::number(db),db);
+        quiet_level->setCurrentIndex(60);curve_form->addRow(label("Quiet-frame diagnostic level, dB (2 dB steps)",owner),quiet_level);
+        ui::bind(quiet_level,"toolTip","Reclassifies saved RMS groups without reading audio. Does not change the normalization curve. Legacy scans keep their original quiet statistics.");
+        QObject::connect(quiet_level,&QComboBox::currentIndexChanged,owner,[this]{if(!restoring_controls)update_quiet_statistics();});
+    }
+    void update_quiet_statistics(){
+        if(!has_rms_groups())return;
+        const auto db=quiet_level->currentData().toInt();
+        for(auto& t:document.profile.compositions)dsp_kernels::classify_quiet_frames(t,db);
+        document.profile.training.silence_rms=std::pow(10.,db/20.);
+        auto diagnostics=document.preserved.value("diagnostics").toObject();diagnostics["quiet_db"]=db;document.preserved["diagnostics"]=diagnostics;
+        refresh_statistics();show_track_mean(result_files->currentItem()?result_files->currentItem()->text():QString{});
+    }
+    void restore_quiet_level(){
+        QSignalBlocker block(quiet_level);
+        if(!has_rms_groups()){quiet_level->setPlaceholderText(ui::text("Saved quiet RMS threshold: %1 (fixed)").arg(document.profile.training.silence_rms));quiet_level->setCurrentIndex(-1);return;}
+        quiet_level->setPlaceholderText({});
+        const auto db=document.preserved.value("diagnostics").toObject().value("quiet_db").toInt(-80);
+        quiet_level->setCurrentIndex(quiet_level->findData(db));update_quiet_statistics();
     }
     void build_curve_invalidation_events(){
         for(auto* box:{aggregation,approximation,gain_mode})QObject::connect(box,&QComboBox::currentIndexChanged,owner,[this]{invalidate_curve();});
@@ -821,7 +876,7 @@ struct MusicAnalysisDialog::State {
     bool can_save_scan() const {
         const auto bins=document.profile.compatibility.fft_size/2+1;
         return has_profile && !document.profile.compositions.empty() && std::ranges::all_of(document.profile.compositions,[bins](const auto& t){
-            return t.mean_spectrum.size()==bins && t.peak_spectrum.size()==bins && t.quiet_mean_spectrum.size()==bins && t.quiet_peak_spectrum.size()==bins;
+            return t.mean_spectrum.size()==bins && t.peak_spectrum.size()==bins && ((t.rms_statistics_version==1 && dsp_kernels::valid_rms_bands(t)) || (t.quiet_mean_spectrum.size()==bins && t.quiet_peak_spectrum.size()==bins));
         });
     }
 

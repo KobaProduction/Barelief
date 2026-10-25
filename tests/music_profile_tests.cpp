@@ -172,7 +172,7 @@ using namespace dsp_kernels;using namespace desktop_analysis::offline;
         // Exercise the same frontend choices as the live graph, including EOF
         // drain and a reloaded profile/preview without a second library scan.
         for(const auto mode:{ResamplerMode::ExistingFir,ResamplerMode::CompactFir,ResamplerMode::SpeexDsp,ResamplerMode::IirExperimental,ResamplerMode::LinearDiagnostic}){
-            AnalysisOptions selected;selected.workers=1;selected.compatibility.sample_rate=37000;selected.compatibility.resampler_mode=mode;selected.compatibility.resampler_quality=7;
+            AnalysisOptions selected;selected.resample_input=true;selected.workers=1;selected.compatibility.sample_rate=37000;selected.compatibility.resampler_mode=mode;selected.compatibility.resampler_quality=7;
             selected.compatibility.fft_size=512;selected.training.hop=128;selected.preview_time_bins=16;selected.preview_frequency_bins=32;
             const auto path=temp.filePath("frontend.wav");wav(path,4801,false,48000);
             auto scan=analyze_music_files({path,path},selected,cancel);
@@ -353,7 +353,7 @@ int main(int argc,char** argv) {
         normalizer_validation(doc.profile);
         QTemporaryDir temp;require(temp.isValid(),"Temp directory failed");wav(temp.filePath("short.wav"),32768);wav(temp.filePath("long.wav"),65536);wav(temp.filePath("silence.wav"),32768,true);
         require(save_profile(temp.filePath("profile.json"),doc,json_error),"Atomic profile save failed");require(load_profile(temp.filePath("profile.json"),loaded,json_error),"Profile file load failed");
-        AnalysisOptions options;options.compatibility=c;options.training=t;options.workers=1;options.preview_time_bins=32;std::atomic_bool cancel=false;
+        AnalysisOptions options;options.resample_input=true;options.compatibility=c;options.training=t;options.workers=1;options.preview_time_bins=32;std::atomic_bool cancel=false;
         auto single=analyze_music_files({temp.filePath("short.wav"),temp.filePath("long.wav"),temp.filePath("silence.wav")},options,cancel);
         require(single.success,"Streaming WAV batch failed");require(single.document.profile.compositions[2].active_frames==0,"Silence not excluded");require(single.preview.values.size()<=32*257,"Preview is not bounded");
         require(std::abs(single.preview.duration_seconds-1)<1e-6,"Full-track preview lost duration");

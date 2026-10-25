@@ -11,6 +11,7 @@ struct AnalysisOptions {
     unsigned workers=2;
     std::size_t preview_time_bins=256;
     std::size_t preview_frequency_bins=256;
+    bool resample_input=false;
 };
 struct AnalysisResult {
     ProfileDocument document;

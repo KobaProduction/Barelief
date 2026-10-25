@@ -7,6 +7,7 @@
 #include <numeric>
 #include <optional>
 #include "frequency_curve_math.h"
+#include <dsp_kernels/frequency_measurements.h>
 
 namespace dsp_kernels {
 WindowScaling profile_window_scaling(const ProfileCompatibility& c) noexcept {
@@ -121,20 +122,30 @@ struct ProfileAccumulator {
     FrequencyProfile value;
     std::size_t active=0;
     bool has_presence=true,has_peaks=true;
+    std::vector<std::size_t> contributors;
     explicit ProfileAccumulator(const ProfileCompatibility& c,const ProfileTraining& t) {
         value.compatibility=c;value.training=t;
         value.mean_spectrum.assign(c.fft_size/2+1,0);value.peak_spectrum.assign(c.fft_size/2+1,0);value.frequency_presence.assign(c.fft_size/2+1,0);
+        contributors.assign(c.fft_size/2+1,0);
+    }
+    void add_spectrum(const CompositionStatistics& track,std::span<const double> source,std::vector<double>& target) {
+        for(std::size_t k=0;k<target.size();++k){
+            const auto hz=k*value.compatibility.sample_rate/value.compatibility.fft_size;
+            if(measured_frequency(track,value.compatibility.sample_rate,hz))
+                target[k]+=sample_measured_spectrum(source,measurement_rate(track,value.compatibility.sample_rate),hz);
+        }
     }
     bool add_presence(const CompositionStatistics& track,std::string& error) {
         if(track.frequency_presence.size()!=value.frequency_presence.size()){has_presence=false;return true;}
         for(std::size_t k=0;k<track.frequency_presence.size();++k){
             const auto presence=track.frequency_presence[k];
             if(!std::isfinite(presence) || presence<0 || presence>1){error="Invalid composition presence";return false;}
-            value.frequency_presence[k]+=presence;
         }
+        add_spectrum(track,track.frequency_presence,value.frequency_presence);
         return true;
     }
     bool validate_track(const CompositionStatistics& track,std::string& error) const {
+        if(!valid_measurement_grid(track,value.compatibility.sample_rate)){error="Invalid composition frequency grid";return false;}
         if(track.active_frames>track.frames || !std::isfinite(track.rms) || track.rms<0 || track.mean_spectrum.size()!=value.mean_spectrum.size()){
             error="Invalid composition statistics";return false;
         }
@@ -146,8 +157,8 @@ struct ProfileAccumulator {
             for(std::size_t k=0;k<track.peak_spectrum.size();++k){
                 const auto peak=track.peak_spectrum[k];
                 if(!std::isfinite(peak) || peak<0){error="Invalid composition peak";return false;}
-                value.peak_spectrum[k]+=peak;
             }
+            add_spectrum(track,track.peak_spectrum,value.peak_spectrum);
         }else if(value.training.gain_mode==ProfileGainMode::PeakNormalization){
             error="Peak normalization requires measured per-bin track maxima";return false;
         }else has_peaks=false;
@@ -158,7 +169,9 @@ struct ProfileAccumulator {
         if(!track.active_frames)return true;
         if(!add_presence(track,error) || !add_peaks(track,error))return false;
         ++active;
-        for(std::size_t k=0;k<track.mean_spectrum.size();++k)value.mean_spectrum[k]+=track.mean_spectrum[k];
+        add_spectrum(track,track.mean_spectrum,value.mean_spectrum);
+        for(std::size_t k=0;k<contributors.size();++k)
+            if(measured_frequency(track,value.compatibility.sample_rate,k*value.compatibility.sample_rate/value.compatibility.fft_size))++contributors[k];
         return true;
     }
     bool finish(std::string& error) {
@@ -169,9 +182,10 @@ struct ProfileAccumulator {
         return true;
     }
     void normalize_spectra() {
-        for(auto& v:value.mean_spectrum)v/=double(active);
-        for(auto& v:value.peak_spectrum)v/=double(active);
-        if(has_presence)for(auto& v:value.frequency_presence)v/=double(active);
+        for(std::size_t k=0;k<contributors.size();++k)if(contributors[k]){
+            value.mean_spectrum[k]/=double(contributors[k]);value.peak_spectrum[k]/=double(contributors[k]);
+            if(has_presence)value.frequency_presence[k]/=double(contributors[k]);
+        }
     }
     bool collect(std::span<const CompositionStatistics> tracks,std::string& error) {
         for(const auto& track:tracks)if(!add(track,error))return false;
@@ -195,7 +209,7 @@ void build_mean_gains(FrequencyProfile& profile,double floor) {
     const auto target=std::accumulate(smoothed.begin()+1,smoothed.end(),0.0)/double(bins-1);
     profile.gains.resize(bins);
     for(std::size_t k=0;k<bins;++k)
-        profile.gains[k]=float(std::clamp(k && smoothed[k]>floor?target/smoothed[k]:1.,
+        profile.gains[k]=k && profile.mean_spectrum[k]==0?1.f:float(std::clamp(k && smoothed[k]>floor?target/smoothed[k]:1.,
                                         training.min_gain,training.max_gain));
 }
 bool build_profile_gains(FrequencyProfile& profile,std::string& error) {

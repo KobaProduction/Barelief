@@ -1,4 +1,5 @@
 #include "frequency_curve_math.h"
+#include <dsp_kernels/frequency_measurements.h>
 #include <algorithm>
 #include <cmath>
 
@@ -30,14 +31,15 @@ double aggregate(std::vector<double>& values,const FrequencyCurveOptions& o) {
 bool valid_track(const CompositionStatistics& t,std::size_t bins,double nyquist) {
     return t.active_frames<=t.frames && t.mean_spectrum.size()==bins && t.peak_spectrum.size()==bins &&
         nonnegative(t.mean_spectrum) && nonnegative(t.peak_spectrum) &&
-        std::isfinite(t.measured_max_hz) && t.measured_max_hz>=0 && t.measured_max_hz<=nyquist;
+        valid_measurement_grid(t,2*nyquist);
 }
 void collect_bin(FrequencyProfile& p,std::span<const CompositionStatistics> tracks,std::size_t k) {
     std::vector<double> values;double mean=0,presence=0;
     const auto hz=k*p.compatibility.sample_rate/p.compatibility.fft_size;
-    for(const auto& t:tracks)if(t.active_frames && (!t.measured_max_hz || hz<=t.measured_max_hz)){
-        values.push_back(t.peak_spectrum[k]);mean+=t.mean_spectrum[k];
-        if(!p.frequency_presence.empty())presence+=t.frequency_presence[k];
+    for(const auto& t:tracks)if(t.active_frames && measured_frequency(t,p.compatibility.sample_rate,hz)){
+        const auto rate=measurement_rate(t,p.compatibility.sample_rate);
+        values.push_back(sample_measured_spectrum(t.peak_spectrum,rate,hz));mean+=sample_measured_spectrum(t.mean_spectrum,rate,hz);
+        if(!p.frequency_presence.empty())presence+=sample_measured_spectrum(t.frequency_presence,rate,hz);
     }
     p.mean_spectrum[k]=values.empty()?0:mean/double(values.size());
     p.peak_spectrum[k]=aggregate(values,p.curve->options);

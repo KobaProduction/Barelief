@@ -2,6 +2,17 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Saved quiet RMS threshold: %1 (fixed)</source><translation>Сохранённый порог RMS: %1 (фиксированный)</translation></message>
+    <message><source>RMS group spectra before compression/Base64: up to %1 MiB. Only occupied groups are stored in the scan; ready profiles omit them.</source><translation>Спектры групп RMS до сжатия/Base64: до %1 МиБ. Сканирование хранит только занятые группы; готовый профиль их не содержит.</translation></message>
+    <message><source>Completed scan: curve grid %1 Hz; FFT %2; %3; %4; %5; %6 tracks</source><translation>Сканирование завершено: сетка кривой %1 Гц; FFT %2; %3; %4; %5; %6 треков</translation></message>
+    <message><source>Curve grid / FIR output rate, Hz</source><translation>Сетка кривой / выходная частота КИХ, Гц</translation></message>
+    <message><source>Resample PCM with FIR to selected rate</source><translation>Пересчитывать PCM через КИХ на выбранную частоту</translation></message>
+    <message><source>%1; native sample rate per track, no PCM resampling</source><translation>%1; исходная частота каждого трека, без пересчёта PCM</translation></message>
+    <message><source>Quiet-frame diagnostic level, dB (2 dB steps)</source><translation>Уровень тихих кадров, дБ (шаг 2 дБ)</translation></message>
+    <message><source>Reclassifies saved RMS groups without reading audio. Does not change the normalization curve. Legacy scans keep their original quiet statistics.</source><translation>Пересчитывает сохранённые группы RMS без чтения аудио. Не меняет кривую нормализации. Старые сканирования сохраняют исходную статистику тихих кадров.</translation></message>
+    <message><source>Source Fs, Hz</source><translation>Исходная Fs, Гц</translation></message>
+    <message><source>Analysis Fs, Hz</source><translation>Fs анализа, Гц</translation></message>
+    <message><source>Ready profile loaded. Load a scan to change curve settings.</source><translation>Готовый профиль загружен. Для изменения настроек кривой загрузите сканирование.</translation></message>
     <message><source>Legacy profile has incomplete track measurements; apply it on its original grid or scan music again.</source><translation>В старом профиле нет полной статистики треков; примените его на исходной сетке или выполните сканирование заново.</translation></message>
     <message><source>Coefficients for current graph</source><translation>Коэффициенты для текущей схемы</translation></message>
     <message><source>Measurements ready; build a curve</source><translation>Измерения готовы; постройте кривую</translation></message>

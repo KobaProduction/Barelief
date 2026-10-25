@@ -3,6 +3,7 @@
 #include <barelief/numeric_image_view.h>
 #include <QApplication>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
@@ -15,6 +16,8 @@
 #include <QListWidget>
 #include <QLineEdit>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -75,6 +78,11 @@ static int save_profile_dialog(core_app::MusicAnalysisDialog& dialog,const QTemp
 return 0;
 }
 
+static bool same_ready_function(const QByteArray& first,const QByteArray& second) {
+    const auto a=QJsonDocument::fromJson(first).object(),b=QJsonDocument::fromJson(second).object();
+    for(const auto* key:{"function","gains","mean_spectrum","peak_spectrum","frequency_presence","metadata","training"})if(a.value(key)!=b.value(key))return false;
+    return true;
+}
 static int rescan_and_cached_preview(core_app::MusicAnalysisDialog& dialog,const QString& profile,QString& error,QFile& exported,const QByteArray& original,QStackedWidget* pages,QComboBox* size,QPushButton* run,QProgressBar* progress,QListWidget* results,QTableWidget* statistics,const auto& waitPreview,const QString& path,const QString& other) {
         auto* frequencies=dialog.findChild<QTableWidget*>("musicFrequencyStatistics");
         if(frequencies->rowCount()!=256 || frequencies->item(0,0)->text()!="1" || frequencies->item(255,0)->text()!="256" || dialog.findChild<QLabel*>("musicDcValue")->text().isEmpty())return failure(14,__LINE__);
@@ -83,14 +91,16 @@ static int rescan_and_cached_preview(core_app::MusicAnalysisDialog& dialog,const
         dialog.findChild<QComboBox*>("musicSampleRate")->setCurrentText("48000");
         dialog.findChild<QPushButton*>("musicShowResults")->click();
         if(pages->currentIndex()!=1||size->isEnabled()||!dialog.findChild<QLabel*>("musicScanSummary")->text().contains("32768"))return failure(23,__LINE__);
-        if(!dialog.load_profile_from(profile,error)||results->count()!=2 || dialog.findChild<QComboBox*>("musicSampleRate")->currentText()!="32768")return failure(15,__LINE__);
+        const auto scan=profile+".scan.json";
+        if(!dialog.save_scan_to(scan,error) || !dialog.load_scan_from(scan,error)||results->count()!=2 || dialog.findChild<QComboBox*>("musicSampleRate")->currentText()!="32768")return failure(15,__LINE__);
+        dialog.findChild<QPushButton*>("musicBuildCurve")->click();
         // Reload restores source paths, and statistics rows can select another preview.
         QMetaObject::invokeMethod(statistics,"cellClicked",Q_ARG(int,1),Q_ARG(int,0));
         if(!waitPreview(path))return failure(16,__LINE__);
         // Persisted results must remain viewable when original audio is unavailable.
         if(!QFile::remove(other))return failure(17,__LINE__);
         results->setCurrentRow(0);if(!waitPreview(other))return failure(18,__LINE__);
-        if(!dialog.save_profile_to(profile,error)||!exported.open(QIODevice::ReadOnly)||exported.readAll()!=original)return failure(24,__LINE__);exported.close();
+        if(!dialog.save_profile_to(profile,error)||!exported.open(QIODevice::ReadOnly)||!same_ready_function(exported.readAll(),original))return failure(24,__LINE__);exported.close();
 return 0;
 }
 
@@ -176,10 +186,22 @@ static int theme_dialog(QApplication& app,const QTemporaryDir& directory,const Q
 }
 static bool scanner_settings_roundtrip(core_app::MusicAnalysisDialog& dialog,const QString& path,QString& error) {
     desktop_analysis::offline::ProfileDocument saved;
-    if(!dialog.save_profile_to(path,error) || !desktop_analysis::offline::load_profile(path,saved,error))return false;
-    const auto& t=saved.profile.training;
-    return t.silence_rms==.125 && t.hop==128 && t.interval_numerator==0 && dialog.load_profile_from(path,error) &&
-        dialog.findChild<QDoubleSpinBox*>("musicQuietRms")->value()==.125 && dialog.findChild<QSpinBox*>("musicHop")->value()==128;
+    const auto scan=path+".scan.json";
+    if(!dialog.save_scan_to(scan,error) || !dialog.save_profile_to(path,error) || !desktop_analysis::offline::load_profile(path,saved,error))return false;
+    if(!saved.profile.compositions.empty() || !dialog.load_profile_from(path,error) || dialog.findChild<QPushButton*>("musicBuildCurve")->isEnabled())return false;
+    if(!dialog.load_scan_from(scan,error))return false;
+    dialog.findChild<QPushButton*>("musicBuildCurve")->click();
+    return dialog.findChild<QComboBox*>("musicQuietLevelDb")->currentData().toInt()==-18 && dialog.findChild<QSpinBox*>("musicHop")->value()==128;
+}
+static int rebuild_variants(core_app::MusicAnalysisDialog& dialog,const std::atomic_int& scans) {
+    for(int method=0;method<3;++method)for(int fit=0;fit<2;++fit){
+        dialog.findChild<QComboBox*>("musicAggregation")->setCurrentIndex(method);dialog.findChild<QComboBox*>("musicApproximation")->setCurrentIndex(fit);
+        dialog.findChild<QPushButton*>("musicBuildCurve")->click();
+        if(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || scans!=1)return failure(42,__LINE__);
+    }
+    dialog.findChild<QComboBox*>("musicQuietLevelDb")->setCurrentIndex(90);
+    if(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || scans!=1)return failure(47,__LINE__);
+    dialog.findChild<QComboBox*>("musicQuietLevelDb")->setCurrentIndex(91);return 0;
 }
 static int reuse_scan(QApplication& app,const QTemporaryDir& directory,const QString& source) {
     using namespace desktop_analysis::offline;
@@ -189,15 +211,12 @@ static int reuse_scan(QApplication& app,const QTemporaryDir& directory,const QSt
     services.scan_files=[&](const auto& paths,const auto& options,const auto& cancel,const auto& progress){++scans;return scan_music_files(paths,options,cancel,progress);};
     core_app::MusicAnalysisDialog dialog({}, {},std::move(services));dialog.findChild<QComboBox*>("musicFftSize")->setCurrentText("512");
     dialog.findChild<QComboBox*>("musicCadenceMode")->setCurrentIndex(0);dialog.findChild<QSpinBox*>("musicHop")->setValue(128);
-    dialog.findChild<QDoubleSpinBox*>("musicQuietRms")->setValue(.125);
+    if(dialog.findChild<QCheckBox*>("musicResampleInput")->isChecked())return failure(46,__LINE__);
     dialog.findChild<QListWidget*>("musicFiles")->addItem(audio);dialog.findChild<QPushButton*>("musicRun")->click();
     QElapsedTimer timer;timer.start();while(!dialog.findChild<QPushButton*>("musicSaveScan")->isEnabled()&&timer.elapsed()<10000)app.processEvents();
     QString error;if(!dialog.save_scan_to(scan,error) || !QFile::remove(audio) || !dialog.load_scan_from(scan,error))return failure(41,__LINE__);
-    for(int method=0;method<3;++method)for(int fit=0;fit<2;++fit){
-        dialog.findChild<QComboBox*>("musicAggregation")->setCurrentIndex(method);dialog.findChild<QComboBox*>("musicApproximation")->setCurrentIndex(fit);
-        dialog.findChild<QPushButton*>("musicBuildCurve")->click();
-        if(!dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || scans!=1)return failure(42,__LINE__);
-    }
+    dialog.findChild<QComboBox*>("musicQuietLevelDb")->setCurrentIndex(91);
+    if(const auto result=rebuild_variants(dialog,scans))return result;
     if(!scanner_settings_roundtrip(dialog,directory.filePath("reuse-profile.json"),error))return failure(45,__LINE__);
     dialog.findChild<QSpinBox*>("musicPolynomialDegree")->setValue(3);
     if(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || dialog.findChild<QPushButton*>("musicApplyStep")->isEnabled())return failure(43,__LINE__);

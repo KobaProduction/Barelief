@@ -48,6 +48,16 @@ struct CompositionStatistics {
     std::vector<double> mean_spectrum;
     std::vector<double> peak_spectrum;
     std::vector<double> frequency_presence;
+    // Zero rates identify legacy measurements on the profile's common grid.
+    double source_sample_rate = 0, sample_rate = 0;
+    struct RmsBand {
+        unsigned index = 0;
+        std::uint64_t frames = 0;
+        double square_sum = 0;
+        std::vector<float> mean_spectrum, peak_spectrum;
+    };
+    unsigned rms_statistics_version = 0;
+    std::vector<RmsBand> rms_bands;
 };
 enum class PeakAggregation { MeanTrackMaxima, GlobalMaximum, UpperPercentile };
 enum class CurveApproximation { Polynomial, PiecewiseSmooth };
