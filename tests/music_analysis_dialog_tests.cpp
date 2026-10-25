@@ -135,13 +135,22 @@ static int storage_without_audio(core_app::MusicAnalysisDialog& dialog,const QTe
     if(!ready(dialog) || table->model()->data(table->model()->index(50,5)).toString()!="1")return failure(56,__LINE__);
     tracks->item(0)->setCheckState(Qt::Checked);return ready(dialog)?0:failure(57,__LINE__);
 }
+static int initial_scan_controls(core_app::MusicAnalysisDialog& dialog,QApplication& app){
+    auto* run=dialog.findChild<QPushButton*>("musicRun");auto* size=dialog.findChild<QComboBox*>("musicFftSize");
+    auto* resampling=dialog.findChild<QComboBox*>("musicResamplingMode");
+    if(!run->isEnabled() || resampling->currentIndex()!=0 || size->findText("16384")<0 || run->palette().color(QPalette::Button)!=app.palette().color(QPalette::Button))return failure(1,__LINE__);
+    resampling->setCurrentIndex(1);
+    if(!dialog.findChild<QLabel*>("musicFrontendSummary")->text().contains("0.40") || !dialog.findChild<QComboBox*>("musicSampleRate")->isVisible())return failure(6,__LINE__);
+    resampling->setCurrentIndex(0);
+    if(dialog.findChild<QLabel*>("musicFrontendSummary")->text().contains("0.40") || dialog.findChild<QComboBox*>("musicSampleRate")->isVisible())return failure(7,__LINE__);
+    return 0;
+}
 static int theme_dialog(QApplication& app,const QTemporaryDir& directory,const QString& base,const char* theme) {
     ui::Theme::instance().set(theme);auto services=analysis_services();unsigned scans=0;
     services.scan_files=[&](const auto& paths,const auto& options,const auto& cancel,const auto& progress){++scans;return desktop_analysis::offline::scan_music_files(paths,options,cancel,progress);};
     core_app::MusicAnalysisDialog dialog({}, {},std::move(services));dialog.resize(1600,900);dialog.show();app.processEvents();
     auto* run=dialog.findChild<QPushButton*>("musicRun");auto* size=dialog.findChild<QComboBox*>("musicFftSize");
-    auto* resampling=dialog.findChild<QComboBox*>("musicResamplingMode");
-    if(!run->isEnabled() || resampling->currentIndex()!=0 || size->findText("16384")<0 || run->palette().color(QPalette::Button)!=app.palette().color(QPalette::Button))return failure(1,__LINE__);
+    if(const auto code=initial_scan_controls(dialog,app))return code;
     size->setCurrentText("512");dialog.findChild<QComboBox*>("musicCadenceMode")->setCurrentIndex(0);dialog.findChild<QSpinBox*>("musicHop")->setValue(128);
     const auto first=directory.filePath(QString("first-%1.wav").arg(theme)),second=directory.filePath(QString("second-%1.wav").arg(theme));
     if(!QFile::copy(base,first) || !QFile::copy(base,second))return failure(2,__LINE__);

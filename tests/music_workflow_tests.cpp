@@ -10,14 +10,17 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QListWidget>
 #include <QPushButton>
 #include <QLabel>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QThread>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -71,6 +74,36 @@ void cache_and_representation() {
     options.aggregation=PeakAggregation::UpperPercentile;auto percentile=analyze_frequency_curves(corpus,options,limited);
     check(percentile.error.empty() && percentile.measurements!=limited->measurements,"aggregation changes rebuild only derived statistics");
     check(corpus->tracks.front().rms_bands.empty(),"curve job does not copy RMS archive data");
+}
+double log_oracle(double hz){
+    const auto x=2*(hz-100)/23900-1;
+    return -3+.2*x+.15*x*x+.3*x*x*x;
+}
+FrequencyMeasurements density_measurements(bool clustered){
+    FrequencyMeasurements data;data.edge_hz=100;
+    for(double hz=0;hz<=24000;hz+=100)data.hz.push_back(hz);
+    if(clustered)for(double hz=5001;hz<6000;hz+=1)data.hz.push_back(hz);
+    std::sort(data.hz.begin(),data.hz.end());data.hz.erase(std::unique(data.hz.begin(),data.hz.end()),data.hz.end());
+    for(const auto hz:data.hz){data.maxima.push_back(std::exp(log_oracle(hz)));data.mean_amplitude.push_back(data.maxima.back()/4);data.contributors.push_back(1);}
+    return data;
+}
+void fit_density_invariance(){
+    const auto calibration=measurements().compatibility;FrequencyCurveOptions options;options.polynomial_degree=2;
+    for(const auto method:{CurveApproximation::Polynomial,CurveApproximation::PiecewiseSmooth}){
+        options.approximation=method;FrequencyProfile uniform,clustered;std::string error;
+        check(fit_frequency_measurements(calibration,density_measurements(false),options,uniform,error),error.c_str());
+        check(fit_frequency_measurements(calibration,density_measurements(true),options,clustered,error),error.c_str());
+        check(std::abs(uniform.curve->fit_rmse_db-clustered.curve->fit_rmse_db)<.002,"error metric is independent of a dense frequency cluster");
+        for(double hz=137;hz<23900;hz+=173){
+            const auto a=frequency_curve_amplitude(uniform,hz),b=frequency_curve_amplitude(clustered,hz);
+            check(std::abs(20*std::log10(a/b))<.005,"dense sampling does not bias the approximation between source points");
+            const auto x=2*(hz-100)/23900-1;
+            const auto expected=method==CurveApproximation::Polynomial?-3+.38*x+.15*x*x:log_oracle(hz);
+            check(std::abs(20/std::log(10.)*(std::log(b)-expected))<.02,"fit agrees with an independent analytic oracle");
+        }
+        if(method==CurveApproximation::Polynomial)
+            check(std::abs(uniform.curve->fit_rmse_db-20/std::log(10.)*.12/std::sqrt(7.))<.001,"physical-Hz polynomial RMS matches its analytic integral");
+    }
 }
 void portable_function_storage(const QString& directory) {
     ProfileDocument raw;raw.profile=measurements();QString error;
@@ -146,13 +179,34 @@ void stale_fit_is_discarded(const QString& directory) {
     ProfileDocument saved;check(load_profile(path,saved,error),qPrintable(error));
     check(saved.profile.curve->options.aggregation==PeakAggregation::GlobalMaximum && saved.profile.training.max_gain==2,"old worker cannot publish stale settings");
 }
+void readable_track_list(core_app::MusicAnalysisDialog& dialog){
+    auto* tracks=dialog.findChild<QListWidget*>("musicResultFiles");
+    check(tracks->item(0)->data(Qt::UserRole).toString().contains("32768") && tracks->item(0)->data(Qt::UserRole).toString().contains("1.0 s"),"track list exposes native rates and duration while retaining source identity");
+    auto* workspace=dialog.findChild<QSplitter*>("musicWorkspace");const auto sizes=workspace->sizes();
+    workspace->setSizes({650,500,300});
+    QApplication::processEvents();
+    check(tracks->visualItemRect(tracks->item(0)).height()>=3*tracks->fontMetrics().height(),"track details occupy separate readable lines instead of a clipped horizontal row");
+    workspace->setSizes(sizes);QApplication::processEvents();
+    const auto* failed=tracks->item(tracks->count()-1);
+    check(tracks->count()==4 && !(failed->flags()&Qt::ItemIsEnabled) && failed->toolTip().contains("missing.wav"),"failed files remain visible as diagnostics and cannot enter the corpus");
+}
+void localized_result_status(core_app::MusicAnalysisDialog& dialog){
+    dialog.findChild<QPushButton*>("musicNewScan")->click();dialog.findChild<QPushButton*>("musicShowResults")->click();
+    ui::Language::instance().set("ru");ui::Language::instance().set("en");
+    check(dialog.findChild<QLabel*>("musicStatus")->text()==ui::text("Showing completed scan results"),"the current result status changes language along with the workspace");
+}
 void automatic_ui(const QString& directory) {
     ProfileDocument raw;raw.profile=measurements();QString error;const auto scan=directory+"/ui.brscan";
+    raw.preserved["analysis_run"]=QJsonObject{{"requested_count",4},{"processed_count",3},{"failed_count",1},{"errors",QJsonArray{"missing.wav: cannot open"}}};
     check(save_music_scan(scan,raw,error),qPrintable(error));
     AnalysisServices services;services.load_scan=load_music_scan;services.save=save_profile;services.save_scan=save_music_scan;
     unsigned preview_reads=0;services.preview=[&](const auto&,const auto&,const auto&){++preview_reads;return PreviewResult{};};
     core_app::MusicAnalysisDialog dialog({}, {},std::move(services));dialog.resize(1600,900);dialog.show();
     check(dialog.load_scan_from(scan,error) && wait_ready(dialog),"loaded scan automatically builds curve");
+    auto* storage=dialog.findChild<QLabel*>("musicStorageInfo");
+    check(storage->isVisible() && storage->text().contains("ui.brscan") && storage->toolTip().contains("Blosc2/Zstd5"),"actual saved-file information is available without archive settings");
+    readable_track_list(dialog);
+    localized_result_status(dialog);
     auto* aggregation=dialog.findChild<QComboBox*>("musicAggregation");aggregation->setCurrentIndex(1);aggregation->setCurrentIndex(2);aggregation->setCurrentIndex(0);
     check(wait_ready(dialog),"latest interactive settings complete automatically");
     const auto output=directory+"/ui.brprofile";check(dialog.save_profile_to(output,error),qPrintable(error));
@@ -184,6 +238,17 @@ bool wait_target_summary(core_app::MusicAnalysisDialog& dialog,const QString& te
     }
     return false;
 }
+void cached_selection(core_app::MusicAnalysisDialog& dialog,const unsigned& fits){
+    auto* choice=dialog.findChild<QComboBox*>("musicApproximation");
+    for(const auto method:{0,1}){
+        choice->setCurrentIndex(method);
+        check(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && fits==1,"selecting a cached approximation is immediate and launches no worker");
+    }
+}
+void retained_application(core_app::MusicAnalysisDialog& dialog,const QLabel& application_state){
+    dialog.findChild<QPushButton*>("musicNewScan")->click();dialog.findChild<QPushButton*>("musicShowResults")->click();
+    check(application_state.text().contains("Profile applied"),"opening new scan settings preserves the application state of unchanged results");
+}
 void target_grid_updates(){
     ProfileDocument raw;raw.profile=measurements();AnalysisServices services;
     services.load_scan=[raw](const QString&,ProfileDocument& out,QString&){out=raw;return true;};
@@ -200,12 +265,19 @@ void target_grid_updates(){
         applied=compiled.gains;return true;
     },std::move(services));QString error;
     check(dialog.load_scan_from("snapshot",error) && wait_ready(dialog),"target grid scenario loads measurements");
+    cached_selection(dialog,fits);
     auto* choice=dialog.findChild<QComboBox*>("musicProfileTarget");choice->setCurrentIndex(1);
     targets[1].options.compatibility.sample_rate=44100;targets[1].options.compatibility.fft_size=2048;
     check(wait_target_summary(dialog,"44100") && choice->currentIndex()==1,"grid watcher refreshes the selected target without switching routes");
     targets[1].options.compatibility.sample_rate=48000;targets[1].options.compatibility.fft_size=8192;
     dialog.findChild<QPushButton*>("musicApplyProfile")->click();
     check(applied.size()==4097 && fits==1,"Apply reads current graph geometry immediately and uses the same function without refitting");
+    auto* application_state=dialog.findChild<QLabel*>("musicApplicationState");
+    check(application_state->text().contains("Profile applied"),"successful application is visible on the application card");
+    retained_application(dialog,*application_state);
+    targets[1].options.compatibility.sample_rate=32768;
+    check(wait_target_summary(dialog,"32768") && application_state->text().contains("Apply again"),"graph grid changes explicitly require applying the profile again");
+    check(!dialog.findChild<QLabel*>("musicStatus")->text().contains("Profile applied to the scheme"),"stale application success is removed after a grid change");
     targets.pop_back();
     check(wait_target_summary(dialog,"No declared") && choice->currentIndex()==-1,"a removed selected route cannot silently select another route");
     check(!dialog.findChild<QPushButton*>("musicApplyProfile")->isEnabled(),"removed route disables application");
@@ -214,7 +286,7 @@ void target_grid_updates(){
 int main(int argc,char** argv) {
     QApplication app(argc,argv);ui::Language::instance().set("en");QTemporaryDir directory;
     try{
-        native_axis_and_coverage();cache_and_representation();portable_function_storage(directory.path());malformed_axes_are_atomic();legacy_function_semantics();
+        native_axis_and_coverage();cache_and_representation();fit_density_invariance();portable_function_storage(directory.path());malformed_axes_are_atomic();legacy_function_semantics();
         automatic_ui(directory.path());stale_fit_is_discarded(directory.path());target_grid_updates();
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     std::cout<<"music_workflow_tests PASS\n";

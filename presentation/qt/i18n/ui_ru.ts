@@ -2,6 +2,18 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Trusted band: 0–0.40 × min(source Fs, %1 Hz), evaluated per track.</source><translation>Достоверная полоса: 0–0,40 × min(исходная Fs, %1 Гц), определяется для каждого трека.</translation></message>
+    <message><source>Scanned</source><translation>Просканировано</translation></message>
+    <message><source>%1 · %2 s
+%3 → %4 Hz</source><translation>%1 · %2 с
+%3 → %4 Гц</translation></message>
+    <message><source>Source Fs → analysis Fs, Hz</source><translation>Исходная Fs → Fs анализа, Гц</translation></message>
+    <message><source>File: %1 · %2</source><translation>Файл: %1 · %2</translation></message>
+    <message><source>JSON document</source><translation>Документ JSON</translation></message>
+    <message><source>ZIP Store · Blosc2/Zstd5 · shuffle</source><translation>ZIP Store · Blosc2/Zstd5 · shuffle</translation></message>
+    <message><source>Profile applied to current graph</source><translation>Профиль применён к текущей схеме</translation></message>
+    <message><source>Profile or graph grid changed. Apply again.</source><translation>Профиль или сетка схемы изменились. Примените профиль заново.</translation></message>
+    <message><source>Profile has not been applied.</source><translation>Профиль ещё не применён.</translation></message>
     <message><source>Preview correction</source><translation>Коррекция предпросмотра</translation></message>
     <message><source>Quiet frames only</source><translation>Только тихие кадры</translation></message>
     <message><source>Select channel</source><translation>Выбрать канал</translation></message>

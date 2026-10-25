@@ -43,6 +43,9 @@
 #include <QAbstractItemModel>
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
+#include <QLocale>
+#include <QJsonArray>
 #include <thread>
 #include <algorithm>
 #include <chrono>
@@ -53,13 +56,30 @@
 namespace core_app {
 using namespace desktop_analysis::offline;
 namespace {
+constexpr auto track_diagnostic_role=Qt::UserRole+1;
 class TrackNameDelegate final:public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
     QString displayText(const QVariant& value,const QLocale&)const override {
         return QFileInfo(value.toString()).fileName();
     }
+protected:
+    void initStyleOption(QStyleOptionViewItem* option,const QModelIndex& index)const override {
+        QStyledItemDelegate::initStyleOption(option,index);
+        const auto details=index.data(Qt::UserRole).toString();
+        if(!details.isEmpty())option->text+="\n"+details;
+        const auto diagnostic=index.data(track_diagnostic_role).toString();
+        if(!diagnostic.isEmpty())option->text=ui::text("Analysis failed")+"\n"+diagnostic;
+        option->text.replace(QLatin1Char('\n'),QChar(QChar::LineSeparator));
+        option->features|=QStyleOptionViewItem::WrapText;
+    }
 };
+QString track_summary(const dsp_kernels::CompositionStatistics& track,double fallback){
+    const auto rate=dsp_kernels::measurement_rate(track,fallback);
+    return ui::text("%1 · %2 s\n%3 → %4 Hz")
+        .arg(ui::text(track.active_frames?"Scanned":"Digital silence"))
+        .arg(double(track.samples)/rate,0,'f',1).arg(track.source_sample_rate?track.source_sample_rate:rate).arg(rate);
+}
 bool same_target_route(const FrequencyProfileTarget& a,const FrequencyProfileTarget& b){
     return a.coefficients==b.coefficients && a.arithmetic==b.arithmetic && a.projection==b.projection &&
         a.route.graph_id==b.route.graph_id && a.route.frame_source==b.route.frame_source &&
@@ -139,7 +159,11 @@ struct MusicAnalysisDialog::State {
     QSpinBox *degree=nullptr,*segments=nullptr;
     QDoubleSpinBox* percentile=nullptr;
     QPushButton *build_curve=nullptr,*save_scan=nullptr,*load_scan=nullptr,*curve_step=nullptr,*apply_step=nullptr;
-    QLabel *fit_quality=nullptr,*application_summary=nullptr;
+    QLabel *fit_quality=nullptr,*application_summary=nullptr,*application_state=nullptr,*storage_info=nullptr;
+    QString storage_path;
+    bool ever_applied=false;
+    std::function<QString()> status_translation;
+    QString status_rendered;
     bool curve_ready=false;
     bool restoring_controls=false;
     std::shared_ptr<const CurveCorpus> corpus;
@@ -296,6 +320,7 @@ struct MusicAnalysisDialog::State {
         const auto frontend=options().compatibility;
         const auto channel=frontend.channel_policy==dsp_kernels::ChannelPolicy::Mean?ui::text("Mean channels"):ui::text("Selected channel %1").arg(frontend.channel_index);
         frontend_status->setText(fir->isChecked()?ui::text("Declared frontend: %1; %2 (quality %3)").arg(channel,ui::text(presentation::resampler_caption(frontend.resampler_mode))).arg(frontend.resampler_quality):ui::text("%1; native sample rate per track, no PCM resampling").arg(channel));
+        if(fir->isChecked())frontend_status->setText(frontend_status->text()+"\n"+ui::text("Trusted band: 0–0.40 × min(source Fs, %1 Hz), evaluated per track.").arg(frontend.sample_rate));
     }
     void show_track_mean(const QString& path){
         track_mean->values.clear();track_peak->values.clear();
@@ -357,6 +382,16 @@ struct MusicAnalysisDialog::State {
         training.max_gain=maximum->value();
     }
     void set_busy(bool busy){if(busy)profile_load_diagnostic.reset();set_mode(busy?Mode::Scanning:has_profile?Mode::Results:Mode::Setup);}
+    void set_status_message(const char* source,QStringList arguments={}){
+        status_translation=[key=QByteArray(source),arguments=std::move(arguments)]{
+            auto message=ui::text(key.constData());for(const auto& argument:arguments)message=message.arg(argument);return message;
+        };
+        render_status_message();
+    }
+    void render_status_message(){status_rendered=status_translation();status->setText(status_rendered);}
+    void refresh_status_language(){
+        if(status_translation && status->text()==status_rendered)render_status_message();
+    }
     void refresh() {
         refresh_result_files();refresh_scan_summary();refresh_curves();update_preview();refresh_statistics();refresh_frequency_statistics();refresh_result_summary();
     }
@@ -371,7 +406,17 @@ struct MusicAnalysisDialog::State {
         for(const auto& track:document.profile.compositions){
             auto* item=new QListWidgetItem(QString::fromStdString(track.source),result_files);
             item->setFlags(item->flags()|Qt::ItemIsUserCheckable);item->setCheckState(checks.value(item->text(),Qt::Checked));
-            item->setToolTip(item->text()+"\n"+ui::text("Include track in corpus calculation"));
+            item->setData(Qt::UserRole,track_summary(track,document.profile.compatibility.sample_rate));
+            item->setToolTip(item->text()+"\n"+ui::text("Source Fs → analysis Fs, Hz")+"\n"+ui::text("Include track in corpus calculation"));
+        }
+        fill_failed_files();
+    }
+    void fill_failed_files(){
+        const auto errors=document.preserved.value("analysis_run").toObject().value("errors").toArray();
+        for(qsizetype i=0;i<std::min(qsizetype{4096},errors.size());++i){
+            const auto message=errors[i].toString().left(8192);if(message.isEmpty())continue;
+            auto* item=new QListWidgetItem(message,result_files);item->setFlags(Qt::NoItemFlags);
+            item->setData(track_diagnostic_role,message);item->setToolTip(message);
         }
     }
     void refresh_scan_summary(){
@@ -504,8 +549,8 @@ struct MusicAnalysisDialog::State {
         preview_rows->setValue(resolution.value("time_cells").toInt(256));preview_bands->setValue(resolution.value("frequency_cells").toInt(256));
     }
     void show_loaded_status(){
-        if(document.profile.curve && document.profile.compositions.empty()){status->setText(ui::text("Ready profile loaded. Load a scan to change curve settings."));return;}
-        if(!can_save_scan()){status->setText(ui::text("Legacy profile has incomplete track measurements; apply it on its original grid or scan music again."));return;}
+        if(document.profile.curve && document.profile.compositions.empty()){set_status_message("Ready profile loaded. Load a scan to change curve settings.");return;}
+        if(!can_save_scan()){set_status_message("Legacy profile has incomplete track measurements; apply it on its original grid or scan music again.");return;}
         const bool saved_previews=std::any_of(document.previews.begin(),document.previews.end(),[](const auto& item){return item.rows>0;});
         status->setText(saved_previews?ui::text("Profile loaded"):ui::text("Profile loaded without saved spectrograms. A new scan is required to collect them."));
     }
@@ -516,6 +561,7 @@ struct MusicAnalysisDialog::State {
         restore_scan_options();restore_quiet_level();
         restore_preview_resolution();update_file_count();refresh();set_busy(false);show_loaded_status();
         restore_curve_options();
+        show_storage_info(path);
     }
     void discard_curve_result(){
         ++curve_revision;curve_pending=false;curve_analysis.reset();corpus.reset();curve_debounce->stop();
@@ -542,10 +588,9 @@ struct MusicAnalysisDialog::State {
     }
     void append(QStringList paths){for(const auto& path:paths)if(files->findItems(path,Qt::MatchExactly).empty()&&files->count()<4096)files->addItem(path);}
     void start() {
-        applied_status=false;
         if(future.valid() || mode!=Mode::Setup)return;stop_preview();auto paths=scan_paths();
-        if(paths.empty()){status->setText(ui::text("Select audio files first"));return;}
-        if(!services.scan_files&&!services.analyze_files){status->setText(ui::text("Analysis service unavailable"));return;}
+        if(paths.empty()){set_status_message("Select audio files first");return;}
+        if(!services.scan_files&&!services.analyze_files){set_status_message("Analysis service unavailable");return;}
         ++curve_revision;curve_pending=false;curve_debounce->stop();
         prepare_scan_progress(paths.size());launch_scan(std::move(paths));
     }
@@ -556,7 +601,7 @@ struct MusicAnalysisDialog::State {
         return paths;
     }
     void prepare_scan_progress(qsizetype count){
-        cancelled->store(false);completed->store(0);progress->setRange(0,int(count));progress->setValue(0);set_busy(true);status->setText(ui::text("Analyzing audio files"));
+        cancelled->store(false);completed->store(0);progress->setRange(0,int(count));progress->setValue(0);set_busy(true);set_status_message("Analyzing audio files");
     }
     void launch_scan(QStringList paths){
         const auto opt=options();auto stop=cancelled;auto done=completed;
@@ -697,10 +742,15 @@ struct MusicAnalysisDialog::State {
     }
     void build_analysis_workspace(){
         auto* workspace=new QSplitter(owner);workspace->setObjectName("musicWorkspace");layout->addWidget(workspace,1);
-        result_files=new QListWidget(owner);result_files->setObjectName("musicResultFiles");result_files->setTextElideMode(Qt::ElideMiddle);result_files->setItemDelegate(new TrackNameDelegate(result_files));workspace->addWidget(result_files);
+        build_result_list(workspace);
         auto* charts=new QWidget(owner);workspace->addWidget(charts);auto* chart_layout=new QVBoxLayout(charts);
         build_analysis_controls(workspace);
         layout=chart_layout;workspace->setStretchFactor(1,1);workspace->setSizes({210,850,300});
+    }
+    void build_result_list(QSplitter* workspace){
+        result_files=new QListWidget(owner);result_files->setObjectName("musicResultFiles");result_files->setTextElideMode(Qt::ElideMiddle);
+        result_files->setWordWrap(true);result_files->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        result_files->setItemDelegate(new TrackNameDelegate(result_files));workspace->addWidget(result_files);
     }
     void build_analysis_controls(QSplitter* workspace){
         auto* scroll=new QScrollArea(owner);scroll->setWidgetResizable(true);scroll->setMinimumWidth(280);workspace->addWidget(scroll);
@@ -758,16 +808,16 @@ struct MusicAnalysisDialog::State {
 
     }
     void configure_new_scan(){
-        stop_preview();profile_load_diagnostic.reset();applied_status=false;set_mode(State::Mode::Setup);
+        stop_preview();profile_load_diagnostic.reset();set_mode(State::Mode::Setup);
         progress->setRange(0,std::max(1,files->count()));progress->setValue(0);
-        status->setText(ui::text("Configure a new scan; previous results remain available."));
+        set_status_message("Configure a new scan; previous results remain available.");
     }
     void build_preview_events(){
         auto& s=*this;auto* dialog=owner;
     QObject::connect(s.preview_timer,&QTimer::timeout,dialog,[&s]{s.poll_preview();});
     QObject::connect(s.result_files,&QListWidget::currentTextChanged,dialog,[&s](const QString& path){s.request_preview(path);});
     QObject::connect(s.new_scan,&QPushButton::clicked,dialog,[&s]{s.configure_new_scan();});
-    QObject::connect(s.show_results,&QPushButton::clicked,dialog,[&s]{s.profile_load_diagnostic.reset();s.set_mode(State::Mode::Results);s.status->setText(ui::text("Showing completed scan results"));});
+    QObject::connect(s.show_results,&QPushButton::clicked,dialog,[&s]{s.profile_load_diagnostic.reset();s.set_mode(State::Mode::Results);s.set_status_message("Showing completed scan results");});
     QObject::connect(s.preview_rows,&QSpinBox::valueChanged,dialog,[&s]{s.update_memory();});QObject::connect(s.preview_bands,&QSpinBox::valueChanged,dialog,[&s]{s.update_memory();});
 
     }
@@ -799,7 +849,7 @@ struct MusicAnalysisDialog::State {
         auto& s=*this;auto* dialog=owner;
     QObject::connect(s.run,&QPushButton::clicked,dialog,[&s]{s.start();});QObject::connect(s.cancel,&QPushButton::clicked,dialog,[&s]{s.cancelled->store(true);});QObject::connect(s.timer,&QTimer::timeout,dialog,[&s]{s.poll();});QObject::connect(s.normalized,&QCheckBox::toggled,dialog,[&s]{s.update_preview();});
     QObject::connect(s.size,&QComboBox::currentTextChanged,dialog,[&s](const QString& text){s.update_fft_geometry(text);});
-    QObject::connect(s.target,&QComboBox::currentIndexChanged,dialog,[&s]{if(s.mode!=State::Mode::Results)s.select_target();else s.set_mode(s.mode);});QObject::connect(s.reload_targets,&QPushButton::clicked,dialog,[&s]{s.refresh_targets();});
+    QObject::connect(s.target,&QComboBox::currentIndexChanged,dialog,[&s]{s.mark_application_dirty();if(s.mode!=State::Mode::Results)s.select_target();else s.set_mode(s.mode);});QObject::connect(s.reload_targets,&QPushButton::clicked,dialog,[&s]{s.refresh_targets();});
 
     }
     void build_apply_events(){
@@ -810,8 +860,10 @@ struct MusicAnalysisDialog::State {
         if(at<0 || std::size_t(at)>=targets.size() || !apply_profile || !apply->isEnabled() || !curve_ready)return;
         QString error;profile_load_diagnostic.reset();
         applied_status=apply_profile(targets[std::size_t(at)],active_profile(),error);
+        if(applied_status)ever_applied=true;
+        update_application_state();
         if(!applied_status)status->setText(error.isEmpty()?ui::text("Profile could not be applied"):error);
-        else status->setText(ui::text("Profile applied to the scheme; save the project to keep the coefficients"));
+        else set_status_message("Profile applied to the scheme; save the project to keep the coefficients");
     }
     void choose_profile_save(){
         const auto suggested=profile_path.endsWith(".json",Qt::CaseInsensitive)?profile_path.chopped(5)+".brprofile":profile_path;
@@ -821,7 +873,7 @@ struct MusicAnalysisDialog::State {
         if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;
         const auto path=chooser.selectedFiles().value(0);QString error;
         if(!owner->save_profile_to(path,error))status->setText(error);
-        else {profile_path=path;status->setText(ui::text("Profile saved: %1").arg(path));}
+        else {profile_path=path;set_status_message("Profile saved: %1",{path});}
     }
     void choose_profile_load(){
         const auto path=QFileDialog::getOpenFileName(owner,ui::text("Load frequency profile"),{},ui::text("Barelief profiles (*.brprofile *.json)"));
@@ -857,6 +909,8 @@ struct MusicAnalysisDialog::State {
         s.update_file_count();s.set_mode(s.mode);s.progress->setFormat(ui::text("%v / %m files (%p%)"));
         refresh_control_labels();
         refresh_plot_labels();refresh_spectrum_labels();refresh_table_labels();refresh();
+        show_storage_info(storage_path);
+        refresh_status_language();
     }
     void refresh_control_labels(){
         auto& s=*this;
@@ -864,7 +918,7 @@ struct MusicAnalysisDialog::State {
         s.gain_mode->setItemText(0,ui::text("Mean-spectrum equalization"));
         s.gain_mode->setItemText(1,ui::text("Per-bin peak normalization to 1.0"));
         for(std::size_t i=0;i<s.targets.size();++i)s.target->setItemText(int(i),frequency_profile_target_caption(s.targets[i]));
-        if(s.applied_status)s.status->setText(ui::text("Profile applied to the scheme; save the project to keep the coefficients"));
+        if(s.applied_status)s.set_status_message("Profile applied to the scheme; save the project to keep the coefficients");
         if(s.profile_load_diagnostic)s.status->setText(profile_read_issue_text(*s.profile_load_diagnostic));
         refresh_curve_labels();
         refresh_scan_selector_labels();
@@ -889,11 +943,25 @@ struct MusicAnalysisDialog::State {
         statistics->setHorizontalHeaderLabels({ui::text("Composition"),"RMS",ui::text("Nonzero windows"),ui::text("Total windows"),ui::text("Duration, s"),ui::text("Digital silence"),ui::text("Quiet windows"),ui::text("Quiet RMS"),ui::text("Minimum frame RMS"),ui::text("Source Fs, Hz"),ui::text("Analysis Fs, Hz"),ui::text("Measured upper frequency, Hz")});
     }
     void build_stage_navigation(){
-        auto* storage=new QHBoxLayout;header->removeWidget(load);header->removeWidget(save);storage->addWidget(load);storage->addWidget(save);
-        save_scan=button("Save scan","musicSaveScan",owner);load_scan=button("Load scan","musicLoadScan",owner);storage->addWidget(load_scan);storage->addWidget(save_scan);storage->addStretch();root->insertLayout(1,storage);
+        build_storage_actions();
         curve_step=button("Analysis and normalization","musicCurveStep",owner);apply_step=button("Application to graph","musicApplyStep",owner);curve_step->hide();apply_step->hide();
         QObject::connect(curve_step,&QPushButton::clicked,owner,[this]{set_mode(Mode::Results);});
         QObject::connect(apply_step,&QPushButton::clicked,owner,[this]{set_mode(Mode::Application);refresh_targets();});
+    }
+    void build_storage_actions(){
+        auto* storage=new QHBoxLayout;header->removeWidget(load);header->removeWidget(save);storage->addWidget(load);storage->addWidget(save);
+        save_scan=button("Save scan","musicSaveScan",owner);load_scan=button("Load scan","musicLoadScan",owner);storage->addWidget(load_scan);storage->addWidget(save_scan);storage->addStretch();root->insertLayout(1,storage);
+        build_storage_info();
+    }
+    void build_storage_info(){
+        storage_info=new QLabel(owner);storage_info->setObjectName("musicStorageInfo");storage_info->setWordWrap(true);
+        storage_info->hide();root->insertWidget(2,storage_info);
+    }
+    void show_storage_info(const QString& path){
+        storage_path=path;const QFileInfo info(path);
+        if(!info.isFile()){storage_info->hide();return;}
+        storage_info->setText(ui::text("File: %1 · %2").arg(info.fileName(),QLocale().formattedDataSize(info.size())));
+        storage_info->setToolTip(info.absoluteFilePath()+"\n"+ui::text(info.suffix().compare("json",Qt::CaseInsensitive)==0?"JSON document":"ZIP Store · Blosc2/Zstd5 · shuffle"));storage_info->show();
     }
     void build_curve_controls(){
         curve_form=new QFormLayout;auto* methods=new QFormLayout;fit_form=methods;methods->setRowWrapPolicy(QFormLayout::WrapLongRows);curve_form->setRowWrapPolicy(QFormLayout::WrapLongRows);layout->addLayout(methods);layout->addLayout(curve_form);
@@ -949,9 +1017,17 @@ struct MusicAnalysisDialog::State {
         quiet_level->setCurrentIndex(quiet_level->findData(db));update_quiet_statistics();
     }
     void build_curve_invalidation_events(){
-        for(auto* box:{aggregation,approximation,gain_mode})QObject::connect(box,&QComboBox::currentIndexChanged,owner,[this]{invalidate_curve();});
+        for(auto* box:{aggregation,gain_mode})QObject::connect(box,&QComboBox::currentIndexChanged,owner,[this]{invalidate_curve();});
+        QObject::connect(approximation,&QComboBox::currentIndexChanged,owner,[this]{select_approximation();});
         for(auto* box:{maximum,minimum,floor,percentile})QObject::connect(box,&QDoubleSpinBox::valueChanged,owner,[this]{invalidate_curve();});
         for(auto* box:{degree,segments,smooth})QObject::connect(box,&QSpinBox::valueChanged,owner,[this]{invalidate_curve();});
+    }
+    void select_approximation(){
+        if(restoring_controls)return;
+        if(!curve_ready || !curve_analysis || curve_future.valid() || curve_pending){invalidate_curve();return;}
+        auto result=*curve_analysis;result.settings.approximation=dsp_kernels::CurveApproximation(approximation->currentIndex());
+        if(!result.selected().curve){invalidate_curve();return;}
+        ++curve_revision;mark_application_dirty();install_curve(std::move(result));
     }
     dsp_kernels::FrequencyCurveOptions curve_options() const {
         dsp_kernels::FrequencyCurveOptions o;o.aggregation=dsp_kernels::PeakAggregation(aggregation->currentIndex());o.approximation=dsp_kernels::CurveApproximation(approximation->currentIndex());
@@ -959,7 +1035,7 @@ struct MusicAnalysisDialog::State {
     }
     void invalidate_curve(){
         if(restoring_controls || !corpus)return;
-        ++curve_revision;curve_pending=true;curve_ready=false;applied_status=false;
+        ++curve_revision;curve_pending=true;curve_ready=false;mark_application_dirty();
         fit_quality->setText(ui::text("Updating curve…"));curve_debounce->start();set_mode(mode);
     }
     void rebuild_curve(){
@@ -985,7 +1061,7 @@ struct MusicAnalysisDialog::State {
         preserve_scanner_settings(result.polynomial);preserve_scanner_settings(result.piecewise);
         curve_analysis=std::make_shared<CurveAnalysis>(std::move(result));curve_ready=true;applied_status=false;
         compare_fits(curve_analysis->settings);refresh_curves();refresh_frequency_statistics();update_preview();set_mode(mode==Mode::Setup?Mode::Setup:Mode::Results);
-        status->setText(ui::text("Curve ready; measurements were reused without reading audio"));
+        set_status_message("Curve ready; measurements were reused without reading audio");
     }
     void reset_curve_source(){
         ++curve_revision;curve_analysis.reset();curve_ready=false;
@@ -1031,6 +1107,7 @@ struct MusicAnalysisDialog::State {
     }
     void update_application_summary(){
         if(!application_summary)return;
+        update_application_state();
         const auto at=target->currentIndex();
         if(at<0 || std::size_t(at)>=targets.size()){show_target_refusal(ui::text("No declared coefficient route is available in the current graph"));return;}
         const auto& frontend=targets[std::size_t(at)].options.compatibility;
@@ -1041,10 +1118,21 @@ struct MusicAnalysisDialog::State {
         application_summary->setText(active_profile().curve?ui::text("Coefficients will be evaluated at %1 Hz, FFT %2. Frequencies outside the measured range keep gain 1. Audio files are not read.").arg(frontend.sample_rate).arg(frontend.fft_size):ui::text("Legacy profile requires an exact frontend match"));
         update_target_gain_plot(frontend);
     }
+    void update_application_state(){
+        if(!application_state)return;
+        application_state->setVisible(has_profile);
+        application_state->setText(ui::text(applied_status?"Profile applied to current graph":ever_applied?
+            "Profile or graph grid changed. Apply again.":"Profile has not been applied."));
+    }
+    void mark_application_dirty(){
+        if(applied_status)set_status_message("Profile or graph grid changed. Apply again.");
+        applied_status=false;update_application_state();
+    }
     void show_target_refusal(const QString& reason){
         target_gains->values.clear();target_gains->update();application_summary->setText(reason);
     }
     void build_application_preview(QVBoxLayout* apply_layout){
+        application_state=new QLabel(owner);application_state->setObjectName("musicApplicationState");application_state->setWordWrap(true);apply_layout->addWidget(application_state);
         application_summary=new QLabel(owner);application_summary->setObjectName("musicApplicationSummary");application_summary->setWordWrap(true);apply_layout->addWidget(application_summary);
         apply_layout->addWidget(label("Coefficients for current graph",owner));target_gains=new Curve(owner);target_gains->setObjectName("musicTargetCurve");target_gains->gain=true;apply_layout->addWidget(target_gains,1);
     }
@@ -1060,7 +1148,7 @@ struct MusicAnalysisDialog::State {
         if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;
         const auto path=chooser.selectedFiles().value(0);
         QString error;const auto ok=saving?owner->save_scan_to(path,error):owner->load_scan_from(path,error);
-        status->setText(ok?ui::text(saving?"Scan saved":"Scan loaded"):error);
+        if(ok)set_status_message(saving?"Scan saved":"Scan loaded");else status->setText(error);
     }
     QWidget* build_measurement_plots(){
         auto* page=new QWidget(owner);auto* charts=new QVBoxLayout(page);build_display_controls(charts);
@@ -1111,7 +1199,7 @@ struct MusicAnalysisDialog::State {
                 a.options.compatibility.projection!=b.options.compatibility.projection ||
                 a.options.compatibility.window!=b.options.compatibility.window;
         }
-        if(changed){applied_status=false;refresh_targets();}
+        if(changed){mark_application_dirty();refresh_targets();}
     }
     void build_track_spectra(){
         auto* page=new QWidget(owner);auto* content=new QVBoxLayout(page);auto* plots=new QHBoxLayout;
@@ -1174,7 +1262,9 @@ bool MusicAnalysisDialog::save_profile_to(const QString& path,QString& error) co
     if(!state_->services.save){error=ui::text("Analysis service unavailable");return false;}
     ProfileDocument ready;ready.profile=state_->active_profile();ready.preserved=state_->document.preserved;
     ready.archive_preserved=state_->document.archive_preserved;
-    return state_->services.save(path,ready,error);
+    const auto saved=state_->services.save(path,ready,error);
+    if(saved)state_->show_storage_info(path);
+    return saved;
 }
 namespace {
 QString profile_read_issue_text(const ProfileReadDiagnostic& diagnostic) {
@@ -1220,14 +1310,16 @@ bool MusicAnalysisDialog::load_profile_from(const QString& path,QString& error) 
 bool MusicAnalysisDialog::save_scan_to(const QString& path,QString& error) const {
     if(!state_->has_profile || state_->future.valid()){error=ui::text("No completed scan to save");return false;}
     if(!state_->services.save_scan){error=ui::text("Analysis service unavailable");return false;}
-    return state_->services.save_scan(path,state_->document,error);
+    const auto saved=state_->services.save_scan(path,state_->document,error);
+    if(saved)state_->show_storage_info(path);
+    return saved;
 }
 bool MusicAnalysisDialog::load_scan_from(const QString& path,QString& error) {
     auto& s=*state_;
     if(s.future.valid()){error=ui::text("Analysis is running");return false;}
     if(!s.services.load_scan){error=ui::text("Analysis service unavailable");return false;}
     ProfileDocument candidate;if(!s.services.load_scan(path,candidate,error))return false;
-    s.install_scan(std::move(candidate));return true;
+    s.install_scan(std::move(candidate));s.show_storage_info(path);return true;
 }
 void show_music_analysis(QWidget* parent){auto* dialog=new MusicAnalysisDialog(parent);dialog->setAttribute(Qt::WA_DeleteOnClose);dialog->show();}
 }
