@@ -1,4 +1,5 @@
-#include "profile_json.h"
+#include "profile_codec.h"
+#include "music_archive.h"
 #include <QFile>
 #include <QJsonDocument>
 #include <QSaveFile>
@@ -46,41 +47,59 @@ bool complete_measurements(const ProfileDocument& document) {
              (t.quiet_mean_spectrum.size()==bins && t.quiet_peak_spectrum.size()==bins));
     });
 }
+bool valid_scan_header(const QJsonObject& object,QString& error) {
+    const auto version=object.value("version").toDouble();
+    if(object.value("kind").toString()!="barelief.music_scan" || (version!=1 && version!=2)){error="Unsupported scan document";return false;}
+    return true;
+}
 bool parse_scan(const QByteArray& bytes,QJsonObject& object,QString& error) {
     if(bytes.size()>limit){error="Scan exceeds 1 GiB limit";return false;}
     QJsonParseError parse;object=QJsonDocument::fromJson(bytes,&parse).object();
-    const auto version=object.value("version").toDouble();
-    if(parse.error!=QJsonParseError::NoError || object.value("kind").toString()!="barelief.music_scan" || (version!=1 && version!=2)){error="Unsupported or malformed scan document";return false;}
+    if(parse.error!=QJsonParseError::NoError){error="Malformed scan JSON";return false;}
+    return valid_scan_header(object,error);
+}
+bool save_scan_json(const QString& path,const ProfileDocument& input,QString& error) {
+    const auto bytes=encode_music_scan(input);ProfileDocument check;
+    if(!decode_music_scan(bytes,check,error))return false;
+    QSaveFile file(path);file.setDirectWriteFallback(false);
+    if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()){error=file.errorString();return false;}
     return true;
 }
 }
-QByteArray encode_music_scan(const ProfileDocument& input) {
-    auto object=QJsonDocument::fromJson(encode_profile(measurement_document(input))).object();
+QJsonObject encode_scan_object(const ProfileDocument& input,ProfileArraySink* sink) {
+    auto object=encode_profile_object(input,sink,false);
     const auto grouped=std::ranges::all_of(input.profile.compositions,[](const auto& t){return t.rms_statistics_version==1;});
     object["scanner"]=scanner_settings(object.value("training").toObject(),object.value("scanner").toObject(),grouped);
     for(const auto* key:{"training","gains","mean_spectrum","peak_spectrum","frequency_presence","function"})object.remove(key);
     object["kind"]="barelief.music_scan";object["version"]=2;
-    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+    return object;
 }
-bool decode_music_scan(const QByteArray& bytes,ProfileDocument& output,QString& error) {
-    QJsonObject object;if(!parse_scan(bytes,object,error))return false;
+QByteArray encode_music_scan(const ProfileDocument& input){return QJsonDocument(encode_scan_object(input)).toJson(QJsonDocument::Compact);}
+bool decode_scan_object(QJsonObject object,ProfileDocument& output,QString& error,ProfileArraySource* source) {
+    if(!valid_scan_header(object,error))return false;
     const auto original=object;
     if(!restore_codec_fields(object,error))return false;
     ProfileDocument candidate;
-    if(!decode_profile(QJsonDocument(object).toJson(QJsonDocument::Compact),candidate,error))return false;
+    ProfileReadDiagnostic diagnostic;
+    if(!decode_profile_object(object,candidate,error,diagnostic,source))return false;
     if(!complete_measurements(candidate)){error="Scan requires complete per-track measurements";return false;}
     candidate.preserved=original;output=std::move(candidate);return true;
 }
+bool decode_music_scan(const QByteArray& bytes,ProfileDocument& output,QString& error) {
+    QJsonObject object;if(!parse_scan(bytes,object,error))return false;
+    return decode_scan_object(object,output,error);
+}
 bool save_music_scan(const QString& path,const ProfileDocument& input,QString& error) {
-    const auto bytes=encode_music_scan(input);ProfileDocument check;
-    if(!decode_music_scan(bytes,check,error))return false;
-    QSaveFile file(path);
-    if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()){error=file.errorString();return false;}
-    return true;
+    ProfileDocument frontend;frontend.profile.compatibility=input.profile.compatibility;frontend.profile.training=input.profile.training;
+    if(!valid_profile_storage(measurement_document(frontend),error) || !valid_scan_measurements(input,error))return false;
+    if(!complete_measurements(input)){error="Scan requires complete per-track measurements";return false;}
+    if(path.endsWith(".json",Qt::CaseInsensitive))return save_scan_json(path,input,error);
+    return save_music_archive(path,input,MusicArchiveKind::Scan,error);
 }
 bool load_music_scan(const QString& path,ProfileDocument& output,QString& error) {
     QFile file(path);
     if(!file.open(QIODevice::ReadOnly)){error=file.errorString();return false;}
+    if(file.peek(4)==QByteArray("PK\x03\x04",4)){ProfileReadDiagnostic diagnostic;return load_music_archive(path,MusicArchiveKind::Scan,output,error,diagnostic);}
     if(file.size()>limit){error="Scan exceeds 1 GiB limit";return false;}
     const auto bytes=file.read(limit+1);
     if(file.error()!=QFileDevice::NoError){error=file.errorString();return false;}

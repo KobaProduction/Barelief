@@ -68,9 +68,9 @@ static int save_profile_dialog(core_app::MusicAnalysisDialog& dialog,const QTemp
                 const auto topLevels=QApplication::topLevelWidgets();for(auto* widget:topLevels){drive_save_dialog(widget,confirmed,submitted,deadline,uiPath);
                 }
             });driver.start(10);dialog.findChild<QPushButton*>("musicSaveProfile")->click();driver.stop();
-            if(!QFile::exists(uiPath+".json") || (attempt==1&&!confirmed)) {
+            if(!QFile::exists(uiPath+".brprofile") || (attempt==1&&!confirmed)) {
                 std::cerr<<"Save profile dialog attempt="<<attempt<<" submitted="<<submitted<<" confirmed="<<confirmed
-                         <<" expected="<<qPrintable(uiPath+".json")<<" suffix_file="<<QFile::exists(uiPath+".json")
+                         <<" expected="<<qPrintable(uiPath+".brprofile")<<" suffix_file="<<QFile::exists(uiPath+".brprofile")
                          <<" bare_file="<<QFile::exists(uiPath)<<'\n';
                 return failure(19,__LINE__);
             }
@@ -186,7 +186,7 @@ static int theme_dialog(QApplication& app,const QTemporaryDir& directory,const Q
 }
 static bool scanner_settings_roundtrip(core_app::MusicAnalysisDialog& dialog,const QString& path,QString& error) {
     desktop_analysis::offline::ProfileDocument saved;
-    const auto scan=path+".scan.json";
+    const auto scan=path+".brscan";
     if(!dialog.save_scan_to(scan,error) || !dialog.save_profile_to(path,error) || !desktop_analysis::offline::load_profile(path,saved,error))return false;
     if(!saved.profile.compositions.empty() || !dialog.load_profile_from(path,error) || dialog.findChild<QPushButton*>("musicBuildCurve")->isEnabled())return false;
     if(!dialog.load_scan_from(scan,error))return false;
@@ -205,7 +205,7 @@ static int rebuild_variants(core_app::MusicAnalysisDialog& dialog,const std::ato
 }
 static int reuse_scan(QApplication& app,const QTemporaryDir& directory,const QString& source) {
     using namespace desktop_analysis::offline;
-    const auto audio=directory.filePath("reuse.wav"),scan=directory.filePath("measurements.json");
+    const auto audio=directory.filePath("reuse.wav"),scan=directory.filePath("measurements.brscan");
     if(!QFile::copy(source,audio))return failure(40,__LINE__);
     auto services=analysis_services();std::atomic_int scans=0;
     services.scan_files=[&](const auto& paths,const auto& options,const auto& cancel,const auto& progress){++scans;return scan_music_files(paths,options,cancel,progress);};
@@ -217,7 +217,7 @@ static int reuse_scan(QApplication& app,const QTemporaryDir& directory,const QSt
     QString error;if(!dialog.save_scan_to(scan,error) || !QFile::remove(audio) || !dialog.load_scan_from(scan,error))return failure(41,__LINE__);
     dialog.findChild<QComboBox*>("musicQuietLevelDb")->setCurrentIndex(91);
     if(const auto result=rebuild_variants(dialog,scans))return result;
-    if(!scanner_settings_roundtrip(dialog,directory.filePath("reuse-profile.json"),error))return failure(45,__LINE__);
+    if(!scanner_settings_roundtrip(dialog,directory.filePath("reuse-profile.brprofile"),error))return failure(45,__LINE__);
     dialog.findChild<QSpinBox*>("musicPolynomialDegree")->setValue(3);
     if(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() || dialog.findChild<QPushButton*>("musicApplyStep")->isEnabled())return failure(43,__LINE__);
     dialog.findChild<QPushButton*>("musicBuildCurve")->click();dialog.findChild<QPushButton*>("musicApplyStep")->click();

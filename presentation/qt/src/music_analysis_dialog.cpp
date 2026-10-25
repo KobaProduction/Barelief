@@ -636,15 +636,17 @@ struct MusicAnalysisDialog::State {
 
     }
     void choose_profile_save(){
-        QFileDialog chooser(owner,ui::text("Save frequency profile"),profile_path,"JSON (*.json)");
-        chooser.setAcceptMode(QFileDialog::AcceptSave);chooser.setDefaultSuffix("json");
+        const auto suggested=profile_path.endsWith(".json",Qt::CaseInsensitive)?profile_path.chopped(5)+".brprofile":profile_path;
+        QFileDialog chooser(owner,ui::text("Save frequency profile"),suggested,ui::text("Barelief profile (*.brprofile)"));
+        chooser.setObjectName("musicProfileFileDialog");
+        chooser.setAcceptMode(QFileDialog::AcceptSave);chooser.setDefaultSuffix("brprofile");
         if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;
         const auto path=chooser.selectedFiles().value(0);QString error;
         if(!owner->save_profile_to(path,error))status->setText(error);
         else {profile_path=path;status->setText(ui::text("Profile saved: %1").arg(path));}
     }
     void choose_profile_load(){
-        const auto path=QFileDialog::getOpenFileName(owner,ui::text("Load frequency profile"),{},"JSON (*.json)");
+        const auto path=QFileDialog::getOpenFileName(owner,ui::text("Load frequency profile"),{},ui::text("Barelief profiles (*.brprofile *.json)"));
         if(path.isEmpty())return;
         QString error;if(!owner->load_profile_from(path,error))status->setText(error);
     }
@@ -841,8 +843,11 @@ struct MusicAnalysisDialog::State {
         target_gains->fs=frontend.sample_rate;target_gains->update();
     }
     void choose_scan_storage(bool saving){
-        const auto path=saving?QFileDialog::getSaveFileName(owner,ui::text("Save scan"),{},"JSON (*.json)"):QFileDialog::getOpenFileName(owner,ui::text("Load scan"),{},"JSON (*.json)");
-        if(path.isEmpty())return;
+        QFileDialog chooser(owner,ui::text(saving?"Save scan":"Load scan"),{},ui::text(saving?"Barelief scan (*.brscan)":"Barelief scans (*.brscan *.json)"));
+        chooser.setObjectName("musicScanFileDialog");chooser.setAcceptMode(saving?QFileDialog::AcceptSave:QFileDialog::AcceptOpen);
+        if(saving)chooser.setDefaultSuffix("brscan");
+        if(chooser.exec()!=QDialog::Accepted || chooser.selectedFiles().isEmpty())return;
+        const auto path=chooser.selectedFiles().value(0);
         QString error;const auto ok=saving?owner->save_scan_to(path,error):owner->load_scan_from(path,error);
         status->setText(ok?ui::text(saving?"Scan saved":"Scan loaded; build a curve to continue"):error);
     }

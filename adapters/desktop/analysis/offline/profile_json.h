@@ -20,6 +20,7 @@ struct ProfileDocument {
     QJsonObject preserved;
     // Optional bounded full-track images, aligned with profile.compositions.
     std::vector<SpectrogramPreview> previews;
+    QJsonObject archive_preserved;
 };
 enum class ProfileReadIssue { None, Encoding, FftSize, SampleRate, Layout, Representation, Window,
     CoherentGain, PowerGain, Frontend, Resampler, GainCount, GainValue };

@@ -2,6 +2,10 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Barelief profile (*.brprofile)</source><translation>Профиль Barelief (*.brprofile)</translation></message>
+    <message><source>Barelief profiles (*.brprofile *.json)</source><translation>Профили Barelief (*.brprofile *.json)</translation></message>
+    <message><source>Barelief scan (*.brscan)</source><translation>Сканирование Barelief (*.brscan)</translation></message>
+    <message><source>Barelief scans (*.brscan *.json)</source><translation>Сканирования Barelief (*.brscan *.json)</translation></message>
     <message><source>Saved quiet RMS threshold: %1 (fixed)</source><translation>Сохранённый порог RMS: %1 (фиксированный)</translation></message>
     <message><source>RMS group spectra before compression/Base64: up to %1 MiB. Only occupied groups are stored in the scan; ready profiles omit them.</source><translation>Спектры групп RMS до сжатия/Base64: до %1 МиБ. Сканирование хранит только занятые группы; готовый профиль их не содержит.</translation></message>
     <message><source>Completed scan: curve grid %1 Hz; FFT %2; %3; %4; %5; %6 tracks</source><translation>Сканирование завершено: сетка кривой %1 Гц; FFT %2; %3; %4; %5; %6 треков</translation></message>
