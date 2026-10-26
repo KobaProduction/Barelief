@@ -351,6 +351,10 @@ namespace signal_contracts {
             result.shape.axes={source.shape.axes[1],Axis::None};
             result.shape.extents={source.shape.extents[1],ExtentBounds{}};
             result.coordinates={source.coordinates[1],AxisCoordinates{}};
+            if(source.shape.rank==Rank::Vector){
+                result.shape={Rank::Scalar,{Axis::None,Axis::None},{ExtentBounds{},ExtentBounds{}}};
+                result.coordinates={};
+            }
             return result;
         }
         void publish_history_row(const NumericView& source,std::size_t row,NumericView& output,
@@ -434,7 +438,8 @@ static Status validate_history_row_source(const NumericView& view,std::size_t ro
 }
 
     Status history_row(const NumericView& v,std::size_t row,NumericView& out,NumericContract& c,std::span<PlaneLayout> planes) noexcept {
-    if(!v.contract || v.contract->shape.rank!=Rank::Matrix || row>=v.actual[0] ||
+    if(!v.contract || (v.contract->shape.rank!=Rank::Matrix &&
+       (v.contract->shape.rank!=Rank::Vector || v.contract->semantic!=Semantic::History)) || row>=v.actual[0] ||
        planes.size()<v.planes.size())return Status::invalid_argument;
     if(!history_outputs_disjoint(v,out,c,planes))return Status::invalid_argument;
     const auto status=validate_history_row_source(v,row);

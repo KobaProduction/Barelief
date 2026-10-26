@@ -147,7 +147,7 @@ static void supported_cadences(CoreApplication& app,QComboBox* guiMode,QSpinBox*
               guiMode->findData(-1)>=0 && guiMode->findData(30)<0 && guiMode->findData(100)<0 &&
               guiMode->findData(170)<0 && guiMode->findData(165)>0,
               "Cadence choices must contain System, Maximum, Custom and only distinct supported screen modes");
-        check(guiMode->currentData().toInt()==0 && guiMode->currentText()==ui::text("Maximum") && guiMode->findText(ui::text("Screen refresh rate"))<0 && guiRate->value()==165 && renderTimer->interval()==qMax(1,1000/165),"Default cadence must select Maximum and use the actual OS screen rate");
+        check(guiMode->currentData().toInt()==-2 && guiMode->findText(ui::text("Screen refresh rate"))<0 && guiRate->value()==165 && renderTimer->interval()==qMax(1,1000/165),"Default cadence must follow System and use the actual OS screen rate");
         check(guiRate->suffix().isEmpty() && guiRate->prefix().isEmpty() && guiRate->text()=="165","Editable cadence must contain only a number");
         int removedCadenceRows=0;QObject cadenceWitness;
         const auto cadenceRowsConnection=QObject::connect(guiMode->model(),&QAbstractItemModel::rowsRemoved,&cadenceWitness,[&removedCadenceRows]{++removedCadenceRows;});

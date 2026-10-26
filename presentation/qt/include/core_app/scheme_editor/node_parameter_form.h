@@ -12,9 +12,13 @@ class QAction;
 class QLineEdit;
 namespace ui {class FieldRow;class CollapsibleSection;}
 class NodeParameterForm final : public QWidget {
+    Q_OBJECT
   public:
     using CompositeFactory=std::function<QWidget*(NodeParameterModel*,QWidget*)>;
     NodeParameterForm(NodeParameterModel *, bool inline_form, QWidget *parent = nullptr, bool contracts_only = false,CompositeFactory composite_factory={});
+
+  signals:
+    void layoutChanged();
 
   private:
     QPointer<NodeParameterModel> _model;

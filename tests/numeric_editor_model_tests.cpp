@@ -1486,17 +1486,24 @@ void exact_fields(){
     check(std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.scaling.gain.exponent2==-17,"dyadic exponent edit preserves signed value");
 
 }
+void refresh_form_fields(){
+    for(int pass=0;pass<3;++pass)QCoreApplication::processEvents();
+    inlineText=body->findChild<QLineEdit*>("numericNan");
+    text=form->findChild<QLineEdit*>("numericNan");
+    show=form->findChild<QAction*>("showOnBlock_numericNan");
+}
 void inline_fields(){
     std::fprintf(stderr,"editor converter before inline\n");
     body=model->embeddedWidget();inlineText=body->findChild<QLineEdit*>("numericNan");
 
     show=form->findChild<QAction*>("showOnBlock_numericNan");
 
-    check(show && inlineText && !show->isChecked() && !inlineText->isVisibleTo(body),"compact default hides editable parameters");
+    check(show && !show->isChecked() && (!inlineText || !inlineText->isVisibleTo(body)),"compact default hides editable parameters");
 
     desktop::encode_numeric_graph(graph.numeric_graph(),processingBefore);
 
     if(show)show->setChecked(true);
+    refresh_form_fields();
 
     check(inlineText && inlineText->isVisibleTo(body) && inlineText->text()=="18446744073709551615","selected inline parameter displays exact inspector value");
 
@@ -1504,21 +1511,24 @@ void inline_fields(){
 
     check(processingBefore==processingAfter,"presentation flags leak into processing serialization");
 
-    undo.undo();check(show && !show->isChecked() && !inlineText->isVisibleTo(body),"visibility undo synchronizes inspector and block");
+    undo.undo();refresh_form_fields();check(show && !show->isChecked() && inlineText && !inlineText->isVisibleTo(body),"visibility undo synchronizes inspector and block");
 
-    undo.redo();check(show && show->isChecked() && inlineText->isVisibleTo(body),"visibility redo restores block field");
+    undo.redo();refresh_form_fields();check(show && show->isChecked() && inlineText && inlineText->isVisibleTo(body),"visibility redo restores block field");
 
     if(inlineText){inlineText->setText("9007199254740993");inlineText->setModified(true);QMetaObject::invokeMethod(inlineText,"editingFinished",Qt::DirectConnection);}
+    refresh_form_fields();
 
     check(text && text->text()=="9007199254740993" && std::get<std::uint64_t>(value())==9007199254740993ULL,"inline exact edit synchronizes inspector");
 
-    undo.undo();check(inlineText->text()=="18446744073709551615" && text->text()==inlineText->text(),"parameter undo synchronizes both forms");
+    undo.undo();refresh_form_fields();check(inlineText && text && inlineText->text()=="18446744073709551615" && text->text()==inlineText->text(),"parameter undo synchronizes both forms");
 
     if(show)show->setChecked(false);
+    refresh_form_fields();
 
-    check(!inlineText->isVisibleTo(body) && std::get<std::uint64_t>(value())==std::numeric_limits<std::uint64_t>::max(),"hiding inline preserves parameter value");
+    check(inlineText && !inlineText->isVisibleTo(body) && std::get<std::uint64_t>(value())==std::numeric_limits<std::uint64_t>::max(),"hiding inline preserves parameter value");
 
     if(show)show->setChecked(true);
+    refresh_form_fields();
 
 }
 void presentation(){

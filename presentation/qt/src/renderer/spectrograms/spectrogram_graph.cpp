@@ -1392,7 +1392,7 @@ QQuickFramebufferObject::Renderer* SurfaceQuickItem::createRenderer() const{retu
 
 SpectrogramGraph::SpectrogramGraph(QWidget *parent) : QWidget(parent) {
     ui::quick::configure();
-    _surface_settings=SurfaceSettings::defaults();
+    _surface_settings=SurfaceSettings::normalized(SurfaceSettings::defaults());
     _camera_timer.setInterval(17);
     _camera_timer.setTimerType(Qt::PreciseTimer);
     connect(&_camera_timer, &QTimer::timeout, this, [this] { _move_camera(); });
@@ -1608,7 +1608,7 @@ void SpectrogramGraph::set_y_range(float minimum,float maximum) {
     auto options=surface_settings();options["y_range_mode"]="manual";options["y_min"]=minimum;options["y_max"]=maximum;
     set_surface_settings(options);
 }
-QJsonObject SpectrogramGraph::surface_settings() const { return SurfaceSettings::normalized(_surface_settings); }
+QJsonObject SpectrogramGraph::surface_settings() const { return _surface_settings; }
 void SpectrogramGraph::apply_surface_options(){
     if(!m_spectrogram_graph)return;
     const auto previous=m_spectrogram_graph->options;const bool changed=previous!=_surface_settings;
@@ -2006,10 +2006,11 @@ QVariantList SpectrogramGraph::horizontal_automatic_ranges(const QJsonArray& ran
     return result;
 }
 QVariantMap SpectrogramGraph::quick_state() const {
-    auto result=presentation_state().toVariantMap();
+    const auto presentation=presentation_state();
+    auto result=presentation.toVariantMap();
     result["surface"]=surface_settings().toVariantMap();result["pause"]=_pause;
     result["panelRatio"]=_side_panel_ratio;
-    const auto ranges=presentation_state().value("ranges").toArray();
+    const auto ranges=presentation.value("ranges").toArray();
     result["horizontalAutomatic"]=horizontal_automatic_ranges(ranges);
     const auto range=y_range();result["yMinimum"]=range.first;result["yMaximum"]=range.second;
     result["timeTitle"]=ui::text(_axis_metadata.time_title_key.toUtf8().constData());

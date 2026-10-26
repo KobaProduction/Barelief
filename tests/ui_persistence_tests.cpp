@@ -194,9 +194,10 @@ void preferences_checks(gui_fixture::App &fixture) {
     const auto path = project_path(fixture);
     const auto before = read_project(path, "read baseline project", "read applied baseline");
     edit_unsaved_draft(fixture, before.graph);
-    fixture.application->_ctx.file_configs.ui.autosave_enabled = true;
+    // Explicit preferences persistence must not flush the dirty project.
+    fixture.application->_ctx.file_configs.ui.autosave_enabled = false;
     theme_selector(fixture)->setCurrentIndex(1);
-    // Measure the synchronous preferences delta without running draft debounce.
+    emit fixture.window->settings_change_requested({ui::SettingsChangeScope::ApplicationPreferences,true});
     const auto after = read_project(path, "read preferences-only commit", "read applied after preferences edit");
     check_unchanged_graph(fixture, before, after);
     check(fixture.application->_ctx.editor_draft_modified, "preferences save does not clear project dirty state");

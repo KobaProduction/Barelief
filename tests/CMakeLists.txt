@@ -173,7 +173,8 @@ if(BUILD_GUI)
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     add_desktop_check(numeric_graph_action_tests desktop_gui_composition)
     target_link_libraries(numeric_graph_action_tests PRIVATE Qt6::Test)
-    set_tests_properties(numeric_graph_action_tests PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 20
+    # Opens every catalog view; measured completion is39s on the reference host.
+    set_tests_properties(numeric_graph_action_tests PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 60
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     add_desktop_check(numeric_editor_gesture_tests desktop_gui_composition)
     target_link_libraries(numeric_editor_gesture_tests PRIVATE Qt6::Test)
@@ -214,9 +215,10 @@ if(BUILD_GUI)
     add_test(NAME numeric_application_matrix_bypass COMMAND numeric_application_tests --matrix-center-ring-bypass)
     set_tests_properties(numeric_application_matrix_bypass PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
-    set_tests_properties(numeric_application_temporal_fft_44100 PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 45
+    # Full lifecycle includes window/center edits, silence, source switching and SaveAs.
+    set_tests_properties(numeric_application_temporal_fft_44100 PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 120
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
-    set_tests_properties(numeric_application_temporal_fft PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 45
+    set_tests_properties(numeric_application_temporal_fft PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 120
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     set_tests_properties(numeric_application_current_examples PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 60
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")

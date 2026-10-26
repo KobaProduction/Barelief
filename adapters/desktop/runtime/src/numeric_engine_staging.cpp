@@ -383,14 +383,18 @@ Status DeliveryHub::stage_wled(const domain::ConfiguredProcessingNode& node,
     staged.wled_outputs_candidate.emplace(node.id,std::move(output));
     return Status::ok;
 }
-void DeliveryHub::commit(Staged&& staged) {
-    contexts.swap(staged.contexts_candidate);history_ordinals.swap(staged.history_ordinals_candidate);
-    latest_matrices.swap(staged.latest_matrices_candidate);delivery_gaps.swap(staged.delivery_gaps_candidate);wled_outputs.swap(staged.wled_outputs_candidate);
+void DeliveryHub::update_wled_timer() {
     if(!wled_outputs.empty()) {
         auto cadence=std::uint32_t(60000);for(const auto& [node,output]:wled_outputs)cadence=std::min(cadence,output.policy.cadence_ms());
         wled_timer.setInterval(int(cadence));wled_timer.start();
     } else wled_timer.stop();
+}
+void DeliveryHub::commit(Staged&& staged) {
+    contexts.swap(staged.contexts_candidate);history_ordinals.swap(staged.history_ordinals_candidate);
+    latest_matrices.swap(staged.latest_matrices_candidate);delivery_gaps.swap(staged.delivery_gaps_candidate);wled_outputs.swap(staged.wled_outputs_candidate);
+    update_wled_timer();
     ++delivery_generation;frames.clear();previews.clear();rows.clear();preview_rows.clear();
+    update_tap_budget();
 }
 void DeliveryHub::clear() {
     ++delivery_generation;preview_scheduled=false;preview_last_flush_ns=0;

@@ -199,5 +199,25 @@ void research_quantization_scales(){
         check(kernel.process(values,codes));check(codes[0]==0 && codes[1]==128 && codes[2]==255);
     }
 }
+void explicit_rhythm_rate_binding(){
+    auto requested=numeric_startup_graph();
+    const auto is_rate=[](const Edge& edge){return edge.from==332&&edge.to==1102&&edge.output_port==sample_rate_output&&edge.input_port==target_sample_rate_input;};
+    check(std::any_of(requested.edges.begin(),requested.edges.end(),is_rate));
+    for(auto& node:requested.nodes){
+        auto* parameters=std::get_if<TransformProcessingParameters>(&node.parameters);if(!parameters)continue;
+        for(auto& field:parameters->values){
+            if(node.id==332&&field.key=="output_rate")field.value=NumericLiteral{std::uint64_t{36000}};
+            if(node.id==1005&&field.key=="values")field.value=NumericArray{};
+            if(node.id==1005&&field.key=="frontend_declared")field.value=false;
+        }
+    }
+    NumericProcessingGraph evaluated,executable;
+    check(resolve_numeric_parameter_bindings(requested,limits,evaluated,executable,332));
+    const auto analyzer=std::find_if(evaluated.nodes.begin(),evaluated.nodes.end(),[](const auto& node){return node.id==1102;});
+    check(analyzer!=evaluated.nodes.end()&&research_parameter(*analyzer,"sample_rate")==36000);
+    std::erase_if(requested.edges,is_rate);
+    // Without the explicit wire, a stale manual Fs is rejected rather than inferred.
+    check(!resolve_numeric_parameter_bindings(requested,limits,evaluated,executable,332));
 }
-int main(){ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();research_quantization_scales();}
+}
+int main(){explicit_rhythm_rate_binding();ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();research_quantization_scales();}

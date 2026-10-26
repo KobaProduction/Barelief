@@ -24,6 +24,21 @@ ctest --preset release
 
 Для Debug или SDK заменить имя preset. SDK устанавливается командой
 `cmake --install cmake-build-sdk` в `cmake-build-sdk/install`.
+
+Для MinGW на Windows установленный LLD можно использовать вместо GNU ld,
+сохраняя компилятор, ABI и проверки. Это локальная настройка CMake cache;
+пути машины не добавляются в общий preset. Если `ld.lld.exe` доступен в PATH:
+
+```powershell
+$lldBin = (Split-Path (Get-Command ld.lld.exe).Source).Replace('\', '/')
+$linkFlags = "-fuse-ld=lld -B`"$lldBin/`""
+cmake --preset debug "-DCMAKE_EXE_LINKER_FLAGS_DEBUG=$linkFlags"
+cmake --build --preset debug
+```
+
+Для возврата к GNU ld задайте `-DCMAKE_EXE_LINKER_FLAGS_DEBUG=`.
+Замена линковщика требует повторной проверки собранных программ.
+
 Обычные `release`, `debug` и `sdk` CTest presets выбирают короткие
 `quick` unit/component/core/node проверки. Все тесты остаются
 зарегистрированными; более широкие прогоны выбираются явно:

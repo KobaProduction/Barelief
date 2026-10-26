@@ -668,6 +668,11 @@ Status NumericPreparation::prepare_reduction(NodeFrame& frame){
 }
 Status NumericPreparation::prepare_gather(NodeFrame& frame){
     auto& n=frame.n;
+    if(n.operation==ProcessingOperation::Sink){
+        const auto* input=std::get_if<NumericContract>(&n.numeric_input);
+        if(input&&input->shape.rank==Rank::Vector&&input->semantic==Semantic::History)
+            frame.state.row_planes.resize(input->channel_order.size());
+    }
     if(!((n.operation==ProcessingOperation::History && std::get<NumericContract>(n.numeric_outputs[0]).shape.rank==Rank::Matrix) || n.operation==ProcessingOperation::Reduce ||
            ((n.operation==ProcessingOperation::Source || n.operation==ProcessingOperation::Converter) && std::holds_alternative<NumericContract>(n.numeric_outputs[0]) && std::get<NumericContract>(n.numeric_outputs[0]).shape.rank==Rank::Matrix) ||
            (n.operation==ProcessingOperation::Sink && std::holds_alternative<NumericContract>(n.numeric_input) && std::get<NumericContract>(n.numeric_input).shape.rank==Rank::Matrix)))return Status::ok;

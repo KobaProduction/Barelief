@@ -106,6 +106,22 @@ void DeliveryHub::record_transport_drop(ContextIterator found) {
     ++transport_frame_drops;
     if(auto gap=delivery_gaps.find(found->first);gap!=delivery_gaps.end())gap->second=true;
 }
+void DeliveryHub::update_tap_budget() {
+    std::size_t demanded=0;
+    for(const auto& [endpoint,context]:contexts)if(tap_selected(endpoint))++demanded;
+    tap_queue_depth=std::max(std::size_t{1},std::size_t{128}/std::max(std::size_t{1},demanded));
+}
+std::size_t DeliveryHub::queued_tap_frames(const EndpointIdentity& endpoint) {
+    std::size_t matching=0;
+    const auto count=frames.size();
+    for(std::size_t index=0;index<count;++index){
+        auto queued=frames.pop();
+        if(!queued)continue;
+        if(queued->context && queued->context->endpoint==endpoint)++matching;
+        frames.push(std::move(*queued));
+    }
+    return matching;
+}
 void DeliveryHub::commit_tap_frame(ContextIterator found,LatestIterator cached,const dataflow_runtime::NumericPortFrameView& borrowed,DeliveredNumericFrame retained,Status status) {
     auto pending_gap=delivery_gaps.find(found->first);
     if(pending_gap!=delivery_gaps.end())pending_gap->second=status!=Status::ok;
@@ -115,7 +131,9 @@ void DeliveryHub::commit_tap_frame(ContextIterator found,LatestIterator cached,c
 }
 void DeliveryHub::queue_tap_frame(ContextIterator found,LatestIterator cached,const dataflow_runtime::NumericPortFrameView& borrowed) {
     auto pending_gap=delivery_gaps.find(found->first);
-    if(frames.size()==128){record_transport_drop(found);return;}
+    // Reserve bounded FIFO space for other demanded endpoints. Already admitted
+    // events retain their order; loss is marked on the next admitted event.
+    if(frames.size()==128 || queued_tap_frames(found->first)>=tap_queue_depth){record_transport_drop(found);return;}
     auto delivered_frame=borrowed.frame;
     delivered_frame.stamp.discontinuity|=(pending_gap!=delivery_gaps.end()&&pending_gap->second);
     DeliveredNumericFrame retained;

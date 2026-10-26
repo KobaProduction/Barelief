@@ -33,7 +33,7 @@ std::span<const ProcessingPort> data_outputs(const ConfiguredProcessingNode& nod
 }
 namespace {
 std::string_view spectral_parameter_key(std::string_view kind,PortId input) noexcept {
-    if((kind=="FrequencyNormalizer" || kind=="AmplitudePhase") && input==target_sample_rate_input)return "sample_rate";
+    if((kind=="FrequencyNormalizer" || kind=="AmplitudePhase" || kind=="RhythmAnalyzer") && input==target_sample_rate_input)return "sample_rate";
     if((kind=="FrequencyStep" || kind=="SpectrumAmplitude" || kind=="FrequencyNormalizer" || kind=="Fourier" || kind=="RealFourier" || kind=="RFFT" || kind=="SpectrumProjection") && input==window_size_input)return "fft_size";
     if((kind=="SpectrumPeak" || kind=="NoteSalience") && input==spectrum_first_bin_input)return "first_bin";
     if((kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind)) && input==frequency_step_input)return "bin_hz";
@@ -59,7 +59,7 @@ void plan_gain_inputs(std::string_view kind,ParameterPortPlan& plan) noexcept;
 void plan_parameter_inputs(std::string_view kind,ParameterPortPlan& plan) noexcept {
     if(kind=="Window" || kind=="PcmResampler")plan.inputs[plan.input_count++]=input_sample_rate_input;
     if(!numeric_parameter_key(kind,window_size_input).empty())plan.inputs[plan.input_count++]=window_size_input;
-    if(kind=="FrequencyNormalizer" || kind=="AmplitudePhase")plan.inputs[plan.input_count++]=target_sample_rate_input;
+    if(kind=="FrequencyNormalizer" || kind=="AmplitudePhase" || kind=="RhythmAnalyzer")plan.inputs[plan.input_count++]=target_sample_rate_input;
     if(kind=="SpectrumPeak" || kind=="NoteSalience")plan.inputs[plan.input_count++]=spectrum_first_bin_input;
     if(kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind))plan.inputs[plan.input_count++]=frequency_step_input;
     plan_gain_inputs(kind,plan);
@@ -329,14 +329,19 @@ bool derive_extract(ConfiguredProcessingNode& node,const NumericContract& input,
     return own(output,limits,node.outputs[0].contract);
 }
 
+bool derive_array_generator(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
+    if(array_generator_output_contract(node,input,node.outputs[0].contract)!=Status::ok)return false;
+    auto data=node.outputs[0].contract.view();auto& output=std::get<NumericContract>(data);
+    if(frequency_profile_coefficient_coordinates(node,output)!=Status::ok || !own(output,limits,node.outputs[0].contract))return false;
+    return attach_numeric_parameter_ports(node,limits)==Status::ok;
+}
 std::optional<bool> derive_numeric(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
     if(node.kind=="Converter")return derive_converter(node,input,limits);
     if(node.kind=="IndexExtract")return derive_extract(node,input,limits);
     if(node.kind=="ArrayConcat")return array_concat_output_contract(node,node.outputs[0].contract)==Status::ok;
     if(node.kind=="ArrayMultiply")return array_product_output_contract(node,node.outputs[0].contract)==Status::ok;
     if(node.kind!="ArrayFill" && node.kind!="WindowFunction")return {};
-    if(array_generator_output_contract(node,input,node.outputs[0].contract)!=Status::ok)return false;
-    return attach_numeric_parameter_ports(node,limits)==Status::ok;
+    return derive_array_generator(node,input,limits);
 }
 bool derive_fourier(ConfiguredProcessingNode& node,const NumericContract& input) {
     if(input.shape.extents[0].minimum!=input.shape.extents[0].maximum)return false;
@@ -786,7 +791,7 @@ ProcessingDiagnostic validate_bound_rate(const NodeBindings& target) {
 ProcessingDiagnostic refresh_bound_node(BindingContext& context,NodeBindings& target) {
     const auto& node=target.node;
     const auto valid=validate_bound_rate(target);if(!valid)return valid;
-    if(!target.update && node.kind!="ArrayMultiply" && node.kind!="ArrayConcat" && node.kind!="InputSelector")return {};
+    if(!target.update && node.kind!="ArrayFill" && node.kind!="ArrayMultiply" && node.kind!="ArrayConcat" && node.kind!="InputSelector")return {};
     const auto previous=node.outputs;
     if(!derive(target.node,context.limits))return {ProcessingError::UnsupportedCombination,node.id};
     for(std::size_t i=0;i<std::min(previous.size(),node.outputs.size());++i)target.update=target.update || !same_contract(previous[i].contract.view(),node.outputs[i].contract.view());

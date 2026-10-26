@@ -12,6 +12,8 @@ ProcessingDiagnostic frequency_normalizer_diagnostic(const ConfiguredProcessingN
     const signal_contracts::NumericContract&) noexcept;
 
 signal_contracts::Status validate_frequency_normalizer(const ConfiguredProcessingNode&,const signal_contracts::NumericContract&) noexcept;
+signal_contracts::Status frequency_profile_coefficient_coordinates(const ConfiguredProcessingNode&,
+    signal_contracts::NumericContract&) noexcept;
 // Canonical geometry of the PC music operations. Refusal preserves owner.
 // Composite [low][mid][high][notes], full/selected peak agreement, and notes.
 signal_contracts::Status musical_spectrogram_output_contracts(const ConfiguredProcessingNode&,

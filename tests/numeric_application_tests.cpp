@@ -1158,7 +1158,7 @@ static int scenario_verify_project(char** argv,const QString& path) {
 static int startup_menu_locale(auto& locale,QComboBox*& language,QAction*& demo,QMenu*& menu,QMenu*& display_menu){
 
             language->setCurrentIndex(locale);QCoreApplication::processEvents();
-            CHECK(demo->text()==(locale==0?QString::fromUtf8("Спектрограмма: генератор, loopback, микрофон"):QStringLiteral("Spectrogram: generator, loopback, microphone")));
+            CHECK(demo->text()==ui::text("Spectrogram and rhythm: Loopback"));
             CHECK(menu->title()==(locale==0?QString::fromUtf8("Пресеты"):QStringLiteral("Presets")));
             CHECK(display_menu->title()==(locale==0?QString::fromUtf8("Отображение"):QStringLiteral("Display")));
 
@@ -1301,7 +1301,8 @@ static bool inspect_shipped_example(auto& label,SchemeEditorWidget*& editor,Nume
             auto expected=numeric_startup_graph();
             if(QByteArray(label)=="stereo-sources")for(const auto& example:numeric_example_graphs())if(QByteArray(example.id)=="stereo-sources")expected=example.graph;
              const auto channels=QByteArray(label)=="stereo-sources"?2u:1u;
-             if(!desktop::resolve_numeric_source_format(expected,13,48000,channels,numeric_editor::limits(),&error)||!desktop::resolve_numeric_source_format(expected,14,48000,channels,numeric_editor::limits(),&error))return false;
+             for(const auto& source:graph.nodes)if(source.kind=="AudioSource" && source.id!=1)
+                 if(!desktop::resolve_numeric_source_format(expected,source.id,48000,channels,numeric_editor::limits(),&error))return false;
             if(graph.nodes.size()!=expected.nodes.size()||graph.edges.size()!=expected.edges.size()||!std::is_permutation(graph.configuration_bindings.begin(),graph.configuration_bindings.end(),expected.configuration_bindings.begin(),expected.configuration_bindings.end()))return false;
             QSet<QPair<int,int>> positions;for(const auto items_17=model->allNodeIds();auto id:items_17){const auto p=model->nodeData(id,QtNodes::NodeRole::Position).toPointF();positions.insert({qRound(p.x()),qRound(p.y())});}
             if(positions.size()!=int(graph.nodes.size())){std::fprintf(stderr,"%s overlapping startup positions: %d\n",label,int(positions.size()));return false;}
@@ -1430,6 +1431,7 @@ static int reject_isolated_low_reduction(AudioNodeModel* row) {
 }
 
 static int first_run_low_rows(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,MainWindow*& window,AudioNodeModel*& rowModel,AudioNodeModel*& noteModel,auto& rowNumber,auto& rowGeometry,auto& rowEdit) {
+        CHECK(rowEdit("low pass-through baseline",[&]{return edit_low_row_mode(model,rowModel,"pass_through",0);}));
 std::array<domain::OwnedProcessingContract,4> beforeLow;std::array<std::size_t,4> passSections{};
         CHECK(domain::musical_spectrogram_output_contracts(*rowModel->numeric_node(),std::get<signal_contracts::NumericContract>(rowModel->numeric_node()->inputs[0].contract.view()),beforeLow,&passSections)==signal_contracts::Status::ok);
         if(const int failure=reject_isolated_low_reduction(rowModel);failure)return failure;
@@ -1448,6 +1450,7 @@ static int first_run_row_edits(CoreApplication& app,NumericEditorGraphModel*& mo
         CHECK(rowEdit("first MIDI 60",[&]{return noteModel->parameter_model()->editLiteral("first_midi","60",0);},noteModel));
         CHECK(rowEdit("last MIDI 72",[&]{return noteModel->parameter_model()->editLiteral("last_midi","72",0);},noteModel));
         CHECK(rowEdit("high count 4",[&]{return rowModel->parameter_model()->editLiteral("high_count","4",0);}));
+        CHECK(rowEdit("mid count 16",[&]{return rowModel->parameter_model()->editLiteral("mid_count","16",0);}));
         CHECK(rowEdit("mid RMS",[&]{return rowModel->parameter_model()->edit("mid_reduction",2);}));
         CHECK(rowEdit("mid weighted, uniform default",[&]{return rowModel->parameter_model()->edit("mid_reduction",3);}));
         const auto* weights=rowModel->parameter_model()->field("weights");CHECK(weights && std::get<QString>(weights->read()).isEmpty());
@@ -1474,9 +1477,11 @@ using namespace signal_contracts;
             const auto history=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.id==7;});
             const auto view=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.id==8;});
             const auto joined=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.kind=="ArrayConcat";});
-            if(history==current->nodes.end() || view==current->nodes.end() || joined==current->nodes.end() || !same_contract(history->inputs[0].contract.view(),joined->outputs[0].contract.view()) || !same_contract(history->outputs[0].contract.view(),view->inputs[0].contract.view()))return false;
+            const auto quantizer=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.kind=="SpectralQuantize";});
+            if(history==current->nodes.end() || view==current->nodes.end() || joined==current->nodes.end() || quantizer==current->nodes.end())return false;
+            if(!same_contract(quantizer->inputs[0].contract.view(),joined->outputs[0].contract.view()) || !same_contract(history->inputs[0].contract.view(),quantizer->outputs[0].contract.view()) || !same_contract(history->outputs[0].contract.view(),view->inputs[0].contract.view()))return false;
             const auto matrix=std::get<NumericContract>(history->outputs[0].contract.view());
-            if(matrix.shape.extents[0].maximum!=400 || matrix.shape.extents[1].maximum!=total)return false;
+            if(matrix.shape.extents[0].maximum!=512 || matrix.shape.extents[1].maximum!=total || matrix.dtype!=DType::UInt8)return false;
 return musical_scalar_agreement(model,noteId,current,note);
 }
 
@@ -1523,6 +1528,12 @@ static bool edit_musical_row(CoreApplication& app,MainWindow*& window,auto& labe
         }
 
 static int first_run_musical(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,MainWindow*& window) {
+        // Variable feature counts are tested independently of the rhythm kernel's
+        // fixed64/96-band input contract. The shipped96-band route is checked above.
+        auto* history=model->delegateModel<AudioNodeModel>(7);auto* rhythm=model->delegateModel<AudioNodeModel>(1102);CHECK(history&&rhythm);
+        const auto before=app.presenter().client().snapshot().graph_revision;
+        CHECK(model->deleteConnection({7,history->port_index(QtNodes::PortType::Out,0),1102,rhythm->port_index(QtNodes::PortType::In,0)}));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>before;}));
         auto* rowModel=model->delegateModel<AudioNodeModel>(6);CHECK(rowModel && rowModel->numeric_node()->kind=="BroadbandRow");
         AudioNodeModel* noteModel=nullptr;for(const auto items_21=model->allNodeIds();const auto id:items_21)if(auto* candidate=model->delegateModel<AudioNodeModel>(id);candidate && candidate->numeric_node()->kind=="NoteSpectrum")noteModel=candidate;CHECK(noteModel);
         const auto noteId=noteModel->numeric_node()->id;
@@ -1552,8 +1563,8 @@ static int set_first_spectrum_text(domain::NumericProcessingGraph& graph,int id,
     return 0;
 }
 static int edit_first_spectrum_representation(CoreApplication& app,AudioNodeModel*& projection,int mode) {
-    static constexpr const char* representations[]{"magnitude","peak_amplitude","power","psd"};
-    CHECK(mode>=0&&mode<4);
+    static constexpr const char* representations[]{"magnitude","peak_amplitude","power","psd","rms_amplitude","bin_power","window_scaled_magnitude"};
+    CHECK(mode>=0&&mode<7);
     auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
     auto requested=model->numeric_graph();const auto id=projection->numeric_node()->id;
     const auto* value=representations[mode];
@@ -1597,10 +1608,10 @@ return 0;
 static int first_run_spectrum_controls(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,MainWindow*& window,auto& changedWindow) {
 const auto spectral=std::find_if(changedWindow->nodes.begin(),changedWindow->nodes.end(),[](const auto& n){return n.kind=="AmplitudePhase";});CHECK(spectral!=changedWindow->nodes.end());
         auto* projectionModel=model->delegateModel<AudioNodeModel>(spectral->id);CHECK(projectionModel);
-        const auto* representation=projectionModel->parameter_model()->field("representation");CHECK(representation && representation->primary && representation->options.size()==4);
-        const signal_contracts::Quantity quantities[]{signal_contracts::Quantity::SpectrumMagnitude,signal_contracts::Quantity::SpectrumPeakAmplitude,signal_contracts::Quantity::SpectrumPower,signal_contracts::Quantity::SpectrumPsd};
+        const auto* representation=projectionModel->parameter_model()->field("representation");CHECK(representation && representation->primary && representation->options.size()==7);
+        const signal_contracts::Quantity quantities[]{signal_contracts::Quantity::SpectrumWindowScaledMagnitude,signal_contracts::Quantity::SpectrumPeakAmplitude,signal_contracts::Quantity::SpectrumPower,signal_contracts::Quantity::SpectrumPsd,signal_contracts::Quantity::SpectrumRmsAmplitude,signal_contracts::Quantity::SpectrumBinPower,signal_contracts::Quantity::SpectrumWindowScaledMagnitude};
         if(const int failure=isolated_first_spectrum_draft(app,model,projectionModel);failure)return failure;
-        for(int mode=0;mode<4;++mode){ if(const int failure=validate_spectrum_representation(mode,app,projectionModel,quantities);failure)return failure; }
+        for(int mode=0;mode<7;++mode){ if(const int failure=validate_spectrum_representation(mode,app,projectionModel,quantities);failure)return failure; }
         const auto beforeRestoreAmplitude=app.presenter().client().snapshot().graph_revision;
         if(const int failure=edit_first_spectrum_representation(app,projectionModel,1);failure)return failure;
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>beforeRestoreAmplitude && !app.presenter().graph_request_pending();},5000));
@@ -1714,12 +1725,37 @@ static int first_run_rate(CoreApplication& app,auto& rate,GraphPanel*& frequency
             struct TapGuard{pipeline::NumericEngine& engine;std::uint64_t token;~TapGuard(){engine.unsubscribe_numeric_tap(token);}} guard{app.pipeline(),token};
             auto* rateEdit=resamplerModel->embeddedWidget()->findChild<QLineEdit*>("output_rate");CHECK(rateEdit);
             const auto revision=app.presenter().client().snapshot().graph_revision;
-            rateEdit->setText(QString::number(rate));rateEdit->setModified(true);QMetaObject::invokeMethod(rateEdit,"editingFinished",Qt::DirectConnection);
-            CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>revision && !app.presenter().graph_request_pending();},5000));
+            rateEdit->setText(QString::number(rate));rateEdit->setModified(true);CHECK(QMetaObject::invokeMethod(rateEdit,"editingFinished",Qt::DirectConnection));
+            const bool applied=wait_until([&]{return app.presenter().client().snapshot().graph_revision>revision && !app.presenter().graph_request_pending();},5000);
+            if(!applied){
+                auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());domain::NumericProcessingGraph graph;QString error;
+                if(model)model->export_numeric_graph(graph,&error);
+                std::fprintf(stderr,"first-run rate%u revision=%llu pending=%d status=%s field=%s export=%s\n",rate,(unsigned long long)app.presenter().client().snapshot().graph_revision,int(app.presenter().graph_request_pending()),qPrintable(app.presenter().apply_status()),qPrintable(resamplerModel->parameter_model()->editState("output_rate").error),qPrintable(error));
+                domain::NumericProcessingGraph evaluated,executable;
+                const auto diagnostic=domain::resolve_numeric_parameter_bindings(model->numeric_graph(),numeric_editor::limits(),evaluated,executable,332);
+                std::fprintf(stderr,"first-run route diagnostic error=%d node=%d port=%u reason=%d parameter=%.*s\n",int(diagnostic.error),int(diagnostic.node),unsigned(diagnostic.port),int(diagnostic.reason),int(diagnostic.parameter.size()),diagnostic.parameter.data());
+            }
+            CHECK(applied);
             return first_run_rate_contract(app,rate,frequencyPanel,observed,revision);
 }
 
+static int first_run_identity_coefficients(CoreApplication& app,NumericEditorGraphModel* model) {
+    auto* coefficients=model->delegateModel<AudioNodeModel>(1005);CHECK(coefficients);
+    auto identity=*coefficients->numeric_node();
+    auto& parameters=std::get<domain::TransformProcessingParameters>(identity.parameters).values;
+    for(auto& parameter:parameters){
+        if(parameter.key=="values")parameter.value=domain::NumericArray{};
+        if(parameter.key=="frontend_declared")parameter.value=false;
+    }
+    const auto before=app.presenter().client().snapshot().graph_revision;
+    CHECK(model->edit_node(1005,identity));
+    CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>before;}));
+    return 0;
+}
 static int first_run_resampling(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,MainWindow*& window) {
+        // Geometry edits use an explicitly selected identity array, rather than
+        // silently reinterpreting the measured32768-Hz profile on another grid.
+        if(const int failure=first_run_identity_coefficients(app,model);failure)return failure;
         auto* frequencyDock=fixture_primary_dock(window,10);CHECK(frequencyDock);frequencyDock->toggleView(true);frequencyDock->raise();
         auto* frequencyPanel=qobject_cast<GraphPanel*>(frequencyDock->widget());CHECK(frequencyPanel);
         auto* resamplerModel=model->delegateModel<AudioNodeModel>(332);CHECK(resamplerModel);
@@ -1770,7 +1806,7 @@ const auto& tones=std::get<domain::SignalGeneratorProcessingParameters>(generato
 static int first_run_graph_contracts(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,auto& clock) {
         CHECK(clock!=graph.nodes.end() && clock->kind=="SampleClock");
         CHECK(std::get<domain::SampleClockProcessingParameters>(clock->parameters).sample_rate==48000);
-        const auto selector=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.kind=="InputSelector";});CHECK(selector!=graph.nodes.end() && selector->inputs.size()==6 && domain::data_outputs(*selector).size()==2);
+        const auto selector=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.kind=="InputSelector";});CHECK(selector!=graph.nodes.end() && selector->inputs.size()==4 && domain::data_outputs(*selector).size()==2);
         const auto generator=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.id==1;});CHECK(generator!=graph.nodes.end()&&generator->kind=="SignalGenerator");
         CHECK(domain::has_configuration_binding(graph,1,domain::ConfigurationRole::SampleClock));
         domain::NumericProcessingGraph resolved;CHECK(domain::resolve_configuration_bindings(graph,numeric_editor::limits(),resolved));
@@ -1799,7 +1835,7 @@ static int first_run_native_source(const auto& graph,domain::NodeId id) {
 }
 
 static int first_run_source_contracts(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,auto& clock) {
-for(auto id:{domain::NodeId{13},domain::NodeId{14}}) {
+for(auto id:{domain::NodeId{13}}) {
             if(const int failure=first_run_native_source(graph,id);failure)return failure;
         }
         for(auto id:{domain::NodeId{2}}){
@@ -1813,7 +1849,7 @@ for(auto id:{domain::NodeId{13},domain::NodeId{14}}) {
 static int scenario_first_run(const QString& path) {
         CHECK(!QFile::exists(path));auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
-        CoreApplication app(count,arguments,test_fixture::synthetic_capture_factory());
+        CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));
         const auto fontFile=qEnvironmentVariable("NUMERIC_TEST_FONT_FILE");
         if(!fontFile.isEmpty()){if(const int failure=install_first_font(fontFile);failure)return failure;}
         install_synthetic_capture_discovery(app,48000,2);

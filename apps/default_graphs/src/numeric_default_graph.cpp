@@ -215,7 +215,8 @@ void add_startup_spectrum(examples::Builder& b) {
     examples::add_window(b,332,2,3,1000,1001,4096);
     b.connect(332,2,sample_rate_output,input_sample_rate_input);
     b.chain(4,"RealFourier",1001);
-    b.chain(5,"AmplitudePhase",4);
+    b.chain(5,"AmplitudePhase",4,examples::transform({
+        {"sample_rate",signal_contracts::NumericLiteral{std::uint64_t{32768}}}}));
     b.connect(4,5,1,1);
     b.connect(3,5,coherent_gain_output,coherent_gain_input);
     b.connect(3,5,power_gain_output,power_gain_input);
@@ -243,6 +244,7 @@ void add_startup_correction(examples::Builder& b) {
 void add_startup_features(examples::Builder& b) {
     using namespace domain;
     b.chain(6,"BroadbandRow",15,examples::transform({{"input_representation",std::string{"peak_amplitude"}},
+        {"bin_hz",signal_contracts::NumericLiteral{8.0}},
         {"peak_weight",std::string{"squared_value"}},
         {"low_reduction",std::string{"maximum"}},
         {"low_count",signal_contracts::NumericLiteral{std::uint64_t{24}}},
@@ -250,6 +252,7 @@ void add_startup_features(examples::Builder& b) {
         {"high_count",signal_contracts::NumericLiteral{std::uint64_t{16}}},
         {"first_bin",signal_contracts::NumericLiteral{std::uint64_t{1}}}}));
     b.chain(1006,"NoteSpectrum",15,examples::transform({{"input_representation",std::string{"peak_amplitude"}},
+        {"bin_hz",signal_contracts::NumericLiteral{8.0}},
         {"first_midi",signal_contracts::NumericLiteral{std::uint64_t{36}}},
         {"last_midi",signal_contracts::NumericLiteral{std::uint64_t{83}}},
         {"peak_weight",std::string{"squared_value"}},

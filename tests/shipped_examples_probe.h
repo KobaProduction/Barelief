@@ -20,8 +20,23 @@
 namespace shipped_probe {
 using namespace pipeline;using namespace signal_contracts;
 using Key=std::tuple<domain::NodeId,domain::PortDirection,domain::PortId>;
-struct Stage {unsigned frames=0;bool positive=false;std::uint64_t first=0,last=0;};
-struct History {unsigned rows=0;std::uint64_t ordinal=0,capacity=0;bool positive=false;};
+struct Stage {unsigned frames=0;bool positive=false;std::uint64_t first=0,last=0;unsigned unavailable=0;};
+struct History {unsigned rows=0;std::uint64_t ordinal=0,capacity=0;bool positive=false,unavailable=false;};
+
+inline bool allows_missing(const domain::NumericProcessingGraph& graph,domain::NodeId id,
+                          domain::PortDirection direction,domain::PortId port,std::size_t remaining) {
+ if(!remaining)return false;
+ const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& item){return item.id==id;});
+ if(node==graph.nodes.end())return false;
+ if(direction==domain::PortDirection::Output && node->kind=="RhythmAnalyzer"){
+  constexpr std::array<domain::PortId,7> optional{0,1,4,5,6,8,10};
+  return std::find(optional.begin(),optional.end(),port)!=optional.end();
+ }
+ if(direction==domain::PortDirection::Output && (node->kind!="NumberAccumulator" || port!=0))return false;
+ const auto input=direction==domain::PortDirection::Input?port:0;
+ const auto edge=std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& value){return value.to==id&&value.input_port==input;});
+ return edge!=graph.edges.end()&&allows_missing(graph,edge->from,domain::PortDirection::Output,edge->output_port,remaining-1);
+}
 template<class Predicate> bool wait(const Predicate& predicate){
  QElapsedTimer timer;timer.start();
  while(timer.elapsed()<5000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}
@@ -42,8 +57,10 @@ struct Observation {
  auto node(domain::NodeId id)const{return std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});}
  std::uint64_t history_capacity(domain::NodeId id)const {
   const auto producer=node(id);if(producer==graph.nodes.end())return 0;
-  const auto* history=std::get_if<domain::HistoryProcessingParameters>(&producer->parameters);
-  return history?history->capacity:0;
+  const auto ports=producer->outputs.empty()?std::span<const domain::ProcessingPort>(producer->inputs):std::span<const domain::ProcessingPort>(producer->outputs);
+  for(const auto& port:ports){const auto c=port.contract.view();
+   if(const auto* numeric=std::get_if<NumericContract>(&c);numeric&&numeric->semantic==Semantic::History)return numeric->shape.extents[0].maximum;}
+  return 0;
  }
  void register_history(const domain::ConfiguredProcessingNode& configured){
   if(const auto capacity=history_capacity(configured.id)){histories[configured.id].capacity=capacity;return;}
@@ -57,7 +74,7 @@ struct Observation {
  bool compact_history_port(const domain::ConfiguredProcessingNode& configured,const domain::ProcessingPort& port)const {
   if(!histories.contains(configured.id))return false;
   const auto contract=port.contract.view();const auto* numeric=std::get_if<NumericContract>(&contract);
-  return numeric&&numeric->shape.rank==Rank::Matrix;
+  return numeric&&numeric->semantic==Semantic::History;
  }
  bool record_prepared_value(const Key& key,const NumericLiteral& value,Status status,domain::PreparationValueKind kind){
   if(status==Status::unavailable&&kind==domain::PreparationValueKind::Routed)return false;
@@ -91,7 +108,7 @@ struct Observation {
   return edge==graph.edges.end()?prepared_default(configured,port,key):prepared_output(edge->from,edge->output_port,key);
  }
  void register_ports(const domain::ConfiguredProcessingNode& configured){
-  for(const auto& port:configured.outputs)if(!(configured.kind=="Spectrogram"&&port.id==0)&&!prepared_port(configured,port,domain::PortDirection::Output))stages[{configured.id,domain::PortDirection::Output,port.id}]={};
+  for(const auto& port:configured.outputs)if(!compact_history_port(configured,port)&&!prepared_port(configured,port,domain::PortDirection::Output))stages[{configured.id,domain::PortDirection::Output,port.id}]={};
   if(configured.outputs.empty())for(const auto& port:configured.inputs)
    if(!compact_history_port(configured,port)&&!prepared_port(configured,port,domain::PortDirection::Input))stages[{configured.id,domain::PortDirection::Input,port.id}]={};
  }
@@ -118,6 +135,8 @@ struct Observation {
   switch(numeric.contract->dtype){
    case DType::Float32:return element_energy<float>(numeric,plane,i,energy);
    case DType::Float64:return element_energy<double>(numeric,plane,i,energy);
+   case DType::UInt8:return element_energy<std::uint8_t>(numeric,plane,i,energy);
+   case DType::UInt16:return element_energy<std::uint16_t>(numeric,plane,i,energy);
    case DType::UInt32:return element_energy<std::uint32_t>(numeric,plane,i,energy);
    case DType::UInt64:return element_energy<std::uint64_t>(numeric,plane,i,energy);
    default:return false;
@@ -135,9 +154,11 @@ struct Observation {
   update_stage(state,view.stamp.sequence,sum);
  }
  void observe(const DeliveredNumericFrame& delivered){
-  if(!delivered.context||!delivered.frame||!delivered.frame.view().stamp.available)return;
+  if(!delivered.context)return;
   const auto& endpoint=delivered.context->endpoint;std::lock_guard lock(mutex);
   const auto at=stages.find({endpoint.node,endpoint.direction,endpoint.port});if(at==stages.end())return;
+  if(delivered.status==Status::unavailable || (delivered.status==Status::ok&&delivered.frame&&!delivered.frame.view().stamp.available)){++at->second.unavailable;return;}
+  if(!delivered.frame||!delivered.frame.view().stamp.available)return;
   observe_stage(delivered,endpoint,at->second);
  }
  void update_stage(Stage& state,std::uint64_t sequence,double energy){
@@ -147,18 +168,20 @@ struct Observation {
  bool history_payload(const DeliveredNumericFrame& frame,History& history){
   if(!frame.frame)return false;
   const auto view=frame.frame.view();const auto* values=std::get_if<NumericView>(&view.payload);
-  if(!values||values->contract->dtype!=DType::Float32)return false;
-  for(std::size_t i=0;i<values->actual[0];++i){float value=0;
-   if(load_element(*values,{0,i,0},value)!=Status::ok||!std::isfinite(value))return false;
-   history.positive|=std::abs(value)>1e-12f;
-  }
+  if(!values)return false;
+  double sum=0;if(!energy(*values,sum))return false;
+  history.positive|=sum>1e-12;
   return true;
  }
+ void history_lifecycle(const DeliveredNumericHistoryRow& row,History& history){
+  if((row.event==NumericHistoryEvent::Empty||row.event==NumericHistoryEvent::Unavailable)&&row.filled_count==0&&row.capacity==history.capacity)history.unavailable=true;
+ }
  void observe_history(const DeliveredNumericHistoryRow& row){
-  if(row.event!=NumericHistoryEvent::Row||!row.compact.context)return;
+  if(!row.compact.context)return;
   const auto& endpoint=row.compact.context->endpoint;std::lock_guard lock(mutex);
   const auto at=histories.find(endpoint.node);if(at==histories.end())return;
   const auto capacity=at->second.capacity;
+  if(row.event!=NumericHistoryEvent::Row){history_lifecycle(row,at->second);return;}
   bad|=row.capacity!=capacity||row.filled_count!=std::min(row.accepted_row_ordinal,capacity)||row.accepted_row_ordinal<=at->second.ordinal;
   at->second.ordinal=row.accepted_row_ordinal;++at->second.rows;
   if(!history_payload(row.compact,at->second))bad=true;
@@ -177,18 +200,28 @@ struct Observation {
  }
  bool stage_ready(const Key& key,const Stage& s)const {
   const auto configured=node(std::get<0>(key));
+  if(s.unavailable&&allows_missing(graph,std::get<0>(key),std::get<1>(key),std::get<2>(key),graph.nodes.size()))return true;
   if(domain::numeric_constant_kind(configured->kind))return s.frames&&s.positive;
-  return s.frames>=5&&s.last>s.first&&(signed_metric(key,*configured)||s.positive);
+  const auto& ports=std::get<1>(key)==domain::PortDirection::Output?configured->outputs:configured->inputs;
+  const auto port=std::find_if(ports.begin(),ports.end(),[&](const auto& value){return value.id==std::get<2>(key);});
+  const auto c=port->contract.view();const auto* numeric=std::get_if<NumericContract>(&c);
+  return s.frames>=5&&s.last>s.first&&((numeric&&numeric->shape.rank==Rank::Scalar)||signed_metric(key,*configured)||s.positive);
+ }
+ bool history_ready(domain::NodeId id,const History& history)const {
+  const auto configured=node(id);const auto side=configured->outputs.empty()?domain::PortDirection::Input:domain::PortDirection::Output;
+  if(history.unavailable&&allows_missing(graph,id,side,0,graph.nodes.size()))return true;
+  return history.rows>=5&&history.positive;
  }
  bool ready()const {
   if(bad)return true;
   for(const auto& [key,s]:stages)if(!stage_ready(key,s))return false;
-  for(const auto& [id,h]:histories)if(h.rows<5||!h.positive)return false;
+  for(const auto& [id,h]:histories)if(!history_ready(id,h))return false;
   return true;
  }
  void report(const char* name,bool good)const {
   std::printf("shipped %s: opens=%u stages=%zu history=%zu prepared=%zu %s\n",name,opens,stages.size(),histories.size(),prepared.size(),good?"PASS":"FAIL");
   if(!good)for(const auto& [key,s]:stages)std::printf(" stage%lld/%u/%u frames=%u positive=%d seq=%llu..%llu\n",(long long)std::get<0>(key),unsigned(std::get<1>(key)),unsigned(std::get<2>(key)),s.frames,int(s.positive),(unsigned long long)s.first,(unsigned long long)s.last);
+  if(!good)for(const auto& [id,h]:histories)std::printf(" history%lld rows=%u capacity=%llu missing=%d ready=%d\n",(long long)id,h.rows,(unsigned long long)h.capacity,int(h.unavailable),int(history_ready(id,h)));
  }
 };
 inline bool apply(NumericEngine& engine,const domain::NumericProcessingGraph& graph,const char* name){

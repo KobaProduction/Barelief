@@ -1,4 +1,5 @@
 #pragma once
+#include "shipped_examples_probe.h"
 #include <algorithm>
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
@@ -67,6 +68,7 @@ struct Stage {
     bool positive=false;
     std::uint64_t producer_epoch=0,generation=0;
     unsigned received=0,unavailable=0,exhausted=0;
+    bool history=false,optional=false,missing=false;
 };
 struct RawWindowObservation {
     std::mutex mutex;
@@ -95,6 +97,7 @@ struct RawScalarObservation {
         DType dtype;
         unsigned count=0;
         std::uint64_t producer_epoch=0,generation=0,first=0,last=0;
+        bool optional=false,missing=false;
     };
     mutable std::mutex mutex;
     std::vector<Entry> entries;
@@ -131,7 +134,12 @@ struct RawScalarObservation {
         std::lock_guard lock(mutex);
         if(!frame.context)return;
         auto entry=std::find_if(entries.begin(),entries.end(),[&](const auto& item){return item.endpoint==frame.context->endpoint;});
-        if(entry==entries.end()||!readable(frame))return;
+        if(entry==entries.end())return;
+        if(!readable(frame)) {
+            entry->missing|=frame.status==Status::unavailable ||
+                (frame.status==Status::ok&&frame.frame&&!frame.frame.view().stamp.available);
+            return;
+        }
         const auto frame_view=frame.frame.view();
         const auto* view=std::get_if<NumericView>(&frame_view.payload);
         if(!view||!valid_value(*view,entry->dtype)){bad=true;return;}
@@ -139,7 +147,7 @@ struct RawScalarObservation {
     }
     bool complete() const {
         std::lock_guard lock(mutex);
-        return !bad&&std::all_of(entries.begin(),entries.end(),[](const auto& entry){return entry.count>=5&&entry.last>entry.first;});
+        return !bad&&std::all_of(entries.begin(),entries.end(),[](const auto& entry){return (entry.optional&&entry.missing)||(entry.count>=5&&entry.last>entry.first);});
     }
     void report() const {
         std::lock_guard lock(mutex);
@@ -228,8 +236,13 @@ class ShippedGuiProbe {
         EndpointIdentity endpoint{expected.graph_id,node.id,view?domain::PortDirection::Input:domain::PortDirection::Output,port.id};
         stages.push_back({endpoint,numeric->shape.rank,numeric->dtype,
             numeric->shape.extents[numeric->shape.rank==Rank::Matrix?1:0].maximum});
+        stages.back().history=numeric->semantic==Semantic::History;
+        stages.back().optional=shipped_probe::allows_missing(expected,node.id,endpoint.direction,port.id,expected.nodes.size());
         endpoints.push_back(endpoint);
-        if(numeric->shape.rank==Rank::Scalar)rawScalars->entries.push_back({endpoint,numeric->dtype});
+        if(numeric->shape.rank==Rank::Scalar) {
+            rawScalars->entries.push_back({endpoint,numeric->dtype});
+            rawScalars->entries.back().optional=stages.back().optional;
+        }
     }
     void collect_stages() {
         for(const auto& node:expected.nodes) {
@@ -256,14 +269,14 @@ class ShippedGuiProbe {
         energy=square?value*value:double(value);
         return true;
     }
-    bool float_energy(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,double& energy) {
+    template<class Value=float> bool float_energy(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,double& energy) {
         if(numeric.planes.size()!=1 || numeric.actual[0]==0 || numeric.actual[0]>stage.width ||
            (stage.rank==Rank::Matrix && numeric.actual[0]!=stage.width)) {
             fail(stage,frame,"Float32 geometry");
             return false;
         }
         for(std::size_t i=0;i<numeric.actual[0];++i) {
-            float value=0;
+            Value value=0;
             if(load_element(numeric,{0,i,0},value)!=Status::ok||!std::isfinite(value)) {
                 fail(stage,frame,"Float32 read or finiteness");
                 return false;
@@ -274,6 +287,8 @@ class ShippedGuiProbe {
     }
     bool energy_of(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,double& energy) {
         switch(stage.dtype) {
+        case DType::UInt8:return float_energy<std::uint8_t>(stage,frame,numeric,energy);
+        case DType::UInt16:return float_energy<std::uint16_t>(stage,frame,numeric,energy);
         case DType::UInt64:return scalar_energy<std::uint64_t>(stage,frame,numeric,"UInt64 read",energy);
         case DType::UInt32:return scalar_energy<std::uint32_t>(stage,frame,numeric,"UInt32 read",energy);
         case DType::Float64:return scalar_energy<double>(stage,frame,numeric,"Float64 read or finiteness",energy,true);
@@ -305,18 +320,37 @@ class ShippedGuiProbe {
     void observe(const DeliveredNumericFrame& frame,bool compact) {
         if(!frame.context||frame.delivery.graph_revision!=revision||frame.delivery.epoch!=epoch)return;
         auto stage=std::find_if(stages.begin(),stages.end(),[&](const auto& item){return item.endpoint==frame.context->endpoint;});
-        if(stage==stages.end() || (stage->rank==Rank::Matrix)!=compact)return;
+        if(stage==stages.end() || stage->history!=compact)return;
         ++stage->received;
         if(!frame.frame || !frame.frame.view().stamp.available) {
             ++stage->unavailable;
+            stage->missing|=frame.status==Status::unavailable ||
+                (frame.status==Status::ok&&frame.frame&&!frame.frame.view().stamp.available);
             if(frame.status==Status::exhausted)++stage->exhausted;
             return;
         }
         available(*stage,frame);
     }
+    std::uint64_t declared_history_capacity(const EndpointIdentity& endpoint) const {
+        const auto node=std::find_if(expected.nodes.begin(),expected.nodes.end(),[&](const auto& value){return value.id==endpoint.node;});
+        if(node==expected.nodes.end())return 0;
+        const auto& ports=endpoint.direction==domain::PortDirection::Input?node->inputs:node->outputs;
+        const auto port=std::find_if(ports.begin(),ports.end(),[&](const auto& value){return value.id==endpoint.port;});
+        if(port==ports.end())return 0;
+        const auto contract=port->contract.view();const auto* numeric=std::get_if<NumericContract>(&contract);
+        return numeric&&numeric->semantic==Semantic::History?numeric->shape.extents[0].maximum:0;
+    }
+    void observe_empty_history(const DeliveredNumericHistoryRow& row,std::uint64_t capacity) {
+        if((row.event!=NumericHistoryEvent::Empty&&row.event!=NumericHistoryEvent::Unavailable)||row.filled_count!=0||row.capacity!=capacity)return;
+        const auto endpoint=row.compact.context->endpoint;
+        const auto stage=std::find_if(stages.begin(),stages.end(),[&](const auto& value){return value.endpoint==endpoint;});
+        if(stage!=stages.end())stage->missing=true;
+    }
     void observe_history(const DeliveredNumericHistoryRow& row) {
-        if(row.event!=NumericHistoryEvent::Row || row.compact.delivery.graph_revision!=revision || row.compact.delivery.epoch!=epoch)return;
-        if(row.capacity!=400 || row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400})) {
+        if(!row.compact.context || row.compact.delivery.graph_revision!=revision || row.compact.delivery.epoch!=epoch)return;
+        const auto capacity=declared_history_capacity(row.compact.context->endpoint);
+        if(row.event!=NumericHistoryEvent::Row){observe_empty_history(row,capacity);return;}
+        if(!capacity || row.capacity!=capacity || row.filled_count!=std::min(row.accepted_row_ordinal,capacity)) {
             if(!bad)std::fprintf(stderr,"GUI %s History invalid: node=%d capacity=%llu filled=%llu ordinal=%llu\n",label,
                 row.compact.context?int(row.compact.context->endpoint.node):-1,(unsigned long long)row.capacity,
                 (unsigned long long)row.filled_count,(unsigned long long)row.accepted_row_ordinal);
@@ -351,6 +385,7 @@ class ShippedGuiProbe {
     }
     bool complete() const {
         for(const auto& stage:stages) {
+            if(stage.optional&&stage.missing)continue;
             if(stage.rank==Rank::Scalar){if(!stage.count)return false;}
             else if(stage.count<5||stage.last<=stage.first||!stage.positive)return false;
         }
@@ -444,13 +479,15 @@ class StartupSelectorProbe {
     bool editor_fixture() {
         auto* body=selector->embeddedWidget();
         editor=window->findChild<SchemeEditorWidget*>();
-        if(!editor||selector->selected_input()!=0||body->findChild<QWidget*>("pipelineDataStatus"))return false;
-        if(selector->numeric_node()->inputs.size()!=6 || domain::data_outputs(*selector->numeric_node()).size()!=2 || selector->grouped_channels(QtNodes::PortType::In)!=2)return false;
+        if(!editor||selector->selected_input()!=1||body->findChild<QWidget*>("pipelineDataStatus"))return false;
+        if(selector->numeric_node()->inputs.size()!=4 || domain::data_outputs(*selector->numeric_node()).size()!=2 || selector->grouped_channels(QtNodes::PortType::In)!=2)return false;
         inspectorScene=editor->findChild<QtNodes::DataFlowGraphicsScene*>();
         if(!inspectorScene)return false;
         emit inspectorScene->nodeSelected(1);
         selectorDiagnostics.reset(selector->preview_widget());
-        return true;
+        const auto before=presenter.client().snapshot().graph_revision;
+        if(!selector->select_input(0))return false;
+        return wait([&]{return !presenter.graph_request_pending()&&presenter.client().snapshot().graph_revision>before;});
     }
     bool click_view(QGraphicsView* view,auto* node,EditorNodeGeometry* geometry,QtNodes::PortIndex port,domain::PortId id) {
         geometry->recomputeSize(200);
@@ -578,7 +615,7 @@ class StartupSelectorProbe {
            row.compact.context->endpoint.direction!=PortDirection::Output||row.compact.delivery.graph_revision!=current.graph_revision||
            row.compact.delivery.epoch!=current.epoch||
            (revision?row.compact.delivery.graph_revision!=revision:row.compact.delivery.graph_revision<=transition_after))return;
-        bad|=row.accepted_row_ordinal<=ordinal||row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{400})||row.capacity!=400;
+        bad|=row.accepted_row_ordinal<=ordinal||row.filled_count!=std::min(row.accepted_row_ordinal,std::uint64_t{512})||row.capacity!=512;
         const auto sequence=row.compact.frame.view().stamp.sequence;
         bad|=sequence<=history_sequence;
         ordinal=row.accepted_row_ordinal;history_sequence=sequence;
@@ -710,15 +747,15 @@ class StartupSelectorProbe {
     }
     bool grow_inputs() {
         auto expanded=*selector->numeric_node();
-        if(!numeric_editor::set_input_count(expanded,4))return false;
+        if(!numeric_editor::set_input_count(expanded,3))return false;
         phase=71;
         if(!model->edit_node(200,expanded))return false;
         phase=72;
-        model->addConnection({1,0,200,6});
-        model->addConnection({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7});
+        model->addConnection({1,0,200,4});
+        model->addConnection({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,5});
         QCoreApplication::processEvents();
         const auto configInputs=unsigned(selector->configuration_port(QtNodes::PortType::In,domain::ConfigurationRole::SampleClock)!=QtNodes::InvalidPortIndex)+unsigned(selector->configuration_port(QtNodes::PortType::In,domain::ConfigurationRole::FrequencyGrid)!=QtNodes::InvalidPortIndex);
-        if(selector->numeric_node()->inputs.size()==8&&selector->nPorts(QtNodes::PortType::In)==8+configInputs&&model->connectionExists({1,0,200,6})&&model->connectionExists({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7}))return true;
+        if(selector->numeric_node()->inputs.size()==6&&selector->nPorts(QtNodes::PortType::In)==6+configInputs&&model->connectionExists({1,0,200,4})&&model->connectionExists({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,5}))return true;
         std::fprintf(stderr,"selector growth inputs=%zu ports=%u config=%u edge6=%d edge7=%d possible6=%d possible7=%d\n",selector->numeric_node()->inputs.size(),selector->nPorts(QtNodes::PortType::In),configInputs,int(model->connectionExists({1,0,200,6})),int(model->connectionExists({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7})),int(model->connectionPossible({1,0,200,6})),int(model->connectionPossible({1,source->port_index(QtNodes::PortType::Out,domain::sample_rate_output),200,7})));
         return false;
     }
@@ -728,13 +765,13 @@ class StartupSelectorProbe {
         transition_after=prior_revision;revision=0;
         if(!grow_inputs())return false;
         phase=73;
-        if(!click_input(3))return false;
+        if(!click_input(2))return false;
         selected=0;selected_frames=0;
         return grown_selection(prior_revision,prior_ordinal);
     }
     bool grown_selection(std::uint64_t prior_revision,std::uint64_t prior_ordinal) {
         phase=74;
-        if(!wait([&]{return presenter.client().snapshot().graph_revision>prior_revision&&!presenter.graph_request_pending()&&applied_choice(3);}))return false;
+        if(!wait([&]{return presenter.client().snapshot().graph_revision>prior_revision&&!presenter.graph_request_pending()&&applied_choice(2);}))return false;
         phase=75;subscribe();
         return wait([&]{return bad||(selected_frames>=5&&ordinal>prior_ordinal);})&&!bad;
     }
@@ -905,9 +942,10 @@ class ExampleAutosaveProbe {
     }
     bool preferences() {
         if(!flush_disabled_presentation())return failure("preferences.flush_disabled");
-        autosave->setChecked(true);
-        // Enabling autosave persists preferences, retaining document draft/applied snapshots.
-        if(!wait([&]{return preference_saved(QStringLiteral("autosave_enabled"),true);},5000)) {
+        // A forced preferences-only request preserves the dirty document.
+        // Enabling autosave also flushes pending project changes asynchronously.
+        emit window->settings_change_requested({ui::SettingsChangeScope::ApplicationPreferences,true});
+        if(!wait([&]{return preference_saved(QStringLiteral("autosave_enabled"),false);},5000)) {
             qWarning()<<"Autosave probe: preferences save"<<window->statusBar()->currentMessage()<<QFile::exists(path);
             return false;
         }
@@ -925,16 +963,21 @@ class ExampleAutosaveProbe {
         auto* save=window->findChild<QAction*>("saveSettings");
         if(!wait([&]{return save&&save->isEnabled();},5000)){qWarning()<<"Autosave probe: Save context";return false;}
         save->trigger();
-        if(wait([&]{return snapshots_saved();},5000))return true;
-        qWarning()<<"Autosave probe: full Save snapshots";
-        return false;
+        if(!wait([&]{return snapshots_saved();},5000)){qWarning()<<"Autosave probe: full Save snapshots";return false;}
+        autosave->setChecked(true);
+        return wait([&]{return preference_saved(QStringLiteral("autosave_enabled"),true);},5000);
     }
     bool save_position() {
         working_revision=presenter.client().snapshot().graph_revision;
         model->setNodeData(1,QtNodes::NodeRole::Position,QPointF(713,421));
         if(!wait([&]{desktop::NumericDraftPresentation display;return desktop::load_numeric_project(path,saved,disk)&&
                    desktop::read_numeric_presentation(saved,display)&&display.positions["1"].toObject()["x"].toDouble()==713;},5000)) {
-            qWarning()<<"Autosave probe: position save";
+            desktop::NumericDraftPresentation display;
+            const auto loaded=desktop::load_numeric_project(path,saved,disk)&&desktop::read_numeric_presentation(saved,display);
+            auto* status=window->findChild<QLabel*>("configurationSaveStatus");
+            qWarning()<<"Autosave probe: position save"<<loaded<<display.positions.value("1")
+                      <<model->nodeData(1,QtNodes::NodeRole::Position)<<app._ctx.file_configs.ui.autosave_enabled
+                      <<(status?status->property("saveState"):QVariant{})<<(status?status->toolTip():QString{});
             return false;
         }
         return presenter.client().snapshot().graph_revision==working_revision;

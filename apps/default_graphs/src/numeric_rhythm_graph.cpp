@@ -12,6 +12,7 @@ void append_startup_rhythm(examples::Builder& builder) {
         {"feature_bins",NumericLiteral{std::uint64_t{96}}},
         {"feature_rate_fps",NumericLiteral{std::uint64_t{60}}},
         {"sample_rate",NumericLiteral{std::uint64_t{32768}}}}));
+    builder.connect(332,1102,sample_rate_output,target_sample_rate_input);
     builder.chain(1103,"ScalarMetricsView",1102);
     for(PortId port=1;port<rhythm_output_count;++port)
         builder.connect(1102,1103,port,port);

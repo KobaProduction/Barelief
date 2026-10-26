@@ -614,15 +614,17 @@ std::uint64_t NumericEngine::subscribe_numeric_tap(std::vector<EndpointIdentity>
     std::lock_guard lock(impl_->mutex);
     if(impl_->delivery.taps.size()>=8 || endpoints.size()>2048)return 0;
     const auto token=++impl_->delivery.next_tap;
-    impl_->delivery.taps.emplace(token,DeliveryHub::Tap{std::make_shared<std::atomic_bool>(true),std::move(endpoints),std::move(frame),std::move(history)});return token;
+    impl_->delivery.taps.emplace(token,DeliveryHub::Tap{std::make_shared<std::atomic_bool>(true),std::move(endpoints),std::move(frame),std::move(history)});
+    impl_->delivery.update_tap_budget();return token;
 }
 void NumericEngine::update_numeric_tap(std::uint64_t token,std::vector<EndpointIdentity> endpoints) {
     if(endpoints.size()>2048)return;
     if(endpoints.empty())endpoints.push_back({"",-1,domain::PortDirection::Output,0});
     std::lock_guard lock(impl_->mutex);auto it=impl_->delivery.taps.find(token);if(it==impl_->delivery.taps.end()||it->second.endpoints==endpoints)return;
     it->second.active->store(false,std::memory_order_release);it->second.active=std::make_shared<std::atomic_bool>(true);it->second.endpoints=std::move(endpoints);
+    impl_->delivery.update_tap_budget();
 }
-void NumericEngine::unsubscribe_numeric_tap(std::uint64_t token) {std::lock_guard lock(impl_->mutex);if(auto it=impl_->delivery.taps.find(token);it!=impl_->delivery.taps.end()){it->second.active->store(false,std::memory_order_release);impl_->delivery.taps.erase(it);}}
+void NumericEngine::unsubscribe_numeric_tap(std::uint64_t token) {std::lock_guard lock(impl_->mutex);if(auto it=impl_->delivery.taps.find(token);it!=impl_->delivery.taps.end()){it->second.active->store(false,std::memory_order_release);impl_->delivery.taps.erase(it);impl_->delivery.update_tap_budget();}}
 Status NumericEngine::query_numeric(const EndpointIdentity& endpoint,DeliveredNumericFrame& out,std::uint64_t* ordinal,std::uint64_t* filled_count,bool* is_history) {
     if(is_history)*is_history=false;
     const auto wait_start=(core::perf::enabled.load(std::memory_order_relaxed) || core::telemetry::enabled())?core::perf::now():0;

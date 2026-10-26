@@ -1,5 +1,6 @@
 #include <domain/numeric/contracts.h>
 #include <cmath>
+#include <optional>
 namespace domain {
 using namespace signal_contracts;
 namespace {
@@ -22,12 +23,21 @@ bool vector_valid(const NumericContract& value) {
         value.representation.encoding==StorageEncoding::Native && value.representation.layout==ChannelLayout::Planar &&
         (value.representation.normalization==Normalization::None || value.representation.normalization==Normalization::FloatUnit);
 }
+struct VectorGrid {Axis axis;AxisCoordinates coordinates;bool operator==(const VectorGrid&)const=default;};
+bool accept_grid(const NumericContract& value,std::optional<VectorGrid>& grid) {
+    if(value.coordinates[0].mode==CoordinateMode::None)return true;
+    const VectorGrid current{value.shape.axes[0],value.coordinates[0]};
+    if(grid && *grid!=current)return false;
+    grid=current;return true;
+}
 Status validate_inputs(const ConfiguredProcessingNode& node) {
     std::uint64_t count=0;
+    std::optional<VectorGrid> grid;
     for(const auto& port:node.inputs) {
         const auto data=port.contract.view();const auto* value=std::get_if<NumericContract>(&data);
         if(!value || !vector_valid(*value))return Status::incompatible_contract;
         if(count && count!=value->shape.extents[0].maximum)return Status::incompatible_contract;
+        if(!accept_grid(*value,grid))return Status::incompatible_contract;
         count=value->shape.extents[0].maximum;
     }
     return Status::ok;

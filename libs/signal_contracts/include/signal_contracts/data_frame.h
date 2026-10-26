@@ -36,6 +36,7 @@ Status required_storage(const NumericContract&,std::span<const PlaneLayout>,std:
 Status validate_view(const DataFrameView&,const FrameLimits&) noexcept;
 Status validate_mutable(const MutableNumericView&,const FrameLimits&) noexcept;
 Status validate_values(const NumericView&,ValueDomain,const FrameLimits&) noexcept;
+// Borrow one logical row: Matrix -> Vector; scalar Vector History -> Scalar.
 Status history_row(const NumericView&,std::size_t row,NumericView& out,NumericContract& row_contract,
                    std::span<PlaneLayout> row_planes) noexcept;
 // Exact dtype access; packed24 logical Int32. Internal bits helpers never cast bytes to T*.

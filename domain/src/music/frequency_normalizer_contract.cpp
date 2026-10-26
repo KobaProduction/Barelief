@@ -23,6 +23,20 @@ bool flag(const ConfiguredProcessingNode& n,std::string_view key,bool& result) {
     const auto* boolean=std::get_if<bool>(&value);if(!boolean)return false;
     result=*boolean;return true;
 }
+bool coefficient_integer(const ConfiguredProcessingNode& node,std::string_view key,std::uint64_t minimum,std::uint64_t& result) {
+    double value=0;
+    if(!number(node,key,value) || value<double(minimum) || value>UINT32_MAX || std::floor(value)!=value)return false;
+    result=std::uint64_t(value);return true;
+}
+struct CoefficientGrid {std::uint64_t rate=0,fft=0,first=0;};
+bool coefficient_grid(const ConfiguredProcessingNode& node,std::size_t count,CoefficientGrid& grid) {
+    bool half=true;
+    if(!coefficient_integer(node,"sample_rate",1,grid.rate) || !coefficient_integer(node,"fft_size",2,grid.fft) ||
+       !coefficient_integer(node,"first_bin",0,grid.first) || !flag(node,"positive_half",half))return false;
+    if(grid.fft&(grid.fft-1))return false;
+    const auto last=half?grid.fft/2:grid.fft-1;
+    return grid.first<=last && count<=last-grid.first+1 && grid.first<=std::uint64_t(INT64_MAX)/grid.rate;
+}
 std::string_view text(const ConfiguredProcessingNode& n,std::string_view key) {
     ProcessingParameterView value;
     if(resolve_processing_parameter(view(n),key,value)!=Status::ok)return {};
@@ -135,6 +149,17 @@ ProcessingDiagnostic configured_profile_diagnostic(const ConfiguredProcessingNod
     if(!representation_matches(node,input))return profile_issue(node,ProcessingReason::SpectrumRepresentation,"representation");
     return profile_gains_diagnostic(node,input);
 }
+}
+Status frequency_profile_coefficient_coordinates(const ConfiguredProcessingNode& node,NumericContract& output) noexcept {
+    if(node.kind!="ArrayFill")return Status::ok;
+    bool declared=false;
+    if(!flag(node,"frontend_declared",declared))return Status::invalid_argument;
+    if(!declared)return Status::ok;
+    CoefficientGrid grid;
+    if(!coefficient_grid(node,output.shape.extents[0].maximum,grid))return Status::invalid_argument;
+    output.shape.axes[0]=Axis::Bin;
+    output.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(grid.first*grid.rate),grid.fft},{std::int64_t(grid.rate),grid.fft}};
+    return Status::ok;
 }
 ProcessingDiagnostic frequency_normalizer_diagnostic(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {
     const auto mode=text(node,"mode");double gain=0;

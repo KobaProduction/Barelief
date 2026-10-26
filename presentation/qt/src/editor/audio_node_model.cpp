@@ -115,8 +115,9 @@ void AudioNodeModel::refresh_widget_size() {
     const auto height=embeddedContentHeight(_widget);
     const int preferred=_widget->property("nodePreferredWidth").isValid()
         ? _widget->property("nodePreferredWidth").toInt() : 240;
-    if(height!=_widget->height() || embeddedContentWidth(_widget,preferred)!=_widget->width())
+    if(height!=_widget->height() || embeddedContentWidth(_widget,preferred)!=_widget->width()){
         emit embeddedWidgetSizeUpdated();
+    }
 }
 unsigned int AudioNodeModel::nPorts(QtNodes::PortType type) const {
     if(!_numeric_load_error.isEmpty())return 0;
@@ -601,15 +602,13 @@ bool AudioNodeModel::set_scalar_input_enabled(domain::PortId id,bool enabled){
 }
 void AudioNodeModel::refresh_embedded_geometry() {
     if(_widget){_widget->layout()->invalidate();_widget->layout()->activate();}
-    emit embeddedWidgetSizeUpdated();
+    emit embeddedWidgetSizeUpdated();emit requestNodeUpdate();
 }
 QWidget* AudioNodeModel::numeric_parameter_widget(QWidget* parent,bool inline_form) {
     NodeParameterForm::CompositeFactory composite;
     if(_kind=="SignalGenerator")composite=[](auto* model,auto* owner){return new OscillatorBankWidget(model,owner);};
     auto* form=new NodeParameterForm(_parameters,inline_form,parent,false,std::move(composite));update_widget_style(form);
-    connect(_parameters,&NodeParameterModel::structureChanged,form,[this]{
-        QTimer::singleShot(0,this,[this]{refresh_embedded_geometry();});
-    });
+    connect(form,&NodeParameterForm::layoutChanged,this,&AudioNodeModel::refresh_embedded_geometry,Qt::QueuedConnection);
     if(!inline_form && (_kind=="InputSelector" || _kind=="Switch"))return selector_parameter_widget(parent,form);
     if(!scalar_view_kind(_kind) || inline_form)return form;
     return scalar_parameter_widget(parent,form,inline_form);

@@ -94,11 +94,15 @@ bool test_signal_rules(const ConfiguredProcessingNode& node) noexcept {
         number("sample_rate",rate) && number("sweep_depth",sweep) &&
         minimum<maximum && maximum*(1+sweep)<rate/2;
 }
+bool declared_array_output_matches(const ConfiguredProcessingNode& node,const OwnedProcessingContract& expected,const DataContract& result) {
+    auto data=expected.view();auto* numeric=std::get_if<NumericContract>(&data);
+    return numeric && frequency_profile_coefficient_coordinates(node,*numeric)==Status::ok && same_physical_contract(data,result);
+}
 ProcessingDiagnostic validate_arrayfill(const OperationValidation& context) noexcept {
     const auto& [configured,limits,n,k,role,op,input_count,output_count,in,result,input,output]=context;
  {
         const auto* p=std::get_if<TransformProcessingParameters>(&n.parameters);OwnedProcessingContract expected;
-        if(!p || !parameter_fields_valid(*k,p->values,limits) || !input || !output || array_generator_output_contract(configured,*input,expected)!=Status::ok || !same_physical_contract(expected.view(),result))return context.error(ProcessingError::InvalidContract);
+        if(!p || !parameter_fields_valid(*k,p->values,limits) || !input || !output || array_generator_output_contract(configured,*input,expected)!=Status::ok || !declared_array_output_matches(configured,expected,result))return context.error(ProcessingError::InvalidContract);
         return {};
     }
 }

@@ -549,15 +549,32 @@ std::optional<Status> publish_wled_ready() noexcept {
                 else {auto& packet=std::get<StructuredView>(silence);packet.bytes=packet.bytes.first(std::get<StructuredView>(current.payload).bytes.size());}
                 current.payload=silence;
                 }
+    void scalar_sink_row_info(const NumericView& source,NumericGatherOutput& compact) noexcept {
+        const auto logical=source.actual[0]-1;
+        compact.row.history=true;compact.row.silenced=std::get<NumericView>(compact.frame.payload).semantic_silence;
+        compact.row.logical_row=logical;compact.row.physical_row=(source.ring.oldest+logical)%source.ring.capacity;
+        compact.row.filled_rows=source.actual[0];compact.row.capacity=source.ring.capacity;
+        compact.row.time_axis=source.contract->coordinates[0];
+        const auto time=source.coordinates.axes[0];
+        if(!time.empty())compact.row.time_coordinate=time.subspan(logical*sizeof(double),sizeof(double));
+    }
+    Status gather_sink_history(NumericGatherOutput& compact,NumericContract& contract) noexcept {
+        if(n.gather)return gather(n,state,current,compact);
+        const auto& source=std::get<NumericView>(current.payload);NumericView row;
+        const auto status=history_row(source,source.actual[0]-1,row,contract,state.row_planes);
+        if(status!=Status::ok)return status;
+        compact.frame={current.stamp,row};scalar_sink_row_info(source,compact);
+        return Status::ok;
+    }
     Status deliver_sink_history(const NumericPortFrameView& ep) noexcept {
-        if(!(n.gather && callbacks.history && std::get<NumericView>(current.payload).ring.capacity))return Status::ok;
+        if(!((n.gather || !state.row_planes.empty()) && callbacks.history && std::get<NumericView>(current.payload).ring.capacity))return Status::ok;
 const auto& source=std::get<NumericView>(current.payload);const auto producer=history_producer(n.parent!=absent?n.parent:n.numeric_clock_parent);
                 const auto ordinal=producer==absent?std::uint64_t{0}:runtime.states[producer].row_ordinal;
                 const auto filled=producer==absent?std::uint64_t{0}:std::uint64_t(runtime.states[producer].progress);
                 const auto capacity=std::uint64_t(source.ring.capacity?source.ring.capacity:source.contract->shape.extents[0].maximum);
                 auto event=!current.stamp.available?NumericHistoryEventKind::Unavailable:filled?NumericHistoryEventKind::Row:NumericHistoryEventKind::Empty;
-                NumericGatherOutput compact;
-                if(event==NumericHistoryEventKind::Row){const auto gathered=gather(n,state,current,compact);if(gathered!=Status::ok)return gathered;}
+                NumericGatherOutput compact;NumericContract row_contract;
+                if(event==NumericHistoryEventKind::Row){const auto gathered=gather_sink_history(compact,row_contract);if(gathered!=Status::ok)return gathered;}
                 port_delivery.history({event,ep,*source.contract,compact,filled,capacity,ordinal});
                     return Status::ok;
     }

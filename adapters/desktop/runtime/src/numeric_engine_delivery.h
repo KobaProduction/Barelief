@@ -56,6 +56,7 @@ struct DeliveryHub {
     std::map<std::uint64_t,Tap> taps;
     std::uint64_t next_tap=0;
     std::uint64_t transport_frame_drops=0,transport_row_drops=0,preview_coalesced=0,preview_row_drops=0;
+    std::size_t tap_queue_depth=128;
     QTimer preview_timer,wled_timer;
     bool preview_scheduled=false,preview_flushing=false;
     int preview_interval_ms=16;
@@ -95,6 +96,9 @@ struct DeliveryHub {
     void commit_tap_frame(ContextIterator,LatestIterator,const dataflow_runtime::NumericPortFrameView&,DeliveredNumericFrame,Status);
     ContextIterator history_context(const dataflow_runtime::NumericHistoryRowView&);
     void record_transport_drop(ContextIterator);
+    void update_tap_budget();
+    void update_wled_timer();
+    std::size_t queued_tap_frames(const EndpointIdentity&);
     static NumericHistoryEvent history_event(dataflow_runtime::NumericHistoryEventKind);
     bool delivery_current(std::uint64_t,const DeliveryStamp&) const;
     bool generation_current(std::uint64_t) const;

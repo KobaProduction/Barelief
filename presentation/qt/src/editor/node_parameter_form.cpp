@@ -316,6 +316,7 @@ void NodeParameterForm::rebuild() {
     if(placement)root->addWidget(placement);
     if(!_inline_form)root->addStretch(1);
     updateGeometry();
+    emit layoutChanged();
 }
 void NodeParameterForm::appendFields(QVBoxLayout* root,ui::CollapsibleSection* placement) {
     QMap<int,QVBoxLayout*> sections;

@@ -266,6 +266,25 @@ static void primitive_roundtrips(){require(dtype_descriptors().size()==10);
     primitive<std::int32_t>();primitive<std::uint32_t>();primitive<std::int64_t>();primitive<std::uint64_t>();
     primitive<float>();primitive<double>();
 }
-int main(){silence_alias_refusals();truncated_history_row_atomicity();history_integrity_repairs::run();
+static void scalar_history_row_projection(){
+    auto contract=base(DType::Float32,Rank::Vector);
+    contract.semantic=Semantic::History;contract.history_element=Semantic::Scalar;
+    contract.shape.axes[0]=Axis::Time;contract.shape.extents[0]={0,3};
+    std::array<float,3> values{10,20,30};
+    std::array<PlaneLayout,1> planes{{{0,{4,0}}}},row_planes{};
+    const std::array<std::byte,3> mask{std::byte{0},std::byte{1},std::byte{0}};
+    const NumericView history{&contract,std::as_bytes(std::span(values)),planes,{3,1},{3,1,mask},{}};
+    NumericView row;NumericContract scalar;
+    const auto before=allocations;
+    require(history_row(history,2,row,scalar,row_planes)==Status::ok);
+    require(allocations==before&&scalar.shape.rank==Rank::Scalar&&scalar.semantic==Semantic::Scalar);
+    require(row.storage.data()==history.storage.data()&&row.ring.capacity==0&&validate_view({{},row},limits)==Status::ok);
+    float value=0;require(load_element(row,{0,0,0},value)==Status::ok&&value==10);
+    require(history_row(history,1,row,scalar,row_planes)==Status::ok&&row.semantic_silence);
+    require(load_element(row,{0,0,0},value)==Status::ok&&value==0);
+    require(history_row(history,3,row,scalar,row_planes)==Status::invalid_argument);
+    require(values[0]==10&&values[2]==30);
+}
+int main(){scalar_history_row_projection();silence_alias_refusals();truncated_history_row_atomicity();history_integrity_repairs::run();
     literal_identity();metadata_and_failures();per_plane_history();primitive_roundtrips();
     pcm();layout_and_values();history_and_owner();structured();std::puts("numeric foundation tests passed");}
