@@ -80,6 +80,9 @@ set_tests_properties(music_archive_tests PROPERTIES TIMEOUT 60)
 set_tests_properties(music_profile_tests PROPERTIES TIMEOUT 60)
 add_desktop_check(music_profile_control_tests desktop_numeric_remote)
 set_tests_properties(music_profile_control_tests PROPERTIES TIMEOUT 60)
+add_test(NAME linux_package_verification_tests COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/verify_linux_package_tests.py)
+set_tests_properties(linux_package_verification_tests PROPERTIES LABELS "quick;component;packaging" TIMEOUT 15)
 if(BUILD_GUI)
     get_filename_component(music_qt_platform_path "${Qt6_DIR}/../../../plugins/platforms" ABSOLUTE)
     add_desktop_check(music_analysis_dialog_tests desktop_gui_composition)
@@ -324,9 +327,11 @@ set_property(TEST numeric_runtime_startup_tests desktop_history_demand_tests con
 set_property(TEST performance_tests APPEND PROPERTY LABELS performance)
 set_tests_properties(performance_tests PROPERTIES RUN_SERIAL TRUE)
 if(BUILD_GUI)
-    # These scenarios open many Qt views or bound child startup+shutdown by6s.
+    # These scenarios open many Qt views, bound child startup+shutdown by6s,
+    # or measure temporal refresh responsiveness across many graph revisions.
     # Six concurrent full applications exceeded their existing deadlines.
-    set_tests_properties(numeric_graph_action_tests numeric_shutdown_tests PROPERTIES RUN_SERIAL TRUE)
+    set_tests_properties(numeric_graph_action_tests numeric_shutdown_tests
+        numeric_application_temporal_fft numeric_application_temporal_fft_44100 PROPERTIES RUN_SERIAL TRUE)
 endif()
 set_tests_properties(numeric_presentation_tests PROPERTIES LABELS "quick;component" TIMEOUT 15)
 add_desktop_check(plot_viewport_component_tests Qt6::Core)

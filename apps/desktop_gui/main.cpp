@@ -2,11 +2,24 @@
 #include <barelief/quick/quick_ui.h>
 #include <barelief/render_preparation_policy.h>
 #include <core/telemetry.h>
+#include "package_verification_probe.h"
 #if BARELIEF_DEV_TELEMETRY
 #include "native_performance_trace.h"
 #include "dev_telemetry_ui.h"
 #endif
 #include <QElapsedTimer>
+
+namespace {
+void configure_graphics() {
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    ui::quick::configure();
+    // Docked scenes and their settings share native hosts. A texture settings
+    // sidebar would keep the entire window on GUI-thread RHI composition.
+    // Proxy-embedded diagnostic plots explicitly keep their texture host.
+    presentation::RenderPreparationPolicy::plot_host=presentation::PlotHost::NativeWindow;
+    presentation::RenderPreparationPolicy::piano_host=presentation::PlotHost::NativeWindow;
+}
+}
 
 int main(int argc, char* argv[]) {
     core::telemetry::Session telemetry;
@@ -16,14 +29,9 @@ int main(int argc, char* argv[]) {
     QElapsedTimer startup;if(tracing){startup.start();native_performance_trace::milestone("main_entry",0);}
     const auto entryForeground=tracing?native_performance_trace::foregroundSnapshot():QJsonObject{};
 #endif
-    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
-    ui::quick::configure();
-    // Docked scenes and their settings share native hosts. A texture settings
-    // sidebar would keep the entire window on GUI-thread RHI composition.
-    // Proxy-embedded diagnostic plots explicitly keep their texture host.
-    presentation::RenderPreparationPolicy::plot_host=presentation::PlotHost::NativeWindow;
-    presentation::RenderPreparationPolicy::piano_host=presentation::PlotHost::NativeWindow;
+    configure_graphics();
     CoreApplication app(argc, argv);
+    install_package_verification_probe(app);
 #if BARELIEF_DEV_TELEMETRY
     install_dev_telemetry_ui();
     if(tracing)native_performance_trace::milestone("constructor_complete",startup.elapsed());

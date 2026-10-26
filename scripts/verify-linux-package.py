@@ -63,7 +63,7 @@ def check_gui(root, environment, temporary, evidence):
         try:
             wait_for_server(engine, port)
             gui_environment = dict(environment, QT_QPA_PLATFORM="xcb", LIBGL_ALWAYS_SOFTWARE="1",
-                                   CORE_APP_TRACE_FILE=str(trace), CORE_APP_TRACE_PASSIVE="1")
+                                   BARELIEF_PACKAGE_PROBE_FILE=str(trace))
             with (evidence / "installed-gui.log").open("w") as gui_log:
                 subprocess.run([str(root / "bin/Barelief"), "--config", str(config),
                                 "--remote-host", "127.0.0.1", "--remote-port", str(port)],
@@ -72,7 +72,11 @@ def check_gui(root, environment, temporary, evidence):
             output = (evidence / "installed-gui.log").read_text()
             if re.search(r"module .* is not installed|Error loading QML|failed to load component", output):
                 raise RuntimeError("Packaged GUI could not load its QML dependencies")
+            if not trace.is_file():
+                raise RuntimeError("Packaged GUI did not produce its delivery report")
             report = json.loads(trace.read_text())
+            if report.get("schema") != 1 or report.get("kind") != "packaged_gui_delivery":
+                raise RuntimeError("Packaged GUI produced an unsupported delivery report")
             delivery = {key: report[key] for key in
                         ("numeric_frames_delivered", "history_rows_delivered", "history_snapshots_delivered")}
             if not report["sample_started"] or not any(value > 0 for value in delivery.values()):
@@ -99,7 +103,7 @@ def main():
     evidence = args.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
     environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith(("QT_", "QML", "LD_", "CORE_APP_TRACE"))}
+                   if not key.startswith(("QT_", "QML", "LD_", "CORE_APP_TRACE", "BARELIEF_PACKAGE_PROBE"))}
     with tempfile.TemporaryDirectory(prefix="barelief-package-") as directory:
         temporary = Path(directory)
         command(["dpkg-deb", "--extract", str(args.package.resolve()), str(temporary)], environment)

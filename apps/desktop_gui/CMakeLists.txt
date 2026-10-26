@@ -25,7 +25,7 @@ qt_add_resources(desktop_gui_composition barelief_licenses PREFIX "/barelief"
 target_include_directories(desktop_gui_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(desktop_gui_composition PUBLIC core_app_components desktop_gui_configuration desktop_numeric_defaults desktop_numeric_remote desktop_numeric_routing desktop_processor_discovery
     PRIVATE desktop_analysis desktop_resampling)
-add_executable(core_app main.cpp)
+add_executable(core_app main.cpp package_verification_probe.cpp)
 if(BARELIEF_DEV_TELEMETRY)
     target_sources(core_app PRIVATE dev_telemetry_ui.cpp)
     set(BARELIEF_TRACY_PROFILER_PATH "${CMAKE_SOURCE_DIR}/.agent-workspace/tools/tracy/0.14.1/tracy-profiler.exe"

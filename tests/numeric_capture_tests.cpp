@@ -220,7 +220,13 @@ static void downstream_error_preserves_capture_continuity() {
     EngineCommand command;command.kind=EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();engine.submit(command);
     require(wait([&]{return replied;}) && accepted && probe,"error isolation Apply");
     unsigned boundaries=0,sourceFrames=0,errors=0;std::size_t windowPrefix=4096;
-    const auto token=engine.subscribe_numeric_tap({},[&](const DeliveredNumericFrame& delivered){
+    // Observe only the three outputs under test, rather than exhausting each
+    // endpoint's bounded FIFO share with unrelated inputs and metadata ports.
+    const std::vector<EndpointIdentity> endpoints{
+        {graph.graph_id,graph.nodes[0].id,domain::PortDirection::Output,0},
+        {graph.graph_id,graph.nodes[2].id,domain::PortDirection::Output,0},
+        {graph.graph_id,graph.nodes[1].id,domain::PortDirection::Output,0}};
+    const auto token=engine.subscribe_numeric_tap(endpoints,[&](const DeliveredNumericFrame& delivered){
         observe_downstream_error(delivered,graph.nodes[0].id,graph.nodes[2].id,graph.nodes[1].id,sourceFrames,boundaries,errors,windowPrefix);
     },{});require(token!=0,"error isolation tap");
     for(unsigned packet=0;packet<32;++packet){auto frame=tones(17);frame.sample_position=packet*256;frame.discontinuity=packet==0;
@@ -229,8 +235,9 @@ static void downstream_error_preserves_capture_continuity() {
         for(auto& value:frame.samples)value*=1e22f;
         probe->audio(frame);QCoreApplication::processEvents();
     }
-    require(wait([&]{return sourceFrames==32 && errors>0;}),"failed downstream operation not observed");
+    const bool observed=wait([&]{return sourceFrames==32 && errors>0;});
     std::fprintf(stderr,"error isolation: source=%u boundaries=%u rejected=%u windowPrefix=%zu\n",sourceFrames,boundaries,errors,windowPrefix);
+    require(observed,"failed downstream operation not observed");
     require(boundaries==1 && windowPrefix<2,"downstream error fabricated capture gaps and cleared rolling window");
     engine.unsubscribe_numeric_tap(token);
 }
