@@ -2,6 +2,16 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Sum squared window coefficients</source><translation>Суммировать квадраты коэффициентов окна</translation></message>
+    <message><source>FFT magnitude: raw or window-scaled</source><translation>Модуль FFT: исходный или делённый на сумму окна</translation></message>
+    <message><source>Window-scaled magnitude</source><translation>Модуль FFT, делённый на сумму окна</translation></message>
+    <message><source>One-sided peak amplitude</source><translation>Пиковая амплитуда одностороннего спектра</translation></message>
+    <message><source>One-sided RMS amplitude</source><translation>RMS-амплитуда одностороннего спектра</translation></message>
+    <message><source>Power spectrum (spectrum scaling)</source><translation>Спектр мощности (нормировка spectrum)</translation></message>
+    <message><source>RMS amplitude</source><translation>RMS-амплитуда</translation></message>
+    <message><source>Bin power</source><translation>Мощность бина</translation></message>
+    <message><source>Bin power (PSD x frequency step)</source><translation>Мощность бина (PSD × шаг частоты)</translation></message>
+    <message><source>Bin power (PSD x bin width)</source><translation>Мощность бина (PSD × ширина бина)</translation></message>
     <message><source>Trusted band: 0–0.40 × min(source Fs, %1 Hz), evaluated per track.</source><translation>Достоверная полоса: 0–0,40 × min(исходная Fs, %1 Гц), определяется для каждого трека.</translation></message>
     <message><source>Scanned</source><translation>Просканировано</translation></message>
     <message><source>%1 · %2 s
@@ -32,7 +42,7 @@
     <message><source>Calculated corrected spectrum</source><translation>Расчётный спектр после коррекции</translation></message>
     <message><source>Show calculated corrected spectrum</source><translation>Показать расчётный спектр после коррекции</translation></message>
     <message><source>Reset plot view</source><translation>Сбросить масштаб графиков</translation></message>
-    <message><source>Raw FFT magnitude</source><translation>Модуль FFT</translation></message>
+    <message><source>Raw FFT magnitude</source><translation>Исходный модуль FFT</translation></message>
     <message><source>Analysis and normalization</source><translation>Анализ и нормировка</translation></message>
     <message><source>Music scan</source><translation>Сканирование музыки</translation></message>
     <message><source>Unity (0 dB)</source><translation>Без усиления (0 дБ)</translation></message>

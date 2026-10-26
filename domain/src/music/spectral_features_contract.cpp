@@ -32,7 +32,7 @@ struct SpectralContract {
 };
 bool ordinary_spectrum(const SpectralContract& context) {
     const auto& input=context.input;
-    return input.quantity==Quantity::SpectrumPower && input.unit==NumericUnit::SquaredAmplitude &&
+    return (input.quantity==Quantity::SpectrumPower || input.quantity==Quantity::SpectrumBinPower) && input.unit==NumericUnit::SquaredAmplitude &&
         input.representation.normalization==Normalization::None && input.shape.rank==Rank::Vector &&
         input.shape.axes[0]==Axis::Bin && context.fixed() && input.shape.extents[0].maximum>=2;
 }
@@ -76,7 +76,10 @@ constexpr Projection projections[]{
     {"magnitude",Quantity::SpectrumMagnitude,NumericUnit::RawAmplitude},
     {"peak_amplitude",Quantity::SpectrumPeakAmplitude,NumericUnit::RawAmplitude},
     {"power",Quantity::SpectrumPower,NumericUnit::SquaredAmplitude},
-    {"psd",Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz}};
+    {"psd",Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz},
+    {"rms_amplitude",Quantity::SpectrumRmsAmplitude,NumericUnit::RawAmplitude},
+    {"bin_power",Quantity::SpectrumBinPower,NumericUnit::SquaredAmplitude},
+    {"window_scaled_magnitude",Quantity::SpectrumWindowScaledMagnitude,NumericUnit::RawAmplitude}};
 bool projection_input(const SpectralContract& context,std::size_t size) {
     const auto& input=context.input;
     if(input.quantity!=Quantity::SpectrumComplex || input.unit!=NumericUnit::RawAmplitude || input.shape.rank!=Rank::Matrix || input.shape.axes!=std::array{Axis::Bin,Axis::Component})return false;
@@ -119,7 +122,7 @@ constexpr BandStatistic band_statistics[]{
     {"sum_energy",Quantity::BroadbandEnergy},{"mean_power",Quantity::BroadbandPower},
     {"rms",Quantity::BroadbandRms,NumericUnit::RawAmplitude},{"maximum",Quantity::BroadbandMaximum},{"flux",Quantity::SpectralFlux}};
 Status broadband_features(SpectralContract& context) {
-    if(!spectrum_grid(context) || context.input.quantity!=Quantity::SpectrumPower)return Status::incompatible_contract;
+    if(!spectrum_grid(context))return Status::incompatible_contract;
     std::size_t count=0;if(!band_boundaries(context,count))return Status::invalid_argument;
     const auto statistic=context.text("statistic");
     const auto selected=std::find_if(std::begin(band_statistics),std::end(band_statistics),[&](const auto& p){return p.id==statistic;});
@@ -132,7 +135,8 @@ bool salience_representation(const SpectralContract& context) {
     const auto representation=context.text("input_representation");
     const auto selected=std::find_if(std::begin(projections),std::end(projections),[&](const auto& p){return p.id==representation;});
     if(selected==std::end(projections) || representation=="real" || representation=="imaginary" || representation=="phase")return false;
-    return context.input.quantity==selected->quantity && context.input.unit==selected->unit;
+    const bool legacy_scaled=representation=="magnitude" && context.input.quantity==Quantity::SpectrumWindowScaledMagnitude;
+    return (legacy_scaled || context.input.quantity==selected->quantity) && context.input.unit==selected->unit;
 }
 bool salience_nyquist(const SpectralContract& context,bool& out) {
     const auto& node=context.node;

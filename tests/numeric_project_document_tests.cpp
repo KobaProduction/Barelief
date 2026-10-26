@@ -944,7 +944,7 @@ class FreshProjectScenario {
     }
     bool invalid_inline_flags() {
         const auto before=std::string(document.source.bytes());
-        for(const auto invalid:{QJsonArray{"enabled","enabled"},QJsonArray{42},QJsonArray{""}}) {
+        for(const auto& invalid:{QJsonArray{"enabled","enabled"},QJsonArray{42},QJsonArray{""}}) {
             presentation.node_presentations["7"]=QJsonObject{{"inline_parameters",invalid}};
             CHECK(!stage_numeric_presentation(document,presentation,document));
             CHECK(document.source.bytes()==before);
@@ -1040,8 +1040,8 @@ class NodeDisplayNameScenario {
         return stage_and_project(document);
     }
     bool named_projection() const {
-        CHECK(view()["display_name"]==name);
-        CHECK(view()["inline_parameters"].toArray()==QJsonArray{"converter.overflow"});
+        CHECK(view().value("display_name")==name);
+        CHECK(view().value("inline_parameters").toArray()==QJsonArray{"converter.overflow"});
         return future_presentation_preserved(document);
     }
     bool processing_unchanged() {
@@ -1051,12 +1051,12 @@ class NodeDisplayNameScenario {
     bool maximum_name() {
         delta.node_presentations["7"]=QJsonObject{{"display_name",QString(256,QChar(0x0416))}};
         if(!stage_and_project(document))return false;
-        CHECK(view()["display_name"].toString()==QString(256,QChar(0x0416)));
+        CHECK(view().value("display_name").toString()==QString(256,QChar(0x0416)));
         return true;
     }
     bool invalid_names_refused() {
         const auto before=std::string(document.source.bytes());
-        for(const QJsonValue invalid:{QJsonValue(42),QJsonValue(QString(257,'x')),QJsonValue(QString("bad")+QChar(1))}) {
+        for(const QJsonValue& invalid:{QJsonValue(42),QJsonValue(QString(257,'x')),QJsonValue(QString("bad")+QChar(1))}) {
             delta.node_presentations["7"]=QJsonObject{{"display_name",invalid}};
             CHECK(!stage_numeric_presentation(document,delta,document));
             CHECK(document.source.bytes()==before);
@@ -1071,20 +1071,20 @@ class NodeDisplayNameScenario {
             labels[QString::number(id)]=QJsonObject{{"display_name",QString("Metric %1").arg(id)},{"enabled",true}};
         delta.node_presentations["7"]=QJsonObject{{"scalar_inputs",labels}};
         if(!stage_and_project(document))return false;
-        CHECK(view()["scalar_inputs"].toObject().size()==12);
-        CHECK(view()["scalar_inputs"].toObject().value("0").toObject().value("enabled")==false);
+        CHECK(view().value("scalar_inputs").toObject().size()==12);
+        CHECK(view().value("scalar_inputs").toObject().value("0").toObject().value("enabled")==false);
         return true;
     }
     bool replace_scalar_labels() {
         delta.node_presentations["7"]=QJsonObject{{"scalar_inputs",QJsonObject{{"3",QJsonObject{{"display_name","Peak"},{"enabled",true}}}}}};
         if(!stage_and_project(document))return false;
-        CHECK(!view()["scalar_inputs"].toObject().contains("0"));
+        CHECK(!view().value("scalar_inputs").toObject().contains("0"));
         return true;
     }
     bool empty_name() {
         delta.node_presentations["7"]=QJsonObject{{"display_name",""}};
         if(!stage_and_project(document))return false;
-        CHECK(view()["display_name"].isString() && view()["display_name"].toString().isEmpty());
+        CHECK(view().value("display_name").isString() && view().value("display_name").toString().isEmpty());
         return true;
     }
     bool save_and_reload() {
@@ -1096,7 +1096,7 @@ class NodeDisplayNameScenario {
     }
     bool reloaded_name() {
         CHECK(read_numeric_presentation(reloaded,projected));
-        CHECK(view()["display_name"].toString().isEmpty());
+        CHECK(view().value("display_name").toString().isEmpty());
         return future_presentation_preserved(reloaded);
     }
     bool save_dc_flag(bool shown) {
@@ -1108,7 +1108,7 @@ class NodeDisplayNameScenario {
     bool read_dc_flag(bool shown,NumericProjectDocument& copy) {
         CHECK(load_numeric_project(path,copy,draft));
         CHECK(read_numeric_presentation(copy,projected));
-        CHECK(view()["show_dc_outputs"]==shown);
+        CHECK(view().value("show_dc_outputs")==shown);
         return future_presentation_preserved(copy);
     }
     bool dc_roundtrip() {
@@ -1121,7 +1121,7 @@ class NodeDisplayNameScenario {
     }
     bool invalid_dc_flags() {
         const auto before=std::string(reloaded.source.bytes());
-        for(const QJsonValue invalid:{QJsonValue(1),QJsonValue("true"),QJsonValue(QJsonArray{})}) {
+        for(const QJsonValue& invalid:{QJsonValue(1),QJsonValue("true"),QJsonValue(QJsonArray{})}) {
             delta.node_presentations["7"]=QJsonObject{{"show_dc_outputs",invalid}};
             CHECK(!stage_numeric_presentation(reloaded,delta,reloaded));
             CHECK(reloaded.source.bytes()==before);
@@ -1224,7 +1224,7 @@ class PresetDisplayScenario {
     }
     bool invalid_projections() {
         const auto before=projected;
-        for(const auto invalid:{QByteArray("{\"version\":99}"),QByteArray("{\"version\":1,\"version\":1}"),
+        for(const auto& invalid:{QByteArray("{\"version\":99}"),QByteArray("{\"version\":1,\"version\":1}"),
             QByteArray("{\"version\":1,\"show_spectrogram\":0}"),QByteArray("{\"version\":1,\"workspace\":[]}"),
             QByteArray("{\"version\":1,\"workspace\":{\"layout_version\":1.5}}"),
             QByteArray("{\"version\":1,\"workspace\":{\"visibility\":{\"fft\":0}}}"),
@@ -2099,6 +2099,14 @@ public:
 };
 static bool document_version_boundary() { DocumentVersionBoundaryScenario scenario;return scenario.run(); }
 
+static bool second_node_raw(const NumericProjectDocument& source,std::string& raw){
+    project_storage::NodeHandle scene,nodes;
+    CHECK(project_storage::find_unique_member(source.source,source.source.root(),"scene_graph",scene));
+    CHECK(project_storage::find_unique_member(source.source,scene,"nodes",nodes));
+    project_storage::NodeView array,first,second;
+    CHECK(source.source.view(nodes,array));CHECK(source.source.view(array.first_child,first));
+    CHECK(source.source.view(first.next_sibling,second));raw=std::string(second.raw);return true;
+}
 static bool selective_node_settings() {
     auto graph=sample();auto other=graph.nodes.front();other.id=8;graph.nodes.push_back(other);
     NumericProjectDocument source;CHECK(create_numeric_project(graph,{},source));
@@ -2106,12 +2114,7 @@ static bool selective_node_settings() {
     raw.replace("\"id\":7","\"id\":7,\"future\":1e9999");
     CHECK(read_numeric_project(raw,source));
     const auto original=std::string(source.source.bytes());
-    project_storage::NodeHandle scene,nodes;
-    CHECK(project_storage::find_unique_member(source.source,source.source.root(),"scene_graph",scene));
-    CHECK(project_storage::find_unique_member(source.source,scene,"nodes",nodes));
-    project_storage::NodeView array,first,second;
-    CHECK(source.source.view(nodes,array));CHECK(source.source.view(array.first_child,first));
-    CHECK(source.source.view(first.next_sibling,second));const auto untouched=std::string(second.raw);
+    std::string untouched;CHECK(second_node_raw(source,untouched));
     auto changed=graph.nodes.front();changed.enabled=false;
     NumericProjectDocument staged;CHECK(stage_numeric_nodes(source,std::span(&changed,1),staged));
     NumericProcessingGraph result;CHECK(read_numeric_draft(staged,result));
@@ -2123,8 +2126,23 @@ static bool selective_node_settings() {
     CHECK(!stage_numeric_nodes(source,std::span(&changed,1),staged));CHECK(staged.source.bytes()==before);
     return true;
 }
+static bool spectral_quantity_roundtrip() {
+    for(const auto quantity:{Quantity::SpectrumRmsAmplitude,Quantity::SpectrumBinPower,Quantity::SpectrumWindowScaledMagnitude}){
+        auto graph=sample();auto& output=graph.nodes.front().outputs.front().contract;
+        auto value=std::get<NumericContract>(output.view());value.dtype=DType::Float32;value.quantity=quantity;
+        value.unit=quantity==Quantity::SpectrumBinPower?NumericUnit::SquaredAmplitude:NumericUnit::RawAmplitude;
+        OwnedProcessingContract owner;
+        CHECK(own_processing_contract(value,FrameLimits{64,1000000,16777216,16777216,1024,16777216},16777216,owner)==Status::ok);
+        output=std::move(owner);QByteArray encoded;NumericProcessingGraph decoded;
+        CHECK(encode_numeric_graph(graph,encoded));CHECK(decode_numeric_graph(encoded,decoded));
+        const auto restored=std::get<NumericContract>(decoded.nodes.front().outputs.front().contract.view());
+        CHECK(restored.quantity==quantity && restored.unit==value.unit && restored.dtype==DType::Float32);
+    }
+    return true;
+}
 static int run_document_scenarios() {
     int failures=0;
+    failures+=!spectral_quantity_roundtrip();
     failures+=!selective_node_settings();
     for(auto test:{malformed_position_projection,typed_array_storage_roundtrip,typed_array_storage_refusal,string_encoded_array_project_roundtrip,malformed_string_array_project_refused,confirmed_replacement,explicit_binding_storage,exact_clipboard_and_file,refusal_and_output_rollback,unsupported_version_diagnostics,alternatives_and_commit_failure,draft_applied_and_atomic_publication,editor_snapshot_boundary,retained_layout_identity_oracles,settings_arrays_and_opaque_refusal,fresh_project_and_node_presentation,node_display_name_persistence,preset_display_snapshot_roundtrip,node_adapter_storage_and_projection,presentation_vertical,visual_preset_options_refusal,network_projection_boundary,document_version_boundary})failures+=!test();
     return failures;

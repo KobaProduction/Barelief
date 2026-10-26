@@ -181,6 +181,8 @@ const char* amplitude_caption(signal_contracts::Quantity quantity,bool normalize
     case Q::SpectrumMagnitude:return "Compensated FFT magnitude";
     case Q::SpectrumPower:return "Power spectrum";
     case Q::SpectrumPsd:return "Power spectral density (PSD)";
+    case Q::SpectrumRmsAmplitude:return "RMS amplitude spectrum";
+    case Q::SpectrumBinPower:return "Bin power (PSD x bin width)";
     case Q::SpectrumAmplitudeDb:return "Amplitude, dB";
     case Q::SpectrumPowerDb:return "Power, dB";
     case Q::SpectrumPsdDb:return "PSD, dB";

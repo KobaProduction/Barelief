@@ -26,7 +26,8 @@ Status prepare_polar(OperationKernelState& kernel,PlanNode& node,const ResolvedP
     if(resolve_processing_parameter(n,"positive_half",positive)!=Status::ok || !std::holds_alternative<bool>(positive) ||
        resolve_processing_parameter(n,"normalize",normalized)!=Status::ok || !std::holds_alternative<bool>(normalized))return Status::invalid_argument;
     node.half_last=std::get<bool>(positive);
-    return kernel.spectrum_scaling.prepare(fs,coherent,power,{projection_kind(operation_text(n,"representation")),std::get<bool>(normalized)})?Status::ok:Status::invalid_argument;
+    const auto fft_size=node.half_last?2*kernel.input.size():kernel.input.size()+1;
+    return kernel.spectrum_scaling.prepare(fs,coherent,power,{projection_kind(operation_text(n,"representation")),std::get<bool>(normalized)},fft_size)?Status::ok:Status::invalid_argument;
 }
 Status prepare_paired(OperationKernelState& kernel,PlanNode& node,const ResolvedProcessingNode& n) {
     const auto samples=kernel.input.size();kernel.imaginary.resize(samples);

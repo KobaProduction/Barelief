@@ -425,7 +425,7 @@ void music_contract_cases() {
     contract.channel_order=channels;contract.clock={"music",{1,32768},32768};
     contract.representation.encoding=StorageEncoding::FixedLittleEndian;
     contract.shape={Rank::Matrix,{Axis::Bin,Axis::Component},{ExtentBounds{2,2},ExtentBounds{2,2}}};
-    for(int quantity=int(Quantity::SpectrumComplex);quantity<=int(Quantity::NoteSalience);++quantity)
+    for(int quantity=int(Quantity::SpectrumComplex);quantity<=int(Quantity::SpectrumWindowScaledMagnitude);++quantity)
         for(const auto unit:{NumericUnit::Radians,NumericUnit::SquaredAmplitude,NumericUnit::SquaredAmplitudePerHertz,NumericUnit::Decibels}) {
             contract.quantity=Quantity(quantity);contract.unit=unit;
             auto message=base(contract,payload,planes);message.numeric.actual={2,2};Buffers buffers;

@@ -45,13 +45,19 @@ bool grid_matches(const NumericContract& input,std::uint64_t fs,std::uint64_t ff
     return std::abs(step-expected)<=std::numeric_limits<double>::epsilon()*expected &&
         std::abs(origin-first*expected)<=std::numeric_limits<double>::epsilon()*std::max(1.L,first*expected);
 }
+bool amplitude_representation_matches(std::string_view representation,Quantity quantity) {
+    if(representation=="magnitude")return quantity==Quantity::SpectrumMagnitude || quantity==Quantity::SpectrumWindowScaledMagnitude;
+    if(representation=="peak_amplitude")return quantity==Quantity::SpectrumPeakAmplitude;
+    if(representation=="rms_amplitude")return quantity==Quantity::SpectrumRmsAmplitude;
+    return representation=="window_scaled_magnitude" && quantity==Quantity::SpectrumWindowScaledMagnitude;
+}
 bool representation_matches(const ConfiguredProcessingNode& n,const NumericContract& input) {
     const auto representation=text(n,"representation");
-    if(representation=="power")return input.quantity==Quantity::SpectrumPower && input.unit==NumericUnit::SquaredAmplitude;
-    if(representation=="psd")return input.quantity==Quantity::SpectrumPsd && input.unit==NumericUnit::SquaredAmplitudePerHertz;
-    if(representation=="magnitude")return input.quantity==Quantity::SpectrumMagnitude && input.unit==NumericUnit::RawAmplitude;
-    if(representation=="peak_amplitude")return input.quantity==Quantity::SpectrumPeakAmplitude && input.unit==NumericUnit::RawAmplitude;
-    return false;
+    if(input.unit==NumericUnit::RawAmplitude)return amplitude_representation_matches(representation,input.quantity);
+    if(input.unit==NumericUnit::SquaredAmplitude)return
+        (representation=="power" && input.quantity==Quantity::SpectrumPower) ||
+        (representation=="bin_power" && input.quantity==Quantity::SpectrumBinPower);
+    return representation=="psd" && input.quantity==Quantity::SpectrumPsd && input.unit==NumericUnit::SquaredAmplitudePerHertz;
 }
 bool profile_spectrum_geometry(const NumericContract& input,double fft,double fs,double first,bool half,bool dc,bool nyquist) {
     const auto size=static_cast<std::uint64_t>(fft);if(size&(size-1))return false;

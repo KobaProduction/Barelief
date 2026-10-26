@@ -71,7 +71,7 @@ NAMES(DType,"Int8","UInt8","Int16","UInt16","Int32","UInt32","Int64","UInt64","F
 NAMES(Rank,"Scalar","Vector","Matrix");
 NAMES(Semantic,"Scalar","PCM","Window","Windowed","SpectrumMagnitude","MelEnergy","History","Numeric");
 NAMES(Axis,"None","Sample","Bin","Band","Time","Declared","Component");
-NAMES(Quantity,"Unspecified","Amplitude","SpectrumMagnitude","MelEnergy","FilledFrameCount","Packet","SpectrumComplex","SpectrumReal","SpectrumImaginary","SpectrumPhase","SpectrumPeakAmplitude","SpectrumPower","SpectrumPsd","SpectrumAmplitudeDb","SpectrumPowerDb","SpectrumPsdDb","BroadbandEnergy","BroadbandPower","BroadbandRms","BroadbandMaximum","SpectralFlux","NoteSalience");
+NAMES(Quantity,"Unspecified","Amplitude","SpectrumMagnitude","MelEnergy","FilledFrameCount","Packet","SpectrumComplex","SpectrumReal","SpectrumImaginary","SpectrumPhase","SpectrumPeakAmplitude","SpectrumPower","SpectrumPsd","SpectrumAmplitudeDb","SpectrumPowerDb","SpectrumPsdDb","BroadbandEnergy","BroadbandPower","BroadbandRms","BroadbandMaximum","SpectralFlux","NoteSalience","SpectrumRmsAmplitude","SpectrumBinPower","SpectrumWindowScaledMagnitude");
 NAMES(NumericUnit,"Unspecified","NormalizedAmplitude","RawAmplitude","Frames","Hertz","Seconds","Values","Radians","SquaredAmplitude","SquaredAmplitudePerHertz","Decibels");
 NAMES(StorageEncoding,"Native","FixedLittleEndian","FixedBigEndian","PackedSigned24LE","PackedSigned24BE");
 NAMES(BitPlacement,"LeastSignificant","MostSignificant");

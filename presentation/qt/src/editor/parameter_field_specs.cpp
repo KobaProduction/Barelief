@@ -35,6 +35,7 @@ static const QMap<QString, const char *> titles{{"profile","Frequency profile"},
 {"feature_rate_fps","Feature cadence, frames/s"},{"feature_bins","R4 feature bands"},{"budget_ops","ACF budget, cost units"},
 {"input","Input contract"},{"grid","Frequency grid"},{"training","Training settings"},{"resampler","Resampler settings"},
 {"input_representation","Input representation"},{"peak_weight","Peak weighting"},{"power_bandwidth_hz","Power bandwidth, Hz"},
+{"power","Sum squared window coefficients"},
 {"frontend_declared","Declared audio frontend"}, {"include_dc","Include DC"}, {"include_nyquist","Include Nyquist"},
 {"channel_policy","Channel policy"}, {"channel_index","Channel index"}, {"analysis_interval_num","Analysis interval numerator"}, {"analysis_interval_den","Analysis interval denominator"},
 {"resampler_mode","Resampling method"}, {"resampler_quality","Resampler quality"}, {"representation","Spectral representation"}, {"positive_half","One-sided spectrum (DC separate)"},
@@ -93,8 +94,8 @@ ParameterChoices resampler_choices() {
 ParameterChoices spectrum_representation_choices(const QString& kind) {
     ParameterChoices result;
     if(kind=="AmplitudePhase")presentation::amplitude_spectrum_choices(result.values,result.labels);
-    else result={{"real","imaginary","phase","magnitude","peak_amplitude","power","psd"},
-                 {"Real","Imaginary","Phase, radians","Raw magnitude","Peak amplitude","Power","PSD"}};
+    else result={{"real","imaginary","phase","magnitude","peak_amplitude","power","psd","rms_amplitude","bin_power","window_scaled_magnitude"},
+                 {"Real","Imaginary","Phase, radians","Raw FFT magnitude","Peak amplitude","Power spectrum","PSD","RMS amplitude","Bin power (PSD x bin width)","Window-scaled magnitude"}};
     return result;
 }
 }
@@ -103,9 +104,9 @@ namespace {
 ParameterChoices representation_parameter_choices(const QString& kind,const QString& key) {
     if(key=="input_representation") {
         if(kind=="BroadbandRow" || kind=="NoteSpectrum")
-            return {{"linear","magnitude","peak_amplitude","power","psd"},{"Linear values","Raw magnitude","Peak amplitude","Power","PSD"}};
+            return {{"linear","magnitude","peak_amplitude","power","psd","rms_amplitude","bin_power","window_scaled_magnitude"},{"Linear values","Raw FFT magnitude","Peak amplitude","Power spectrum","PSD","RMS amplitude","Bin power","Window-scaled magnitude"}};
         if(kind=="MusicalSpectrogram" || kind=="NoteSalience")
-            return {{"magnitude","peak_amplitude","power","psd"},{"Raw magnitude","Peak amplitude","Power","PSD"}};
+            return {{"magnitude","peak_amplitude","power","psd","rms_amplitude","bin_power","window_scaled_magnitude"},{"Raw FFT magnitude","Peak amplitude","Power spectrum","PSD","RMS amplitude","Bin power","Window-scaled magnitude"}};
     }
     if(key=="representation")return spectrum_representation_choices(kind);
     return {};

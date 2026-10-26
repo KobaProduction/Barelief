@@ -6,6 +6,7 @@
 #include <speex_backend.h>
 #endif
 #include <array>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <source_location>
@@ -92,11 +93,17 @@ void refuses_wrong_input() {
     auto p=profile();p.music_enabled=false;std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
     check(PreparedGraph::prepare_numeric(graph(),p,plan,context)!=Status::ok);
 }
-void example_is_preparable() {
-    const auto example=numeric_rhythm_graph();
+bool has_measured_profile(const domain::ConfiguredProcessingNode& node){
+    const auto& parameters=std::get<TransformProcessingParameters>(node.parameters).values;
+    for(const auto& f:parameters)if(f.key=="values"){
+        if(const auto* profile=std::get_if<NumericArray>(&f.value))return profile->values.size()==2048 && profile->values[0]>1;
+    }
+    return false;
+}
+struct ResearchTopology {
     unsigned real_fourier=0,duplicate_rfft=0;bool shared_history=false,combined_96=false,quantized=false;
     bool no_custom_features=true,existing_broadband=false,existing_notes=false,measured_profile=false;
-    for(const auto& node:example.nodes){
+    void include(const domain::ConfiguredProcessingNode& node){
         real_fourier+=unsigned(node.kind=="RealFourier");
         duplicate_rfft+=unsigned(node.kind=="RFFT");
         no_custom_features=no_custom_features && node.kind!="RhythmFeatures" && node.id!=1101;
@@ -113,20 +120,19 @@ void example_is_preparable() {
             combined_96=c.dtype==DType::UInt8 && c.shape.extents[0].maximum==512 &&
                 c.shape.extents[1]==ExtentBounds{96,96};
         }
-        if(node.id==1005){
-            const auto& parameters=std::get<TransformProcessingParameters>(node.parameters).values;
-            for(const auto& f:parameters)if(f.key=="values"){
-                if(const auto* profile=std::get_if<NumericArray>(&f.value))
-                    measured_profile=profile->values.size()==2048 && profile->values[0]>1;
-            }
-        }
+        if(node.id==1005)measured_profile=has_measured_profile(node);
     }
+    bool valid()const{return real_fourier==1 && duplicate_rfft==0 && shared_history && combined_96 &&
+          quantized && no_custom_features && existing_broadband && existing_notes && measured_profile;}
+};
+void example_is_preparable() {
+    const auto example=numeric_rhythm_graph();ResearchTopology topology;
+    for(const auto& node:example.nodes)topology.include(node);
     for(const auto& edge:example.edges){
-        if(edge.from==7 && edge.to==1102)shared_history=true;
-        if(edge.from==1007 && edge.to==1111)quantized=true;
+        if(edge.from==7 && edge.to==1102)topology.shared_history=true;
+        if(edge.from==1007 && edge.to==1111)topology.quantized=true;
     }
-    check(real_fourier==1 && duplicate_rfft==0 && shared_history && combined_96 &&
-          quantized && no_custom_features && existing_broadband && existing_notes && measured_profile);
+    check(topology.valid());
     std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
     // The shipped desktop example uses the external SpeexDSP backend.
     // Portable SDK tests retain the same topology with its allowed FIR fallback.
@@ -143,5 +149,42 @@ void example_is_preparable() {
     check(PreparedGraph::prepare_numeric(portable,p,plan,context)==Status::ok);
 #endif
 }
+void research_history_contract() {
+    const auto research=numeric_music_graph();
+    check((research.execution_interval==Ratio{1,60}));
+    bool found_history=false,found_quantizer=false,found_concat=false;
+    for(const auto& node:research.nodes){
+        if(node.id==7){
+            check(node.kind=="Spectrogram" && !node.outputs.empty());
+            const auto& c=std::get<NumericContract>(node.outputs.front().contract.view());
+            check((c.dtype==DType::UInt8 && c.shape.extents[0].maximum==512 && c.shape.extents[1]==ExtentBounds{64,64}));
+            found_history=true;
+        }
+        if(node.id==33)found_quantizer=node.kind=="SpectralQuantize";
+        if(node.id==35)found_concat=node.kind=="ArrayConcat";
+        check(node.id!=17 && node.id!=34 && node.id!=18);
+    }
+    check(found_history && found_quantizer && found_concat);
+    bool broadband=false,notes=false,quantized=false;
+    for(const auto& edge:research.edges){
+        if(edge.from==31 && edge.to==35)broadband=true;
+        if(edge.from==32 && edge.to==35)notes=true;
+        if(edge.from==35 && edge.to==33)quantized=true;
+    }
+    check(broadband && notes && quantized);
 }
-int main(){ring_and_unavailable();refuses_wrong_input();example_is_preparable();}
+double research_parameter(const domain::ConfiguredProcessingNode& node,std::string_view key){
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,node.inputs,node.outputs,&node.parameters,node.enabled};
+    ProcessingParameterView value;check(resolve_processing_parameter(resolved,key,value)==Status::ok);
+    const auto* numeric=std::get_if<NumericLiteral>(&value);check(numeric);
+    return std::visit([](auto v){return double(v);},*numeric);
+}
+void research_window_calibration(){
+    const auto graph=numeric_music_graph();
+    const auto found=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.kind=="NoteSalience";});
+    check(found!=graph.nodes.end());
+    check(std::abs(research_parameter(*found,"coherent_gain")-4095./2)<1e-5);
+    check(std::abs(research_parameter(*found,"power_bandwidth_hz")-1.5*32768./4095)<1e-6);
+}
+}
+int main(){ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();}

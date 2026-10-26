@@ -96,16 +96,18 @@ void apply_stereo_weights(std::span<float> left,std::span<float> right,
     }
 }
 double projected_spectrum_value(SpectrumProjection projection,double real,double imaginary,
-    double sided,double amplitude_scale,double power_scale,double psd_scale) noexcept {
+    double sided,double amplitude_scale,double power_scale,double psd_scale,double bin_power_scale) noexcept {
     const double squared=real*real+imaginary*imaginary;
     switch(projection){
     case SpectrumProjection::Real:return real;
     case SpectrumProjection::Imaginary:return imaginary;
     case SpectrumProjection::Phase:return squared?std::atan2(imaginary,real):0;
-    case SpectrumProjection::Magnitude:return std::sqrt(squared)*amplitude_scale;
+    case SpectrumProjection::Magnitude:case SpectrumProjection::WindowScaledMagnitude:return std::sqrt(squared)*amplitude_scale;
     case SpectrumProjection::PeakAmplitude:return sided*std::sqrt(squared)*amplitude_scale;
     case SpectrumProjection::Power:return sided*squared*power_scale;
     case SpectrumProjection::Psd:return sided*squared*psd_scale;
+    case SpectrumProjection::RmsAmplitude:return std::sqrt(sided*squared)*amplitude_scale;
+    case SpectrumProjection::BinPower:return sided*squared*bin_power_scale;
     }
     return 0;
 }
@@ -532,7 +534,7 @@ void PreparedRfft::split_spectrum(std::size_t packed) noexcept {
     DSP_FFT_END(Split);
 }
 std::span<const SpectrumProjection> amplitude_spectrum_projections() noexcept {
-    static constexpr SpectrumProjection values[]{SpectrumProjection::Magnitude,SpectrumProjection::PeakAmplitude,SpectrumProjection::Power,SpectrumProjection::Psd};
+    static constexpr SpectrumProjection values[]{SpectrumProjection::Magnitude,SpectrumProjection::PeakAmplitude,SpectrumProjection::Power,SpectrumProjection::Psd,SpectrumProjection::RmsAmplitude,SpectrumProjection::BinPower,SpectrumProjection::WindowScaledMagnitude};
     return values;
 }
 std::string_view spectrum_projection_name(SpectrumProjection value) noexcept {
@@ -544,15 +546,32 @@ std::string_view spectrum_projection_name(SpectrumProjection value) noexcept {
     case SpectrumProjection::PeakAmplitude:return "peak_amplitude";
     case SpectrumProjection::Power:return "power";
     case SpectrumProjection::Psd:return "psd";
+    case SpectrumProjection::RmsAmplitude:return "rms_amplitude";
+    case SpectrumProjection::BinPower:return "bin_power";
+    case SpectrumProjection::WindowScaledMagnitude:return "window_scaled_magnitude";
     }return {};
 }
 bool parse_spectrum_projection(std::string_view text,SpectrumProjection& result) noexcept {
-    for(unsigned i=0;i<=unsigned(SpectrumProjection::Psd);++i){const auto value=SpectrumProjection(i);
+    for(unsigned i=0;i<=unsigned(SpectrumProjection::WindowScaledMagnitude);++i){const auto value=SpectrumProjection(i);
         if(spectrum_projection_name(value)==text){result=value;return true;}}
     return false;
 }
 bool is_amplitude_spectrum_projection(SpectrumProjection value) noexcept {
     const auto values=amplitude_spectrum_projections();return std::find(values.begin(),values.end(),value)!=values.end();
+}
+namespace {
+double spectrum_power_value(float value,bool endpoint,const SpectrumPowerPolicy& policy) noexcept {
+    const double squared=double(value)*value;
+    switch(policy.representation){
+    case SpectrumProjection::Magnitude:{const auto calibrated=double(value)/policy.coherent_gain;return calibrated*calibrated*(endpoint?1.:2.);}
+    case SpectrumProjection::WindowScaledMagnitude:return squared*(endpoint?1.:2.);
+    case SpectrumProjection::PeakAmplitude:return squared*(endpoint?1.:.5);
+    case SpectrumProjection::Psd:return double(value)*policy.power_bandwidth_hz;
+    case SpectrumProjection::RmsAmplitude:return squared;
+    case SpectrumProjection::BinPower:return double(value)*(policy.power_bandwidth_hz/policy.bin_hz);
+    default:return value;
+    }
+}
 }
 
 bool PreparedSpectrumPower::prepare(std::size_t input_bins,SpectrumPowerPolicy policy) noexcept {
@@ -568,15 +587,7 @@ bool PreparedSpectrumPower::convert(float value,std::size_t index,float& output)
     if(!std::isfinite(value) || value<0)return false;
     const bool endpoint=(policy_.first_bin==0 && index==0) ||
                         (policy_.include_nyquist && index+1==input_bins_);
-    double power=value;
-    if(policy_.representation==SpectrumProjection::Magnitude){
-        const double calibrated=double(value)/policy_.coherent_gain;
-        power=calibrated*calibrated*(endpoint?1.:2.);
-    }
-    else if(policy_.representation==SpectrumProjection::PeakAmplitude)
-        power=double(value)*value*(endpoint?1.:.5);
-    else if(policy_.representation==SpectrumProjection::Psd)
-        power*=policy_.power_bandwidth_hz;
+    const double power=spectrum_power_value(value,endpoint,policy_);
     if(!std::isfinite(power) || power>std::numeric_limits<float>::max())return false;
     output=float(power);return true;
 }
@@ -600,26 +611,28 @@ bool PreparedSpectrumPower::process(std::span<const float> input,std::span<float
     for(std::size_t index=0;index<input.size();++index){(void)convert(input[index],index,converted);output[index+policy_.first_bin]=converted;}
     return true;
 }
-bool PreparedSpectrumScaling::prepare(double rate,double sum,double squares,SpectrumProjectionOptions options) noexcept {
+bool PreparedSpectrumScaling::prepare(double rate,double sum,double squares,SpectrumProjectionOptions options,std::size_t fft_samples) noexcept {
     ready_=false;
     if(spectrum_projection_name(options.representation).empty() || !std::isfinite(rate) || rate<=0 ||
-       !std::isfinite(sum) || sum<=0 || !std::isfinite(squares) || squares<=0)return false;
+       !std::isfinite(sum) || sum<=0 || !std::isfinite(squares) || squares<=0 ||
+       (options.representation==SpectrumProjection::BinPower && options.compensate && !fft_samples))return false;
     options_=options;amplitude_scale_=options.compensate?1/sum:1;
-    power_scale_=amplitude_scale_*amplitude_scale_;psd_scale_=options.compensate?1/(rate*squares):1;
-    ready_=std::isfinite(amplitude_scale_) && amplitude_scale_>0 && std::isfinite(power_scale_) && power_scale_>0 && std::isfinite(psd_scale_) && psd_scale_>0;
+    power_scale_=amplitude_scale_*amplitude_scale_;psd_scale_=options.compensate?(1/rate)/squares:1;bin_power_scale_=options.compensate?(1/double(fft_samples?fft_samples:1))/squares:1;
+    const auto valid=[](double value){return std::isfinite(value) && value>0;};
+    ready_=valid(amplitude_scale_) && valid(power_scale_) && valid(psd_scale_) && valid(bin_power_scale_);
     return ready_;
 }
 bool PreparedSpectrumScaling::project(float real,float imaginary,bool paired,float& output) const noexcept {
     if(!ready_ || !std::isfinite(real) || !std::isfinite(imaginary))return false;
     const double sided=options_.compensate && paired?2.:1.;
     const double value=projected_spectrum_value(options_.representation,real,imaginary,sided,
-        amplitude_scale_,power_scale_,psd_scale_);
+        amplitude_scale_,power_scale_,psd_scale_,bin_power_scale_);
     if(!std::isfinite(value) || std::abs(value)>std::numeric_limits<float>::max())return false;
     output=float(value);return true;
 }
 bool PreparedSpectrumProjection::prepare(std::size_t n,double rate,WindowScaling window,SpectrumProjectionOptions options) {
     samples_=0;
-    if(n<8 || n>max_fft_samples || (n&(n-1)) || window.samples!=n || !scaling_.prepare(rate,window.sum,window.sum_squares,options))return false;
+    if(n<8 || n>max_fft_samples || (n&(n-1)) || window.samples!=n || !scaling_.prepare(rate,window.sum,window.sum_squares,options,n))return false;
     scratch_.resize(n/2+1);samples_=n;return true;
 }
 bool PreparedSpectrumProjection::process(std::span<const float> input,std::span<float> output) noexcept {

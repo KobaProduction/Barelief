@@ -46,7 +46,8 @@ SYMBOLS(Quantity, quantities, {Quantity::Unspecified, 0}, {Quantity::Amplitude, 
         {Quantity::SpectrumPower, 11}, {Quantity::SpectrumPsd, 12}, {Quantity::SpectrumAmplitudeDb, 13},
         {Quantity::SpectrumPowerDb, 14}, {Quantity::SpectrumPsdDb, 15}, {Quantity::BroadbandEnergy, 16},
         {Quantity::BroadbandPower, 17}, {Quantity::BroadbandRms, 18}, {Quantity::BroadbandMaximum, 19},
-        {Quantity::SpectralFlux, 20}, {Quantity::NoteSalience, 21})
+        {Quantity::SpectralFlux, 20}, {Quantity::NoteSalience, 21}, {Quantity::SpectrumRmsAmplitude, 22},
+        {Quantity::SpectrumBinPower, 23}, {Quantity::SpectrumWindowScaledMagnitude, 24})
 SYMBOLS(NumericUnit, units, {NumericUnit::Unspecified, 0}, {NumericUnit::NormalizedAmplitude, 1},
         {NumericUnit::RawAmplitude, 2}, {NumericUnit::Frames, 3}, {NumericUnit::Hertz, 4},
         {NumericUnit::Seconds, 5}, {NumericUnit::Values, 6}, {NumericUnit::Radians, 7},

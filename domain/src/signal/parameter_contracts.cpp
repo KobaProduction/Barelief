@@ -105,10 +105,13 @@ Status amplitude_phase_parameters(const ConfiguredProcessingNode& node,const Num
     return Status::ok;
 }
 Quantity amplitude_quantity(std::string_view representation,bool normalize) {
-    if(!normalize)return representation=="power" || representation=="psd"?Quantity::SpectrumPower:Quantity::SpectrumMagnitude;
-    if(representation=="magnitude")return Quantity::SpectrumMagnitude;
+    if(!normalize)return representation=="power" || representation=="psd" || representation=="bin_power"?Quantity::SpectrumPower:Quantity::SpectrumMagnitude;
+    if(representation=="magnitude" || representation=="window_scaled_magnitude")return Quantity::SpectrumWindowScaledMagnitude;
     if(representation=="power")return Quantity::SpectrumPower;
-    return representation=="psd"?Quantity::SpectrumPsd:Quantity::SpectrumPeakAmplitude;
+    if(representation=="psd")return Quantity::SpectrumPsd;
+    if(representation=="rms_amplitude")return Quantity::SpectrumRmsAmplitude;
+    if(representation=="bin_power")return Quantity::SpectrumBinPower;
+    return Quantity::SpectrumPeakAmplitude;
 }
 }
 namespace {
@@ -117,7 +120,7 @@ Status own_amplitude_phase(NumericContract result,std::array<OwnedProcessingCont
     auto phase=std::get<NumericContract>(polar[1].view());
     phase.coordinates=result.coordinates;
     if(own_processing_contract(phase,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,polar[1])!=Status::ok)return Status::invalid_argument;
-    result.unit=representation=="power" || (!normalize && representation=="psd")?NumericUnit::SquaredAmplitude:representation=="psd"?NumericUnit::SquaredAmplitudePerHertz:NumericUnit::RawAmplitude;
+    result.unit=representation=="power" || representation=="bin_power" || (!normalize && representation=="psd")?NumericUnit::SquaredAmplitude:representation=="psd"?NumericUnit::SquaredAmplitudePerHertz:NumericUnit::RawAmplitude;
     if(own_processing_contract(result,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,polar[0])!=Status::ok)return Status::invalid_argument;
     return Status::ok;
 }
@@ -126,7 +129,7 @@ namespace {
 Status configure_amplitude_phase(const ConfiguredProcessingNode& node,std::uint64_t size,bool normalize,std::array<OwnedProcessingContract,2>& polar) {
     auto result=std::get<NumericContract>(polar[0].view());const auto representation=text(node,"representation");
     result.quantity=amplitude_quantity(representation,normalize);
-    if(representation!="magnitude" && representation!="peak_amplitude" && representation!="power" && representation!="psd")return Status::invalid_argument;
+    if(representation!="magnitude" && representation!="window_scaled_magnitude" && representation!="peak_amplitude" && representation!="power" && representation!="psd" && representation!="rms_amplitude" && representation!="bin_power")return Status::invalid_argument;
     std::uint64_t fs=0;if(!number(node,"sample_rate",fs) || !fs)return Status::invalid_argument;
     result.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(fs),size},{std::int64_t(fs),size}};
     if(own_amplitude_phase(result,polar,representation,normalize)!=Status::ok)return Status::invalid_argument;

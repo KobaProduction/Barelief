@@ -151,7 +151,7 @@ pipeline::DeliveredNumericFrame note;
     auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);QString reload_error;
     CHECK(editor->load_numeric_draft(reloaded,&reload_error,reloaded_display.node_adapters));
     const auto reload_revision=app.presenter().client().snapshot().graph_revision;CHECK(app.presenter().apply_pipeline_graph({}));
-    CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>reload_revision&&query(17,note);}));
+    CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>reload_revision&&query(7,note);}));
     CHECK(read(input_path)==original);
 return 0;
 }
@@ -178,7 +178,7 @@ static int select_music_stream(CoreApplication& app,NumericEditorGraphModel* mod
 pipeline::DeliveredNumericFrame note;
         auto* selector=model->delegateModel<AudioNodeModel>(200);CHECK(selector);
         const auto revision=app.presenter().client().snapshot().graph_revision;CHECK(selector->select_input(domain::PortId(stream)));
-        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(17,note);}));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(7,note);}));
 return 0;
 }
 static int select_music_source(CoreApplication& app,NumericEditorGraphModel* model,const auto& query) {
@@ -220,7 +220,7 @@ pipeline::DeliveredNumericFrame note;
     CHECK(std::get<int>(model->delegateModel<AudioNodeModel>(6)->parameter_model()->field("mode")->read())==2);
     if(const auto result=select_music_source(app,model,query))return result;
     CHECK(model->edit_execution_interval({1,64}));
-    CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(17,note);}));
+    CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(7,note);}));
 return 0;
 }
 
@@ -234,13 +234,13 @@ pipeline::DeliveredNumericFrame broad;
     CHECK(edit(33,"bits",1));CHECK(query(7,broad));CHECK(std::get<NumericView>(broad.frame.view().payload).contract->dtype==DType::UInt16);
     CHECK(edit(33,"bits",0));
     CHECK(edit(31,"boundaries_hz",QString{"0,60,120,300,650,1250,3500,7000,16000"}));
-    CHECK(query(7,broad));CHECK(std::get<NumericView>(broad.frame.view().payload).actual[1]==8);
+    CHECK(query(7,broad));CHECK(std::get<NumericView>(broad.frame.view().payload).actual[1]==56);
 return 0;
 }
 static int projection_and_cells(NumericEditorGraphModel* model,const auto& query,const auto& edit) {
 pipeline::DeliveredNumericFrame note;
     if(const auto result=broadband_projection_cells(query,edit))return result;
-    CHECK(edit(32,"notes",NumericLiteral{std::int64_t{24}}));CHECK(query(17,note));CHECK(std::get<NumericView>(note.frame.view().payload).actual[1]==24);
+    CHECK(edit(32,"notes",NumericLiteral{std::int64_t{24}}));CHECK(query(7,note));CHECK(std::get<NumericView>(note.frame.view().payload).actual[1]==32);
     auto* notes=model->delegateModel<AudioNodeModel>(32);CHECK(notes&&notes->parameter_model()->field("noteGridReadout"));
     CHECK(std::get<QString>(notes->parameter_model()->field("noteGridReadout")->read()).contains("C3"));
     CHECK(edit(6,"manual_gain",NumericLiteral{2.}));CHECK(edit(6,"mode",1));
@@ -295,7 +295,7 @@ static int commit_music_geometry(CoreApplication& app,NumericEditorGraphModel* m
     CHECK(domain::resolve_numeric_parameter_bindings(requested,numeric_editor::limits(),evaluated,executable,changed_node));
     CHECK(model->edit_nodes(evaluated.nodes));
     CHECK(wait_until([&]{pipeline::DeliveredNumericFrame terminal,changed;
-        return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(17,terminal)&&query(observed_node,changed);}));
+        return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(7,terminal)&&query(observed_node,changed);}));
     return 0;
 }
 static void music_text_parameter(domain::ConfiguredProcessingNode& node,const char* key,std::string value) {
@@ -369,7 +369,7 @@ static bool edit_music_parameter(CoreApplication& app,NumericEditorGraphModel* m
         const auto* descriptor=node?node->parameter_model()->field(field):nullptr;
         const bool unchanged=descriptor&&descriptor->read&&descriptor->read()==value;
         const bool committed=node&&node->parameter_model()->edit(field,value);
-        const bool ready=committed&&wait_until([&]{pipeline::DeliveredNumericFrame result,changed;const auto current=app.presenter().client().snapshot().graph_revision;return !app.presenter().graph_request_pending()&&(unchanged?current==revision:current>revision)&&query(17,result)&&query(id,changed);});
+        const bool ready=committed&&wait_until([&]{pipeline::DeliveredNumericFrame result,changed;const auto current=app.presenter().client().snapshot().graph_revision;return !app.presenter().graph_request_pending()&&(unchanged?current==revision:current>revision)&&query(7,result)&&query(id,changed);});
         if(!ready) {
             pipeline::DeliveredNumericFrame changed;const bool delivered=query(id,changed);
             std::fprintf(stderr,"Edit failure node=%d field=%s committed=%d before_rev=%llu after_rev=%llu pending=%d current_tap=%d rejection=%s statusbar=%s\n",id,field,committed,
@@ -389,65 +389,54 @@ static int export_project(CoreApplication& app,MainWindow* window,const QString&
 return 0;
 }
 
-static int save_raster(const QImage& raster,int id,const QString& image_dir) {
-        if(!image_dir.isEmpty()){CHECK(QDir().mkpath(image_dir));CHECK(raster.save(QDir(image_dir).filePath(id==7?"broadband.png":"note-salience.png")));}return 0;
-}
-static int raster_metadata(NumericImageView& image,int id,const QString& image_dir) {
-        CHECK(image.source_axis_metadata().value_title_key=="Quantized code (Y)");
-        CHECK(image.source_axis_metadata().column_title_key==(id==7?"Frequency, Hz (Z)":"Note salience, MIDI (Z)"));
-        CHECK(image.source_axis_metadata().columns.front()==(id==7?30.:48.));
-        CHECK(image.source_axis_metadata().columns.back()==(id==7?14250.:95.));
-        CHECK(image.source_axis_metadata().ages.front()==0);
-        const auto raster=image.numeric_raster();CHECK(!raster.isNull());
-        return save_raster(raster,id,image_dir);
-}
-
-static int render_history(CoreApplication& app,const auto& endpoint,const QString& image_dir,int id) {
-std::uint64_t ordinal=0,filled=0;
-        pipeline::DeliveredNumericFrame history;CHECK(app.pipeline().query_numeric(endpoint(id),history,&ordinal,&filled)==Status::ok);
-        presentation::NumericViewAdapter adapter({1,{400,128,1024*1024,{false,400*128}},{false,400*128}});
-        CHECK(adapter.bind(endpoint(id))==Status::ok);CHECK(adapter.accept_history_snapshot(history,ordinal,filled)==Status::ok);
-        NumericImageView image;image.resize(640,360);
-        presentation::NumericImagePort port;port.set_matrix=[&](const auto& rows){image.set_matrix(rows);};
-        port.set_axis_metadata=[&](const auto& axes){return image.set_axis_metadata(axes);};
-        port.set_snapshot=[&](auto snapshot,bool age){image.set_snapshot(std::move(snapshot),age);};
-        presentation::NumericRenderTarget target;target.image=&port;target.visible=true;
-        target.axes={true,true};
-        target.presentation=presentation::audio_plot_presentation(*std::get<NumericView>(history.frame.view().payload).contract);
-        target.presentation.value_title="Quantized code (Y)";
-        CHECK(adapter.render(endpoint(id),0,target)==Status::ok);
-        CHECK(image.value_count()==400*size_t(id==7?16:48)&&image.peak_value()>0);
-    if(const auto result=raster_metadata(image,id,image_dir))return result;
-return 0;
+static int render_history_image(const pipeline::DeliveredNumericFrame& history,presentation::NumericViewAdapter& adapter,const auto& endpoint,const QString& image_dir) {
+    NumericImageView image;image.resize(640,360);
+    presentation::NumericImagePort port;port.set_matrix=[&](const auto& rows){image.set_matrix(rows);};
+    port.set_axis_metadata=[&](const auto& axes){return image.set_axis_metadata(axes);};
+    port.set_snapshot=[&](auto snapshot,bool age){image.set_snapshot(std::move(snapshot),age);};
+    presentation::NumericRenderTarget target;target.image=&port;target.visible=true;
+    target.axes={true,true};
+    target.presentation=presentation::audio_plot_presentation(*std::get<NumericView>(history.frame.view().payload).contract);
+    target.presentation.value_title="Quantized code (Y)";
+    CHECK(adapter.render(endpoint(7),0,target)==Status::ok);
+    CHECK(image.value_count()==512*64 && image.peak_value()>0);
+    CHECK(!image.numeric_raster().isNull());
+    if(!image_dir.isEmpty()){
+        CHECK(QDir().mkpath(image_dir));
+        CHECK(image.numeric_raster().save(QDir(image_dir).filePath("combined-music.png")));
+    }
+    return 0;
 }
 static int render_histories(CoreApplication& app,const auto& endpoint,const QString& image_dir) {
-    // Render only owned test data. numeric_raster is the renderer's own image;
-    // no desktop capture or native graphics claim is involved.
-    for(int id:{7,17})if(const auto result=render_history(app,endpoint,image_dir,id))return result;
-return 0;
+    // The single research History contains 512 x (16 broadband + 48 note) UInt8 codes.
+    std::uint64_t ordinal=0,filled=0;pipeline::DeliveredNumericFrame history;
+    CHECK(app.pipeline().query_numeric(endpoint(7),history,&ordinal,&filled)==Status::ok);
+    presentation::NumericViewAdapter adapter({1,{512,96,1024*1024,{false,512*96}},{false,512*96}});
+    CHECK(adapter.bind(endpoint(7))==Status::ok);
+    CHECK(adapter.accept_history_snapshot(history,ordinal,filled)==Status::ok);
+    return render_history_image(history,adapter,endpoint,image_dir);
 }
 
 static int filled_histories(CoreApplication& app,const auto& endpoint) {
-pipeline::DeliveredNumericFrame broad,note;
+    pipeline::DeliveredNumericFrame history;
     std::uint64_t ordinal=0,filled=0;
-    CHECK(wait_until([&]{return app.pipeline().query_numeric(endpoint(7),broad,&ordinal,&filled)==Status::ok&&filled==400;},11000));
-    CHECK(wait_until([&]{return app.pipeline().query_numeric(endpoint(17),note,&ordinal,&filled)==Status::ok&&filled==400;}));
-    const auto broad_view=std::get<NumericView>(broad.frame.view().payload),note_view=std::get<NumericView>(note.frame.view().payload);
-    CHECK(broad_view.actual[0]==400&&broad_view.actual[1]==16&&broad_view.contract->dtype==DType::UInt8);
-    CHECK(note_view.actual[0]==400&&note_view.actual[1]==48&&note_view.contract->dtype==DType::UInt8);
-    CHECK(400*(broad_view.actual[1]+note_view.actual[1])==25600);
-    CHECK(broad_view.contract->coordinates[1].unit==NumericUnit::Hertz&&note_view.contract->coordinates[1].unit==NumericUnit::Values);
-return 0;
+    CHECK(wait_until([&]{return app.pipeline().query_numeric(endpoint(7),history,&ordinal,&filled)==Status::ok&&filled==512;},16000));
+    const auto view=std::get<NumericView>(history.frame.view().payload);
+    CHECK(view.actual[0]==512 && view.actual[1]==64 && view.contract->dtype==DType::UInt8);
+    CHECK(view.contract->shape.rank==Rank::Matrix && 512*view.actual[1]==32768);
+    CHECK(view.storage.size()==32768);
+    std::printf("Research History PASS: 512x64 UInt8, payload=%zu bytes, all 512 rows delivered\n",view.storage.size());
+    return 0;
 }
 
 static int initial_music_delivery(CoreApplication& app,const auto& graph_id,const auto& endpoint,const auto& query) {
-    pipeline::DeliveredNumericFrame broad,note,pcm,fft,phase,power;
-    const bool initial_ready=wait_until([&]{return query(7,broad)&&query(17,note)&&query(201,pcm)&&query(4,fft)&&query(5,power)&&query(30,phase);});
+    pipeline::DeliveredNumericFrame broad,pcm,fft,phase,power;
+    const bool initial_ready=wait_until([&]{return query(7,broad)&&query(201,pcm)&&query(4,fft)&&query(5,power)&&query(30,phase);});
     if(!initial_ready) {
         std::fprintf(stderr,"Initial music query failure graph=%s revision=%llu diagnostics=%s\n",graph_id.c_str(),
             static_cast<unsigned long long>(app.presenter().client().snapshot().graph_revision),
             QJsonDocument(app.pipeline().snapshot().diagnostics).toJson(QJsonDocument::Compact).constData());
-        for(int id:{200,201,2,3,4,5,6,30,31,32,33,34,7,17}) {
+        for(int id:{200,201,2,3,4,5,6,30,31,32,35,33,7}) {
             pipeline::DeliveredNumericFrame frame;const auto status=app.pipeline().query_numeric(endpoint(id),frame);
             const bool present=bool(frame.frame),available=present&&frame.frame.view().stamp.available;
             std::fprintf(stderr,"Node %d query=%u owner=%d available=%d finite=%d\n",id,unsigned(status),present,available,
@@ -490,7 +479,7 @@ static int view_configuration_case(NumericEditorGraphModel* model,int id) {
 }
 
 static int view_configuration_inputs(NumericEditorGraphModel* model) {
-    for(int id:{8,18,9,10,11,12,19,20}){
+    for(int id:{8,9,10,11,12,19,20}){
         if(const auto result=view_configuration_case(model,id))return result;
     }
 return 0;
@@ -503,8 +492,18 @@ static int coefficient_wires(const domain::NumericProcessingGraph& research_grap
     CHECK(std::any_of(research_graph.edges.begin(),research_graph.edges.end(),[](const auto& e){return e.from==1001 && e.to==4 && e.input_port==0;}));
 return 0;
 }
+static int research_history_topology(const domain::NumericProcessingGraph& research_graph) {
+    const auto history=std::find_if(research_graph.nodes.begin(),research_graph.nodes.end(),[](const auto& n){return n.id==7;});
+    CHECK(history!=research_graph.nodes.end() && history->kind=="Spectrogram");
+    const auto contract=std::get<NumericContract>(history->outputs.front().contract.view());
+    CHECK((contract.dtype==DType::UInt8 && contract.shape.extents[0].maximum==512 && contract.shape.extents[1]==ExtentBounds{64,64}));
+    CHECK(std::any_of(research_graph.edges.begin(),research_graph.edges.end(),[](const auto& e){return e.from==31 && e.to==35;}));
+    CHECK(std::any_of(research_graph.edges.begin(),research_graph.edges.end(),[](const auto& e){return e.from==32 && e.to==35;}));
+    CHECK(std::none_of(research_graph.nodes.begin(),research_graph.nodes.end(),[](const auto& n){return n.id==17;}));
+    return 0;
+}
 static int research_topology(NumericEditorGraphModel* model,const auto& initial_graph) {
-    CHECK(model->numeric_graph().execution_interval==(Ratio{1,120}));
+    CHECK(model->numeric_graph().execution_interval==(Ratio{1,60}));
     CHECK(model->numeric_graph().graph_id==initial_graph.graph_id);
     const auto research_graph=model->numeric_graph();
     const auto coefficient_generator=std::find_if(research_graph.nodes.begin(),research_graph.nodes.end(),[](const auto& n){return n.id==3;});
@@ -512,8 +511,7 @@ static int research_topology(NumericEditorGraphModel* model,const auto& initial_
     const auto n_input=std::get<NumericContract>(coefficient_generator->inputs[0].contract.view());
     CHECK(n_input.dtype==DType::UInt32 && n_input.shape.rank==Rank::Scalar);
     if(const auto result=coefficient_wires(research_graph))return result;
-
-return 0;
+    return research_history_topology(research_graph);
 }
 
 static int fresh_rfft_parameter_edits(AudioNodeModel& node) {
@@ -568,7 +566,7 @@ struct MusicFrameCache {
         latest[frame.context->endpoint.node]=std::move(frame);
     }
     bool query(CoreApplication& app,const auto& endpoint,int id,pipeline::DeliveredNumericFrame& frame) {
-        if(id==7||id==17)return app.pipeline().query_numeric(endpoint(id),frame)==Status::ok&&finite_values(frame);
+        if(id==7)return app.pipeline().query_numeric(endpoint(id),frame)==Status::ok&&finite_values(frame);
         {std::lock_guard lock(mutex);const auto found=latest.find(id);if(found==latest.end())return false;frame=found->second;}
         return frame.status==Status::ok&&frame.delivery.graph_revision==app.presenter().client().snapshot().graph_revision&&finite_values(frame);
     }
@@ -589,7 +587,7 @@ static int music_processing_workflow(CoreApplication& app,MainWindow* window,Num
     MusicFrameCache cache;
     auto query=[&](int id,pipeline::DeliveredNumericFrame& frame){return cache.query(app,endpoint,id,frame);};
     std::vector<pipeline::EndpointIdentity> endpoints;
-    for(int id:{200,201,2,3,4,5,6,30,31,32,33,34,7,17})endpoints.push_back(endpoint(id));
+    for(int id:{200,201,2,3,4,5,6,30,31,32,35,33,7})endpoints.push_back(endpoint(id));
     const auto tap=app.pipeline().subscribe_numeric_tap(endpoints,[&](pipeline::DeliveredNumericFrame frame){
         cache.accept(std::move(frame));
     },{});CHECK(tap);
@@ -655,7 +653,7 @@ static int music_window_workflow(CoreApplication& app,const QTemporaryDir& direc
     if(const auto result=prepare_music_window(app,model,native_rate,window,menu))return result;
     if(const auto result=open_research_preset(app,window,model,menu,initial_graph))return result;
     if(const auto result=music_processing_workflow(app,window,model,menu,directory,input_path,saved_path,original,export_path,image_dir,edit_rejection))return result;
-    std::printf("Music Qt preset: native %u; menu/layout, full 400x(16+48) UInt8 History 25600-byte payload, renderer rasters, six resamplers, 32000/32768 Fs, four windows, 512/4096 RFFT, radix2/4, UInt16, 8 broad/24 note cells, manual/canonical profile, synthetic source switching, 120/64 Hz, save/reload, benchmark lifecycle PASS (offscreen only)\n",native_rate);
+    std::printf("Music Qt preset: native %u; menu/layout, full 512x64 UInt8 History 32768-byte payload, renderer rasters, six resamplers, 32000/32768 Fs, four windows, 512/4096 RFFT, radix2/4, UInt16, 8 broad/24 note cells, manual/canonical profile, synthetic source switching, 60/64 Hz, save/reload, benchmark lifecycle PASS (offscreen only)\n",native_rate);
 return 0;
 }
 int main(int argc,char** argv) {

@@ -389,7 +389,7 @@ std::array<float,48> expected_note_row(const std::array<float,256>& real,
     for(std::size_t i=0;i<real.size();++i){
         const double squared=double(real[i])*real[i]+double(imaginary[i])*imaginary[i];
         const bool endpoint=i+1==real.size();
-        const bool amplitude=mode=="magnitude" || mode=="peak_amplitude";
+        const bool amplitude=mode=="magnitude" || mode=="window_scaled_magnitude" || mode=="peak_amplitude" || mode=="rms_amplitude";
         const double factor=!normalize && !amplitude?2.:
             (amplitude?(endpoint?4.:8.):(endpoint?2.:4.))/(window_gain*window_gain);
         power[i+1]=float(squared*factor);
@@ -439,10 +439,10 @@ ConfiguredProcessingNode corrected_normalizer(const OwnedProcessingContract& pro
 }
 ConfiguredProcessingNode corrected_note_row(const ConfiguredProcessingNode& window,const OwnedProcessingContract& normalized,const char* representation,bool normalize){
     const std::string_view mode=representation;
-    const auto row_representation=!normalize?(mode=="power" || mode=="psd"?"power":"magnitude"):representation;
+    const auto row_representation=!normalize?(mode=="power" || mode=="psd" || mode=="bin_power"?"power":"magnitude"):representation;
     const double window_gain=processing_window_gain(window,512);
     const double row_gain=normalize?1.:window_gain;
-    const double row_bandwidth=mode=="psd" && normalize?48000.*processing_window_gain(window,512,true)/(window_gain*window_gain):1.;
+    const double row_bandwidth=(mode=="psd" || mode=="bin_power") && normalize?48000.*processing_window_gain(window,512,true)/(window_gain*window_gain):1.;
     ConfiguredProcessingNode row;row.id=6;row.kind="NoteSalience";row.parameters=TransformProcessingParameters{{{"first_midi",NumericLiteral{std::int64_t{48}}},{"notes",NumericLiteral{std::int64_t{48}}},{"harmonics",NumericLiteral{std::int64_t{1}}},{"input_representation",std::string(row_representation)},{"first_bin",NumericLiteral{std::uint64_t{1}}},{"bin_hz",NumericLiteral{48000./512.}},{"power_bandwidth_hz",NumericLiteral{row_bandwidth}},{"coherent_gain",NumericLiteral{row_gain}}}};row.inputs={{0,PortDirection::Input,normalized}};OwnedProcessingContract notes;check(music_output_contract(row,std::get<NumericContract>(normalized.view()),notes)==Status::ok,"musical row accepts calibrated amplitude");row.outputs={{0,PortDirection::Output,notes}};
     return row;
 }
@@ -481,6 +481,16 @@ void corrected_calibration(Running& running,const std::vector<RoutingAlias>& cal
     }
     check(result.gain_events==1 && result.power_events==1 && result.rows==0,"calibration is observable before signal delivery without running spectral DSP");
 }
+double expected_calibrated_tone(std::string_view mode,bool normalize,double amplitude,bool nyquist,double cg,double pg){
+    const double paired=nyquist?1.:2.;const double magnitude=amplitude*cg/paired;
+    if(!normalize)return mode=="power" || mode=="psd" || mode=="bin_power"?magnitude*magnitude:magnitude;
+    if(mode=="magnitude" || mode=="window_scaled_magnitude")return magnitude/cg;
+    if(mode=="peak_amplitude")return amplitude;
+    if(mode=="rms_amplitude")return amplitude/std::sqrt(paired);
+    if(mode=="bin_power")return magnitude*magnitude*paired/(512*pg);
+    if(mode=="power")return amplitude*amplitude/paired;
+    return magnitude*magnitude*paired/(48000*pg);
+}
 void corrected_musical_oracle(const ConfiguredProcessingNode& window,double window_gain,bool normalize,std::string_view mode,const char* representation,const char* function,const CorrectedMusicalObservation& result){
     const auto expected_notes=expected_note_row(result.re,result.im,window_gain,normalize,mode);
     for(std::size_t i=0;i<expected_notes.size();++i)check(std::abs(result.notes[i]-expected_notes[i])<=std::max(1e-5f,std::abs(expected_notes[i])*.002f),"explicit salience representation, coherent gain and ENBW match raw FFT reference");
@@ -492,22 +502,24 @@ void corrected_musical_oracle(const ConfiguredProcessingNode& window,double wind
     check(batch.process(interleaved,batchOutput),"project same FFT with batch layout adapter");
     for(std::size_t i=0;i<256;++i)check(result.projected[i]==batchOutput[i+1],"graph and batch agree exactly for every bin, mode, window and compensation state");
     check(cg>1 && pg>1,"window scalar ports carry sums, not means");
-    const auto expected=[&](double amplitude,bool nyquist){const std::string_view mode=representation;const double paired=nyquist?1.:2.;const double magnitude=amplitude*cg/paired;
-        if(!normalize)return mode=="power" || mode=="psd"?magnitude*magnitude:magnitude;
-        if(mode=="magnitude")return magnitude/cg;
-        if(mode=="peak_amplitude")return amplitude;
-        const double power=amplitude*amplitude/paired,psd=magnitude*magnitude*paired/(48000*pg);
-        if(mode=="power")return power;return psd;};
-    const auto tone=expected(.3,false),nyquist=expected(.2,true);
+    const auto tone=expected_calibrated_tone(representation,normalize,.3,false,cg,pg),nyquist=expected_calibrated_tone(representation,normalize,.2,true,cg,pg);
     if(std::abs(result.amplitude-tone)>std::max(.001,std::abs(tone)*.001))std::fprintf(stderr,"function=%s representation=%s actual=%g expected=%g\n",function,representation,result.amplitude,tone);
     check(std::abs(result.amplitude-tone)<std::max(.001,std::abs(tone)*.001) && std::abs(result.nyquist-nyquist)<std::max(.001,std::abs(nyquist)*.001) && std::abs(result.normalized-2*tone)<std::max(.002,std::abs(tone)*.002) && result.rows==1 && std::abs(result.phase)<.0001f,"four linear representations, window correction, Nyquist, array multiplication and musical row");
     check(result.gain_events==1 && result.power_events==1,"PCM does not republish configuration calibration outputs");
     check(std::abs(result.power_gain-pg)<1e-12,"published power window correction equals prepared squared coefficient sum");
     check(std::abs(result.gain-processing_window_gain(window,512))<1e-12,"published window correction equals prepared parameter");
 }
+void stale_polar_fft_setting(NumericProcessingGraph& graph){
+    const auto polar=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.id==4;});
+    check(polar!=graph.nodes.end(),"polar geometry fixture");
+    auto& fields=std::get<TransformProcessingParameters>(polar->parameters).values;
+    const auto size=std::find_if(fields.begin(),fields.end(),[](const auto& field){return field.key=="fft_size";});
+    check(size!=fields.end(),"legacy polar FFT setting fixture");size->value=NumericLiteral{std::uint64_t{4096}};
+}
 void corrected_musical_case(const char* function,const char* representation,bool normalize){
     NumericContract input;ConfiguredProcessingNode window;auto graph=corrected_musical_graph(function,representation,normalize,input,window);
     const std::string_view mode=representation;const double window_gain=processing_window_gain(window,512);
+    if(mode=="bin_power")stale_polar_fft_setting(graph);
     const auto calibration_aliases=corrected_graph_admission(graph,function);
     Running running(graph);
     CorrectedMusicalObservation result;
@@ -519,7 +531,7 @@ void corrected_musical_case(const char* function,const char* representation,bool
     corrected_musical_oracle(window,window_gain,normalize,mode,representation,function,result);
 }
 void corrected_musical_pipeline(){
- for(const auto* function:{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top","bypass"})for(const auto* representation:{"magnitude","peak_amplitude","power","psd"})for(const bool normalize:{false,true}){
+ for(const auto* function:{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top","bypass"})for(const auto* representation:{"magnitude","peak_amplitude","power","psd","rms_amplitude","bin_power","window_scaled_magnitude"})for(const bool normalize:{false,true}){
     corrected_musical_case(function,representation,normalize);
  }
 }

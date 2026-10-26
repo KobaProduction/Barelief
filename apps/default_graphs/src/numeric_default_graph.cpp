@@ -326,7 +326,7 @@ std::vector<NumericExampleGraph> numeric_example_graphs() {
         numeric_startup_example(),
         []{auto result=numeric_startup_example();result.id="rhythm-research";
             result.title_key="Spectrogram and rhythm: shared 96-band history";return result;}(),
-        {"music-research","Music spectrum: RFFT, profiles and note salience",numeric_music_graph(),{8,18},{},{{200,{"Generator","Loopback"}}}},
+        {"music-research","Music spectrum: RFFT, profiles and note salience",numeric_music_graph(),{8},{},{{200,{"Generator","Loopback"}}}},
         {"stereo-sources","Stereo: generator, loopback, microphone",source_selector_graph(2),{8},{},{{200,{"Generators","Loopback","Microphone"}}}},
         {"pcm-mix","Two channels: PCM mixer",pcm_mix_example(),{8}},
         {"input-selector","Two channels: input selector",input_selector_example(),{8},{},{{200,{"Generator A","Generator B"}}}},

@@ -65,8 +65,12 @@ output timestamps. See ../../docs/reference/resampling.md for modes and EOF drai
 
 Raw PreparedRfft returns interleaved Re/Im bins 0..N/2, including DC/Nyquist,
 without division by N. PreparedSpectrumScaling/Projection apply explicitly
-selected magnitude/peak/power/PSD and sums C=sum(w), E=sum(w*w).
+selected raw/window-scaled magnitude, peak/RMS amplitude, power spectrum,
+PSD or bin power and sums C=sum(w), E=sum(w*w).
 Rectangular C=E=N. Logarithmic display belongs to the audio presenter.
+The stable coherent_gain/power_gain parameter names carry C/E, not C/N and E/N.
+See ../../docs/reference/spectral-projections.md for formulas, units, legacy
+aliases, zero padding and the independently executable SciPy oracle.
 
 MelFilterBank shares prepared boundaries for canonical and explicit Hz grids.
 spectral_weights.h owns common Mel/Bark/triangle math. sample_cadence.h shares

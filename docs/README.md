@@ -24,6 +24,7 @@
 - [Runtime API](reference/runtime-api.md).
 - [Оптимизация обработки, доставки и графиков](reference/optimizations.md).
 - [FFT: raw комплексный выход и реализации](reference/fft.md).
+- [Спектральные проекции: формулы, окна и калибровки](reference/spectral-projections.md).
 - [Музыкальный спектр и частотные профили](guides/music-spectrum.md).
 - [Формат проекта](reference/project-format.md).
 - [Сетевой протокол](reference/protocol.md).

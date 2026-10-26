@@ -96,9 +96,13 @@ struct MusicalLayout {
             {"magnitude",Quantity::SpectrumMagnitude,NumericUnit::RawAmplitude},
             {"peak_amplitude",Quantity::SpectrumPeakAmplitude,NumericUnit::RawAmplitude},
             {"power",Quantity::SpectrumPower,NumericUnit::SquaredAmplitude},
-            {"psd",Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz}};
+            {"psd",Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz},
+            {"rms_amplitude",Quantity::SpectrumRmsAmplitude,NumericUnit::RawAmplitude},
+            {"bin_power",Quantity::SpectrumBinPower,NumericUnit::SquaredAmplitude},
+            {"window_scaled_magnitude",Quantity::SpectrumWindowScaledMagnitude,NumericUnit::RawAmplitude}};
         for(const auto& rule:rules)if(representation==rule.id) {
-            if(input.quantity!=rule.quantity || input.unit!=rule.unit)return Status::incompatible_contract;
+            const bool legacy_scaled=representation=="magnitude" && input.quantity==Quantity::SpectrumWindowScaledMagnitude;
+            if((input.quantity!=rule.quantity && !legacy_scaled) || input.unit!=rule.unit)return Status::incompatible_contract;
             output_unit=rule.unit;
             return Status::ok;
         }

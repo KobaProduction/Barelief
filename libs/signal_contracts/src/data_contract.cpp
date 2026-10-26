@@ -35,7 +35,7 @@ namespace signal_contracts {
             return validate_normalization(value.normalization,dtype);
         }
         Status validate_numeric_tags(const NumericContract& value) {
-            if(static_cast<unsigned>(value.quantity)>static_cast<unsigned>(Quantity::NoteSalience) || static_cast<unsigned>(value.unit)>static_cast<unsigned>(NumericUnit::Decibels) || static_cast<unsigned>(value.semantic)>static_cast<unsigned>(Semantic::Numeric) || static_cast<unsigned>(value.history_element)>static_cast<unsigned>(Semantic::Numeric))return Status::invalid_argument;
+            if(static_cast<unsigned>(value.quantity)>static_cast<unsigned>(Quantity::SpectrumWindowScaledMagnitude) || static_cast<unsigned>(value.unit)>static_cast<unsigned>(NumericUnit::Decibels) || static_cast<unsigned>(value.semantic)>static_cast<unsigned>(Semantic::Numeric) || static_cast<unsigned>(value.history_element)>static_cast<unsigned>(Semantic::Numeric))return Status::invalid_argument;
             return Status::ok;
         }
         Status validate_channel_order(const NumericContract& value,const FrameLimits& limits) {

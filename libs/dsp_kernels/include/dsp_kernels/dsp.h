@@ -171,8 +171,11 @@ class PreparedRfft {
     Split split_ = Split::Automatic;
     detail::FftStorage scratch_, twiddles_, mixed_;
 };
+// Keep existing numeric values stable for saved project/editor enum choices.
+// RMS amplitude is sqrt(Power); bin power is PSD times the nominal FFT-bin width.
 enum class SpectrumProjection {
-    Real, Imaginary, Phase, Magnitude, PeakAmplitude, Power, Psd
+    Real, Imaginary, Phase, Magnitude, PeakAmplitude, Power, Psd, RmsAmplitude, BinPower,
+    WindowScaledMagnitude
 };
 struct SpectrumProjectionOptions {
     SpectrumProjection representation = SpectrumProjection::Power;
@@ -188,11 +191,11 @@ bool is_amplitude_spectrum_projection(SpectrumProjection) noexcept;
 class PreparedSpectrumScaling {
   public:
     bool prepare(double sample_rate, double window_sum, double window_square_sum,
-                 SpectrumProjectionOptions options) noexcept;
+                 SpectrumProjectionOptions options, std::size_t fft_samples = 0) noexcept;
     bool project(float real, float imaginary, bool paired, float& output) const noexcept;
   private:
     SpectrumProjectionOptions options_{};
-    double amplitude_scale_=1, power_scale_=1, psd_scale_=1;
+    double amplitude_scale_=1, power_scale_=1, psd_scale_=1, bin_power_scale_=1;
     bool ready_=false;
 };
 
@@ -202,7 +205,7 @@ struct SpectrumPowerPolicy {
     std::uint32_t first_bin=0;
     bool include_nyquist=true;
     double bin_hz=1;
-    // C=sum(w): calibrates raw Magnitude=|DFT| to mean-square power.
+    // Stable legacy identifier. C=sum(w), not the normalized coherent gain C/N.
     double coherent_gain=1;
     // Equivalent noise bandwidth Fs*sum(w^2)/sum(w)^2, supplied by this
     // operation's setting. It is generally wider than bin_hz for tapered windows.
@@ -226,6 +229,9 @@ private:
 // Separate prepared projection preserves the raw DFT. For d=1 at endpoints,
 // d=2 elsewhere: peak=d*abs(X)/sum(w), power=d*abs(X)^2/sum(w)^2,
 // PSD=d*abs(X)^2/(Fs*sum(w^2)). Power is a tonal mean-square estimator,
+// RMS=sqrt(power), bin power=PSD*Fs/N. The latter is power, not time energy.
+// Magnitude uses |X| with compensation off and |X|/sum(w) with it on;
+// WindowScaledMagnitude makes the calibrated interpretation explicit.
 // PSD has sample^2/Hz units. Phase is radians, atan2(Im,Re), with phase(0)=0.
 // Compensation is explicit in options. Logarithmic display belongs to the renderer.
 // Output must not overlap raw input. Failure leaves output unchanged.

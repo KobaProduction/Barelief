@@ -7,6 +7,10 @@ using namespace domain;
 using signal_contracts::NumericLiteral;
 constexpr std::uint32_t music_sample_rate=32768;
 constexpr std::uint64_t music_fft_size=4096;
+double music_window_bandwidth(){
+    const auto sum=dsp_kernels::window_sum(music_fft_size,dsp_kernels::WindowFunction::Hann);
+    return double(music_sample_rate)*dsp_kernels::window_square_sum(music_fft_size,dsp_kernels::WindowFunction::Hann)/(sum*sum);
+}
 
 void music_generator(examples::Builder& b) {
     b.add(1,"SignalGenerator");
@@ -60,17 +64,20 @@ void music_features(examples::Builder& b) {
         {"input_representation",std::string{"power"}},{"first_bin",NumericLiteral{std::uint64_t{0}}},
         {"include_nyquist",true},{"bin_hz",NumericLiteral{double(music_sample_rate)/double(music_fft_size)}},
         {"coherent_gain",NumericLiteral{dsp_kernels::window_sum(music_fft_size,dsp_kernels::WindowFunction::Hann)}},
-        {"power_bandwidth_hz",NumericLiteral{1.5*double(music_sample_rate)/double(music_fft_size)}}}));
+        {"power_bandwidth_hz",NumericLiteral{music_window_bandwidth()}}}));
     b.connect(1003,32,0,frequency_step_input);
-    for(const auto pair:{std::pair{31,33},std::pair{32,34}})
-        b.chain(pair.second,"SpectralQuantize",pair.first,examples::transform({{"bits",NumericLiteral{std::int64_t{8}}},
-            {"min_value",NumericLiteral{0.0}},{"max_value",NumericLiteral{.5}}}));
-    b.chain(7,"Spectrogram",33);
-    b.chain(17,"Spectrogram",34);
+    // One compact research history: 16 broadband + 48 note values per frame.
+    // Keep Float32 branches for diagnostics; only the combined row is quantized.
+    b.add(35,"ArrayConcat");
+    b.connect(31,35);
+    b.connect(32,35,0,1);
+    b.derive(35);
+    b.chain(33,"SpectralQuantize",35,examples::transform({{"bits",NumericLiteral{std::int64_t{8}}},
+        {"min_value",NumericLiteral{0.0}},{"max_value",NumericLiteral{.5}}}));
+    b.chain(7,"Spectrogram",33,HistoryProcessingParameters{512});
 }
 void music_views(examples::Builder& b) {
     b.chain(8,"AudioSurfaceView",7);
-    b.chain(18,"AudioSurfaceView",17);
     b.chain(9,"AudioLineView",200);
     b.chain(10,"AudioLineView",5);
     b.chain(11,"AudioLineView",6);
@@ -78,7 +85,6 @@ void music_views(examples::Builder& b) {
     b.chain(19,"AudioLineView",31);
     b.chain(20,"PianoView",32,EndpointProcessingParameters{{{"first_midi",NumericLiteral{std::uint64_t{48}}}}});
     b.chain(21,"ScalarMetricsView",7,{},1);
-    b.chain(22,"ScalarMetricsView",17,{},1);
     for(const auto view:{10,11,12})b.connect(1003,view,0,frequency_step_input);
 }
 }
@@ -88,5 +94,6 @@ domain::NumericProcessingGraph numeric_music_graph() {
     music_transform(builder);
     music_features(builder);
     music_views(builder);
+    builder.graph.execution_interval={1,60};
     return builder.finish();
 }

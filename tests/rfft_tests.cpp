@@ -19,6 +19,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string_view>
+#include <fstream>
 
 namespace {
 std::atomic<bool> watch_allocations{false};
@@ -80,7 +81,7 @@ void verify_projections(std::span<const float> input,const std::vector<float>& r
     const auto preserved = raw;
     for (const auto kind : {SpectrumProjection::Real, SpectrumProjection::Imaginary, SpectrumProjection::Phase,
             SpectrumProjection::Magnitude, SpectrumProjection::PeakAmplitude, SpectrumProjection::Power,
-            SpectrumProjection::Psd}) {
+            SpectrumProjection::Psd, SpectrumProjection::RmsAmplitude, SpectrumProjection::BinPower}) {
         PreparedSpectrumProjection projector;
         require(projector.prepare(n, 32768, scaling, {kind,kind!=SpectrumProjection::Magnitude}), "Projection prepare failed");
         allocations = 0;
@@ -92,6 +93,12 @@ void verify_projections(std::span<const float> input,const std::vector<float>& r
             const double expected = expected_projection(kind, raw[2 * k], raw[2 * k + 1],
                 k == 0 || k == n / 2 ? 1 : 2, scaling, 32768);
             near(projected[k], expected, 1e-5, 2e-6, "Projection formula/reference incorrect");
+        }
+        if (kind == SpectrumProjection::BinPower) {
+            double integrated=0,windowed_squares=0;
+            for(const auto value:projected)integrated+=value;
+            for(const double value:input)windowed_squares+=value*value;
+            near(integrated,windowed_squares/scaling.sum_squares,1e-7,3e-6,"Bin power Parseval identity failed");
         }
         if (kind == SpectrumProjection::Psd) {
             double integrated = 0, windowed_squares = 0;
@@ -165,6 +172,21 @@ void numerical_case(std::size_t n, dsp_kernels::WindowFunction window) {
             for(bool platform:{false,true})route.process(radix4,split,platform);
     std::cout << "oracle N=" << n << " window=" << unsigned(window) << " max_abs_error=" << route.maximum_error << '\n';
 }
+void endpoint_calibrations(dsp_kernels::PreparedRfft& fft,dsp_kernels::PreparedSpectrumProjection& projection,
+    std::span<float> input,std::span<float> raw,std::span<float> output,const dsp_kernels::WindowScaling& scaling) {
+    using namespace dsp_kernels;const auto n=input.size();
+    for (std::size_t k : {std::size_t{0}, std::size_t{17}, n / 2}) {
+        for (std::size_t i = 0; i < n; ++i) input[i] = float(.7 * std::cos(2 * std::numbers::pi * double(k * i) / double(n)));
+        require(fft.process(input, raw) && projection.prepare(n, 32768, scaling, {SpectrumProjection::PeakAmplitude,true}) && projection.process(raw, output), "Tone peak failed");
+        near(output[k], .7, 1e-6, 3e-6, "One-sided peak endpoint factor wrong");
+        require(projection.prepare(n, 32768, scaling, {SpectrumProjection::Power,true}) && projection.process(raw, output), "Tone power failed");
+        near(output[k], k == 17 ? .245 : .49, 1e-6, 3e-6, "Power uses squared peak instead of mean-square");
+        require(projection.prepare(n,32768,scaling,{SpectrumProjection::RmsAmplitude,true}) && projection.process(raw,output),"RMS amplitude failed");
+        near(output[k],k==17?.7/std::sqrt(2.):.7,1e-6,3e-6,"RMS amplitude factor differs from power");
+        require(projection.prepare(n,32768,scaling,{SpectrumProjection::BinPower,true}) && projection.process(raw,output),"Bin power failed");
+        near(output[k],(k==17?.245:.49)*scaling.sum*scaling.sum/(double(n)*scaling.sum_squares),1e-6,3e-6,"Bin power uses wrong window normalization");
+    }
+}
 void edge_cases(std::size_t n) {
     using namespace dsp_kernels;
     PreparedRfft fft;
@@ -173,17 +195,11 @@ void edge_cases(std::size_t n) {
     const auto scaling = *window_scaling(window);
     require(!fft.prepare(7) && !fft.prepare(768) && !fft.prepare(max_fft_samples * 2), "Invalid RFFT prepare accepted");
     require(fft.prepare(n), "Valid RFFT prepare rejected");
-    for (const auto kind : {SpectrumProjection::Magnitude, SpectrumProjection::PeakAmplitude, SpectrumProjection::Power, SpectrumProjection::Psd}) {
+    for (const auto kind : {SpectrumProjection::Magnitude, SpectrumProjection::PeakAmplitude, SpectrumProjection::Power, SpectrumProjection::Psd, SpectrumProjection::RmsAmplitude, SpectrumProjection::BinPower}) {
         require(projection.prepare(n, 32768, scaling, {kind,kind!=SpectrumProjection::Magnitude}) && fft.process(input, raw) && projection.process(raw, output), "Silence processing failed");
         require(std::all_of(output.begin(), output.end(), [](float value) { return value == 0; }), "Linear silence is not zero");
     }
-    for (std::size_t k : {std::size_t{0}, std::size_t{17}, n / 2}) {
-        for (std::size_t i = 0; i < n; ++i) input[i] = float(.7 * std::cos(2 * std::numbers::pi * double(k * i) / double(n)));
-        require(fft.process(input, raw) && projection.prepare(n, 32768, scaling, {SpectrumProjection::PeakAmplitude,true}) && projection.process(raw, output), "Tone peak failed");
-        near(output[k], .7, 1e-6, 3e-6, "One-sided peak endpoint factor wrong");
-        require(projection.prepare(n, 32768, scaling, {SpectrumProjection::Power,true}) && projection.process(raw, output), "Tone power failed");
-        near(output[k], k == 17 ? .245 : .49, 1e-6, 3e-6, "Power uses squared peak instead of mean-square");
-    }
+    endpoint_calibrations(fft,projection,input,raw,output,scaling);
     input[0] = std::numeric_limits<float>::infinity();
     const auto old_raw = raw;
     require(!fft.process(input, raw) && raw == old_raw, "Nonfinite RFFT is not atomic");
@@ -199,6 +215,9 @@ void edge_cases(std::size_t n) {
     require(!projection.prepare(n, 0, scaling, {SpectrumProjection::Psd,true}) &&
         !projection.prepare(n, 32768, {n, 0, 0}, {SpectrumProjection::Psd,true}) &&
         !projection.prepare(n, 32768, scaling, {SpectrumProjection(999),true}), "Invalid projection accepted");
+    PreparedSpectrumScaling extreme;
+    require(!extreme.prepare(1e308,1,1e-320,{SpectrumProjection::BinPower,true},n),"overflowed bin-power calibration is rejected at prepare");
+    require(!extreme.prepare(48000,1,1,{SpectrumProjection::BinPower,true}),"bin power requires an explicit FFT length");
     window[0] = std::numeric_limits<float>::infinity();
     require(!window_scaling(window) && !window_scaling({}), "Invalid window statistics accepted");
     // Scaling avoids intermediate overflow even when the raw result is finite.
@@ -222,8 +241,9 @@ constexpr std::array projection_kinds{
     dsp_kernels::SpectrumProjection::Real, dsp_kernels::SpectrumProjection::Imaginary,
     dsp_kernels::SpectrumProjection::Phase, dsp_kernels::SpectrumProjection::Magnitude,
     dsp_kernels::SpectrumProjection::PeakAmplitude, dsp_kernels::SpectrumProjection::Power,
-    dsp_kernels::SpectrumProjection::Psd};
-constexpr std::array projection_names{"real", "imaginary", "phase", "magnitude", "peak_amplitude", "power", "psd"};
+    dsp_kernels::SpectrumProjection::Psd, dsp_kernels::SpectrumProjection::RmsAmplitude,
+    dsp_kernels::SpectrumProjection::BinPower,dsp_kernels::SpectrumProjection::WindowScaledMagnitude};
+constexpr std::array projection_names{"real", "imaginary", "phase", "magnitude", "peak_amplitude", "power", "psd", "rms_amplitude", "bin_power","window_scaled_magnitude"};
 void fill_extreme_projection(std::size_t n,unsigned frame,std::vector<float>& raw) {
         for (std::size_t k = 0; k <= n / 2; ++k) {
             const float magnitude = frame == 0 ? (k % 2 ? std::numeric_limits<float>::denorm_min() : std::numeric_limits<float>::min()) :
@@ -438,6 +458,73 @@ void raw_benchmark() {
     benchmark.report();
 }
 
+void json_values(std::ostream& out,std::span<const float> values) {
+    out<<'[';
+    for(std::size_t i=0;i<values.size();++i){if(i)out<<',';out<<values[i];}
+    out<<']';
+}
+float oracle_sample(unsigned kind,std::size_t i,std::size_t fft_size,std::uint32_t& random) {
+    const auto angle=2*std::numbers::pi*double(i)/double(fft_size);
+    switch(kind){
+    case 0:return 0;
+    case 1:return .25f;
+    case 2:return i%2?-.3f:.3f;
+    case 3:return i==7?.7f:0;
+    case 4:return float(.5*std::cos(7*angle+.2));
+    case 5:return float(.5*std::cos(7.37*angle+.2));
+    case 6:random=random*1664525u+1013904223u;return float(double(random)/double(UINT32_MAX)-.5);
+    default:{double value=.1;for(unsigned tone=0;tone<7;++tone)value+=.2/(tone+1)*std::cos((3+4.25*tone)*angle+.17*tone);return float(value);}
+    }
+}
+struct ProjectionExport {
+    std::vector<float> signal,window,windowed,raw,full,values;
+    dsp_kernels::WindowScaling scaling;
+    std::size_t samples;
+    explicit ProjectionExport(std::size_t size,dsp_kernels::WindowFunction function,unsigned kind,std::size_t padded)
+        :signal(size),window(size),windowed(padded),raw(padded+2),full(padded+2),values(padded/2+1),samples(padded) {
+        std::uint32_t random=0x56341527u;
+        const dsp_kernels::PreparedWindows bank(size);const auto coefficients_view=bank.coefficients(function);
+        for(std::size_t i=0;i<size;++i){
+            window[i]=coefficients_view[i];near(window[i],dsp_kernels::window_coefficient(i,size,function),1e-7,0,"prepared and scalar windows disagree");
+            signal[i]=oracle_sample(kind,i,padded,random);windowed[i]=signal[i]*window[i];
+        }
+        auto coefficients=window;coefficients.resize(padded,0);scaling=*dsp_kernels::window_scaling(coefficients);
+        dsp_kernels::PreparedRfft rfft;dsp_kernels::FFT fft;
+        require(rfft.prepare(padded) && fft.prepare(padded),"oracle FFT plans");
+        allocations=0;watch_allocations=true;
+        const bool success=rfft.process(windowed,raw) && fft.process(windowed,full);watch_allocations=false;
+        require(success && allocations==0,"export FFT routes have no hot allocations");
+        for(std::size_t i=0;i<raw.size();++i)near(raw[i],full[i],.0003,5e-6,"CFFT and RFFT oracle routes disagree");
+    }
+    void outputs(std::ostream& out,double rate) {
+        bool comma=false;
+        for(const auto kind:projection_kinds)for(const auto compensate:{false,true}){
+            dsp_kernels::PreparedSpectrumProjection plan;
+            require(plan.prepare(samples,rate,scaling,{kind,compensate}),"oracle projection plan");
+            allocations=0;watch_allocations=true;const bool success=plan.process(raw,values);watch_allocations=false;
+            require(success && allocations==0,"export projections have no hot allocations");
+            if(comma)out<<',';comma=true;
+            out<<'"'<<dsp_kernels::spectrum_projection_name(kind)<<(compensate?"_scaled":"_raw")<<"\":";
+            json_values(out,values);
+        }
+    }
+    void write(std::ostream& out,dsp_kernels::WindowFunction function,unsigned kind,double rate) {
+        out<<"{\"window_name\":\""<<dsp_kernels::window_function_name(function)<<"\",\"signal_kind\":"<<kind<<",\"fs\":"<<rate<<",\"nfft\":"<<samples;
+        out<<",\"signal\":";json_values(out,signal);out<<",\"window\":";json_values(out,window);
+        out<<",\"windowed\":";json_values(out,windowed);out<<",\"raw\":";json_values(out,raw);
+        out<<",\"outputs\":{";outputs(out,rate);out<<"}}";
+    }
+};
+void export_projections(const char* path) {
+    std::ofstream out(path);out<<std::setprecision(std::numeric_limits<float>::max_digits10)<<'[';bool comma=false;
+    for(const auto function:{dsp_kernels::WindowFunction::Hann,dsp_kernels::WindowFunction::Hamming,dsp_kernels::WindowFunction::Blackman,
+            dsp_kernels::WindowFunction::Rectangular,dsp_kernels::WindowFunction::Bartlett,dsp_kernels::WindowFunction::BlackmanHarris,dsp_kernels::WindowFunction::FlatTop})
+        for(const auto window_size:{63u,64u})for(const auto nfft:{64u,256u})for(unsigned kind=0;kind<8;++kind)for(const auto rate:{32768.,44100.,48000.}){
+            if(comma)out<<',';comma=true;ProjectionExport fixture(window_size,function,kind,nfft);fixture.write(out,function,kind,rate);
+        }
+    out<<']';require(bool(out),"could not write spectral oracle export");
+}
+
 }
 void* operator new(std::size_t bytes) {
     if (watch_allocations.load()) ++allocations;
@@ -472,6 +559,7 @@ void operator delete(void* memory, std::size_t, std::align_val_t alignment) noex
 int main(int argc, char** argv) {
     try {
         std::cout << std::setprecision(9);
+        if(argc==3 && std::string_view(argv[1])=="--export-projections"){export_projections(argv[2]);return 0;}
         if (argc == 2 && std::string_view(argv[1]) == "--benchmark-only") {
             raw_benchmark();
             return 0;

@@ -165,16 +165,23 @@ struct SalienceObservation {
         for(std::size_t i=0;i<values.size();++i)check(load_element(view,{0,i,0},values[i])==Status::ok,"salience result");
     }
 };
+struct SalienceInput {std::string_view mode;Quantity quantity;NumericUnit unit;float value;};
+SalienceInput salience_input(std::string_view representation){
+    constexpr SalienceInput cases[]{
+        {"peak_amplitude",Quantity::SpectrumPeakAmplitude,NumericUnit::RawAmplitude,.5f},
+        {"magnitude",Quantity::SpectrumMagnitude,NumericUnit::RawAmplitude,.5f},
+        {"psd",Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz,1.f/96.f},
+        {"rms_amplitude",Quantity::SpectrumRmsAmplitude,NumericUnit::RawAmplitude,.3535533905932738f},
+        {"bin_power",Quantity::SpectrumBinPower,NumericUnit::SquaredAmplitude,1.f/12.f},
+        {"window_scaled_magnitude",Quantity::SpectrumWindowScaledMagnitude,NumericUnit::RawAmplitude,.25f},
+        {"power",Quantity::SpectrumPower,NumericUnit::SquaredAmplitude,.125f}};
+    for(const auto& item:cases)if(item.mode==representation)return item;
+    check(false,"unknown salience fixture representation");return {};
+}
 std::vector<float> salience_values(bool no_dc,const char* representation){
     const auto source_graph=graph();
     auto input=output(source_graph.nodes[4]);
-    const bool amplitude=std::string_view(representation)=="peak_amplitude";
-    const bool magnitude=std::string_view(representation)=="magnitude";
-    const bool density=std::string_view(representation)=="psd";
-    input.quantity=amplitude?Quantity::SpectrumPeakAmplitude:magnitude?Quantity::SpectrumMagnitude:
-        density?Quantity::SpectrumPsd:Quantity::SpectrumPower;
-    input.unit=density?NumericUnit::SquaredAmplitudePerHertz:
-        amplitude || magnitude?NumericUnit::RawAmplitude:NumericUnit::SquaredAmplitude;
+    const auto settings=salience_input(representation);input.quantity=settings.quantity;input.unit=settings.unit;
     if(no_dc){input.shape.extents[0]={2048,2048};input.coordinates[0].origin=input.coordinates[0].step;}
     ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.parameters=EndpointProcessingParameters{{number("sample_rate",32768)}};source.outputs={port(PortDirection::Output,0,input)};
     std::vector<ProcessingParameter> policy{text("input_representation",representation),
@@ -188,8 +195,7 @@ std::vector<float> salience_values(bool no_dc,const char* representation){
     std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
     check(PreparedGraph::prepare_numeric(fixture,profile(),plan,context)==Status::ok,"prepare salience units");
     std::vector<float> samples(input.shape.extents[0].maximum);
-    for(std::size_t bin:{55,110,165})samples[bin-(no_dc?1:0)]=amplitude?.5f:
-        magnitude?.5f:density?(1.f/96.f):.125f;
+    for(std::size_t bin:{55,110,165})samples[bin-(no_dc?1:0)]=settings.value;
     SalienceObservation observed;observed.values.resize(output(fixture.nodes.back()).shape.extents[0].maximum);
     const PlaneLayout plane{0,{sizeof(float),0}};FrameStamp stamp;stamp.sequence=1;stamp.producer_epoch=1;stamp.generation=1;
     auto frame=numeric_test_builders::frame(stamp,input,std::as_bytes(std::span(samples)),
@@ -201,10 +207,26 @@ void salience_grid_and_units(){
     const auto full=salience_values(false,"peak_amplitude"),positive=salience_values(true,"peak_amplitude");
     const auto power=salience_values(false,"power"),magnitude=salience_values(false,"magnitude");
     const auto density=salience_values(false,"psd");
+    const auto rms=salience_values(false,"rms_amplitude"),bin=salience_values(false,"bin_power"),scaled=salience_values(false,"window_scaled_magnitude");
     check(std::any_of(full.begin(),full.end(),[](float value){return value>0;}),"salience fixture is meaningful");
     for(std::size_t i=0;i<full.size();++i)check(std::abs(full[i]-positive[i])<1e-6f &&
         std::abs(full[i]-power[i])<1e-6f && std::abs(full[i]-magnitude[i])<1e-6f &&
-        std::abs(full[i]-density[i])<1e-6f,"salience explicit policy unit equivalence");
+        std::abs(full[i]-density[i])<1e-6f && std::abs(full[i]-rms[i])<1e-6f &&
+        std::abs(full[i]-bin[i])<1e-6f && std::abs(full[i]-scaled[i])<1e-6f,"salience explicit policy unit equivalence");
+}
+void new_projection_contracts(){
+    const auto fixture=graph();auto input=output(fixture.nodes[4]);OwnedProcessingContract result;
+    auto broad=*std::find_if(fixture.nodes.begin(),fixture.nodes.end(),[](const auto& n){return n.kind=="BroadbandFeatures";});
+    input.quantity=Quantity::SpectrumBinPower;input.unit=NumericUnit::SquaredAmplitude;
+    check(music_output_contract(broad,input,result)==Status::ok,"BroadbandFeatures accepts bin power without converting its units");
+    input.quantity=Quantity::SpectrumRmsAmplitude;input.unit=NumericUnit::RawAmplitude;
+    check(music_output_contract(broad,input,result)==Status::incompatible_contract,"BroadbandFeatures refuses amplitude instead of silently squaring it");
+    for(const auto mode:{"rms_amplitude","bin_power","window_scaled_magnitude"}){
+        auto source=output(fixture.nodes[3]);
+        auto projected=transform(100,"SpectrumProjection",source,{text("representation",mode),number("sample_rate",32768)});
+        auto normalized=transform(101,"FrequencyNormalizer",output(projected),{text("mode","manual"),text("representation",mode),number("manual_gain",2)});
+        check(output(normalized).quantity==output(projected).quantity && output(normalized).unit==output(projected).unit,"manual normalizer preserves each explicit new representation");
+    }
 }
 void salience_endpoint_policy(){
     dsp_kernels::PreparedSpectrumPower converter;
@@ -280,4 +302,4 @@ void* operator new(std::size_t n){++allocations;if(auto* p=std::malloc(n?n:1))re
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
-int main(){packet_queue();partition_and_cadence();declared_spectral_window();complex_frequency_binding();flux_boundaries();salience_grid_and_units();salience_endpoint_policy();disconnected_product_after_clear();}
+int main(){packet_queue();partition_and_cadence();declared_spectral_window();complex_frequency_binding();flux_boundaries();salience_grid_and_units();salience_endpoint_policy();new_projection_contracts();disconnected_product_after_clear();}

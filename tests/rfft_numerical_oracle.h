@@ -38,14 +38,16 @@ inline std::vector<float> signal(std::size_t n) {
     return input;
 }
 struct Projection {
-    double re,im,magnitude,amplitude,power,psd;
+    double re,im,magnitude,amplitude,power,psd,bin_power,window_scaled_magnitude;
     Projection(double real,double imaginary,double sided,const dsp_kernels::WindowScaling& scaling,double rate)
         :re(real),im(imaginary) {
         magnitude=std::hypot(re,im);
+        window_scaled_magnitude=magnitude/scaling.sum;
         const auto squared=re*re+im*im;
         amplitude=sided*magnitude/scaling.sum;
         power=sided*squared/(scaling.sum*scaling.sum);
         psd=sided*squared/(rate*scaling.sum_squares);
+        bin_power=sided*squared/(double(scaling.samples)*scaling.sum_squares);
     }
     double value(dsp_kernels::SpectrumProjection kind)const {
         using enum dsp_kernels::SpectrumProjection;
@@ -54,9 +56,12 @@ struct Projection {
         case Imaginary:return im;
         case Phase:return magnitude==0?0:std::atan2(im,re);
         case Magnitude:return magnitude;
+        case WindowScaledMagnitude:return window_scaled_magnitude;
         case PeakAmplitude:return amplitude;
         case Power:return power;
         case Psd:return psd;
+        case RmsAmplitude:return std::sqrt(power);
+        case BinPower:return bin_power;
         }
         return 0;
     }
