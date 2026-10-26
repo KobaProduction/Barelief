@@ -109,8 +109,12 @@ static int independent_display(core_app::MusicAnalysisDialog& dialog,const QStri
     if(!desktop_analysis::offline::load_profile(path,before,error))return failure(42,__LINE__);
     auto* automatic=dialog.findChild<QCheckBox*>("musicAutomaticRange");automatic->setChecked(false);
     dialog.findChild<QDoubleSpinBox*>("musicDisplayMinimumDb")->setValue(-180);
-    dialog.findChild<QDoubleSpinBox*>("musicDisplayReference")->setValue(.1);
     auto* plot=dynamic_cast<NumericSeriesView*>(dialog.findChild<QWidget*>("musicMeanCurve"));
+    if(!plot)return failure(43,__LINE__);
+    unsigned publications=0;QObject subscription;
+    const auto connection=QObject::connect(plot->presentation_model(),&QuickPlotModel::changed,&subscription,[&]{++publications;});
+    dialog.findChild<QDoubleSpinBox*>("musicDisplayReference")->setValue(.1);QObject::disconnect(connection);
+    if(publications!=1)return failure(47,__LINE__);
     if(!plot || plot->y_range().first!=-180 || !dialog.save_profile_to(path,error) || !desktop_analysis::offline::load_profile(path,after,error))return failure(43,__LINE__);
     if(before.profile.gains!=after.profile.gains || before.profile.curve->coefficients!=after.profile.curve->coefficients)return failure(44,__LINE__);
     const auto viewport=plot->viewport();plot->presentation_model()->navigate("zoom",.5,.5,.8);

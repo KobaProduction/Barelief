@@ -3,7 +3,43 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <algorithm>
+#include <array>
 #include <limits>
+
+namespace {
+// Preserve first/last and both extrema in source order for each pixel column.
+// A gap flushes the envelope and starts a new subpath, never a connecting line.
+class PixelEnvelope {
+public:
+    void append(std::size_t index,QPointF point){
+        const auto column=std::floor(point.x());
+        if(occupied_ && column!=column_)flush();
+        const Sample sample{index,point};
+        if(!occupied_){points_.fill(sample);occupied_=true;column_=column;}
+        points_[3]=sample;
+        if(point.y()<points_[1].point.y())points_[1]=sample;
+        if(point.y()>points_[2].point.y())points_[2]=sample;
+    }
+    void gap(){flush();connected_=false;}
+    QPainterPath take_path(){flush();return std::move(path_);}
+private:
+    struct Sample {std::size_t index;QPointF point;};
+    std::array<Sample,4> points_{};
+    QPainterPath path_;
+    bool occupied_=false,connected_=false;
+    double column_=0;
+    void flush(){
+        if(!occupied_)return;
+        std::sort(points_.begin(),points_.end(),[](const Sample& a,const Sample& b){return a.index<b.index;});
+        for(std::size_t i=0;i<points_.size();++i){
+            if(i && points_[i].index==points_[i-1].index)continue;
+            if(connected_)path_.lineTo(points_[i].point);else path_.moveTo(points_[i].point);
+            connected_=true;
+        }
+        occupied_=false;
+    }
+};
+}
 
 NumericSeriesView::NumericSeriesView(QWidget* parent):QuickPlotWidget(parent) {
     setMinimumSize(180,170);
@@ -15,9 +51,10 @@ void NumericSeriesView::set_series(std::vector<double> coordinates,std::vector<S
     if(!std::all_of(coordinates.begin(),coordinates.end(),finite) || std::adjacent_find(coordinates.begin(),coordinates.end(),ordered)!=coordinates.end()){
         coordinates.clear();series.clear();
     }
-    coordinates_=std::move(coordinates);series_=std::move(series);refresh_presentation();
+    coordinates_=std::move(coordinates);series_=std::move(series);range_dirty_=true;refresh_presentation();
 }
 void NumericSeriesView::set_scale(ValueDisplayScale scale,bool automatic,double low,double high) {
+    range_dirty_=range_dirty_ || scale_!=scale;
     scale_=scale;automatic_=automatic;low_=low;high_=high;refresh_presentation();
 }
 void NumericSeriesView::set_titles(QString x,QString y) {x_title_=std::move(x);y_title_=std::move(y);refresh_presentation();}
@@ -47,7 +84,8 @@ std::pair<double,double> NumericSeriesView::data_range()const {
 }
 void NumericSeriesView::observe_range() {
     if(!automatic_)return;
-    const auto [low,high]=data_range();
+    if(range_dirty_){observed_range_=data_range();range_dirty_=false;}
+    const auto [low,high]=observed_range_;
     if(!std::isfinite(low)){low_=-120;high_=20;return;}
     low_=std::max(scale_.floor,std::floor((std::max(low,high-120)-5)/10)*10);
     high_=std::ceil((high+5)/10)*10;
@@ -60,16 +98,27 @@ void NumericSeriesView::draw_bands(QPainter& painter,const QSize& size,double mi
         painter.fillRect(QRectF(left,0,right-left,size.height()),color);
     }
 }
+std::pair<std::size_t,std::size_t> NumericSeriesView::visible_indices(std::size_t count,double minimum,double maximum)const {
+    const auto begin=coordinates_.begin(),end=begin+std::min(count,coordinates_.size());
+    auto first=std::lower_bound(begin,end,logarithmic_?std::pow(10.,minimum):minimum);
+    auto last=std::upper_bound(first,end,logarithmic_?std::pow(10.,maximum):maximum);
+    if(first!=begin)--first;
+    if(last!=end)++last;
+    if(logarithmic_)first=std::max(first,std::upper_bound(begin,last,0.));
+    return {std::size_t(first-begin),std::size_t(last-begin)};
+}
 QPainterPath NumericSeriesView::series_path(const Series& series,const QSize& size,double minimum,double maximum)const {
+    if(maximum<=minimum || high_<=low_ || size.isEmpty())return {};
     const auto y0=low_+(1-viewport_.bottom())*(high_-low_),span=viewport_.height()*(high_-low_);
-    QPainterPath path;bool connected=false;
-        for(std::size_t i=0;i<coordinates_.size() && i<series.values.size();++i){
-            if(!std::isfinite(series.values[i]) || (logarithmic_ && coordinates_[i]<=0)){connected=false;continue;}
-            const QPointF point((map_x(coordinates_[i])-minimum)/(maximum-minimum)*size.width(),
-                size.height()*(1-(scale_.map(series.values[i])-y0)/span));
-            if(connected)path.lineTo(point);else path.moveTo(point);connected=true;
-        }
-    return path;
+    const auto [first,last]=visible_indices(series.values.size(),minimum,maximum);
+    PixelEnvelope envelope;
+    for(auto i=first;i<last;++i){
+        if(!std::isfinite(series.values[i])){envelope.gap();continue;}
+        const QPointF point((map_x(coordinates_[i])-minimum)/(maximum-minimum)*size.width(),
+            size.height()*(1-(scale_.map(series.values[i])-y0)/span));
+        envelope.append(i,point);
+    }
+    return envelope.take_path();
 }
 void NumericSeriesView::draw_series(QPainter& painter,const QSize& size,double minimum,double maximum)const {
     const QPalette::ColorRole roles[]{QPalette::Highlight,QPalette::Link,QPalette::LinkVisited,QPalette::Text};
@@ -87,6 +136,8 @@ QImage NumericSeriesView::raster(double minimum,double maximum)const {
     return image;
 }
 void NumericSeriesView::refresh_presentation() {
+    if(update_depth_){refresh_pending_=true;return;}
+    refresh_pending_=false;
     observe_range();const auto [start,end]=x_range();const auto span=end-start;
     const auto minimum=start+viewport_.left()*span,maximum=start+viewport_.right()*span;
     publish_image(raster(minimum,maximum));

@@ -26,11 +26,109 @@
 #include <limits>
 #include <stdexcept>
 #include <future>
+#include <QJsonObject>
+#include <QPainterPath>
 
 namespace {
 using namespace dsp_kernels;
 using namespace desktop_analysis::offline;
 void check(bool condition,const char* message) {if(!condition)throw std::runtime_error(message);}
+std::vector<double> stress_coordinates(unsigned tracks,bool diverse) {
+    std::vector<double> hz;hz.reserve(std::size_t(tracks)*2049);
+    const double rates[]{32768,44100,48000};
+    for(unsigned t=0;t<tracks;++t)for(unsigned k=0;k<=2048;++k)
+        hz.push_back(k*(diverse?44000.+t:rates[t%3])/4096);
+    std::sort(hz.begin(),hz.end());hz.erase(std::unique(hz.begin(),hz.end()),hz.end());return hz;
+}
+std::vector<NumericSeriesView::Series> stress_series(const std::vector<double>& hz) {
+    std::vector<NumericSeriesView::Series> result(3);
+    for(unsigned s=0;s<result.size();++s){
+        result[s].name=QString::number(s);result[s].values.reserve(hz.size());
+        for(const auto x:hz)result[s].values.push_back(std::exp(-x/5000)*(1+.2*std::sin(x*(s+1))));
+    }
+    return result;
+}
+void stress_update(NumericSeriesView& view,const std::vector<double>& hz,const std::vector<NumericSeriesView::Series>& series,ValueDisplayScale scale) {
+    const auto transaction=view.batch_update();
+    view.set_scale(scale,true,-120,20);view.set_titles("Hz","dB");view.set_series(hz,series);
+}
+QJsonObject plot_stress(unsigned tracks,bool diverse,double view_width) {
+    const auto hz=stress_coordinates(tracks,diverse);const auto series=stress_series(hz);
+    NumericSeriesView view;view.resize(1000,600);ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Decibels;
+    view.set_scale(scale,true,-120,20);view.set_series(hz,series);view.set_horizontal_view(.45*(1-view_width),view_width);
+    unsigned publications=0;QObject::connect(view.presentation_model(),&QuickPlotModel::changed,[&]{++publications;});
+    std::array<double,3> timings{};
+    for(auto& elapsed:timings){
+        QElapsedTimer clock;clock.start();
+        stress_update(view,hz,series,scale);
+        elapsed=clock.nsecsElapsed()/1e6;
+    }
+    std::sort(timings.begin(),timings.end());
+    return {{"tracks",int(tracks)},{"diverse_rates",diverse},{"points",qint64(hz.size())},{"viewport_width",view_width},
+        {"median_ms",timings[1]},{"publications_per_operation",publications/3.}};
+}
+void plot_benchmark() {
+    QJsonArray rows;
+    for(const auto diverse:{false,true})for(const auto tracks:{100u,1000u})for(const auto width:{1.,.01})
+        rows.append(plot_stress(tracks,diverse,width));
+    std::cout<<QJsonDocument(rows).toJson(QJsonDocument::Compact).constData()<<'\n';
+}
+class PlotProbe final:public NumericSeriesView {
+public:
+    using NumericSeriesView::series_path;
+};
+void plot_batching_and_range() {
+    PlotProbe view;unsigned publications=0;
+    QObject::connect(view.presentation_model(),&QuickPlotModel::changed,[&]{++publications;});
+    ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Decibels;scale.floor=-300;
+    {
+        const auto outer=view.batch_update();
+        view.set_bands({{1,2,true}});stress_update(view,{0,1,2},{{"one",{.001,.1,1}}},scale);
+        check(publications==0,"nested transactions do not publish intermediate rasters");
+    }
+    check(publications==1 && view.y_range().second==10,"one final raster includes current automatic range");
+    view.set_horizontal_view(.4,.1);check(view.y_range().second==10,"navigation preserves the global range");
+    scale.reference=.01;view.set_scale(scale,true,0,0);
+    check(view.y_range().second==50,"scale changes invalidate cached automatic range");
+    view.set_series({0,1},{{"new",{.001,.01}}});check(view.y_range().second==10,"data changes invalidate cached range");
+    view.set_scale(scale,false,-180,20);check(view.y_range().first==-180,"manual range remains synchronous");
+}
+void plot_visible_geometry() {
+    PlotProbe view;ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Linear;
+    view.set_scale(scale,false,0,1);std::vector<double> hz(10001);NumericSeriesView::Series series;
+    for(std::size_t i=0;i<hz.size();++i)hz[i]=double(i);
+    series.values.assign(hz.size(),.5);view.set_series(hz,{series});
+    auto path=view.series_path(series,{100,100},4000.2,4010.8);
+    check(path.elementCount()==12,"visible range retains exactly one neighbor on either side");
+    check(path.elementAt(0).x<0 && path.elementAt(11).x>100,"boundary crossing segments are retained");
+    series.values[4005]=std::numeric_limits<double>::quiet_NaN();path=view.series_path(series,{100,100},4000.2,4010.8);
+    unsigned moves=0;for(int i=0;i<path.elementCount();++i)moves+=path.elementAt(i).isMoveTo();
+    check(moves==2,"nonfinite samples remain gaps after clipping");
+    check(view.series_path(series,{100,100},1,1).isEmpty(),"empty viewport produces no geometry");
+    view.set_series({0,.1,1,10,100,1000},{{"log",{.5,.5,.5,.5,.5,.5}}});view.set_logarithmic_x(true);
+    path=view.series_path({"log",{.5,.5,.5,.5,.5,.5}},{100,100},.5,1.5);
+    check(path.elementCount()==3 && path.elementAt(0).x==-50 && path.elementAt(2).x==150,"log viewport clips in physical coordinates and excludes DC");
+}
+void plot_pixel_extrema() {
+    PlotProbe view;ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Linear;view.set_scale(scale,false,0,1);
+    std::vector<double> hz(10001);NumericSeriesView::Series series;series.values.assign(hz.size(),.5);
+    for(std::size_t i=0;i<hz.size();++i)hz[i]=double(i)/10000;
+    series.values[1210]=0;series.values[1211]=1;view.set_series(hz,{series});
+    const auto path=view.series_path(series,{32,100},0,1);
+    check(path.elementCount()<=4*33,"dense geometry is bounded by pixel columns");
+    int minimum=-1,maximum=-1;
+    for(int i=0;i<path.elementCount();++i){
+        const auto p=path.elementAt(i);if(p.y==100)minimum=i;if(p.y==0)maximum=i;
+    }
+    check(minimum>=0 && maximum>minimum,"both local extrema survive in original order within the same pixel");
+    check(path.elementAt(0).x==0 && path.elementAt(path.elementCount()-1).x==32,"first and last samples survive reduction");
+    view.presentation_model()->hover(.1211,.5);
+    check(view.presentation_model()->state().value("title").toString().endsWith(": 1"),"hover reads full source samples rather than reduced geometry");
+    series.values[1210]=std::numeric_limits<double>::quiet_NaN();
+    const auto gapped=view.series_path(series,{32,100},0,1);unsigned moves=0;
+    for(int i=0;i<gapped.elementCount();++i)moves+=gapped.elementAt(i).isMoveTo();
+    check(moves==2,"a gap inside a dense pixel bucket never becomes a connecting line");
+}
 FrequencyProfile measurements() {
     FrequencyProfile p;p.compatibility.sample_rate=32768;p.compatibility.fft_size=4096;
     p.compatibility.projection={SpectrumProjection::PeakAmplitude,true};p.compatibility.resampler_mode=ResamplerMode::Bypass;
@@ -285,7 +383,9 @@ void target_grid_updates(){
 }
 int main(int argc,char** argv) {
     QApplication app(argc,argv);ui::Language::instance().set("en");QTemporaryDir directory;
+    if(app.arguments().contains("--plot-benchmark")){plot_benchmark();return 0;}
     try{
+        plot_batching_and_range();plot_visible_geometry();plot_pixel_extrema();
         native_axis_and_coverage();cache_and_representation();fit_density_invariance();portable_function_storage(directory.path());malformed_axes_are_atomic();legacy_function_semantics();
         automatic_ui(directory.path());stale_fit_is_discarded(directory.path());target_grid_updates();
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

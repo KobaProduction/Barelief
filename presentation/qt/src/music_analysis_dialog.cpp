@@ -97,6 +97,7 @@ public:
     bool gain=false,magnitude=false,automatic=true;
     explicit Curve(QWidget* parent):NumericSeriesView(parent){}
     void update(){
+        const auto transaction=batch_update();
         ValueDisplayScale scale;scale.mode=ValueDisplayScale::Mode::Decibels;
         scale.factor=magnitude?20:10;scale.reference=gain?1:reference;scale.floor=-300;
         set_scale(scale,!gain&&automatic,gain?minimum_gain_db():display_floor,gain?std::max(3.,scale.factor*std::log10(limit)+3):display_ceiling);
@@ -428,6 +429,7 @@ struct MusicAnalysisDialog::State {
         if(has_profile)scan_summary->setText(ui::text("Scan: %1 tracks; native track coordinates; FFT %2; %3; %4").arg(p.compositions.size()).arg(p.compatibility.fft_size).arg(window->itemText(int(p.compatibility.window)),cadence_caption(p.training)));
     }
     void refresh_curves(){
+        const auto mean_transaction=mean->batch_update(),gain_transaction=gains->batch_update();
         const auto& p=active_profile();mean->comparisons.clear();gains->comparisons.clear();
         mean->values=p.curve?p.curve->measured_spectrum:p.mean_spectrum;mean->hz=p.curve?p.curve->measurement_hz:std::vector<double>{};
         mean->fs=gains->fs=p.compatibility.sample_rate;mean->reference=reference->value();
