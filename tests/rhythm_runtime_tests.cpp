@@ -1,6 +1,7 @@
 #include <dataflow_runtime/runtime.h>
 #include <domain/graph/node_factory.h>
 #include <dsp_kernels/rhythm.h>
+#include <dsp_kernels/musical_features.h>
 #include <core_app/numeric_default_graph.h>
 #ifdef BARELIEF_TEST_DESKTOP_SPEEX
 #include <speex_backend.h>
@@ -186,5 +187,17 @@ void research_window_calibration(){
     check(std::abs(research_parameter(*found,"coherent_gain")-4095./2)<1e-5);
     check(std::abs(research_parameter(*found,"power_bandwidth_hz")-1.5*32768./4095)<1e-6);
 }
+void research_quantization_scales(){
+    for(const auto& graph:{numeric_music_graph(),numeric_startup_graph()}){
+        const auto quantizer=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.kind=="SpectralQuantize";});
+        check(quantizer!=graph.nodes.end());const auto expected=graph.execution_interval==Ratio{1,60} && quantizer->id==33?.5:1.;
+        check(research_parameter(*quantizer,"min_value")==0 && research_parameter(*quantizer,"max_value")==expected);
+        const auto contract=std::get<NumericContract>(quantizer->outputs.front().contract.view());
+        check(contract.dtype==DType::UInt8 && contract.quantity==Quantity::Unspecified && contract.unit==NumericUnit::Values);
+        dsp_kernels::SpectralQuantizer kernel;check(kernel.prepare(0,expected,8));
+        const std::array<float,3> values{0,float(expected/2),float(expected)};std::array<std::uint8_t,3> codes{};
+        check(kernel.process(values,codes));check(codes[0]==0 && codes[1]==128 && codes[2]==255);
+    }
 }
-int main(){ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();}
+}
+int main(){ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();research_quantization_scales();}

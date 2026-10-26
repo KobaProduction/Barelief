@@ -228,6 +228,52 @@ void new_projection_contracts(){
         check(output(normalized).quantity==output(projected).quantity && output(normalized).unit==output(projected).unit,"manual normalizer preserves each explicit new representation");
     }
 }
+void calibrated_magnitude_admission(){
+    const auto fixture=graph();auto input=output(fixture.nodes[4]);
+    input.quantity=Quantity::SpectrumWindowScaledMagnitude;input.unit=NumericUnit::RawAmplitude;
+    ConfiguredProcessingNode node;node.id=99;node.kind="NoteSalience";
+    node.parameters=TransformProcessingParameters{{text("input_representation","magnitude"),{"bin_hz",NumericLiteral{8.}},
+        {"coherent_gain",NumericLiteral{1.}}}};OwnedProcessingContract result;
+    check(music_output_contract(node,input,result)==Status::ok,"legacy calibrated magnitude accepts only identity calibration");
+    auto& fields=std::get<TransformProcessingParameters>(node.parameters).values;
+    fields.back().value=NumericLiteral{2048.};
+    check(music_output_contract(node,input,result)==Status::incompatible_contract,"legacy calibrated magnitude rejects repeated window scaling");
+    const auto diagnostic=note_salience_calibration_diagnostic(node,input);
+    check(!diagnostic && diagnostic.reason==ProcessingReason::CoherentGain && diagnostic.parameter=="coherent_gain","ambiguous calibration identifies the conflicting parameter");
+    fields.front().value=std::string{"window_scaled_magnitude"};
+    check(music_output_contract(node,input,result)==Status::ok,"explicit calibrated magnitude does not use raw-FFT coherent gain");
+    input.quantity=Quantity::SpectrumMagnitude;
+    check(music_output_contract(node,input,result)==Status::incompatible_contract,"raw FFT cannot masquerade as calibrated magnitude");
+}
+void normalizer_magnitude_admission(){
+    const auto fixture=graph();auto input=output(fixture.nodes[4]);
+    input.quantity=Quantity::SpectrumWindowScaledMagnitude;input.unit=NumericUnit::RawAmplitude;
+    ConfiguredProcessingNode node;node.id=99;node.kind="FrequencyNormalizer";
+    node.parameters=TransformProcessingParameters{{text("mode","profile"),text("representation","magnitude"),
+        {"frontend_declared",true},text("channel_policy","mean"),text("resampler_mode","compact_fir"),
+        number("sample_rate",32768),number("fft_size",4096),number("first_bin",0),
+        {"gains",NumericArray{std::vector<float>(2049,1.f)}}}};
+    auto diagnostic=frequency_normalizer_diagnostic(node,input);
+    check(!diagnostic && diagnostic.reason==ProcessingReason::SpectrumRepresentation,"profile raw magnitude refuses an already calibrated spectrum");
+    auto& fields=std::get<TransformProcessingParameters>(node.parameters).values;
+    fields[1].value=std::string{"window_scaled_magnitude"};
+    check(bool(frequency_normalizer_diagnostic(node,input)),"profile calibrated magnitude has an explicit representation");
+    input.quantity=Quantity::SpectrumMagnitude;
+    check(!frequency_normalizer_diagnostic(node,input),"profile calibrated magnitude refuses a raw FFT");
+}
+void broadband_quantity_admission(){
+    const auto fixture=graph();auto input=output(fixture.nodes[4]);
+    const char* statistics[]{"sum_energy","mean_power","rms","maximum","flux"};
+    const Quantity expected[]{Quantity::BroadbandBinPowerSum,Quantity::BroadbandBinPowerMean,Quantity::BroadbandBinPowerRms,Quantity::BroadbandBinPowerMaximum,Quantity::BroadbandBinPowerFlux};
+    for(unsigned i=0;i<5;++i){
+        auto node=transform(100,"BroadbandFeatures",input,{text("statistic",statistics[i]),{"bin_hz",NumericLiteral{8.}}});
+        const auto old=output(node);input.quantity=Quantity::SpectrumBinPower;OwnedProcessingContract result;
+        check(music_output_contract(node,input,result)==Status::ok,"bin-power aggregate admission");
+        const auto bin=std::get<NumericContract>(result.view());
+        check(bin.quantity==expected[i] && bin.quantity!=old.quantity && bin.unit==old.unit,"each aggregate retains the spectral estimator in its quantity");
+        input.quantity=Quantity::SpectrumPower;
+    }
+}
 void salience_endpoint_policy(){
     dsp_kernels::PreparedSpectrumPower converter;
     dsp_kernels::SpectrumPowerPolicy policy;
@@ -302,4 +348,4 @@ void* operator new(std::size_t n){++allocations;if(auto* p=std::malloc(n?n:1))re
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
-int main(){packet_queue();partition_and_cadence();declared_spectral_window();complex_frequency_binding();flux_boundaries();salience_grid_and_units();salience_endpoint_policy();new_projection_contracts();disconnected_product_after_clear();}
+int main(){packet_queue();partition_and_cadence();declared_spectral_window();complex_frequency_binding();flux_boundaries();salience_grid_and_units();salience_endpoint_policy();new_projection_contracts();calibrated_magnitude_admission();normalizer_magnitude_admission();broadband_quantity_admission();disconnected_product_after_clear();}

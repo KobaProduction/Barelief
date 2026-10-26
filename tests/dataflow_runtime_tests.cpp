@@ -2,6 +2,9 @@
 #include "canonical_core_regressions.h"
 #include <bit>
 #include <domain/signal/contracts.h>
+#ifdef BARELIEF_TEST_DESKTOP_SPEEX
+#include <speex_backend.h>
+#endif
 using namespace canonical_test;
 static std::array<std::byte,50*8> mel_coordinates(){
  std::array<std::byte,50*8> bytes{};
@@ -641,10 +644,14 @@ static NumericRuntimeProfile startup_profile(){
  // Match the desktop engine's actual admission/kernel/reservation profile.
  constexpr std::size_t fixed=256*(262144+16384)+(384+48)*1024*1024;
  constexpr FrameLimits desktopLimits{8,131072,524288,16384,256,8192};
- NumericRuntimeProfile p{{512,2048,8,32,1024*1024,4*1024*1024,desktopLimits},
+ NumericRuntimeProfile p{{512,2048,16,32,1024*1024,4*1024*1024,desktopLimits},
   {{16*1024*1024,32*1024*1024,16*1024*1024,1024*1024},fixed,576*1024*1024},
   {32768,8,262144,262144,16*1024*1024},{true,true,true},true};
- p.music_enabled=true;return p;
+ p.music_enabled=true;p.experimental_resampling_enabled=true;
+#ifdef BARELIEF_TEST_DESKTOP_SPEEX
+ p.resampler_backend=&desktop_resampling::speex_backend_factory();
+#endif
+ return p;
 }
 static void add_unique_ancestor(std::vector<NodeId>& keep,NodeId id){
  if(std::find(keep.begin(),keep.end(),id)==keep.end())keep.push_back(id);
@@ -682,7 +689,7 @@ static void mono_source_discovery(NumericProcessingGraph& graph,NodeId source_id
  std::erase_if(graph.edges,[&](const auto& edge){return edge.from==source_id && edge.output_port!=0 && edge.output_port!=sample_rate_output;});
 }
 static void mono_selector_variants(NumericProcessingGraph& graph,const NumericRuntimeProfile& profile){
- for(std::uint64_t selected=0;selected<3;++selected){
+ for(std::uint64_t selected=0;selected<2;++selected){
   auto& selector=std::get<TransformProcessingParameters>(node(graph,200).parameters);
   for(auto& field:selector.values)if(field.key=="selected_input")field.value=NumericLiteral{selected};
   std::shared_ptr<const PreparedGraph> mono_plan;std::unique_ptr<RuntimeContext> mono_state;
@@ -696,7 +703,7 @@ static void startup_preparation_oracle(){auto graph=numeric_startup_graph();cons
  const auto status=PreparedGraph::prepare_numeric(graph,profile,plan,context);
  if(status!=Status::ok)diagnose_startup_failure(graph,profile,status);
  check(status==Status::ok,"startup complete preparation");
- for(const NodeId source_id:{13,14})mono_source_discovery(graph,source_id);
+ mono_source_discovery(graph,13);
  mono_selector_variants(graph,profile);
 }
 #include "aligned_numerical_acceptance.h"

@@ -530,11 +530,14 @@ ProcessingDiagnostic validate_rhythm(const OperationValidation& context) noexcep
     if(context.node.outputs.size()!=rhythm_output_count || rhythm_output_contracts(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return expected_outputs(context,expected);
 }
+ProcessingDiagnostic music_calibration_diagnostic(const OperationValidation& context) noexcept {
+    if(context.kind==NodeKind::FrequencyNormalizer)
+        return frequency_normalizer_diagnostic(context.configured,*context.input);
+    return note_salience_calibration_diagnostic(context.configured,*context.input);
+}
 ProcessingDiagnostic validate_music_operation(const OperationValidation& context) noexcept {
-    if(context.kind==NodeKind::FrequencyNormalizer){
-        const auto diagnostic=frequency_normalizer_diagnostic(context.configured,*context.input);
-        if(!diagnostic)return diagnostic;
-    }
+    const auto diagnostic=music_calibration_diagnostic(context);
+    if(!diagnostic)return diagnostic;
     if(!transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
     if(context.kind==NodeKind::MusicalSpectrogram || context.kind==NodeKind::BroadbandRow || context.kind==NodeKind::NoteSpectrum)return validate_musical_rows(context);
     OwnedProcessingContract expected;

@@ -2127,10 +2127,12 @@ static bool selective_node_settings() {
     return true;
 }
 static bool spectral_quantity_roundtrip() {
-    for(const auto quantity:{Quantity::SpectrumRmsAmplitude,Quantity::SpectrumBinPower,Quantity::SpectrumWindowScaledMagnitude}){
+    for(const auto quantity:{Quantity::SpectrumRmsAmplitude,Quantity::SpectrumBinPower,Quantity::SpectrumWindowScaledMagnitude,
+            Quantity::BroadbandBinPowerSum,Quantity::BroadbandBinPowerMean,Quantity::BroadbandBinPowerRms,Quantity::BroadbandBinPowerMaximum,Quantity::BroadbandBinPowerFlux}){
         auto graph=sample();auto& output=graph.nodes.front().outputs.front().contract;
         auto value=std::get<NumericContract>(output.view());value.dtype=DType::Float32;value.quantity=quantity;
-        value.unit=quantity==Quantity::SpectrumBinPower?NumericUnit::SquaredAmplitude:NumericUnit::RawAmplitude;
+        value.unit=(quantity==Quantity::SpectrumRmsAmplitude || quantity==Quantity::SpectrumWindowScaledMagnitude || quantity==Quantity::BroadbandBinPowerRms)
+            ?NumericUnit::RawAmplitude:NumericUnit::SquaredAmplitude;
         OwnedProcessingContract owner;
         CHECK(own_processing_contract(value,FrameLimits{64,1000000,16777216,16777216,1024,16777216},16777216,owner)==Status::ok);
         output=std::move(owner);QByteArray encoded;NumericProcessingGraph decoded;

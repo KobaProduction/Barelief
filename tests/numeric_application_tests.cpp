@@ -1092,7 +1092,8 @@ static int validate_current_history(CoreApplication& app,auto& node) {
 
                 pipeline::DeliveredNumericFrame frame;std::uint64_t ordinal=0,filled=0;
                 CHECK(wait_until([&]{return app.pipeline().query_numeric({"main",node.id,domain::PortDirection::Output,0},frame,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=3;}));
-                CHECK(std::get<signal_contracts::NumericView>(frame.frame.view().payload).actual[0]==400&&filled>0);
+                const auto capacity=std::get<domain::HistoryProcessingParameters>(node.parameters).capacity;
+                CHECK(std::get<signal_contracts::NumericView>(frame.frame.view().payload).actual[0]==capacity&&filled>0&&filled<=capacity);
 
 return 0;
 }

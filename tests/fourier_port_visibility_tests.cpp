@@ -5,6 +5,7 @@
 #include <barelief/ui_text.h>
 #include <core_app/numeric_default_graph.h>
 #include <core_app/example_presentation.h>
+#include <core_app/plot_composition.h>
 #include <dataflow_runtime/runtime.h>
 #include <QApplication>
 #include <QUndoStack>
@@ -13,6 +14,7 @@
 #include <QDir>
 #include <QFontDatabase>
 #include <QLabel>
+#include <QSet>
 #include <QVBoxLayout>
 #include <cstdio>
 #include <cstdlib>
@@ -20,10 +22,24 @@
 #include <string_view>
 
 namespace {
+void broadband_estimator_labels(){
+    using enum signal_contracts::Quantity;
+    const signal_contracts::Quantity quantities[]{BroadbandEnergy,BroadbandPower,BroadbandRms,BroadbandMaximum,SpectralFlux,
+        BroadbandBinPowerSum,BroadbandBinPowerMean,BroadbandBinPowerRms,BroadbandBinPowerMaximum,BroadbandBinPowerFlux};
+    QSet<QString> labels;
+    for(const auto quantity:quantities){
+        signal_contracts::NumericContract value;value.quantity=quantity;
+        labels.insert(presentation::audio_plot_presentation(value).value_title);
+    }
+    if(labels.size()!=10 || std::any_of(labels.begin(),labels.end(),[](const auto& label){return label.contains("Energy");})){
+        std::fputs("FAIL Fourier visibility: broadband estimators need distinct, non-energy axis titles\n",stderr);std::exit(1);
+    }
+}
 void check(bool ok,const char* message){if(!ok){std::fprintf(stderr,"FAIL Fourier visibility: %s\n",message);std::exit(1);}}
 std::shared_ptr<QtNodes::NodeDelegateModelRegistry> registry(){
     auto result=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto& kind:numeric_editor::catalog())result->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    const auto kinds=numeric_editor::catalog();
+    for(const auto& kind:kinds)result->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     return result;
 }
 void ports(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,const QString& kind){
@@ -114,6 +130,9 @@ void normalization_widget(){
         auto* toggle=form->findChild<QCheckBox*>("normalize");
         auto* representation=form->findChild<QComboBox*>("representation");
         check(toggle && toggle->isChecked() && representation,"actual inline normalization and representation controls exist");
+        representation->setCurrentIndex(0);QCoreApplication::processEvents();
+        check(model->portCaption(QtNodes::PortType::Out,0).contains(ui::text("Compensated FFT magnitude")),"calibrated magnitude must not be captioned peak amplitude");
+        representation=form->findChild<QComboBox*>("representation");
         representation->setCurrentIndex(3);QCoreApplication::processEvents();
         check(model->portCaption(QtNodes::PortType::Out,0).contains(ui::text("Power spectral density (PSD)")),"normalized PSD output caption");
         // The real checkbox must update the graph and the resulting unit/caption.
@@ -203,7 +222,7 @@ int main(int argc,char** argv){
 #endif
     auto r=registry();std::fputs("Fourier visibility: complex ports\n",stderr);ports(r,"Fourier");
     std::fputs("Fourier visibility: real ports\n",stderr);ports(r,"RealFourier");
-    musical_layout_caption();std::fputs("Fourier visibility: normalization controls\n",stderr);spectrum_normalization_controls();normalization_widget();
+    musical_layout_caption();broadband_estimator_labels();std::fputs("Fourier visibility: normalization controls\n",stderr);spectrum_normalization_controls();normalization_widget();
     std::fputs("Fourier visibility: shipped graphs\n",stderr);shipped_window_dependency_branches();rhythm_node_ports();rhythm_example_labels();
     std::puts("PASS Fourier DC visibility, normalization controls, musical layout and shipped window dependencies");
 }

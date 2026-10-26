@@ -127,7 +127,7 @@ ParameterChoices parameter_choices(const QString& kind,const QString& key) {
     static const QMap<QString,ParameterChoices> specs{
       {"FrequencyNormalizer/mode",{{"off","manual","profile"},{"Off","Manual","Loaded profile"}}},
       {"ArrayMultiply/operation",{{"multiply","add"},{"Multiply","Add"}}},
-      {"BroadbandFeatures/statistic",{{"sum_energy","mean_power","rms","maximum","flux"},{"Sum of bin power","Mean bin power","RMS of spectral power","Maximum bin power","Positive spectral flux"}}},
+      {"BroadbandFeatures/statistic",{{"sum_energy","mean_power","rms","maximum","flux"},{"Sum of spectral power values","Mean of spectral power values","Root sum of spectral power values","Maximum spectral power value","Positive spectral power flux"}}},
       {"AudioSource/source",{{"0","1"},{"System audio (loopback)","Microphone"}}},
       {"MatrixCenter/method",{{"0","1","2"},{"Subtract mean","Center between minimum and maximum","Manual offset"}}},
       {"SpectralQuantize/bits",{{"8","16"},{"UInt8","UInt16"}}}

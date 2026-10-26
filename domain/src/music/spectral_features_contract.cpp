@@ -1,4 +1,5 @@
 #include <domain/music/contracts.h>
+#include <domain/graph/admission.h>
 #include <domain/signal/contracts.h>
 #include <signal_contracts/window_policy.h>
 #include <algorithm>
@@ -121,6 +122,13 @@ struct BandStatistic {std::string_view id;Quantity quantity;NumericUnit unit=Num
 constexpr BandStatistic band_statistics[]{
     {"sum_energy",Quantity::BroadbandEnergy},{"mean_power",Quantity::BroadbandPower},
     {"rms",Quantity::BroadbandRms,NumericUnit::RawAmplitude},{"maximum",Quantity::BroadbandMaximum},{"flux",Quantity::SpectralFlux}};
+Quantity broadband_quantity(const BandStatistic& statistic,Quantity input) {
+    if(input!=Quantity::SpectrumBinPower)return statistic.quantity;
+    if(statistic.id=="sum_energy")return Quantity::BroadbandBinPowerSum;
+    if(statistic.id=="mean_power")return Quantity::BroadbandBinPowerMean;
+    if(statistic.id=="rms")return Quantity::BroadbandBinPowerRms;
+    return statistic.id=="maximum"?Quantity::BroadbandBinPowerMaximum:Quantity::BroadbandBinPowerFlux;
+}
 Status broadband_features(SpectralContract& context) {
     if(!spectrum_grid(context))return Status::incompatible_contract;
     std::size_t count=0;if(!band_boundaries(context,count))return Status::invalid_argument;
@@ -129,13 +137,15 @@ Status broadband_features(SpectralContract& context) {
     if(selected==std::end(band_statistics))return Status::invalid_argument;
     auto& output=context.output;output.shape.axes={Axis::Band,Axis::None};output.shape.extents[0]={count,count};
     output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{0,1}};
-    output.quantity=selected->quantity;output.unit=selected->unit;return Status::ok;
+    output.quantity=broadband_quantity(*selected,context.input.quantity);output.unit=selected->unit;return Status::ok;
 }
 bool salience_representation(const SpectralContract& context) {
     const auto representation=context.text("input_representation");
     const auto selected=std::find_if(std::begin(projections),std::end(projections),[&](const auto& p){return p.id==representation;});
     if(selected==std::end(projections) || representation=="real" || representation=="imaginary" || representation=="phase")return false;
-    const bool legacy_scaled=representation=="magnitude" && context.input.quantity==Quantity::SpectrumWindowScaledMagnitude;
+    double coherent=0;
+    const bool legacy_scaled=representation=="magnitude" && context.input.quantity==Quantity::SpectrumWindowScaledMagnitude &&
+        context.number("coherent_gain",coherent) && coherent==1;
     return (legacy_scaled || context.input.quantity==selected->quantity) && context.input.unit==selected->unit;
 }
 bool salience_nyquist(const SpectralContract& context,bool& out) {
@@ -176,6 +186,7 @@ Status quantize_spectrum(SpectralContract& context) {
     double bits=0,minimum=0,maximum=0;
     if(context.input.shape.rank!=Rank::Vector || !context.fixed() || !context.number("bits",bits) || (bits!=8 && bits!=16) || !context.number("min_value",minimum) || !context.number("max_value",maximum) || minimum>=maximum)return Status::invalid_argument;
     context.output=context.input;context.output.dtype=bits==8?DType::UInt8:DType::UInt16;
+    context.output.quantity=Quantity::Unspecified;context.output.unit=NumericUnit::Values;
     context.output.representation.normalization=Normalization::None;context.output.representation.alignment=bits==8?alignof(std::uint8_t):alignof(std::uint16_t);
     return Status::ok;
 }
@@ -205,5 +216,13 @@ Status music_output_contract(const ConfiguredProcessingNode& node,const NumericC
     }
     if(!std::holds_alternative<TransformProcessingParameters>(node.parameters) || input.dtype!=DType::Float32 || input.channel_order.size()!=1 || input.representation.encoding!=StorageEncoding::Native || input.representation.layout!=ChannelLayout::Planar || input.representation.valid_bits || !input.clock.sample_rate || input.clock.domain.empty())return Status::incompatible_contract;
     return materialize_music_contract(node,input,owner);
+}
+ProcessingDiagnostic note_salience_calibration_diagnostic(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {
+    if(node.kind!="NoteSalience" || input.quantity!=Quantity::SpectrumWindowScaledMagnitude)return {};
+    const SpectralContract context{node,input,{}};
+    if(context.text("input_representation")!="magnitude")return {};
+    double coherent=0;
+    if(context.number("coherent_gain",coherent) && coherent==1)return {};
+    return {ProcessingError::InvalidParameters,node.id,0,{},ProcessingReason::CoherentGain,"coherent_gain"};
 }
 }

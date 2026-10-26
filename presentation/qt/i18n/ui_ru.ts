@@ -2,6 +2,21 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Sum of power-spectrum values (Y)</source><translation>Сумма значений спектра мощности (Y)</translation></message>
+    <message><source>Mean of power-spectrum values (Y)</source><translation>Среднее значений спектра мощности (Y)</translation></message>
+    <message><source>Root sum of power-spectrum values (Y)</source><translation>Корень суммы значений спектра мощности (Y)</translation></message>
+    <message><source>Maximum of power-spectrum values (Y)</source><translation>Максимум значений спектра мощности (Y)</translation></message>
+    <message><source>Positive power-spectrum flux (Y)</source><translation>Положительный поток спектра мощности (Y)</translation></message>
+    <message><source>Sum of bin powers (Y)</source><translation>Сумма мощности бинов (Y)</translation></message>
+    <message><source>Mean bin power (Y)</source><translation>Средняя мощность бинов (Y)</translation></message>
+    <message><source>Root sum of bin powers (Y)</source><translation>Корень суммы мощности бинов (Y)</translation></message>
+    <message><source>Maximum bin power (Y)</source><translation>Максимальная мощность бина (Y)</translation></message>
+    <message><source>Positive bin-power flux (Y)</source><translation>Положительный поток мощности бинов (Y)</translation></message>
+    <message><source>Sum of spectral power values</source><translation>Сумма значений спектральной мощности</translation></message>
+    <message><source>Mean of spectral power values</source><translation>Среднее значений спектральной мощности</translation></message>
+    <message><source>Root sum of spectral power values</source><translation>Корень суммы значений спектральной мощности</translation></message>
+    <message><source>Maximum spectral power value</source><translation>Максимум спектральной мощности</translation></message>
+    <message><source>Positive spectral power flux</source><translation>Положительный поток спектральной мощности</translation></message>
     <message><source>Sum squared window coefficients</source><translation>Суммировать квадраты коэффициентов окна</translation></message>
     <message><source>FFT magnitude: raw or window-scaled</source><translation>Модуль FFT: исходный или делённый на сумму окна</translation></message>
     <message><source>Window-scaled magnitude</source><translation>Модуль FFT, делённый на сумму окна</translation></message>

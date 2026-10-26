@@ -178,7 +178,8 @@ const char* amplitude_caption(signal_contracts::Quantity quantity,bool normalize
     using Q=signal_contracts::Quantity;
     if(!normalize)return quantity==Q::SpectrumPower?"Raw magnitude squared":"Raw magnitude";
     switch(quantity){
-    case Q::SpectrumMagnitude:return "Compensated FFT magnitude";
+    case Q::SpectrumMagnitude:return "Raw magnitude";
+    case Q::SpectrumWindowScaledMagnitude:return "Compensated FFT magnitude";
     case Q::SpectrumPower:return "Power spectrum";
     case Q::SpectrumPsd:return "Power spectral density (PSD)";
     case Q::SpectrumRmsAmplitude:return "RMS amplitude spectrum";

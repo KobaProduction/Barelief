@@ -19,4 +19,6 @@ signal_contracts::Status musical_spectrogram_output_contracts(const ConfiguredPr
     std::array<std::size_t,4>* section_counts=nullptr) noexcept;
 signal_contracts::Status music_output_contract(const ConfiguredProcessingNode&,
     const signal_contracts::NumericContract&, OwnedProcessingContract&) noexcept;
+ProcessingDiagnostic note_salience_calibration_diagnostic(const ConfiguredProcessingNode&,
+    const signal_contracts::NumericContract&) noexcept;
 }

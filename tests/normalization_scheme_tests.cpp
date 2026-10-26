@@ -428,13 +428,19 @@ void resampler_live_edit_regression(){
     NumericEditorGraphModel model(registry);QString error;
     require(model.set_numeric_graph(numeric_startup_graph(),&error),"Startup example loads in editor");
     auto original=model.numeric_graph();auto changed=get(original,332);
-    // This example contains measured 32768-Hz coefficients: changing Fs alone
-    // is incompatible and must be rejected atomically, without stale edges.
+    // The measured coefficients stay at 32768 Hz. A locally valid rate edit
+    // remains an incompatible draft; exporting it must fail atomically.
     put(changed,"output_rate",NumericLiteral{std::uint64_t{48000}});
-    require(!model.edit_node(QtNodes::NodeId(332),changed),
-            "Incompatible sample-rate edit must be rejected");
-    require(model.numeric_graph().edges==original.edges,
-            "Rejected incompatible rate change must preserve graph edges");
+    require(model.edit_node(QtNodes::NodeId(332),changed),
+            "Locally valid sample-rate edit must remain available as a draft");
+    const auto draft=model.numeric_graph();
+    require(std::is_permutation(draft.edges.begin(),draft.edges.end(),original.edges.begin(),original.edges.end()),
+            "Incompatible draft preserves graph edges for repair");
+    auto executable=original;QByteArray before,after;
+    require(bool(desktop::encode_numeric_graph(executable,before)),"Encode prior executable graph");
+    require(!model.export_numeric_graph(executable,&error) && !error.isEmpty(),"Incompatible draft cannot execute");
+    require(desktop::encode_numeric_graph(executable,after) && before==after,"Refused export preserves the prior executable graph");
+    require(model.edit_node(QtNodes::NodeId(332),get(original,332)),"Restore the measured sample rate");
     original=model.numeric_graph();changed=get(original,332);
     put(changed,"mode",std::string{"existing_fir"});
     // The backend mode can change without affecting contracts. Check its

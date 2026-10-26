@@ -43,15 +43,35 @@ PlotCapabilities plot_capabilities(const PlotDescriptor& descriptor) {
     return {descriptor.modes,descriptor.audio_scales};
 }
 namespace {
-QString audio_value_title(const signal_contracts::NumericContract& value) {
-    using namespace signal_contracts;
-    if(value.quantity==Quantity::NoteSalience)return "Note salience (Y)";
-    if(value.unit==NumericUnit::RawAmplitude || value.unit==NumericUnit::NormalizedAmplitude)return "Amplitude (Y)";
-    if(value.unit==NumericUnit::Radians)return "Phase, radians (Y)";
-    if(value.unit==NumericUnit::SquaredAmplitude)return "Power (Y)";
-    if(value.unit==NumericUnit::SquaredAmplitudePerHertz)return "PSD (Y)";
-    if(value.unit==NumericUnit::Decibels)return "Level, dB (Y)";
+const char* broadband_value_title(signal_contracts::Quantity quantity) {
+    using enum signal_contracts::Quantity;
+    switch(quantity){
+    case BroadbandEnergy:return "Sum of power-spectrum values (Y)";
+    case BroadbandPower:return "Mean of power-spectrum values (Y)";
+    case BroadbandRms:return "Root sum of power-spectrum values (Y)";
+    case BroadbandMaximum:return "Maximum of power-spectrum values (Y)";
+    case SpectralFlux:return "Positive power-spectrum flux (Y)";
+    case BroadbandBinPowerSum:return "Sum of bin powers (Y)";
+    case BroadbandBinPowerMean:return "Mean bin power (Y)";
+    case BroadbandBinPowerRms:return "Root sum of bin powers (Y)";
+    case BroadbandBinPowerMaximum:return "Maximum bin power (Y)";
+    case BroadbandBinPowerFlux:return "Positive bin-power flux (Y)";
+    default:return nullptr;
+    }
+}
+QString audio_unit_title(signal_contracts::NumericUnit unit) {
+    using enum signal_contracts::NumericUnit;
+    if(unit==RawAmplitude || unit==NormalizedAmplitude)return "Amplitude (Y)";
+    if(unit==Radians)return "Phase, radians (Y)";
+    if(unit==SquaredAmplitude)return "Power (Y)";
+    if(unit==SquaredAmplitudePerHertz)return "PSD (Y)";
+    if(unit==Decibels)return "Level, dB (Y)";
     return {};
+}
+QString audio_value_title(const signal_contracts::NumericContract& value) {
+    if(const auto* title=broadband_value_title(value.quantity))return title;
+    if(value.quantity==signal_contracts::Quantity::NoteSalience)return "Note salience (Y)";
+    return audio_unit_title(value.unit);
 }
 void apply_audio_axis_titles(const signal_contracts::NumericContract& value,PlotPresentation& result) {
     using namespace signal_contracts;

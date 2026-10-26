@@ -537,10 +537,10 @@ bool prepare_parameter_edit(domain::NumericProcessingGraph& graph,domain::Config
     if(!update_sample_clock_consumers(graph,changed))return false;
     const bool valid_configuration=resolve_edited_configuration(graph);
     const bool valid_parameters=resolve_edited_parameters(graph,changed.id);
-    // Never commit a partially updated resampler: otherwise outgoing ports
-    // retain stale sample rates/shapes and editor links become invalid.
-    if((changed.kind=="SampleClock" || changed.kind=="PcmResampler") &&
-       (!valid_configuration || !valid_parameters))return false;
+    // The edited node's own ports were derived before this transaction. A
+    // downstream refusal remains a visible, non-executable draft; keeping that
+    // edge allows the user to repair explicit spectral Fs/N/calibration inputs.
+    if(changed.kind=="SampleClock" && (!valid_configuration || !valid_parameters))return false;
     return true;
 }
 }

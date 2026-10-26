@@ -46,7 +46,7 @@ bool grid_matches(const NumericContract& input,std::uint64_t fs,std::uint64_t ff
         std::abs(origin-first*expected)<=std::numeric_limits<double>::epsilon()*std::max(1.L,first*expected);
 }
 bool amplitude_representation_matches(std::string_view representation,Quantity quantity) {
-    if(representation=="magnitude")return quantity==Quantity::SpectrumMagnitude || quantity==Quantity::SpectrumWindowScaledMagnitude;
+    if(representation=="magnitude")return quantity==Quantity::SpectrumMagnitude;
     if(representation=="peak_amplitude")return quantity==Quantity::SpectrumPeakAmplitude;
     if(representation=="rms_amplitude")return quantity==Quantity::SpectrumRmsAmplitude;
     return representation=="window_scaled_magnitude" && quantity==Quantity::SpectrumWindowScaledMagnitude;
