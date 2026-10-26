@@ -321,7 +321,13 @@ set_property(TEST resampling_modes_tests resampler_runtime_tests APPEND PROPERTY
 set_property(TEST music_profile_tests music_profile_control_tests APPEND PROPERTY LABELS integration long)
 set_property(TEST numeric_runtime_startup_tests desktop_history_demand_tests console_config_tests
     APPEND PROPERTY LABELS integration)
-set_property(TEST performance_tests portable_dsp_cadence_tests APPEND PROPERTY LABELS performance)
+set_property(TEST performance_tests APPEND PROPERTY LABELS performance)
+set_tests_properties(performance_tests PROPERTIES RUN_SERIAL TRUE)
+if(BUILD_GUI)
+    # These scenarios open many Qt views or bound child startup+shutdown by6s.
+    # Six concurrent full applications exceeded their existing deadlines.
+    set_tests_properties(numeric_graph_action_tests numeric_shutdown_tests PROPERTIES RUN_SERIAL TRUE)
+endif()
 set_tests_properties(numeric_presentation_tests PROPERTIES LABELS "quick;component" TIMEOUT 15)
 add_desktop_check(plot_viewport_component_tests Qt6::Core)
 target_include_directories(plot_viewport_component_tests PRIVATE ${CMAKE_SOURCE_DIR}/presentation/qt/include)

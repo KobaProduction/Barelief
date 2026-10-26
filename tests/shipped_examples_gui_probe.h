@@ -925,7 +925,14 @@ class ExampleAutosaveProbe {
         qWarning()<<"Autosave probe: live edit or disabled persistence";
         return false;
     }
+    bool save_in_flight() const {
+        const auto* status=window->findChild<QLabel*>("configurationSaveStatus");
+        return status&&status->property("saveState").toInt()==int(MainWindow::ConfigurationSaveState::Saving);
+    }
     bool preference_saved(const QString& key,const QJsonValue& expected) {
+        // A polling Windows reader can deny the background writer's atomic
+        // destination replacement. Observe completion before opening the file.
+        if(save_in_flight())return false;
         QJsonObject settings;
         return desktop::load_numeric_project(path,saved,disk)&&desktop::read_numeric_application_settings(saved,settings)&&
                settings["ui"].toObject()[key]==expected;
@@ -954,6 +961,7 @@ class ExampleAutosaveProbe {
         return false;
     }
     bool snapshots_saved() {
+        if(save_in_flight())return false;
         return desktop::load_numeric_project(path,saved,disk)&&desktop::read_numeric_applied(saved,applied)&&applied&&
                encoded(disk)==encoded(model->numeric_graph())&&encoded(*applied)==encoded(*presenter.applied_numeric_graph());
     }
@@ -970,14 +978,16 @@ class ExampleAutosaveProbe {
     bool save_position() {
         working_revision=presenter.client().snapshot().graph_revision;
         model->setNodeData(1,QtNodes::NodeRole::Position,QPointF(713,421));
-        if(!wait([&]{desktop::NumericDraftPresentation display;return desktop::load_numeric_project(path,saved,disk)&&
+        if(!wait([&]{if(save_in_flight())return false;
+                   desktop::NumericDraftPresentation display;return desktop::load_numeric_project(path,saved,disk)&&
                    desktop::read_numeric_presentation(saved,display)&&display.positions["1"].toObject()["x"].toDouble()==713;},5000)) {
             desktop::NumericDraftPresentation display;
             const auto loaded=desktop::load_numeric_project(path,saved,disk)&&desktop::read_numeric_presentation(saved,display);
             auto* status=window->findChild<QLabel*>("configurationSaveStatus");
             qWarning()<<"Autosave probe: position save"<<loaded<<display.positions.value("1")
                       <<model->nodeData(1,QtNodes::NodeRole::Position)<<app._ctx.file_configs.ui.autosave_enabled
-                      <<(status?status->property("saveState"):QVariant{})<<(status?status->toolTip():QString{});
+                      <<(status?status->property("saveState"):QVariant{})<<(status?status->toolTip():QString{})
+                      <<"errorUtf8Hex"<<(status?status->toolTip().toUtf8().toHex():QByteArray{});
             return false;
         }
         return presenter.client().snapshot().graph_revision==working_revision;

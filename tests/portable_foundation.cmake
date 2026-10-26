@@ -152,3 +152,6 @@ endforeach()
 foreach(long_test IN ITEMS numeric_runtime_scenario_tests numeric_values_runtime_tests temporal_fft_tests)
     set_property(TEST ${long_test} APPEND PROPERTY LABELS long)
 endforeach()
+# Wall-clock cadence measurements must have the CTest runner to themselves.
+set_property(TEST portable_dsp_cadence_tests APPEND PROPERTY LABELS performance)
+set_tests_properties(portable_dsp_cadence_tests PROPERTIES RUN_SERIAL TRUE)
