@@ -288,12 +288,12 @@ struct MusicAnalysisDialog::State {
     }
     void update_curve_availability(bool busy){
         const bool measurements=has_profile&&bool(corpus);
-        for(QWidget* widget:std::initializer_list<QWidget*>{maximum,floor,approximation,degree,segments,knot_spacing,percentile})
+        for(QWidget* widget:std::initializer_list<QWidget*>{maximum,floor,segments,knot_spacing,percentile})
             widget->setEnabled(!busy&&measurements);
         aggregation->setEnabled(!busy&&measurements&&!document.profile.compositions.empty());
         if(export_coefficients)export_coefficients->setEnabled(!busy&&curve_ready&&has_profile);
         quiet_level->setEnabled(!busy&&has_rms_groups());
-        fit_form->setRowVisible(degree,approximation->currentIndex()==0);fit_form->setRowVisible(segments,approximation->currentIndex()==1);fit_form->setRowVisible(knot_spacing,approximation->currentIndex()==1);
+        fit_form->setRowVisible(segments,true);fit_form->setRowVisible(knot_spacing,true);
         fit_form->setRowVisible(percentile,aggregation->currentIndex()==2);
         percentile->setEnabled(!busy&&measurements&&aggregation->currentIndex()==2);
     }
@@ -455,7 +455,7 @@ struct MusicAnalysisDialog::State {
         }else {gains->hz.clear();gains->values.assign(p.gains.begin(),p.gains.end());}
     }
     void append_fit_lines(){
-        if(curve_analysis){append_profile_fit(curve_analysis->polynomial);append_profile_fit(curve_analysis->piecewise);}
+        if(curve_analysis)append_profile_fit(curve_analysis->piecewise);
         else append_profile_fit(active_profile());
         if(corrected_spectrum->isChecked()){
             std::vector<double> values;const auto& p=active_profile();
@@ -468,9 +468,9 @@ struct MusicAnalysisDialog::State {
         std::vector<double> values;
         for(const auto hz:mean->hz)values.push_back(hz>=profile.curve->minimum_hz && hz<=profile.curve->maximum_hz?
             dsp_kernels::frequency_curve_amplitude(profile,hz):std::numeric_limits<double>::quiet_NaN());
-        const auto polynomial=profile.curve->options.approximation==dsp_kernels::CurveApproximation::Polynomial;
-        mean->comparisons.push_back({ui::text(polynomial?"Polynomial":"Piecewise smooth"),std::move(values),
-            curve_analysis && profile.curve->options.approximation!=curve_analysis->settings.approximation});
+        const auto name=profile.curve->options.approximation==dsp_kernels::CurveApproximation::Polynomial?
+            "Imported legacy curve":"Piecewise smooth";
+        mean->comparisons.push_back({ui::text(name),std::move(values),false});
     }
     void refresh_support_bands(){
         const auto& p=active_profile();std::vector<NumericSeriesView::Band> missing,limited;
@@ -1001,11 +1001,16 @@ struct MusicAnalysisDialog::State {
     void build_curve_controls(){
         curve_form=new QFormLayout;auto* methods=new QFormLayout;fit_form=methods;methods->setRowWrapPolicy(QFormLayout::WrapLongRows);curve_form->setRowWrapPolicy(QFormLayout::WrapLongRows);layout->addLayout(methods);layout->addLayout(curve_form);
         aggregation=new QComboBox(owner);aggregation->setObjectName("musicAggregation");aggregation->addItems({ui::text("Mean of track maxima"),ui::text("Global maximum"),ui::text("Upper percentile of track maxima")});methods->addRow(label("Track aggregation",owner),aggregation);
-        approximation=new QComboBox(owner);approximation->setObjectName("musicApproximation");approximation->addItems({ui::text("Polynomial in Hz"),ui::text("Piecewise smooth in Hz")});approximation->setCurrentIndex(1);methods->addRow(label("Approximation",owner),approximation);
+        // Keep a compatibility object for existing UI clients, but expose only
+        // the piecewise representation and avoid selecting old polynomial modes.
+        approximation=new QComboBox(owner);approximation->setObjectName("musicApproximation");
+        approximation->addItem(ui::text("Piecewise smooth in Hz"));approximation->setCurrentIndex(0);
+        methods->addRow(label("Approximation",owner),approximation);
         build_fit_resolution(methods);build_curve_gain_controls();build_curve_actions();
     }
     void build_fit_resolution(QFormLayout* methods){
-        degree=new QSpinBox(owner);degree->setObjectName("musicPolynomialDegree");degree->setRange(1,12);degree->setValue(6);methods->addRow(label("Polynomial degree",owner),degree);
+        degree=new QSpinBox(owner);degree->setObjectName("musicPolynomialDegree");degree->setRange(1,12);degree->setValue(6);
+        degree->hide(); // Legacy archive metadata only; not a current fitting parameter.
         segments=new QSpinBox(owner);segments->setObjectName("musicCurveSegments");segments->setRange(2,2048);segments->setValue(64);methods->addRow(label("Curve segments",owner),segments);
         knot_spacing=new QComboBox(owner);knot_spacing->setObjectName("musicKnotSpacing");
         knot_spacing->addItems({ui::text("Uniform frequency spacing (legacy)"),ui::text("Logarithmic frequency spacing"),
@@ -1057,21 +1062,14 @@ struct MusicAnalysisDialog::State {
     }
     void build_curve_invalidation_events(){
         for(auto* box:{aggregation,gain_mode})QObject::connect(box,&QComboBox::currentIndexChanged,owner,[this]{invalidate_curve();});
-        QObject::connect(approximation,&QComboBox::currentIndexChanged,owner,[this]{select_approximation();});
         for(auto* box:{maximum,minimum,floor,percentile})QObject::connect(box,&QDoubleSpinBox::valueChanged,owner,[this]{invalidate_curve();});
-        for(auto* box:{degree,segments,smooth})QObject::connect(box,&QSpinBox::valueChanged,owner,[this]{invalidate_curve();});
+        for(auto* box:{segments,smooth})QObject::connect(box,&QSpinBox::valueChanged,owner,[this]{invalidate_curve();});
         QObject::connect(knot_spacing,&QComboBox::currentIndexChanged,owner,[this]{invalidate_curve();});
     }
-    void select_approximation(){
-        if(restoring_controls)return;
-        if(!curve_ready || !curve_analysis || curve_future.valid() || curve_pending){invalidate_curve();return;}
-        auto result=*curve_analysis;result.settings.approximation=dsp_kernels::CurveApproximation(approximation->currentIndex());
-        if(!result.selected().curve){invalidate_curve();return;}
-        ++curve_revision;mark_application_dirty();install_curve(std::move(result));
-    }
     dsp_kernels::FrequencyCurveOptions curve_options() const {
-        dsp_kernels::FrequencyCurveOptions o;o.aggregation=dsp_kernels::PeakAggregation(aggregation->currentIndex());o.approximation=dsp_kernels::CurveApproximation(approximation->currentIndex());
-        o.percentile=percentile->value();o.polynomial_degree=unsigned(degree->value());o.segments=std::size_t(segments->value());o.knot_spacing=dsp_kernels::CurveKnotSpacing(knot_spacing->currentIndex());o.regularization_db=floor->value();o.max_gain=maximum->value();return o;
+        dsp_kernels::FrequencyCurveOptions o;o.aggregation=dsp_kernels::PeakAggregation(aggregation->currentIndex());
+        o.approximation=dsp_kernels::CurveApproximation::PiecewiseSmooth;
+        o.percentile=percentile->value();o.segments=std::size_t(segments->value());o.knot_spacing=dsp_kernels::CurveKnotSpacing(knot_spacing->currentIndex());o.regularization_db=floor->value();o.max_gain=maximum->value();return o;
     }
     void invalidate_curve(){
         if(restoring_controls || !corpus)return;
@@ -1098,9 +1096,9 @@ struct MusicAnalysisDialog::State {
         if(!result.error.empty()){
             curve_ready=false;fit_quality->setText(ui::text(result.error.c_str()));set_mode(mode);return;
         }
-        preserve_scanner_settings(result.polynomial);preserve_scanner_settings(result.piecewise);
+        preserve_scanner_settings(result.piecewise);
         curve_analysis=std::make_shared<CurveAnalysis>(std::move(result));curve_ready=true;applied_status=false;
-        compare_fits(curve_analysis->settings);refresh_curves();refresh_frequency_statistics();update_preview();set_mode(mode==Mode::Setup?Mode::Setup:Mode::Results);
+        compare_fits();refresh_curves();refresh_frequency_statistics();update_preview();set_mode(mode==Mode::Setup?Mode::Setup:Mode::Results);
         set_status_message("Curve ready; measurements were reused without reading audio");
     }
     void reset_curve_source(){
@@ -1111,7 +1109,7 @@ struct MusicAnalysisDialog::State {
         if(corpus)invalidate_curve();
     }
     void reset_curve_defaults(){
-        restoring_controls=true;aggregation->setCurrentIndex(0);approximation->setCurrentIndex(1);
+        restoring_controls=true;aggregation->setCurrentIndex(0);approximation->setCurrentIndex(0);
         degree->setValue(6);segments->setValue(64);knot_spacing->setCurrentIndex(2);percentile->setValue(90);floor->setValue(-120);maximum->setValue(10000);
         gain_mode->setCurrentIndex(1);restoring_controls=false;
     }
@@ -1145,17 +1143,14 @@ struct MusicAnalysisDialog::State {
         }
         return weight_total>0?std::sqrt(sum/weight_total):std::numeric_limits<double>::quiet_NaN();
     }
-    void compare_fits(dsp_kernels::FrequencyCurveOptions options){
+    void compare_fits(){
         const auto& p=active_profile();
         if(!p.curve){fit_quality->setText(ui::text("Legacy profile requires an exact frontend match"));return;}
-        const auto* other=curve_analysis?(options.approximation==dsp_kernels::CurveApproximation::Polynomial?&curve_analysis->piecewise:&curve_analysis->polynomial):nullptr;
         const auto low=low_band_rmse(p);
-        const auto alternative_low=other?low_band_rmse(*other):std::numeric_limits<double>::quiet_NaN();
         const auto fmt=[](double value){return std::isfinite(value)?QString::number(value,'f',2):ui::text("Unavailable");};
-        const auto global=QString::number(p.curve->fit_rmse_db,'f',2);
-        const auto alternative=other&&other->curve?QString::number(other->curve->fit_rmse_db,'f',2):ui::text("Unavailable");
-        fit_quality->setText(ui::text("Fit RMS error: selected %1 dB; alternative %2 dB. Low band 20–250 Hz: %3 / %4 dB. Measured range: %5–%6 Hz.")
-            .arg(global,alternative,fmt(low),fmt(alternative_low),QString::number(p.curve->minimum_hz),QString::number(p.curve->maximum_hz)));
+        fit_quality->setText(ui::text("Fit RMS error: %1 dB. Low band 20–250 Hz: %2 dB. Measured range: %3–%4 Hz.")
+            .arg(QString::number(p.curve->fit_rmse_db,'f',2),fmt(low),
+                 QString::number(p.curve->minimum_hz),QString::number(p.curve->maximum_hz)));
     }
     void refresh_fitted_curve(){
         const auto& p=document.profile;fitted->values.clear();
@@ -1167,8 +1162,8 @@ struct MusicAnalysisDialog::State {
     void restore_curve_options(){
         if(!document.profile.curve)return;
         restoring_controls=true;const auto& o=document.profile.curve->options;
-        aggregation->setCurrentIndex(int(o.aggregation));approximation->setCurrentIndex(int(o.approximation));degree->setValue(int(o.polynomial_degree));segments->setValue(int(o.segments));knot_spacing->setCurrentIndex(int(o.knot_spacing));percentile->setValue(o.percentile);maximum->setValue(o.max_gain);floor->setValue(o.regularization_db);
-        restoring_controls=false;compare_fits(o);
+        aggregation->setCurrentIndex(int(o.aggregation));approximation->setCurrentIndex(0);degree->setValue(int(o.polynomial_degree));segments->setValue(int(o.segments));knot_spacing->setCurrentIndex(int(o.knot_spacing));percentile->setValue(o.percentile);maximum->setValue(o.max_gain);floor->setValue(o.regularization_db);
+        restoring_controls=false;compare_fits();
     }
     void update_application_summary(){
         if(!application_summary)return;
@@ -1303,8 +1298,8 @@ struct MusicAnalysisDialog::State {
     void refresh_curve_labels(){
         aggregation->setItemText(0,ui::text("Mean of track maxima"));aggregation->setItemText(1,ui::text("Global maximum"));aggregation->setItemText(2,ui::text("Upper percentile of track maxima"));
         knot_spacing->setItemText(0,ui::text("Uniform frequency spacing (legacy)"));knot_spacing->setItemText(1,ui::text("Logarithmic frequency spacing"));knot_spacing->setItemText(2,ui::text("Hybrid: dense bass, uniform highs"));
-        approximation->setItemText(0,ui::text("Polynomial in Hz"));approximation->setItemText(1,ui::text("Piecewise smooth in Hz"));
-        if(curve_ready && active_profile().curve)compare_fits(active_profile().curve->options);
+        approximation->setItemText(0,ui::text("Piecewise smooth in Hz"));
+        if(curve_ready && active_profile().curve)compare_fits();
     }
     void install_scan(ProfileDocument candidate){
         install_profile(std::move(candidate),{});curve_ready=false;

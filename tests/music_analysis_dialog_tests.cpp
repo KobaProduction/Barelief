@@ -96,9 +96,10 @@ static bool ready(core_app::MusicAnalysisDialog& dialog) {
     return false;
 }
 static int interactive_methods(core_app::MusicAnalysisDialog& dialog,const unsigned& scans) {
-    for(int method=0;method<3;++method)for(int fit=0;fit<2;++fit){
+    auto* choice=dialog.findChild<QComboBox*>("musicApproximation");
+    if(!choice || choice->count()!=1)return failure(40,__LINE__);
+    for(int method=0;method<3;++method){
         dialog.findChild<QComboBox*>("musicAggregation")->setCurrentIndex(method);
-        dialog.findChild<QComboBox*>("musicApproximation")->setCurrentIndex(fit);
         if(!ready(dialog) || scans!=1)return failure(40,__LINE__);
     }
     return 0;

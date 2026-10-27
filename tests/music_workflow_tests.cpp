@@ -163,13 +163,16 @@ void native_axis_and_coverage() {
 void cache_and_representation() {
     const auto source=measurements();const auto corpus=curve_corpus(source);FrequencyCurveOptions options;
     auto first=std::make_shared<CurveAnalysis>(analyze_frequency_curves(corpus,options));
-    check(first->error.empty() && first->polynomial.curve && first->piecewise.curve,"both approximations calculated");
+    check(first->error.empty() && first->piecewise.curve && !first->polynomial.curve,
+          "new analysis generates only the piecewise function");
     options.max_gain=2;auto limited=std::make_shared<CurveAnalysis>(analyze_frequency_curves(corpus,options,first));
     check(limited->measurements==first->measurements,"gain changes reuse combined measurements");
-    check(limited->polynomial.curve->coefficients==first->polynomial.curve->coefficients,"gain changes do not refit polynomial");
-    options.polynomial_degree=3;auto degree=analyze_frequency_curves(corpus,options,limited);
-    check(degree.measurements==limited->measurements,"degree changes reuse measurements");
-    check(degree.piecewise.curve->knot_hz==limited->piecewise.curve->knot_hz,"degree changes preserve independent piecewise fit");
+    check(limited->piecewise.curve->knot_hz==first->piecewise.curve->knot_hz,
+          "gain changes reuse piecewise knot geometry");
+    options.segments=32;auto fewer=analyze_frequency_curves(corpus,options,limited);
+    check(fewer.measurements==limited->measurements,"knot count changes reuse source measurements");
+    check(fewer.piecewise.curve->knot_hz!=limited->piecewise.curve->knot_hz,
+          "knot count changes the piecewise fit");
     options.aggregation=PeakAggregation::UpperPercentile;auto percentile=analyze_frequency_curves(corpus,options,limited);
     check(percentile.error.empty() && percentile.measurements!=limited->measurements,"aggregation changes rebuild only derived statistics");
     check(corpus->tracks.front().rms_bands.empty(),"curve job does not copy RMS archive data");
@@ -391,10 +394,10 @@ bool wait_target_summary(core_app::MusicAnalysisDialog& dialog,const QString& te
 }
 void cached_selection(core_app::MusicAnalysisDialog& dialog,const unsigned& fits){
     auto* choice=dialog.findChild<QComboBox*>("musicApproximation");
-    for(const auto method:{0,1}){
-        choice->setCurrentIndex(method);
-        check(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && fits==1,"selecting a cached approximation is immediate and launches no worker");
-    }
+    check(choice && choice->count()==1 && choice->currentIndex()==0,
+          "piecewise smooth is the only available approximation");
+    check(dialog.findChild<QPushButton*>("musicSaveProfile")->isEnabled() && fits==1,
+          "the calculated piecewise curve is immediately available");
 }
 void retained_application(core_app::MusicAnalysisDialog& dialog,const QLabel& application_state){
     dialog.findChild<QPushButton*>("musicNewScan")->click();dialog.findChild<QPushButton*>("musicShowResults")->click();

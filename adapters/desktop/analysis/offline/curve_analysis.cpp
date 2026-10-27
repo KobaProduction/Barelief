@@ -18,7 +18,7 @@ std::shared_ptr<const FrequencyMeasurements> stored_measurements(const Frequency
 }
 }
 const FrequencyProfile& CurveAnalysis::selected()const {
-    return settings.approximation==CurveApproximation::Polynomial?polynomial:piecewise;
+    return piecewise;
 }
 std::shared_ptr<const CurveCorpus> curve_corpus(const FrequencyProfile& source,std::span<const std::uint8_t> included) {
     auto corpus=std::make_shared<CurveCorpus>();corpus->calibration=source.compatibility;
@@ -36,9 +36,8 @@ namespace {
 bool same_aggregation(const FrequencyCurveOptions& a,const FrequencyCurveOptions& b) {
     return a.aggregation==b.aggregation && (a.aggregation!=PeakAggregation::UpperPercentile || a.percentile==b.percentile);
 }
-bool same_fit(const FrequencyCurveOptions& a,const FrequencyCurveOptions& b,CurveApproximation method) {
-    return method==CurveApproximation::Polynomial?a.polynomial_degree==b.polynomial_degree:
-        (a.segments==b.segments && a.knot_spacing==b.knot_spacing);
+bool same_fit(const FrequencyCurveOptions& a,const FrequencyCurveOptions& b) {
+    return a.segments==b.segments && a.knot_spacing==b.knot_spacing;
 }
 bool prepare_measurements(CurveAnalysis& output,const std::shared_ptr<const CurveAnalysis>& previous) {
     if(output.corpus->saved_measurements){
@@ -56,26 +55,25 @@ bool prepare_measurements(CurveAnalysis& output,const std::shared_ptr<const Curv
     if(!combine_frequency_measurements(output.corpus->calibration,output.corpus->tracks,output.settings,*measurements,output.error))return false;
     output.measurements=std::move(measurements);return true;
 }
-bool prepare_fit(CurveAnalysis& output,CurveApproximation method,const std::shared_ptr<const CurveAnalysis>& previous) {
-    auto options=output.settings;options.approximation=method;
-    auto& profile=method==CurveApproximation::Polynomial?output.polynomial:output.piecewise;
-    auto& error=method==CurveApproximation::Polynomial?output.polynomial_error:output.piecewise_error;
-    if(previous && previous->measurements==output.measurements && same_fit(previous->settings,options,method)){
-        profile=method==CurveApproximation::Polynomial?previous->polynomial:previous->piecewise;
-        if(profile.curve){profile.curve->options=options;return update_frequency_curve_gains(profile,error);}
+bool prepare_fit(CurveAnalysis& output,const std::shared_ptr<const CurveAnalysis>& previous) {
+    auto& profile=output.piecewise;
+    if(previous && previous->measurements==output.measurements && same_fit(previous->settings,output.settings)){
+        profile=previous->piecewise;
+        if(profile.curve){profile.curve->options=output.settings;return update_frequency_curve_gains(profile,output.piecewise_error);}
     }
-    return fit_frequency_measurements(output.corpus->calibration,*output.measurements,options,profile,error);
+    return fit_frequency_measurements(output.corpus->calibration,*output.measurements,
+        output.settings,profile,output.piecewise_error);
 }
 }
 CurveAnalysis analyze_frequency_curves(std::shared_ptr<const CurveCorpus> corpus,
     const FrequencyCurveOptions& options,std::shared_ptr<const CurveAnalysis> previous) {
     CurveAnalysis result;result.corpus=std::move(corpus);result.settings=options;
+    // New analysis only uses the 64-segment piecewise smooth representation.
+    // Legacy polynomial decoding stays in the DSP/storage layer for old files.
+    result.settings.approximation=CurveApproximation::PiecewiseSmooth;
     if(!result.corpus){result.error="No scan measurements";return result;}
     if(!prepare_measurements(result,previous))return result;
-    const auto polynomial_ok=prepare_fit(result,CurveApproximation::Polynomial,previous);
-    const auto piecewise_ok=prepare_fit(result,CurveApproximation::PiecewiseSmooth,previous);
-    if(options.approximation==CurveApproximation::Polynomial && !polynomial_ok)result.error=result.polynomial_error;
-    if(options.approximation==CurveApproximation::PiecewiseSmooth && !piecewise_ok)result.error=result.piecewise_error;
+    if(!prepare_fit(result,previous))result.error=result.piecewise_error;
     return result;
 }
 }
