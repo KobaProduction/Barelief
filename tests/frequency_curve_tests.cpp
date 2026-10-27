@@ -54,7 +54,9 @@ void floor_continuity() {
     assert(std::abs(gains[1]-gains[3])<.001 && gains[2]<=100);
     auto t=track();std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),1e-12);
     auto p=curve({},std::span(&t,1));assert(*std::max_element(p.gains.begin(),p.gains.end())<1.001);
-    std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),1e-6);p=curve({},std::span(&t,1));
+    std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),1e-6);
+    FrequencyCurveOptions capped;capped.max_gain=100;
+    p=curve(capped,std::span(&t,1));
     assert(std::abs(p.gains[100]-50.5)<1e-3);
     std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),0);std::string error;const auto before=p.gains;
     assert(!build_frequency_curve(frontend(),std::span(&t,1),{},p,error) && p.gains==before);
@@ -73,6 +75,33 @@ void grids_and_support() {
             if(hz>p.curve->maximum_hz)assert(converted.gains[k]==1);
         }
     }
+}
+void logarithmic_knot_resolution(){
+    auto calibration=frontend();
+    FrequencyMeasurements data;data.edge_hz=calibration.sample_rate/4096;
+    for(std::size_t k=0;k<=2048;++k){
+        const auto hz=k*calibration.sample_rate/4096;
+        const auto bump=hz>0?1.4*std::exp(-std::pow(std::log(hz/45.)/.23,2)):0.;
+        const auto amplitude=std::exp(-1.2-hz/8000+bump);
+        data.hz.push_back(hz);data.maxima.push_back(amplitude);
+        data.mean_amplitude.push_back(amplitude/2);data.contributors.push_back(4);
+    }
+    FrequencyCurveOptions options;options.segments=64;
+    options.approximation=CurveApproximation::PiecewiseSmooth;
+    options.knot_spacing=CurveKnotSpacing::LinearHz;
+    std::string error;FrequencyProfile old_curve,new_curve;
+    assert(fit_frequency_measurements(calibration,data,options,old_curve,error));
+    options.knot_spacing=CurveKnotSpacing::LogarithmicHz;
+    assert(fit_frequency_measurements(calibration,data,options,new_curve,error));
+    const auto hz=data.hz[6];
+    const auto measured=20*std::log10(data.maxima[6]);
+    const auto error_db=[&](const FrequencyProfile& p){
+        return std::abs(20*std::log10(frequency_curve_amplitude(p,hz))-measured);
+    };
+    assert(error_db(new_curve)<error_db(old_curve));
+    assert(error_db(new_curve)<2.);
+    for(std::size_t i=1;i<new_curve.curve->knot_hz.size();++i)
+        assert(new_curve.curve->knot_hz[i]>new_curve.curve->knot_hz[i-1]);
 }
 void malformed_and_legacy() {
     auto t=track();auto p=curve({},std::span(&t,1));std::string error;auto invalid=frontend();invalid.window=WindowFunction::Hamming;
@@ -113,6 +142,6 @@ void holes_and_boundaries() {
 }
 }
 int main() {
-    aggregation();approximation_quality();floor_continuity();grids_and_support();malformed_and_legacy();holes_and_boundaries();native_measurement_grids();
+    aggregation();approximation_quality();floor_continuity();grids_and_support();logarithmic_knot_resolution();malformed_and_legacy();holes_and_boundaries();native_measurement_grids();
     std::cout<<"frequency_curve_tests PASS\n";
 }

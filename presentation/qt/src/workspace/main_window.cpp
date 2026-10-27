@@ -771,8 +771,9 @@ bool MainWindow::restore_serialized_workspace(const UIApplicationConfig& saved_u
     const int layout_version=workspace.value("layout_version").toInt();
     if(!restore_workspace_state(workspace,layout_version))return false;
     _application.state().file_configs.ui=saved_ui;
-    restore_workspace_dock_visibility(workspace.value("visibility").toObject(),layout_version);
-    sync_workspace_config_visibility();
+    const auto saved_visibility=workspace.value("visibility").toObject();
+    restore_workspace_dock_visibility(saved_visibility,layout_version);
+    sync_workspace_config_visibility(saved_visibility);
     return true;
 }
 bool MainWindow::restore_workspace_state(const QJsonObject& workspace,int layout_version) {
@@ -799,32 +800,40 @@ void MainWindow::restore_workspace_dock_visibility(const QJsonObject& visibility
     }
 }
 
-void MainWindow::sync_workspace_config_visibility() {
-    // The Qt dock state is authoritative for older workspaces. Legacy
-    // flags may describe parent/tab visibility rather than an open dock.
+void MainWindow::sync_workspace_config_visibility(const QJsonObject& saved_visibility) {
+    // A serialized open/closed choice is authoritative during startup. ADS
+    // can temporarily close or hide a dock until its host becomes visible.
+    // Older workspaces without an explicit choice use the restored ADS state.
+    const auto open=[this,&saved_visibility](const char* key){
+        const auto value=saved_visibility.value(key);
+        return value.isBool()?value.toBool():!_panels[key]->isClosed();
+    };
     auto &ui=_application.state().file_configs.ui;
-    ui.show_spectrogram=!_panels["spectrogram"]->isHidden();
-    ui.show_data_flow=!_panels["dataFlow"]->isHidden();
-    ui.show_amplitudes=!_panels["fft"]->isHidden();
-    ui.show_test_amplitudes=!_panels["mel"]->isHidden();
-    ui.show_raw_samples=!_panels["rawSamples"]->isHidden();
-    ui.show_window_signal=!_panels["windowSignal"]->isHidden();
-    ui.show_windowed_signal=!_panels["windowedSignal"]->isHidden();
-    ui.show_window_function=!_panels["windowFunction"]->isHidden();
+    ui.show_spectrogram=open("spectrogram");
+    ui.show_data_flow=open("dataFlow");
+    ui.show_amplitudes=open("fft");
+    ui.show_test_amplitudes=open("mel");
+    ui.show_raw_samples=open("rawSamples");
+    ui.show_window_signal=open("windowSignal");
+    ui.show_windowed_signal=open("windowedSignal");
+    ui.show_window_function=open("windowFunction");
 }
 
 void MainWindow::setup_workspace_layout() {
     setup_workspace_save_timer();
     const auto saved_ui = _application.state().file_configs.ui;
+    // ADS emits intermediate viewToggled notifications while reconstructing
+    // tab groups. They must not overwrite the persisted visibility choices.
+    _restoring_layout = true;
     reset_workspace();
     restore_node_views();
     const bool restored_workspace=restore_serialized_workspace(saved_ui);
     if (!restored_workspace)restore_default_workspace_visibility(saved_ui);
-    _restoring_layout = false;
-    QTimer::singleShot(0, this, [this, restored_workspace] {
+    _restoring_layout=false;
+    QTimer::singleShot(0,this,[this,restored_workspace] {
         recover_offscreen_panels();
-        if (!restored_workspace && !_panels["spectrogram"]->isHidden() && !_panels["dataFlow"]->isHidden())
-            resizeDocks({_panels["spectrogram"], _panels["dataFlow"]}, {560, 320}, Qt::Vertical);
+        if(!restored_workspace && !_panels["spectrogram"]->isClosed() && !_panels["dataFlow"]->isClosed())
+            resizeDocks({_panels["spectrogram"],_panels["dataFlow"]},{560,320},Qt::Vertical);
         refresh_subscriptions();
     });
     connect(qApp, &QGuiApplication::screenRemoved, this, [this] { recover_offscreen_panels(); });

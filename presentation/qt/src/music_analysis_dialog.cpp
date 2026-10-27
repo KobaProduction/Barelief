@@ -9,6 +9,7 @@
 #include <barelief/numeric_series_view.h>
 #include <core_app/ui/collapsible_section.h>
 #include <offline/curve_analysis.h>
+#include <offline/curve_coefficients.h>
 #include <QScrollArea>
 #include <QGroupBox>
 #include <barelief/numeric_image_view.h>
@@ -25,6 +26,7 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -156,10 +158,10 @@ struct MusicAnalysisDialog::State {
     QFormLayout *left=nullptr,*right=nullptr;
     QWidget *setup_page=nullptr,*results_page=nullptr,*apply_page=nullptr;
     QFormLayout* curve_form=nullptr;
-    QComboBox *aggregation=nullptr,*approximation=nullptr;
-    QSpinBox *degree=nullptr,*segments=nullptr;
+    QComboBox *aggregation=nullptr,*approximation=nullptr,*knot_spacing=nullptr,*export_fft=nullptr;
+    QSpinBox *degree=nullptr,*segments=nullptr,*export_rate=nullptr;
     QDoubleSpinBox* percentile=nullptr;
-    QPushButton *build_curve=nullptr,*save_scan=nullptr,*load_scan=nullptr,*curve_step=nullptr,*apply_step=nullptr;
+    QPushButton *build_curve=nullptr,*save_scan=nullptr,*load_scan=nullptr,*curve_step=nullptr,*apply_step=nullptr,*export_coefficients=nullptr;
     QLabel *fit_quality=nullptr,*application_summary=nullptr,*application_state=nullptr,*storage_info=nullptr;
     QString storage_path;
     bool ever_applied=false;
@@ -270,6 +272,7 @@ struct MusicAnalysisDialog::State {
     enum class Mode{Setup,Scanning,Results,Application};Mode mode=Mode::Setup;
     explicit State(MusicAnalysisDialog* dialog):owner(dialog){
         baseline_options.training.gain_mode=dsp_kernels::ProfileGainMode::PeakNormalization;
+        baseline_options.training.max_gain=10000;
         baseline_options.compatibility.projection.representation=dsp_kernels::SpectrumProjection::PeakAmplitude;
         baseline_options.compatibility.sample_rate=48000;
     }
@@ -285,9 +288,12 @@ struct MusicAnalysisDialog::State {
     }
     void update_curve_availability(bool busy){
         const bool measurements=has_profile&&bool(corpus);
-        for(QWidget* widget:std::initializer_list<QWidget*>{maximum,floor,aggregation,approximation,degree,segments,percentile})widget->setEnabled(!busy&&measurements);
+        for(QWidget* widget:std::initializer_list<QWidget*>{maximum,floor,approximation,degree,segments,knot_spacing,percentile})
+            widget->setEnabled(!busy&&measurements);
+        aggregation->setEnabled(!busy&&measurements&&!document.profile.compositions.empty());
+        if(export_coefficients)export_coefficients->setEnabled(!busy&&curve_ready&&has_profile);
         quiet_level->setEnabled(!busy&&has_rms_groups());
-        fit_form->setRowVisible(degree,approximation->currentIndex()==0);fit_form->setRowVisible(segments,approximation->currentIndex()==1);
+        fit_form->setRowVisible(degree,approximation->currentIndex()==0);fit_form->setRowVisible(segments,approximation->currentIndex()==1);fit_form->setRowVisible(knot_spacing,approximation->currentIndex()==1);
         fit_form->setRowVisible(percentile,aggregation->currentIndex()==2);
         percentile->setEnabled(!busy&&measurements&&aggregation->currentIndex()==2);
     }
@@ -551,10 +557,16 @@ struct MusicAnalysisDialog::State {
         preview_rows->setValue(resolution.value("time_cells").toInt(256));preview_bands->setValue(resolution.value("frequency_cells").toInt(256));
     }
     void show_loaded_status(){
-        if(document.profile.curve && document.profile.compositions.empty()){set_status_message("Ready profile loaded. Load a scan to change curve settings.");return;}
+        if(document.profile.curve && document.profile.compositions.empty()){set_status_message("Ready profile loaded. Curve fitting and gain can be adjusted from saved measurements; track aggregation requires a scan.");return;}
         if(!can_save_scan()){set_status_message("Legacy profile has incomplete track measurements; apply it on its original grid or scan music again.");return;}
         const bool saved_previews=std::any_of(document.previews.begin(),document.previews.end(),[](const auto& item){return item.rows>0;});
         status->setText(saved_previews?ui::text("Profile loaded"):ui::text("Profile loaded without saved spectrograms. A new scan is required to collect them."));
+    }
+    void finish_profile_loading(const QString& path){
+        restore_curve_options();
+        corpus=curve_corpus(document.profile);
+        update_curve_availability(false);
+        show_storage_info(path);
     }
     void install_profile(ProfileDocument candidate,const QString& path){
         discard_curve_result();
@@ -562,8 +574,7 @@ struct MusicAnalysisDialog::State {
         stop_preview();fit_quality->clear();applied_status=false;document=std::move(candidate);has_profile=true;curve_ready=true;preview={};profile_path=path;restore_source_files();
         restore_scan_options();restore_quiet_level();
         restore_preview_resolution();update_file_count();refresh();set_busy(false);show_loaded_status();
-        restore_curve_options();
-        show_storage_info(path);
+        finish_profile_loading(path);
     }
     void discard_curve_result(){
         ++curve_revision;curve_pending=false;curve_analysis.reset();corpus.reset();curve_debounce->stop();
@@ -716,7 +727,7 @@ struct MusicAnalysisDialog::State {
             minimum->setValue(gain_mode->currentIndex()==0?.1:1.);
             minimum->setEnabled(has_profile&&gain_mode->currentIndex()==0);invalidate_curve();
         });
-        maximum=make_training_scalar(1,1000000,100,6);maximum->setObjectName("musicMaximumGain");curve_form->addRow(label("Maximum linear gain",owner),maximum);
+        maximum=make_training_scalar(1,1000000,10000,6);maximum->setObjectName("musicMaximumGain");curve_form->addRow(label("Maximum linear gain",owner),maximum);
     }
     void build_training(){
         fir=new QCheckBox(owner);fir->setObjectName("musicResampleInput");fir->hide();
@@ -856,6 +867,28 @@ struct MusicAnalysisDialog::State {
     }
     void build_apply_events(){
         QObject::connect(apply,&QPushButton::clicked,owner,[this]{apply_current_profile();});
+        QObject::connect(export_coefficients,&QPushButton::clicked,owner,[this]{export_dsp_coefficients();});
+    }
+    void save_dsp_header(const std::string& header){
+        auto path=QFileDialog::getSaveFileName(owner,ui::text("Export DSP coefficients"),{},ui::text("C++ header (*.h)"));
+        if(path.isEmpty())return;
+        if(!path.endsWith(".h",Qt::CaseInsensitive) && !path.endsWith(".hpp",Qt::CaseInsensitive))path+=".h";
+        QSaveFile file(path);const auto bytes=QByteArray::fromStdString(header);
+        if(!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()){
+            status->setText(file.errorString());return;
+        }
+        set_status_message("DSP coefficient header saved: %1",{path});
+    }
+    void export_dsp_coefficients(){
+        if(!has_profile || !curve_ready)return;
+        auto target=active_profile().compatibility;
+        target.sample_rate=export_rate->value();
+        target.fft_size=std::size_t(export_fft->currentData().toUInt());
+        std::string header,problem;
+        if(!frequency_coefficients_cpp_header(active_profile(),target,header,problem)){
+            status->setText(QString::fromStdString(problem));return;
+        }
+        save_dsp_header(header);
     }
     void apply_current_profile(){
         refresh_targets();const auto at=target->currentIndex();
@@ -974,6 +1007,10 @@ struct MusicAnalysisDialog::State {
     void build_fit_resolution(QFormLayout* methods){
         degree=new QSpinBox(owner);degree->setObjectName("musicPolynomialDegree");degree->setRange(1,12);degree->setValue(6);methods->addRow(label("Polynomial degree",owner),degree);
         segments=new QSpinBox(owner);segments->setObjectName("musicCurveSegments");segments->setRange(2,2048);segments->setValue(64);methods->addRow(label("Curve segments",owner),segments);
+        knot_spacing=new QComboBox(owner);knot_spacing->setObjectName("musicKnotSpacing");
+        knot_spacing->addItems({ui::text("Uniform frequency spacing (legacy)"),ui::text("Logarithmic frequency spacing"),
+            ui::text("Hybrid: dense bass, uniform highs")});
+        knot_spacing->setCurrentIndex(2);methods->addRow(label("Knot placement",owner),knot_spacing);
         percentile=make_training_scalar(50,100,90,1);percentile->setObjectName("musicPercentile");methods->addRow(label("Upper percentile, %",owner),percentile);
     }
     void build_curve_gain_controls(){
@@ -1023,6 +1060,7 @@ struct MusicAnalysisDialog::State {
         QObject::connect(approximation,&QComboBox::currentIndexChanged,owner,[this]{select_approximation();});
         for(auto* box:{maximum,minimum,floor,percentile})QObject::connect(box,&QDoubleSpinBox::valueChanged,owner,[this]{invalidate_curve();});
         for(auto* box:{degree,segments,smooth})QObject::connect(box,&QSpinBox::valueChanged,owner,[this]{invalidate_curve();});
+        QObject::connect(knot_spacing,&QComboBox::currentIndexChanged,owner,[this]{invalidate_curve();});
     }
     void select_approximation(){
         if(restoring_controls)return;
@@ -1033,7 +1071,7 @@ struct MusicAnalysisDialog::State {
     }
     dsp_kernels::FrequencyCurveOptions curve_options() const {
         dsp_kernels::FrequencyCurveOptions o;o.aggregation=dsp_kernels::PeakAggregation(aggregation->currentIndex());o.approximation=dsp_kernels::CurveApproximation(approximation->currentIndex());
-        o.percentile=percentile->value();o.polynomial_degree=unsigned(degree->value());o.segments=std::size_t(segments->value());o.regularization_db=floor->value();o.max_gain=maximum->value();return o;
+        o.percentile=percentile->value();o.polynomial_degree=unsigned(degree->value());o.segments=std::size_t(segments->value());o.knot_spacing=dsp_kernels::CurveKnotSpacing(knot_spacing->currentIndex());o.regularization_db=floor->value();o.max_gain=maximum->value();return o;
     }
     void invalidate_curve(){
         if(restoring_controls || !corpus)return;
@@ -1074,7 +1112,7 @@ struct MusicAnalysisDialog::State {
     }
     void reset_curve_defaults(){
         restoring_controls=true;aggregation->setCurrentIndex(0);approximation->setCurrentIndex(1);
-        degree->setValue(6);segments->setValue(64);percentile->setValue(90);floor->setValue(-120);maximum->setValue(100);
+        degree->setValue(6);segments->setValue(64);knot_spacing->setCurrentIndex(2);percentile->setValue(90);floor->setValue(-120);maximum->setValue(10000);
         gain_mode->setCurrentIndex(1);restoring_controls=false;
     }
     void preserve_scanner_settings(dsp_kernels::FrequencyProfile& candidate) const {
@@ -1088,11 +1126,36 @@ struct MusicAnalysisDialog::State {
         auto training=source.training;collect_training(training);
         return dsp_kernels::build_frequency_profile(source.compatibility,training,source.compositions,output,error);
     }
+    std::pair<double,double> low_band_error_cell(const dsp_kernels::FrequencyProfile& profile,std::size_t i)const {
+        const auto& c=*profile.curve;const auto hz=c.measurement_hz[i];
+        if(hz<20 || hz>250 || c.measured_spectrum[i]<=0)return {0,0};
+        const auto left=(c.measurement_hz[i-1]+hz)/2;
+        const auto right=i+1<c.measurement_hz.size()?(hz+c.measurement_hz[i+1])/2:hz;
+        const auto weight=std::max(0.,std::min(250.,right)-std::max(20.,left));
+        const auto fitted=dsp_kernels::frequency_curve_amplitude(profile,hz);
+        if(weight==0 || fitted<=0)return {0,0};
+        return {weight,20*std::log10(fitted/c.measured_spectrum[i])};
+    }
+    double low_band_rmse(const dsp_kernels::FrequencyProfile& profile)const {
+        if(!profile.curve || profile.curve->measurement_hz.size()<3)return std::numeric_limits<double>::quiet_NaN();
+        const auto& c=*profile.curve;double sum=0,weight_total=0;
+        for(std::size_t i=1;i<c.measurement_hz.size() && i<c.measured_spectrum.size();++i){
+            const auto [weight,error]=low_band_error_cell(profile,i);
+            sum+=weight*error*error;weight_total+=weight;
+        }
+        return weight_total>0?std::sqrt(sum/weight_total):std::numeric_limits<double>::quiet_NaN();
+    }
     void compare_fits(dsp_kernels::FrequencyCurveOptions options){
         const auto& p=active_profile();
         if(!p.curve){fit_quality->setText(ui::text("Legacy profile requires an exact frontend match"));return;}
         const auto* other=curve_analysis?(options.approximation==dsp_kernels::CurveApproximation::Polynomial?&curve_analysis->piecewise:&curve_analysis->polynomial):nullptr;
-        fit_quality->setText(ui::text("Fit RMS error: selected %1 dB; alternative %2 dB. Measured range: %3–%4 Hz.").arg(p.curve->fit_rmse_db,0,'f',2).arg(other&&other->curve?QString::number(other->curve->fit_rmse_db,'f',2):ui::text("Unavailable")).arg(p.curve->minimum_hz).arg(p.curve->maximum_hz));
+        const auto low=low_band_rmse(p);
+        const auto alternative_low=other?low_band_rmse(*other):std::numeric_limits<double>::quiet_NaN();
+        const auto fmt=[](double value){return std::isfinite(value)?QString::number(value,'f',2):ui::text("Unavailable");};
+        const auto global=QString::number(p.curve->fit_rmse_db,'f',2);
+        const auto alternative=other&&other->curve?QString::number(other->curve->fit_rmse_db,'f',2):ui::text("Unavailable");
+        fit_quality->setText(ui::text("Fit RMS error: selected %1 dB; alternative %2 dB. Low band 20–250 Hz: %3 / %4 dB. Measured range: %5–%6 Hz.")
+            .arg(global,alternative,fmt(low),fmt(alternative_low),QString::number(p.curve->minimum_hz),QString::number(p.curve->maximum_hz)));
     }
     void refresh_fitted_curve(){
         const auto& p=document.profile;fitted->values.clear();
@@ -1104,7 +1167,7 @@ struct MusicAnalysisDialog::State {
     void restore_curve_options(){
         if(!document.profile.curve)return;
         restoring_controls=true;const auto& o=document.profile.curve->options;
-        aggregation->setCurrentIndex(int(o.aggregation));approximation->setCurrentIndex(int(o.approximation));degree->setValue(int(o.polynomial_degree));segments->setValue(int(o.segments));percentile->setValue(o.percentile);maximum->setValue(o.max_gain);floor->setValue(o.regularization_db);
+        aggregation->setCurrentIndex(int(o.aggregation));approximation->setCurrentIndex(int(o.approximation));degree->setValue(int(o.polynomial_degree));segments->setValue(int(o.segments));knot_spacing->setCurrentIndex(int(o.knot_spacing));percentile->setValue(o.percentile);maximum->setValue(o.max_gain);floor->setValue(o.regularization_db);
         restoring_controls=false;compare_fits(o);
     }
     void update_application_summary(){
@@ -1133,9 +1196,26 @@ struct MusicAnalysisDialog::State {
     void show_target_refusal(const QString& reason){
         target_gains->values.clear();target_gains->update();application_summary->setText(reason);
     }
+    void create_export_inputs(){
+        export_rate=new QSpinBox(owner);export_rate->setObjectName("musicCoefficientRate");
+        export_rate->setRange(8000,384000);export_rate->setValue(48000);export_rate->setSuffix(" Hz");
+        export_fft=new QComboBox(owner);export_fft->setObjectName("musicCoefficientFft");
+        for(const unsigned n:{512u,1024u,2048u,4096u,8192u,16384u})
+            export_fft->addItem(QString::number(n),n);
+        export_fft->setCurrentText("4096");
+    }
+    void build_export_controls(QVBoxLayout* apply_layout){
+        create_export_inputs();
+        export_coefficients=button("Export DSP coefficients (.h)","musicExportCoefficients",owner);
+        auto* controls=new QHBoxLayout;
+        controls->addWidget(label("DSP sample rate",owner));controls->addWidget(export_rate);
+        controls->addWidget(label("DSP FFT size",owner));controls->addWidget(export_fft);
+        controls->addWidget(export_coefficients);apply_layout->addLayout(controls);
+    }
     void build_application_preview(QVBoxLayout* apply_layout){
         application_state=new QLabel(owner);application_state->setObjectName("musicApplicationState");application_state->setWordWrap(true);apply_layout->addWidget(application_state);
         application_summary=new QLabel(owner);application_summary->setObjectName("musicApplicationSummary");application_summary->setWordWrap(true);apply_layout->addWidget(application_summary);
+        build_export_controls(apply_layout);
         apply_layout->addWidget(label("Coefficients for current graph",owner));target_gains=new Curve(owner);target_gains->setObjectName("musicTargetCurve");target_gains->gain=true;apply_layout->addWidget(target_gains,1);
     }
     void update_target_gain_plot(const dsp_kernels::ProfileCompatibility& frontend){
@@ -1222,12 +1302,13 @@ struct MusicAnalysisDialog::State {
     }
     void refresh_curve_labels(){
         aggregation->setItemText(0,ui::text("Mean of track maxima"));aggregation->setItemText(1,ui::text("Global maximum"));aggregation->setItemText(2,ui::text("Upper percentile of track maxima"));
+        knot_spacing->setItemText(0,ui::text("Uniform frequency spacing (legacy)"));knot_spacing->setItemText(1,ui::text("Logarithmic frequency spacing"));knot_spacing->setItemText(2,ui::text("Hybrid: dense bass, uniform highs"));
         approximation->setItemText(0,ui::text("Polynomial in Hz"));approximation->setItemText(1,ui::text("Piecewise smooth in Hz"));
         if(curve_ready && active_profile().curve)compare_fits(active_profile().curve->options);
     }
     void install_scan(ProfileDocument candidate){
         install_profile(std::move(candidate),{});curve_ready=false;
-        restoring_controls=true;gain_mode->setCurrentIndex(1);maximum->setValue(100);restoring_controls=false;
+        restoring_controls=true;gain_mode->setCurrentIndex(1);maximum->setValue(10000);restoring_controls=false;
         reset_curve_source();set_mode(Mode::Results);
     }
     bool can_save_scan() const {

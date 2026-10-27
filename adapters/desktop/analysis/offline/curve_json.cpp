@@ -32,13 +32,22 @@ bool read_methods(const QJsonObject& o,FrequencyCurveOptions& options) {
     else return false;
     return true;
 }
+bool read_knot_spacing(const QJsonObject& o,CurveKnotSpacing& spacing) {
+    const auto field=o.value("knot_spacing");
+    if(field.isUndefined()){spacing=CurveKnotSpacing::LinearHz;return true;}
+    if(field.toString()=="linear_hz"){spacing=CurveKnotSpacing::LinearHz;return true;}
+    if(field.toString()=="logarithmic_hz"){spacing=CurveKnotSpacing::LogarithmicHz;return true;}
+    if(field.toString()=="hybrid_hz"){spacing=CurveKnotSpacing::HybridHz;return true;}
+    return false;
+}
 bool read_options(const QJsonObject& o,FrequencyCurveOptions& options) {
     if(!read_methods(o,options))return false;
     double degree=0,segments=0;
     if(!number(o,"degree",degree) || degree<1 || degree>12 || std::floor(degree)!=degree ||
         !number(o,"segments",segments) || segments<2 || segments>2048 || std::floor(segments)!=segments)return false;
     options.polynomial_degree=unsigned(degree);options.segments=std::size_t(segments);
-    return number(o,"percentile",options.percentile) && number(o,"regularization_db",options.regularization_db) && number(o,"max_gain",options.max_gain);
+    return read_knot_spacing(o,options.knot_spacing) &&
+        number(o,"percentile",options.percentile) && number(o,"regularization_db",options.regularization_db) && number(o,"max_gain",options.max_gain);
 }
 void encode_function_data(const FrequencyCurve& c,QJsonObject& o,ProfileArraySink* sink) {
     o["minimum_hz"]=c.minimum_hz;o["maximum_hz"]=c.maximum_hz;o["fit_rmse_db"]=c.fit_rmse_db;
@@ -72,6 +81,8 @@ QJsonObject encode_curve(const dsp_kernels::FrequencyCurve& c,QJsonObject o,Prof
     o["approximation"]=options.approximation==CurveApproximation::Polynomial?"chebyshev_log_amplitude_hz":"pchip_log_amplitude_hz";
     o["percentile"]=options.percentile;o["regularization_db"]=options.regularization_db;o["max_gain"]=options.max_gain;
     o["degree"]=int(options.polynomial_degree);o["segments"]=double(options.segments);
+    o["knot_spacing"]=options.knot_spacing==CurveKnotSpacing::HybridHz?"hybrid_hz":
+        options.knot_spacing==CurveKnotSpacing::LogarithmicHz?"logarithmic_hz":"linear_hz";
     encode_function_data(c,o,sink);return o;
 }
 bool decode_curve(const QJsonObject& o,dsp_kernels::FrequencyProfile& profile,ProfileArraySource* source,std::size_t* shared_budget) {

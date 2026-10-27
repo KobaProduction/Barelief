@@ -208,16 +208,57 @@ static QByteArray initial_session(){
         workspace_persistence(app,several,severalPresentation,revision,firstName,firstKey);
         QFile retained(QString::fromLocal8Bit(app.path));check(retained.open(QIODevice::ReadOnly),"restart source read");return retained.readAll();
 }
+static QByteArray closed_view_session(){
+    using namespace gui_fixture;
+    App app;app.apply();
+    auto* floating=app.open(8,0);
+    check(floating && floating->isFloating(),"surface floating test precondition");
+    auto& ui=app.application->_ctx.file_configs.ui;
+    check(wait([&]{return !ui.workspace.value("ads_state").toString().isEmpty();},4500),
+        "new floating window should publish an initial workspace state");
+    const auto beforeMove=ui.workspace.value("ads_state").toString();
+    floating->floatingDockContainer()->resize(440,290);
+    floating->floatingDockContainer()->move(88,107);
+    check(wait([&]{return ui.workspace.value("ads_state").toString()!=beforeMove;},3500),
+        "moving and resizing a floating spectrogram did not schedule workspace persistence");
+    for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))dock->toggleView(false);
+    auto* save=app.window->findChild<QAction*>("saveSettings");
+    check(save,"workspace save action");save->trigger();
+    QFile file(QString::fromLocal8Bit(app.path));check(file.open(QIODevice::ReadOnly),"saved closed workspace source");
+    return file.readAll();
+}
+static void check_closed_view_restart(const QByteArray& stored){
+    using namespace gui_fixture;
+    App app(numeric_default_graph(),{},stored);app.apply();
+    for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))
+        check(dock->isClosed(),"closed graph or spectrogram reopened during process restart");
+}
+static bool run_closed_workspace_phase(int argc,char** argv){
+    if(argc!=3)return false;
+    const auto mode=QString::fromLocal8Bit(argv[1]);
+    if(mode=="--closed-initial"){
+        const auto stored=closed_view_session();QFile file(QString::fromLocal8Bit(argv[2]));
+        gui_fixture::check(file.open(QIODevice::WriteOnly) && file.write(stored)==stored.size(),"save closed layout test handoff");return true;
+    }
+    if(mode=="--closed-restart"){
+        QFile file(QString::fromLocal8Bit(argv[2]));gui_fixture::check(file.open(QIODevice::ReadOnly),"read closed test handoff");
+        check_closed_view_restart(file.readAll());return true;
+    }
+    return false;
+}
+static bool run_initial_workspace_phase(int argc,char** argv){
+    if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--initial")return false;
+    const auto stored=initial_session();QFile file(QString::fromLocal8Bit(argv[2]));
+    gui_fixture::check(file.open(QIODevice::WriteOnly) && file.write(stored)==stored.size(),"write restart handoff");
+    return true;
+}
 int main(int argc,char** argv){
     try {
-        if(argc==3 && QString::fromLocal8Bit(argv[1])=="--initial"){
-            const auto stored=initial_session();QFile file(QString::fromLocal8Bit(argv[2]));
-            gui_fixture::check(file.open(QIODevice::WriteOnly) && file.write(stored)==stored.size(),"write restart handoff");return 0;
-        }
+        if(run_closed_workspace_phase(argc,argv) || run_initial_workspace_phase(argc,argv))return 0;
         if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--restart"){
             QCoreApplication coordinator(argc,argv);QTemporaryDir directory;
             gui_fixture::check(directory.isValid(),"restart test directory");const auto path=directory.filePath("session.json");
-            for(const auto* phase:{"--initial","--restart"}){
+            for(const auto* phase:{"--initial","--restart","--closed-initial","--closed-restart"}){
                 QProcess process;process.setProcessChannelMode(QProcess::ForwardedChannels);
                 process.start(QCoreApplication::applicationFilePath(),{QString::fromLatin1(phase),path});
                 gui_fixture::check(process.waitForStarted(),"start isolated workspace phase");

@@ -73,11 +73,41 @@ void append_knot(FrequencyCurve& c,std::size_t first,std::size_t last,double bin
     if(!count)return;
     c.knot_hz.push_back(hz_sum/count);c.log_amplitude.push_back(log_sum/count);
 }
+double endpoint_slope(double first_width,double second_width,double first_secant,double second_secant) {
+    const auto estimated=((2*first_width+second_width)*first_secant-first_width*second_secant)/
+        (first_width+second_width);
+    if(first_secant==0 || std::signbit(estimated)!=std::signbit(first_secant))return 0;
+    if(std::signbit(first_secant)!=std::signbit(second_secant) && std::abs(estimated)>3*std::abs(first_secant))
+        return 3*first_secant;
+    return estimated;
+}
+double segment_edge(const FrequencyCurve& c,std::size_t segment) {
+    const auto fraction=double(segment)/double(c.options.segments);
+    if(c.options.knot_spacing==CurveKnotSpacing::LogarithmicHz)
+        return c.minimum_hz*std::pow(c.maximum_hz/c.minimum_hz,fraction);
+    if(c.options.knot_spacing==CurveKnotSpacing::HybridHz){
+        const auto pivot=std::min(c.maximum_hz,std::max(250.,16*c.minimum_hz));
+        if(pivot>=c.maximum_hz)return c.minimum_hz*std::pow(c.maximum_hz/c.minimum_hz,fraction);
+        const auto low=std::max(std::size_t{1},c.options.segments/4);
+        if(segment<=low)return c.minimum_hz*std::pow(pivot/c.minimum_hz,double(segment)/double(low));
+        return pivot+(c.maximum_hz-pivot)*double(segment-low)/double(c.options.segments-low);
+    }
+    return c.minimum_hz+(c.maximum_hz-c.minimum_hz)*fraction;
+}
+void prepare_endpoint_slopes(FrequencyCurve& c,const std::vector<double>& secants) {
+    const auto n=c.knot_hz.size();
+    c.slopes.front()=secants.front();c.slopes.back()=secants.back();
+    if(n<=2)return;
+    const auto first=c.knot_hz[1]-c.knot_hz[0],second=c.knot_hz[2]-c.knot_hz[1];
+    const auto last=c.knot_hz[n-1]-c.knot_hz[n-2],before=c.knot_hz[n-2]-c.knot_hz[n-3];
+    c.slopes.front()=endpoint_slope(first,second,secants[0],secants[1]);
+    c.slopes.back()=endpoint_slope(last,before,secants[n-2],secants[n-3]);
+}
 void prepare_slopes(FrequencyCurve& c) {
     const auto n=c.knot_hz.size();c.slopes.assign(n,0);
     std::vector<double> secants(n-1);
     for(std::size_t i=0;i+1<n;++i)secants[i]=(c.log_amplitude[i+1]-c.log_amplitude[i])/(c.knot_hz[i+1]-c.knot_hz[i]);
-    c.slopes.front()=secants.front();c.slopes.back()=secants.back();
+    prepare_endpoint_slopes(c,secants);
     for(std::size_t i=1;i+1<n;++i)if(secants[i-1]*secants[i]>0){
         const auto left=c.knot_hz[i]-c.knot_hz[i-1],right=c.knot_hz[i+1]-c.knot_hz[i];
         c.slopes[i]=3*(left+right)/((left+2*right)/secants[i-1]+(2*left+right)/secants[i]);
@@ -88,7 +118,7 @@ bool piecewise_explicit(FrequencyCurve& c,double bin_hz) {
         const auto last=std::size_t(std::lower_bound(c.measurement_hz.begin(),c.measurement_hz.end(),c.maximum_hz)-c.measurement_hz.begin());
         append_knot(c,first,first+1,bin_hz);auto begin=first+1;
         for(std::size_t segment=1;segment<=c.options.segments;++segment){
-            const auto edge=c.minimum_hz+(c.maximum_hz-c.minimum_hz)*double(segment)/double(c.options.segments);
+            const auto edge=segment_edge(c,segment);
             const auto end=std::min(last,std::size_t(std::lower_bound(c.measurement_hz.begin(),c.measurement_hz.end(),edge)-c.measurement_hz.begin()));
             if(end>begin)append_knot(c,begin,end,bin_hz);
             begin=end;
@@ -97,12 +127,26 @@ bool piecewise_explicit(FrequencyCurve& c,double bin_hz) {
         if(c.knot_hz.size()<2)return false;
         prepare_slopes(c);return true;
 }
+void append_linear_bins(FrequencyCurve& c,std::size_t first,std::size_t last,double bin_hz) {
+    const auto width=std::max(std::size_t{1},(last-first+c.options.segments-1)/c.options.segments);
+    for(auto begin=first+1;begin<last;begin+=width)
+        append_knot(c,begin,std::min(last,begin+width),bin_hz);
+}
+void append_spaced_bins(FrequencyCurve& c,std::size_t first,std::size_t last,double bin_hz) {
+    auto begin=first+1;
+    for(std::size_t segment=1;segment<=c.options.segments && begin<last;++segment){
+        const auto end=std::min(last,std::max(begin,std::size_t(std::ceil(segment_edge(c,segment)/bin_hz))));
+        if(end>begin)append_knot(c,begin,end,bin_hz);
+        begin=end;
+    }
+    if(begin<last)append_knot(c,begin,last,bin_hz);
+}
 bool piecewise(FrequencyCurve& c,double bin_hz) {
     if(!c.measurement_hz.empty())return piecewise_explicit(c,bin_hz);
     const auto first=std::size_t(std::ceil(c.minimum_hz/bin_hz)),last=std::size_t(std::floor(c.maximum_hz/bin_hz));
     append_knot(c,first,first+1,bin_hz);
-    const auto width=std::max(std::size_t{1},(last-first+c.options.segments-1)/c.options.segments);
-    for(auto begin=first+1;begin<last;begin+=width)append_knot(c,begin,std::min(last,begin+width),bin_hz);
+    if(c.options.knot_spacing==CurveKnotSpacing::LinearHz)append_linear_bins(c,first,last,bin_hz);
+    else append_spaced_bins(c,first,last,bin_hz);
     append_knot(c,last,last+1,bin_hz);
     if(c.knot_hz.size()<2)return false;
     prepare_slopes(c);return true;

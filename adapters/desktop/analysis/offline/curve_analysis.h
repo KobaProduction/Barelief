@@ -7,6 +7,10 @@ namespace desktop_analysis::offline {
 struct CurveCorpus {
     dsp_kernels::ProfileCompatibility calibration;
     std::vector<dsp_kernels::CompositionStatistics> tracks;
+    // A ready .brprofile stores aggregate measured arrays but not per-track data.
+    // These measurements allow re-fitting; aggregation itself cannot be changed.
+    std::shared_ptr<const dsp_kernels::FrequencyMeasurements> saved_measurements;
+    dsp_kernels::FrequencyCurveOptions saved_options;
 };
 struct CurveAnalysis {
     std::shared_ptr<const CurveCorpus> corpus;

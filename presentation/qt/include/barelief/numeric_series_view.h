@@ -51,6 +51,7 @@ private:
     std::pair<std::size_t,std::size_t> visible_indices(std::size_t,double,double)const;
     QImage raster(double minimum,double maximum)const;
     void draw_series(QPainter&,const QSize&,double,double)const;
+    void draw_legend(QPainter&,const QSize&)const;
     void draw_bands(QPainter&,const QSize&,double,double)const;
     void hover(double x,double y);
 };

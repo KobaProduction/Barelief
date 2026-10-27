@@ -160,8 +160,13 @@ void MainWindow::bind_panel_visibility(WorkspaceDock *dock,const QString& id,boo
             _workspace_save_timer.start();
     });
 }
-void MainWindow::panel_view_toggled(const QString& id,bool UIApplicationConfig::*flag,bool open) {
+void MainWindow::panel_view_toggled(const QString& id,bool UIApplicationConfig::*flag,bool) {
     if(_restoring_layout)return;
+    // Inactive ADS tabs can emit a visibility toggle during host changes.
+    // Persist the logical dock close state, never the transient signal value.
+    const auto* dock=_panels.value(id);
+    if(!dock)return;
+    const bool open=!dock->isClosed();
     _application.state().file_configs.ui.*flag=open;
     sync_panel_toggle_controls(id,open);
     _workspace_save_timer.start();

@@ -4,6 +4,8 @@
 #include <QPainterPath>
 #include <algorithm>
 #include <array>
+#include <span>
+#include <QPalette>
 #include <limits>
 
 namespace {
@@ -39,8 +41,29 @@ private:
         occupied_=false;
     }
 };
+QRect legend_bounds(const QPainter& painter,const QSize& size,std::span<const NumericSeriesView::Series> series) {
+    constexpr int padding=7,swatch=26,gap=7;
+    const auto metrics=painter.fontMetrics();
+    int longest=0;
+    for(const auto& value:series)longest=std::max(longest,metrics.horizontalAdvance(value.name));
+    const int width=std::min(size.width()/2,longest+swatch+gap+3*padding);
+    const int height=int(series.size())*(metrics.height()+4)+2*padding;
+    if(height>=size.height()-10)return {};
+    return {size.width()-width-8,8,width,height};
 }
-
+void draw_legend_item(QPainter& painter,const QPalette& colors,const QRect& box,
+    const NumericSeriesView::Series& series,std::size_t index) {
+    const QPalette::ColorRole roles[]{QPalette::Highlight,QPalette::Link,QPalette::LinkVisited,QPalette::Text};
+    constexpr int padding=7,swatch=26,gap=7;
+    const auto metrics=painter.fontMetrics();
+    const int center=box.top()+padding+int(index)*(metrics.height()+4)+(metrics.height()+4)/2;
+    painter.setPen(QPen(colors.color(roles[index%4]),index?1.5:1.8,series.dashed?Qt::DashLine:Qt::SolidLine));
+    painter.drawLine(box.left()+padding,center,box.left()+padding+swatch,center);
+    painter.setPen(colors.color(QPalette::Text));
+    painter.drawText(box.left()+padding+swatch+gap,center+metrics.ascent()/2,
+        metrics.elidedText(series.name,Qt::ElideRight,box.width()-swatch-gap-3*padding));
+}
+}
 NumericSeriesView::NumericSeriesView(QWidget* parent):QuickPlotWidget(parent) {
     setMinimumSize(180,170);
     QObject::connect(presentation_model(),&QuickPlotModel::hoverRequested,this,[this](double x,double y){hover(x,y);});
@@ -128,11 +151,21 @@ void NumericSeriesView::draw_series(QPainter& painter,const QSize& size,double m
         painter.drawPath(series_path(series,size,minimum,maximum));
     }
 }
+void NumericSeriesView::draw_legend(QPainter& painter,const QSize& size)const {
+    if(series_.empty() || size.width()<300 || size.height()<95)return;
+    const QRect box=legend_bounds(painter,size,series_);
+    if(box.isEmpty())return;
+    auto background=palette().color(QPalette::Base);background.setAlpha(225);
+    painter.fillRect(box,background);
+    painter.setPen(palette().color(QPalette::Mid));painter.drawRect(box);
+    for(std::size_t i=0;i<series_.size();++i)draw_legend_item(painter,palette(),box,series_[i],i);
+}
 QImage NumericSeriesView::raster(double minimum,double maximum)const {
     const QSize pixels(std::clamp(width()-110,1,2048),std::clamp(height()-86,1,2048));
     QImage image(pixels,QImage::Format_ARGB32_Premultiplied);image.fill(palette().color(QPalette::Base));
     QPainter painter(&image);painter.setRenderHint(QPainter::Antialiasing);draw_bands(painter,pixels,minimum,maximum);
     if(maximum>minimum && high_>low_)draw_series(painter,pixels,minimum,maximum);
+    draw_legend(painter,pixels);
     return image;
 }
 void NumericSeriesView::refresh_presentation() {

@@ -1,4 +1,5 @@
 #include <offline/curve_analysis.h>
+#include <offline/curve_coefficients.h>
 #include <offline/profile_json.h>
 #include <dsp_kernels/frequency_measurements.h>
 #include <core_app/music_analysis_dialog.h>
@@ -293,6 +294,58 @@ void localized_result_status(core_app::MusicAnalysisDialog& dialog){
     ui::Language::instance().set("ru");ui::Language::instance().set("en");
     check(dialog.findChild<QLabel*>("musicStatus")->text()==ui::text("Showing completed scan results"),"the current result status changes language along with the workspace");
 }
+void coefficient_header_export(const dsp_kernels::FrequencyProfile& profile){
+    for(const auto rate:{32768.,48000.})for(const std::size_t fft:{2048,4096}){
+        auto frontend=profile.compatibility;frontend.sample_rate=rate;frontend.fft_size=fft;
+        std::string header,error;
+        check(frequency_coefficients_cpp_header(profile,frontend,header,error),error.c_str());
+        check(header.find("std::array<float, "+std::to_string(fft/2+1)+">")!=std::string::npos,
+            "exported C++ header uses exact FFT half-spectrum extent");
+        check(header.find("1.0f")!=std::string::npos && header.find("sample_rate_hz=")!=std::string::npos,
+            "C++ coefficients include valid float literals and declared frequency grid");
+    }
+    auto mismatch=profile.compatibility;mismatch.window=dsp_kernels::WindowFunction::Hamming;
+    std::string header,error;check(!frequency_coefficients_cpp_header(profile,mismatch,header,error),
+        "mismatched FFT calibration cannot be exported as if compatible");
+}
+void ready_profile_refit(const QString& directory){
+    ProfileDocument raw;raw.profile=measurements();
+    auto initial=analyze_frequency_curves(curve_corpus(raw.profile),{});
+    check(initial.error.empty(),"baseline fit for profile-only refit");
+    ProfileDocument ready;ready.profile=initial.selected();QString error;
+    const auto path=directory+"/saved-refit.brprofile";
+    check(save_profile(path,ready,error),qPrintable(error));
+    ProfileDocument loaded;
+    check(load_profile(path,loaded,error),"roundtrip ready profile");
+    auto corpus=curve_corpus(loaded.profile);
+    check(corpus && corpus->saved_measurements && corpus->tracks.empty(),"ready profile stores sufficient aggregate measurements to refit");
+    auto options=loaded.profile.curve->options;
+    options.knot_spacing=CurveKnotSpacing::LinearHz;
+    auto baseline=analyze_frequency_curves(corpus,options);
+    options.knot_spacing=CurveKnotSpacing::LogarithmicHz;
+    auto refined=analyze_frequency_curves(corpus,options);
+    check(baseline.error.empty() && refined.error.empty(),"saved measurements refit without audio");
+    check(refined.piecewise.curve->knot_hz[1]<baseline.piecewise.curve->knot_hz[1],"log knots allocate additional low-frequency detail");
+    coefficient_header_export(refined.piecewise);
+    AnalysisServices services;services.load=load_profile;services.save=save_profile;
+    core_app::MusicAnalysisDialog dialog({}, {},std::move(services));
+    check(dialog.load_profile_from(path,error),"ready profile opens for refit");
+    auto* export_button=dialog.findChild<QPushButton*>("musicExportCoefficients");
+    check(export_button && export_button->isEnabled(),"saved profile can export DSP coefficients without a graph route");
+    auto* knots=dialog.findChild<QComboBox*>("musicKnotSpacing");
+    auto* aggregation=dialog.findChild<QComboBox*>("musicAggregation");
+    check(knots && knots->isEnabled() && aggregation && !aggregation->isEnabled(),"saved profile permits refitting but forbids changing track aggregation");
+    knots->setCurrentIndex(0);
+    check(wait_ready(dialog),"legacy fitting works on saved profile");
+    knots->setCurrentIndex(1);
+    check(wait_ready(dialog),"logarithmic fitting works on saved profile");
+    knots->setCurrentIndex(2);
+    check(wait_ready(dialog),"hybrid fitting works on saved profile");
+    const auto updated=directory+"/refitted.brprofile";
+    check(dialog.save_profile_to(updated,error),"refitted profile saves without audio");
+    check(load_profile(updated,loaded,error) && loaded.profile.curve->options.knot_spacing==CurveKnotSpacing::HybridHz,
+        "refit method survives archive roundtrip");
+}
 void automatic_ui(const QString& directory) {
     ProfileDocument raw;raw.profile=measurements();QString error;const auto scan=directory+"/ui.brscan";
     raw.preserved["analysis_run"]=QJsonObject{{"requested_count",4},{"processed_count",3},{"failed_count",1},{"errors",QJsonArray{"missing.wav: cannot open"}}};
@@ -387,7 +440,7 @@ int main(int argc,char** argv) {
     try{
         plot_batching_and_range();plot_visible_geometry();plot_pixel_extrema();
         native_axis_and_coverage();cache_and_representation();fit_density_invariance();portable_function_storage(directory.path());malformed_axes_are_atomic();legacy_function_semantics();
-        automatic_ui(directory.path());stale_fit_is_discarded(directory.path());target_grid_updates();
+        ready_profile_refit(directory.path());automatic_ui(directory.path());stale_fit_is_discarded(directory.path());target_grid_updates();
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     std::cout<<"music_workflow_tests PASS\n";
 }

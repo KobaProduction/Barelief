@@ -61,12 +61,16 @@ struct CompositionStatistics {
 };
 enum class PeakAggregation { MeanTrackMaxima, GlobalMaximum, UpperPercentile };
 enum class CurveApproximation { Polynomial, PiecewiseSmooth };
+// LinearHz is the historical equal-Hz bin partition; logarithmic knots
+// retain substantially more low-frequency resolution for new profiles.
+enum class CurveKnotSpacing { LinearHz, LogarithmicHz, HybridHz };
 struct FrequencyCurveOptions {
     PeakAggregation aggregation = PeakAggregation::MeanTrackMaxima;
     CurveApproximation approximation = CurveApproximation::PiecewiseSmooth;
-    double percentile = 90, regularization_db = -120, max_gain = 100;
+    double percentile = 90, regularization_db = -120, max_gain = 10000;
     unsigned polynomial_degree = 6;
     std::size_t segments = 64;
+    CurveKnotSpacing knot_spacing = CurveKnotSpacing::HybridHz;
 };
 struct FrequencyCurve {
     FrequencyCurveOptions options;

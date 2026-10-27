@@ -137,6 +137,17 @@
     <message><source>Piecewise smooth in Hz</source><translation>Кусочная гладкая функция в Гц</translation></message>
     <message><source>Polynomial degree</source><translation>Степень полинома</translation></message>
     <message><source>Curve segments</source><translation>Число участков кривой</translation></message>
+    <message><source>Knot placement</source><translation>Размещение узлов</translation></message>
+    <message><source>Uniform frequency spacing (legacy)</source><translation>Равномерные по частоте (старый метод)</translation></message>
+    <message><source>Logarithmic frequency spacing</source><translation>Логарифмические частотные интервалы</translation></message>
+    <message><source>Hybrid: dense bass, uniform highs</source><translation>Гибридная: точные низкие, равномерные высокие частоты</translation></message>
+    <message><source>Export DSP coefficients (.h)</source><translation>Экспорт коэффициентов DSP (.h)</translation></message>
+    <message><source>DSP sample rate</source><translation>Частота DSP</translation></message>
+    <message><source>DSP FFT size</source><translation>Размер БПФ DSP</translation></message>
+    <message><source>Export DSP coefficients</source><translation>Экспорт коэффициентов DSP</translation></message>
+    <message><source>C++ header (*.h)</source><translation>Заголовочный файл C++ (*.h)</translation></message>
+    <message><source>DSP coefficient header saved: %1</source><translation>Заголовочный файл коэффициентов DSP сохранён: %1</translation></message>
+    <message><source>Ready profile loaded. Curve fitting and gain can be adjusted from saved measurements; track aggregation requires a scan.</source><translation>Готовый профиль загружен. Аппроксимацию и усиление можно менять по сохранённым измерениям; для нового объединения треков нужно сканирование.</translation></message>
     <message><source>Upper percentile, %</source><translation>Верхний процентиль, %</translation></message>
     <message><source>Legacy mean smoothing, bins</source><translation>Сглаживание среднего (старый метод), бины</translation></message>
     <message><source>Regularization floor, dB</source><translation>Уровень регуляризации, дБ</translation></message>
@@ -146,6 +157,7 @@
     <message><source>Curve ready; measurements were reused without reading audio</source><translation>Кривая готова; использованы сохранённые измерения без чтения аудио</translation></message>
     <message><source>Legacy profile requires an exact frontend match</source><translation>Старый профиль требует точного совпадения параметров анализа</translation></message>
     <message><source>Fit RMS error: selected %1 dB; alternative %2 dB. Measured range: %3–%4 Hz.</source><translation>СКО аппроксимации: выбранная %1 дБ; другая %2 дБ. Измеренный диапазон: %3–%4 Гц.</translation></message>
+    <message><source>Fit RMS error: selected %1 dB; alternative %2 dB. Low band 20–250 Hz: %3 / %4 dB. Measured range: %5–%6 Hz.</source><translation>СКО аппроксимации: выбранная %1 дБ, другая %2 дБ. Низкие частоты 20–250 Гц: %3 / %4 дБ. Измеренный диапазон: %5–%6 Гц.</translation></message>
     <message><source>No declared coefficient route is available in the current graph</source><translation>В текущей схеме нет объявленного маршрута коэффициентов</translation></message>
     <message><source>Coefficients will be evaluated at %1 Hz, FFT %2. Frequencies outside the measured range keep gain 1. Audio files are not read.</source><translation>Коэффициенты будут рассчитаны для %1 Гц и FFT %2. Вне измеренного диапазона усиление равно 1. Аудиофайлы не читаются.</translation></message>
     <message><source>Only exact digital silence is excluded. Quiet frames remain in the measurements. Build and compare curves without scanning again; save measurements and ready profiles separately.</source><translation>Исключается только точная цифровая тишина. Тихие кадры сохраняются в измерениях. Стройте и сравнивайте кривые без повторного сканирования; сохраняйте измерения и готовые профили отдельно.</translation></message>

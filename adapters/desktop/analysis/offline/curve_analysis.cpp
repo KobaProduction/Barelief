@@ -8,6 +8,14 @@ CompositionStatistics spectral_track(const CompositionStatistics& t) {
     value.source_sample_rate=t.source_sample_rate;value.sample_rate=t.sample_rate;value.measured_max_hz=t.measured_max_hz;
     value.mean_spectrum=t.mean_spectrum;value.peak_spectrum=t.peak_spectrum;return value;
 }
+std::shared_ptr<const FrequencyMeasurements> stored_measurements(const FrequencyProfile& source) {
+    if(!source.curve || source.curve->measurement_hz.empty())return {};
+    const auto& curve=*source.curve;
+    auto saved=std::make_shared<FrequencyMeasurements>();
+    saved->hz=curve.measurement_hz;saved->maxima=curve.measured_spectrum;
+    saved->mean_amplitude=curve.mean_amplitude;saved->contributors=curve.contributors;
+    saved->edge_hz=curve.edge_hz;return saved;
+}
 }
 const FrequencyProfile& CurveAnalysis::selected()const {
     return settings.approximation==CurveApproximation::Polynomial?polynomial:piecewise;
@@ -18,6 +26,10 @@ std::shared_ptr<const CurveCorpus> curve_corpus(const FrequencyProfile& source,s
         if(!included.empty() && (i>=included.size() || !included[i]))continue;
         corpus->tracks.push_back(spectral_track(source.compositions[i]));
     }
+    if(corpus->tracks.empty()){
+        corpus->saved_measurements=stored_measurements(source);
+        if(corpus->saved_measurements)corpus->saved_options=source.curve->options;
+    }
     return corpus;
 }
 namespace {
@@ -25,9 +37,18 @@ bool same_aggregation(const FrequencyCurveOptions& a,const FrequencyCurveOptions
     return a.aggregation==b.aggregation && (a.aggregation!=PeakAggregation::UpperPercentile || a.percentile==b.percentile);
 }
 bool same_fit(const FrequencyCurveOptions& a,const FrequencyCurveOptions& b,CurveApproximation method) {
-    return method==CurveApproximation::Polynomial?a.polynomial_degree==b.polynomial_degree:a.segments==b.segments;
+    return method==CurveApproximation::Polynomial?a.polynomial_degree==b.polynomial_degree:
+        (a.segments==b.segments && a.knot_spacing==b.knot_spacing);
 }
 bool prepare_measurements(CurveAnalysis& output,const std::shared_ptr<const CurveAnalysis>& previous) {
+    if(output.corpus->saved_measurements){
+        if(!same_aggregation(output.settings,output.corpus->saved_options)){
+            output.error="Saved ready profile has no track spectra: aggregation cannot be changed";
+            return false;
+        }
+        output.measurements=output.corpus->saved_measurements;
+        return true;
+    }
     if(previous && previous->corpus==output.corpus && same_aggregation(previous->settings,output.settings)){
         output.measurements=previous->measurements;return bool(output.measurements);
     }

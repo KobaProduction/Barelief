@@ -1,4 +1,5 @@
 #include <offline/music_analysis.h>
+#include <offline/curve_analysis.h>
 #include <dsp_kernels/pcm_resampler.h>
 #include <dsp_kernels/sample_cadence.h>
 #include <offline/audio_decoder.h>
@@ -12,6 +13,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <iomanip>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -341,10 +343,65 @@ using namespace dsp_kernels;using namespace desktop_analysis::offline;
         doc.preserved["training"]=QJsonObject{{"future_training","yes"}};doc.preserved["compositions"]=QJsonArray{QJsonObject{{"future_track","yes"}}};
 return doc;
 }
+
+namespace {
+using dsp_kernels::FrequencyProfile;
+double fit_error(const FrequencyProfile& p,double hz,double measured) {
+    if(measured<=0)return 0;
+    const auto fitted=dsp_kernels::frequency_curve_amplitude(p,hz);
+    return fitted>0?20*std::log10(fitted/measured):0;
+}
+void print_curve_evidence(const FrequencyProfile& p,const dsp_kernels::FrequencyMeasurements& samples,const char* label){
+    std::size_t low_count=0;double sum=0,worst=0,point_error=0;
+    for(std::size_t i=1;i<samples.hz.size();++i){
+        const auto hz=samples.hz[i];
+        if(hz<20 || hz>250 || samples.maxima[i]<=0)continue;
+        const auto e=fit_error(p,hz,samples.maxima[i]);sum+=e*e;worst=std::max(worst,std::abs(e));++low_count;
+        if(std::abs(hz-32.2998046875)<.001)point_error=e;
+    }
+    std::cout<<std::setprecision(9)<<"FIT "<<label<<" GLOBAL_RMSE_DB="<<p.curve->fit_rmse_db
+      <<" LOW_RMSE_DB="<<(low_count?std::sqrt(sum/double(low_count)):0)
+      <<" LOW_MAX_ERROR_DB="<<worst<<" ERR_AT_32_3HZ_DB="<<point_error
+      <<" KNOTS="<<p.curve->knot_hz.size()<<'\n';
+}
+int inspect_ready_profile(const QStringList& args){
+    using namespace dsp_kernels;using namespace desktop_analysis::offline;
+    const auto pos=args.indexOf("--inspect-profile");
+    if(pos<0 || pos+1>=args.size())return 2;
+    ProfileDocument doc;QString error;
+    if(!load_profile(args[pos+1],doc,error)){std::cerr<<"PROFILE_LOAD_ERROR "<<qPrintable(error)<<'\n';return 3;}
+    std::cout<<"READY_PROFILE_LOADED "<<doc.profile.curve.has_value()<<std::endl;
+    const auto source=curve_corpus(doc.profile);
+    if(!source->saved_measurements){std::cerr<<"PROFILE_HAS_NO_SAVED_MEASUREMENTS\n";return 4;}
+    auto options=doc.profile.curve->options;
+    print_curve_evidence(doc.profile,*source->saved_measurements,"SAVED");
+    FrequencyProfile candidate;
+    for(const auto mode:{CurveKnotSpacing::LinearHz,CurveKnotSpacing::LogarithmicHz,CurveKnotSpacing::HybridHz}){
+        options.knot_spacing=mode;
+        const auto result=analyze_frequency_curves(source,options);
+        if(!result.error.empty()){std::cerr<<"REFIT_ERROR "<<result.error<<'\n';return 5;}
+        print_curve_evidence(result.piecewise,*source->saved_measurements,
+            mode==CurveKnotSpacing::LinearHz?"LINEAR":mode==CurveKnotSpacing::LogarithmicHz?"LOGARITHMIC":"HYBRID");
+        if(mode==CurveKnotSpacing::HybridHz)candidate=result.piecewise;
+    }
+    if(pos+2<args.size()){
+        ProfileDocument out;out.profile=std::move(candidate);out.preserved=doc.preserved;
+        if(!save_profile(args[pos+2],out,error)){std::cerr<<"PROFILE_SAVE_ERROR "<<qPrintable(error)<<'\n';return 6;}
+        std::cout<<"REFINED_PROFILE_SAVED "<<qPrintable(args[pos+2])<<'\n';
+    }
+    return 0;
+}
+void run_basic_oracles(){
+    cadence_oracle();mel_coordinates_oracle();compensation_curve_oracle();
+    profile_mismatch_reasons();malformed_preview_normalization();
+}
+} // namespace
+
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);using namespace dsp_kernels;using namespace desktop_analysis::offline;
+    if(app.arguments().contains("--inspect-profile"))return inspect_ready_profile(app.arguments());
     try {
-        cadence_oracle();mel_coordinates_oracle();compensation_curve_oracle();profile_mismatch_reasons();malformed_preview_normalization();
+        run_basic_oracles();
         ProfileCompatibility c;c.fft_size=512;ProfileTraining t;t.hop=256;t.smoothing_radius=2;
         auto doc=weighting_profile(c,t);
         auto encoded=encode_profile(doc);ProfileDocument loaded;QString json_error;require(decode_profile(encoded,loaded,json_error),"Export reload failed");

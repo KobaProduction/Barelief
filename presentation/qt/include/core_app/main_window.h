@@ -209,7 +209,7 @@ class MainWindow final : public WorkspaceWindow {
     void setup_workspace_layout();
     bool restore_serialized_workspace(const UIApplicationConfig& saved_ui);
     void restore_workspace_dock_visibility(const QJsonObject& visibility,int layout_version);
-    void sync_workspace_config_visibility();
+    void sync_workspace_config_visibility(const QJsonObject& saved_visibility);
     void restore_default_workspace_visibility(const UIApplicationConfig& saved_ui);
     void restore_default_node_visibility(const UIApplicationConfig& saved_ui);
     QWidget *make_panel_content(const QString& id,QWidget *view,WorkspaceDock *dock);
