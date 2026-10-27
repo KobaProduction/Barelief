@@ -269,20 +269,11 @@ AnalysisOptions measurement_options(const AnalysisOptions& input) {
 }
 bool valid_analysis_options(const QStringList& files,const AnalysisOptions& options,QString& error) {
     std::string validation;
-    if(files.empty() || files.size()>4096 || !valid_capture_settings(options,validation) || options.workers<1 || options.workers>50 || options.preview_time_bins<1 || options.preview_time_bins>2048 || options.preview_frequency_bins<1 || options.preview_frequency_bins>2048){
+    // Memory usage depends on actual per-track statistics and preview content.
+    // Do not reject large research corpora using a pessimistic total-size estimate.
+    if(files.empty() || !valid_capture_settings(options,validation) || options.workers<1 || options.workers>50 || options.preview_time_bins<1 || options.preview_time_bins>2048 || options.preview_frequency_bins<1 || options.preview_frequency_bins>2048){
         error=validation.empty()?QStringLiteral("Invalid analysis options"):QString::fromStdString(validation);return false;
     }
-    const auto rows=options.preview_time_bins,bands=std::min(options.preview_frequency_bins,options.compatibility.fft_size/2+1);
-    const auto bytes=std::uint64_t(files.size())*(rows*bands*sizeof(float)+(rows+bands)*sizeof(double)+rows*sizeof(std::uint64_t));
-    if(bytes>512ull*1024*1024){error="Preview memory exceeds 512 MiB; reduce preview resolution or the file list";return false;}
-    const auto bins=options.compatibility.fft_size/2+1;
-    const auto statistics_bytes=5*bins*sizeof(double)+(rms_overflow_band+1)*(sizeof(CompositionStatistics::RmsBand)+2*bins*sizeof(float));
-    // 102 RMS bands per track are a pessimistic upper bound, not an
-    // allocation performed up front. A 528-track, 4096-point research corpus
-    // can legitimately exceed 512 MiB while staying well within desktop RAM.
-    // Preserve a finite safety limit without forcing a lower FFT resolution.
-    constexpr std::uint64_t maximum_statistics_bytes=2ull*1024*1024*1024;
-    if(std::uint64_t(files.size())*statistics_bytes>maximum_statistics_bytes){error="Spectral statistics exceed 2 GiB; reduce FFT size or the file list";return false;}
     return true;
 }
 class AnalysisBatch {
