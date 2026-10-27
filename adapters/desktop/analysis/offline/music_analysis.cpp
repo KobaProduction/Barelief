@@ -277,7 +277,12 @@ bool valid_analysis_options(const QStringList& files,const AnalysisOptions& opti
     if(bytes>512ull*1024*1024){error="Preview memory exceeds 512 MiB; reduce preview resolution or the file list";return false;}
     const auto bins=options.compatibility.fft_size/2+1;
     const auto statistics_bytes=5*bins*sizeof(double)+(rms_overflow_band+1)*(sizeof(CompositionStatistics::RmsBand)+2*bins*sizeof(float));
-    if(std::uint64_t(files.size())*statistics_bytes>512ull*1024*1024){error="Spectral statistics exceed 512 MiB; reduce FFT size or the file list";return false;}
+    // 102 RMS bands per track are a pessimistic upper bound, not an
+    // allocation performed up front. A 528-track, 4096-point research corpus
+    // can legitimately exceed 512 MiB while staying well within desktop RAM.
+    // Preserve a finite safety limit without forcing a lower FFT resolution.
+    constexpr std::uint64_t maximum_statistics_bytes=2ull*1024*1024*1024;
+    if(std::uint64_t(files.size())*statistics_bytes>maximum_statistics_bytes){error="Spectral statistics exceed 2 GiB; reduce FFT size or the file list";return false;}
     return true;
 }
 class AnalysisBatch {
