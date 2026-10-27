@@ -25,6 +25,7 @@ FrequencyProfile curve(const FrequencyCurveOptions& o,std::span<const Compositio
 }
 void aggregation() {
     std::array tracks{track(),track(2),track(100)};FrequencyCurveOptions o;
+    o.level_reference=CurveLevelReference::AbsoluteAmplitude;
     auto mean=curve(o,tracks);o.aggregation=PeakAggregation::GlobalMaximum;auto maximum=curve(o,tracks);
     o.aggregation=PeakAggregation::UpperPercentile;o.percentile=90;auto percentile=curve(o,tracks);
     assert(std::abs(mean.peak_spectrum[100]/tracks[0].peak_spectrum[100]-103./3)<1e-12);
@@ -36,6 +37,7 @@ void aggregation() {
 }
 void approximation_quality() {
     const auto input=track();FrequencyCurveOptions o;o.polynomial_degree=2;
+    o.level_reference=CurveLevelReference::AbsoluteAmplitude;
     for(const auto method:{CurveApproximation::Polynomial,CurveApproximation::PiecewiseSmooth}){
         o.approximation=method;const auto p=curve(o,std::span(&input,1));
         assert(p.curve->fit_rmse_db<(method==CurveApproximation::Polynomial?1e-6:.02));
@@ -53,9 +55,11 @@ void floor_continuity() {
     assert(gains.front()==1 && gains.back()==1 && gains[2]>1);
     assert(std::abs(gains[1]-gains[3])<.001 && gains[2]<=100);
     auto t=track();std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),1e-12);
-    auto p=curve({},std::span(&t,1));assert(*std::max_element(p.gains.begin(),p.gains.end())<1.001);
+    FrequencyCurveOptions absolute;absolute.level_reference=CurveLevelReference::AbsoluteAmplitude;
+    auto p=curve(absolute,std::span(&t,1));assert(*std::max_element(p.gains.begin(),p.gains.end())<1.001);
     std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),1e-6);
     FrequencyCurveOptions capped;capped.max_gain=100;
+    capped.level_reference=CurveLevelReference::AbsoluteAmplitude;
     p=curve(capped,std::span(&t,1));
     assert(std::abs(p.gains[100]-50.5)<1e-3);
     std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),0);std::string error;const auto before=p.gains;
@@ -120,7 +124,8 @@ void native_measurement_grids() {
             const auto hz=k*rates[i]/4096;t.peak_spectrum[k]=double(1u<<i)*(.1+hz/1e6);t.mean_spectrum[k]=t.peak_spectrum[k]/4;
         }
     }
-    const auto p=curve({},tracks);
+    FrequencyCurveOptions absolute;absolute.level_reference=CurveLevelReference::AbsoluteAmplitude;
+    const auto p=curve(absolute,tracks);
     for(std::size_t k=1;k<p.gains.size();++k){
         const auto hz=k*48000./4096;double sum=0,count=0;
         for(std::size_t i=0;i<rates.size();++i)if(hz<=rates[i]/2){sum+=double(1u<<i)*(.1+hz/1e6);++count;}

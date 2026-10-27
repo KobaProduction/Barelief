@@ -14,8 +14,10 @@ bool valid_track(const CompositionStatistics& t,double fallback) {
         valid_values(t.mean_spectrum) && valid_values(t.peak_spectrum);
 }
 bool valid_collection(const ProfileCompatibility& frontend,std::span<const CompositionStatistics> tracks,const FrequencyCurveOptions& options) {
-    if(tracks.empty() || tracks.size()>4096 || !std::isfinite(options.percentile) || options.percentile<50 || options.percentile>100 ||
-        options.aggregation<PeakAggregation::MeanTrackMaxima || options.aggregation>PeakAggregation::UpperPercentile)return false;
+    if(tracks.empty() || !std::isfinite(options.percentile) || options.percentile<50 || options.percentile>100 ||
+        options.aggregation<PeakAggregation::MeanTrackMaxima || options.aggregation>PeakAggregation::UpperPercentile ||
+        options.level_reference<CurveLevelReference::AbsoluteAmplitude ||
+        options.level_reference>CurveLevelReference::TrackSpectralMaximum)return false;
     return std::ranges::all_of(tracks,[&](const auto& t){return valid_track(t,frontend.sample_rate);});
 }
 void append_axis(std::vector<double>& hz,const CompositionStatistics& t,double fallback) {
@@ -42,12 +44,31 @@ struct Collector {
     const FrequencyCurveOptions& options;
     FrequencyMeasurements result;
     std::vector<double> values;
+    std::vector<double> track_scale;
+    void prepare_scales() {
+        track_scale.reserve(tracks.size());
+        for(const auto& t:tracks){
+            if(options.level_reference==CurveLevelReference::AbsoluteAmplitude){
+                track_scale.push_back(1);
+                continue;
+            }
+            const auto max_hz=t.measured_max_hz>0?t.measured_max_hz:measurement_rate(t,frontend.sample_rate)/2;
+            const auto step=measurement_rate(t,frontend.sample_rate)/(2.*double(t.peak_spectrum.size()-1));
+            double peak=0;
+            for(std::size_t bin=1;bin<t.peak_spectrum.size() && double(bin)*step<=max_hz;++bin)
+                peak=std::max(peak,t.peak_spectrum[bin]);
+            // Empty or completely silent tracks already have no active contributions.
+            track_scale.push_back(peak>0?1/peak:1);
+        }
+    }
     void append(double hz) {
         values.clear();double mean=0;
-        for(const auto& t:tracks)if(t.active_frames && measured_frequency(t,frontend.sample_rate,hz)){
+        for(std::size_t i=0;i<tracks.size();++i){
+            const auto& t=tracks[i];
+            if(!t.active_frames || !measured_frequency(t,frontend.sample_rate,hz))continue;
             const auto rate=measurement_rate(t,frontend.sample_rate);
-            values.push_back(sample_measured_spectrum(t.peak_spectrum,rate,hz));
-            mean+=sample_measured_spectrum(t.mean_spectrum,rate,hz);
+            values.push_back(sample_measured_spectrum(t.peak_spectrum,rate,hz)*track_scale[i]);
+            mean+=sample_measured_spectrum(t.mean_spectrum,rate,hz)*track_scale[i];
         }
         result.contributors.push_back(double(values.size()));
         result.mean_amplitude.push_back(values.empty()?0:mean/double(values.size()));
@@ -68,7 +89,8 @@ bool combine_frequency_measurements(const ProfileCompatibility& frontend,
     if(!valid_collection(frontend,tracks,options)){
         error="Invalid frequency measurement collection";return false;
     }
-    Collector collector{frontend,tracks,options,{}, {}};collector.values.reserve(tracks.size());collector.axis();
+    Collector collector{frontend,tracks,options,{}, {}, {}};collector.values.reserve(tracks.size());
+    collector.prepare_scales();collector.axis();
     if(collector.result.hz.size()<3 || collector.result.hz.size()>4194304){error="Insufficient or excessive measured frequencies for approximation";return false;}
     for(const auto hz:collector.result.hz)collector.append(hz);
     output=std::move(collector.result);return true;

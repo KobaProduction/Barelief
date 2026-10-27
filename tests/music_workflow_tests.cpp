@@ -148,6 +148,8 @@ FrequencyProfile measurements() {
 }
 void native_axis_and_coverage() {
     const auto source=measurements();FrequencyMeasurements data;std::string error;FrequencyCurveOptions options;
+    // This case specifically checks the historical absolute spectral statistics.
+    options.level_reference=CurveLevelReference::AbsoluteAmplitude;
     check(combine_frequency_measurements(source.compatibility,source.compositions,options,data,error),"combine native grids");
     check(data.hz.back()==24000 && data.hz.size()>2049,"32768 Hz placeholder must not truncate a 48000 Hz track");
     for(std::size_t k=0;k<data.hz.size();++k){
@@ -159,6 +161,39 @@ void native_axis_and_coverage() {
     auto different=source.compatibility;different.sample_rate=48000;FrequencyMeasurements other;
     check(combine_frequency_measurements(different,source.compositions,options,other,error),"combine with another target placeholder");
     check(other.hz==data.hz && other.maxima==data.maxima,"target grid is absent from native aggregation");
+}
+void static_spectral_level_invariance() {
+    // The physical FFT measurements remain absolute. Only static-profile fitting
+    // divides each composition by its own measured strongest spectral component.
+    auto raw=measurements();auto louder=raw;
+    const std::array<double,3> levels{.03,4.,.17};
+    for(std::size_t i=0;i<louder.compositions.size();++i){
+        auto& t=louder.compositions[i];
+        for(auto& v:t.peak_spectrum)v*=levels[i];
+        for(auto& v:t.mean_spectrum)v*=levels[i];
+        t.rms*=levels[i];
+    }
+    FrequencyCurveOptions options;std::string error;
+    FrequencyMeasurements first,second;
+    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,first,error),error.c_str());
+    check(combine_frequency_measurements(louder.compatibility,louder.compositions,options,second,error),error.c_str());
+    check(first.hz==second.hz && first.contributors==second.contributors,"the native FFT frequency axis remains unchanged");
+    for(std::size_t k=0;k<first.hz.size();++k){
+        check(std::abs(first.maxima[k]-second.maxima[k])<1e-12,"static spectral shape is invariant to recording gain");
+        check(std::abs(first.mean_amplitude[k]-second.mean_amplitude[k])<1e-12,"relative track means are level-invariant");
+    }
+    auto a=analyze_frequency_curves(curve_corpus(raw),options);
+    auto b=analyze_frequency_curves(curve_corpus(louder),options);
+    check(a.error.empty() && b.error.empty() && a.selected().curve && b.selected().curve,
+          "both datasets build the static piecewise profile");
+    for(std::size_t k=0;k<a.selected().gains.size();++k)
+        check(std::abs(a.selected().gains[k]-b.selected().gains[k])<1e-4,
+              "static normalizer coefficients do not change with track volume");
+    options.level_reference=CurveLevelReference::AbsoluteAmplitude;
+    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,first,error),error.c_str());
+    check(combine_frequency_measurements(louder.compatibility,louder.compositions,options,second,error),error.c_str());
+    check(std::abs(first.maxima[100]-second.maxima[100])>.01,
+          "legacy absolute measurement mode still preserves level differences");
 }
 void cache_and_representation() {
     const auto source=measurements();const auto corpus=curve_corpus(source);FrequencyCurveOptions options;
@@ -442,7 +477,7 @@ int main(int argc,char** argv) {
     if(app.arguments().contains("--plot-benchmark")){plot_benchmark();return 0;}
     try{
         plot_batching_and_range();plot_visible_geometry();plot_pixel_extrema();
-        native_axis_and_coverage();cache_and_representation();fit_density_invariance();portable_function_storage(directory.path());malformed_axes_are_atomic();legacy_function_semantics();
+        native_axis_and_coverage();static_spectral_level_invariance();cache_and_representation();fit_density_invariance();portable_function_storage(directory.path());malformed_axes_are_atomic();legacy_function_semantics();
         ready_profile_refit(directory.path());automatic_ui(directory.path());stale_fit_is_discarded(directory.path());target_grid_updates();
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
     std::cout<<"music_workflow_tests PASS\n";

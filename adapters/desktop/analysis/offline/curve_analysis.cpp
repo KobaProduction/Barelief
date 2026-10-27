@@ -34,7 +34,8 @@ std::shared_ptr<const CurveCorpus> curve_corpus(const FrequencyProfile& source,s
 }
 namespace {
 bool same_aggregation(const FrequencyCurveOptions& a,const FrequencyCurveOptions& b) {
-    return a.aggregation==b.aggregation && (a.aggregation!=PeakAggregation::UpperPercentile || a.percentile==b.percentile);
+    return a.level_reference==b.level_reference && a.aggregation==b.aggregation &&
+        (a.aggregation!=PeakAggregation::UpperPercentile || a.percentile==b.percentile);
 }
 bool same_fit(const FrequencyCurveOptions& a,const FrequencyCurveOptions& b) {
     return a.segments==b.segments && a.knot_spacing==b.knot_spacing;
