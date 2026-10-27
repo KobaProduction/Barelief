@@ -65,8 +65,9 @@ enum class CurveApproximation { Polynomial, PiecewiseSmooth };
 // retain substantially more low-frequency resolution for new profiles.
 enum class CurveKnotSpacing { LinearHz, LogarithmicHz, HybridHz };
 // A static correction curve should depend on spectral shape, not recording gain.
-// AbsoluteAmplitude is retained for reading historical .brprofile functions.
-enum class CurveLevelReference { AbsoluteAmplitude, TrackSpectralMaximum };
+// Historical models retain their original meaning. New models normalize only
+// after aggregating the unmodified per-track spectral maxima.
+enum class CurveLevelReference { AbsoluteAmplitude, TrackSpectralMaximum, CorpusSpectralMaximum };
 struct FrequencyCurveOptions {
     PeakAggregation aggregation = PeakAggregation::MeanTrackMaxima;
     CurveApproximation approximation = CurveApproximation::PiecewiseSmooth;
@@ -74,7 +75,7 @@ struct FrequencyCurveOptions {
     unsigned polynomial_degree = 6;
     std::size_t segments = 64;
     CurveKnotSpacing knot_spacing = CurveKnotSpacing::HybridHz;
-    CurveLevelReference level_reference = CurveLevelReference::TrackSpectralMaximum;
+    CurveLevelReference level_reference = CurveLevelReference::CorpusSpectralMaximum;
 };
 struct FrequencyCurve {
     FrequencyCurveOptions options;

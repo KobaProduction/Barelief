@@ -15,7 +15,7 @@ bool valid_options(const FrequencyCurveOptions& o) {
     return o.aggregation>=PeakAggregation::MeanTrackMaxima && o.aggregation<=PeakAggregation::UpperPercentile &&
         o.approximation>=CurveApproximation::Polynomial && o.approximation<=CurveApproximation::PiecewiseSmooth &&
         (o.knot_spacing>=CurveKnotSpacing::LinearHz && o.knot_spacing<=CurveKnotSpacing::HybridHz) &&
-        (o.level_reference>=CurveLevelReference::AbsoluteAmplitude && o.level_reference<=CurveLevelReference::TrackSpectralMaximum) &&
+        (o.level_reference>=CurveLevelReference::AbsoluteAmplitude && o.level_reference<=CurveLevelReference::CorpusSpectralMaximum) &&
         std::isfinite(o.percentile) && o.percentile>=50 && o.percentile<=100 &&
         std::isfinite(o.regularization_db) && o.regularization_db>=-300 && o.regularization_db<=0 &&
         std::isfinite(o.max_gain) && o.max_gain>=1 && o.max_gain<=1000000 &&

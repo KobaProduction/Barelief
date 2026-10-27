@@ -53,6 +53,8 @@ bool read_options(const QJsonObject& o,FrequencyCurveOptions& options) {
         options.level_reference=CurveLevelReference::AbsoluteAmplitude;
     else if(reference.toString()=="track_spectral_maximum")
         options.level_reference=CurveLevelReference::TrackSpectralMaximum;
+    else if(reference.toString()=="corpus_spectral_maximum")
+        options.level_reference=CurveLevelReference::CorpusSpectralMaximum;
     else return false;
     return read_knot_spacing(o,options.knot_spacing) &&
         number(o,"percentile",options.percentile) && number(o,"regularization_db",options.regularization_db) && number(o,"max_gain",options.max_gain);
@@ -89,7 +91,8 @@ QJsonObject encode_curve(const dsp_kernels::FrequencyCurve& c,QJsonObject o,Prof
     o["approximation"]=options.approximation==CurveApproximation::Polynomial?"chebyshev_log_amplitude_hz":"pchip_log_amplitude_hz";
     o["percentile"]=options.percentile;o["regularization_db"]=options.regularization_db;o["max_gain"]=options.max_gain;
     o["degree"]=int(options.polynomial_degree);o["segments"]=double(options.segments);
-    o["level_reference"]=options.level_reference==CurveLevelReference::TrackSpectralMaximum?
+    o["level_reference"]=options.level_reference==CurveLevelReference::CorpusSpectralMaximum?
+        "corpus_spectral_maximum":options.level_reference==CurveLevelReference::TrackSpectralMaximum?
         "track_spectral_maximum":"absolute_amplitude";
     o["knot_spacing"]=options.knot_spacing==CurveKnotSpacing::HybridHz?"hybrid_hz":
         options.knot_spacing==CurveKnotSpacing::LogarithmicHz?"logarithmic_hz":"linear_hz";

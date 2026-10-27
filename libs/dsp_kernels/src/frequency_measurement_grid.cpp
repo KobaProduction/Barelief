@@ -17,7 +17,7 @@ bool valid_collection(const ProfileCompatibility& frontend,std::span<const Compo
     if(tracks.empty() || !std::isfinite(options.percentile) || options.percentile<50 || options.percentile>100 ||
         options.aggregation<PeakAggregation::MeanTrackMaxima || options.aggregation>PeakAggregation::UpperPercentile ||
         options.level_reference<CurveLevelReference::AbsoluteAmplitude ||
-        options.level_reference>CurveLevelReference::TrackSpectralMaximum)return false;
+        options.level_reference>CurveLevelReference::CorpusSpectralMaximum)return false;
     return std::ranges::all_of(tracks,[&](const auto& t){return valid_track(t,frontend.sample_rate);});
 }
 void append_axis(std::vector<double>& hz,const CompositionStatistics& t,double fallback) {
@@ -48,7 +48,7 @@ struct Collector {
     void prepare_scales() {
         track_scale.reserve(tracks.size());
         for(const auto& t:tracks){
-            if(options.level_reference==CurveLevelReference::AbsoluteAmplitude){
+            if(options.level_reference!=CurveLevelReference::TrackSpectralMaximum){
                 track_scale.push_back(1);
                 continue;
             }
@@ -74,6 +74,17 @@ struct Collector {
         result.mean_amplitude.push_back(values.empty()?0:mean/double(values.size()));
         result.maxima.push_back(aggregate(values,options));
     }
+    void normalize_aggregated_spectrum() {
+        if(options.level_reference!=CurveLevelReference::CorpusSpectralMaximum)return;
+        // The selected aggregation is computed in calibrated FFT amplitude
+        // units first. Normalize the single resulting spectrum, never a track.
+        double maximum=0;
+        for(std::size_t k=1;k<result.maxima.size();++k)
+            if(result.contributors[k]>0)maximum=std::max(maximum,result.maxima[k]);
+        if(maximum<=0)return; // Existing fitting validation rejects empty data.
+        for(double& value:result.maxima)value/=maximum;
+        for(double& value:result.mean_amplitude)value/=maximum;
+    }
     void axis() {
         for(const auto& t:tracks)append_axis(result.hz,t,frontend.sample_rate);
         std::sort(result.hz.begin(),result.hz.end());
@@ -93,6 +104,7 @@ bool combine_frequency_measurements(const ProfileCompatibility& frontend,
     collector.prepare_scales();collector.axis();
     if(collector.result.hz.size()<3 || collector.result.hz.size()>4194304){error="Insufficient or excessive measured frequencies for approximation";return false;}
     for(const auto hz:collector.result.hz)collector.append(hz);
+    collector.normalize_aggregated_spectrum();
     output=std::move(collector.result);return true;
 }
 }

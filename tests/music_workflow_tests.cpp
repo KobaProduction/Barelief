@@ -163,37 +163,48 @@ void native_axis_and_coverage() {
     check(other.hz==data.hz && other.maxima==data.maxima,"target grid is absent from native aggregation");
 }
 void static_spectral_level_invariance() {
-    // The physical FFT measurements remain absolute. Only static-profile fitting
-    // divides each composition by its own measured strongest spectral component.
     auto raw=measurements();auto louder=raw;
-    const std::array<double,3> levels{.03,4.,.17};
-    for(std::size_t i=0;i<louder.compositions.size();++i){
-        auto& t=louder.compositions[i];
-        for(auto& v:t.peak_spectrum)v*=levels[i];
-        for(auto& v:t.mean_spectrum)v*=levels[i];
-        t.rms*=levels[i];
+    for(auto& t:louder.compositions){
+        for(auto& v:t.peak_spectrum)v*=5.;
+        for(auto& v:t.mean_spectrum)v*=5.;
+        t.rms*=5.;
     }
     FrequencyCurveOptions options;std::string error;
-    FrequencyMeasurements first,second;
-    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,first,error),error.c_str());
-    check(combine_frequency_measurements(louder.compatibility,louder.compositions,options,second,error),error.c_str());
-    check(first.hz==second.hz && first.contributors==second.contributors,"the native FFT frequency axis remains unchanged");
-    for(std::size_t k=0;k<first.hz.size();++k){
-        check(std::abs(first.maxima[k]-second.maxima[k])<1e-12,"static spectral shape is invariant to recording gain");
-        check(std::abs(first.mean_amplitude[k]-second.mean_amplitude[k])<1e-12,"relative track means are level-invariant");
+    check(options.level_reference==CurveLevelReference::CorpusSpectralMaximum,
+          "a new profile normalizes only after aggregating per-track maxima");
+    FrequencyMeasurements absolute,normalized,louder_normalized;
+    options.level_reference=CurveLevelReference::AbsoluteAmplitude;
+    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,absolute,error),error.c_str());
+    options.level_reference=CurveLevelReference::CorpusSpectralMaximum;
+    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,normalized,error),error.c_str());
+    check(combine_frequency_measurements(louder.compatibility,louder.compositions,options,louder_normalized,error),error.c_str());
+    check(absolute.hz==normalized.hz && normalized.hz==louder_normalized.hz,
+          "native frequencies do not depend on scaling");
+    const auto maximum=*std::max_element(absolute.maxima.begin()+1,absolute.maxima.end());
+    check(maximum>0 && std::abs(*std::max_element(normalized.maxima.begin()+1,normalized.maxima.end())-1.)<1e-12,
+          "the maximum of the averaged peak spectrum equals one");
+    for(std::size_t k=0;k<absolute.hz.size();++k){
+        check(std::abs(normalized.maxima[k]-absolute.maxima[k]/maximum)<1e-12,
+              "the raw peak spectra are averaged before corpus normalization");
+        check(std::abs(normalized.mean_amplitude[k]-absolute.mean_amplitude[k]/maximum)<1e-12,
+              "average spectrum has the same global amplitude reference");
+        check(std::abs(normalized.maxima[k]-louder_normalized.maxima[k])<1e-12,
+              "a common recording-gain change does not change the normalized spectrum");
     }
     auto a=analyze_frequency_curves(curve_corpus(raw),options);
     auto b=analyze_frequency_curves(curve_corpus(louder),options);
     check(a.error.empty() && b.error.empty() && a.selected().curve && b.selected().curve,
-          "both datasets build the static piecewise profile");
+          "both corpora build the static piecewise profile");
     for(std::size_t k=0;k<a.selected().gains.size();++k)
         check(std::abs(a.selected().gains[k]-b.selected().gains[k])<1e-4,
-              "static normalizer coefficients do not change with track volume");
-    options.level_reference=CurveLevelReference::AbsoluteAmplitude;
-    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,first,error),error.c_str());
-    check(combine_frequency_measurements(louder.compatibility,louder.compositions,options,second,error),error.c_str());
-    check(std::abs(first.maxima[100]-second.maxima[100])>.01,
-          "legacy absolute measurement mode still preserves level differences");
+              "global recording gain does not change final coefficients");
+    options.level_reference=CurveLevelReference::TrackSpectralMaximum;
+    FrequencyMeasurements old_a,old_b;
+    check(combine_frequency_measurements(raw.compatibility,raw.compositions,options,old_a,error),error.c_str());
+    check(combine_frequency_measurements(louder.compatibility,louder.compositions,options,old_b,error),error.c_str());
+    for(std::size_t k=0;k<old_a.hz.size();++k)
+        check(std::abs(old_a.maxima[k]-old_b.maxima[k])<1e-12,
+              "old track-normalized profile remains compatible");
 }
 void cache_and_representation() {
     const auto source=measurements();const auto corpus=curve_corpus(source);FrequencyCurveOptions options;
