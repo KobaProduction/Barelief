@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QPushButton>
 #include <QSpinBox>
@@ -133,7 +134,10 @@ static int storage_without_audio(core_app::MusicAnalysisDialog& dialog,const QTe
     dialog.findChild<QComboBox*>("musicQuietLevelDb")->setCurrentIndex(91);
     if(!dialog.save_scan_to(scan,error) || !dialog.save_profile_to(profile,error) || !QFile::remove(first) || !QFile::remove(second))return failure(50,__LINE__);
     auto* tracks=dialog.findChild<QListWidget*>("musicResultFiles");tracks->setCurrentRow(1);tracks->setCurrentRow(0);
-    if(!dialog.findChild<QLabel*>("musicPreviewTitle")->text().startsWith("Preview: "))return failure(51,__LINE__);
+    // Measurement-only scans intentionally omit per-track preview grids:
+    // scientific bin statistics remain available without source audio.
+    if(!dialog.findChild<QLabel*>("musicPreviewTitle")->text().contains("No saved spectrogram for this track"))
+        return failure(51,__LINE__);
     if(!dialog.load_profile_from(profile,error) || dialog.findChild<QComboBox*>("musicAggregation")->isEnabled())return failure(52,__LINE__);
     if(!dialog.load_scan_from(scan,error) || !ready(dialog) || scans!=1)return failure(53,__LINE__);
     if(dialog.findChild<QComboBox*>("musicQuietLevelDb")->currentData().toInt()!=-18)return failure(54,__LINE__);
@@ -264,10 +268,75 @@ static int large_folder_display_and_start(QApplication& app,const QTemporaryDir&
     dialog.close();
     return 0;
 }
+
+static int completed_collection_disables_last_batch_save(
+    QApplication& app,const QTemporaryDir& directory,const QString& fixture_path) {
+    namespace offline=desktop_analysis::offline;
+    const auto input=directory.filePath("bulk-fixture-source");
+    if(!QDir().mkpath(input))return failure(70,__LINE__);
+    QStringList paths;
+    for(int i=0;i<129;++i)
+        paths.append(input+QString("/track-%1.wav").arg(i,4,10,QLatin1Char('0')));
+    auto services=analysis_services();
+    std::atomic_int calls=0;
+    services.scan_files=[&](const QStringList& batch,const offline::AnalysisOptions& options,
+                            const std::atomic_bool& cancelled,const offline::AnalysisServices::Progress& progress){
+        ++calls;
+        const auto seed=offline::scan_music_files({fixture_path},options,cancelled);
+        offline::AnalysisResult result;
+        if(!seed.success)return result;
+        result.success=true;
+        result.document=seed.document;
+        result.document.previews.clear();
+        result.document.profile.compositions.clear();
+        for(const auto& name:batch){
+            auto composition=seed.document.profile.compositions.front();
+            composition.source=name.toStdString();
+            result.document.profile.compositions.push_back(std::move(composition));
+        }
+        result.document.preserved["analysis_run"]=QJsonObject{
+            {"requested_count",batch.size()},
+            {"processed_count",batch.size()},
+            {"failed_count",0},{"errors",QJsonArray{}}
+        };
+        if(progress)progress(std::size_t(batch.size()),std::size_t(batch.size()));
+        return result;
+    };
+    core_app::MusicAnalysisDialog dialog({}, {},std::move(services));
+    dialog.resize(1300,900);dialog.show();app.processEvents();
+    auto* list=dialog.findChild<QListWidget*>("musicFiles");
+    auto* button=dialog.findChild<QPushButton*>("musicSaveScan");
+    if(!list||!button)return failure(71,__LINE__);
+    list->addItems(paths);
+    dialog.findChild<QPushButton*>("musicRun")->click();
+    QElapsedTimer timer;timer.start();
+    bool completed=false;
+    while(timer.elapsed()<25000){
+        app.processEvents();
+        auto* label=dialog.findChild<QLabel*>("musicStatus");
+        if(label && label->text().contains("Complete scan saved:")){completed=true;break;}
+        QThread::msleep(1);
+    }
+    if(!completed || calls!=2 || button->isEnabled())return failure(72,__LINE__);
+    QString error;
+    const auto bogus=directory.filePath("misleading-last-part.brscan");
+    if(dialog.save_scan_to(bogus,error) || error.isEmpty() || QFileInfo::exists(bogus))
+        return failure(73,__LINE__);
+    const auto scan_parent=QDir(directory.path()).entryList({"*.brscan"},QDir::Files).isEmpty()
+                           ?input:directory.path();
+    const auto collections=QDir(scan_parent).entryList({"music-scan-*"},QDir::Dirs|QDir::NoDotAndDotDot);
+    if(collections.size()!=1)return failure(74,__LINE__);
+    const auto folder=scan_parent+"/"+collections.front();
+    if(QDir(folder).entryList({"music-scan-part-*.brscan"},QDir::Files).size()!=2)
+        return failure(75,__LINE__);
+    dialog.close();
+    return 0;
+}
 int main(int argc,char** argv) {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);QApplication app(argc,argv);ui::Language::instance().set("en");
     QTemporaryDir directory;const auto path=fixture(directory.path());if(path.isEmpty())return failure(5,__LINE__);
     for(const auto* theme:{"light","dark"})if(const auto result=theme_dialog(app,directory,path,theme))return result;
     if(const auto result=large_folder_display_and_start(app,directory))return result;
+    if(const auto result=completed_collection_disables_last_batch_save(app,directory,path))return result;
     std::cout<<"music_analysis_dialog_tests PASS (offscreen widget lifecycle only)\n";
 }

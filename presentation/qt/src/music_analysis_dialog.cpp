@@ -213,6 +213,9 @@ struct MusicAnalysisDialog::State {
     QLabel* frontend_status;
     std::uint64_t interval_numerator=1,interval_denominator=120;
     ProfileDocument document;SpectrogramPreview preview;bool has_profile=false,applied_status=false;
+    // A large scan is a COMPLETE COLLECTION, not the most recent batch.
+    // Saving the in-memory last part as "full corpus" must be prohibited.
+    QString complete_scan_collection;
     std::shared_ptr<std::atomic_bool> cancelled=std::make_shared<std::atomic_bool>(false);
     std::shared_ptr<std::atomic_size_t> completed=std::make_shared<std::atomic_size_t>(0);
     std::future<AnalysisResult> future;
@@ -311,7 +314,7 @@ struct MusicAnalysisDialog::State {
         load->setEnabled(!busy);save->setEnabled(results&&has_profile);cancel->setEnabled(busy);
         new_scan->setVisible(results);show_results->setVisible(!results&&has_profile);show_results->setEnabled(!busy);
         target->setEnabled(!busy);reload_targets->setEnabled(!busy);
-        save->setEnabled(results&&has_profile&&curve_ready);save_scan->setEnabled(!busy&&can_save_scan());
+        save->setEnabled(results&&has_profile&&curve_ready);save_scan->setEnabled(!busy&&complete_scan_collection.isEmpty()&&can_save_scan());
         load_scan->setEnabled(!busy);curve_step->setEnabled(!busy&&has_profile);apply_step->setEnabled(!busy&&curve_ready);
     }
     void update_target_availability(bool results){
@@ -581,6 +584,7 @@ struct MusicAnalysisDialog::State {
         show_storage_info(path);
     }
     void install_profile(ProfileDocument candidate,const QString& path){
+        complete_scan_collection.clear();
         discard_curve_result();
         reset_result_viewports();
         stop_preview();fit_quality->clear();applied_status=false;document=std::move(candidate);has_profile=true;curve_ready=true;preview={};profile_path=path;restore_source_files();
@@ -698,6 +702,7 @@ struct MusicAnalysisDialog::State {
         }catch(const std::exception& e){status->setText(QString::fromUtf8(e.what()));}set_mode(has_profile&&document.profile.compositions.size()?Mode::Results:Mode::Setup);
     }
     void accept_analysis_result(AnalysisResult result){
+        complete_scan_collection=result.success?result.batch_directory:QString{};
         if(result.success){document=std::move(result.document);preview=std::move(result.preview);has_profile=true;restore_quiet_level();reset_curve_source();refresh();
             if(!result.batch_directory.isEmpty())
                 status->setText(QStringLiteral("Complete scan saved: %1 tracks, %2 parts, %3. Results view displays the last part only.")
@@ -1309,6 +1314,12 @@ struct MusicAnalysisDialog::State {
         target_gains->fs=frontend.sample_rate;target_gains->limit=active_profile().training.max_gain;target_gains->magnitude=gains->magnitude;target_gains->update();
     }
     void choose_scan_storage(bool saving){
+        if(saving && !complete_scan_collection.isEmpty()){
+            status->setText(QStringLiteral("This corpus is already saved as a complete scan collection: %1. "
+                                           "The in-memory last batch is not a complete scan.")
+                                           .arg(complete_scan_collection));
+            return;
+        }
         QFileDialog chooser(owner,ui::text(saving?"Save scan":"Load scan"),{},ui::text(saving?"Barelief scan (*.brscan)":"Barelief scans (*.brscan *.json)"));
         chooser.setObjectName("musicScanFileDialog");chooser.setAcceptMode(saving?QFileDialog::AcceptSave:QFileDialog::AcceptOpen);
         if(saving)chooser.setDefaultSuffix("brscan");
@@ -1392,6 +1403,7 @@ struct MusicAnalysisDialog::State {
         if(curve_ready && active_profile().curve)compare_fits();
     }
     void install_scan(ProfileDocument candidate){
+        complete_scan_collection.clear();
         install_profile(std::move(candidate),{});curve_ready=false;
         restoring_controls=true;gain_mode->setCurrentIndex(1);maximum->setValue(10000);restoring_controls=false;
         reset_curve_source();set_mode(Mode::Results);
@@ -1476,6 +1488,11 @@ bool MusicAnalysisDialog::load_profile_from(const QString& path,QString& error) 
     return true;
 }
 bool MusicAnalysisDialog::save_scan_to(const QString& path,QString& error) const {
+    if(!state_->complete_scan_collection.isEmpty()){
+        error=QStringLiteral("The completed corpus is stored at %1; cannot save only its last batch as a scan.")
+              .arg(state_->complete_scan_collection);
+        return false;
+    }
     if(!state_->has_profile || state_->future.valid()){error=ui::text("No completed scan to save");return false;}
     if(!state_->services.save_scan){error=ui::text("Analysis service unavailable");return false;}
     const auto saved=state_->services.save_scan(path,state_->document,error);
