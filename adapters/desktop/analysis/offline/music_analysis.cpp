@@ -232,6 +232,7 @@ public:
     bool run(const QString& path) {
         if(!prepare_decoder(path) || !prepare_spectrum() || !prepare_cadence() || !prepare_preview(path))return false;
         if(!read_stream() || !drain() || cancel_.load())return false;
+        if(!written_)return fail("Decoded audio contains no PCM samples");
         // Only complete cadence deadlines contribute, exactly as the live Window.
         // EOF padding is solely a resampler drain and never creates an extra STFT frame.
         finish_statistics();finish_preview();return true;
@@ -287,12 +288,16 @@ class AnalysisBatch {
     const std::atomic_bool& cancel_;
     const AnalysisServices::Progress& progress_;
     std::vector<SpectrogramPreview> previews_;
+    bool measurements_only_=false;
     std::vector<CompositionStatistics> statistics_;
     std::vector<QString> errors_;
     std::atomic_size_t next_{0},done_{0};
     std::mutex callback_mutex_;
     void analyze(std::size_t index) {
-        try{analyze_track(files_[qsizetype(index)],options_,cancel_,statistics_[index],&previews_[index],errors_[index]);}
+        // Full-track time/frequency previews are not part of measurement-only
+        // corpus scans. Compute them separately on demand for a selected track.
+        auto* preview=measurements_only_?nullptr:&previews_[index];
+        try{analyze_track(files_[qsizetype(index)],options_,cancel_,statistics_[index],preview,errors_[index]);}
         catch(const std::exception& error){errors_[index]=QString::fromUtf8(error.what());}
         std::lock_guard lock(callback_mutex_);const auto completed=done_.fetch_add(1)+1;
         if(progress_)progress_(completed,std::size_t(files_.size()));
@@ -308,7 +313,8 @@ class AnalysisBatch {
         for(std::size_t i=0;i<statistics_.size();++i){
             if(!errors_[i].isEmpty()){result.errors.append(files_[qsizetype(i)]+": "+errors_[i]);continue;}
             result.audio_seconds+=double(statistics_[i].samples)/measurement_rate(statistics_[i],options_.compatibility.sample_rate);
-            valid.push_back(std::move(statistics_[i]));result.document.previews.push_back(std::move(previews_[i]));
+            valid.push_back(std::move(statistics_[i]));
+            if(!measurements_only_)result.document.previews.push_back(std::move(previews_[i]));
         }
         return valid;
     }
@@ -323,8 +329,11 @@ class AnalysisBatch {
             {"failed_count",int(result.errors.size())},{"audio_seconds",result.audio_seconds},{"errors",failures}};
     }
 public:
-    AnalysisBatch(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,const AnalysisServices::Progress& progress):
-        files_(files),options_(options),cancel_(cancel),progress_(progress),previews_(std::size_t(files.size())),statistics_(std::size_t(files.size())),errors_(std::size_t(files.size())){}
+    AnalysisBatch(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,
+                  const AnalysisServices::Progress& progress,bool measurements_only):
+        files_(files),options_(options),cancel_(cancel),progress_(progress),
+        previews_(measurements_only?0:std::size_t(files.size())),measurements_only_(measurements_only),
+        statistics_(std::size_t(files.size())),errors_(std::size_t(files.size())){}
     void run() {
         std::vector<std::jthread> workers;
         for(unsigned i=0;i<std::min<unsigned>(options_.workers,unsigned(files_.size()));++i)workers.emplace_back([this]{work();});
@@ -348,7 +357,7 @@ public:
 };
 void run_scan_batch(const QStringList& files,const AnalysisOptions& options,const std::atomic_bool& cancel,
     const AnalysisServices::Progress& progress,AnalysisResult& result,bool measurements_only=true) {
-    QElapsedTimer timer;timer.start();AnalysisBatch batch(files,options,cancel,progress);batch.run();
+    QElapsedTimer timer;timer.start();AnalysisBatch batch(files,options,cancel,progress,measurements_only);batch.run();
     result.cancelled=cancel.load();result.wall_seconds=timer.nsecsElapsed()/1e9;
     if(!result.cancelled){
         if(measurements_only)batch.finish_scan(result);else batch.finish(result);
@@ -422,6 +431,12 @@ AnalysisResult scan_music_in_parts(
             combined.errors.append(part.errors);
             completed=false;break;
         }
+        // Previews are a separate UI derivative, not scientific bin statistics.
+        // Keeping thousands in the scan archive can reject otherwise valid
+        // measurements when decoder duration estimates differ from actual PCM.
+        // A selected-track preview can be rebuilt on demand from its source.
+        part.document.previews.clear();
+        part.preview={};
         QString error;
         if(!save(destination,part.document,error)){
             combined.errors.append(QStringLiteral("Cannot save scan part %1: %2").arg(name,error));

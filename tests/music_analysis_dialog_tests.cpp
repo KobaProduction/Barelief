@@ -15,6 +15,7 @@
 #include <QStackedWidget>
 #include <QLabel>
 #include <QListWidget>
+#include <QScrollBar>
 #include <QLineEdit>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -227,20 +228,22 @@ static int large_folder_display_and_start(QApplication& app,const QTemporaryDir&
     if(!file_dialog_seen || !confirmed || enumerations!=1)return failure(62,__LINE__);
     auto* list=dialog.findChild<QListWidget*>("musicFiles");
     auto* count=dialog.findChild<QLabel*>("musicFileCount");
-    auto* page=dialog.findChild<QLabel*>("musicFilesPage");
-    auto* next=dialog.findChild<QPushButton*>("musicFilesNext");
-    auto* prev=dialog.findChild<QPushButton*>("musicFilesPrevious");
-    if(!list||!count||!page||!next||!prev ||
-       list->count()!=512 || !count->text().contains("106574") ||
-       !page->text().contains("512") || !next->isEnabled() ||
+    if(!list || !count || list->count()!=106574 ||
+       !count->text().contains("106574") ||
        list->item(0)->text()!=fake_paths[0] ||
-       list->item(511)->text()!=fake_paths[511])return failure(63,__LINE__);
-    next->click();app.processEvents();
-    if(list->count()!=512 || list->item(0)->text()!=fake_paths[512] ||
-       !prev->isEnabled())return failure(64,__LINE__);
-    prev->click();app.processEvents();
-    if(list->item(0)->text()!=fake_paths[0])return failure(65,__LINE__);
-
+       list->item(511)->text()!=fake_paths[511] ||
+       list->item(106573)->text()!=fake_paths[106573])
+        return failure(63,__LINE__);
+    // A normal Qt item view must be scrollable all the way to the last track.
+    list->scrollToItem(list->item(106573));
+    app.processEvents();
+    if(!list->verticalScrollBar() ||
+       list->verticalScrollBar()->value()!=list->verticalScrollBar()->maximum())
+        return failure(64,__LINE__);
+    list->scrollToTop();
+    app.processEvents();
+    if(list->verticalScrollBar()->value()!=list->verticalScrollBar()->minimum())
+        return failure(65,__LINE__);
     int unexpected_dialogs=0;
     QTimer refusal;
     QObject::connect(&refusal,&QTimer::timeout,&dialog,[&]{

@@ -204,12 +204,8 @@ struct MusicAnalysisDialog::State {
     AnalysisServices services;
     std::optional<ProfileReadDiagnostic> profile_load_diagnostic;
     AnalysisOptions baseline_options;
-    QStringList selected_paths; // Entire corpus remains outside the Qt item widget.
+    QStringList selected_paths;
     QString input_folder;
-    qsizetype file_page_offset=0;
-    static constexpr qsizetype file_page_size=512;
-    QPushButton *file_previous=nullptr,*file_next=nullptr;
-    QLabel* file_page_label=nullptr;
     MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum,*gain_mode;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *minimum,*maximum,*reference,*floor;
     QPushButton *run,*cancel,*save,*load,*add,*folder,*clear,*apply,*reload_targets,*new_scan,*show_results;QLabel *status,*average,*file_count,*result_summary,*preview_title,*dc,*mode_title,*scan_summary,*memory;QStackedWidget* pages;QProgressBar* progress;QTableWidget *statistics;QTableView* frequencies;MusicFrequencyModel* frequency_model;Curve *mean,*gains,*track_mean;Spectrogram* image;QCheckBox* normalized,*compensate;QTimer* timer;
     QComboBox* target;MusicAnalysisDialog::Targets read_targets;MusicAnalysisDialog::Apply apply_profile;std::vector<FrequencyProfileTarget> targets;
@@ -368,13 +364,6 @@ struct MusicAnalysisDialog::State {
     void update_file_count(){
         const auto total=selected_paths.empty()?qsizetype(files->count()):selected_paths.size();
         file_count->setText(ui::text("Files in list: %1").arg(total));
-        if(file_page_label){
-            const auto first=total?file_page_offset+1:0;
-            const auto last=selected_paths.empty()?total:std::min(total,file_page_offset+file_page_size);
-            file_page_label->setText(QStringLiteral("%1?%2 / %3").arg(first).arg(last).arg(total));
-            file_previous->setEnabled(file_page_offset>0);
-            file_next->setEnabled(file_page_offset+file_page_size<total);
-        }
         update_memory();
     }
     void collect_cadence(dsp_kernels::ProfileTraining& training)const {
@@ -570,7 +559,6 @@ struct MusicAnalysisDialog::State {
     void restore_source_files(){
         selected_paths.clear();
         input_folder.clear();
-        file_page_offset=0;
         files->clear();
         QStringList paths;
         for(const auto& track:document.profile.compositions)paths.append(QString::fromStdString(track.source));
@@ -623,42 +611,34 @@ struct MusicAnalysisDialog::State {
         target->setCurrentIndex(-1);
         for(std::size_t i=0;i<targets.size();++i)if(same_target_route(previous,targets[i])){target->setCurrentIndex(int(i));return;}
     }
-    void show_file_page(){
-        if(!files)return;
-        const auto count=selected_paths.size();
-        if(file_page_offset>=count)file_page_offset=count?((count-1)/file_page_size)*file_page_size:0;
-        {
-            // Do not block the model: QListView needs rowsInserted and rowsRemoved
-            // to compute actual item geometry and display the paths.
-            QSignalBlocker block(files);
-            files->setUpdatesEnabled(false);
-            files->clear();
-            files->addItems(selected_paths.mid(file_page_offset,file_page_size));
-            files->setUpdatesEnabled(true);
-        }
-        files->viewport()->update();
-        update_file_count();
-    }
     void append(const QStringList& paths){
-        QSet<QString> known;
-        known.reserve(selected_paths.size()+paths.size());
-        for(const auto& path:selected_paths)known.insert(path);
+        QSet<QString> seen;
+        seen.reserve(selected_paths.size()+paths.size());
+        for(const auto& path:selected_paths)seen.insert(path);
         QStringList additions;
         additions.reserve(paths.size());
         for(const auto& path:paths){
-            if(path.isEmpty() || known.contains(path))continue;
-            known.insert(path);
+            if(path.isEmpty()||seen.contains(path))continue;
+            seen.insert(path);
             additions.append(path);
         }
         if(additions.empty())return;
         selected_paths.append(additions);
-        show_file_page();
+        {
+            // One batch, genuine QListWidget model notifications. The
+            // built-in scrollbar can reach every file without pagination.
+            QSignalBlocker block(files);
+            files->setUpdatesEnabled(false);
+            files->addItems(additions);
+            files->setUpdatesEnabled(true);
+        }
+        update_file_count();
     }
     void clear_files(){
         selected_paths.clear();
         input_folder.clear();
-        file_page_offset=0;
-        show_file_page();
+        files->clear();
+        update_file_count();
     }
     QString scan_destination(const QStringList& paths)const{
         // Select the nearest ancestor containing the existing research scans,
@@ -754,28 +734,6 @@ struct MusicAnalysisDialog::State {
         files->setUniformItemSizes(true);
         files->setTextElideMode(Qt::ElideMiddle);
         layout->addWidget(files);
-        auto* navigation=new QHBoxLayout;
-        file_previous=new QPushButton(QStringLiteral("?"),owner);
-        file_previous->setObjectName("musicFilesPrevious");
-        file_next=new QPushButton(QStringLiteral("?"),owner);
-        file_next->setObjectName("musicFilesNext");
-        file_page_label=new QLabel(owner);
-        file_page_label->setObjectName("musicFilesPage");
-        navigation->addWidget(file_previous);
-        navigation->addWidget(file_next);
-        navigation->addWidget(file_page_label);
-        navigation->addStretch();
-        layout->addLayout(navigation);
-        QObject::connect(file_previous,&QPushButton::clicked,owner,[this]{
-            file_page_offset=std::max(qsizetype(0),file_page_offset-file_page_size);
-            show_file_page();
-        });
-        QObject::connect(file_next,&QPushButton::clicked,owner,[this]{
-            file_page_offset+=file_page_size;
-            show_file_page();
-        });
-        // The memory/analysis form is constructed later; the initial count
-        // is updated by build_file_events() after all dependent widgets exist.
     }
     void build_profile_storage_actions(){
         load=button("Load profile","musicLoadProfile",owner);save=button("Save profile","musicSaveProfile",owner);header->addWidget(load);header->addWidget(save);
