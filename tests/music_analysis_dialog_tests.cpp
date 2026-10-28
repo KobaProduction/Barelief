@@ -7,6 +7,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QDir>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QAbstractButton>
@@ -29,6 +30,7 @@
 #include <QTabWidget>
 #include <QWheelEvent>
 #include <QMouseEvent>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -171,9 +173,98 @@ static int theme_dialog(QApplication& app,const QTemporaryDir& directory,const Q
     dialog.findChild<QPushButton*>("musicNewScan")->click();run->click();dialog.findChild<QPushButton*>("musicCancel")->click();dialog.close();
     return 0;
 }
+
+static int large_folder_display_and_start(QApplication& app,const QTemporaryDir& directory) {
+    using namespace desktop_analysis::offline;
+    const auto input=directory.filePath("large-source");
+    if(!QDir().mkpath(input))return failure(61,__LINE__);
+    QStringList fake_paths;
+    fake_paths.reserve(106574);
+    for(int i=0;i<106574;++i)
+        fake_paths.append(input+QString("/audio-%1.mp3").arg(i,6,10,QLatin1Char('0')));
+    auto services=analysis_services();
+    int enumerations=0;
+    std::atomic_int analyses=0;
+    services.scan=[&](const QString&,bool recursive){
+        ++enumerations;
+        if(!recursive)return QStringList{};
+        return fake_paths;
+    };
+    services.scan_files=[&](const QStringList&,const AnalysisOptions&,
+                             const std::atomic_bool&,const AnalysisServices::Progress&){
+        ++analyses;
+        AnalysisResult failed;
+        failed.errors.append("Intentional test stop");
+        return failed;
+    };
+    core_app::MusicAnalysisDialog dialog({}, {},std::move(services));
+    dialog.resize(1600,900);dialog.show();app.processEvents();
+    bool file_dialog_seen=false,confirmed=false;
+    QTimer chooser_driver;
+    QObject::connect(&chooser_driver,&QTimer::timeout,&dialog,[&]{
+        for(auto* top:QApplication::topLevelWidgets()) {
+            auto* chooser=qobject_cast<QFileDialog*>(top);
+            if(!chooser||!chooser->isVisible())continue;
+            file_dialog_seen=true;
+            if(!confirmed) {
+                confirmed=true;
+                chooser->setDirectory(input);
+                chooser->selectFile(input);
+                QMetaObject::invokeMethod(chooser,"accept",Qt::QueuedConnection);
+            }
+        }
+    });
+    chooser_driver.start(10);
+    QTimer deadline;
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline,&QTimer::timeout,&dialog,[&]{
+        for(auto* top:QApplication::topLevelWidgets())
+            if(auto* chooser=qobject_cast<QFileDialog*>(top);chooser&&chooser->isVisible())chooser->reject();
+    });
+    deadline.start(4000);
+    dialog.findChild<QPushButton*>("musicAddFolder")->click();
+    chooser_driver.stop();deadline.stop();app.processEvents();
+    if(!file_dialog_seen || !confirmed || enumerations!=1)return failure(62,__LINE__);
+    auto* list=dialog.findChild<QListWidget*>("musicFiles");
+    auto* count=dialog.findChild<QLabel*>("musicFileCount");
+    auto* page=dialog.findChild<QLabel*>("musicFilesPage");
+    auto* next=dialog.findChild<QPushButton*>("musicFilesNext");
+    auto* prev=dialog.findChild<QPushButton*>("musicFilesPrevious");
+    if(!list||!count||!page||!next||!prev ||
+       list->count()!=512 || !count->text().contains("106574") ||
+       !page->text().contains("512") || !next->isEnabled() ||
+       list->item(0)->text()!=fake_paths[0] ||
+       list->item(511)->text()!=fake_paths[511])return failure(63,__LINE__);
+    next->click();app.processEvents();
+    if(list->count()!=512 || list->item(0)->text()!=fake_paths[512] ||
+       !prev->isEnabled())return failure(64,__LINE__);
+    prev->click();app.processEvents();
+    if(list->item(0)->text()!=fake_paths[0])return failure(65,__LINE__);
+
+    int unexpected_dialogs=0;
+    QTimer refusal;
+    QObject::connect(&refusal,&QTimer::timeout,&dialog,[&]{
+        for(auto* top:QApplication::topLevelWidgets())
+            if(auto* chooser=qobject_cast<QFileDialog*>(top);chooser&&chooser->isVisible()){
+                ++unexpected_dialogs;
+                chooser->reject();
+            }
+    });
+    refusal.start(5);
+    dialog.findChild<QPushButton*>("musicRun")->click();
+    QElapsedTimer elapsed;elapsed.start();
+    while(analyses.load()==0 && elapsed.elapsed()<3000){
+        app.processEvents();QThread::msleep(1);
+    }
+    app.processEvents();refusal.stop();
+    if(unexpected_dialogs!=0 || analyses.load()!=1)return failure(66,__LINE__);
+    dialog.close();
+    return 0;
+}
 int main(int argc,char** argv) {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);QApplication app(argc,argv);ui::Language::instance().set("en");
     QTemporaryDir directory;const auto path=fixture(directory.path());if(path.isEmpty())return failure(5,__LINE__);
     for(const auto* theme:{"light","dark"})if(const auto result=theme_dialog(app,directory,path,theme))return result;
+    if(const auto result=large_folder_display_and_start(app,directory))return result;
     std::cout<<"music_analysis_dialog_tests PASS (offscreen widget lifecycle only)\n";
 }

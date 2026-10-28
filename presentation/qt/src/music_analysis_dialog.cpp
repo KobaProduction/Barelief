@@ -205,6 +205,11 @@ struct MusicAnalysisDialog::State {
     std::optional<ProfileReadDiagnostic> profile_load_diagnostic;
     AnalysisOptions baseline_options;
     QStringList selected_paths; // Entire corpus remains outside the Qt item widget.
+    QString input_folder;
+    qsizetype file_page_offset=0;
+    static constexpr qsizetype file_page_size=512;
+    QPushButton *file_previous=nullptr,*file_next=nullptr;
+    QLabel* file_page_label=nullptr;
     MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum,*gain_mode;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *minimum,*maximum,*reference,*floor;
     QPushButton *run,*cancel,*save,*load,*add,*folder,*clear,*apply,*reload_targets,*new_scan,*show_results;QLabel *status,*average,*file_count,*result_summary,*preview_title,*dc,*mode_title,*scan_summary,*memory;QStackedWidget* pages;QProgressBar* progress;QTableWidget *statistics;QTableView* frequencies;MusicFrequencyModel* frequency_model;Curve *mean,*gains,*track_mean;Spectrogram* image;QCheckBox* normalized,*compensate;QTimer* timer;
     QComboBox* target;MusicAnalysisDialog::Targets read_targets;MusicAnalysisDialog::Apply apply_profile;std::vector<FrequencyProfileTarget> targets;
@@ -360,7 +365,18 @@ struct MusicAnalysisDialog::State {
         plot->reference=reference->value();plot->automatic=auto_axes->isChecked();
         plot->display_floor=axis_minimum->value();plot->display_ceiling=axis_maximum->value();
     }
-    void update_file_count(){file_count->setText(ui::text("Files in list: %1").arg(selected_paths.empty()?files->count():selected_paths.size()));update_memory();}
+    void update_file_count(){
+        const auto total=selected_paths.empty()?qsizetype(files->count()):selected_paths.size();
+        file_count->setText(ui::text("Files in list: %1").arg(total));
+        if(file_page_label){
+            const auto first=total?file_page_offset+1:0;
+            const auto last=selected_paths.empty()?total:std::min(total,file_page_offset+file_page_size);
+            file_page_label->setText(QStringLiteral("%1?%2 / %3").arg(first).arg(last).arg(total));
+            file_previous->setEnabled(file_page_offset>0);
+            file_next->setEnabled(file_page_offset+file_page_size<total);
+        }
+        update_memory();
+    }
     void collect_cadence(dsp_kernels::ProfileTraining& training)const {
         training.interval_numerator=cadence->currentIndex()==1?1:0;
         training.interval_denominator=std::uint64_t(analysis_rate->value());
@@ -553,6 +569,8 @@ struct MusicAnalysisDialog::State {
     }
     void restore_source_files(){
         selected_paths.clear();
+        input_folder.clear();
+        file_page_offset=0;
         files->clear();
         QStringList paths;
         for(const auto& track:document.profile.compositions)paths.append(QString::fromStdString(track.source));
@@ -605,6 +623,22 @@ struct MusicAnalysisDialog::State {
         target->setCurrentIndex(-1);
         for(std::size_t i=0;i<targets.size();++i)if(same_target_route(previous,targets[i])){target->setCurrentIndex(int(i));return;}
     }
+    void show_file_page(){
+        if(!files)return;
+        const auto count=selected_paths.size();
+        if(file_page_offset>=count)file_page_offset=count?((count-1)/file_page_size)*file_page_size:0;
+        {
+            // Do not block the model: QListView needs rowsInserted and rowsRemoved
+            // to compute actual item geometry and display the paths.
+            QSignalBlocker block(files);
+            files->setUpdatesEnabled(false);
+            files->clear();
+            files->addItems(selected_paths.mid(file_page_offset,file_page_size));
+            files->setUpdatesEnabled(true);
+        }
+        files->viewport()->update();
+        update_file_count();
+    }
     void append(const QStringList& paths){
         QSet<QString> known;
         known.reserve(selected_paths.size()+paths.size());
@@ -617,23 +651,26 @@ struct MusicAnalysisDialog::State {
             additions.append(path);
         }
         if(additions.empty())return;
-        const auto old_count=selected_paths.size();
         selected_paths.append(additions);
-        // QListWidget is only a bounded sample: a 100k-node widget exhausts Qt.
-        constexpr qsizetype display_limit=64;
-        if(old_count<display_limit){
-            const auto amount=std::min(display_limit-old_count,additions.size());
-            QSignalBlocker block(files->model());
-            files->setUpdatesEnabled(false);
-            files->addItems(additions.mid(0,amount));
-            files->setUpdatesEnabled(true);
-        }
-        update_file_count();
+        show_file_page();
     }
     void clear_files(){
         selected_paths.clear();
-        files->clear();
-        update_file_count();
+        input_folder.clear();
+        file_page_offset=0;
+        show_file_page();
+    }
+    QString scan_destination(const QStringList& paths)const{
+        // Select the nearest ancestor containing the existing research scans,
+        // otherwise put the new result beside the selected audio directory.
+        QDir dir(input_folder.isEmpty()?QFileInfo(paths.front()).absolutePath():input_folder);
+        const auto fallback=input_folder.isEmpty()?dir.absolutePath():QFileInfo(dir.absolutePath()).absolutePath();
+        for(int level=0;level<16;++level){
+            if(!dir.entryList({"*.brscan"},QDir::Files|QDir::NoDotAndDotDot).isEmpty())
+                return dir.absolutePath();
+            if(!dir.cdUp())break;
+        }
+        return fallback;
     }
     void start() {
         if(future.valid() || mode!=Mode::Setup)return;
@@ -644,8 +681,8 @@ struct MusicAnalysisDialog::State {
         QString batch_directory;
         if(paths.size()>128){
             if(!services.save_scan){set_status_message("Scan archive service unavailable");return;}
-            batch_directory=QFileDialog::getExistingDirectory(owner,ui::text("Select destination for the completed scan"));
-            if(batch_directory.isEmpty())return;
+            batch_directory=scan_destination(paths);
+            if(batch_directory.isEmpty()){set_status_message("Cannot resolve scan output folder");return;}
         }
         ++curve_revision;curve_pending=false;curve_debounce->stop();
         prepare_scan_progress(paths.size());
@@ -711,7 +748,34 @@ struct MusicAnalysisDialog::State {
 
     }
     void build_file_list(){
-        files=new QListWidget(owner);files->setObjectName("musicFiles");files->setMaximumHeight(100);layout->addWidget(files);
+        files=new QListWidget(owner);
+        files->setObjectName("musicFiles");
+        files->setMaximumHeight(130);
+        files->setUniformItemSizes(true);
+        files->setTextElideMode(Qt::ElideMiddle);
+        layout->addWidget(files);
+        auto* navigation=new QHBoxLayout;
+        file_previous=new QPushButton(QStringLiteral("?"),owner);
+        file_previous->setObjectName("musicFilesPrevious");
+        file_next=new QPushButton(QStringLiteral("?"),owner);
+        file_next->setObjectName("musicFilesNext");
+        file_page_label=new QLabel(owner);
+        file_page_label->setObjectName("musicFilesPage");
+        navigation->addWidget(file_previous);
+        navigation->addWidget(file_next);
+        navigation->addWidget(file_page_label);
+        navigation->addStretch();
+        layout->addLayout(navigation);
+        QObject::connect(file_previous,&QPushButton::clicked,owner,[this]{
+            file_page_offset=std::max(qsizetype(0),file_page_offset-file_page_size);
+            show_file_page();
+        });
+        QObject::connect(file_next,&QPushButton::clicked,owner,[this]{
+            file_page_offset+=file_page_size;
+            show_file_page();
+        });
+        // The memory/analysis form is constructed later; the initial count
+        // is updated by build_file_events() after all dependent widgets exist.
     }
     void build_profile_storage_actions(){
         load=button("Load profile","musicLoadProfile",owner);save=button("Save profile","musicSaveProfile",owner);header->addWidget(load);header->addWidget(save);
@@ -913,7 +977,14 @@ struct MusicAnalysisDialog::State {
         auto& s=*this;auto* dialog=owner;
     QObject::connect(s.files->model(),&QAbstractItemModel::rowsInserted,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::rowsRemoved,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::modelReset,dialog,[&s]{s.update_file_count();});s.update_file_count();
     QObject::connect(s.add,&QPushButton::clicked,dialog,[&s,dialog]{s.append(QFileDialog::getOpenFileNames(dialog,ui::text("Select audio files"),{},ui::text("Audio files (*.wav *.flac *.mp3)")));});
-    QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{auto path=QFileDialog::getExistingDirectory(dialog,ui::text("Select audio folder"));if(!path.isEmpty())s.append(s.services.scan?s.services.scan(path,true):QStringList{});});QObject::connect(s.clear,&QPushButton::clicked,dialog,[&s]{s.clear_files();});
+    QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{
+        auto path=QFileDialog::getExistingDirectory(dialog,ui::text("Select audio folder"));
+        if(path.isEmpty())return;
+        const auto found=s.services.scan?s.services.scan(path,true):QStringList{};
+        if(found.isEmpty())return;
+        s.input_folder=path;
+        s.append(found);
+    });QObject::connect(s.clear,&QPushButton::clicked,dialog,[&s]{s.clear_files();});
 
     }
     void update_fft_geometry(const QString& text){
