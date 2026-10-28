@@ -667,8 +667,8 @@ struct MusicAnalysisDialog::State {
     void accept_analysis_result(AnalysisResult result){
         if(result.success){document=std::move(result.document);preview=std::move(result.preview);has_profile=true;restore_quiet_level();reset_curve_source();refresh();
             if(!result.batch_directory.isEmpty())
-                status->setText(QStringLiteral("Saved %1 scan parts for %2 requested tracks in %3. Results view shows only the last part; keep all .brscan files for corpus processing.")
-                    .arg(result.saved_part_count).arg(result.requested_track_count).arg(result.batch_directory));
+                status->setText(QStringLiteral("Available %1 scan parts (%2 reused) for %3 requested tracks in %4. Results view shows only the last part; keep all .brscan files for corpus processing.")
+                    .arg(result.saved_part_count).arg(result.reused_part_count).arg(result.requested_track_count).arg(result.batch_directory));
             else status->setText(ui::text("Analysis complete: %1 s audio / %2 s processing (%3?)").arg(result.audio_seconds,0,'f',2).arg(result.wall_seconds,0,'f',3).arg(result.audio_seconds/std::max(.000001,result.wall_seconds),0,'f',1));
         }else status->setText(result.cancelled?ui::text("Analysis cancelled"):ui::text("Analysis failed"));
         if(result.cancelled && result.saved_part_count)

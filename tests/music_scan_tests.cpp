@@ -84,6 +84,18 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
             composition.source=path.toStdString();
             result.document.profile.compositions.push_back(std::move(composition));
         }
+        result.document.preserved["analysis_run"]=QJsonObject{
+            {"requested_count",int(batch.size())},
+            {"processed_count",int(batch.size())},
+            {"failed_count",0},
+            {"audio_seconds",1.},
+            {"errors",QJsonArray{}}
+        };
+        result.document.preserved["scanner"]=QJsonObject{
+            {"resample_input",false},{"hop",double(options().training.hop)},
+            {"interval_numerator",double(options().training.interval_numerator)},
+            {"interval_denominator",double(options().training.interval_denominator)}
+        };
         if(progress)progress(std::size_t(batch.size()),std::size_t(batch.size()));
         return result;
     };
@@ -105,8 +117,17 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
         assert(loaded.profile.compositions.size()==(part==3?1:3));
         assert(loaded.profile.compositions.front().source==paths[(part-1)*3].toStdString());
     }
-    const auto existing=scan_music_in_parts(paths,options(),stop,{},scan,save,output,3);
-    assert(!existing.success && existing.saved_part_count==0 && invocations==3 && !existing.errors.empty());
+    progress_calls.clear();
+    const auto existing=scan_music_in_parts(paths,options(),stop,
+        [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
+        scan,save,output,3);
+    assert(existing.success && existing.saved_part_count==3 && existing.reused_part_count==3);
+    assert(invocations==3 && existing.errors.empty() && progress_calls==std::vector<std::size_t>({3,6,7}));
+    auto mismatched=paths;
+    mismatched[0]=QStringLiteral("different_source.mp3");
+    const auto rejected=scan_music_in_parts(mismatched,options(),stop,{},scan,save,output,3);
+    assert(!rejected.success && rejected.saved_part_count==0 && invocations==3 &&
+           !rejected.errors.empty());
 }
 void silence(const QString& path) {
     const auto o=options();std::atomic_bool stop=false;const auto scan=scan_music_files({path},o,stop);assert(scan.success);

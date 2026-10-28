@@ -24,6 +24,7 @@ struct AnalysisResult {
     double wall_seconds=0, audio_seconds=0;
     QString batch_directory;
     std::size_t saved_part_count=0;
+    std::size_t reused_part_count=0;
     std::size_t requested_track_count=0;
 };
 struct PreviewResult {
