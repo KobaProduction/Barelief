@@ -6,6 +6,9 @@
 #include <signal_contracts/spectral_calibration.h>
 #include <speex_backend.h>
 #include <QDirIterator>
+#include <QJsonDocument>
+#include <QSaveFile>
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QElapsedTimer>
@@ -375,95 +378,61 @@ AnalysisResult scan_music_in_parts(
     const decltype(AnalysisServices::save_scan)& save, const QString& output_directory,
     qsizetype tracks_per_part) {
     AnalysisResult combined;
-    combined.batch_directory=output_directory;
     combined.requested_track_count=std::size_t(files.size());
     if(files.isEmpty() || output_directory.isEmpty() || !scan || !save || tracks_per_part<=0 ||
        !QDir(output_directory).exists()){
         combined.errors.append("Invalid folder or scan archive service");
         return combined;
     }
-    const QDir output(output_directory);
+    QDir output(output_directory);
+    // A failed process cannot clean up its temporary data. The next start
+    // removes only staging directories created by this scanner.
+    const auto stale=output.entryInfoList({".barelief-scan-incomplete-*"},
+        QDir::Dirs|QDir::Hidden|QDir::NoDotAndDotDot);
+    for(const auto& entry:stale)
+        if(!QDir(entry.absoluteFilePath()).removeRecursively()){
+            combined.errors.append(QStringLiteral("Cannot remove abandoned scan data: %1").arg(entry.absoluteFilePath()));
+            return combined;
+        }
+    const auto tag=QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
+    const auto temporary=output.filePath(QStringLiteral(".barelief-scan-incomplete-%1").arg(tag));
+    const auto final=output.filePath(QStringLiteral("music-scan-%1").arg(tag));
+    if(QFileInfo::exists(temporary) || QFileInfo::exists(final) || !output.mkdir(QFileInfo(temporary).fileName())){
+        combined.errors.append("Cannot prepare a clean scan directory");
+        return combined;
+    }
+    const QDir temporary_dir(temporary);
+    QJsonArray parts;
+    std::size_t failed_tracks=0;
+    std::size_t recorded_tracks=0;
+    bool completed=true;
     const auto total=std::size_t(files.size());
     for(qsizetype offset=0;offset<files.size();offset+=tracks_per_part){
-        if(cancel.load()){combined.cancelled=true;break;}
-        const auto part_number=qulonglong(offset/tracks_per_part+1);
-        const auto filename=QStringLiteral("music-scan-part-%1.brscan").arg(part_number,6,10,QLatin1Char('0'));
-        const auto destination=output.filePath(filename);
+        if(cancel.load()){combined.cancelled=true;completed=false;break;}
+        const auto number=qulonglong(offset/tracks_per_part+1);
+        const auto name=QStringLiteral("music-scan-part-%1.brscan").arg(number,6,10,QLatin1Char('0'));
+        const auto destination=temporary_dir.filePath(name);
         const auto chunk=files.mid(offset,tracks_per_part);
-        if(QFileInfo::exists(destination)){
-            ProfileDocument previous;
-            QString error;
-            if(!load_music_scan(destination,previous,error)){
-                combined.errors.append(QStringLiteral("Cannot validate existing scan part %1: %2").arg(destination,error));
-                break;
-            }
-            const auto run=previous.preserved.value("analysis_run").toObject();
-            const auto requested=run.value("requested_count").toInt(-1);
-            const auto processed=run.value("processed_count").toInt(-1);
-            const auto failed=run.value("failed_count").toInt(-1);
-            const auto errors=run.value("errors").toArray();
-            const auto scanner=previous.preserved.value("scanner").toObject();
-            const auto& observed=previous.profile.compositions;
-            const auto& prior=previous.profile.compatibility;
-            const auto& expected=options.compatibility;
-            bool valid=requested==chunk.size() && processed>=0 && failed>=0 &&
-                       processed+failed==requested && observed.size()==std::size_t(processed) &&
-                       errors.size()==failed && prior.fft_size==expected.fft_size &&
-                       prior.window==expected.window && prior.projection==expected.projection &&
-                       prior.channel_policy==expected.channel_policy &&
-                       prior.channel_index==expected.channel_index &&
-                       prior.include_dc==expected.include_dc &&
-                       prior.include_nyquist==expected.include_nyquist &&
-                       prior.coherent_gain==expected.coherent_gain &&
-                       prior.power_gain==expected.power_gain &&
-                       prior.reference==expected.reference &&
-                       prior.floor_db==expected.floor_db &&
-                       scanner.value("resample_input").isBool() &&
-                       scanner.value("resample_input").toBool()==options.resample_input &&
-                       scanner.value("hop").toDouble(-1)==double(options.training.hop) &&
-                       scanner.value("interval_numerator").toDouble(-1)==double(options.training.interval_numerator) &&
-                       scanner.value("interval_denominator").toDouble(-1)==double(options.training.interval_denominator) &&
-                       (!options.resample_input ||
-                        (prior.sample_rate==expected.sample_rate &&
-                         prior.resampler_mode==expected.resampler_mode &&
-                         prior.resampler_quality==expected.resampler_quality));
-            qsizetype cursor=0;
-            for(const auto& entry:observed){
-                const auto source=QString::fromStdString(entry.source);
-                while(cursor<chunk.size() && chunk[cursor]!=source)++cursor;
-                if(cursor>=chunk.size()){valid=false;break;}
-                ++cursor;
-            }
-            if(!valid){
-                combined.errors.append(QStringLiteral("Existing scan part does not match this scan and will not be overwritten: %1").arg(destination));
-                break;
-            }
-            // An existing validated part is a completed transaction. Skip it.
-            combined.success=true;
-            combined.audio_seconds+=run.value("audio_seconds").toDouble();
-            for(const auto& failure:errors)
-                if(failure.isString())combined.errors.append(failure.toString());
-            combined.document=std::move(previous);
-            ++combined.saved_part_count;
-            ++combined.reused_part_count;
-            if(progress)progress(std::size_t(offset)+std::size_t(chunk.size()),total);
-            continue;
-        }
         auto part=scan(chunk,options,cancel,[&progress,offset,total](std::size_t done,std::size_t){
             if(progress)progress(std::size_t(offset)+done,total);
         });
-        if(part.cancelled){combined.cancelled=true;break;}
+        if(part.cancelled){combined.cancelled=true;completed=false;break;}
         if(!part.success){
-            combined.errors.append(QStringLiteral("Batch %1 failed").arg(part_number));
+            combined.errors.append(QStringLiteral("Batch %1 failed").arg(number));
             combined.errors.append(part.errors);
-            break;
+            completed=false;break;
         }
         QString error;
         if(!save(destination,part.document,error)){
-            combined.errors.append(QStringLiteral("Cannot save %1: %2").arg(destination,error));
-            break;
+            combined.errors.append(QStringLiteral("Cannot save scan part %1: %2").arg(name,error));
+            completed=false;break;
         }
-        combined.success=true;
+        const auto successful=part.document.profile.compositions.size();
+        recorded_tracks+=successful;
+        failed_tracks+=part.errors.size();
+        parts.append(QJsonObject{{"name",name},{"requested_count",chunk.size()},
+                                 {"processed_count",int(successful)},
+                                 {"failed_count",int(part.errors.size())}});
         combined.audio_seconds+=part.audio_seconds;
         combined.wall_seconds+=part.wall_seconds;
         combined.errors.append(part.errors);
@@ -471,6 +440,36 @@ AnalysisResult scan_music_in_parts(
         combined.preview=std::move(part.preview);
         ++combined.saved_part_count;
     }
+    if(completed && !cancel.load()){
+        QJsonObject manifest{
+            {"kind","barelief.music_scan_collection"},{"version",1},
+            {"requested_count",int(files.size())},{"processed_count",int(recorded_tracks)},
+            {"failed_count",int(failed_tracks)},{"parts",parts},
+            {"fft_size",int(options.compatibility.fft_size)},
+            {"note","Complete scan collection; inner parts preserve original measurements"}
+        };
+        QSaveFile metadata(temporary_dir.filePath("manifest.json"));
+        const auto encoded=QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+        if(!metadata.open(QIODevice::WriteOnly) ||
+           metadata.write(encoded)!=encoded.size() || !metadata.commit()){
+            combined.errors.append("Cannot finalize scan collection manifest");
+            completed=false;
+        }else if(!output.rename(QFileInfo(temporary).fileName(),QFileInfo(final).fileName())){
+            combined.errors.append("Cannot commit completed scan directory");
+            completed=false;
+        }
+    }else completed=false;
+    if(!completed){
+        QDir(temporary).removeRecursively();
+        combined.success=false;
+        combined.document={};
+        combined.preview={};
+        combined.saved_part_count=0;
+        combined.batch_directory.clear();
+        return combined;
+    }
+    combined.success=true;
+    combined.batch_directory=final;
     return combined;
 }
 }

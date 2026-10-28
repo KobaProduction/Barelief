@@ -104,30 +104,68 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
     };
     const auto output=directory+"/parts";
     assert(QDir().mkpath(output));
+    // Simulate abandoned data left by a previous hard crash.
+    const auto stale=output+"/.barelief-scan-incomplete-obsolete";
+    assert(QDir().mkpath(stale));
+    QFile orphan(stale+"/orphan.tmp");
+    assert(orphan.open(QIODevice::WriteOnly));
+    orphan.write("garbage");orphan.close();
+
     auto result=scan_music_in_parts(paths,options(),stop,
         [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
         scan,save,output,3);
     assert(result.success && result.saved_part_count==3 && result.requested_track_count==7);
     assert(result.errors.empty() && invocations==3 && progress_calls==std::vector<std::size_t>({3,6,7}));
+    assert(!QFileInfo::exists(stale));
+    const auto finalized=result.batch_directory;
+    assert(QFileInfo(finalized).isDir());
+    assert(QDir(finalized).entryList({"music-scan-part-*.brscan"},QDir::Files).size()==3);
+    QFile metadata(finalized+"/manifest.json");
+    assert(metadata.open(QIODevice::ReadOnly));
+    const auto json=QJsonDocument::fromJson(metadata.readAll()).object();
+    assert(json.value("requested_count").toInt()==7 &&
+           json.value("processed_count").toInt()==7 &&
+           json.value("parts").toArray().size()==3);
     for(int part=1;part<=3;++part){
-        const auto path=output+QString("/music-scan-part-%1.brscan").arg(part,6,10,QLatin1Char('0'));
+        const auto path=finalized+QString("/music-scan-part-%1.brscan").arg(part,6,10,QLatin1Char('0'));
         assert(QFileInfo::exists(path));
         ProfileDocument loaded;QString error;
         assert(load_music_scan(path,loaded,error));
         assert(loaded.profile.compositions.size()==(part==3?1:3));
         assert(loaded.profile.compositions.front().source==paths[(part-1)*3].toStdString());
     }
+    // Re-running performs fresh analysis; old output is not used or overwritten.
     progress_calls.clear();
-    const auto existing=scan_music_in_parts(paths,options(),stop,
+    const auto repeated=scan_music_in_parts(paths,options(),stop,
         [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
         scan,save,output,3);
-    assert(existing.success && existing.saved_part_count==3 && existing.reused_part_count==3);
-    assert(invocations==3 && existing.errors.empty() && progress_calls==std::vector<std::size_t>({3,6,7}));
-    auto mismatched=paths;
-    mismatched[0]=QStringLiteral("different_source.mp3");
-    const auto rejected=scan_music_in_parts(mismatched,options(),stop,{},scan,save,output,3);
-    assert(!rejected.success && rejected.saved_part_count==0 && invocations==3 &&
-           !rejected.errors.empty());
+    assert(repeated.success && repeated.saved_part_count==3 && invocations==6);
+    assert(repeated.batch_directory!=finalized && progress_calls==std::vector<std::size_t>({3,6,7}));
+    assert(QFileInfo(finalized).isDir() && QFileInfo(repeated.batch_directory).isDir());
+    // A fatal error mid-run must leave no partial parts or committed collection.
+    const auto fail_dir=directory+"/failure";
+    assert(QDir().mkpath(fail_dir));
+    int calls=0;
+    const decltype(AnalysisServices::scan_files) broken=
+        [&](const QStringList& batch,const AnalysisOptions& opts,const std::atomic_bool& stopped,
+            const AnalysisServices::Progress& update)->AnalysisResult{
+            ++calls;
+            if(calls==2){AnalysisResult failure;failure.errors.append("Decoder fatal");return failure;}
+            return scan(batch,opts,stopped,update);
+        };
+    const auto failed=scan_music_in_parts(paths,options(),stop,{},broken,save,fail_dir,3);
+    assert(!failed.success && failed.saved_part_count==0 && !failed.errors.empty());
+    assert(QDir(fail_dir).entryList(QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden).empty());
+    // Cancellation cleans temporary output as well.
+    const auto cancel_dir=directory+"/cancelled";
+    assert(QDir().mkpath(cancel_dir));
+    std::atomic_bool aborted=false;
+    const auto cancelled=scan_music_in_parts(paths,options(),aborted,
+        [&](std::size_t n,std::size_t){if(n==3)aborted.store(true);},
+        scan,save,cancel_dir,3);
+    assert(cancelled.cancelled && !cancelled.success && cancelled.saved_part_count==0);
+    assert(QDir(cancel_dir).entryList(QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden).empty());
+
 }
 void silence(const QString& path) {
     const auto o=options();std::atomic_bool stop=false;const auto scan=scan_music_files({path},o,stop);assert(scan.success);

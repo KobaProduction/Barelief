@@ -204,6 +204,7 @@ struct MusicAnalysisDialog::State {
     AnalysisServices services;
     std::optional<ProfileReadDiagnostic> profile_load_diagnostic;
     AnalysisOptions baseline_options;
+    QStringList selected_paths; // Entire corpus remains outside the Qt item widget.
     MusicAnalysisDialog* owner;QListWidget *files,*result_files;QComboBox *rate,*size,*window,*spectrum,*gain_mode;QSpinBox *workers,*hop,*smooth,*preview_rows,*preview_bands;QDoubleSpinBox *minimum,*maximum,*reference,*floor;
     QPushButton *run,*cancel,*save,*load,*add,*folder,*clear,*apply,*reload_targets,*new_scan,*show_results;QLabel *status,*average,*file_count,*result_summary,*preview_title,*dc,*mode_title,*scan_summary,*memory;QStackedWidget* pages;QProgressBar* progress;QTableWidget *statistics;QTableView* frequencies;MusicFrequencyModel* frequency_model;Curve *mean,*gains,*track_mean;Spectrogram* image;QCheckBox* normalized,*compensate;QTimer* timer;
     QComboBox* target;MusicAnalysisDialog::Targets read_targets;MusicAnalysisDialog::Apply apply_profile;std::vector<FrequencyProfileTarget> targets;
@@ -359,7 +360,7 @@ struct MusicAnalysisDialog::State {
         plot->reference=reference->value();plot->automatic=auto_axes->isChecked();
         plot->display_floor=axis_minimum->value();plot->display_ceiling=axis_maximum->value();
     }
-    void update_file_count(){file_count->setText(ui::text("Files in list: %1").arg(files->count()));update_memory();}
+    void update_file_count(){file_count->setText(ui::text("Files in list: %1").arg(selected_paths.empty()?files->count():selected_paths.size()));update_memory();}
     void collect_cadence(dsp_kernels::ProfileTraining& training)const {
         training.interval_numerator=cadence->currentIndex()==1?1:0;
         training.interval_denominator=std::uint64_t(analysis_rate->value());
@@ -551,7 +552,9 @@ struct MusicAnalysisDialog::State {
         minimum->setEnabled(mode==Mode::Setup&&gain_mode->currentIndex()==0);
     }
     void restore_source_files(){
-        QSignalBlocker block(files);files->clear();QStringList paths;
+        selected_paths.clear();
+        files->clear();
+        QStringList paths;
         for(const auto& track:document.profile.compositions)paths.append(QString::fromStdString(track.source));
         append(paths);
     }
@@ -603,22 +606,33 @@ struct MusicAnalysisDialog::State {
         for(std::size_t i=0;i<targets.size();++i)if(same_target_route(previous,targets[i])){target->setCurrentIndex(int(i));return;}
     }
     void append(const QStringList& paths){
-        // Folder discovery may return over 100,000 tracks. Avoid quadratic
-        // QListWidget::findItems() searches and per-item repaints/signals.
-        QSet<QString> seen;
-        seen.reserve(files->count()+paths.size());
-        for(int i=0;i<files->count();++i)seen.insert(files->item(i)->text());
+        QSet<QString> known;
+        known.reserve(selected_paths.size()+paths.size());
+        for(const auto& path:selected_paths)known.insert(path);
         QStringList additions;
         additions.reserve(paths.size());
-        for(const auto& path:paths)if(!path.isEmpty()&&!seen.contains(path)){
-            seen.insert(path);
+        for(const auto& path:paths){
+            if(path.isEmpty() || known.contains(path))continue;
+            known.insert(path);
             additions.append(path);
         }
         if(additions.empty())return;
-        QSignalBlocker block(files->model());
-        files->setUpdatesEnabled(false);
-        files->addItems(additions);
-        files->setUpdatesEnabled(true);
+        const auto old_count=selected_paths.size();
+        selected_paths.append(additions);
+        // QListWidget is only a bounded sample: a 100k-node widget exhausts Qt.
+        constexpr qsizetype display_limit=64;
+        if(old_count<display_limit){
+            const auto amount=std::min(display_limit-old_count,additions.size());
+            QSignalBlocker block(files->model());
+            files->setUpdatesEnabled(false);
+            files->addItems(additions.mid(0,amount));
+            files->setUpdatesEnabled(true);
+        }
+        update_file_count();
+    }
+    void clear_files(){
+        selected_paths.clear();
+        files->clear();
         update_file_count();
     }
     void start() {
@@ -630,7 +644,7 @@ struct MusicAnalysisDialog::State {
         QString batch_directory;
         if(paths.size()>128){
             if(!services.save_scan){set_status_message("Scan archive service unavailable");return;}
-            batch_directory=QFileDialog::getExistingDirectory(owner,ui::text("Select folder for scan parts"));
+            batch_directory=QFileDialog::getExistingDirectory(owner,ui::text("Select destination for the completed scan"));
             if(batch_directory.isEmpty())return;
         }
         ++curve_revision;curve_pending=false;curve_debounce->stop();
@@ -638,10 +652,12 @@ struct MusicAnalysisDialog::State {
         launch_scan(std::move(paths),std::move(batch_directory));
     }
     QStringList scan_paths()const {
-        QStringList paths;for(int i=0;i<files->count();++i)paths.append(files->item(i)->text());
-        // The selected composition receives the single bounded full-track preview.
-        if(files->currentRow()>0)paths.move(files->currentRow(),0);
-        return paths;
+        // Application paths are separate from the bounded widget. Tests and
+        // integrations that inject a few widget items remain compatible.
+        if(!selected_paths.empty())return selected_paths;
+        QStringList injected;
+        for(int i=0;i<files->count();++i)injected.append(files->item(i)->text());
+        return injected;
     }
     void prepare_scan_progress(qsizetype count){
         cancelled->store(false);completed->store(0);progress->setRange(0,int(count));progress->setValue(0);set_busy(true);set_status_message("Analyzing audio files");
@@ -667,13 +683,14 @@ struct MusicAnalysisDialog::State {
     void accept_analysis_result(AnalysisResult result){
         if(result.success){document=std::move(result.document);preview=std::move(result.preview);has_profile=true;restore_quiet_level();reset_curve_source();refresh();
             if(!result.batch_directory.isEmpty())
-                status->setText(QStringLiteral("Available %1 scan parts (%2 reused) for %3 requested tracks in %4. Results view shows only the last part; keep all .brscan files for corpus processing.")
-                    .arg(result.saved_part_count).arg(result.reused_part_count).arg(result.requested_track_count).arg(result.batch_directory));
+                status->setText(QStringLiteral("Complete scan saved: %1 tracks, %2 parts, %3. Results view displays the last part only.")
+                    .arg(result.requested_track_count).arg(result.saved_part_count).arg(result.batch_directory));
             else status->setText(ui::text("Analysis complete: %1 s audio / %2 s processing (%3?)").arg(result.audio_seconds,0,'f',2).arg(result.wall_seconds,0,'f',3).arg(result.audio_seconds/std::max(.000001,result.wall_seconds),0,'f',1));
         }else status->setText(result.cancelled?ui::text("Analysis cancelled"):ui::text("Analysis failed"));
-        if(result.cancelled && result.saved_part_count)
-            status->setText(status->text()+QStringLiteral("\nPartial archives saved: %1").arg(result.saved_part_count));
-        if(!result.errors.empty())status->setText(status->text()+"\n"+result.errors.join('\n'));
+        if(!result.errors.empty()){
+            const auto shown=result.errors.mid(0,10).join('\n');
+            status->setText(status->text()+QStringLiteral("\n%1 errors; first 10:\n").arg(result.errors.size())+shown);
+        }
     }
     void build_shell(){
         auto& s=*this;auto* dialog=owner;
@@ -866,7 +883,7 @@ struct MusicAnalysisDialog::State {
     }
     void configure_new_scan(){
         stop_preview();profile_load_diagnostic.reset();set_mode(State::Mode::Setup);
-        progress->setRange(0,std::max(1,files->count()));progress->setValue(0);
+        progress->setRange(0,std::max(qsizetype(1),selected_paths.size()));progress->setValue(0);
         set_status_message("Configure a new scan; previous results remain available.");
     }
     void build_preview_events(){
@@ -896,7 +913,7 @@ struct MusicAnalysisDialog::State {
         auto& s=*this;auto* dialog=owner;
     QObject::connect(s.files->model(),&QAbstractItemModel::rowsInserted,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::rowsRemoved,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::modelReset,dialog,[&s]{s.update_file_count();});s.update_file_count();
     QObject::connect(s.add,&QPushButton::clicked,dialog,[&s,dialog]{s.append(QFileDialog::getOpenFileNames(dialog,ui::text("Select audio files"),{},ui::text("Audio files (*.wav *.flac *.mp3)")));});
-    QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{auto path=QFileDialog::getExistingDirectory(dialog,ui::text("Select audio folder"));if(!path.isEmpty())s.append(s.services.scan?s.services.scan(path,true):QStringList{});});QObject::connect(s.clear,&QPushButton::clicked,s.files,&QListWidget::clear);
+    QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{auto path=QFileDialog::getExistingDirectory(dialog,ui::text("Select audio folder"));if(!path.isEmpty())s.append(s.services.scan?s.services.scan(path,true):QStringList{});});QObject::connect(s.clear,&QPushButton::clicked,dialog,[&s]{s.clear_files();});
 
     }
     void update_fft_geometry(const QString& text){
