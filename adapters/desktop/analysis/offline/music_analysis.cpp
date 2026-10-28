@@ -6,6 +6,8 @@
 #include <signal_contracts/spectral_calibration.h>
 #include <speex_backend.h>
 #include <QDirIterator>
+#include <QDir>
+#include <QFileInfo>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <algorithm>
@@ -19,7 +21,7 @@ namespace desktop_analysis::offline {
 using namespace dsp_kernels;
 QStringList scan_audio_files(const QString& folder,bool recursive) {
     QStringList out;QDirIterator it(folder,{"*.wav","*.flac","*.mp3"},QDir::Files,recursive?QDirIterator::Subdirectories:QDirIterator::NoIteratorFlags);
-    while(it.hasNext()&&out.size()<4096)out.append(it.next());out.sort(Qt::CaseSensitive);return out;
+    while(it.hasNext())out.append(it.next());out.sort(Qt::CaseSensitive);return out;
 }
 namespace {
 double preview_band_gain(const std::vector<float>& gains,std::size_t band,std::size_t bands){
@@ -365,5 +367,55 @@ AnalysisResult scan_music_files(const QStringList& files,const AnalysisOptions& 
     if(!valid_analysis_options(files,options,error)){result.errors.append(error);return result;}
     run_scan_batch(files,options,cancel,progress,result);
     return result;
+}
+
+AnalysisResult scan_music_in_parts(
+    const QStringList& files, const AnalysisOptions& options, const std::atomic_bool& cancel,
+    const AnalysisServices::Progress& progress, const decltype(AnalysisServices::scan_files)& scan,
+    const decltype(AnalysisServices::save_scan)& save, const QString& output_directory,
+    qsizetype tracks_per_part) {
+    AnalysisResult combined;
+    combined.batch_directory=output_directory;
+    combined.requested_track_count=std::size_t(files.size());
+    if(files.isEmpty() || output_directory.isEmpty() || !scan || !save || tracks_per_part<=0 ||
+       !QDir(output_directory).exists()){
+        combined.errors.append("Invalid folder or scan archive service");
+        return combined;
+    }
+    const QDir output(output_directory);
+    const auto total=std::size_t(files.size());
+    for(qsizetype offset=0;offset<files.size();offset+=tracks_per_part){
+        if(cancel.load()){combined.cancelled=true;break;}
+        const auto part_number=qulonglong(offset/tracks_per_part+1);
+        const auto filename=QStringLiteral("music-scan-part-%1.brscan").arg(part_number,6,10,QLatin1Char('0'));
+        const auto destination=output.filePath(filename);
+        if(QFileInfo::exists(destination)){
+            combined.errors.append(QStringLiteral("Existing scan part not overwritten: %1").arg(destination));
+            break;
+        }
+        const auto chunk=files.mid(offset,tracks_per_part);
+        auto part=scan(chunk,options,cancel,[&progress,offset,total](std::size_t done,std::size_t){
+            if(progress)progress(std::size_t(offset)+done,total);
+        });
+        if(part.cancelled){combined.cancelled=true;break;}
+        if(!part.success){
+            combined.errors.append(QStringLiteral("Batch %1 failed").arg(part_number));
+            combined.errors.append(part.errors);
+            break;
+        }
+        QString error;
+        if(!save(destination,part.document,error)){
+            combined.errors.append(QStringLiteral("Cannot save %1: %2").arg(destination,error));
+            break;
+        }
+        combined.success=true;
+        combined.audio_seconds+=part.audio_seconds;
+        combined.wall_seconds+=part.wall_seconds;
+        combined.errors.append(part.errors);
+        combined.document=std::move(part.document);
+        combined.preview=std::move(part.preview);
+        ++combined.saved_part_count;
+    }
+    return combined;
 }
 }

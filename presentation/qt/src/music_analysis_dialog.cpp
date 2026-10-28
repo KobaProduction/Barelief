@@ -26,6 +26,8 @@
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QDir>
+#include <QFile>
 #include <QSaveFile>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -42,6 +44,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QSignalBlocker>
+#include <QSet>
 #include <QAbstractItemModel>
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
@@ -599,13 +602,40 @@ struct MusicAnalysisDialog::State {
         target->setCurrentIndex(-1);
         for(std::size_t i=0;i<targets.size();++i)if(same_target_route(previous,targets[i])){target->setCurrentIndex(int(i));return;}
     }
-    void append(QStringList paths){for(const auto& path:paths)if(files->findItems(path,Qt::MatchExactly).empty()&&files->count()<4096)files->addItem(path);}
+    void append(const QStringList& paths){
+        // Folder discovery may return over 100,000 tracks. Avoid quadratic
+        // QListWidget::findItems() searches and per-item repaints/signals.
+        QSet<QString> seen;
+        seen.reserve(files->count()+paths.size());
+        for(int i=0;i<files->count();++i)seen.insert(files->item(i)->text());
+        QStringList additions;
+        additions.reserve(paths.size());
+        for(const auto& path:paths)if(!path.isEmpty()&&!seen.contains(path)){
+            seen.insert(path);
+            additions.append(path);
+        }
+        if(additions.empty())return;
+        QSignalBlocker block(files->model());
+        files->setUpdatesEnabled(false);
+        files->addItems(additions);
+        files->setUpdatesEnabled(true);
+        update_file_count();
+    }
     void start() {
-        if(future.valid() || mode!=Mode::Setup)return;stop_preview();auto paths=scan_paths();
+        if(future.valid() || mode!=Mode::Setup)return;
+        stop_preview();
+        auto paths=scan_paths();
         if(paths.empty()){set_status_message("Select audio files first");return;}
         if(!services.scan_files&&!services.analyze_files){set_status_message("Analysis service unavailable");return;}
+        QString batch_directory;
+        if(paths.size()>128){
+            if(!services.save_scan){set_status_message("Scan archive service unavailable");return;}
+            batch_directory=QFileDialog::getExistingDirectory(owner,ui::text("Select folder for scan parts"));
+            if(batch_directory.isEmpty())return;
+        }
         ++curve_revision;curve_pending=false;curve_debounce->stop();
-        prepare_scan_progress(paths.size());launch_scan(std::move(paths));
+        prepare_scan_progress(paths.size());
+        launch_scan(std::move(paths),std::move(batch_directory));
     }
     QStringList scan_paths()const {
         QStringList paths;for(int i=0;i<files->count();++i)paths.append(files->item(i)->text());
@@ -616,9 +646,18 @@ struct MusicAnalysisDialog::State {
     void prepare_scan_progress(qsizetype count){
         cancelled->store(false);completed->store(0);progress->setRange(0,int(count));progress->setValue(0);set_busy(true);set_status_message("Analyzing audio files");
     }
-    void launch_scan(QStringList paths){
+    void launch_scan(QStringList paths,QString batch_directory={}){
         const auto opt=options();auto stop=cancelled;auto done=completed;
-        future=std::async(std::launch::async,[paths=std::move(paths),opt,stop,done,service=services.scan_files?services.scan_files:services.analyze_files]{return service(paths,opt,*stop,[done](auto n,auto){done->store(n);});});timer->start(50);
+        const auto service=services.scan_files?services.scan_files:services.analyze_files;
+        const auto save=services.save_scan;
+        future=std::async(std::launch::async,
+            [paths=std::move(paths),opt,stop,done,service,save,batch_directory=std::move(batch_directory)]{
+            if(batch_directory.isEmpty())
+                return service(paths,opt,*stop,[done](auto n,auto){done->store(n);});
+            return scan_music_in_parts(paths,opt,*stop,[done](auto n,auto){done->store(n);},
+                                       service,save,batch_directory);
+        });
+        timer->start(50);
     }
     void poll() {
         progress->setValue(int(completed->load()));if(!future.valid()||future.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return;
@@ -627,8 +666,13 @@ struct MusicAnalysisDialog::State {
     }
     void accept_analysis_result(AnalysisResult result){
         if(result.success){document=std::move(result.document);preview=std::move(result.preview);has_profile=true;restore_quiet_level();reset_curve_source();refresh();
-            status->setText(ui::text("Analysis complete: %1 s audio / %2 s processing (%3×)").arg(result.audio_seconds,0,'f',2).arg(result.wall_seconds,0,'f',3).arg(result.audio_seconds/std::max(.000001,result.wall_seconds),0,'f',1));}
-        else status->setText(result.cancelled?ui::text("Analysis cancelled"):ui::text("Analysis failed"));
+            if(!result.batch_directory.isEmpty())
+                status->setText(QStringLiteral("Saved %1 scan parts for %2 requested tracks in %3. Results view shows only the last part; keep all .brscan files for corpus processing.")
+                    .arg(result.saved_part_count).arg(result.requested_track_count).arg(result.batch_directory));
+            else status->setText(ui::text("Analysis complete: %1 s audio / %2 s processing (%3?)").arg(result.audio_seconds,0,'f',2).arg(result.wall_seconds,0,'f',3).arg(result.audio_seconds/std::max(.000001,result.wall_seconds),0,'f',1));
+        }else status->setText(result.cancelled?ui::text("Analysis cancelled"):ui::text("Analysis failed"));
+        if(result.cancelled && result.saved_part_count)
+            status->setText(status->text()+QStringLiteral("\nPartial archives saved: %1").arg(result.saved_part_count));
         if(!result.errors.empty())status->setText(status->text()+"\n"+result.errors.join('\n'));
     }
     void build_shell(){

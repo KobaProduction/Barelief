@@ -22,6 +22,9 @@ struct AnalysisResult {
     QStringList errors;
     bool cancelled=false, success=false;
     double wall_seconds=0, audio_seconds=0;
+    QString batch_directory;
+    std::size_t saved_part_count=0;
+    std::size_t requested_track_count=0;
 };
 struct PreviewResult {
     SpectrogramPreview preview;
@@ -52,4 +55,11 @@ struct AnalysisServices {
     std::function<CurveAnalysis(std::shared_ptr<const CurveCorpus>,
         const dsp_kernels::FrequencyCurveOptions&,std::shared_ptr<const CurveAnalysis>)> curves;
 };
+// Persists independent bounded scan archives; never materializes the entire
+// music corpus in one ProfileDocument. Completed archives remain valid on cancel.
+AnalysisResult scan_music_in_parts(
+    const QStringList&, const AnalysisOptions&, const std::atomic_bool&,
+    const AnalysisServices::Progress&, const decltype(AnalysisServices::scan_files)&,
+    const decltype(AnalysisServices::save_scan)&, const QString& output_directory,
+    qsizetype tracks_per_part=128);
 }

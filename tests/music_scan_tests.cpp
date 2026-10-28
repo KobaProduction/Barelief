@@ -1,6 +1,7 @@
 #include <offline/music_analysis.h>
 #include <dsp_kernels/frequency_measurements.h>
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -29,6 +30,22 @@ QString signal_file(const QString& directory,const QString& name,float amplitude
     const auto path=directory+"/"+name;QFile file(path);assert(file.open(QIODevice::WriteOnly));assert(file.write(bytes)==bytes.size());return path;
 }
 AnalysisOptions options(){AnalysisOptions o;o.compatibility.sample_rate=48000;o.compatibility.projection={dsp_kernels::SpectrumProjection::PeakAmplitude,true};o.preview_time_bins=16;o.preview_frequency_bins=32;return o;}
+void large_folder_enumeration(const QString& directory) {
+    const auto folder=directory+"/many-tracks";
+    assert(QDir().mkpath(folder+"/nested"));
+    constexpr int count=4121;
+    for(int i=0;i<count;++i){
+        const auto parent=i%2?folder:folder+"/nested";
+        const auto path=parent+QString("/track-%1.mp3").arg(i,5,10,QLatin1Char('0'));
+        QFile file(path);assert(file.open(QIODevice::WriteOnly));file.close();
+    }
+    const auto all=scan_audio_files(folder,true);
+    assert(all.size()==count);
+    assert(std::is_sorted(all.cbegin(),all.cend()));
+    const auto direct=scan_audio_files(folder,false);
+    assert(direct.size()==count/2);
+    assert(scan_audio_files(folder+"/missing",true).empty());
+}
 void retained_quiet_measurements(const QString& path) {
     auto o=options();std::atomic_bool stop=false;o.training.silence_rms=.01;
     const auto quiet=scan_music_files({path},o,stop);assert(quiet.success);
@@ -44,6 +61,52 @@ void retained_quiet_measurements(const QString& path) {
     assert(classified.mean_spectrum==t.mean_spectrum && classified.peak_spectrum==t.peak_spectrum);
     o.training.min_gain=std::numeric_limits<double>::quiet_NaN();o.training.max_gain=-1;
     assert(scan_music_files({path},o,stop).success);
+}
+void multi_part_archive_scan(const QString& sample_path,const QString& directory) {
+    std::atomic_bool initial_stop=false;
+    const auto seed=scan_music_files({sample_path},options(),initial_stop);
+    assert(seed.success);
+    const auto base=seed.document.profile.compositions.front();
+    QStringList paths;
+    for(int i=0;i<7;++i)paths.append(QStringLiteral("source_%1.mp3").arg(i));
+    std::atomic_bool stop=false;
+    std::vector<std::size_t> progress_calls;
+    int invocations=0;
+    const auto scan=[&](const QStringList& batch,const AnalysisOptions&,const std::atomic_bool&,
+                        const AnalysisServices::Progress& progress)->AnalysisResult {
+        ++invocations;
+        AnalysisResult result;
+        result.success=true;result.document=seed.document;
+        result.document.previews.clear();
+        result.document.profile.compositions.clear();
+        for(const auto& path:batch){
+            auto composition=base;
+            composition.source=path.toStdString();
+            result.document.profile.compositions.push_back(std::move(composition));
+        }
+        if(progress)progress(std::size_t(batch.size()),std::size_t(batch.size()));
+        return result;
+    };
+    const decltype(AnalysisServices::save_scan) save=[](const QString& path,const ProfileDocument& doc,QString& error) {
+        return save_music_scan(path,doc,error);
+    };
+    const auto output=directory+"/parts";
+    assert(QDir().mkpath(output));
+    auto result=scan_music_in_parts(paths,options(),stop,
+        [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
+        scan,save,output,3);
+    assert(result.success && result.saved_part_count==3 && result.requested_track_count==7);
+    assert(result.errors.empty() && invocations==3 && progress_calls==std::vector<std::size_t>({3,6,7}));
+    for(int part=1;part<=3;++part){
+        const auto path=output+QString("/music-scan-part-%1.brscan").arg(part,6,10,QLatin1Char('0'));
+        assert(QFileInfo::exists(path));
+        ProfileDocument loaded;QString error;
+        assert(load_music_scan(path,loaded,error));
+        assert(loaded.profile.compositions.size()==(part==3?1:3));
+        assert(loaded.profile.compositions.front().source==paths[(part-1)*3].toStdString());
+    }
+    const auto existing=scan_music_in_parts(paths,options(),stop,{},scan,save,output,3);
+    assert(!existing.success && existing.saved_part_count==0 && invocations==3 && !existing.errors.empty());
 }
 void silence(const QString& path) {
     const auto o=options();std::atomic_bool stop=false;const auto scan=scan_music_files({path},o,stop);assert(scan.success);
@@ -158,8 +221,8 @@ void compressed_formats() {
 }
 }
 int main(int argc,char** argv) {
-    QCoreApplication app(argc,argv);QTemporaryDir directory;assert(directory.isValid());
+    QCoreApplication app(argc,argv);QTemporaryDir directory;assert(directory.isValid());large_folder_enumeration(directory.path());
     const auto quiet=signal_file(directory.path(),"quiet.wav",1e-8f),zero=signal_file(directory.path(),"zero.wav",0);
-    retained_quiet_measurements(quiet);silence(zero);persistence(quiet,directory.path());malformed(quiet);compressed_formats();native_and_fir(directory.path());native_cadence_uses_track_clock(directory.path());quiet_bands_roundtrip(directory.path());rms_boundaries();
+    retained_quiet_measurements(quiet);multi_part_archive_scan(quiet,directory.path());silence(zero);persistence(quiet,directory.path());malformed(quiet);compressed_formats();native_and_fir(directory.path());native_cadence_uses_track_clock(directory.path());quiet_bands_roundtrip(directory.path());rms_boundaries();
     std::cout<<"music_scan_tests PASS\n";
 }
