@@ -642,7 +642,7 @@ struct MusicAnalysisDialog::State {
     void append(const QStringList& paths){
         QSet<QString> seen;
         seen.reserve(selected_paths.size()+paths.size());
-        for(const auto& path:selected_paths)seen.insert(path);
+        for(const auto& path:std::as_const(selected_paths))seen.insert(path);
         QStringList additions;
         additions.reserve(paths.size());
         for(const auto& path:paths){
