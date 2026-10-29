@@ -32,6 +32,7 @@
 #include <QTabWidget>
 #include <QWheelEvent>
 #include <QMouseEvent>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -324,13 +325,60 @@ static int completed_collection_disables_last_batch_save(
         return failure(73,__LINE__);
     const auto scan_parent=QDir(directory.path()).entryList({"*.brscan"},QDir::Files).isEmpty()
                            ?input:directory.path();
-    const auto collections=QDir(scan_parent).entryList({"music-scan-*"},QDir::Dirs|QDir::NoDotAndDotDot);
+    const auto collections=QDir(scan_parent).entryList({"music-scan-*.brscan"},QDir::Files|QDir::NoDotAndDotDot);
     if(collections.size()!=1)return failure(74,__LINE__);
-    const auto folder=scan_parent+"/"+collections.front();
-    if(QDir(folder).entryList({"music-scan-part-*.brscan"},QDir::Files).size()!=2)
+    const auto archive=scan_parent+"/"+collections.front();
+    desktop_analysis::offline::MusicScanCollectionInfo summary;
+    if(!desktop_analysis::offline::inspect_music_scan(archive,summary,error) ||
+       summary.part_count!=2 || summary.requested_count!=129)
         return failure(75,__LINE__);
     dialog.close();
     return 0;
+}
+static int loaded_corpus_builds_curve(const QTemporaryDir& directory) {
+    const auto source=qEnvironmentVariable("BARELIEF_UI_SCAN_SMOKE");
+    if(source.isEmpty())return 0;
+    auto services=analysis_services();
+    core_app::MusicAnalysisDialog dialog({}, {},std::move(services));
+    dialog.resize(1300,900);dialog.show();QApplication::processEvents();
+    QString error;
+    if(!dialog.load_scan_from(source,error)){
+        std::cerr<<"CORPUS_LOAD_FAILED "<<error.toStdString()<<'\n';
+        return failure(81,__LINE__);
+    }
+    desktop_analysis::offline::MusicScanCollectionInfo info;
+    if(!desktop_analysis::offline::inspect_music_scan(source,info,error))return failure(82,__LINE__);
+    const auto* summary=dialog.findChild<QLabel*>("musicScanSummary");
+    if(!summary || !summary->text().contains(QString::number(info.processed_count)) ||
+       !summary->text().contains(QString::number(info.part_count)))
+        return failure(82,__LINE__);
+    if(!ready(dialog))return failure(83,__LINE__);
+    const auto profile=directory.filePath("cached-corpus-curve.brprofile");
+    if(!dialog.save_profile_to(profile,error)){
+        std::cerr<<"CORPUS_CURVE_SAVE_FAILED "<<error.toStdString()<<'\n';
+        return failure(84,__LINE__);
+    }
+    desktop_analysis::offline::ProfileDocument restored;
+    if(!desktop_analysis::offline::load_profile(profile,restored,error) ||
+       !restored.profile.curve ||
+       restored.profile.curve->measurement_hz.size()!=
+           restored.profile.compatibility.fft_size/2+1 ||
+       restored.profile.curve->contributors[100]<=0 ||
+       restored.profile.curve->contributors[100]>double(info.processed_count)){
+        std::cerr<<"CORPUS_CURVE_RESTORE_FAILED "<<error.toStdString()<<'\n';
+        return failure(85,__LINE__);
+    }
+    const auto& curve=*restored.profile.curve;
+    const auto peak=*std::max_element(curve.measured_spectrum.begin()+1,
+                                      curve.measured_spectrum.end());
+    if(std::abs(peak-1.)>1e-9 ||
+       curve.options.aggregation!=dsp_kernels::PeakAggregation::MeanTrackMaxima ||
+       curve.options.level_reference!=dsp_kernels::CurveLevelReference::CorpusSpectralMaximum)
+        return failure(86,__LINE__);
+    std::cout<<"CACHED_CORPUS_UI_CURVE_PASS bins="
+             <<curve.measurement_hz.size()<<" contributors="
+             <<curve.contributors[100]<<" corpus_peak="<<peak<<'\n';
+    dialog.close();return 0;
 }
 int main(int argc,char** argv) {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);QApplication app(argc,argv);ui::Language::instance().set("en");
@@ -338,5 +386,6 @@ int main(int argc,char** argv) {
     for(const auto* theme:{"light","dark"})if(const auto result=theme_dialog(app,directory,path,theme))return result;
     if(const auto result=large_folder_display_and_start(app,directory))return result;
     if(const auto result=completed_collection_disables_last_batch_save(app,directory,path))return result;
+    if(const auto result=loaded_corpus_builds_curve(directory))return result;
     std::cout<<"music_analysis_dialog_tests PASS (offscreen widget lifecycle only)\n";
 }

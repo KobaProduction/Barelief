@@ -125,7 +125,7 @@ bool valid_function_samples(const FrequencyProfile& p) {
 bool valid_contributors(const FrequencyCurve& c) {
     for(std::size_t i=0;i<c.measurement_hz.size();++i){
         if(i && c.measurement_hz[i]<=c.measurement_hz[i-1])return false;
-        if(c.contributors[i]>4096 || std::floor(c.contributors[i])!=c.contributors[i] || (!c.contributors[i] && c.measured_spectrum[i]>0))return false;
+        if(c.contributors[i]>10000000 || std::floor(c.contributors[i])!=c.contributors[i] || (!c.contributors[i] && c.measured_spectrum[i]>0))return false;
     }
     return true;
 }

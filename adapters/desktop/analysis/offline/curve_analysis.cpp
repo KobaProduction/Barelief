@@ -1,4 +1,6 @@
 #include "curve_analysis.h"
+#include <algorithm>
+#include <cmath>
 
 namespace desktop_analysis::offline {
 using namespace dsp_kernels;
@@ -30,6 +32,39 @@ std::shared_ptr<const CurveCorpus> curve_corpus(const FrequencyProfile& source,s
         corpus->saved_measurements=stored_measurements(source);
         if(corpus->saved_measurements)corpus->saved_options=source.curve->options;
     }
+    return corpus;
+}
+std::shared_ptr<const CurveCorpus> curve_corpus_summary(
+    const FrequencyProfile& source,std::span<const double> contributors) {
+    const auto n=source.compatibility.fft_size/2+1;
+    if(!source.compositions.empty() || source.curve ||
+       source.compatibility.fft_size<512 || source.compatibility.fft_size>16384 ||
+       (source.compatibility.fft_size&(source.compatibility.fft_size-1)) ||
+       source.peak_spectrum.size()!=n || source.mean_spectrum.size()!=n ||
+       contributors.size()!=n || !source.compatibility.sample_rate ||
+       source.compatibility.projection.representation!=SpectrumProjection::PeakAmplitude ||
+       !source.compatibility.projection.compensate)return {};
+    auto corpus=std::make_shared<CurveCorpus>();
+    corpus->calibration=source.compatibility;
+    auto values=std::make_shared<FrequencyMeasurements>();
+    double maximum=0;
+    for(std::size_t k=0;k<n;++k){
+        const auto count=contributors[k],peak=source.peak_spectrum[k],mean=source.mean_spectrum[k];
+        if(!std::isfinite(count) || count<0 || std::floor(count)!=count ||
+           count>10000000 || !std::isfinite(peak) || peak<0 ||
+           !std::isfinite(mean) || mean<0 || (!count && (peak>0 || mean>0)))return {};
+        values->hz.push_back(k*source.compatibility.sample_rate/double(source.compatibility.fft_size));
+        values->contributors.push_back(count);
+        values->maxima.push_back(peak);
+        values->mean_amplitude.push_back(mean);
+        if(k>0 && count>0)maximum=std::max(maximum,peak);
+    }
+    if(maximum<=0)return {};
+    for(auto& value:values->maxima)value/=maximum;
+    for(auto& value:values->mean_amplitude)value/=maximum;
+    values->edge_hz=source.compatibility.sample_rate/double(source.compatibility.fft_size);
+    corpus->saved_measurements=std::move(values);
+    corpus->saved_options=FrequencyCurveOptions{};
     return corpus;
 }
 namespace {

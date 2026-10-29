@@ -440,6 +440,16 @@ struct MusicAnalysisDialog::State {
     }
     void refresh_scan_summary(){
         const auto& p=document.profile;
+        const auto collection=document.preserved.value("scan_collection").toObject();
+        if(has_profile && !collection.isEmpty()){
+            scan_summary->setText(QStringLiteral("Complete corpus: %1 measured tracks / %2 parts. "
+                "Common frequency grid %3 Hz / FFT %4; source amplitudes are not normalized per track.")
+                .arg(collection.value("processed_count").toDouble(),0,'f',0)
+                .arg(collection.value("part_count").toDouble(),0,'f',0)
+                .arg(collection.value("grid_sample_rate_hz").toDouble(),0,'f',0)
+                .arg(p.compatibility.fft_size));
+            return;
+        }
         if(has_profile && p.compositions.empty()){
             scan_summary->setText(p.curve?ui::text("Ready profile: %1–%2 Hz. Load a scan to change curve construction.").arg(p.curve->minimum_hz).arg(p.curve->maximum_hz):
                 ui::text("Legacy profile: %1 Hz, FFT %2; exact frontend required").arg(p.compatibility.sample_rate).arg(p.compatibility.fft_size));return;
@@ -450,6 +460,9 @@ struct MusicAnalysisDialog::State {
         const auto mean_transaction=mean->batch_update(),gain_transaction=gains->batch_update();
         const auto& p=active_profile();mean->comparisons.clear();gains->comparisons.clear();
         mean->values=p.curve?p.curve->measured_spectrum:p.mean_spectrum;mean->hz=p.curve?p.curve->measurement_hz:std::vector<double>{};
+        if(document.preserved.contains("scan_collection") && p.peak_spectrum.size()==mean->values.size())
+            mean->comparisons.push_back({QStringLiteral("Corpus mean of track-bin maxima"),
+                                         p.peak_spectrum,true});
         mean->fs=gains->fs=p.compatibility.sample_rate;mean->reference=reference->value();
         mean->magnitude=gains->magnitude=p.compatibility.projection.representation==dsp_kernels::SpectrumProjection::PeakAmplitude || p.compatibility.projection.representation==dsp_kernels::SpectrumProjection::Magnitude;gains->limit=p.training.max_gain;
         prepare_gain_data(p);
@@ -572,6 +585,17 @@ struct MusicAnalysisDialog::State {
         preview_rows->setValue(resolution.value("time_cells").toInt(256));preview_bands->setValue(resolution.value("frequency_cells").toInt(256));
     }
     void show_loaded_status(){
+        const auto collection=document.preserved.value("scan_collection").toObject();
+        if(!collection.isEmpty()){
+            status->setText(QStringLiteral("Loaded complete .brscan: %1 successful tracks in %2 parts "
+                                          "(%3 requested, %4 failed). Aggregated spectra are in RAM, "
+                                          "per-track measurements remain on disk.")
+                .arg(collection.value("processed_count").toDouble(),0,'f',0)
+                .arg(collection.value("part_count").toDouble(),0,'f',0)
+                .arg(collection.value("requested_count").toDouble(),0,'f',0)
+                .arg(collection.value("failed_count").toDouble(),0,'f',0));
+            return;
+        }
         if(document.profile.curve && document.profile.compositions.empty()){set_status_message("Ready profile loaded. Curve fitting and gain can be adjusted from saved measurements; track aggregation requires a scan.");return;}
         if(!can_save_scan()){set_status_message("Legacy profile has incomplete track measurements; apply it on its original grid or scan music again.");return;}
         const bool saved_previews=std::any_of(document.previews.begin(),document.previews.end(),[](const auto& item){return item.rows>0;});
@@ -692,7 +716,7 @@ struct MusicAnalysisDialog::State {
             if(batch_directory.isEmpty())
                 return service(paths,opt,*stop,[done](auto n,auto){done->store(n);});
             return scan_music_in_parts(paths,opt,*stop,[done](auto n,auto){done->store(n);},
-                                       service,save,batch_directory);
+                                       service,save_music_scan_part,batch_directory);
         });
         timer->start(50);
     }
@@ -1200,7 +1224,14 @@ struct MusicAnalysisDialog::State {
         ++curve_revision;curve_analysis.reset();curve_ready=false;
         reset_result_viewports();
         reset_curve_defaults();
-        corpus=can_save_scan()?curve_corpus(document.profile):nullptr;
+        const auto collection=document.preserved.value("scan_collection").toObject();
+        if(!collection.isEmpty()){
+            std::vector<double> contributors;
+            const auto counts=collection.value("positive_bin_contributors").toArray();
+            contributors.reserve(counts.size());
+            for(const auto& count:counts)contributors.push_back(count.toDouble(-1));
+            corpus=curve_corpus_summary(document.profile,contributors);
+        }else corpus=can_save_scan()?curve_corpus(document.profile):nullptr;
         if(corpus)invalidate_curve();
     }
     void reset_curve_defaults(){

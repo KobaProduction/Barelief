@@ -22,6 +22,10 @@ struct CurveAnalysis {
 };
 std::shared_ptr<const CurveCorpus> curve_corpus(const dsp_kernels::FrequencyProfile&,
     std::span<const std::uint8_t> included={});
+// Large scan summaries retain frequency-aligned mean track maxima, not individual
+// track statistics. Only their original aggregation can be refitted.
+std::shared_ptr<const CurveCorpus> curve_corpus_summary(
+    const dsp_kernels::FrequencyProfile&,std::span<const double> contributors);
 CurveAnalysis analyze_frequency_curves(std::shared_ptr<const CurveCorpus>,
     const dsp_kernels::FrequencyCurveOptions&,std::shared_ptr<const CurveAnalysis> previous={});
 }

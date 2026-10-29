@@ -1,4 +1,5 @@
-#include <offline/music_analysis.h>
+﻿#include <offline/music_analysis.h>
+#include <offline/music_archive.h>
 #include <offline/archive_zip.h>
 #include <offline/archive_blocks.h>
 #include <dsp_kernels/frequency_measurements.h>
@@ -58,25 +59,50 @@ void same_measurements(const ProfileDocument& a,const ProfileDocument& b) {
         const auto& p=x.rms_bands[i];const auto& q=y.rms_bands[i];
         assert(p.index==q.index && p.frames==q.frames && p.square_sum==q.square_sum && p.mean_spectrum==q.mean_spectrum && p.peak_spectrum==q.peak_spectrum);
     }
-    assert(a.previews.front().values==b.previews.front().values && a.previews.front().time_seconds==b.previews.front().time_seconds && a.previews.front().frequency_hz==b.previews.front().frequency_hz);
+    const auto populated=[](const auto& previews){
+        return !previews.empty() && previews.front().rows>0;
+    };
+    if(populated(a.previews) || populated(b.previews)){
+        assert(populated(a.previews) && populated(b.previews));
+        assert(a.previews.front().values==b.previews.front().values);
+        assert(a.previews.front().time_seconds==b.previews.front().time_seconds);
+        assert(a.previews.front().frequency_hz==b.previews.front().frequency_hz);
+    }
 }
 void scan_roundtrip(const QString& path,const ProfileDocument& original) {
-    QString error;assert(save_music_scan(path,original,error));assert(read_file(path).startsWith(QByteArray("PK\x03\x04",4)));
-    ProfileDocument loaded;const auto loaded_ok=load_music_scan(path,loaded,error);if(!loaded_ok)std::cerr<<error.toStdString()<<'\n';assert(loaded_ok);same_measurements(original,loaded);
+    QString error;assert(save_music_archive(path,original,MusicArchiveKind::Scan,error));assert(read_file(path).startsWith(QByteArray("PK\x03\x04",4)));
+    ProfileDocument loaded;const auto loaded_ok=load_music_scan(path,loaded,error);
+    if(!loaded_ok)std::cerr<<error.toStdString()<<'\n';assert(loaded_ok);same_measurements(original,loaded);
     auto& track=loaded.profile.compositions.front();assert(dsp_kernels::classify_quiet_frames(track,-120));assert(track.quiet_frames==41);
     assert(dsp_kernels::classify_quiet_frames(track,-80) && track.quiet_frames==61);
     const auto files=read_zip(path);const auto root=manifest(files);assert(root.value("compression").toString()=="blosc2-zstd5-shuffle-v1");
-    assert(files.size()==11 && root.value("blocks").toArray().size()==10);
+    assert(files.size()==root.value("blocks").toArray().size()+1);
     const auto matrix=files.value("arrays/tracks/0/rms/mean_spectrum.b2");assert(!matrix.isEmpty());
     assert(root.value("document").toObject().value("compositions").toArray()[0].toObject().value("mean_spectrum").toObject().value("array_extension").toString()=="keep");
     std::cout<<"Scan JSON="<<encode_music_scan(original).size()<<" bytes, archive="<<read_file(path).size()<<" bytes\n";
+}
+void unified_public_brscan(const QString& path,const ProfileDocument& original) {
+    QString error;
+    assert(save_music_scan(path,original,error));
+    MusicScanCollectionInfo info;
+    assert(inspect_music_scan(path,info,error));
+    assert(info.part_count==1 && info.processed_count==1);
+    ProfileDocument restored;
+    assert(load_music_scan(path,restored,error));
+    same_measurements(original,restored);
+    std::size_t visited=0;
+    assert(visit_music_scan_parts(path,[&](ProfileDocument&& doc,std::size_t i){
+        assert(i==0);
+        same_measurements(original,doc);++visited;return true;
+    },info,error));
+    assert(visited==1);
 }
 void extensions_roundtrip(const QString& path,const ProfileDocument& original) {
     auto files=read_zip(path);auto root=manifest(files);auto blocks=root.value("blocks").toArray();
     auto block=blocks[0].toObject();block["block_extension"]="keep";blocks[0]=block;root["blocks"]=blocks;set_manifest(files,root);write_zip(path,files);
     ProfileDocument loaded;QString error;assert(load_music_scan(path,loaded,error));
     assert(loaded.preserved.value("extension").toInt()==42 && loaded.archive_preserved.value("outer_extension").toObject().value("value").toInt()==17);
-    assert(save_music_scan(path,loaded,error));root=manifest(read_zip(path));
+    assert(save_music_archive(path,loaded,MusicArchiveKind::Scan,error));root=manifest(read_zip(path));
     assert(root.value("blocks").toArray()[0].toObject().value("block_extension").toString()=="keep");same_measurements(original,loaded);
 }
 void rejected_scan(const QString& path,const ProfileDocument& original) {
@@ -158,7 +184,7 @@ void profile_roundtrip(const QString& path,const ProfileDocument& measurements) 
 }
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);QTemporaryDir temporary;assert(temporary.isValid());constant_blocks<float>();constant_blocks<double>();auto original=measurements();add_groups(original);
-    const auto scan=temporary.filePath("измерения.brscan"),bad=temporary.filePath("bad.brscan");scan_roundtrip(scan,original);extensions_roundtrip(scan,original);
+    const auto scan=temporary.filePath("измерения.brscan"),bad=temporary.filePath("bad.brscan");scan_roundtrip(scan,original);extensions_roundtrip(scan,original);unified_public_brscan(temporary.filePath("unified.brscan"),original);
     const auto valid=read_zip(scan);bad_manifests(bad,valid,original);bad_descriptors(bad,valid,original);bad_slice(bad,valid,original);
     damaged_payloads(bad,valid,original);damaged_zip(bad,valid,original);atomic_save(scan,original);legacy_json(temporary.path(),original);
     scan_without_normalizer(temporary.filePath("raw.brscan"),original);

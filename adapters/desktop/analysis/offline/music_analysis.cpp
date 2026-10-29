@@ -1,4 +1,8 @@
 #include "music_analysis.h"
+#include "music_archive.h"
+#include <QFile>
+#include <QCryptographicHash>
+#include "archive_zip.h"
 #include "audio_decoder.h"
 #include <dsp_kernels/prepared_resampler.h>
 #include <dsp_kernels/sample_cadence.h>
@@ -405,13 +409,15 @@ AnalysisResult scan_music_in_parts(
         }
     const auto tag=QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
     const auto temporary=output.filePath(QStringLiteral(".barelief-scan-incomplete-%1").arg(tag));
-    const auto final=output.filePath(QStringLiteral("music-scan-%1").arg(tag));
+    const auto final=output.filePath(QStringLiteral("music-scan-%1.brscan").arg(tag));
     if(QFileInfo::exists(temporary) || QFileInfo::exists(final) || !output.mkdir(QFileInfo(temporary).fileName())){
         combined.errors.append("Cannot prepare a clean scan directory");
         return combined;
     }
     const QDir temporary_dir(temporary);
     QJsonArray parts;
+    MusicScanSummaryAccumulator cached_summary;
+    const bool cache_enabled=true;
     std::size_t failed_tracks=0;
     std::size_t recorded_tracks=0;
     bool completed=true;
@@ -438,6 +444,10 @@ AnalysisResult scan_music_in_parts(
         part.document.previews.clear();
         part.preview={};
         QString error;
+        if(cache_enabled && !cached_summary.add(part.document,error)){
+            combined.errors.append("Cannot aggregate scan summary: "+error);
+            completed=false;break;
+        }
         if(!save(destination,part.document,error)){
             combined.errors.append(QStringLiteral("Cannot save scan part %1: %2").arg(name,error));
             completed=false;break;
@@ -469,9 +479,24 @@ AnalysisResult scan_music_in_parts(
            metadata.write(encoded)!=encoded.size() || !metadata.commit()){
             combined.errors.append("Cannot finalize scan collection manifest");
             completed=false;
-        }else if(!output.rename(QFileInfo(temporary).fileName(),QFileInfo(final).fileName())){
-            combined.errors.append("Cannot commit completed scan directory");
-            completed=false;
+        }else{
+            QString error;
+            const auto cache=cache_enabled?cached_summary.result():QJsonObject{};
+            if(!save_music_scan_collection(temporary_dir,final,manifest,parts,error,cache)){
+                combined.errors.append(QStringLiteral("Cannot commit complete .brscan: %1").arg(error));
+                completed=false;
+            }else{
+                MusicScanCollectionInfo info;
+                if(!inspect_music_scan(final,info,error) ||
+                   info.requested_count!=std::size_t(files.size()) ||
+                   info.processed_count!=recorded_tracks ||
+                   info.failed_count!=failed_tracks ||
+                   info.part_count!=std::size_t(parts.size())){
+                    combined.errors.append("Written .brscan failed collection verification: "+error);
+                    QFile::remove(final);
+                    completed=false;
+                }
+            }
         }
     }else completed=false;
     if(!completed){
@@ -482,6 +507,9 @@ AnalysisResult scan_music_in_parts(
         combined.saved_part_count=0;
         combined.batch_directory.clear();
         return combined;
+    }
+    if(!QDir(temporary).removeRecursively()){
+        combined.errors.append("Completed .brscan is valid, but staging directory cleanup failed: "+temporary);
     }
     combined.success=true;
     combined.batch_directory=final;

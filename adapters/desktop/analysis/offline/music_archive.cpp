@@ -2,6 +2,9 @@
 #include "archive_blocks.h"
 #include "profile_codec.h"
 #include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QSaveFile>
 
@@ -47,6 +50,64 @@ bool write_archive_document(StoredZipWriter& zip,const ProfileDocument& document
     return zip.add("manifest.json",bytes,error) && zip.finish(error);
 }
 }
+bool save_music_scan_collection(const QDir& temporary_dir,const QString& output,
+                          const QJsonObject& metadata,const QJsonArray& listed,QString& error,
+                          const QJsonObject& summary) {
+    QSaveFile file(output);
+    file.setDirectWriteFallback(false);
+    if(!file.open(QIODevice::WriteOnly)){error=file.errorString();return false;}
+    StoredZipWriter zip(file);
+    if(!zip.open(error,true))return false;
+    const auto manifest=QJsonDocument(metadata).toJson(QJsonDocument::Compact);
+    if(!zip.add("manifest.json",manifest,error))return false;
+    QJsonArray descriptors;
+    for(qsizetype i=0;i<listed.size();++i){
+        const auto item=listed.at(i).toObject();
+        const auto name=item.value("name").toString();
+        QFile part(temporary_dir.filePath(name));
+        if(name!=QStringLiteral("music-scan-part-%1.brscan").arg(i+1,6,10,QLatin1Char('0')) ||
+           !part.open(QIODevice::ReadOnly) || part.size()<=0 ||
+           part.size()>music_archive_limit){
+            error=QStringLiteral("Invalid scan part for collection: %1").arg(name);
+            return false;
+        }
+        QCryptographicHash digest(QCryptographicHash::Sha256);
+        if(!digest.addData(&part) || !part.seek(0)){
+            error="Cannot calculate source part checksum";return false;
+        }
+        if(!zip.add_file("parts/"+name,part,error))return false;
+        descriptors.append(QJsonObject{
+            {"name",name},{"size",double(part.size())},
+            {"sha256",QString::fromLatin1(digest.result().toHex())},
+            {"requested_count",item.value("requested_count")},
+            {"processed_count",item.value("processed_count")},
+            {"failed_count",item.value("failed_count")}
+        });
+    }
+    const QJsonObject index{
+        {"kind","barelief.music_scan_pack"},{"version",1},{"reference","manifest.json"},
+        {"parts",descriptors},
+        {"storage","uncompressed ZIP64 of compressed Barelief .brscan members"},
+        {"completed",true}
+    };
+    const auto bytes=QJsonDocument(index).toJson(QJsonDocument::Compact);
+    if(!zip.add("pack-index.json",bytes,error))return false;
+    if(!summary.isEmpty()){
+        if(summary.value("kind").toString()!="barelief.music_scan_summary" ||
+           summary.value("processed_count").toDouble()!=metadata.value("processed_count").toDouble()){
+            error="Cached scan summary mismatches its corpus";return false;
+        }
+        auto bound=summary;
+        bound["manifest_sha256"]=QString::fromLatin1(QCryptographicHash::hash(manifest,QCryptographicHash::Sha256).toHex());
+        bound["index_sha256"]=QString::fromLatin1(QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex());
+        const auto packed=QJsonDocument(bound).toJson(QJsonDocument::Compact);
+        if(!zip.add("summary.json",packed,error))return false;
+    }
+    if(!zip.finish(error))return false;
+    if(!file.commit()){error=file.errorString();return false;}
+    return true;
+}
+
 bool save_music_archive(const QString& path,const ProfileDocument& document,MusicArchiveKind kind,QString& error) {
     error.clear();QSaveFile file(path);file.setDirectWriteFallback(false);
     if(!file.open(QIODevice::WriteOnly)){error=file.errorString();return false;}

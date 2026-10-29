@@ -13,9 +13,10 @@ class StoredZipReader {
 public:
     explicit StoredZipReader(QIODevice&);
     ~StoredZipReader();
-    bool open(QString& error);
+    bool open(QString& error,bool large_collection=false);
     QStringList entries() const;
     bool read(const QString&,qint64 maximum,QByteArray& output,QString& error);
+    bool extract_to(const QString& name,QIODevice& destination,qint64 maximum,QString& error);
 };
 class StoredZipWriter {
     struct Impl;
@@ -23,8 +24,9 @@ class StoredZipWriter {
 public:
     explicit StoredZipWriter(QIODevice&);
     ~StoredZipWriter();
-    bool open(QString& error);
+    bool open(QString& error,bool large_collection=false);
     bool add(const QString&,QByteArrayView,QString& error);
+    bool add_file(const QString&,QIODevice& input,QString& error);
     bool finish(QString& error);
 };
 }
