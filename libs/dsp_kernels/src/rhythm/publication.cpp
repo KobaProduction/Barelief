@@ -2,8 +2,8 @@
 
 namespace dsp_kernels::rhythm::detail {
 namespace {
-double margin(const Output& out,bool use_acf,unsigned fps) noexcept {
-    const auto& top=out.candidates[0];double best=-1;
+float margin(const Output& out,bool use_acf,unsigned fps) noexcept {
+    const auto& top=out.candidates[0];float best=-1;
     for(std::size_t i=1;i<out.candidate_count;++i){
         const auto& c=out.candidates[i];
         if(use_acf && equivalent(top.period_s,c.period_s,fps))continue;
@@ -64,7 +64,7 @@ void Engine::publish_tempo(const Frame& frame,bool use_acf) noexcept {
     const auto [status,reason]=tempo_status(*this,frame,use_acf);
     const bool capped=out.octave.status==Status::Ambiguous || reason==Reason::PrimaryConflict || reason==Reason::SubdivisionConflict;
     out.raw_support=top.score;
-    out.tempo=estimate(status,capped?std::min(top.score,.49):top.score,top.t_obs,frame,reason);
+    out.tempo=estimate(status,capped?std::min(top.score,.49f):top.score,top.t_obs,frame,reason);
     if(status==Status::Determined){out.bpm=top.bpm;out.period_s=top.period_s;}
     if(held(change,frame,cfg))out.previous_episode=change;
 }
@@ -77,7 +77,7 @@ void derived_dynamics(Engine& e,const Frame& frame) noexcept {
     if(e.out.tempo.status!=Status::Determined || !e.out.tempo.t_obs)return;
     const double observed=*e.out.tempo.t_obs;
     if(e.last_determined && observed>e.last_determined->second+1e-9 && e.out.tempo_dynamics.status!=Status::Determined){
-        e.out.bpm_per_s=rounded((*e.out.bpm-e.last_determined->first)/(observed-e.last_determined->second),6);
+        e.out.bpm_per_s=rounded(float((*e.out.bpm-e.last_determined->first)/(observed-e.last_determined->second)),6);
         e.out.tempo_dynamics=estimate(Status::Ambiguous,e.out.candidates[0].score,observed,frame,Reason::Weak);
     }
     e.last_determined=std::pair{*e.out.bpm,observed};
@@ -86,16 +86,16 @@ void derived_dynamics(Engine& e,const Frame& frame) noexcept {
 void Engine::publish_dynamics(const Frame& frame) noexcept {
     out.tempo_dynamics=estimate(Status::Unknown,{},{},frame,Reason::InsufficientEvidence);
     if(held(change,frame,cfg)){
-        out.change=change;out.bpm_per_s=rounded((change.to_bpm-change.from_bpm)/std::max(1e-9,change.confirm_s-change.point_s),6);
-        out.tempo_dynamics=estimate(Status::Determined,std::max(0.,1-change.spread),change.confirm_s,frame);
+        out.change=change;out.bpm_per_s=rounded(float((change.to_bpm-change.from_bpm)/std::max(1e-9,change.confirm_s-change.point_s)),6);
+        out.tempo_dynamics=estimate(Status::Determined,std::max(0.f,1.f-change.spread),change.confirm_s,frame);
     }else if(held(spectral_change,frame,cfg)){
         out.change=spectral_change;
-        out.tempo_dynamics=estimate(Status::Ambiguous,std::min(.49,std::max(0.,1-spectral_change.spread)),spectral_change.confirm_s,frame,Reason::Octave);
+        out.tempo_dynamics=estimate(Status::Ambiguous,std::min(.49f,std::max(0.f,1.f-spectral_change.spread)),spectral_change.confirm_s,frame,Reason::Octave);
     }
     derived_dynamics(*this,frame);
 }
 void Engine::publish_observations(const Frame& frame) noexcept {
-    std::optional<double> strength,observed;Status status=out.event_count?Status::Determined:Status::Unknown;
+    std::optional<float> strength;std::optional<double> observed;Status status=out.event_count?Status::Determined:Status::Unknown;
     for(std::size_t i=0;i<out.event_count;++i){
         const auto& e=out.events[i].observation;
         strength=std::max(strength.value_or(0),e.strength);observed=std::max(observed.value_or(e.t_obs),e.t_obs);

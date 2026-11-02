@@ -4,6 +4,8 @@
 #include "preparation_support.h"
 #include "frame_access.h"
 #include "signal_time.h"
+#include <domain/music/contracts.h>
+#include <domain/numeric/temporal_operations.h>
 #include <algorithm>
 #include <charconv>
 #include <cstring>
@@ -26,16 +28,46 @@ PreparedOperationKernel::PreparedOperationKernel(const PreparedOperationKernel& 
 PreparedOperationKernel& PreparedOperationKernel::operator=(const PreparedOperationKernel& other){if(this!=&other)value_=std::make_unique<OperationKernelState>(*other.value_);return *this;}
 PreparedOperationKernel::PreparedOperationKernel(PreparedOperationKernel&&) noexcept=default;
 PreparedOperationKernel& PreparedOperationKernel::operator=(PreparedOperationKernel&&) noexcept=default;
-void PreparedOperationKernel::reset() noexcept {value_->pending={};value_->product_pending=false;std::copy(value_->factor_initial_ready.begin(),value_->factor_initial_ready.end(),value_->factor_ready.begin());if(auto* broad=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation))broad->reset();if(value_->rhythm)value_->rhythm->reset();}
+namespace {
+void reset_pairs(OperationKernelState& state) noexcept {
+    state.pending={};state.product_pending=false;
+    state.onset_position=0;state.onset_filled=0;
+    std::fill(state.factor_actual.begin(),state.factor_actual.end(),std::array<std::size_t,2>{});
+    std::copy(state.factor_initial_ready.begin(),state.factor_initial_ready.end(),state.factor_ready.begin());
+}
+}
+void PreparedOperationKernel::reset() noexcept {reset_pairs(*value_);if(auto* broad=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation))broad->reset();if(auto* descriptor=std::get_if<dsp_kernels::PreparedSpectralDescriptor>(&value_->operation))descriptor->reset();if(value_->rhythm)value_->rhythm->reset();if(value_->tempo)value_->tempo->reset();if(value_->temporal)value_->temporal->reset();}
 void PreparedOperationKernel::invalidate_product_lane(std::size_t lane) noexcept {
     if(lane>=value_->factor_ready.size())return;
     value_->factor_ready[lane]=false;value_->product_pending=false;
 }
+namespace {
+bool copy_onset_state(OperationKernelState& target,const OperationKernelState& source) noexcept {
+    if(target.onset_lag!=source.onset_lag || target.onset_history.size()!=source.onset_history.size())return false;
+    std::copy(source.onset_history.begin(),source.onset_history.end(),target.onset_history.begin());
+    target.onset_position=source.onset_position;target.onset_filled=source.onset_filled;return true;
+}
+}
+
 bool PreparedOperationKernel::copy_state_from(const PreparedOperationKernel& other) noexcept {
+    if(value_->onset_lag)return copy_onset_state(*value_,*other.value_);
+    if(value_->temporal)return other.value_->temporal.has_value();
+    if(auto* current=std::get_if<dsp_kernels::PreparedSpectralDescriptor>(&value_->operation)){
+        const auto* before=std::get_if<dsp_kernels::PreparedSpectralDescriptor>(&other.value_->operation);
+        return before && current->copy_state_from(*before);
+    }
     if(value_->rhythm)return other.value_->rhythm && value_->rhythm->copy_state_from(*other.value_->rhythm);
     auto* current=std::get_if<dsp_kernels::BroadbandFeatures>(&value_->operation);
     const auto* before=std::get_if<dsp_kernels::BroadbandFeatures>(&other.value_->operation);
     return !current || (before && current->copy_state_from(*before));
+}
+
+void PreparedOperationKernel::copy_rhythm_clipping_stats(NodeStats& stats) const noexcept {
+    if(!value_->rhythm)return;
+    const auto clipping=value_->rhythm->clipping_statistics();
+    stats.clipped_frames=clipping.clipped_frames;
+    stats.clipped_values=clipping.clipped_values;
+    stats.maximum_before_clamp=clipping.maximum_before_clamp;
 }
 namespace {
 bool assign_resampler_config(const ResolvedProcessingNode& node,const NumericContract& input,double input_rate,double output_rate,double quality,dsp_kernels::ResamplerConfig& config) noexcept {
@@ -62,25 +94,39 @@ bool resampler_config(const ResolvedProcessingNode& node,dsp_kernels::ResamplerC
 }
 namespace {
 std::optional<bool> numeric_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,const NumericRuntimeProfile& profile,std::size_t input) {
-    if(n.operation==ProcessingOperation::ArrayProduct)return numeric_add(resources.payload_bytes,profile.admission.frame.max_string_bytes+n.inputs.size()*(input*sizeof(float)+2*sizeof(std::uint8_t)));
+    if(n.operation==ProcessingOperation::ArrayProduct)return numeric_add(resources.payload_bytes,profile.admission.frame.max_string_bytes+n.inputs.size()*(input*sizeof(float)+2*sizeof(std::uint8_t)+sizeof(std::array<std::size_t,2>)));
     if(n.operation!=ProcessingOperation::ArrayConcat)return {};
     const auto right=n.inputs[1].contract.view();
     return numeric_add(resources.payload_bytes,std::size_t(std::get<NumericContract>(right).shape.extents[0].maximum)*sizeof(float));
 }
 std::optional<bool> feature_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result) {
-    if(n.kind=="RhythmFeatures")return numeric_add(resources.payload_bytes,output);
+    if(n.kind=="RhythmFeatures")return numeric_add(resources.scratch_bytes,96*sizeof(float));
     if(n.kind=="BroadbandFeatures")return numeric_add(resources.scratch_bytes,input*sizeof(float)+output*48+8);
     if(n.kind=="SpectralQuantize")return numeric_add(resources.payload_bytes,output*(result.dtype==DType::UInt8?1:2));
     if(n.kind=="FrequencyNormalizer")return numeric_add(resources.scratch_bytes,input*sizeof(float));
     return {};
 }
+bool projection_operation_resources(const ResolvedProcessingNode& node,ProcessingResources& resources,std::size_t output) {
+    if(!numeric_add(resources.scratch_bytes,output*sizeof(float)))return false;
+    ProcessingParameterView normalized;double size=0;std::size_t bytes=0;
+    if(resolve_processing_parameter(node,"normalize",normalized)!=Status::ok || !std::holds_alternative<bool>(normalized) || !numeric_parameter(node,"fft_size",size))return false;
+    if(!std::get<bool>(normalized) || operation_text(node,"scaling_source")!="window")return true;
+    return dsp_kernels::PreparedWindows::storage_bytes(std::size_t(size),bytes) && numeric_add(resources.scratch_bytes,bytes);
+}
+bool paired_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input) {
+    std::size_t coordinates=0;const auto contract=std::get<NumericContract>(n.inputs.front().contract.view());
+    for(std::size_t axis=0;axis<2;++axis)if(contract.coordinates[axis].mode==CoordinateMode::ExplicitFloat64LE)
+        {std::size_t bytes=0;if(!numeric_mul(std::size_t(contract.shape.extents[axis].maximum),2*sizeof(double),bytes) || !numeric_add(coordinates,bytes))return false;}
+    return numeric_add(resources.payload_bytes,(4*input+2)*sizeof(float)) && numeric_add(resources.payload_bytes,coordinates) && numeric_add(resources.scratch_bytes,(4*input+4)*sizeof(float));
+}
+
 std::optional<bool> signal_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result) {
-    if(paired_processing(n.operation))return numeric_add(resources.payload_bytes,(4*input+2)*sizeof(float)) && numeric_add(resources.scratch_bytes,(4*input+4)*sizeof(float));
-    if(n.kind=="RFFT")return numeric_add(resources.scratch_bytes,(3*input+4)*sizeof(float));
-    if(n.kind=="SpectrumProjection"){
-        std::size_t windows=0;if(!dsp_kernels::PreparedWindows::storage_bytes(input-2,windows))return false;
-        return numeric_add(resources.scratch_bytes,output*sizeof(float)+windows);
+    if(spectral_descriptor_kind(n.kind)){
+        std::size_t bytes=0;return dsp_kernels::PreparedSpectralDescriptor::storage_bytes(input/2,bytes) && numeric_add(resources.scratch_bytes,bytes);
     }
+    if(paired_processing(n.operation))return paired_operation_resources(n,resources,input);
+    if(n.kind=="RFFT")return numeric_add(resources.scratch_bytes,(3*input+4)*sizeof(float));
+    if(n.kind=="SpectrumProjection")return projection_operation_resources(n,resources,output);
     return feature_operation_resources(n,resources,input,output,result);
 }
 bool music_operation_resources(const ResolvedProcessingNode& node,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract&){
@@ -94,32 +140,52 @@ bool music_operation_resources(const ResolvedProcessingNode& node,ProcessingReso
 }
 }
 namespace {
+bool transform_geometry_supported(const ResolvedProcessingNode& node,const NumericContract& input) noexcept {
+    if(node.kind!="Fourier" && node.kind!="RealFourier" && node.kind!="RFFT")return true;
+    const auto minimum=node.kind=="Fourier"?4u:8u;
+    const auto count=std::size_t(input.shape.extents[input.shape.rank==Rank::Matrix?1:0].maximum);
+    return count>=minimum && count<=dsp_kernels::max_fft_samples && !(count&(count-1));
+}
 bool operation_support(const ResolvedProcessingNode& node,ProcessingResources& resources,const NumericRuntimeProfile& profile,const NumericContract& input,const NumericContract& output) noexcept {
-    const auto in=std::size_t(input.shape.extents[0].maximum)*(input.shape.rank==Rank::Matrix?std::size_t(input.shape.extents[1].maximum):1);
+    const auto& buffer=node.operation==ProcessingOperation::ArrayProduct?output:input;
+    const auto in=std::size_t(buffer.shape.extents[0].maximum)*(buffer.shape.rank==Rank::Matrix?std::size_t(buffer.shape.extents[1].maximum):1);
     const auto out=std::size_t(output.shape.extents[0].maximum)*(output.shape.rank==Rank::Matrix?std::size_t(output.shape.extents[1].maximum):1);
-    const bool fourier=node.kind=="Fourier" || node.kind=="RealFourier" || node.kind=="RFFT";
-    if(fourier && (in<256 || in>dsp_kernels::max_fft_samples || (in&(in-1))))return false;
+    if(!transform_geometry_supported(node,input))return false;
     if(!numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) || !numeric_add(resources.payload_bytes,(in+out)*sizeof(float)))return false;
     if(const auto numeric=numeric_operation_resources(node,resources,profile,in))return *numeric;
     if(const auto signal=signal_operation_resources(node,resources,in,out,output))return *signal;
     return music_operation_resources(node,resources,in,out,input);
 }
 void prepare_operation_buffers(OperationKernelState& kernel,const PlanNode& node) {
-    const auto input=std::get<NumericContract>(node.numeric_input);
     const auto output=std::get<NumericContract>(node.numeric_outputs[0]);
+    const auto input=node.operation==ProcessingOperation::ArrayProduct?output:std::get<NumericContract>(node.numeric_input);
     kernel.input.resize(std::size_t(input.shape.extents[0].maximum)*(input.shape.rank==Rank::Matrix?std::size_t(input.shape.extents[1].maximum):1));
     kernel.output.resize(std::size_t(output.shape.extents[0].maximum)*(output.shape.rank==Rank::Matrix?std::size_t(output.shape.extents[1].maximum):1));
 }
 }
 bool music_support(const ResolvedProcessingNode& node,ProcessingResources& resources,const NumericRuntimeProfile& profile) noexcept {
-    if(node.kind=="RhythmAnalyzer")return numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) && numeric_add(resources.scratch_bytes,dsp_kernels::rhythm::Analyzer::workspace_bytes()+96);
+    if(temporal_operation_kind(node.kind))return numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) && PreparedTemporalOperation::resources(node,resources);
+    if(node.kind=="Mel" || node.kind=="PowerToDb")return spectral_frontend_resources(node,resources);
+    if(node.kind=="OnsetStrength")return onset_strength_resources(node,resources);
+    if(node.kind=="TempoEvidence")return numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) && PreparedTempoEvidenceOperation::resources(node,resources);
+    if(node.kind=="RhythmAnalyzer")return numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) && numeric_add(resources.scratch_bytes,dsp_kernels::rhythm::Analyzer::workspace_bytes()+96*sizeof(float));
     const auto input=std::get<NumericContract>(node.inputs.front().contract.view());
     const auto output=std::get<NumericContract>(node.outputs.front().contract.view());
     return operation_support(node,resources,profile,input,output);
 }
+namespace {
+std::optional<Status> prepare_temporal_operation(OperationKernelState& kernel,State& state,const ResolvedProcessingNode& node) {
+    if(temporal_operation_kind(node.kind)){kernel.temporal.emplace();return kernel.temporal->prepare(node)?Status::ok:Status::invalid_argument;}
+    if(node.kind=="Mel" || node.kind=="PowerToDb")return prepare_spectral_frontend(kernel,state,node);
+    if(node.kind=="OnsetStrength")return prepare_onset_strength(kernel,node);
+    if(node.kind=="RhythmAnalyzer")return prepare_rhythm(kernel,node);
+    if(node.kind!="TempoEvidence")return {};
+    kernel.tempo.emplace();return kernel.tempo->prepare(node)?Status::ok:Status::invalid_argument;
+}
+}
 Status prepare_music(PlanNode& node,State& state,const ResolvedProcessingNode& n,const NumericRuntimeProfile& profile){
     state.kernel.emplace<PreparedOperationKernel>();auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
-    if(n.kind=="RhythmAnalyzer")return prepare_rhythm(kernel,n);
+    if(const auto temporal=prepare_temporal_operation(kernel,state,n))return *temporal;
     prepare_operation_buffers(kernel,node);
     const auto numeric=prepare_numeric_operation(kernel,node,n,profile);
     if(numeric!=Status::unavailable)return numeric;
@@ -136,9 +202,25 @@ Status load_operation_input(OperationKernelState& kernel,const NumericView& sour
     }
     return Status::ok;
 }
+double axis_value(std::span<const std::byte> bytes,std::size_t index) noexcept {
+    std::uint64_t bits=0;
+    for(std::size_t byte=0;byte<sizeof(double);++byte)bits|=std::uint64_t(std::to_integer<unsigned char>(bytes[index*sizeof(double)+byte]))<<(8*byte);
+    double value=0;std::memcpy(&value,&bits,sizeof(value));return value;
+}
+bool projection_coordinates(const OperationKernelState& kernel,const NumericView& source) noexcept {
+    const auto* projection=std::get_if<dsp_kernels::PreparedSpectrumProjection>(&kernel.operation);
+    if(!projection || source.contract->coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE || source.contract->coordinates[0].unit!=NumericUnit::Hertz)return true;
+    const auto bytes=source.coordinates.axes[0];if(bytes.size()!=source.actual[0]*sizeof(double))return false;
+    const auto first=projection->geometry().first_bin;
+    for(std::size_t bin=0;bin<source.actual[0];++bin){
+        const auto actual=axis_value(bytes,bin),expected=double(first+bin)*kernel.bin_hz;
+        if(!std::isfinite(actual) || std::abs(actual-expected)>1e-9*std::max(1.,std::abs(expected)))return false;
+    }
+    return true;
+}
 Status read_operation_input(OperationKernelState& kernel,const NumericView& source,const FrameLimits& limits) noexcept {
     const auto rows=source.actual[0],columns=source.contract->shape.rank==Rank::Matrix?source.actual[1]:1;
-    if(source.ring.capacity || rows*columns!=kernel.input.size())return Status::incompatible_contract;
+    if(source.ring.capacity || rows*columns!=kernel.input.size() || !projection_coordinates(kernel,source))return Status::incompatible_contract;
     const auto valid=validate_values(source,ValueDomain::FiniteOnly,limits);if(valid!=Status::ok)return valid;
     return load_operation_input(kernel,source,rows,columns);
 }
@@ -162,6 +244,7 @@ Status quantize_operation(OperationKernelState& kernel,MutableNumericView& desti
 Status compute_operation(OperationKernelState& kernel,MutableNumericView& destination,const DataFrameView& current,bool enabled,bool boundary,const FrameLimits& limits) noexcept {
     if(!enabled){
         if(auto* temporal=std::get_if<dsp_kernels::BroadbandFeatures>(&kernel.operation))temporal->reset();
+        if(auto* descriptor=std::get_if<dsp_kernels::PreparedSpectralDescriptor>(&kernel.operation))descriptor->reset();
         return fill_silence(destination,limits);
     }
     if(auto* quantizer=std::get_if<dsp_kernels::SpectralQuantizer>(&kernel.operation))return quantize_operation(kernel,destination,*quantizer);
@@ -183,14 +266,17 @@ Status execute_common_music(OperationKernelState& kernel,const PlanNode& node,St
 Status execute_loaded_music(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
     const auto& source=std::get<NumericView>(current.payload);
     if(node.node.kind==NodeKind::RhythmFeatures)return execute_rhythm_features(kernel,node,state,current);
-    if(node.node.kind==NodeKind::SpectralQuantize){const auto copied=copy_quantizer_coordinates(source,state);if(copied!=Status::ok)return copied;}
+    if(node.node.kind==NodeKind::SpectralQuantize || node.node.kind==NodeKind::SpectrumProjection){const auto copied=copy_quantizer_coordinates(source,state);if(copied!=Status::ok)return copied;}
     if(std::holds_alternative<dsp_kernels::MusicalSpectrogram>(kernel.operation))return execute_musical_spectrogram(kernel,node,state,current);
     return execute_common_music(kernel,node,state,current,limits);
 }
 }
 Status execute_music(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
     auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
+    if(kernel.temporal)return kernel.temporal->execute(node,state,current,limits);
     if(kernel.rhythm)return execute_rhythm(kernel,node,state,current,limits);
+    if(kernel.onset_strength)return execute_onset_strength(kernel,node,state,current,limits);
+    if(kernel.mel || kernel.db)return execute_spectral_frontend(kernel,node,state,current,limits);
     const auto& source=std::get<NumericView>(current.payload);
     const auto read=read_operation_input(kernel,source,limits);if(read!=Status::ok)return read;
     return execute_loaded_music(kernel,node,state,current,limits);

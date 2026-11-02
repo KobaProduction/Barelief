@@ -61,12 +61,6 @@ bool zero_bytes(const NumericContract& c) noexcept {
     const auto* dtype=dtype_descriptor(c.dtype);
     return dtype && c.representation.normalization!=Normalization::UnsignedUnit;
 }
-bool direct_window(const NumericContract& c) noexcept {
-    return c.dtype==DType::Float32 && c.shape.rank==Rank::Vector &&
-        c.representation.encoding==StorageEncoding::Native && c.representation.layout==ChannelLayout::Planar &&
-        c.representation.alignment<=alignof(float) && !c.representation.valid_bits &&
-        (c.representation.normalization==Normalization::None || c.representation.normalization==Normalization::FloatUnit);
-}
 Status allocate_numeric_storage(const NumericContract& contract,NumericBuffer& buffer,std::size_t bytes,
                                 const std::shared_ptr<const std::vector<std::byte>>& shared) {
     if(shared && zero_bytes(contract)) {

@@ -8,7 +8,10 @@ std::optional<NodeStats> PreparedGraph::node_stats(domain::NodeId node,const Run
     if(!context.impl_ || context.impl_->plan!=this)return {};
     const auto at=index(impl_->nodes,node);
     if(at==absent)return {};
-    auto stats=context.impl_->states[at].stats;stats.node=node;return stats;
+    const auto& state=context.impl_->states[at];
+    auto stats=state.stats;stats.node=node;
+    if(const auto* kernel=std::get_if<PreparedOperationKernel>(&state.kernel))kernel->copy_rhythm_clipping_stats(stats);
+    return stats;
 }
 std::optional<MixerInputStats> PreparedGraph::mixer_input_stats(domain::NodeId node,domain::PortId port,const RuntimeContext& context) const noexcept {
     if(!context.impl_ || context.impl_->plan!=this)return {};

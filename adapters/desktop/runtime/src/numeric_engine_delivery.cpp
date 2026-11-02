@@ -90,13 +90,22 @@ void DeliveryHub::coalesce_preview_frames(const EndpointIdentity& endpoint,const
         else previews.push(std::move(*old));
     }
 }
+Status DeliveryHub::retain_delivery(ContextIterator found,const dataflow_runtime::NumericPortFrameView& borrowed,
+    const DataFrameView& frame,DeliveryArena& preferred,DeliveredNumericFrame& retained) {
+    const auto* numeric=std::get_if<NumericView>(&frame.payload);
+    const auto bytes=numeric?numeric->storage.size():std::get<StructuredView>(frame.payload).bytes.size();
+    const bool large=bytes>DeliveryArena::payload_bytes;
+    auto& payload=large?history_snapshot_arena->payload_pool:preferred.payload_pool;
+    auto& metadata=large?history_snapshot_arena->metadata_pool:preferred.metadata_pool;
+    return retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},
+        frame,borrowed.status,frame_limits,payload,metadata,retained);
+}
 void DeliveryHub::queue_preview(ContextIterator found,LatestIterator cached,const dataflow_runtime::NumericPortFrameView& borrowed) {
     core::perf::Scope preview_produce(core::perf::Stage::NumericPreviewProduce);
     coalesce_preview_frames(found->first,borrowed.frame.stamp,borrowed.status);
     if(previews.size()==128)previews.pop();
     DeliveredNumericFrame preview;
-    const auto status=retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},
-        borrowed.frame,borrowed.status,frame_limits,preview_arena->payload_pool,preview_arena->metadata_pool,preview);
+    const auto status=retain_delivery(found,borrowed,borrowed.frame,*preview_arena,preview);
     if(status!=Status::ok)preview={found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},{},status};
     if(cached!=latest_matrices.end())cached->second=preview;
     previews.push(std::move(preview));
@@ -137,8 +146,7 @@ void DeliveryHub::queue_tap_frame(ContextIterator found,LatestIterator cached,co
     auto delivered_frame=borrowed.frame;
     delivered_frame.stamp.discontinuity|=(pending_gap!=delivery_gaps.end()&&pending_gap->second);
     DeliveredNumericFrame retained;
-    const auto status=retain_numeric_delivery(found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},
-        delivered_frame,borrowed.status,frame_limits,arena->payload_pool,arena->metadata_pool,retained);
+    const auto status=retain_delivery(found,borrowed,delivered_frame,*arena,retained);
     commit_tap_frame(found,cached,borrowed,std::move(retained),status);
 }
 NumericHistoryEvent DeliveryHub::history_event(dataflow_runtime::NumericHistoryEventKind event) {

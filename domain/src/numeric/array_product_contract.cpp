@@ -17,28 +17,36 @@ Status selected_driver(const ConfiguredProcessingNode& node,std::size_t& out) {
     const auto requested=std::visit([](auto v){return static_cast<double>(v);},*literal);
     return find_driver_port(node,requested,out);
 }
-bool vector_valid(const NumericContract& value) {
-    return value.dtype==DType::Float32 && value.channel_order.size()==1 && value.shape.rank==Rank::Vector &&
-        value.shape.extents[0].minimum && value.shape.extents[0].minimum==value.shape.extents[0].maximum &&
+bool product_value_valid(const NumericContract& value) {
+    const auto axis=value.shape.rank==Rank::Matrix?1u:0u;
+    return value.dtype==DType::Float32 && value.channel_order.size()==1 && value.shape.extents[0].maximum &&
+        value.shape.extents[axis].minimum && value.shape.extents[axis].minimum==value.shape.extents[axis].maximum &&
         value.representation.encoding==StorageEncoding::Native && value.representation.layout==ChannelLayout::Planar &&
         (value.representation.normalization==Normalization::None || value.representation.normalization==Normalization::FloatUnit);
 }
 struct VectorGrid {Axis axis;AxisCoordinates coordinates;bool operator==(const VectorGrid&)const=default;};
-bool accept_grid(const NumericContract& value,std::optional<VectorGrid>& grid) {
-    if(value.coordinates[0].mode==CoordinateMode::None)return true;
-    const VectorGrid current{value.shape.axes[0],value.coordinates[0]};
+bool accept_grid(const NumericContract& value,std::size_t axis,std::optional<VectorGrid>& grid) {
+    if(value.coordinates[axis].mode==CoordinateMode::None)return true;
+    const VectorGrid current{value.shape.axes[axis],value.coordinates[axis]};
     if(grid && *grid!=current)return false;
     grid=current;return true;
 }
-Status validate_inputs(const ConfiguredProcessingNode& node) {
-    std::uint64_t count=0;
-    std::optional<VectorGrid> grid;
+bool product_geometry(const NumericContract& driver,const NumericContract& factor,std::array<std::optional<VectorGrid>,2>& grid) {
+    if(factor.shape.rank==Rank::Scalar)return true;
+    if(driver.shape.rank==Rank::Scalar)return false;
+    const bool broadcast=driver.shape.rank==Rank::Matrix && factor.shape.rank==Rank::Vector;
+    if(broadcast)return factor.shape.extents[0]==driver.shape.extents[1] && accept_grid(factor,0,grid[1]);
+    if(driver.shape.rank!=factor.shape.rank || driver.shape.extents!=factor.shape.extents)return false;
+    return accept_grid(factor,0,grid[0]) && (factor.shape.rank!=Rank::Matrix || accept_grid(factor,1,grid[1]));
+}
+Status validate_inputs(const ConfiguredProcessingNode& node,std::size_t driver) {
+    const auto contract=node.inputs[driver].contract.view();const auto* shape=std::get_if<NumericContract>(&contract);
+    if(!shape || !product_value_valid(*shape))return Status::incompatible_contract;
+    std::array<std::optional<VectorGrid>,2> grid;
     for(const auto& port:node.inputs) {
         const auto data=port.contract.view();const auto* value=std::get_if<NumericContract>(&data);
-        if(!value || !vector_valid(*value))return Status::incompatible_contract;
-        if(count && count!=value->shape.extents[0].maximum)return Status::incompatible_contract;
-        if(!accept_grid(*value,grid))return Status::incompatible_contract;
-        count=value->shape.extents[0].maximum;
+        if(!value || !product_value_valid(*value))return Status::incompatible_contract;
+        if(!product_geometry(*shape,*value,grid))return Status::incompatible_contract;
     }
     return Status::ok;
 }
@@ -59,7 +67,7 @@ Status array_product_output_contract(const ConfiguredProcessingNode& node,OwnedP
     if(node.kind!="ArrayMultiply" || node.inputs.size()<2 || node.inputs.size()>max_variadic_inputs || !operation_valid(node))return Status::invalid_argument;
     std::size_t driver=0;
     if(selected_driver(node,driver)!=Status::ok)return Status::invalid_argument;
-    if(validate_inputs(node)!=Status::ok)return Status::incompatible_contract;
+    if(validate_inputs(node,driver)!=Status::ok)return Status::incompatible_contract;
     OwnedProcessingContract candidate;
     const auto status=own_product_contract(node,driver,candidate);
     if(status!=Status::ok)return status;

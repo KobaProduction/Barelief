@@ -1,8 +1,16 @@
 #include "node_state.h"
 
 namespace dataflow_runtime::detail {
+namespace {
+void clear_window_values(const PlanNode& node,State& state) noexcept {
+    auto& buffer=state.numeric_outputs[0];const auto& contract=std::get<NumericContract>(node.numeric_outputs[0]);
+    MutableNumericView value{&contract,buffer.storage(),buffer.planes,buffer.actual,{},{}};
+    (void)fill_silence(value,{buffer.planes.size(),SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX});
+}
+}
 void clear_node_state(const PlanNode& node,State& state) noexcept {
     state.clear();
+    if(node.node.kind==NodeKind::Window && !state.numeric_outputs.empty())clear_window_values(node,state);
     if(node.operation!=ProcessingOperation::History || state.numeric_outputs.empty())return;
     auto& buffer=state.numeric_outputs[0];
     const auto& contract=std::get<NumericContract>(node.numeric_outputs[0]);

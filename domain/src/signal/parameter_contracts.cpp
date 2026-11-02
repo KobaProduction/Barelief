@@ -79,7 +79,9 @@ double processing_window_gain(const ConfiguredProcessingNode& node,std::size_t c
     const auto value=std::get<std::string_view>(field);
     auto function=dsp_kernels::WindowFunction::Rectangular;
     if(node.enabled && !dsp_kernels::parse_window_function(value,function))return 0;
-    return power?dsp_kernels::window_square_sum(count,function):dsp_kernels::window_sum(count,function);
+    ProcessingParameterView periodic;
+    if(resolve_processing_parameter(resolved,"periodic",periodic)!=Status::ok || !std::holds_alternative<bool>(periodic))return 0;
+    return power?dsp_kernels::window_square_sum(count,function,std::get<bool>(periodic)):dsp_kernels::window_sum(count,function,std::get<bool>(periodic));
 }
 Status spectrum_amplitude_output_contract(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& out) noexcept {
     std::uint64_t size=0;if(!number(node,"fft_size",size) || size<2 || input.dtype!=DType::Float32 || input.shape.rank!=Rank::Vector || input.quantity!=Quantity::SpectrumMagnitude)return Status::invalid_argument;
@@ -97,10 +99,12 @@ Status amplitude_phase_parameters(const ConfiguredProcessingNode& node,const Num
     ProcessingParameterView half,normalized;
     if(resolve_processing_parameter(resolved,"positive_half",half)!=Status::ok || !std::holds_alternative<bool>(half) ||
        resolve_processing_parameter(resolved,"normalize",normalized)!=Status::ok || !std::holds_alternative<bool>(normalized))return Status::invalid_argument;
-    const auto extent=input.shape.extents[0];
+    const auto extent=input.shape.extents[input.shape.rank==Rank::Matrix?1:0];
     if(!extent.maximum || extent.minimum!=extent.maximum || extent.maximum>UINT32_MAX/2)return Status::incompatible_contract;
-    // Both explicit layouts exclude DC: half keeps k=1..N/2, full k=1..N-1.
-    size=std::get<bool>(half)?2*extent.maximum:extent.maximum+1;
+    std::uint64_t first=0;
+    if(!number(node,"fft_size",size) || !size || !number(node,"first_bin",first))return Status::invalid_argument;
+    const auto available=std::get<bool>(half)?size/2+1:size;
+    if(first>=available || extent.maximum>available-first)return Status::incompatible_contract;
     normalize=std::get<bool>(normalized);
     return Status::ok;
 }
@@ -126,21 +130,59 @@ Status own_amplitude_phase(NumericContract result,std::array<OwnedProcessingCont
 }
 }
 namespace {
+Status amplitude_coordinates(const ConfiguredProcessingNode& node,std::uint64_t size,bool normalize,std::string_view representation,NumericContract& result) {
+    std::uint64_t fs=0;if(!number(node,"sample_rate",fs))return Status::invalid_argument;
+    if(!fs)return representation=="psd" && normalize?Status::invalid_argument:Status::ok;
+    std::uint64_t first=0;if(!number(node,"first_bin",first) || first>std::uint64_t(INT64_MAX)/fs)return Status::overflow;
+    const auto axis=result.shape.rank==Rank::Matrix?1u:0u;
+    if(result.coordinates[axis].mode!=CoordinateMode::ExplicitFloat64LE &&
+       !declared_frequency_axis_matches(result.coordinates[axis],double(fs)/double(size),first))return Status::incompatible_contract;
+    result.coordinates[result.shape.rank==Rank::Matrix?1:0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(first*fs),size},{std::int64_t(fs),size}};
+    return Status::ok;
+}
 Status configure_amplitude_phase(const ConfiguredProcessingNode& node,std::uint64_t size,bool normalize,std::array<OwnedProcessingContract,2>& polar) {
     auto result=std::get<NumericContract>(polar[0].view());const auto representation=text(node,"representation");
     result.quantity=amplitude_quantity(representation,normalize);
     if(representation!="magnitude" && representation!="window_scaled_magnitude" && representation!="peak_amplitude" && representation!="power" && representation!="psd" && representation!="rms_amplitude" && representation!="bin_power")return Status::invalid_argument;
-    std::uint64_t fs=0;if(!number(node,"sample_rate",fs) || !fs)return Status::invalid_argument;
-    result.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{std::int64_t(fs),size},{std::int64_t(fs),size}};
-    if(own_amplitude_phase(result,polar,representation,normalize)!=Status::ok)return Status::invalid_argument;
-    return Status::ok;
+    const auto status=amplitude_coordinates(node,size,normalize,representation,result);
+    return status==Status::ok?own_amplitude_phase(result,polar,representation,normalize):status;
+}
+}
+namespace {
+bool omits_imaginary_nyquist(const ConfiguredProcessingNode& node,std::uint64_t size,ExtentBounds real,ExtentBounds imaginary) {
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::ComplexPolar,node.inputs,node.outputs,&node.parameters,node.enabled};
+    ProcessingParameterView half;std::uint64_t first=0;
+    return resolve_processing_parameter(resolved,"positive_half",half)==Status::ok && std::holds_alternative<bool>(half) && std::get<bool>(half) &&
+        number(node,"first_bin",first) && first && !(size%2) && first+real.maximum==size/2+1 &&
+        imaginary.minimum+1==real.minimum && imaginary.maximum+1==real.maximum;
+}
+bool amplitude_pair_geometry(const ConfiguredProcessingNode& node,const NumericContract& real,const NumericContract& imaginary,std::uint64_t size) {
+    auto comparable=imaginary;comparable.quantity=real.quantity;comparable.semantic=real.semantic;
+    const auto axis=real.shape.rank==Rank::Matrix?1u:0u;
+    const auto re=real.shape.extents[axis],im=comparable.shape.extents[axis];
+    if(im!=re){
+        if(!omits_imaginary_nyquist(node,size,re,im))return false;
+        comparable.shape.extents[axis]=re;
+    }
+    return same_physical_contract(real,comparable);
+}
+Status amplitude_phase_imaginary(const ConfiguredProcessingNode& node,const NumericContract& real,std::uint64_t size,std::array<OwnedProcessingContract,2>& polar) {
+    if(node.inputs.size()<2)return Status::incompatible_contract;
+    const auto data=node.inputs[1].contract.view();const auto* imaginary=std::get_if<NumericContract>(&data);
+    if(!imaginary || !amplitude_pair_geometry(node,real,*imaginary,size))return Status::incompatible_contract;
+    auto phase=std::get<NumericContract>(polar[1].view());phase.shape=imaginary->shape;
+    return own_processing_contract(phase,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,polar[1]);
+}
+Status prepare_amplitude_geometry(const ConfiguredProcessingNode& node,const NumericContract& input,std::array<OwnedProcessingContract,2>& polar) {
+    std::uint64_t size=0;bool normalize=false;
+    const auto status=amplitude_phase_parameters(node,input,size,normalize);if(status!=Status::ok)return status;
+    const auto configured=configure_amplitude_phase(node,size,normalize,polar);if(configured!=Status::ok)return configured;
+    return amplitude_phase_imaginary(node,input,size,polar);
 }
 }
 Status amplitude_phase_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,std::array<OwnedProcessingContract,2>& output) noexcept {
-    std::array<OwnedProcessingContract,2> polar;auto status=complex_polar_output_contracts(input,polar);if(status!=Status::ok)return status;
-    std::uint64_t size=0;bool normalize=false;
-    status=amplitude_phase_parameters(node,input,size,normalize);if(status!=Status::ok)return status;
-    status=configure_amplitude_phase(node,size,normalize,polar);if(status!=Status::ok)return status;
+    std::array<OwnedProcessingContract,2> polar;auto status=complex_polar_output_contracts(node,input,polar);if(status!=Status::ok)return status;
+    status=prepare_amplitude_geometry(node,input,polar);if(status!=Status::ok)return status;
     output=std::move(polar);return Status::ok;
 }
 Status frequency_step_output_contract(const NumericContract& input,OwnedProcessingContract& out) noexcept {

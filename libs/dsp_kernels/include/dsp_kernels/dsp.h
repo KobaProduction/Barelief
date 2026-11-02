@@ -1,5 +1,6 @@
 #pragma once
 #include <dsp_kernels/window_math.h>
+#include <dsp_kernels/mel_filter_bank.h>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -8,6 +9,7 @@
 #include <vector>
 #include <signal_contracts/data_frame.h>
 #include <dsp_kernels/fft_storage.h>
+#include <dsp_kernels/complex_values.h>
 
 namespace dsp_kernels {
 enum class Backend { Ansi, EspDsp };
@@ -15,27 +17,31 @@ Backend compiled_backend() noexcept;
 inline constexpr std::size_t max_mel_bands = 50;
 void hann_window(std::span<float> output);
 
-void window(std::span<float> output, WindowFunction function);
+void window(std::span<float> output, WindowFunction function, bool periodic=false);
 // Immutable bank shared across graph revisions. All supported windows for the
-// declared geometry are prepared together. Variable extents use prepared
+// declared geometry and symmetric/periodic mode are prepared together. Variable extents use prepared
 // rotations rather than trigonometry or a quadratic table of every length.
 class PreparedWindows {
   public:
     PreparedWindows() = default;
-    explicit PreparedWindows(std::size_t maximum);
+    explicit PreparedWindows(std::size_t maximum,bool periodic=false);
     // Cold preparation only. Invalid geometry is refused before allocation and
     // preserves an existing bank. Allocations follow the other DSP prepare APIs.
-    bool prepare(std::size_t maximum);
+    bool prepare(std::size_t maximum,bool periodic=false);
     bool prepared() const noexcept { return prepared_; }
     std::size_t maximum() const noexcept { return maximum_; }
+    bool periodic() const noexcept { return periodic_; }
     std::span<const float> coefficients(WindowFunction function) const noexcept;
     bool coefficients(WindowFunction function, std::span<float> output) const noexcept;
     static bool storage_bytes(std::size_t maximum, std::size_t& bytes) noexcept;
+    std::size_t workspace_bytes() const noexcept {return bank_.capacity()*sizeof(float)+rotations_.capacity()*sizeof(Rotation);}
   private:
     std::size_t maximum_ = 0;
     bool prepared_ = false;
+    bool periodic_ = false;
     std::vector<float> bank_;
     struct Rotation { double cosine, sine; };
+    static void prepare_rotations(std::span<Rotation>,std::size_t maximum,bool periodic);
     std::vector<Rotation> rotations_;
 };
 void bark_weights(std::span<float> output, float frequency_step);
@@ -82,6 +88,7 @@ std::optional<MemoryRequirements> estimate_memory(std::size_t samples, std::size
 namespace detail { struct FftBenchmarkAccess; }
 class FFT {
   public:
+    static bool storage_bytes(std::size_t samples,std::size_t& bytes) noexcept;
     // Complex input -> full, unnormalized forward DFT. Both input planes are
     // required and have N elements; output contains N interleaved Re/Im pairs.
     // No symmetry is assumed: imaginary DC/Nyquist and negative frequencies
@@ -110,6 +117,11 @@ class MagnitudeSpectrum {
   public:
     bool prepare(std::size_t samples, bool radix4 = false);
     bool process(std::span<const float> input, std::span<float> output);
+    // Same transform, with an optional N/2 phase plane in radians [-pi,pi].
+    // Zero complex bins have phase zero. Output planes must be disjoint.
+    // Failed processing leaves both caller outputs unchanged; no allocation.
+    bool process(std::span<const float> input, std::span<float> output,
+                 std::span<float> phase);
     // Reads and writes one plane directly; the instance scratch is the only
     // intermediate payload. Views remain borrowed for this synchronous call.
     signal_contracts::Status process_plane(const signal_contracts::NumericView& input,
@@ -122,8 +134,8 @@ class MagnitudeSpectrum {
     detail::FftStorage scratch_;
     bool radix4_ = false;
 };
-// Statistics of the actual coefficients applied before the RFFT. Windows are
-// symmetric; zero padding (if any) must be included in samples explicitly.
+// Statistics of the actual coefficients applied before the RFFT, for either
+// sampling mode; zero padding (if any) must be included in samples explicitly.
 struct WindowScaling {
     std::size_t samples = 0;
     double sum = 0, sum_squares = 0;
@@ -138,6 +150,7 @@ std::optional<WindowScaling> window_scaling(std::span<const float> coefficients)
 // the plan. Failed processing leaves caller output unchanged. One owner/thread.
 class PreparedRfft {
   public:
+    static bool storage_bytes(std::size_t samples,bool radix4,std::size_t& bytes) noexcept;
     enum class Split { Automatic, Scalar };
     struct Options { bool platform_optimizations = true; };
     // Null options select maximum available optimizations. Copied at prepare.
@@ -158,6 +171,7 @@ class PreparedRfft {
     bool transform_prepared() noexcept;
     bool transform_input(std::span<const float> input,bool fused,int& scale) noexcept;
     void publish_configuration(std::size_t,bool,bool,Split) noexcept;
+    bool prepare_plan(std::size_t samples,bool radix4,Split split,std::size_t bound);
     bool prepare_twiddles(std::size_t samples, std::size_t packed, bool mixed, Split split) noexcept;
     int input_scale(std::span<const float> input, bool fused) noexcept;
     void pack_mixed(std::span<const float> input, float factor, bool fused) noexcept;
@@ -180,19 +194,35 @@ enum class SpectrumProjection {
 struct SpectrumProjectionOptions {
     SpectrumProjection representation = SpectrumProjection::Power;
     bool compensate = true;
+    ComplexMagnitudeNorm magnitude_norm=ComplexMagnitudeNorm::Hypot;
+    ZeroMagnitudePhase zero_phase=ZeroMagnitudePhase::Zero;
+    // Raw Magnitude may publish |X|^p, preserving the selected source norm.
+    // Calibrated Magnitude requires exponent1; Power remains direct Re²+Im².
+    float magnitude_exponent=1;
+    bool real_endpoints=false;
     bool operator==(const SpectrumProjectionOptions&) const = default;
 };
 std::span<const SpectrumProjection> amplitude_spectrum_projections() noexcept;
 std::string_view spectrum_projection_name(SpectrumProjection) noexcept;
 bool parse_spectrum_projection(std::string_view, SpectrumProjection&) noexcept;
 bool is_amplitude_spectrum_projection(SpectrumProjection) noexcept;
-// The common prepared math for planar graph inputs and interleaved batch FFT.
-// paired marks a bin with a conjugate partner in a one-sided spectrum.
+// Raw source math uses Float32; calibrated scaling retains Double intermediates
+// until the final Float32 result. The graph supplies explicit coefficients and N;
+// Fs is required for calibrated PSD only. Scalar C/E adapters serve batch callers.
+// paired marks a conjugate partner in a one-sided spectrum.
+// compensate=false is raw: Magnitude+exponent2 is pow(selected_norm(X),2),
+// while Power is directly Re²+Im². Neither applies window/sidedness factors.
+// real_axis is applied only when real_endpoints is explicitly enabled.
 class PreparedSpectrumScaling {
   public:
+    // Cold preparation only: cache C=sum(w), E=sum(w*w). Empty span is
+    // rectangular (no window correction); transform normalization still uses N.
+    bool prepare(double sample_rate,std::span<const float> coefficients,
+                 SpectrumProjectionOptions options,std::size_t fft_samples) noexcept;
     bool prepare(double sample_rate, double window_sum, double window_square_sum,
                  SpectrumProjectionOptions options, std::size_t fft_samples = 0) noexcept;
-    bool project(float real, float imaginary, bool paired, float& output) const noexcept;
+    bool prepare_raw(SpectrumProjectionOptions options) noexcept;
+    bool project(float real, float imaginary, bool paired, float& output,bool real_axis=false) const noexcept;
   private:
     SpectrumProjectionOptions options_{};
     double amplitude_scale_=1, power_scale_=1, psd_scale_=1, bin_power_scale_=1;
@@ -234,38 +264,29 @@ private:
 // WindowScaledMagnitude makes the calibrated interpretation explicit.
 // PSD has sample^2/Hz units. Phase is radians, atan2(Im,Re), with phase(0)=0.
 // Compensation is explicit in options. Logarithmic display belongs to the renderer.
+// values() borrows owned staging until the next prepare/process and is empty
+// after failed processing.
 // Output must not overlap raw input. Failure leaves output unchanged.
+struct SpectrumProjectionGeometry {
+    std::size_t fft_size=0,bins=0,first_bin=0;
+    bool one_sided=true;
+};
 class PreparedSpectrumProjection {
   public:
     bool prepare(std::size_t samples, double sample_rate, WindowScaling scaling,
                  SpectrumProjectionOptions options);
+    // Explicit selected/full spectrum geometry; arbitrary positive FFT lengths
+    // are allowed because this operation never performs Fourier itself.
+    bool prepare(SpectrumProjectionGeometry,double sample_rate,WindowScaling,SpectrumProjectionOptions);
     bool process(std::span<const float> complex_input, std::span<float> output) noexcept;
+    std::span<const float> values() const noexcept {return published_?std::span<const float>(scratch_):std::span<const float>{};}
+    SpectrumProjectionGeometry geometry() const noexcept {return geometry_;}
     std::size_t workspace_bytes() const noexcept { return scratch_.capacity() * sizeof(float); }
   private:
-    std::size_t samples_ = 0;
+    SpectrumProjectionGeometry geometry_;
+    bool published_=false;
     PreparedSpectrumScaling scaling_;
     std::vector<float> scratch_;
-};
-class MelFilterBank {
-  public:
-    // Returns one coefficient per Mel band: sum(input magnitude * triangle).
-    // This is linear magnitude, not squared power, dB or area-normalized energy.
-    // Equal Mel spacing selects triangle centres. Optional explicit frequencies
-    // are prepared once; otherwise bins use k*sample_rate/(2*bins).
-    // Bins <= max_fft_samples/2 and bands <= max_mel_bands. Zero bins/rate
-    // retain legacy zero-energy behavior. Invalid preparation disables the plan.
-    bool prepare(std::size_t bins, std::size_t sample_rate, std::size_t bands,
-                 std::span<const double> frequencies_hz = {});
-    bool process(std::span<const float> input, std::span<float> output) const;
-    double center_hz(std::size_t band) const noexcept { return band<bands_?boundaries_[band+1]:0; }
-    std::size_t workspace_bytes() const {
-        return (boundaries_.capacity() + weights_.capacity()) * sizeof(double);
-    }
-
-  private:
-    std::size_t bins_ = 0, bands_ = 0;
-    std::vector<double> boundaries_; // Shared continuous-Hertz triangles.
-    std::vector<double> weights_; // [band][bin], prepared for the declared grid.
 };
 // Applies the supplied window and Bark weights in the same order as Analyzer.
 // Input spans are replaced with windowed samples for legacy callbacks.

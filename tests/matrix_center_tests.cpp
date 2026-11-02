@@ -41,8 +41,10 @@ NumericProcessingGraph center_graph(const NumericContract& input,unsigned method
         OwnedProcessingContract windowed,spectrum;require(matrix_window_output_contract(std::get<NumericContract>(centered.view()),windowed)==Status::ok,"derive downstream window");
         window.outputs={{0,PortDirection::Output,windowed}};graph.nodes.push_back(window);
         ConfiguredProcessingNode transform;transform.id=4;transform.kind="MatrixFFT";transform.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{256}}}}};
-        transform.inputs={{0,PortDirection::Input,windowed}};require(matrix_fft_output_contract(std::get<NumericContract>(windowed.view()),256,spectrum)==Status::ok,"derive downstream FFT");
-        transform.outputs={{0,PortDirection::Output,spectrum}};graph.nodes.push_back(transform);graph.edges.insert(graph.edges.end(),{{2,3},{3,4}});}
+        transform.inputs={{0,PortDirection::Input,windowed}};require(matrix_fft_output_contract(std::get<NumericContract>(windowed.view()),256,spectrum,120)==Status::ok,"derive downstream FFT");
+        std::array<OwnedProcessingContract,2> polar;
+        require(matrix_fft_output_contracts(std::get<NumericContract>(windowed.view()),256,polar,120)==Status::ok,"derive downstream imaginary plane");
+        transform.outputs={{0,PortDirection::Output,polar[0]},{1,PortDirection::Output,polar[1]}};graph.nodes.push_back(transform);graph.edges.insert(graph.edges.end(),{{2,3},{3,4}});}
     return graph;
 }
 struct Probe {
@@ -52,6 +54,7 @@ struct Probe {
     std::array<float,1024> values{},spectrum{};std::array<std::size_t,2> actual{};
     std::array<std::array<std::byte,512>,2> coordinates{};std::array<std::size_t,2> coordinate_bytes{};
     static void output(void* user,const NumericPortFrameView& frame){auto& probe=*static_cast<Probe*>(user);
+        if(frame.identity.port!=0)return;
         if(frame.identity.node!=probe.center_node && frame.identity.node!=probe.fft_node)return;
         const bool fft=frame.identity.node==probe.fft_node;
         if(fft)probe.fft_available=frame.frame.stamp.available;
@@ -124,7 +127,7 @@ void constants_before_window_fft(){
     for(std::size_t row=0;row<3;++row)std::fill_n(data.begin()+row*8,8,row==0?7.f:row==1?-3.f:std::numeric_limits<float>::max());
     require(push(running,input,data,{3,8},0,probe)==Status::ok && probe.available && probe.fft_available,"constant signals reach center/window/FFT without warmup");
     for(std::size_t index=0;index<24;++index)require(probe.values[index]==0,"constant row centers to exact zero before window");
-    for(std::size_t index=0;index<3*128;++index)require(probe.spectrum[index]==0,"constant centered row has exactly zero FFT");
+    for(std::size_t index=0;index<3*129;++index)require(probe.spectrum[index]==0,"constant centered row has exactly zero FFT including Nyquist");
     std::fill(data.begin(),data.end(),0);require(push(running,input,data,{3,8},1,probe)==Status::ok && probe.fft_available,"zero signals stay available");
 }
 void finite_and_overflow(){

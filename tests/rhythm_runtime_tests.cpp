@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <source_location>
 #include <cmath>
+#include <type_traits>
 
 namespace {
 using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
@@ -29,10 +30,11 @@ ConfiguredProcessingNode analyzer_node() {
     check(make_processing_node("RhythmAnalyzer",2,limits,node,NodeFactorySettings{32768,4096,256,512}));
     return node;
 }
-NumericProcessingGraph graph() {
+NumericProcessingGraph graph(DType dtype=DType::Float32) {
     auto analyzer=analyzer_node();ConfiguredProcessingNode source;
     source.id=1;source.kind="NetworkInput";source.parameters=EndpointProcessingParameters{};
     auto input=std::get<NumericContract>(analyzer.inputs[0].contract.view());
+    input.dtype=dtype;input.representation.alignment=dtype==DType::Float32?alignof(float):1;
     input.shape={Rank::Vector,{Axis::Band,Axis::None},{ExtentBounds{64,64},ExtentBounds{}}};input.semantic=Semantic::Numeric;
     OwnedProcessingContract owned;check(own_processing_contract(input,frames,65536,owned)==Status::ok);
     source.outputs={{0,PortDirection::Output,owned}};
@@ -57,17 +59,17 @@ struct Observation {
         if(!self.available[port])check(self.values[port]==0);
     }
 };
-struct Fixture {
-    NumericProcessingGraph definition=graph();
+template<class T=float> struct Fixture {
+    NumericProcessingGraph definition=graph(std::is_same_v<T,float>?DType::Float32:DType::UInt8);
     NumericContract contract=std::get<NumericContract>(definition.nodes[0].outputs[0].contract.view());
     std::shared_ptr<const PreparedGraph> plan;
     std::unique_ptr<RuntimeContext> context;
-    std::array<std::uint8_t,64> storage{};
-    PlaneLayout plane{0,{1,0}};
+    std::array<T,64> storage{};
+    PlaneLayout plane{0,{sizeof(T),0}};
     Observation result;
     Fixture(){check(PreparedGraph::prepare_numeric(definition,profile(),plan,context)==Status::ok);}
     void step(unsigned index,bool available=true) {
-        storage.fill(index%30==0?200:0);
+        storage.fill(index%30==0?T(std::is_same_v<T,float>?200./255:200):T(0));
         NumericView view{&contract,std::as_bytes(std::span{storage}),{&plane,1},{64,1}};
         if(!available)view.storage={};
         FrameStamp stamp;stamp.sequence=index;stamp.epoch=1;stamp.producer_epoch=1;stamp.available=available;
@@ -77,6 +79,61 @@ struct Fixture {
         check(status==Status::ok || (!available && status==Status::unavailable));
     }
 };
+Status submit_features(Fixture<>& fixture,unsigned index,bool discontinuity=false) {
+    NumericView view{&fixture.contract,std::as_bytes(std::span{fixture.storage}),{&fixture.plane,1},{64,1}};
+    FrameStamp stamp;stamp.sequence=index;stamp.epoch=1;stamp.producer_epoch=1;stamp.available=true;
+    stamp.timestamp_ticks=std::int64_t(std::llround(double(index)*32768/60));
+    stamp.discontinuity=discontinuity;
+    return fixture.plan->process_numeric_ports(1,{stamp,view},*fixture.context,{});
+}
+
+void check_clipping(const Fixture<>& fixture,std::uint64_t frames,std::uint64_t values,float maximum,std::uint64_t errors=0) {
+    const auto stats=fixture.plan->node_stats(2,*fixture.context);
+    check(stats && stats->clipped_frames==frames && stats->clipped_values==values);
+    check(stats->maximum_before_clamp==maximum && stats->errors==errors);
+}
+
+void clipping_retains_raw_history() {
+    Fixture fixture;fixture.storage.fill(.0005f);
+    fixture.storage[42]=1.3394404649734497f;fixture.storage[43]=2.f;
+    check(submit_features(fixture,1)==Status::ok);
+    check_clipping(fixture,1,2,2.f);
+    DataFrameView history;std::uint64_t filled=0,ordinal=0;
+    check(fixture.plan->history(3,0,*fixture.context,history,&filled,&ordinal)==Status::ok);
+    const auto& view=std::get<NumericView>(history.payload);
+    check((view.actual==std::array<std::size_t,2>{512,64}) && filled==1 && ordinal==1);
+    float value=0;
+    check(load_element(view,{0,511,42},value)==Status::ok && value==fixture.storage[42]);
+    check(load_element(view,{0,511,43},value)==Status::ok && value==2.f);
+    check(load_element(view,{0,511,0},value)==Status::ok && value==.0005f);
+    check(history.stamp.epoch==1 && history.stamp.sequence==1);
+    check(history.stamp.timestamp_ticks==std::llround(32768./60));
+}
+
+void clipping_statistics_continuity() {
+    Fixture fixture;fixture.storage.fill(0.f);fixture.storage[42]=1.3394404649734497f;
+    check(submit_features(fixture,1)==Status::ok);
+    std::shared_ptr<const PreparedGraph> next;std::unique_ptr<RuntimeContext> context;
+    check(PreparedGraph::prepare_numeric(fixture.definition,profile(),next,context,fixture.plan.get(),fixture.context.get())==Status::ok);
+    fixture.plan=std::move(next);fixture.context=std::move(context);
+    check_clipping(fixture,1,1,fixture.storage[42]);
+    fixture.storage.fill(.0005f);fixture.storage[0]=1.f;
+    check(submit_features(fixture,2,true)==Status::ok);
+    check_clipping(fixture,1,1,1.3394404649734497f);
+    fixture.storage[42]=2.f;
+    check(submit_features(fixture,3)==Status::ok);
+    check_clipping(fixture,2,2,2.f);
+    fixture.storage[0]=-.1f;
+    check(submit_features(fixture,4)==Status::invalid_argument);
+    check_clipping(fixture,2,2,2.f,1);
+    fixture.storage.fill(.0005f);
+    check(submit_features(fixture,5,true)==Status::ok);
+    check_clipping(fixture,2,2,2.f,1);
+    Fixture fresh;check_clipping(fresh,0,0,0.f);
+    fresh.storage.fill(.0005f);check(submit_features(fresh,1)==Status::ok);
+    check_clipping(fresh,0,0,.0005f);
+}
+
 void ring_and_unavailable() {
     Fixture f;
     for(unsigned i=0;i<620;++i)f.step(i);
@@ -88,8 +145,11 @@ void ring_and_unavailable() {
 void refuses_wrong_input() {
     auto node=analyzer_node();auto input=std::get<NumericContract>(node.inputs[0].contract.view());
     std::array<OwnedProcessingContract,rhythm_output_count> output;
-    input.dtype=DType::Float32;check(rhythm_output_contracts(node,input,output)!=Status::ok);
-    input.dtype=DType::UInt8;input.shape.extents[1]={65,65};check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    input.dtype=DType::Float32;check(rhythm_output_contracts(node,input,output)==Status::ok);
+    input.unit=NumericUnit::Decibels;check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    input.unit=NumericUnit::Values;input.dtype=DType::Float64;check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    input.dtype=DType::UInt8;check(rhythm_output_contracts(node,input,output)!=Status::ok);
+    input.dtype=DType::Float32;input.shape.extents[1]={65,65};check(rhythm_output_contracts(node,input,output)!=Status::ok);
     input.shape.extents[1]={64,64};input.clock.sample_rate=48000;check(rhythm_output_contracts(node,input,output)!=Status::ok);
     auto p=profile();p.music_enabled=false;std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
     check(PreparedGraph::prepare_numeric(graph(),p,plan,context)!=Status::ok);
@@ -109,22 +169,22 @@ struct ResearchTopology {
         duplicate_rfft+=unsigned(node.kind=="RFFT");
         no_custom_features=no_custom_features && node.kind!="RhythmFeatures" && node.id!=1101;
         if(node.id==6 && !node.outputs.empty()){
-            const auto& c=std::get<NumericContract>(node.outputs[0].contract.view());
+            const auto c=std::get<NumericContract>(node.outputs[0].contract.view());
             existing_broadband=c.shape.extents[0]==ExtentBounds{48,48};
         }
         if(node.id==1006 && !node.outputs.empty()){
-            const auto& c=std::get<NumericContract>(node.outputs[0].contract.view());
+            const auto c=std::get<NumericContract>(node.outputs[0].contract.view());
             existing_notes=c.shape.extents[0]==ExtentBounds{48,48};
         }
         if(node.id==7 && !node.outputs.empty()){
-            const auto& c=std::get<NumericContract>(node.outputs[0].contract.view());
-            combined_96=c.dtype==DType::UInt8 && c.shape.extents[0].maximum==512 &&
+            const auto c=std::get<NumericContract>(node.outputs[0].contract.view());
+            combined_96=c.dtype==DType::Float32 && c.shape.extents[0].maximum==512 &&
                 c.shape.extents[1]==ExtentBounds{96,96};
         }
         if(node.id==1005)measured_profile=has_measured_profile(node);
     }
     bool valid()const{return real_fourier==1 && duplicate_rfft==0 && shared_history && combined_96 &&
-          quantized && no_custom_features && existing_broadband && existing_notes && measured_profile;}
+          !quantized && no_custom_features && existing_broadband && existing_notes && measured_profile;}
 };
 void example_is_preparable() {
     const auto example=numeric_rhythm_graph();ResearchTopology topology;
@@ -138,9 +198,13 @@ void example_is_preparable() {
     // The shipped desktop example uses the external SpeexDSP backend.
     // Portable SDK tests retain the same topology with its allowed FIR fallback.
     auto p=profile();p.experimental_resampling_enabled=true;
+    p.admission.max_nodes=128;p.admission.max_edges=256;
+    p.resources.maximum.stack_bytes=262144;
 #ifdef BARELIEF_TEST_DESKTOP_SPEEX
     p.resampler_backend=&desktop_resampling::speex_backend_factory();
-    check(PreparedGraph::prepare_numeric(example,p,plan,context)==Status::ok);
+    const auto status=PreparedGraph::prepare_numeric(example,p,plan,context);
+    if(status!=Status::ok)std::fprintf(stderr,"Example preparation status=%u nodes=%zu edges=%zu\n",unsigned(status),example.nodes.size(),example.edges.size());
+    check(status==Status::ok);
 #else
     auto portable=example;
     for(auto& node:portable.nodes)if(node.kind=="PcmResampler"){
@@ -157,7 +221,7 @@ void research_history_contract() {
     for(const auto& node:research.nodes){
         if(node.id==7){
             check(node.kind=="Spectrogram" && !node.outputs.empty());
-            const auto& c=std::get<NumericContract>(node.outputs.front().contract.view());
+            const auto c=std::get<NumericContract>(node.outputs.front().contract.view());
             check((c.dtype==DType::UInt8 && c.shape.extents[0].maximum==512 && c.shape.extents[1]==ExtentBounds{64,64}));
             found_history=true;
         }
@@ -190,7 +254,13 @@ void research_window_calibration(){
 void research_quantization_scales(){
     for(const auto& graph:{numeric_music_graph(),numeric_startup_graph()}){
         const auto quantizer=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.kind=="SpectralQuantize";});
-        check(quantizer!=graph.nodes.end());const auto expected=graph.execution_interval==Ratio{1,60} && quantizer->id==33?.5:1.;
+        if(quantizer==graph.nodes.end()){
+            const auto history=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.id==7 && node.kind=="Spectrogram";});
+            check(history!=graph.nodes.end() && std::get<NumericContract>(history->outputs.front().contract.view()).dtype==DType::Float32);
+            check(std::any_of(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.kind=="RhythmAnalyzer";}));
+            continue;
+        }
+        const auto expected=graph.execution_interval==Ratio{1,60} && quantizer->id==33?.5:1.;
         check(research_parameter(*quantizer,"min_value")==0 && research_parameter(*quantizer,"max_value")==expected);
         const auto contract=std::get<NumericContract>(quantizer->outputs.front().contract.view());
         check(contract.dtype==DType::UInt8 && contract.quantity==Quantity::Unspecified && contract.unit==NumericUnit::Values);
@@ -201,6 +271,7 @@ void research_quantization_scales(){
 }
 void explicit_rhythm_rate_binding(){
     auto requested=numeric_startup_graph();
+    auto admission=limits;admission.max_nodes=128;admission.max_edges=256;
     const auto is_rate=[](const Edge& edge){return edge.from==332&&edge.to==1102&&edge.output_port==sample_rate_output&&edge.input_port==target_sample_rate_input;};
     check(std::any_of(requested.edges.begin(),requested.edges.end(),is_rate));
     for(auto& node:requested.nodes){
@@ -212,12 +283,14 @@ void explicit_rhythm_rate_binding(){
         }
     }
     NumericProcessingGraph evaluated,executable;
-    check(resolve_numeric_parameter_bindings(requested,limits,evaluated,executable,332));
+    const auto diagnostic=resolve_numeric_parameter_bindings(requested,admission,evaluated,executable,332);
+    if(!diagnostic)std::fprintf(stderr,"changed rhythm Fs: error=%u node=%d port=%u reason=%u parameter=%.*s\n",unsigned(diagnostic.error),diagnostic.node,unsigned(diagnostic.port),unsigned(diagnostic.reason),int(diagnostic.parameter.size()),diagnostic.parameter.data());
+    check(diagnostic);
     const auto analyzer=std::find_if(evaluated.nodes.begin(),evaluated.nodes.end(),[](const auto& node){return node.id==1102;});
     check(analyzer!=evaluated.nodes.end()&&research_parameter(*analyzer,"sample_rate")==36000);
     std::erase_if(requested.edges,is_rate);
     // Without the explicit wire, a stale manual Fs is rejected rather than inferred.
-    check(!resolve_numeric_parameter_bindings(requested,limits,evaluated,executable,332));
+    check(!resolve_numeric_parameter_bindings(requested,admission,evaluated,executable,332));
 }
 }
-int main(){explicit_rhythm_rate_binding();ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();research_quantization_scales();}
+int main(){explicit_rhythm_rate_binding();clipping_retains_raw_history();clipping_statistics_continuity();ring_and_unavailable();refuses_wrong_input();example_is_preparable();research_history_contract();research_window_calibration();research_quantization_scales();}

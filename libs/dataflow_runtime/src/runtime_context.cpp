@@ -1,4 +1,5 @@
 #include "runtime_internal.h"
+#include "history_execution.h"
 #include <algorithm>
 
 namespace dataflow_runtime {
@@ -8,12 +9,18 @@ using namespace signal_contracts;
 RuntimeContext::RuntimeContext() : impl_(std::make_unique<Impl>()) {}
 RuntimeContext::~RuntimeContext() = default;
 RuntimeContext::RuntimeContext(const RuntimeContext &c) : impl_(std::make_unique<Impl>(*c.impl_)) {
-    for(auto& state:impl_->states)if(!state.numeric_stamp.stream_id.empty())state.numeric_stamp.stream_id={state.stream_storage.data(),state.numeric_stamp.stream_id.size()};
+    for(auto& state:impl_->states){
+        if(!state.numeric_stamp.stream_id.empty())state.numeric_stamp.stream_id={state.stream_storage.data(),state.numeric_stamp.stream_id.size()};
+        if(state.extension)state.extension->rebind_outputs(state);
+    }
 }
 RuntimeContext &RuntimeContext::operator=(const RuntimeContext &c) {
     if (this != &c)
         {impl_ = std::make_unique<Impl>(*c.impl_);
-        for(auto& state:impl_->states)if(!state.numeric_stamp.stream_id.empty())state.numeric_stamp.stream_id={state.stream_storage.data(),state.numeric_stamp.stream_id.size()};}
+        for(auto& state:impl_->states){
+        if(!state.numeric_stamp.stream_id.empty())state.numeric_stamp.stream_id={state.stream_storage.data(),state.numeric_stamp.stream_id.size()};
+        if(state.extension)state.extension->rebind_outputs(state);
+    }}
     return *this;
 }
 RuntimeContext::RuntimeContext(RuntimeContext &&) noexcept = default;
@@ -83,7 +90,8 @@ class HistoryQuery {
         if(node.operation==ProcessingOperation::Converter && !state.history_origin_valid)return Status::incompatible_contract;
         const auto& buffer=state.numeric_outputs[port];const auto& contract=std::get<NumericContract>(node.numeric_outputs[port]);const auto stamp=prepared_stamp(contract,state);
         NumericView view{&contract,buffer.storage(),buffer.planes,{state.frames,buffer.actual[1]},{buffer.actual[0],state.oldest,{}},{}};
-        prepared_coordinates(view,buffer,state);if(!stamp.available)view.storage={};output={stamp,view};return stamp.available?Status::ok:Status::unavailable;
+        prepared_coordinates(view,buffer,state);select_filled_history(node,state,view);
+        if(!stamp.available)view.storage={};output={stamp,view};return stamp.available?Status::ok:Status::unavailable;
     }
 public:
     HistoryQuery(std::span<const PlanNode> plan,std::span<const State> context,std::size_t node,PortId requested_port) noexcept:nodes(plan),states(context),requested(node),at(node),port(requested_port),mask_port(port){}
@@ -144,7 +152,6 @@ class StateRefresh {
     void reset_frame(const Frame& frame) const noexcept {
         if(frame.node.clock_reset)return;
         frame.next.output_sequence=frame.before.output_sequence;
-        if(frame.node.node.kind==NodeKind::Window && same_interval){frame.next.progress=frame.before.progress;frame.next.remainder=frame.before.remainder;frame.next.hop=frame.before.hop;}
     }
     void copy_identity(const Frame& frame) const noexcept {
         auto& next=frame.next;const auto& before=frame.before;
@@ -167,12 +174,14 @@ class StateRefresh {
         auto& oscillator=*std::get<OscillatorKernel>(frame.next.kernel).value;oscillator=*std::get<OscillatorKernel>(frame.before.kernel).value;
         (void)oscillator.update(std::get<SignalGeneratorProcessingParameters>(graph.nodes[frame.node.configured].parameters).oscillators);
     }
-    void copy_kernels(const Frame& frame) const noexcept {
+    bool copy_kernels(const Frame& frame) const noexcept {
+        if(frame.next.extension && (!frame.before.extension || frame.next.extension->copy_state_from(*frame.before.extension)!=Status::ok))return false;
         copy_generator(frame);
-        if(frame.node.operation==ProcessingOperation::MusicTransform)std::get<PreparedOperationKernel>(frame.next.kernel).copy_state_from(std::get<PreparedOperationKernel>(frame.before.kernel));
-        if(frame.node.node.kind==NodeKind::PcmResampler)std::get<ResamplerKernel>(frame.next.kernel).operation().copy_state_from(std::get<ResamplerKernel>(frame.before.kernel).operation());
+        if(frame.node.operation==ProcessingOperation::MusicTransform && !std::get<PreparedOperationKernel>(frame.next.kernel).copy_state_from(std::get<PreparedOperationKernel>(frame.before.kernel)))return false;
+        if(frame.node.node.kind==NodeKind::PcmResampler && !std::get<ResamplerKernel>(frame.next.kernel).operation().copy_state_from(std::get<ResamplerKernel>(frame.before.kernel).operation()))return false;
         if(frame.node.selector_changed){frame.next.pending_discontinuity=true;
             if(frame.node.operation==ProcessingOperation::InputSelector && frame.node.endpoint_plan)std::fill(frame.next.source_markers.begin(),frame.next.source_markers.end(),false);}
+        return true;
     }
     bool mixer_input_matches(const PlanNode::ScalarInput& next,const PlanNode::ScalarInput& before) const noexcept {
         return next.parent_port==before.parent_port && producer_id(nodes,next.parent)==producer_id(prior_nodes,before.parent) && producer_id(nodes,next.clock)==producer_id(prior_nodes,before.clock) && (next.parent==absent || !nodes[next.parent].clock_reset);
@@ -230,8 +239,7 @@ class StateRefresh {
     void copy_window(const Frame& frame) const noexcept {
         auto& next=frame.next;const auto& before=frame.before;
         if(next.pcm.size()==before.pcm.size())std::copy(before.pcm.begin(),before.pcm.end(),next.pcm.begin());
-        if((frame.node.operation==ProcessingOperation::Mixer || frame.node.node.kind==NodeKind::Window) && !same_interval){next.progress=next.hop=0;next.remainder=0;next.pending_discontinuity=true;}
-        if(frame.node.node.kind==NodeKind::Window && (!frame.node.node.enabled || frame.node.node.enabled!=frame.prior.node.enabled)){std::fill(next.pcm.begin(),next.pcm.end(),0);next.pending_discontinuity=true;}
+        if(frame.node.operation==ProcessingOperation::Mixer && !same_interval){next.progress=next.hop=0;next.remainder=0;next.pending_discontinuity=true;}
     }
     static bool needs_history_resize(const Frame& frame) noexcept {
         return (frame.node.operation==ProcessingOperation::History || (frame.node.operation==ProcessingOperation::Converter && !frame.node.identity_bypass && frame.before.history_origin_valid)) && !frame.next.numeric_outputs.empty() && std::get<NumericContract>(frame.node.numeric_outputs[0]).semantic==Semantic::History && frame.next.numeric_outputs[0].actual[0]!=frame.before.numeric_outputs[0].actual[0];
@@ -276,6 +284,7 @@ class StateRefresh {
         auto& next=frame.next.numeric_outputs[port];const auto& before=frame.before.numeric_outputs[port];
         if(next.storage().size()!=before.storage().size())return;
         std::copy(before.storage().begin(),before.storage().end(),next.storage().begin());
+        if(frame.next.extension)next.actual=before.actual;
         // MIDI coordinates belong to the new prepared range/tuning.
         for(std::size_t axis=0;axis<2;++axis)if(!(frame.node.node.kind==NodeKind::MusicalSpectrogram && port==3 && axis==0) && next.coordinates[axis].size()==before.coordinates[axis].size())std::copy(before.coordinates[axis].begin(),before.coordinates[axis].end(),next.coordinates[axis].begin());
     }
@@ -287,7 +296,10 @@ class StateRefresh {
     }
     void copy_frame(const Frame& frame) const noexcept {
         if(frame.node.reset){reset_frame(frame);return;}
-        copy_identity(frame);copy_schedule(frame);copy_mixer(frame);copy_kernels(frame);copy_ingress(frame);copy_window(frame);copy_outputs(frame);
+        copy_identity(frame);copy_schedule(frame);copy_mixer(frame);
+        if(!copy_kernels(frame)){clear_node_state(frame.node,frame.next);return;}
+        copy_ingress(frame);copy_window(frame);copy_outputs(frame);
+        if(frame.next.extension)frame.next.extension->rebind_outputs(frame.next);
     }
 public:
     StateRefresh(std::span<const PlanNode> prepared,std::span<State> context,const NumericProcessingGraph& definition,Ratio interval,std::span<const PlanNode> prior,std::span<const State> before,Ratio prior_interval) noexcept

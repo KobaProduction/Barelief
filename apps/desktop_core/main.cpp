@@ -82,7 +82,7 @@ QJsonObject matching_preset(const QJsonArray& presets,const QString& key,const Q
     return result;
 }
 struct CliProject {
-    domain::NumericProcessingGraph graph=numeric_default_graph();
+    domain::NumericProcessingGraph graph=numeric_basic_signal_graph();
     QJsonObject runtime_config,adapter_graph;
     bool select_preset(const QString& selected) {
         const auto presets=runtime_config["ui"].toObject()["pipeline_presets"].toArray();

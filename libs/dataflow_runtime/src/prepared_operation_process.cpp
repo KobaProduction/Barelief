@@ -15,6 +15,10 @@ struct Process {
     bool operator()(dsp_kernels::FFT&) const noexcept {return false;}
     bool operator()(dsp_kernels::PreparedRfft& operation) const noexcept {return operation.process(state.input,state.output);}
     bool operator()(dsp_kernels::PreparedSpectrumProjection& operation) const noexcept {return operation.process(state.input,state.output);}
+    bool operator()(dsp_kernels::PreparedSpectralDescriptor& operation) const noexcept {
+        if(discontinuity)operation.reset();
+        return operation.process(state.input,state.output[0]);
+    }
     bool operator()(dsp_kernels::BroadbandFeatures& operation) const noexcept {return operation.process(state.input,state.output,discontinuity);}
     bool operator()(dsp_kernels::PreparedFrequencyNormalizer& operation) const noexcept {return operation.process(state.input,state.output);}
     bool operator()(dsp_kernels::MusicalSpectrogram&) const noexcept {return false;}

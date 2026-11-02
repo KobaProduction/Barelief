@@ -36,10 +36,18 @@ set(PORTABLE_SDK_SOURCES
     domain/src/graph/owned_footprint.cpp
     domain/src/graph/configuration_bindings.cpp
     domain/src/numeric/contract_snapshot.cpp domain/src/numeric/array_generator_contract.cpp
+    domain/src/numeric/temporal_operation_contracts.cpp domain/src/numeric/interval_operation_contracts.cpp
+    domain/src/numeric/common_operation_contracts.cpp
+    domain/src/numeric/sequence_operation_contracts.cpp domain/src/numeric/spectral_sequence_parameters.cpp domain/src/numeric/reference_operation_contracts.cpp
     domain/src/numeric/matrix_contracts.cpp domain/src/signal/fourier_contracts.cpp
     domain/src/signal/parameter_contracts.cpp domain/src/music/spectral_features_contract.cpp
     domain/src/music/frequency_normalizer_contract.cpp
     domain/src/music/rhythm_contract.cpp
+    domain/src/music/tempo_evidence_contract.cpp
+    domain/src/music/onset_strength_contract.cpp
+    domain/src/music/spectral_descriptor_contract.cpp
+    domain/src/signal/power_to_db_contract.cpp
+    domain/src/signal/mel_contract.cpp
     domain/src/graph/processing_contracts.cpp
     domain/src/numeric_parameter_bindings.cpp
     domain/src/music/musical_spectrogram_contract.cpp
@@ -50,6 +58,15 @@ set(PORTABLE_SDK_SOURCES
     adapters/control/src/numeric_control_session.cpp
     adapters/project_storage/src/numeric_array_codec.cpp
     libs/dataflow_runtime/src/runtime.cpp
+    libs/dataflow_runtime/src/numeric_operation.cpp
+    libs/dataflow_runtime/src/numeric_extension_preparation.cpp
+    libs/dataflow_runtime/src/numeric_extension_resources.cpp
+    libs/dataflow_runtime/src/numeric_extension_storage.cpp
+    libs/dataflow_runtime/src/numeric_extension_latch.cpp
+    libs/dataflow_runtime/src/numeric_extension_join.cpp
+    libs/dataflow_runtime/src/numeric_extension_publication.cpp
+    libs/dataflow_runtime/src/numeric_extension_process.cpp
+    libs/dataflow_runtime/src/temporal_operation_execution.cpp
     libs/dataflow_runtime/src/runtime_context.cpp
     libs/dataflow_runtime/src/music_execution.cpp
     libs/dataflow_runtime/src/numeric_operation_preparation.cpp
@@ -60,6 +77,10 @@ set(PORTABLE_SDK_SOURCES
     libs/dataflow_runtime/src/signal_operation_execution.cpp
     libs/dataflow_runtime/src/music_operation_execution.cpp
     libs/dataflow_runtime/src/rhythm_execution.cpp
+    libs/dataflow_runtime/src/tempo_evidence_execution.cpp
+    libs/dataflow_runtime/src/onset_strength_execution.cpp
+    libs/dataflow_runtime/src/spectral_descriptor_execution.cpp
+    libs/dataflow_runtime/src/spectral_frontend_execution.cpp
     libs/dataflow_runtime/src/prepared_operation_process.cpp
     libs/dataflow_runtime/src/pcm_packet_queue.cpp
     libs/dataflow_runtime/src/runtime_queries.cpp
@@ -84,8 +105,44 @@ set(PORTABLE_SDK_SOURCES
     libs/dataflow_runtime/src/mixer_execution.cpp
     libs/dataflow_runtime/src/clock_execution.cpp
     libs/dsp_kernels/src/dsp.cpp libs/dsp_kernels/src/rfft_split.cpp libs/dsp_kernels/src/backend_tables.cpp libs/dsp_kernels/src/scalar_reduce.cpp
-    libs/dsp_kernels/src/prepared_resampler.cpp libs/dsp_kernels/src/musical_features.cpp
-    libs/dsp_kernels/src/frequency_profile.cpp
+    libs/dsp_kernels/src/prepared_resampler.cpp libs/dsp_kernels/src/recursive_filter.cpp libs/dsp_kernels/src/spectral_autocorrelation.cpp libs/dsp_kernels/src/blocked_fourier.cpp libs/dsp_kernels/src/value_histogram.cpp libs/dsp_kernels/src/envelope_follower.cpp libs/dsp_kernels/src/sequence_statistics.cpp libs/dsp_kernels/src/model_prediction_selection.cpp libs/dsp_kernels/src/tempo_probability_histogram.cpp libs/dsp_kernels/src/beat_feature_synchronization.cpp
+    libs/dsp_kernels/src/sparse_markov.cpp libs/dsp_kernels/src/metrical_state_space.cpp libs/dsp_kernels/src/metrical_transitions.cpp
+    libs/dsp_kernels/src/metrical_observations.cpp libs/dsp_kernels/src/bar_state_decoder.cpp libs/dsp_kernels/src/downbeat_state_decoder.cpp
+    libs/dsp_kernels/src/matrix_factorization.cpp libs/dsp_kernels/src/gaussian_mixture.cpp libs/dsp_kernels/src/metrical_events.cpp libs/dsp_kernels/src/pattern_state_decoder.cpp
+    libs/dsp_kernels/src/rectangular_filter_bank.cpp libs/dsp_kernels/src/pattern_feature_recipe.cpp libs/dsp_kernels/src/pcm_pattern_recipe.cpp
+    libs/dsp_kernels/src/tempo_histogram_sequence.cpp libs/dsp_kernels/src/tempo_analysis_sequence.cpp
+    libs/dsp_kernels/src/beat_tracking_sequence.cpp libs/dsp_kernels/src/crf_beat_sequence.cpp libs/dsp_kernels/src/state_beat_sequence.cpp
+    libs/dsp_kernels/src/frame_sampling.cpp libs/dsp_kernels/src/spectral_frame_recipe.cpp libs/dsp_kernels/src/spectral_frame_storage.cpp libs/dsp_kernels/src/interpolated_peaks.cpp libs/dsp_kernels/src/spectral_novelty.cpp libs/dsp_kernels/src/spectral_novelty_storage.cpp libs/dsp_kernels/src/pcm_spectral_novelty.cpp
+    libs/dsp_kernels/src/discrete_triangle.cpp libs/dsp_kernels/src/sinc_resampling_window.cpp libs/dsp_kernels/src/resampling_window.cpp
+    libs/dsp_kernels/src/onset_strength_sequence.cpp libs/dsp_kernels/src/pcm_onset_strength.cpp libs/dsp_kernels/src/onset_detection_sequence.cpp libs/dsp_kernels/src/pcm_onset_events.cpp libs/dsp_kernels/src/pcm_onset_envelope.cpp
+    libs/dsp_kernels/src/tempogram_sequence.cpp libs/dsp_kernels/src/envelope_tempo.cpp libs/dsp_kernels/src/pcm_tempo.cpp
+    libs/dsp_kernels/src/feature_reduction.cpp libs/dsp_kernels/src/tempo_ratio_sequence.cpp libs/dsp_kernels/src/metrical_tempogram_sequence.cpp
+    libs/dsp_kernels/src/envelope_tempo_ratios.cpp libs/dsp_kernels/src/envelope_beat_tracking.cpp libs/dsp_kernels/src/envelope_local_pulse.cpp libs/dsp_kernels/src/pcm_beat_tracking.cpp
+    libs/dsp_kernels/src/musical_features.cpp
+    libs/dsp_kernels/src/frequency_profile.cpp libs/dsp_kernels/src/frequency_curve.cpp libs/dsp_kernels/src/frequency_curve_fit.cpp
+    libs/dsp_kernels/src/frequency_measurements.cpp libs/dsp_kernels/src/frequency_measurement_grid.cpp
+    libs/dsp_kernels/src/onsets.cpp libs/dsp_kernels/src/onset_fusion.cpp
+    libs/dsp_kernels/src/correlation.cpp
+    libs/dsp_kernels/src/spectral_alignment.cpp libs/dsp_kernels/src/comb_filter_bank.cpp
+    libs/dsp_kernels/src/interval_histogram.cpp libs/dsp_kernels/src/convolution.cpp
+    libs/dsp_kernels/src/histogram_tempo_peaks.cpp libs/dsp_kernels/src/interval_beat_search.cpp
+    libs/dsp_kernels/src/interval_sequence_decoder.cpp libs/dsp_kernels/src/state_interval_histogram.cpp
+    libs/dsp_kernels/src/local_interval_beat_search.cpp libs/dsp_kernels/src/interval_sequence_search.cpp
+    libs/dsp_kernels/src/tempo_evidence.cpp
+    libs/dsp_kernels/src/onset_strength.cpp libs/dsp_kernels/src/onset_lag.cpp
+    libs/dsp_kernels/src/beat_tracker.cpp
+    libs/dsp_kernels/src/fourier_backend.cpp libs/dsp_kernels/src/fourier_transform.cpp libs/dsp_kernels/src/fourier_storage.cpp libs/dsp_kernels/src/temporal_window.cpp
+    libs/dsp_kernels/src/tempogram.cpp libs/dsp_kernels/src/tempo_estimator.cpp
+    libs/dsp_kernels/src/reference_fourier.cpp libs/dsp_kernels/src/reference_autocorrelation.cpp libs/dsp_kernels/src/reference_hybrid.cpp
+    libs/dsp_kernels/src/onset_peaks.cpp libs/dsp_kernels/src/overlap_add.cpp
+    libs/dsp_kernels/src/local_pulse.cpp
+    libs/dsp_kernels/src/beat_state_decoder.cpp
+    libs/dsp_kernels/src/log_frequency_filter_bank.cpp libs/dsp_kernels/src/complex_flux.cpp
+    libs/dsp_kernels/src/energy_novelty.cpp
+    libs/dsp_kernels/src/complex_values.cpp libs/dsp_kernels/src/spectral_descriptors.cpp libs/dsp_kernels/src/log_compression.cpp
+    libs/dsp_kernels/src/activation_peaks.cpp libs/dsp_kernels/src/activation_peak_matrix.cpp libs/dsp_kernels/src/curve_interpolation.cpp
+    libs/dsp_kernels/src/sample_rotation.cpp
+    libs/dsp_kernels/src/mel_filter_bank.cpp libs/dsp_kernels/src/power_to_db.cpp
     libs/dsp_kernels/src/rhythm/analyzer.cpp libs/dsp_kernels/src/rhythm/math.cpp
     libs/dsp_kernels/src/rhythm/observer.cpp libs/dsp_kernels/src/rhythm/tracking.cpp
     libs/dsp_kernels/src/rhythm/autocorrelation.cpp libs/dsp_kernels/src/rhythm/hierarchy.cpp

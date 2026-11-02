@@ -13,6 +13,7 @@
 #include <pipeline/numeric_projection.h>
 #include <QtNodes/DataFlowGraphicsScene>
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QPushButton>
 #include <QLabel>
 #include <QInputDialog>
@@ -42,13 +43,16 @@
 #include <vector>
 static void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 static void run_editor_check(const char* name,void (*check)(),QStringList& failures){
+    QElapsedTimer timer;timer.start();
+    std::fprintf(stderr,"editor acceptance begin: %s\n",name);std::fflush(stderr);
     ui::Language::instance().set("en");
     try {check();}
     catch(const std::exception& error){failures.append(QString::fromLatin1(name)+": "+QString::fromUtf8(error.what()));}
+    std::fprintf(stderr,"editor acceptance end: %s elapsed_ms=%lld\n",name,static_cast<long long>(timer.elapsed()));std::fflush(stderr);
 }
 static std::shared_ptr<QtNodes::NodeDelegateModelRegistry> inventory_registry(){
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto& kind:numeric_editor::catalog())registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);});
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);});
     return registry;
 }
 struct CatalogueSpec {const char* kind;unsigned inputs,outputs;const char* control;NodeParameterModel::Editor editor;};
@@ -59,14 +63,23 @@ static std::vector<CatalogueSpec> established_catalogue_specs(){
         {"AudioSource",0,1,"captureDevice",E::Choice},{"SignalGenerator",0,1,"oscillatorCount",E::Integer},
         {"SampleClock",0,0,"clockSampleRate",E::Integer},{"PcmResampler",1,1,"output_rate",E::Literal},
         {"Window",1,1,"size",E::Literal},{"WindowFunction",1,1,"function",E::Choice},
-        {"StereoFFT",1,1,nullptr,E::Caption},{"BarkWeighting",1,1,nullptr,E::Caption},
+        {"WindowFunction",1,1,"periodic",E::Boolean},{"Fourier",2,2,"radix",E::Choice},
+        {"RealFourier",1,3,"fft_size",E::Literal},{"AmplitudePhase",2,2,"normalize",E::Boolean},{"BarkWeighting",1,1,nullptr,E::Caption},
         {"Mel",1,1,"bands",E::Literal},{"SpectrumGain",1,1,"gain",E::Literal},
+        {"Mel",1,1,"scale",E::Choice},{"Mel",1,1,"norm",E::Choice},
         {"Mixer",2,1,"mixerMode",E::Choice},{"InputSelector",2,1,"numericSelectorChannels",E::Integer},
         {"Switch",1,2,"numericRouteChannels",E::Integer},{"Gate",1,1,"numericGate",E::Choice},
         {"Spectrogram",1,2,"numericCapacity",E::Literal},{"IndexExtract",1,1,"index",E::Literal},
-        {"MatrixTranspose",1,1,nullptr,E::Caption},{"MatrixWindowFunction",1,1,"function",E::Choice},
+        {"Spectrogram",1,2,"numericFilledOnly",E::Boolean},{"NumberAccumulator",1,2,"numericFilledOnly",E::Boolean},
+        {"MatrixTranspose",1,1,nullptr,E::Caption},
         {"MatrixCenter",1,1,"method",E::Choice},
-        {"MatrixFFT",1,1,"fft_size",E::Literal},{"MatrixRow",1,1,"row",E::Literal},
+        {"MatrixAutocorrelation",1,1,"max_lag",E::Literal},
+        {"TempoEvidence",6,4,"frame_rate_fps",E::Literal},
+        {"OnsetStrength",1,1,"lag",E::Literal},
+        {"SpectralFlux",1,1,"half_wave",E::Boolean},{"ComplexSpectralDifference",1,1,"half_wave",E::Boolean},
+        {"PhaseDeviation",1,1,"weighted",E::Boolean},{"HighFrequencyContent",1,1,"squared",E::Boolean},
+        {"PowerToDb",1,1,"reference_mode",E::Choice},
+        {"MatrixRow",1,1,"row",E::Literal},
         {"ScalarReduce",1,1,"numericReduction",E::Choice},{"Converter",1,1,"numericRounding",E::Choice},
         {"AudioView",1,0,nullptr,E::Caption},{"WindowView",1,0,nullptr,E::Caption},
         {"WindowedView",1,0,nullptr,E::Caption},{"FFTView",1,0,nullptr,E::Caption},
@@ -118,6 +131,9 @@ static void matrix_operation_controls(AudioNodeModel& node,const QString& kind){
         const auto* size=parameters->field("fft_size");
         require(size && size->editor==E::Literal && std::visit([](auto value){return value==512;},std::get<signal_contracts::NumericLiteral>(size->read())),"Matrix FFT exposes an explicit numeric N with a 512-value default");
         require(!parameters->field("function") && !parameters->field("window_enabled"),"Matrix FFT must not contain a hidden window stage");
+        const auto data=node.numeric_node()->outputs[1].contract.view();
+        const auto& phase=std::get<signal_contracts::NumericContract>(data);
+        require(phase.quantity==signal_contracts::Quantity::SpectrumImaginary && phase.unit==signal_contracts::NumericUnit::RawAmplitude,"Matrix Fourier imaginary plane is an explicit raw typed output");
     }
     if(kind=="MatrixWindowFunction"){
         const auto* window=parameters->field("function");
@@ -128,8 +144,8 @@ static void matrix_operation_controls(AudioNodeModel& node,const QString& kind){
 }
 static void wled_encoder_port_contracts(const domain::ConfiguredProcessingNode& node){
     using namespace signal_contracts;
-    const auto& frequency=std::get<NumericContract>(node.inputs[1].contract.view());
-    const auto& magnitude=std::get<NumericContract>(node.inputs[2].contract.view());
+    const auto frequency=std::get<NumericContract>(node.inputs[1].contract.view());
+    const auto magnitude=std::get<NumericContract>(node.inputs[2].contract.view());
     require(node.inputs[0].id==0 && node.inputs[1].id==1 && node.inputs[2].id==2,"WLED encoder explicit inputs lost stable IDs");
     require(frequency.shape.rank==Rank::Scalar && frequency.dtype==DType::Float32 && frequency.unit==NumericUnit::Hertz,"WLED encoder needs its explicit scalar peak-frequency input");
     require(magnitude.shape.rank==Rank::Scalar && magnitude.dtype==DType::Float32 && magnitude.quantity==Quantity::SpectrumPeakAmplitude,"WLED encoder needs its explicit scalar peak-magnitude input");
@@ -148,7 +164,7 @@ static void catalogue_form_appearance(AudioNodeModel& node,QWidget& form){
     auto* bypass=form.findChild<QCheckBox*>("numericBypass");
     require(bool(bypass)==node.parameter_model()->supportsBypass(),"Catalogue form exposes bypass only for supported identity operations");
     if(bypass)require(bypass->text()==ui::text("Bypass"),"Catalogue form fails live translated bypass");
-    for(auto* control:form.findChildren<QWidget*>())for(auto group:{QPalette::Active,QPalette::Inactive,QPalette::Disabled})
+    for(const auto controls=form.findChildren<QWidget*>();auto* control:controls)for(auto group:{QPalette::Active,QPalette::Inactive,QPalette::Disabled})
         require(control->palette().color(group,QPalette::WindowText)==QApplication::palette().color(group,QPalette::WindowText),"Catalogue control overrides centralized theme text colors");
     form.setEnabled(false);if(bypass)require(!bypass->isEnabled(),"Catalogue disabled controls ignore their inspector");form.setEnabled(true);
 }
@@ -184,6 +200,7 @@ static void oscillator_table_translation(){
 static void catalogue_acceptance_checks(){
     const auto specs=established_catalogue_specs();
     const auto actual=numeric_editor::catalog();
+    for(const auto* retired:{"StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"})require(!actual.contains(retired),"Internal reference blocks remain in the editor catalogue");
     for(const auto& spec:specs)require(actual.contains(spec.kind),qPrintable(QString("Missing established catalogue operation: ")+spec.kind));
     for(const auto& kind:actual){AudioNodeModel node(kind);require(node.numeric_node() && node.parameter_model(),"Catalogue operation has no numeric UI contract");}
     for(const auto& spec:specs)catalogue_operation(spec);
@@ -256,12 +273,32 @@ static void check_dimensional_field(AudioNodeModel& node,QWidget& form,QWidget& 
     }
     for(int unsupported:{0,2,3})require(!model->editLiteral(key,text,unsupported) && node.save()==saved,"Size editor accepted unsupported literal representation");
 }
-static void check_dimensional_node(const QString& kind){
+static void check_dimensional_model_field(AudioNodeModel& node,const QString& key){
+    auto* model=node.parameter_model();const auto* field=model->field(key);
+    require(field && field->editor==NodeParameterModel::Editor::Literal && field->literal_type==1 && field->read,"Dimensional field must expose an exact UInt64 reader");
+    const auto saved=node.save();const auto value=std::get<signal_contracts::NumericLiteral>(field->read());
+    require(std::holds_alternative<std::uint64_t>(value),"Dimensional reader must retain UInt64 representation");
+    const auto text=QString::number(std::get<std::uint64_t>(value));
+    const bool available=!field->available || field->available();
+    const bool accepted=model->editLiteral(key,text,1);
+    require(accepted==available,"Dimensional no-op must respect the field availability");
+    require(node.save()==saved,"Dimensional no-op changes the saved node");
+    if(accepted)require(!model->editState(key).dirty,"Dimensional no-op retains a dirty model draft");
+    for(int unsupported:{0,2,3})require(!model->editLiteral(key,text,unsupported) && node.save()==saved,"Size editor accepted unsupported literal representation");
+}
+static void check_dimensional_controls(const QString& kind){
     AudioNodeModel node(kind);auto* model=node.parameter_model();std::unique_ptr<QWidget> form(node.parameter_widget());
     NodeParameterForm contracts(model,false,nullptr,true);
     QStringList sizes;
     for(const auto& field:model->fields())if(field.editor==NodeParameterModel::Editor::Literal && field.literal_type==1)sizes.append(field.key);
     for(const auto& key:sizes)check_dimensional_field(node,*form,contracts,key);
+}
+
+static void check_dimensional_node(const QString& kind){
+    AudioNodeModel node(kind);auto* model=node.parameter_model();
+    QStringList sizes;
+    for(const auto& field:model->fields())if(field.editor==NodeParameterModel::Editor::Literal && field.literal_type==1)sizes.append(field.key);
+    for(const auto& key:sizes)check_dimensional_model_field(node,key);
 }
 static void check_registered_size_writers(){
     struct Size {const char* kind;const char* key;int type;};
@@ -272,7 +309,8 @@ static void check_registered_size_writers(){
     }
  }
 static void dimensional_editor_acceptance_checks(){
-    for(const auto& kind:numeric_editor::catalog())check_dimensional_node(kind);
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)check_dimensional_node(kind);
+    for(const auto* kind:{"Spectrogram","MatrixRow"})check_dimensional_controls(kind);
     AudioNodeModel history("Spectrogram");require(history.parameter_model()->editLiteral("numericCapacity","17",1),"UInt64 History capacity edit rejected");
     require(std::get<domain::HistoryProcessingParameters>(history.numeric_node()->parameters).capacity==17,"Capacity writer does not retain UInt64 size");
     check_registered_size_writers();
@@ -353,7 +391,7 @@ class GroupedLayoutChecks {
     void check_port(AudioNodeModel& node,QtNodes::NodeId id,QtNodes::PortType side,unsigned port,unsigned channels){
         const auto pin=geometry().portPosition(id,side,port),label=geometry().portTextPosition(id,side,port);
         QFontMetricsF metrics(geometry().label_font());
-        for(const auto& line:node.portCaption(side,port).split('\n'))require(label.x()>=0 && label.x()+metrics.horizontalAdvance(line)<=geometry().size(id).width(),"Long RU/EN port caption clips node bounds");
+        for(const auto lines=node.portCaption(side,port).split('\n');const auto& line:lines)require(label.x()>=0 && label.x()+metrics.horizontalAdvance(line)<=geometry().size(id).width(),"Long RU/EN port caption clips node bounds");
         require(geometry().checkPortHit(id,side,pin)==port,"Multichannel pin hit loses actual port index");
         check_port_spacing(node,id,side,port,channels);
         check_port_zoom(id,side,port,pin);
@@ -432,12 +470,71 @@ static void bypass_policy_checks(AudioNodeModel& model,QWidget* body,QWidget& in
     require(form && form->layout()->itemAt(0)->widget()==toggle,"Inspector bypass stays at the top of its parameter form");
     bypass_edit_checks(model,*toggle);
 }
-static void bypass_controls_checks(){
-    for(const auto& kind:numeric_editor::catalog()){
-        AudioNodeModel model(kind);
-        std::unique_ptr<QWidget> body(model.embeddedWidget()),inspector(model.parameter_widget());
-        node_activity_checks(model,body.get());bypass_policy_checks(model,body.get(),*inspector,kind);
+static QString bypass_round_trip_diagnostic(const QString& kind,bool defaultBypass,bool restored,const QJsonObject& before,const QJsonObject& after){
+    const auto beforeText=before.value("numeric_processing").toString(),afterText=after.value("numeric_processing").toString();
+    const auto beforeNode=QJsonDocument::fromJson(beforeText.toUtf8()).object(),afterNode=QJsonDocument::fromJson(afterText.toUtf8()).object();
+    QStringList snapshotKeys,processingKeys;
+    const auto beforeKeys=before.keys();
+    const auto processingBeforeKeys=beforeNode.keys();
+    for(const auto& key:beforeKeys)if(before.value(key)!=after.value(key))snapshotKeys.append(key);
+    for(const auto& key:processingBeforeKeys)if(beforeNode.value(key)!=afterNode.value(key))processingKeys.append(key);
+    qsizetype first=0;const auto common=std::min(beforeText.size(),afterText.size());
+    while(first<common && beforeText[first]==afterText[first])++first;
+    const auto start=first>60?first-60:0;
+    return QString("Bypass round trip changes processing parameters or ports: kind=%1 initial_enabled=%2 default_bypass=%3 restored=%4 snapshot_keys=%5 processing_keys=%6 offset=%7 before=%8 after=%9")
+        .arg(kind).arg(beforeNode.value("enabled").toBool()).arg(defaultBypass).arg(restored).arg(snapshotKeys.join(','),processingKeys.join(','))
+        .arg(first).arg(beforeText.mid(start,160),afterText.mid(start,160));
+}
+
+static void bypass_model_edit_checks(AudioNodeModel& model,const QString& kind){
+    auto* parameters=model.parameter_model();const auto saved=model.save();const auto presentation=model.presentation();
+    if(!parameters->supportsBypass()){
+        require(!parameters->setBypassed(true) && model.save()==saved,"Unsupported bypass changes the saved node");
+        require(parameters->setBypassed(false) && model.save()==saved,"Unsupported processing no-op changes the saved node");
+        return;
     }
+    const bool defaultBypass=kind=="MatrixWindowFunction";
+    require(model.numeric_node()->enabled==!defaultBypass,"Matrix window defaults to identity bypass; other identity operations process");
+    require(parameters->setBypassed(true) && !model.numeric_node()->enabled && model.presentation()==presentation,"Model bypass changes execution mode without presentation changes");
+    require(parameters->setBypassed(false) && model.numeric_node()->enabled,"Model must restore processing");
+    const auto beforeRefused=model.save();model.set_numeric_edit_handler([](const auto&){return false;});
+    require(!parameters->setBypassed(true) && model.numeric_node()->enabled && model.save()==beforeRefused,"Rejected bypass changes the model or its ports");
+    model.set_numeric_edit_handler({});
+    const bool restored=parameters->setBypassed(defaultBypass);const auto after=model.save();
+    require(restored && after==saved && model.presentation()==presentation,
+        qPrintable(bypass_round_trip_diagnostic(kind,defaultBypass,restored,saved,after)));
+}
+static void canonicalize_bypass_fixture(AudioNodeModel& model){
+    const auto initial=*model.numeric_node();model.set_numeric_node(initial);
+    const auto* canonical=model.numeric_node();
+    require(canonical && canonical->id==initial.id && canonical->kind==initial.kind && canonical->enabled==initial.enabled && domain::same_processing_parameters(initial.parameters,canonical->parameters),"Canonical bypass setup changes node identity, enabled state or parameters");
+    const auto samePort=[](const domain::ProcessingPort& left,const domain::ProcessingPort& right){
+        return left.id==right.id && left.direction==right.direction && signal_contracts::same_contract(left.contract.view(),right.contract.view());
+    };
+    require(std::is_permutation(initial.inputs.begin(),initial.inputs.end(),canonical->inputs.begin(),canonical->inputs.end(),samePort) &&
+        std::is_permutation(initial.outputs.begin(),initial.outputs.end(),canonical->outputs.begin(),canonical->outputs.end(),samePort),"Canonical bypass setup changes port IDs, directions or full contracts");
+}
+
+static void bypass_model_checks(const QString& kind){
+    AudioNodeModel model(kind);canonicalize_bypass_fixture(model);
+    const auto saved=model.save();auto* parameters=model.parameter_model();
+    require(!parameters->field("numericEnabled") && !parameters->field("numericBypass"),"Bypass must not be a pinnable processing parameter");
+    require(!model.set_parameter_on_block("numericBypass",false) && !parameters->setOnBlock("numericEnabled",true),"Presentation pinning cannot hide or duplicate bypass");
+    require(model.save()==saved,"Rejected bypass pinning changes the saved node");
+    bypass_model_edit_checks(model,kind);
+}
+static void bypass_ui_checks(const QString& kind){
+    AudioNodeModel model(kind);
+    std::unique_ptr<QWidget> body(model.embeddedWidget()),inspector(model.parameter_widget());
+    node_activity_checks(model,body.get());bypass_policy_checks(model,body.get(),*inspector,kind);
+}
+
+static void bypass_controls_checks(){
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)bypass_model_checks(kind);
+    for(const auto* kind:{"ScalarView","SpectrumGain","MatrixWindowFunction","Converter","Window","Spectrogram","NumberAccumulator"})bypass_ui_checks(kind);
+    AudioNodeModel accumulator("Window");const auto* parameters=accumulator.parameter_model();
+    require(parameters->field("size") && !parameters->field("input_rate") && !parameters->field("hop_samples") && !parameters->field("pad_start"),"Accumulator has only N and data, without audio framing parameters");
+    require(!parameters->supportsBypass(),"Accumulator never exposes bypass");
 }
 static void selector_repair_and_names_checks(){
     AudioNodeModel broken("InputSelector");auto malformed=*broken.numeric_node();malformed.outputs.clear();broken.set_numeric_node(malformed);
@@ -805,7 +902,7 @@ static domain::NumericProcessingGraph exact_converter_graph(){
 }
 static void clipboard_shortcuts(QtNodes::GraphicsView& view){
     int actions=0;
-    for(auto* action:view.actions())if(action->shortcuts().contains(QKeySequence(QKeySequence::Copy)) || action->shortcuts().contains(QKeySequence(QKeySequence::Paste))){
+    for(const auto view_actions=view.actions();auto* action:view_actions)if(action->shortcuts().contains(QKeySequence(QKeySequence::Copy)) || action->shortcuts().contains(QKeySequence(QKeySequence::Paste))){
         ++actions;require(action->shortcutContext()==Qt::WidgetWithChildrenShortcut && !action->autoRepeat(),"Graph clipboard shortcuts escape the focused view or repeat");
     }
     require(actions==2,"Graph Ctrl+C/V shortcuts were remapped or missing");
@@ -859,12 +956,12 @@ public:
     void rename(){
         graph.setNodeData(3,QtNodes::NodeRole::Position,QPointF(420,230));auto* model=graph.delegateModel<AudioNodeModel>(3);
         require(model->set_parameter_on_block("numericNan",true),"Preset visibility edit failed");
-        editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(3);auto* button=editor.findChild<QPushButton*>("pipelineRenameNode");require(button,"Ordinary processor inspector lacks rename control");
+        emit editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(3);auto* button=editor.findChild<QPushButton*>("pipelineRenameNode");require(button,"Ordinary processor inspector lacks rename control");
         inspector_order(button);clipboard();rename_command(*model,*button);
     }
     void rename_command(AudioNodeModel& model,QPushButton& button){
         const auto before=editor.history().index();
-        QTimer::singleShot(0,[]{for(auto* widget:QApplication::topLevelWidgets())if(auto* dialog=qobject_cast<QInputDialog*>(widget)){dialog->setTextValue("Exact converter");dialog->accept();}});
+        QTimer::singleShot(0,&editor,[]{for(const auto widgets=QApplication::topLevelWidgets();auto* widget:widgets)if(auto* dialog=qobject_cast<QInputDialog*>(widget)){dialog->setTextValue("Exact converter");dialog->accept();}});
         button.click();require(model.caption()=="Exact converter" && model.name()=="Converter" && editor.history().index()==before+1,"Inspector rename did not update user caption with one undo command");
         editor.history().undo();require(model.caption()!="Exact converter","Inspector rename undo did not restore default");editor.history().redo();
     }
@@ -945,7 +1042,7 @@ public:
         for(int i=0;i<100 && applied.isEmpty();++i)QTest::qWait(10);
         require(!applied.isEmpty() && applied.last()[1].toBool(),"Diagnostic graph Apply failed");
         model=graph.delegateModel<AudioNodeModel>(12);card.reset(model->preview_widget());exact=card->findChild<QLabel*>("previewExactValue");require(exact,"Registered diagnostic preview value absent");
-        editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(12);
+        emit editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(12);
     }
     void publish(){
         for(int i=0;i<200 && presenter.client().snapshot().statuses.value("analyzer").state!=pipeline::State::Running;++i)QTest::qWait(10);
@@ -1009,7 +1106,7 @@ static void editor_layout_checks(SchemeEditorWidget& editor,NumericEditorGraphMo
 static std::shared_ptr<NumericEditorGraphModel> widget_graph(GuiState& state){
     state.file_configs.ui.autosave_enabled=false;state.file_configs.ui.pipeline_auto_apply=false;
     state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto& kind:numeric_editor::catalog())state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     auto graph=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);state.data_flow_graph=graph;
     domain::NumericProcessingGraph empty;empty.graph_id="main";require(graph->set_numeric_graph(empty),"Empty canonical fixture rejected");state.file_configs.scene_graph=graph->save();return graph;
 }
@@ -1022,18 +1119,38 @@ static void widget_acceptance_checks(){
         exact_document_checks(editor,*graph,presenter,state,typedSave,applied);
         preview_lifecycle_checks(editor,*graph,presenter,applied);
 }
+static void report_editor_phase(const char* phase) {
+    QElapsedTimer timer;timer.start();
+    std::fprintf(stderr,"editor phase=%s monotonic_ms=%lld\n",phase,static_cast<long long>(timer.msecsSinceReference()));
+    std::fflush(stderr);
+}
+
 static void lazy_inline_fields_checks(){
-    AudioNodeModel node("Converter");std::unique_ptr<QWidget> body(node.embeddedWidget());
+    report_editor_phase("lazy node construct begin");
+    AudioNodeModel node("Converter");
+    report_editor_phase("lazy node construct end / embeddedWidget begin");
+    std::unique_ptr<QWidget> body(node.embeddedWidget());
+    report_editor_phase("lazy embeddedWidget end");
     const auto processing=node.numeric_node()->parameters;
     require(!body->findChild<QLineEdit*>("numericNan"),"Unpinned field eagerly creates an editor");
-    require(node.set_parameter_on_block("numericNan",true),"Pinning a lazy field failed");QCoreApplication::processEvents();
+    report_editor_phase("lazy pin begin");
+    require(node.set_parameter_on_block("numericNan",true),"Pinning a lazy field failed");
+    report_editor_phase("lazy pin processEvents begin");QCoreApplication::processEvents();
+    report_editor_phase("lazy pin end");
     QPointer<QLineEdit> edit=body->findChild<QLineEdit*>("numericNan");require(edit,"Pinned field was not materialized");
     edit->setText("-");edit->setModified(true);emit edit->textEdited(edit->text());
-    require(node.set_parameter_on_block("numericNan",false),"Unpinning field failed");QCoreApplication::processEvents();
+    report_editor_phase("lazy unpin begin");
+    require(node.set_parameter_on_block("numericNan",false),"Unpinning field failed");
+    report_editor_phase("lazy unpin processEvents begin");QCoreApplication::processEvents();
+    report_editor_phase("lazy unpin end");
     require(edit && body->findChild<QWidget*>("numericNan_row")->isHidden(),"Unpinning destroys the retained draft editor");
-    require(node.set_parameter_on_block("numericNan",true),"Repinning field failed");QCoreApplication::processEvents();
+    report_editor_phase("lazy repin begin");
+    require(node.set_parameter_on_block("numericNan",true),"Repinning field failed");
+    report_editor_phase("lazy repin processEvents begin");QCoreApplication::processEvents();
+    report_editor_phase("lazy repin end");
     require(edit && body->findChild<QLineEdit*>("numericNan")==edit && edit->text()=="-","Repinning loses the draft or rebuilds its editor");
     require(domain::same_processing_parameters(processing,node.numeric_node()->parameters),"Presentation edits change numeric processing settings");
+    report_editor_phase("lazy checks end / owners unwind begin");
 }
 static void model_acceptance_checks(){
     QStringList failures;
@@ -1046,6 +1163,19 @@ static void model_acceptance_checks(){
     for(const auto& [name,check]:checks)run_editor_check(name,check,failures);
     require(failures.isEmpty(),qPrintable(failures.join('\n')));
 }
+static bool run_editor_phase(const QByteArray& phase,QStringList& failures){
+    const std::pair<const char*,void (*)()> phases[]{
+        {"lazy",lazy_inline_fields_checks},{"catalogue",catalogue_acceptance_checks},
+        {"oscillator",oscillator_bank_acceptance_checks},{"dimensional",dimensional_editor_acceptance_checks},
+        {"grouped",grouped_layout_acceptance_checks},{"bypass",bypass_controls_checks},
+        {"preview",preview_model_checks},{"widget",widget_acceptance_checks}};
+    for(const auto& [name,check]:phases)if(phase==name){run_editor_check(name,check,failures);return true;}
+    if(phase!="canonical")return false;
+    run_editor_check("canonical parameters",canonical_parameter_checks,failures);
+    run_editor_check("selector repair",selector_repair_and_names_checks,failures);
+    return true;
+}
+
 int main(int argc,char** argv) {
     QApplication app(argc,argv);
     try {
@@ -1053,6 +1183,12 @@ int main(int argc,char** argv) {
             grouped_layout_acceptance_checks();qInfo("Grouped layout and painted port routing PASS");return 0;
         }
         QStringList failures;
+        if(argc>1 && QByteArray(argv[1])=="--phase"){
+            require(argc==3,"Expected --phase <editor acceptance phase>");
+            require(run_editor_phase(QByteArray(argv[2]),failures),"Unknown editor acceptance phase");
+            require(failures.isEmpty(),qPrintable(failures.join('\n')));
+            return 0;
+        }
         run_editor_check("model acceptance",model_acceptance_checks,failures);
         run_editor_check("widget acceptance",widget_acceptance_checks,failures);
         require(failures.isEmpty(),qPrintable(failures.join('\n')));

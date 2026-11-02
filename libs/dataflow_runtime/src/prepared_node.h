@@ -69,7 +69,7 @@ struct PlanNode {
     std::shared_ptr<const GatherOwner> input_gather;
     std::size_t matrix_row=0;
     unsigned center_method=0;
-    double center_offset=0;
+    float center_offset=0;
     float gain=1;
     float wled_peak_hz=0,wled_magnitude=0;
     std::uint64_t constant_bits=0; // Cold materialized in the declared scalar dtype.
@@ -78,8 +78,11 @@ struct PlanNode {
     // Shared numeric scale for FrequencyStep and WindowGain, not a dB reference.
     double spectrum_reference=1;
     dsp_kernels::WindowFunction window_function=dsp_kernels::WindowFunction::Hann;
+    bool periodic_window=false;
+    bool history_filled_only=false;
     std::shared_ptr<const dsp_kernels::PreparedWindows> windows;
     std::size_t hop_base=0;
+    std::size_t frame_hop=0;
     std::uint64_t hop_fraction=0,hop_denominator=1;
     double comparison_threshold=1e-12;
     dsp_kernels::ResamplerMode resampler_mode=dsp_kernels::ResamplerMode::ExistingFir;

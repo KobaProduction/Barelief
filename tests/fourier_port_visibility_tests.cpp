@@ -99,24 +99,29 @@ void musical_layout_caption(){
 void spectrum_normalization_controls(){
     using namespace domain;using namespace signal_contracts;
     auto node=numeric_editor::default_node("AmplitudePhase");
-    check(std::none_of(node.inputs.begin(),node.inputs.end(),[](const auto& p){return p.id==window_size_input;}),"amplitude/phase has no independent N input");
-    check(numeric_parameter_key("AmplitudePhase",window_size_input).empty(),"N is not a bindable amplitude/phase parameter");
+    check(std::any_of(node.inputs.begin(),node.inputs.end(),[](const auto& p){return p.id==window_size_input;}),"amplitude/phase exposes explicit N input");
+    check(numeric_parameter_key("AmplitudePhase",window_size_input)=="fft_size","N binds the registered amplitude/phase setting");
     NodeParameterModel parameters;parameters.setNode(node,true);
-    check(!parameters.field("fft_size"),"no editable or hidden N control");
+    check(parameters.field("fft_size"),"explicit N setting remains editable without a wire");
     const auto* normalize=parameters.field("normalize");
     check(normalize && normalize->primary && std::get<bool>(normalize->read()),"normalization checkbox is visible and defaults on");
     const auto* half=parameters.field("positive_half");check(half && half->primary,"input spectrum layout is explicit");
     auto array=std::get<NumericContract>(node.inputs[0].contract.view());array.shape.extents[0]={128,128};
     std::array<OwnedProcessingContract,2> outputs;
-    // A stale serialized size is not an input and cannot override array geometry.
-    node.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{4096}}},{"representation",std::string{"psd"}},{"normalize",false}}};
-    check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"derive projection from Re/Im geometry");
+    node.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{256}}},{"representation",std::string{"psd"}},{"normalize",false}}};
+    check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"derive projection from explicit N and Re/Im geometry");
     auto value=std::get<NumericContract>(outputs[0].view());
     check(value.quantity==Quantity::SpectrumPower && value.unit==NumericUnit::SquaredAmplitude,"unnormalized PSD is labelled raw squared magnitude");
-    check(value.coordinates[0].step==Ratio{48000,256},"frequency axis derives FFT length from half-spectrum array");
+    check(value.coordinates[0].step==Ratio{48000,256},"frequency axis uses declared half-spectrum N");
+    std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{512}};
+    check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"an explicit bounded spectral slice retains its independent N");
+    check(std::get<NumericContract>(outputs[0].view()).coordinates[0].step==Ratio{48000,512},"same plane length does not override the N setting");
+    std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{129}};
     std::get<TransformProcessingParameters>(node.parameters).values.push_back({"positive_half",false});
-    check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"full-spectrum layout derives size without producer metadata");
-    value=std::get<NumericContract>(outputs[0].view());check(value.coordinates[0].step==Ratio{48000,129},"full spectrum excludes separate DC");
+    check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"explicit full-spectrum N admits the declared non-DC bins");
+    value=std::get<NumericContract>(outputs[0].view());check(value.coordinates[0].step==Ratio{48000,129},"full spectrum excludes separate DC according to explicit N");
+    std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{128}};
+    check(amplitude_phase_output_contracts(node,array,outputs)==Status::invalid_argument,"explicit N rejects a plane beyond its declared spectral bounds");
 }
 void normalization_widget(){
     for(const auto* language:{"ru","en"})for(const auto* theme:{"light","dark"}){
@@ -150,9 +155,42 @@ void normalization_widget(){
         }
     }
 }
+const NumericExampleGraph& rhythm_preset(const std::vector<NumericExampleGraph>& examples,std::string_view id) {
+    const auto found=std::find_if(examples.begin(),examples.end(),[&](const auto& value){return std::string_view(value.id)==id;});
+    check(found!=examples.end(),"explicit rhythm method preset registered");
+    return *found;
+}
+void rhythm_preset_labels(const NumericExampleGraph& example) {
+    NumericEditorGraphModel editor(registry());check(editor.set_numeric_graph(example.graph),"explicit rhythm method imports");
+    apply_example_labels(&editor,example);
+    for(const auto& name:example.node_names){
+        const auto* node=editor.delegateModel<AudioNodeModel>(name.node);
+        check(node&&node->caption()==ui::text(name.label),"localized purpose labels assigned to rhythm lanes");
+    }
+    const auto* selector=editor.delegateModel<AudioNodeModel>(200);
+    check(selector&&selector->selected_input()==1&&selector->numeric_node()->inputs.size()==4,"Loopback selected by default and microphone absent");
+    const auto saved=editor.save();NumericEditorGraphModel restored(registry());restored.load(saved);
+    for(const auto& names:example.scalar_names){
+        const auto* metrics=editor.delegateModel<AudioNodeModel>(names.view);
+        check(metrics&&metrics->numeric_node()->inputs.size()==names.labels.size(),"one metric view consumes its explicit method outputs");
+        const auto labels=metrics->presentation().value("scalar_inputs").toObject();
+        for(std::size_t port=0;port<names.labels.size();++port)
+            check(labels.value(QString::number(port)).toObject().value("display_name").toString()==ui::text(names.labels[port]),"localized metric names assigned");
+        const auto* recovered=restored.delegateModel<AudioNodeModel>(names.view);
+        check(recovered&&recovered->presentation().value("scalar_inputs").toObject()==labels,"metric labels survive save/load");
+    }
+}
+
 void shipped_window_dependency_branches(){
     using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
-    for(const auto& example:numeric_example_graphs()){
+    const auto examples=numeric_fixture_examples();
+    for(const auto* id:{"rhythm-onset-strength","rhythm-onset-max-filter","rhythm-spectral-flux",
+                       "rhythm-complex-difference","rhythm-phase-deviation","rhythm-high-frequency-content"}){
+        const auto& example=rhythm_preset(examples,id);
+        const auto window=std::find_if(example.graph.nodes.begin(),example.graph.nodes.end(),[](const auto& node){return node.id==1310&&node.kind=="WindowFunction";});
+        check(window!=example.graph.nodes.end(),"each independent spectral method retains its periodic-window branch");
+    }
+    for(const auto& example:examples){
         for(const auto& node:example.graph.nodes)if(node.kind=="WindowFunction"){
             check(!node.inputs.empty(),"window generator has numeric size input");
             const auto input=std::get<NumericContract>(node.inputs[0].contract.view());
@@ -196,22 +234,16 @@ void rhythm_node_ports(){
     }
 }
 void rhythm_example_labels(){
-    const auto examples=numeric_example_graphs();
-    const auto found=std::find_if(examples.begin(),examples.end(),[](const auto& value){return std::string_view(value.id)=="rhythm-research";});
-    check(found!=examples.end(),"rhythm example registered");
+    const auto examples=numeric_fixture_examples();
+    const auto& baseline=rhythm_preset(examples,"rhythm-research");
+    check(baseline.scalar_names.size()==1&&baseline.scalar_names[0].view==1103&&
+        baseline.scalar_names[0].labels.size()==domain::rhythm_output_count,"baseline metric view retains all rhythm outputs");
+    constexpr const char* ids[]{"rhythm-research","rhythm-fourier-short","rhythm-fourier-long","rhythm-acf-short","rhythm-acf-long",
+        "rhythm-tempo-evidence","rhythm-onset-strength","rhythm-onset-max-filter","rhythm-spectral-flux",
+        "rhythm-complex-difference","rhythm-phase-deviation","rhythm-high-frequency-content"};
     for(const auto* language:{"ru","en"}){
         ui::Language::instance().set(language);
-        NumericEditorGraphModel editor(registry());check(editor.set_numeric_graph(found->graph),"loopback rhythm example imports");
-        apply_example_labels(&editor,*found);
-        const auto* metrics=editor.delegateModel<AudioNodeModel>(1103);
-        check(metrics && metrics->numeric_node()->inputs.size()==domain::rhythm_output_count,"one metric view consumes all rhythm outputs");
-        const auto labels=metrics->presentation().value("scalar_inputs").toObject();
-        for(unsigned port=0;port<domain::rhythm_output_count;++port)
-            check(labels.value(QString::number(port)).toObject().value("display_name").toString()==ui::text(found->scalar_names[0].labels[port]),"localized metric names assigned");
-        const auto* selector=editor.delegateModel<AudioNodeModel>(200);
-        check(selector && selector->selected_input()==1 && selector->numeric_node()->inputs.size()==4,"Loopback selected by default and microphone absent");
-        const auto saved=editor.save();NumericEditorGraphModel restored(registry());restored.load(saved);
-        check(restored.delegateModel<AudioNodeModel>(1103)->presentation().value("scalar_inputs").toObject()==labels,"metric labels survive save/load");
+        for(const auto* id:ids)rhythm_preset_labels(rhythm_preset(examples,id));
     }
 }
 }

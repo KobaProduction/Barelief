@@ -1,3 +1,7 @@
+#include <domain/numeric/temporal_operations.h>
+#include <domain/numeric/interval_operations.h>
+#include <domain/numeric/common_operations.h>
+#include <domain/numeric/sequence_operations.h>
 #include <domain/graph/node_factory.h>
 #include <domain/processing_contracts.h>
 #include <algorithm>
@@ -90,23 +94,30 @@ void initialize_matrix(Factory& f,std::string_view kind) {
         value=std::get<NumericContract>(row_input.view());
     }
     if(kind=="MatrixWindowFunction")f.node.enabled=false;
-    f.io(value,value);
+    f.io(value,value,1,kind=="MatrixFFT"?2:1);
 }
 void initialize_fourier(Factory& f,std::string_view kind) {
-    const auto input=f.vector(Semantic::Windowed,f.settings.fft_size);
+    auto input=f.vector(Semantic::Numeric,f.settings.fft_size);input.clock={"values",{1,1},0};
     f.field("fft_size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
-    f.io(input,input,kind=="Fourier"?2:1,4);
+    f.io(input,input,kind=="Fourier"?2:1,kind=="Fourier"?2:3);
 }
 void initialize_polar(Factory& f,std::string_view kind) {
     auto input=f.vector(Semantic::Numeric,f.settings.fft_size/2,Axis::Bin);
     input.quantity=Quantity::SpectrumReal;input.unit=NumericUnit::RawAmplitude;
     f.io(input,input,2,2);
-    if(kind=="AmplitudePhase")f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
+    f.field("fft_size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
+    f.field("first_bin",NumericLiteral{std::uint64_t{1}});
+    f.field("positive_half",true);
+    if(kind=="AmplitudePhase"){
+        auto imaginary=input;imaginary.quantity=Quantity::SpectrumImaginary;
+        --imaginary.shape.extents[0].minimum;--imaginary.shape.extents[0].maximum;
+        f.node.inputs.pop_back();f.port(PortDirection::Input,1,imaginary);
+    }
 }
 NumericContract music_input(Factory& f,std::string_view kind) {
     auto input=f.spectrum(true);input.quantity=Quantity::SpectrumPower;input.unit=NumericUnit::SquaredAmplitude;
     if(kind=="RFFT")input=f.vector(Semantic::Windowed,f.settings.fft_size);
-    if(kind=="SpectrumProjection" || kind=="RhythmFeatures") {
+    if(kind=="SpectrumProjection" || kind=="RhythmFeatures" || spectral_descriptor_kind(kind)) {
         input.quantity=Quantity::SpectrumComplex;input.unit=NumericUnit::RawAmplitude;
         input.shape.rank=Rank::Matrix;input.shape.axes[1]=Axis::Component;input.shape.extents[1]={2,2};
         input.coordinates[1]={CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}};
@@ -124,8 +135,9 @@ void initialize_broadband_boundaries(Factory& f) {
     f.field("boundaries_hz",std::move(boundaries));
 }
 void initialize_music_frontend(Factory& f,std::string_view kind) {
+    if(kind=="RhythmFeatures")f.field("input_representation",std::string{"complex"});
     if(one_of(kind,{"RFFT","SpectrumProjection","FrequencyNormalizer"}))f.field("fft_size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
-    if(kind=="SpectrumProjection")f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
+    if(kind=="SpectrumProjection" || kind=="RFFT")f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
     if(kind=="FrequencyNormalizer"){f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});f.field("first_bin",NumericLiteral{std::uint64_t{0}});}
 }
 void initialize_music(Factory& f,std::string_view kind) {
@@ -141,10 +153,32 @@ void initialize_music(Factory& f,std::string_view kind) {
 }
 void initialize_rhythm(Factory& f) {
     auto input=f.vector(Semantic::History,512,Axis::Time);
-    input.dtype=DType::UInt8;input.representation.alignment=alignof(std::uint8_t);
+    input.unit=NumericUnit::Values;
+    input.dtype=DType::Float32;input.representation.alignment=alignof(float);
     input.shape.rank=Rank::Matrix;input.shape.axes[1]=Axis::Band;input.shape.extents[1]={64,64};
     f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
     f.io(input,f.scalar(),1,rhythm_output_count);
+}
+void initialize_librosa_onset(Factory& f) {
+    auto input=f.vector(Semantic::History,f.settings.history_capacity,Axis::Time);
+    input.shape.rank=Rank::Matrix;input.shape.extents[0].minimum=0;
+    input.shape.axes[1]=Axis::Band;input.shape.extents[1]={128,128};input.unit=NumericUnit::Decibels;
+    f.io(input,input);
+}
+void initialize_librosa_db(Factory& f) {
+    auto input=f.vector(Semantic::Numeric,128,Axis::Band);input.unit=NumericUnit::SquaredAmplitude;f.io(input,input);
+}
+NumericContract tempo_input(Factory& f,PortId port) {
+    if(port>=4){auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.representation.alignment=alignof(std::uint64_t);return count;}
+    const auto size=port%2?4096u:512u;
+    auto c=f.vector(Semantic::Numeric,port<2?size/2:121,port<2?Axis::Bin:Axis::Time);
+    c.coordinates[0]=port<2?AxisCoordinates{CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{60,size}}:
+        AxisCoordinates{CoordinateMode::Regular,NumericUnit::Seconds,{0,1},{1,60}};
+    return c;
+}
+void initialize_tempo_evidence(Factory& f) {
+    for(PortId port=0;port<tempo_evidence_inputs;++port)f.port(PortDirection::Input,port,tempo_input(f,port));
+    for(PortId port=0;port<tempo_evidence_outputs;++port)f.port(PortDirection::Output,port,f.scalar());
 }
 void initialize_generator(Factory& f) {
     auto input=f.scalar(DType::UInt32);f.io(input,f.vector(Semantic::Numeric,f.settings.fft_size));
@@ -155,22 +189,22 @@ void initialize_metadata(Factory& f,std::string_view kind) {
     f.io(input,input);
 }
 void initialize_history(Factory& f) {
-    auto input=f.vector(Semantic::Numeric,50,Axis::Band);auto output=input;
+    auto input=f.vector(Semantic::Numeric,50,Axis::Declared);input.clock={"values",{1,1},0};auto output=input;
     output.semantic=Semantic::History;output.history_element=input.semantic;
     output.shape={Rank::Matrix,{Axis::Time,Axis::Band},{ExtentBounds{0,f.settings.history_capacity},input.shape.extents[0]}};
     output.coordinates={AxisCoordinates{CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}},input.coordinates[0]};
     f.node.parameters=HistoryProcessingParameters{f.settings.history_capacity};f.io(input,output);
-    auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.quantity=Quantity::FilledFrameCount;
+    auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.clock=input.clock;count.quantity=Quantity::FilledFrameCount;
     f.port(PortDirection::Output,1,count);
 }
 
 void initialize_number_accumulator(Factory& f) {
-    auto input=f.scalar();auto output=input;
+    auto input=f.scalar();input.clock={"values",{1,1},0};auto output=input;
     output.semantic=Semantic::History;output.history_element=input.semantic;
     output.shape={Rank::Vector,{Axis::Time,Axis::None},{ExtentBounds{0,f.settings.history_capacity},ExtentBounds{}}};
     output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
     f.node.parameters=HistoryProcessingParameters{f.settings.history_capacity};f.io(input,output);
-    auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.quantity=Quantity::FilledFrameCount;
+    auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.clock=input.clock;count.quantity=Quantity::FilledFrameCount;
     f.port(PortDirection::Output,1,count);
 }
 void initialize_history_view(Factory& f,std::string_view kind,NumericContract& input) {
@@ -220,14 +254,18 @@ NumericContract signal_input(Factory& f,std::string_view kind) {
     return input;
 }
 void initialize_signal_parameters(Factory& f,std::string_view kind) {
-    if(kind=="Window")f.field("size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
-    if(kind=="Window")f.field("input_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
     if(kind=="PcmResampler")f.field("input_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
     if(kind=="BarkWeighting" || kind=="Mel") {
         f.field("sample_rate",NumericLiteral{std::uint64_t(f.settings.sample_rate)});
         f.field("bin_hz",NumericLiteral{double(f.settings.sample_rate)/f.settings.fft_size});
         f.field("first_bin",NumericLiteral{std::uint64_t{1}});
     }
+}
+void initialize_accumulator(Factory& f) {
+    NumericContract input;input.channel_order={&mono,1};input.semantic=Semantic::Numeric;input.clock={"values",{1,1},0};
+    input.shape={Rank::Vector,{Axis::Declared,Axis::None},{ExtentBounds{0,1},ExtentBounds{}}};
+    f.field("size",NumericLiteral{std::uint64_t(parameter_descriptor(NodeKind::Window,"size")->default_number)});
+    f.io(input,input);
 }
 void initialize_signal(Factory& f,std::string_view kind) {
     const auto input=signal_input(f,kind);auto output=f.vector(Semantic::PCM,f.settings.packet_samples);
@@ -272,17 +310,70 @@ bool initialize_numerical(Factory& f,std::string_view kind) {
     if(one_of(kind,{"ArrayLength","SampleRate","WindowGain","FrequencyStep"})){initialize_metadata(f,kind);return true;}
     return false;
 }
-bool initialize_music_family(Factory& f,std::string_view kind) {
+bool initialize_librosa_family(Factory& f,std::string_view kind) {
+    if(kind=="PowerToDb"){initialize_librosa_db(f);return true;}
+    if(kind=="OnsetStrength"){initialize_librosa_onset(f);return true;}
+    return false;
+}
+bool initialize_portable_operations(Factory& factory,std::string_view kind) {
+    if(!temporal_operation_kind(kind) && !interval_operation_kind(kind))return false;
+    const auto count=temporal_operation_kind(kind)?temporal_operation_output_count(kind):interval_operation_output_count(kind);
+    const auto input=factory.vector(Semantic::Numeric,512,Axis::Declared);
+    factory.io(input,input,1,count);
+    if(kind=="DetrendedFluctuation")factory.field("scales",NumericArray{{4,8,16,32,64}});
+    return true;
+}
+void curve_interpolation_defaults(Factory& f) {
+    NumericArray coordinates;coordinates.values.resize(512);
+    for(std::size_t i=0;i<512;++i)coordinates.values[i]=float(i);
+    f.field("coordinates",std::move(coordinates));
+}
+
+void common_defaults(Factory& f,std::string_view kind) {
+    if(kind=="CombFilterBank"){f.field("delays",NumericArray{{1}});f.field("alpha",NumericArray{{.5f}});}
+    if(kind=="RecursiveFilter"){f.field("numerator",NumericArray{{1}});f.field("denominator",NumericArray{{1}});}
+    if(kind=="FilterMatrixProjection")f.field("weights",NumericArray{std::vector<float>(512,1.f/512.f)});
+    if(kind=="CurveInterpolation")curve_interpolation_defaults(f);
+}
+bool initialize_sequence_operations(Factory& f,std::string_view kind) {
+    const auto* spec=sequence_operation_spec(kind);if(!spec)return false;
+    // Editable explicit contracts use the registered port counts. Supplied
+    // model grids and mathematical geometry remain runtime-factory inputs.
+    const auto input=f.vector(Semantic::Numeric,f.settings.packet_samples);
+    f.io(input,input,spec->inputs,spec->outputs);return true;
+}
+
+bool initialize_common_operations(Factory& f,std::string_view kind) {
+    const auto* spec=common_operation_spec(kind);if(!spec)return false;
+    const auto input=f.vector(Semantic::Numeric,512,Axis::Declared);
+    f.io(input,input,spec->inputs,spec->outputs);common_defaults(f,kind);return true;
+}
+bool initialize_rhythm_family(Factory& f,std::string_view kind) {
+    if(kind=="TempoEvidence"){initialize_tempo_evidence(f);return true;}
     if(kind=="RhythmAnalyzer"){initialize_rhythm(f);return true;}
+    return false;
+}
+
+bool initialize_music_family(Factory& f,std::string_view kind) {
+    if(initialize_portable_operations(f,kind))return true;
+    if(spectral_descriptor_kind(kind)){initialize_music(f,kind);return true;}
+    if(initialize_librosa_family(f,kind))return true;
+    if(initialize_rhythm_family(f,kind))return true;
     if(one_of(kind,{"RhythmFeatures","RFFT","SpectrumProjection","FrequencyNormalizer","BroadbandFeatures","NoteSalience","MusicalSpectrogram","BroadbandRow","NoteSpectrum","SpectralQuantize"})){initialize_music(f,kind);return true;}
+    return false;
+}
+bool initialize_accumulation(Factory& f,std::string_view kind) {
+    if(kind=="Spectrogram"){initialize_history(f);return true;}
+    if(kind=="NumberAccumulator"){initialize_number_accumulator(f);return true;}
+    if(kind=="Window" || kind=="FrameBuffer"){initialize_accumulator(f);return true;}
+    if(kind=="FrameStride"){const auto input=f.vector(Semantic::Numeric,f.settings.packet_samples);f.io(input,input);return true;}
     return false;
 }
 bool initialize_operations(Factory& f,std::string_view kind) {
     if(initialize_music_family(f,kind))return true;
     if(initialize_numerical(f,kind))return true;
-    if(kind=="Spectrogram"){initialize_history(f);return true;}
-    if(kind=="NumberAccumulator"){initialize_number_accumulator(f);return true;}
-    if(one_of(kind,{"Window","StereoFFT","SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude","PcmResampler","Mixer","ChannelComparison"})){initialize_signal(f,kind);return true;}
+    if(initialize_accumulation(f,kind))return true;
+    if(one_of(kind,{"StereoFFT","SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude","PcmResampler","Mixer","ChannelComparison"})){initialize_signal(f,kind);return true;}
     return false;
 }
 bool initialize_interface(Factory& f,std::string_view kind,NodeRole role) {
@@ -293,6 +384,8 @@ bool initialize_interface(Factory& f,std::string_view kind,NodeRole role) {
     return false;
 }
 void initialize(Factory& f,std::string_view kind,NodeRole role) {
+    if(initialize_common_operations(f,kind))return;
+    if(initialize_sequence_operations(f,kind))return;
     if(initialize_interface(f,kind,role))return;
     if(one_of(kind,{"WLED","WLEDEncode","WLEDOutput","NetworkOutput"})){initialize_transport(f,kind);return;}
     if(!initialize_operations(f,kind))initialize_numeric(f,kind);
@@ -307,10 +400,18 @@ ProcessingDiagnostic finish_factory(Factory& factory,std::string_view kind) {
     return {};
 }
 }
+namespace {
+bool factory_settings_valid(std::string_view kind,NodeFactorySettings settings) noexcept {
+    if(kind=="Window" || kind=="FrameBuffer" || kind=="FrameStride")return true;
+    if(kind=="Fourier" || kind=="RealFourier")return settings.fft_size!=0;
+    if(kind=="Spectrogram" || kind=="NumberAccumulator")return settings.history_capacity!=0;
+    return settings.sample_rate && settings.fft_size && settings.packet_samples && settings.history_capacity;
+}
+}
 ProcessingDiagnostic make_processing_node(std::string_view kind,NodeId id,const ProcessingAdmissionLimits& limits,ConfiguredProcessingNode& out,NodeFactorySettings settings) {
     const auto registered=node_kind(kind);
     if(!registered && kind!="Converter")return {ProcessingError::UnknownKind,id};
-    if(!settings.sample_rate || !settings.fft_size || !settings.packet_samples || !settings.history_capacity)return {ProcessingError::InvalidParameters,id};
+    if(!factory_settings_valid(kind,settings))return {ProcessingError::InvalidParameters,id};
     Factory factory{limits,settings,{}};factory.node.id=id;factory.node.kind=kind;
     const auto role=registered?node_role(*registered):NodeRole::Processor;
     factory.node.parameters=role==NodeRole::Processor?ProcessingParameters{TransformProcessingParameters{}}:ProcessingParameters{EndpointProcessingParameters{}};

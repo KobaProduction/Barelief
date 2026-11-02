@@ -1,3 +1,8 @@
+#include <domain/numeric/temporal_operations.h>
+#include <domain/numeric/interval_operations.h>
+#include <domain/numeric/common_operations.h>
+#include <domain/numeric/sequence_operations.h>
+#include <domain/numeric/reference_operations.h>
 #include <domain/processing_contracts.h>
 #include <domain/graph/node_factory.h>
 #include <algorithm>
@@ -12,7 +17,7 @@ using namespace signal_contracts;
 bool has_sample_rate_output(std::string_view kind) noexcept {
     return kind=="AudioSource" || kind=="SignalGenerator" || kind=="TestSignal" || kind=="NetworkInput" || kind=="PcmResampler";
 }
-bool has_window_gain_output(std::string_view kind) noexcept {return kind=="WindowFunction";}
+bool has_window_gain_output(std::string_view) noexcept {return false;}
 namespace {
 bool audio_vector_view(std::string_view kind) noexcept {
     return kind=="AudioLineView" || kind=="AudioPointView" || kind=="AudioBarView" || kind=="AudioPieView";
@@ -32,22 +37,42 @@ std::span<const ProcessingPort> data_outputs(const ConfiguredProcessingNode& nod
     return ports;
 }
 namespace {
+std::string_view rhythm_parameter_key(std::string_view kind,PortId input) noexcept {
+    const bool rate=kind=="TempoEstimate" || kind=="DynamicBeatPath" || kind=="AutocorrelationTempogram";
+    if(rate && input==target_sample_rate_input)return "sample_rate";
+    if(rate && input==hop_samples_input)return "hop_samples";
+    if(kind=="AutocorrelationTempogram" && input==window_size_input)return "window_length";
+    return {};
+}
+std::string_view primitive_parameter_key(std::string_view kind,PortId input) noexcept {
+    if(kind=="PianoView" && input==note_first_input)return "first_midi";
+    if((kind=="Window" || kind=="FrameBuffer") && input==window_size_input)return "size";
+    if(kind=="PcmResampler" && input==input_sample_rate_input)return "input_rate";
+    return {};
+}
+
 std::string_view spectral_parameter_key(std::string_view kind,PortId input) noexcept {
-    if((kind=="FrequencyNormalizer" || kind=="AmplitudePhase" || kind=="RhythmAnalyzer") && input==target_sample_rate_input)return "sample_rate";
-    if((kind=="FrequencyStep" || kind=="SpectrumAmplitude" || kind=="FrequencyNormalizer" || kind=="Fourier" || kind=="RealFourier" || kind=="RFFT" || kind=="SpectrumProjection") && input==window_size_input)return "fft_size";
+    if(kind=="OnsetStrength" && input==window_size_input)return "n_fft";
+    if((kind=="Mel" || kind=="EnvelopeBeatPath" || kind=="RhythmAnalyzer" || kind=="FrequencyNormalizer" || kind=="AmplitudePhase" || kind=="RFFT" || kind=="SpectrumProjection" || kind=="MatrixFFT") && input==target_sample_rate_input)return "sample_rate";
+    if((kind=="Mel" || kind=="FrequencyStep" || kind=="SpectrumAmplitude" || kind=="FrequencyNormalizer" || kind=="Fourier" || kind=="RealFourier" || kind=="RFFT" || kind=="SpectrumProjection" || kind=="AmplitudePhase" || kind=="ComplexPolar" || kind=="MatrixFFT") && input==window_size_input)return "fft_size";
     if((kind=="SpectrumPeak" || kind=="NoteSalience") && input==spectrum_first_bin_input)return "first_bin";
-    if((kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind)) && input==frequency_step_input)return "bin_hz";
+    if((kind=="Mel" || kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind)) && input==frequency_step_input)return "bin_hz";
+    return {};
+}
+}
+namespace {
+std::string_view normalization_parameter_key(std::string_view kind,PortId input) noexcept {
+    if(kind=="AmplitudePhase" && input==window_coefficients_input)return "window_coefficients";
+    if((kind=="SpectrumProjection" || kind=="NoteSalience") && input==coherent_gain_input)return "coherent_gain";
+    if(kind=="SpectrumProjection" && input==power_gain_input)return "power_gain";
     return {};
 }
 }
 std::string_view numeric_parameter_key(std::string_view kind,PortId input) noexcept {
+    if(const auto key=rhythm_parameter_key(kind,input);!key.empty())return key;
     if(const auto key=spectral_parameter_key(kind,input);!key.empty())return key;
-    if(kind=="PianoView" && input==note_first_input)return "first_midi";
-    if((kind=="AmplitudePhase" || kind=="NoteSalience") && input==coherent_gain_input)return "coherent_gain";
-    if(kind=="AmplitudePhase" && input==power_gain_input)return "power_gain";
-    if(kind=="Window" && input==window_size_input)return "size";
-    if((kind=="PcmResampler" || kind=="Window") && input==input_sample_rate_input)return "input_rate";
-    return {};
+    if(const auto key=normalization_parameter_key(kind,input);!key.empty())return key;
+    return primitive_parameter_key(kind,input);
 }
 namespace {
 struct ParameterPortPlan {
@@ -56,10 +81,22 @@ struct ParameterPortPlan {
     std::size_t input_count=0,output_count=0;
 };
 void plan_gain_inputs(std::string_view kind,ParameterPortPlan& plan) noexcept;
-void plan_parameter_inputs(std::string_view kind,ParameterPortPlan& plan) noexcept {
-    if(kind=="Window" || kind=="PcmResampler")plan.inputs[plan.input_count++]=input_sample_rate_input;
-    if(!numeric_parameter_key(kind,window_size_input).empty())plan.inputs[plan.input_count++]=window_size_input;
-    if(kind=="FrequencyNormalizer" || kind=="AmplitudePhase" || kind=="RhythmAnalyzer")plan.inputs[plan.input_count++]=target_sample_rate_input;
+bool window_size_parameter(const ConfiguredProcessingNode& node) noexcept {
+    if(numeric_parameter_key(node.kind,window_size_input).empty())return false;
+    if(node.kind!="OnsetStrength")return true;
+    for(const auto& input:node.inputs)if(input.id==0){
+        const auto data=input.contract.view();const auto* numeric=std::get_if<NumericContract>(&data);
+        return !numeric || numeric->shape.rank!=Rank::Vector;
+    }
+    return true;
+}
+
+void plan_parameter_inputs(const ConfiguredProcessingNode& node,ParameterPortPlan& plan) noexcept {
+    const auto kind=std::string_view(node.kind);
+    if(!numeric_parameter_key(kind,hop_samples_input).empty())plan.inputs[plan.input_count++]=hop_samples_input;
+    if(kind=="PcmResampler")plan.inputs[plan.input_count++]=input_sample_rate_input;
+    if(window_size_parameter(node))plan.inputs[plan.input_count++]=window_size_input;
+    if(!numeric_parameter_key(kind,target_sample_rate_input).empty())plan.inputs[plan.input_count++]=target_sample_rate_input;
     if(kind=="SpectrumPeak" || kind=="NoteSalience")plan.inputs[plan.input_count++]=spectrum_first_bin_input;
     if(kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind))plan.inputs[plan.input_count++]=frequency_step_input;
     plan_gain_inputs(kind,plan);
@@ -67,7 +104,8 @@ void plan_parameter_inputs(std::string_view kind,ParameterPortPlan& plan) noexce
 void plan_gain_inputs(std::string_view kind,ParameterPortPlan& plan) noexcept {
     if(kind=="PianoView")plan.inputs[plan.input_count++]=note_first_input;
     if(kind=="NoteSalience")plan.inputs[plan.input_count++]=coherent_gain_input;
-    if(kind=="AmplitudePhase"){
+    if(kind=="AmplitudePhase")plan.inputs[plan.input_count++]=window_coefficients_input;
+    if(kind=="SpectrumProjection"){
         plan.inputs[plan.input_count++]=coherent_gain_input;
         plan.inputs[plan.input_count++]=power_gain_input;
     }
@@ -102,13 +140,17 @@ Status parameter_input_contract(PortId id,const ProcessingAdmissionLimits& limit
                                 OwnedProcessingContract& owned) {
     static constexpr std::uint32_t mono=0;
     NumericContract scalar;
-    scalar.dtype=floating_parameter_port(id)?DType::Float64:DType::UInt32;
+    scalar.dtype=id==window_coefficients_input?DType::Float32:floating_parameter_port(id)?DType::Float64:DType::UInt32;
     scalar.semantic=Semantic::Scalar;
-    scalar.unit=id==spectrum_first_bin_input || id==note_first_input || id==window_size_input || id==coherent_gain_input ||
+    scalar.unit=id==hop_samples_input || id==spectrum_first_bin_input || id==note_first_input || id==window_size_input || id==coherent_gain_input ||
                 id==power_gain_input?NumericUnit::Values:NumericUnit::Hertz;
     scalar.channel_order={&mono,1};
     scalar.clock={"configuration",{1,120},0};
     scalar.representation.alignment=floating_parameter_port(id)?alignof(double):alignof(std::uint32_t);
+    if(id==window_coefficients_input){
+        scalar.semantic=Semantic::Numeric;scalar.unit=NumericUnit::Values;
+        scalar.shape={Rank::Vector,{Axis::Declared,Axis::None},{ExtentBounds{1,max_numeric_array_values},ExtentBounds{}}};
+    }
     return own_processing_contract(scalar,limits.frame,limits.max_owned_metadata_bytes,owned);
 }
 Status stage_parameter_inputs(std::vector<ProcessingPort>& ports,std::span<const PortId> ids,
@@ -138,9 +180,18 @@ Status stage_parameter_outputs(std::vector<ProcessingPort>& ports,std::span<cons
     }
     return Status::ok;
 }
+std::vector<ProcessingPort> current_parameter_inputs(const ConfiguredProcessingNode& node) {
+    auto inputs=node.inputs;
+    if(node.kind=="OnsetStrength" && !window_size_parameter(node))
+        std::erase_if(inputs,[](const auto& port){return port.id==window_size_input;});
+    return inputs;
+}
+
 Status commit_parameter_ports(ConfiguredProcessingNode& node,std::span<const PortId> input_ids,
                               std::span<const PortId> output_ids,const ProcessingAdmissionLimits& limits) {
-    auto inputs=node.inputs;
+    const bool streaming_onset=node.kind=="OnsetStrength" && !window_size_parameter(node);
+    if(input_ids.empty() && output_ids.empty() && !streaming_onset)return Status::ok;
+    auto inputs=current_parameter_inputs(node);
     auto outputs=node.outputs;
     const auto output_status=stage_parameter_outputs(outputs,output_ids,node);
     if(output_status!=Status::ok)return output_status;
@@ -157,7 +208,7 @@ Status attach_numeric_parameter_ports(ConfiguredProcessingNode& node,const Proce
     try {
 #endif
     ParameterPortPlan plan;
-    plan_parameter_inputs(node.kind,plan);
+    plan_parameter_inputs(node,plan);
     const auto planned=plan_parameter_outputs(node,plan);
     if(planned!=Status::ok)return planned;
     const auto input_ids=std::span<const PortId>(plan.inputs).first(plan.input_count);
@@ -344,15 +395,15 @@ std::optional<bool> derive_numeric(ConfiguredProcessingNode& node,const NumericC
     return derive_array_generator(node,input,limits);
 }
 bool derive_fourier(ConfiguredProcessingNode& node,const NumericContract& input) {
-    if(input.shape.extents[0].minimum!=input.shape.extents[0].maximum)return false;
-    std::array<OwnedProcessingContract,4> outputs;
+    std::vector<OwnedProcessingContract> outputs;
     if(fourier_output_contracts(node,input,outputs)!=Status::ok)return false;
-    for(std::size_t i=0;i<4;++i)node.outputs[i].contract=std::move(outputs[i]);
+    node.outputs.clear();
+    for(std::size_t i=0;i<outputs.size();++i)node.outputs.push_back({PortId(i),PortDirection::Output,std::move(outputs[i])});
     return true;
 }
 bool derive_polar(ConfiguredProcessingNode& node,const NumericContract& input) {
     std::array<OwnedProcessingContract,2> outputs;
-    const auto status=node.kind=="AmplitudePhase"?amplitude_phase_output_contracts(node,input,outputs):complex_polar_output_contracts(input,outputs);
+    const auto status=node.kind=="AmplitudePhase"?amplitude_phase_output_contracts(node,input,outputs):complex_polar_output_contracts(node,input,outputs);
     if(status!=Status::ok)return false;
     for(std::size_t i=0;i<2;++i)node.outputs[i].contract=std::move(outputs[i]);
     return true;
@@ -404,20 +455,62 @@ bool derive_rhythm(ConfiguredProcessingNode& node,const NumericContract& input) 
     for(PortId i=0;i<rhythm_output_count;++i)node.outputs.push_back({i,PortDirection::Output,std::move(outputs[i])});
     return true;
 }
-std::optional<bool> derive_music(ConfiguredProcessingNode& node,const NumericContract& input) {
+bool derive_tempo_evidence(ConfiguredProcessingNode& node) {
+    const auto zero=std::find_if(node.inputs.begin(),node.inputs.end(),[](const auto& port){return port.id==0;});
+    if(zero==node.inputs.end())return false;
+    const auto data=zero->contract.view();const auto* input=std::get_if<NumericContract>(&data);
+    std::array<OwnedProcessingContract,tempo_evidence_outputs> outputs;
+    if(!input || tempo_evidence_output_contracts(node,*input,outputs)!=Status::ok)return false;
+    node.outputs.clear();
+    for(PortId port=0;port<outputs.size();++port)node.outputs.push_back({port,PortDirection::Output,std::move(outputs[port])});
+    return true;
+}
+bool derive_portable_operations(ConfiguredProcessingNode& node,const NumericContract& input) {
+    std::vector<OwnedProcessingContract> outputs;
+    const auto status=common_operation_kind(node.kind)?common_operation_output_contracts(node,input,outputs):
+        sequence_operation_kind(node.kind)?sequence_operation_output_contracts(node,input,outputs):
+        reference_operation_kind(node.kind)?reference_operation_output_contracts(node,input,outputs):
+        temporal_operation_kind(node.kind)?temporal_operation_output_contracts(node,input,outputs):interval_operation_output_contracts(node,input,outputs);
+    if(status!=Status::ok)return false;
+    node.outputs.clear();node.outputs.reserve(outputs.size());
+    for(std::size_t i=0;i<outputs.size();++i)node.outputs.push_back({PortId(i),PortDirection::Output,std::move(outputs[i])});
+    return true;
+}
+std::optional<bool> derive_rhythm_family(ConfiguredProcessingNode& node,const NumericContract& input) {
+    if(node.kind=="OnsetStrength")return onset_strength_output_contract(node,input,node.outputs[0].contract)==Status::ok;
+    if(node.kind=="TempoEvidence")return derive_tempo_evidence(node);
     if(node.kind=="RhythmFeatures")return rhythm_features_output_contract(node,input,node.outputs[0].contract)==Status::ok;
     if(node.kind=="RhythmAnalyzer")return derive_rhythm(node,input);
     if(node.kind=="MusicalSpectrogram" || node.kind=="BroadbandRow" || node.kind=="NoteSpectrum")return derive_musical_rows(node,input);
-    if(node.kind!="RFFT" && node.kind!="SpectrumProjection" && node.kind!="FrequencyNormalizer" && node.kind!="BroadbandFeatures" && node.kind!="NoteSalience" && node.kind!="SpectralQuantize")return {};
+    return {};
+}
+std::optional<bool> derive_music(ConfiguredProcessingNode& node,const NumericContract& input) {
+    if(temporal_operation_kind(node.kind) || interval_operation_kind(node.kind) || common_operation_kind(node.kind) || sequence_operation_kind(node.kind) || reference_operation_kind(node.kind))return derive_portable_operations(node,input);
+    if(const auto result=derive_rhythm_family(node,input))return result;
+    if(!spectral_descriptor_kind(node.kind) && node.kind!="RFFT" && node.kind!="SpectrumProjection" && node.kind!="FrequencyNormalizer" && node.kind!="BroadbandFeatures" && node.kind!="NoteSalience" && node.kind!="SpectralQuantize")return {};
     return music_output_contract(node,input,node.outputs[0].contract)==Status::ok;
 }
+bool derive_correlation(ConfiguredProcessingNode& node,const NumericContract& input) {
+    std::uint64_t lag=0,rate=0;
+    return number(node,"max_lag",lag) && number(node,"frame_rate_fps",rate) &&
+        matrix_autocorrelation_output_contract(input,lag,rate,node.outputs[0].contract)==Status::ok;
+}
+bool derive_matrix_fft(ConfiguredProcessingNode& node,const NumericContract& input) {
+    std::uint64_t size=0;std::array<OwnedProcessingContract,2> outputs;
+    std::uint64_t rate=0;
+    if(!number(node,"fft_size",size) || !number(node,"sample_rate",rate) || !rate || matrix_fft_output_contracts(input,size,outputs,std::uint32_t(rate))!=Status::ok)return false;
+    node.outputs.clear();
+    for(PortId id=0;id<outputs.size();++id)node.outputs.push_back({id,PortDirection::Output,std::move(outputs[id])});
+    return true;
+}
 std::optional<bool> derive_matrix(ConfiguredProcessingNode& node,const NumericContract& input) {
+    if(node.kind=="MatrixAutocorrelation")return derive_correlation(node,input);
     if(node.kind=="MatrixTranspose")return matrix_transpose_output_contract(input,node.outputs[0].contract)==Status::ok;
     if(node.kind=="MatrixWindowFunction")return matrix_window_output_contract(input,node.outputs[0].contract)==Status::ok;
     if(node.kind=="MatrixCenter")return matrix_center_output_contract(input,node.outputs[0].contract)==Status::ok;
     if(node.kind=="MatrixRow")return matrix_row_output_contract(input,node.outputs[0].contract)==Status::ok;
     if(node.kind!="MatrixFFT")return {};
-    std::uint64_t size=0;return number(node,"fft_size",size) && matrix_fft_output_contract(input,size,node.outputs[0].contract)==Status::ok;
+    return derive_matrix_fft(node,input);
 }
 bool derive_resampler(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
     if(!node.enabled || text(node,"mode")=="bypass"){node.outputs[0].contract=node.inputs[0].contract;return attach_numeric_parameter_ports(node,limits)==Status::ok;}
@@ -436,7 +529,8 @@ bool derive_history(ConfiguredProcessingNode& node,const NumericContract& input,
         output.shape={Rank::Vector,{Axis::Time,Axis::None},{ExtentBounds{0,parameters->capacity},ExtentBounds{}}};
         output.coordinates={AxisCoordinates{CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}},AxisCoordinates{}};
     }else{
-        output.shape={Rank::Matrix,{Axis::Time,input.shape.axes[0]},{ExtentBounds{0,parameters->capacity},input.shape.extents[0]}};
+        const auto axis=input.shape.rank==Rank::Scalar?Axis::Band:input.shape.axes[0];
+        output.shape={Rank::Matrix,{Axis::Time,axis},{ExtentBounds{0,parameters->capacity},input.shape.extents[0]}};
         output.coordinates={AxisCoordinates{CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}},input.coordinates[0]};
     }
     auto count=std::get<NumericContract>(node.outputs[1].contract.view());count.clock=input.clock;
@@ -444,20 +538,17 @@ bool derive_history(ConfiguredProcessingNode& node,const NumericContract& input,
 }
 bool derive_window(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
     std::uint64_t size=0;if(!number(node,"size",size) || !size)return false;
-    auto output=input;output.semantic=Semantic::Window;output.shape.rank=Rank::Vector;output.shape.extents[0]={size,size};
+    auto output=input;output.semantic=Semantic::Numeric;
+    output.shape={Rank::Vector,{Axis::Declared,Axis::None},{ExtentBounds{size,size},ExtentBounds{}}};
+    output.coordinates={AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}},AxisCoordinates{}};
     return own(output,limits,node.outputs[0].contract);
 }
 bool derive_legacy_fft(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
     const auto size=input.shape.extents[0].maximum;if(!size || !input.clock.sample_rate)return false;
     auto output=input;output.semantic=Semantic::SpectrumMagnitude;output.shape.axes={Axis::Bin,Axis::None};
+    output.quantity=Quantity::SpectrumMagnitude;output.unit=NumericUnit::RawAmplitude;
     output.shape.extents[0]={size/2,size/2};output.representation.normalization=Normalization::None;
     output.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{std::int64_t(input.clock.sample_rate),size}};
-    return own(output,limits,node.outputs[0].contract);
-}
-bool derive_mel(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
-    std::uint64_t bands=0;if(!number(node,"bands",bands))return false;
-    auto output=input;output.semantic=Semantic::MelEnergy;output.shape.axes={Axis::Band,Axis::None};output.shape.extents[0]={bands,bands};
-    output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{1,1}};
     return own(output,limits,node.outputs[0].contract);
 }
 bool derive_passthrough_contract(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
@@ -468,15 +559,17 @@ bool derive_passthrough_contract(ConfiguredProcessingNode& node,const NumericCon
     return own(output,limits,node.outputs[0].contract);
 }
 std::optional<bool> derive_stream_route(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
+    if(node.kind=="FrameStride")return own(input,limits,node.outputs[0].contract);
     if(node.kind=="WLEDEncode")return derive_wled(node,input,limits);
-    if(node.kind=="Window")return derive_window(node,input,limits);
+    if(node.kind=="Window" || node.kind=="FrameBuffer")return derive_window(node,input,limits);
     if(node.kind=="PcmResampler")return derive_resampler(node,input,limits);
     return {};
 }
 std::optional<bool> derive_signal_route(ConfiguredProcessingNode& node,const NumericContract& input,const ProcessingAdmissionLimits& limits) {
     if(const auto result=derive_stream_route(node,input,limits))return *result;
     if(node.kind=="StereoFFT")return derive_legacy_fft(node,input,limits);
-    if(node.kind=="Mel")return derive_mel(node,input,limits);
+    if(node.kind=="PowerToDb")return power_to_db_output_contract(node,input,node.outputs[0].contract)==Status::ok;
+    if(node.kind=="Mel")return mel_output_contract(node,input,node.outputs[0].contract)==Status::ok;
     if(node.kind=="Spectrogram" || node.kind=="NumberAccumulator")return derive_history(node,input,limits);
     if(node.kind!="BarkWeighting" && node.kind!="SpectrumGain" && node.kind!="SpectrumMerge" && node.kind!="Mixer" && node.kind!="ChannelComparison" && node.kind!="ScalarReduce")return {};
     return derive_passthrough_contract(node,input,limits);
@@ -516,7 +609,7 @@ ProcessingDiagnostic configure_processing_input(ConfiguredProcessingNode& node,c
     if(candidate.inputs.empty())return {ProcessingError::InvalidPort,node.id};
     const auto status=own_processing_contract(input,limits.frame,limits.max_owned_metadata_bytes,candidate.inputs.front().contract);
     if(status!=Status::ok)return {ProcessingError::InvalidContract,node.id,candidate.inputs.front().id};
-    if(candidate.kind=="PcmResampler" || candidate.kind=="Window") {
+    if(candidate.kind=="PcmResampler") {
         const auto* numeric=std::get_if<NumericContract>(&input);
         if(!numeric || !numeric->clock.sample_rate || !set(candidate,"input_rate",numeric->clock.sample_rate))return {ProcessingError::InvalidParameters,node.id};
     }
@@ -535,6 +628,7 @@ static PreparationValueCapability primary_value_capability(const ConfiguredProce
     using K=PreparationValueKind;
     if(output!=0 && node.kind!="InputSelector")return {};
     if(node.kind=="Reroute" || node.kind=="InputSelector")return {K::Routed};
+    if(node.kind=="WindowFunction" || node.kind=="ArrayFill")return {K::FiniteVector};
     if(node.kind=="WindowGain" || node.kind=="FrequencyStep" || node.kind=="Number")return {K::FiniteScalar};
     if(numeric_constant_kind(node.kind) || node.kind=="ArrayLength" || node.kind=="SampleRate")return {K::UnsignedInteger};
     return {};
@@ -733,6 +827,26 @@ ProcessingDiagnostic floating_binding(BindingContext& context,NodeBindings& targ
     if(!store_bound_scalar(target,key,value))return {ProcessingError::InvalidParameters,target.node.id,edge.input_port};
     input.contract=source.contract;return {};
 }
+bool store_bound_array(NodeBindings& target,std::string_view key,NumericArray values) {
+    auto* fields=mutable_parameters(target.node);if(!fields)return false;
+    const auto old=std::find_if(fields->begin(),fields->end(),[&](const auto& field){return field.key==key;});
+    ProcessingParameterValue replacement=std::move(values);
+    if(old!=fields->end() && old->value==replacement)return true;
+    if(old==fields->end())fields->push_back({std::string(key),std::move(replacement)});
+    else old->value=std::move(replacement);
+    target.update=true;return true;
+}
+ProcessingDiagnostic vector_binding(BindingContext& context,NodeBindings& target,const Edge& edge,const ProcessingPort& source,ProcessingPort& input) {
+    const auto data=source.contract.view();const auto* vector=std::get_if<NumericContract>(&data);
+    if(!vector || vector->dtype!=DType::Float32 || vector->shape.rank!=Rank::Vector || vector->channel_order.size()!=1 ||
+       vector->representation.encoding!=StorageEncoding::Native || vector->representation.normalization!=Normalization::None ||
+       vector->shape.extents[0].minimum!=vector->shape.extents[0].maximum)return {ProcessingError::PreparationTypeMismatch,target.node.id,edge.input_port};
+    NumericArray values;const auto status=resolve_preparation_vector(context.graph,edge.from,edge.output_port,values,context.provider);
+    if(status!=Status::ok)return {status==Status::unavailable?ProcessingError::PreparationValueUnavailable:ProcessingError::PreparationValueInvalid,target.node.id,edge.input_port};
+    if(values.values.size()!=vector->shape.extents[0].maximum)return {ProcessingError::PreparationTypeMismatch,target.node.id,edge.input_port};
+    if(!store_bound_array(target,"window_coefficients",std::move(values)))return {ProcessingError::InvalidParameters,target.node.id,edge.input_port};
+    input.contract=source.contract;return {};
+}
 ProcessingDiagnostic integer_binding(BindingContext& context,NodeBindings& target,const Edge& edge,std::string_view key,const ProcessingPort& source,ProcessingPort& input) {
     if(!scalar_u32(source) || !scalar_u32(input))return {ProcessingError::PreparationTypeMismatch,target.node.id,edge.input_port};
     std::uint64_t value=0;
@@ -742,13 +856,13 @@ ProcessingDiagnostic integer_binding(BindingContext& context,NodeBindings& targe
     input.contract=source.contract;
     if(key=="input_rate") {
         target.asserted_rate=value;
-        if(target.node.kind!="PcmResampler" && target.node.kind!="Window")return {};
+        if(target.node.kind!="PcmResampler")return {};
     }
     return store_bound_integer(target,key,value,edge.input_port);
 }
 ProcessingDiagnostic propagate_numeric_output(BindingContext& context,NodeBindings& target,const DataContract& previous,NumericContract& numeric) {
     const auto* old=std::get_if<NumericContract>(&previous);
-    const auto kind=node_kind(target.node.kind);const bool inherit_dtype=(target.node.kind=="Spectrogram" || target.node.kind=="NumberAccumulator") || (kind && is_view(*kind));
+    const auto kind=node_kind(target.node.kind);const bool inherit_dtype=(target.node.kind=="Window" || target.node.kind=="Spectrogram" || target.node.kind=="NumberAccumulator") || (kind && is_view(*kind));
     if(numeric.dtype!=old->dtype && !inherit_dtype){numeric.dtype=old->dtype;numeric.representation=old->representation;}
     const auto* converter=std::get_if<ConverterProcessingParameters>(&target.node.parameters);
     if(converter && target.node.outputs.size()==1 && converter->policy.scaling.mode==ScaleMode::Identity && same_physical_contract(previous,target.node.outputs.front().contract.view())) {
@@ -776,6 +890,7 @@ ProcessingDiagnostic bind_input(BindingContext& context,NodeBindings& target,con
     if((target.node.kind=="WindowFunction" || target.node.kind=="ArrayFill") && edge.input_port==0)return generator_size(context,target,edge,source,input);
     const auto key=numeric_parameter_key(target.node.kind,edge.input_port);
     if(key.empty())return propagate_data_contract(context,target,edge,source,input);
+    if(key=="window_coefficients")return vector_binding(context,target,edge,source,input);
     if(key=="coherent_gain" || key=="power_gain" || key=="bin_hz")return floating_binding(context,target,edge,key,source,input);
     return integer_binding(context,target,edge,key,source,input);
 }
@@ -813,6 +928,10 @@ ProcessingDiagnostic bind_node_inputs(BindingContext& context,NodeBindings& targ
 }
 ProcessingDiagnostic bind_node(BindingContext& context,std::size_t index,NodeId changed) {
     NodeBindings target{context.graph.nodes[index],context.graph.nodes[index].id==changed};
+    if(target.node.kind=="AmplitudePhase" && std::none_of(context.graph.edges.begin(),context.graph.edges.end(),[&](const auto& edge){return edge.to==target.node.id && edge.input_port==window_coefficients_input;})){
+        auto* fields=mutable_parameters(target.node);
+        if(fields)target.update=std::erase_if(*fields,[](const auto& field){return field.key=="window_coefficients";})!=0 || target.update;
+    }
     const auto bound=bind_node_inputs(context,target);if(!bound)return bound;
     auto result=refresh_bound_node(context,target);
     if(!result) {
@@ -845,10 +964,17 @@ ProcessingDiagnostic executable_parameter_graph(const NumericProcessingGraph& ev
 }
 }
 namespace {
+void clear_materialized_windows(NumericProcessingGraph& graph) {
+    for(auto& node:graph.nodes)if(node.kind=="AmplitudePhase"){
+        auto* fields=mutable_parameters(node);
+        if(fields)std::erase_if(*fields,[](const auto& field){return field.key=="window_coefficients";});
+    }
+}
 ProcessingDiagnostic publish_parameter_graph(const NumericProcessingGraph& candidate,const ProcessingAdmissionLimits& limits,NumericProcessingGraph& evaluated,NumericProcessingGraph& executable) {
     NumericProcessingGraph canonical,processing;
     const auto bindings=resolve_configuration_bindings(candidate,limits,canonical);if(!bindings)return bindings;
     const auto result=executable_parameter_graph(canonical,limits,processing);if(!result)return result;
+    clear_materialized_windows(canonical);
     evaluated=std::move(canonical);executable=std::move(processing);return {};
 }
 

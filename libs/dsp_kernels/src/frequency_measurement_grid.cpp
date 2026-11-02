@@ -74,13 +74,18 @@ struct Collector {
         result.mean_amplitude.push_back(values.empty()?0:mean/double(values.size()));
         result.maxima.push_back(aggregate(values,options));
     }
+    double active_positive_maximum() const {
+        double maximum=0;
+        for(std::size_t k=1;k<result.maxima.size();++k)
+            if(result.contributors[k]>0)maximum=std::max(maximum,result.maxima[k]);
+        return maximum;
+    }
+
     void normalize_aggregated_spectrum() {
         if(options.level_reference!=CurveLevelReference::CorpusSpectralMaximum)return;
         // The selected aggregation is computed in calibrated FFT amplitude
         // units first. Normalize the single resulting spectrum, never a track.
-        double maximum=0;
-        for(std::size_t k=1;k<result.maxima.size();++k)
-            if(result.contributors[k]>0)maximum=std::max(maximum,result.maxima[k]);
+        const auto maximum=active_positive_maximum();
         if(maximum<=0)return; // Existing fitting validation rejects empty data.
         for(double& value:result.maxima)value/=maximum;
         for(double& value:result.mean_amplitude)value/=maximum;

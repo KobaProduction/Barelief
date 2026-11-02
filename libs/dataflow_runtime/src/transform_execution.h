@@ -8,5 +8,6 @@ struct TransformDelivery {
     Status (*reject)(void*,Status);
 };
 struct TransformResult {Status status=Status::ok;bool completed=false;};
+TransformResult execute_frame_buffer(const PlanNode&,State&,const DataFrameView&,const FrameLimits&,TransformDelivery) noexcept;
 TransformResult execute_transform(const PlanNode&,State&,const DataFrameView&,const FrameLimits&,TransformDelivery) noexcept;
 }

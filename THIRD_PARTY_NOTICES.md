@@ -21,6 +21,28 @@ Other bundled dependencies and original notices in licenses/:
 - tinycbor — MIT, Intel Corporation and contributors.
 - nanopb — zlib license, Petteri Aimonen and contributors.
 - ESP-DSP sources — Apache-2.0, Espressif Systems; see source notices.
+- librosa 1.0.0 onset_strength S variant, Mel filter bank, power_to_db and
+  dynamic-programming beat tracker, temporal Fourier/autocorrelation features,
+  tempo selection, peak selection/backtracking and local pulse reconstruction,
+  adapted to C++ — ISC, librosa
+  development team; see licenses/librosa.txt and the source attribution.
+- madmom classical beat-state decoder, logarithmic filter bank, ComplexFlux,
+  activation peak picking and event combination, spectral correlation alignment,
+  forward/backward comb banks, offline/online interval histograms, histogram
+  tempo peaks, fixed/local interval beat search and classical CRF sequence
+  decoding with multi-interval selection,
+  adapted to C++ — BSD-style license;
+  Department of Computational Perception, Johannes Kepler University and OFAI.
+  See licenses/madmom.txt. No madmom model or training-data files are bundled.
+- SciPy not-a-knot spline knot construction, adapted for Float32 curve
+  interpolation - BSD-3-Clause, SciPy Developers; see licenses/scipy.txt.
+- PocketFFT real-transform backend for the explicit desktop reference precision
+  profile — BSD-3-Clause, Max-Planck-Society, Peter Bell and contributors;
+  see licenses/pocketfft.txt. The pinned source and prepared-scratch patch are
+  recorded in libs/dsp_kernels/vendor/pocketfft/PIN.json.
+- NumPy complex Float32 scaled-ratio magnitude expression, adapted for the
+  explicit desktop reference profile — BSD-3-Clause, NumPy Developers;
+  see licenses/numpy.txt and the pinned source attribution in complex_values.cpp.
 - MinGW GCC runtime and winpthreads — upstream GPL/LGPL with the GCC Runtime
   Library Exception where applicable; complete supplied notices in licenses/MinGW.
 

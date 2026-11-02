@@ -1,6 +1,7 @@
 #include "operation_kernel_state.h"
 #include "node_state.h"
 #include "preparation_support.h"
+#include <domain/music/contracts.h>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -112,7 +113,8 @@ Status prepare_salience(OperationKernelState& kernel,PlanNode&,const ResolvedPro
 }
 }
 Status prepare_music_operation(OperationKernelState& kernel,PlanNode& plan,State& state,const ResolvedProcessingNode& node) {
-    if(node.kind=="RhythmFeatures"){kernel.quantized8.resize(kernel.output.size());return Status::ok;}
+    if(spectral_descriptor_kind(node.kind))return prepare_spectral_descriptor(kernel,node);
+    if(node.kind=="RhythmFeatures")return prepare_rhythm_features(kernel,node);
     if(node.kind=="MusicalSpectrogram" || node.kind=="BroadbandRow" || node.kind=="NoteSpectrum")return prepare_spectrogram(kernel,plan,state,node);
     if(node.kind=="NoteSalience")return prepare_salience(kernel,plan,node);
     return Status::unavailable;

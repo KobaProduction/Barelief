@@ -42,6 +42,7 @@ class SchemeEditorWidget final : public QWidget {
     void flush_presentation();
     void arrange_nodes();
     void initialize_default_layout();
+    void initialize_preset_layout(const QJsonObject&);
     void restore_node_positions(const QJsonObject&);
     bool save_preset(const QString &name);
     bool load_preset(const QString &id);

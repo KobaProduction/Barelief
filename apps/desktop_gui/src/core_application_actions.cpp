@@ -21,10 +21,7 @@ void CoreApplication::_bind_default_graph_action() {
 }
 void CoreApplication::_load_default_graph() {
     auto* editor=_main_window->data_flow_editor();if(!editor)return;
-    QString error;
-    if(!editor->load_numeric_draft(numeric_default_graph(),&error)){_main_window->statusBar()->showMessage(error,10000);return;}
-    editor->initialize_default_layout();emit editor->preset_presentation_requested({});
-    _presenter->apply_pipeline_graph({});
+    _load_example(editor,numeric_startup_example());
 }
 void CoreApplication::_bind_analysis_tools() {
     auto* tools=_main_window->menuBar()->addMenu(ui::text("Tools"));

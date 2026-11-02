@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <numeric>
+#include <limits>
 namespace domain {
 using namespace signal_contracts;
 namespace {
@@ -26,9 +27,9 @@ struct SpectralContract {
         const auto* text=std::get_if<std::string_view>(&value);return text?*text:std::string_view{};
     }
     bool fixed(std::size_t axis=0) const {return input.shape.extents[axis].minimum==input.shape.extents[axis].maximum;}
-    AxisCoordinates frequency(std::uint64_t size) const {
-        const auto divisor=std::gcd(std::uint64_t(input.clock.sample_rate),size);
-        return {CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{std::int64_t(input.clock.sample_rate/divisor),size/divisor}};
+    AxisCoordinates frequency(std::uint64_t size,std::uint64_t rate) const {
+        const auto divisor=std::gcd(rate,size);
+        return {CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{std::int64_t(rate/divisor),size/divisor}};
     }
 };
 bool ordinary_spectrum(const SpectralContract& context) {
@@ -54,19 +55,23 @@ bool spectrum_grid(const SpectralContract& context) {
     const auto samples=(no_dc?bins:bins-1)*2;const auto divisor=std::gcd(std::uint64_t(input.clock.sample_rate),samples);
     return spectrum_rate_matches(input,axis,samples,divisor);
 }
-bool declared_fft(const SpectralContract& context,std::size_t& out) {
+bool declared_size(const SpectralContract& context,std::size_t& out) {
     double size=0;
     if(!context.number("fft_size",size) || size<2 || size>UINT32_MAX || std::floor(size)!=size)return false;
-    out=std::size_t(size);return !(out&(out-1));
+    out=std::size_t(size);return true;
+}
+bool declared_fft(const SpectralContract& context,std::size_t& out) {
+    return declared_size(context,out) && !(out&(out-1));
 }
 Status real_fft(SpectralContract& context) {
     std::size_t size=0;if(!declared_fft(context,size))return Status::invalid_argument;
     const auto radix=context.text("radix");if(radix!="radix2" && radix!="radix4")return Status::invalid_argument;
     const auto& input=context.input;
     if(input.shape.rank!=Rank::Vector || input.shape.axes[0]!=Axis::Sample || !context.fixed() || input.shape.extents[0].maximum!=size)return Status::incompatible_contract;
+    double rate=0;if(!context.number("sample_rate",rate) || rate<1 || rate>UINT32_MAX || std::floor(rate)!=rate)return Status::invalid_argument;
     auto& output=context.output;output.quantity=Quantity::SpectrumComplex;output.unit=NumericUnit::RawAmplitude;
     output.shape={Rank::Matrix,{Axis::Bin,Axis::Component},{ExtentBounds{size/2+1,size/2+1},ExtentBounds{2,2}}};
-    output.coordinates={context.frequency(size),AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}}};
+    output.coordinates={context.frequency(size,std::uint64_t(rate)),AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}}};
     return Status::ok;
 }
 struct Projection {std::string_view id;Quantity quantity;NumericUnit unit;};
@@ -83,22 +88,44 @@ constexpr Projection projections[]{
     {"window_scaled_magnitude",Quantity::SpectrumWindowScaledMagnitude,NumericUnit::RawAmplitude}};
 bool projection_input(const SpectralContract& context,std::size_t size) {
     const auto& input=context.input;
-    if(input.quantity!=Quantity::SpectrumComplex || input.unit!=NumericUnit::RawAmplitude || input.shape.rank!=Rank::Matrix || input.shape.axes!=std::array{Axis::Bin,Axis::Component})return false;
-    if(!context.fixed() || !context.fixed(1) || input.shape.extents[1].maximum!=2 || input.shape.extents[0].maximum!=size/2+1)return false;
-    return input.coordinates[0]==context.frequency(size) && input.coordinates[1]==AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}};
+    if(input.shape.rank!=Rank::Matrix || input.shape.axes!=std::array{Axis::Bin,Axis::Component})return false;
+    if(!context.fixed() || !context.fixed(1) || input.shape.extents[1].maximum!=2)return false;
+    const ResolvedProcessingNode view{context.node.id,context.node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,context.node.inputs,context.node.outputs,&context.node.parameters,context.node.enabled};
+    ProcessingParameterView half;double first=0;
+    if(resolve_processing_parameter(view,"positive_half",half)!=Status::ok || !std::holds_alternative<bool>(half) || !context.number("first_bin",first))return false;
+    const auto available=std::get<bool>(half)?size/2+1:size;double rate=0;
+    if(!context.number("sample_rate",rate) || first<0 || first>=available || std::floor(first)!=first)return false;
+    if(input.coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE && !declared_frequency_axis_matches(input.coordinates[0],rate/double(size),std::uint64_t(first)))return false;
+    return input.shape.extents[0].maximum<=available-first;
+}
+bool projection_policy(const SpectralContract& context) {
+    const auto norm=context.text("magnitude_norm"),zero=context.text("zero_phase"),scaling=context.text("scaling_source");
+    if((norm!="hypot" && norm!="squared_norm") || (zero!="zero" && zero!="atan2") || (scaling!="window" && scaling!="coefficients"))return false;
+    double exponent=0;return context.number("magnitude_exponent",exponent) && exponent>=0 && exponent<=std::numeric_limits<float>::max();
+}
+bool projection_units(const SpectralContract& context,std::string_view representation,NumericContract& output) {
+    const ResolvedProcessingNode view{context.node.id,context.node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,context.node.inputs,context.node.outputs,&context.node.parameters,context.node.enabled};
+    ProcessingParameterView normalized;double exponent=1;
+    if(resolve_processing_parameter(view,"normalize",normalized)!=Status::ok || !std::holds_alternative<bool>(normalized) || !context.number("magnitude_exponent",exponent))return false;
+    if(!std::get<bool>(normalized) && representation=="psd"){output.quantity=Quantity::SpectrumPower;output.unit=NumericUnit::SquaredAmplitude;}
+    if(!std::get<bool>(normalized) && representation=="peak_amplitude"){output.quantity=Quantity::SpectrumMagnitude;output.unit=NumericUnit::RawAmplitude;}
+    if(representation=="magnitude" && exponent!=1){output.quantity=exponent==2?Quantity::SpectrumPower:Quantity::Unspecified;output.unit=exponent==2?NumericUnit::SquaredAmplitude:NumericUnit::Values;}
+    if(std::get<bool>(normalized) && representation=="magnitude" && exponent!=1)return false;
+    return true;
 }
 Status project_representation(SpectralContract& context) {
     const auto representation=context.text("representation");
     const auto selected=std::find_if(std::begin(projections),std::end(projections),[&](const auto& p){return p.id==representation;});
     if(selected==std::end(projections))return Status::invalid_argument;
     auto& output=context.output;output.shape.rank=Rank::Vector;output.shape.axes={Axis::Bin,Axis::None};output.shape.extents[1]={1,1};output.coordinates[1]={};
-    output.quantity=selected->quantity;output.unit=selected->unit;return Status::ok;
+    output.quantity=selected->quantity;output.unit=selected->unit;
+    return projection_units(context,representation,output)?Status::ok:Status::invalid_argument;
 }
 Status project_spectrum(SpectralContract& context) {
-    std::size_t size=0;if(!declared_fft(context,size))return Status::invalid_argument;
+    std::size_t size=0;if(!declared_size(context,size))return Status::invalid_argument;
     double sample_rate=0;
     if(!context.number("sample_rate",sample_rate) || sample_rate<=0)return Status::invalid_argument;
-    if(sample_rate!=context.input.clock.sample_rate)return Status::incompatible_contract;
+    if(!projection_policy(context))return Status::invalid_argument;
     if(!projection_input(context,size))return Status::incompatible_contract;
     WindowFunction window;if(!parse_window_function(context.text("window_function"),window))return Status::invalid_argument;
     return project_representation(context);
@@ -200,6 +227,11 @@ Status derive_spectrum(SpectralContract& context) {
 }
 }
 namespace {
+Status first_musical_output(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& owner) {
+    std::array<OwnedProcessingContract,4> outputs;const auto status=musical_spectrogram_output_contracts(node,input,outputs);
+    if(status==Status::ok)owner=std::move(outputs[0]);
+    return status;
+}
 Status materialize_music_contract(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& owner) {
     auto output=input;output.semantic=Semantic::Numeric;output.history_element=Semantic::Numeric;output.quantity=Quantity::Unspecified;output.unit=NumericUnit::Values;output.representation.normalization=Normalization::None;
     SpectralContract context{node,input,output};const auto status=derive_spectrum(context);
@@ -208,13 +240,11 @@ Status materialize_music_contract(const ConfiguredProcessingNode& node,const Num
 }
 }
 Status music_output_contract(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& owner) noexcept {
+    if(spectral_descriptor_kind(node.kind))return spectral_descriptor_output_contract(node,input,owner);
+    if(node.kind=="OnsetStrength")return onset_strength_output_contract(node,input,owner);
     if(node.kind=="RhythmFeatures")return rhythm_features_output_contract(node,input,owner);
-    if(node.kind=="MusicalSpectrogram") {
-        std::array<OwnedProcessingContract,4> outputs;const auto status=musical_spectrogram_output_contracts(node,input,outputs);
-        if(status==Status::ok)owner=std::move(outputs[0]);
-        return status;
-    }
-    if(!std::holds_alternative<TransformProcessingParameters>(node.parameters) || input.dtype!=DType::Float32 || input.channel_order.size()!=1 || input.representation.encoding!=StorageEncoding::Native || input.representation.layout!=ChannelLayout::Planar || input.representation.valid_bits || !input.clock.sample_rate || input.clock.domain.empty())return Status::incompatible_contract;
+    if(node.kind=="MusicalSpectrogram")return first_musical_output(node,input,owner);
+    if(!std::holds_alternative<TransformProcessingParameters>(node.parameters) || input.dtype!=DType::Float32 || input.channel_order.size()!=1 || input.representation.encoding!=StorageEncoding::Native || input.representation.layout!=ChannelLayout::Planar || input.representation.valid_bits || ((node.kind!="RFFT" && node.kind!="SpectrumProjection") && !input.clock.sample_rate) || input.clock.domain.empty())return Status::incompatible_contract;
     return materialize_music_contract(node,input,owner);
 }
 ProcessingDiagnostic note_salience_calibration_diagnostic(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {

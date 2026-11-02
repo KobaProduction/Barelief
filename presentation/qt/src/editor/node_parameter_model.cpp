@@ -14,6 +14,11 @@
 #include <QFile>
 #include <QMessageBox>
 NodeParameterModel::NodeParameterModel(QObject *parent) : QObject(parent) {}
+void NodeParameterModel::setBoundParameters(QStringList keys) {
+    keys.removeDuplicates();keys.sort();
+    if(keys==_bound_parameters)return;
+    _bound_parameters=std::move(keys);buildFields();emit structureChanged();
+}
 void NodeParameterModel::setEditHandlers(std::function<bool(const domain::ConfiguredProcessingNode &)> node,
                                          std::function<bool(const QJsonObject &)> adapter,
                                          std::function<bool(const QString &, bool)> presentation) {
@@ -143,7 +148,7 @@ bool NodeParameterModel::supportsBypass() const {
     switch(*kind){
     case domain::NodeKind::PcmResampler:case domain::NodeKind::WindowFunction:case domain::NodeKind::ArrayMultiply:
     case domain::NodeKind::MatrixWindowFunction:case domain::NodeKind::MatrixCenter:return true;
-    case domain::NodeKind::Window:case domain::NodeKind::SpectrumGain:
+    case domain::NodeKind::SpectrumGain:
     case domain::NodeKind::BarkWeighting:case domain::NodeKind::SpectrumMerge:case domain::NodeKind::FrequencyNormalizer:
     case domain::NodeKind::ScalarReduce:
         return identity;
@@ -202,6 +207,7 @@ bool NodeParameterModel::finishEdit(const QString& key,bool accepted) {
     emit editStateChanged(key);emit valuesChanged();return accepted;
 }
 bool NodeParameterModel::edit(const QString& key,const Value& value) {
+    if(_bound_parameters.contains(key))return false;
     const auto* current=field(key);if(!current || !current->write || (current->available && !current->available()))return false;
     // A write can synchronously rebuild the descriptor list.
     const auto descriptor=*current;
@@ -212,6 +218,7 @@ bool NodeParameterModel::edit(const QString& key,const Value& value) {
     return finishEdit(key,write_field(descriptor,value));
 }
 bool NodeParameterModel::editLiteral(const QString& key,const QString& text,int type) {
+    if(_bound_parameters.contains(key))return false;
     const auto* current=field(key);
     if(!current || current->editor!=Editor::Literal || (current->literal_type && type!=*current->literal_type))return false;
     _edits[key]=EditState{text,{},type,{},true};

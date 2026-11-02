@@ -1,6 +1,7 @@
 #pragma once
 #include "prepared_node.h"
 #include "music_execution.h"
+#include "numeric_extension_execution.h"
 #include <dsp_kernels/pcm_resampler.h>
 #include <dsp_kernels/oscillator_bank.h>
 #include <algorithm>
@@ -93,8 +94,9 @@ struct WledInputState {
 };
 
 struct State {
+    std::optional<PreparedNumericExtension> extension;
     // A node owns only its prepared numerical operation; contexts copy independently.
-    std::variant<std::monostate,dsp_kernels::MagnitudeSpectrum,dsp_kernels::MelFilterBank,ResamplerKernel,OscillatorKernel,PreparedOperationKernel> kernel;
+    std::variant<std::monostate,dsp_kernels::MagnitudeSpectrum,dsp_kernels::PreparedRfft,ResamplerKernel,OscillatorKernel,PreparedOperationKernel> kernel;
     std::vector<float> left, values, coefficients, pcm;
     std::size_t window_extent=0;
     std::vector<MixerQueue> mixer_queues;
@@ -133,6 +135,7 @@ struct State {
         for(auto& queue:mixer_queues){queue.head=queue.count=queue.stamp_head=queue.stamp_count=0;queue.discontinuity=true;queue.input_marker=queue.boundary_marker=queue.aligned_start_valid=false;}
     }
     void clear_kernel() noexcept {
+        if(extension)extension->reset();
         if(auto* resampler=std::get_if<ResamplerKernel>(&kernel))resampler->operation().reset();
         if(auto* music=std::get_if<PreparedOperationKernel>(&kernel))music->reset();
     }

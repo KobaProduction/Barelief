@@ -167,11 +167,33 @@ QtNodes::NodeDataType AudioNodeModel::dataType(QtNodes::PortType type, QtNodes::
     return {};
 }
 namespace {
+const char* analysis_port_title(const QString& kind,QtNodes::PortType type,domain::PortId id) {
+    struct Label {const char* kind;bool input;domain::PortId port;const char* title;};
+    constexpr Label labels[]={
+        {"AutocorrelationTempogram",true,0,"Onset strength history"},
+        {"AutocorrelationTempogram",false,0,"Normalized autocorrelation"},
+        {"AutocorrelationTempogram",false,1,"Raw autocorrelation"},
+        {"AutocorrelationTempogram",false,2,"Windowed onset history"},
+        {"AutocorrelationTempogram",false,3,"Tempo scale, BPM"},
+        {"TempoEstimate",true,0,"Autocorrelation profile"},{"TempoEstimate",true,1,"Tempo prior"},
+        {"TempoEstimate",false,0,"Estimated tempo, BPM"},
+        {"DynamicBeatPath",true,0,"Onset strength history"},{"DynamicBeatPath",true,1,"Tempo, BPM"},
+        {"DynamicBeatPath",false,0,"Beat positions (0/1)"},{"DynamicBeatPath",false,1,"Local beat score"},
+        {"DynamicBeatPath",false,2,"Accumulated path score"},{"DynamicBeatPath",false,3,"Previous beat index"},
+        {"PowerToDb",true,0,"Linear power"},{"PowerToDb",false,0,"Log power, dB"},
+        {"Window",true,0,"New values"},{"Window",false,0,"Accumulated values"},
+        {"Mel",true,0,"Power spectrum"},{"Mel",false,0,"Mel band power"},
+        {"FeatureAggregate",true,0,"Feature values"},{"FeatureAggregate",false,0,"Aggregated feature"},
+        {"FrameStride",true,0,"Input frames"},{"FrameStride",false,0,"Selected frames"}};
+    for(const auto& label:labels)if(kind==QLatin1String(label.kind) && label.input==(type==QtNodes::PortType::In) && label.port==id)return label.title;
+    return nullptr;
+}
+
 const char* numeric_parameter_title(std::string_view key) {
     constexpr std::pair<std::string_view,const char*> titles[]={
         {"first_bin","First bin index"},{"first_midi","First MIDI note"},{"bin_hz","Frequency step, Hz"},{"power_gain","Window coefficient square sum"},
-        {"coherent_gain","Window coefficient sum"},{"size","Buffer size, N"},{"fft_size","FFT size, N"},
-        {"input_rate","Input sample rate, Fs"},{"sample_rate","Sampling frequency, Hz"}};
+        {"coherent_gain","Window coefficient sum"},{"window_coefficients","Window coefficients"},{"size","Accumulator size, elements"},{"fft_size","FFT size, N"},{"n_fft","FFT size, N"},
+        {"input_rate","Input sample rate, Fs"},{"sample_rate","Sampling frequency, Hz"},{"hop_samples","Analysis step, samples"},{"window_length","Window length, frames"}};
     for(const auto& [name,title]:titles)if(name==key)return title;
     return "Output sample rate, Fs";
 }
@@ -214,12 +236,21 @@ const char* spectrum_peak_port_title(const QString& kind, QtNodes::PortType dire
 }
 }
 
+namespace {
+const char* tempo_port_title(QtNodes::PortType type,domain::PortId id) {
+        static constexpr std::array inputs{"Short Fourier magnitude","Long Fourier magnitude","Short linear ACF","Long linear ACF","Short history filled","Long history filled"};
+        static constexpr std::array outputs{"Tempo hypotheses","Candidate count","Observation maturity","Harmonic ambiguity"};
+        return type==QtNodes::PortType::In?inputs.at(id):outputs.at(id);
+}
+const char* rhythm_port_title(QtNodes::PortType type,domain::PortId id) {
+    static constexpr std::array captions{"Candidate tempo, BPM","Accepted tempo, BPM","Decision score (not probability)","Tempo status: 0 unknown, 1 ambiguous, 2 determined","Beat phase, 0...1","Next beat, source seconds","Tempo change, BPM/s","Spectral activity","Periodicity support","ACF cost units (not time)","Accent strength","Grid status: 0 unknown, 1 ambiguous, 2 determined"};
+    return type==QtNodes::PortType::In?"R4 spectrogram: 512 x 64/96 UInt8":captions.at(id);
+}
+}
 QString AudioNodeModel::music_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
-    if(_kind=="RhythmAnalyzer"){
-        static constexpr std::array captions{"Candidate tempo, BPM","Accepted tempo, BPM","Decision score (not probability)","Tempo status: 0 unknown, 1 ambiguous, 2 determined","Beat phase, 0...1","Next beat, source seconds","Tempo change, BPM/s","Spectral activity","Periodicity support","ACF cost units (not time)","Accent strength","Grid status: 0 unknown, 1 ambiguous, 2 determined"};
-        const auto id=port_id(type,port);
-        return ui::text(type==QtNodes::PortType::In?"R4 spectrogram: 512 x 64/96 UInt8":captions.at(id))+"\n"+dataType(type,port).name;
-    }
+    if(_kind=="OnsetStrength")return ui::text(type==QtNodes::PortType::In?"Log-spectrum input":"Positive spectral differences")+"\n"+dataType(type,port).name;
+    if(_kind=="TempoEvidence")return ui::text(tempo_port_title(type,port_id(type,port)))+"\n"+dataType(type,port).name;
+    if(_kind=="RhythmAnalyzer")return ui::text(rhythm_port_title(type,port_id(type,port)))+"\n"+dataType(type,port).name;
     if((_kind=="BroadbandRow" || _kind=="NoteSpectrum") && type==QtNodes::PortType::Out) {
         const auto id=port_id(type,port);
         if(_kind=="NoteSpectrum" && id==domain::note_first_output)
@@ -244,6 +275,7 @@ QString AudioNodeModel::numeric_port_caption(QtNodes::PortType type,QtNodes::Por
 QString AudioNodeModel::numeric_output_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
     if(!_numeric || type!=QtNodes::PortType::Out)return {};
     const auto id=port_id(type,port);
+    if(_kind=="MatrixFFT")return ui::text(transform_output_caption(_kind,id))+"\n"+dataType(type,port).name;
     if(domain::has_sample_rate_output(_numeric->kind) && id==domain::sample_rate_output)
         return QStringLiteral("Fs · ")+dataType(type,port).name;
     if(id==domain::coherent_gain_output)
@@ -294,6 +326,7 @@ QString AudioNodeModel::descriptive_port_caption(QtNodes::PortType type,QtNodes:
     const auto custom=_presentation.value("port_labels").toObject().value(labelKey).toString();
     if(!custom.isEmpty())return custom+"\n"+dataType(type,port).name;
     if(configuration_role(type,port))return dataType(type,port).name;
+    if(const auto* title=analysis_port_title(_kind,type,port_id(type,port)))return ui::text(title)+"\n"+dataType(type,port).name;
     if(_numeric && _kind=="FrequencyStep" && port_id(type,port)==0)return (type==QtNodes::PortType::In?QStringLiteral("Fs"):ui::text("Frequency step, Hz"))+QStringLiteral(" · ")+dataType(type,port).name;
     if (const auto* title = spectrum_peak_port_title(_kind, type, unsigned(port_id(type, port)))) return ui::text(title) + "\n" + dataType(type, port).name;
     return specialized_port_caption(type,port);
@@ -1099,7 +1132,7 @@ namespace {
 QString static_node_caption(const QString& kind) {
     static const QMap<QString,const char*> names{
         {"AudioSource","Audio source"},
-        {"Window","Audio window buffer"},
+        {"Window","Value accumulator"},
         {"WindowFunction","Window function"},
         {"WindowView","Audio vector graph"},
         {"WindowedView","Audio vector graph"},
@@ -1149,6 +1182,17 @@ QString static_node_caption(const QString& kind) {
         {"ChannelComparison","Channel comparison"},
         {"MatrixTranspose","Matrix transpose"},
         {"MatrixCenter","Matrix row centering"},
+        {"MatrixAutocorrelation","Linear autocorrelation of rows"},
+        {"TempoEvidence","Tempo evidence"},
+        {"OnsetStrength","Onset strength (S input)"},
+        {"SpectralFlux","Spectral flux"},
+        {"ComplexSpectralDifference","Complex spectral difference"},
+        {"PhaseDeviation","Phase deviation"},
+        {"HighFrequencyContent","High frequency content"},
+        {"PowerToDb","Power logarithm (dB)"},
+        {"AutocorrelationTempogram","Rhythm autocorrelation"},
+        {"TempoEstimate","Tempo estimation"},
+        {"DynamicBeatPath","Beat grid"},
         {"MatrixWindowFunction","Matrix window function"},
         {"MatrixFFT","Matrix row FFT"},
         {"MatrixRow","Matrix row selector"},
@@ -1157,6 +1201,8 @@ QString static_node_caption(const QString& kind) {
         {"RFFT","Real FFT (complex)"},
         {"Fourier","Fourier (complex input)"},
         {"RealFourier","Real Fourier"},
+        {"FrameBuffer","Sample frame buffer"},
+        {"FrameStride","Frame update cadence"},{"FeatureAggregate","Feature aggregation"},
         {"ArrayFill","Array coefficients"},
         {"AmplitudePhase","Spectrum amplitude and phase"},
         {"WindowGain","Window coefficient sum"},

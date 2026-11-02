@@ -1,6 +1,7 @@
 #include "node_field_builder.h"
 #include "numeric_graph_draft.h"
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 using namespace signal_contracts;
@@ -23,6 +24,12 @@ struct ContractBinding {
         if(!numeric_editor::set_contract(node,direction,id,data))throw std::invalid_argument("Unsupported node settings");
     }
 };
+bool inferred_analysis_contract(std::string_view kind) {
+    constexpr std::string_view names[]={"AutocorrelationTempogram","TempoEstimate","DynamicBeatPath","OnsetStrength","Mel","PowerToDb","FeatureAggregate"};
+    for(const auto name:names)if(kind==name)return true;
+    return false;
+}
+
 void set_contract_rank(NumericContract& contract,Rank rank) {
     contract.shape.rank=rank;
     if(rank==Rank::Scalar){contract.shape={};contract.coordinates={};contract.channel_order=contract.channel_order.first(1);return;}
@@ -81,7 +88,7 @@ void NodeParameterModel::appendContractRepresentation(domain::PortDirection dire
 }
 void NodeParameterModel::appendContractPort(const domain::ProcessingPort& port,domain::PortDirection direction) {
     appendContractCaption(port,direction);
-    if(numeric_editor::is_graph_view(QString::fromStdString(_node.kind)) || !std::holds_alternative<signal_contracts::NumericContract>(port.contract.view()))return;
+    if(inferred_analysis_contract(_node.kind) || numeric_editor::is_graph_view(QString::fromStdString(_node.kind)) || !std::holds_alternative<signal_contracts::NumericContract>(port.contract.view()))return;
     appendContractDtype(direction,port.id);appendContractShape(direction,port.id);
     for(std::size_t axis=0;axis<2;++axis)appendContractExtent(direction,port.id,axis);
     appendContractRepresentation(direction,port.id);

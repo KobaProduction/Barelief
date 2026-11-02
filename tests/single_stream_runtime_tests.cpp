@@ -209,7 +209,7 @@ void resampler_latency(bool spectral){
  if(!spectral){node(g,2).outputs[0]=port(PortDirection::Output,0,pcm);node(g,3).inputs={port(PortDirection::Input,9,pcm),port(PortDirection::Input,5,pcm)};node(g,3).outputs={port(PortDirection::Output,0,pcm)};}
  else {
   auto window=pcm;window.shape.extents[0]={512,512};auto bins=vector_contract(256,true,24000);bins.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{24000,512}};
-  ConfiguredProcessingNode w;w.id=21;w.kind="Window";w.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t(512)}},{"input_rate",NumericLiteral{std::uint64_t{24000}}}}};w.inputs={port(PortDirection::Input,0,pcm)};w.outputs={port(PortDirection::Output,0,window)};
+  ConfiguredProcessingNode w;w.id=21;w.kind="Window";w.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t(512)}}}};w.inputs={port(PortDirection::Input,0,pcm)};w.outputs={port(PortDirection::Output,0,window)};
   ConfiguredProcessingNode fft;fft.id=22;fft.kind="StereoFFT";fft.parameters=TransformProcessingParameters{};fft.inputs={port(PortDirection::Input,0,window)};fft.outputs={port(PortDirection::Output,0,bins)};
   node(g,2).outputs={port(PortDirection::Output,0,bins)};node(g,3).inputs={port(PortDirection::Input,9,bins),port(PortDirection::Input,5,bins)};node(g,3).outputs={port(PortDirection::Output,0,bins)};
   g.nodes.push_back(w);g.nodes.push_back(fft);g.edges[0].from=22;g.edges.push_back({20,21,0,0});g.edges.push_back({21,22,0,0});

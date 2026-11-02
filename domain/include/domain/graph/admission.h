@@ -46,6 +46,14 @@ struct NumericDeviceCapabilities {
     GeometryQuery geometry=nullptr;
 };
 struct ProcessingGraphAdmission { std::size_t node_count = 0; ProcessingResources resources; std::size_t peak_bytes = 0; };
+// Read-only DTO ledger. Shared contract snapshots may be excluded by a caller
+// that already pins and accounts them in its immutable graph snapshot.
+bool processing_node_owned_bytes(const ConfiguredProcessingNode&,const ProcessingAdmissionLimits&,
+    std::size_t&,bool include_contract_snapshots=true) noexcept;
+// Cold construction request bound, without building/copying a graph or node.
+// A newly owned DTO must also pass the actual-capacity ledger before admission.
+bool processing_node_required_bytes(const ResolvedProcessingNode&,const ProcessingAdmissionLimits&,
+    std::size_t&,bool include_contract_snapshots=true) noexcept;
 // Canonical graph/processing editions only; external fields do not gate local admission.
 signal_contracts::Status processing_versions_supported(const ProcessingVersions&) noexcept;
 // One resolver for domain, runtime and editor adapters; publishes only on success.

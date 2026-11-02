@@ -102,18 +102,8 @@ bool requires_alignment(const ConfiguredProcessingNode& node) noexcept {
     const auto* mixer=std::get_if<MixerProcessingParameters>(&node.parameters);
     return node.kind=="Mixer" && mixer && mixer->consumption==MixerConsumption::SourceAligned;
 }
-ProcessingDiagnostic window_cadence(const NumericProcessingGraph& graph,const ConfiguredProcessingNode& node) noexcept {
-    if(node.kind!="Window")return {};
-    const auto* endpoint=admission_port(node.inputs,0);if(!endpoint)return {ProcessingError::InvalidPort,node.id};
-    const auto contract=endpoint->contract.view();const auto* input=std::get_if<NumericContract>(&contract);
-    if(!input)return {ProcessingError::InvalidContract,node.id};
-    const auto numerator=std::uint64_t(graph.execution_interval.numerator),denominator=graph.execution_interval.denominator;
-    const auto minimum=denominator/numerator+std::uint64_t(denominator%numerator!=0);
-    return input->clock.sample_rate>=minimum?ProcessingDiagnostic{}:ProcessingDiagnostic{ProcessingError::InvalidParameters,node.id};
-}
 }
 ProcessingDiagnostic validate_execution_policy(const NumericProcessingGraph& graph,const ConfiguredProcessingNode& node) noexcept {
-    const auto cadence=window_cadence(graph,node);if(!cadence)return cadence;
     const auto* mixer=std::get_if<MixerProcessingParameters>(&node.parameters);
     if(node.kind=="Mixer" && mixer && mixer->consumption==MixerConsumption::ClockedFifo && !has_configuration_binding(graph,node.id,ConfigurationRole::SampleClock))return {ProcessingError::InvalidParameters,node.id};
     return requires_alignment(node)?ClockProvenance{graph}.aligned_inputs(node):ProcessingDiagnostic{};

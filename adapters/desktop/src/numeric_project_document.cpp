@@ -458,7 +458,10 @@ void parameter_fields(Mapper& m,ReduceProcessingParameters& value) {
     m.field("precision_loss",value.precision_loss);
     m.field("rounding",value.rounding);
 }
-void parameter_fields(Mapper& m,HistoryProcessingParameters& value) {m.field("capacity",value.capacity);}
+void parameter_fields(Mapper& m,HistoryProcessingParameters& value) {
+    m.field("capacity",value.capacity);
+    m.field("filled_only",value.filled_only);
+}
 void parameter_fields(Mapper& m,SignalGeneratorProcessingParameters& value) {
     m.field("oscillators",value.oscillators);
     if(value.oscillators.empty() || value.oscillators.size()>signal_contracts::max_oscillators)m.fail("Oscillator count");

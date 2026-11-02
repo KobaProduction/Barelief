@@ -1,4 +1,5 @@
 #include "dsp_kernels/dsp.h"
+#include <dsp_kernels/prepared_storage.h>
 #include <dsp_kernels/spectral_weights.h>
 #include <algorithm>
 #include <cmath>
@@ -27,10 +28,10 @@ int fft_scale(std::span<const float> input,std::size_t n) {
 float spectrum_magnitude(float re,float im,std::size_t n,double restore) {
     return float((std::hypot(double(re),double(im)) / double(n)) * restore);
 }
-void prepare_window_bank(std::span<float> bank,std::size_t maximum) {
+void prepare_window_bank(std::span<float> bank,std::size_t maximum,bool periodic) {
     for (std::size_t index=0;index<window_function_names.size();++index) {
         const auto function=WindowFunction(index);
-        window(bank.subspan(std::size_t(function)*maximum,maximum),function);
+        window(bank.subspan(std::size_t(function)*maximum,maximum),function,periodic);
     }
 }
 void stage_real_fft_input(std::span<const float> input,std::span<float> scratch,int scale) noexcept {
@@ -44,6 +45,21 @@ bool stage_magnitude_bins(std::span<float> scratch,std::size_t n,std::size_t bin
         scratch[2*i]=value;
     }
     return true;
+}
+bool stage_polar_bins(std::span<float> scratch,std::size_t n,double restore) noexcept {
+    for(std::size_t i=0;i<n/2;++i){
+        const auto real=scratch[2*i],imaginary=scratch[2*i+1];
+        const auto magnitude=spectrum_magnitude(real,imaginary,n,restore);
+        if(!std::isfinite(magnitude))return false;
+        scratch[2*i]=magnitude;
+        scratch[2*i+1]=(real!=0 || imaginary!=0)?std::atan2(imaginary,real):0;
+    }
+    return true;
+}
+bool output_planes_overlap(std::span<float> magnitude,std::span<float> phase) noexcept {
+    if(phase.empty())return false;
+    const std::less<const float*> before;
+    return before(magnitude.data(),phase.data()+phase.size()) && before(phase.data(),magnitude.data()+magnitude.size());
 }
 signal_contracts::Status load_fft_plane(const signal_contracts::NumericView& input,
     std::span<float> scratch,std::size_t plane,std::size_t n) noexcept {
@@ -62,27 +78,6 @@ signal_contracts::Status store_magnitude_plane(signal_contracts::MutableNumericV
     }
     return signal_contracts::Status::ok;
 }
-bool prepare_mel_weights(std::size_t bins,std::size_t rate,std::size_t bands,
-    std::span<const double> frequencies,std::span<const double> boundaries,
-    std::span<double> weights) noexcept {
-    const double nyquist=double(rate)*.5;
-    double previous=-1;
-    for(std::size_t bin=0;bin<bins;++bin){
-        const double hz=frequencies.empty()?double(bin)*double(rate)/double(bins*2):frequencies[bin];
-        if(!std::isfinite(hz) || hz<0 || hz<=previous || hz>nyquist)return false;
-        for(std::size_t band=0;band<bands;++band)
-            weights[band*bins+bin]=triangular_weight(hz,boundaries[band],boundaries[band+1],boundaries[band+2]);
-        previous=hz;
-    }
-    return true;
-}
-bool mel_band_energy(std::span<const float> input,std::span<const double> weights,
-    std::size_t band,float& output) noexcept {
-    double energy=0;
-    for(std::size_t bin=0;bin<input.size();++bin)energy+=double(input[bin])*weights[band*input.size()+bin];
-    output=float(energy);
-    return std::isfinite(output);
-}
 void apply_stereo_window(std::span<float> left,std::span<float> right,
     std::span<const float> window) noexcept {
     for(std::size_t i=0;i<left.size();++i){left[i]*=window[i];right[i]*=window[i];}
@@ -95,15 +90,23 @@ void apply_stereo_weights(std::span<float> left,std::span<float> right,
         if(!std::isfinite(right[i]))right[i]=0;
     }
 }
-double projected_spectrum_value(SpectrumProjection projection,double real,double imaginary,
+double calibrated_magnitude(ComplexMagnitudeNorm norm,double real,double imaginary) noexcept {
+    if(norm==ComplexMagnitudeNorm::Hypot)return std::hypot(real,imaginary);
+    if(norm==ComplexMagnitudeNorm::SquaredNorm)return std::sqrt(real*real+imaginary*imaginary);
+    float magnitude=0;
+    return complex_polar_value(float(real),float(imaginary),&magnitude,nullptr,{ZeroMagnitudePhase::Zero,norm,false})?
+        double(magnitude):std::numeric_limits<double>::quiet_NaN();
+}
+double projected_calibrated_value(SpectrumProjectionOptions options,double real,double imaginary,
     double sided,double amplitude_scale,double power_scale,double psd_scale,double bin_power_scale) noexcept {
     const double squared=real*real+imaginary*imaginary;
-    switch(projection){
+    const double magnitude=calibrated_magnitude(options.magnitude_norm,real,imaginary);
+    switch(options.representation){
     case SpectrumProjection::Real:return real;
     case SpectrumProjection::Imaginary:return imaginary;
     case SpectrumProjection::Phase:return squared?std::atan2(imaginary,real):0;
-    case SpectrumProjection::Magnitude:case SpectrumProjection::WindowScaledMagnitude:return std::sqrt(squared)*amplitude_scale;
-    case SpectrumProjection::PeakAmplitude:return sided*std::sqrt(squared)*amplitude_scale;
+    case SpectrumProjection::Magnitude:case SpectrumProjection::WindowScaledMagnitude:return magnitude*amplitude_scale;
+    case SpectrumProjection::PeakAmplitude:return sided*magnitude*amplitude_scale;
     case SpectrumProjection::Power:return sided*squared*power_scale;
     case SpectrumProjection::Psd:return sided*squared*psd_scale;
     case SpectrumProjection::RmsAmplitude:return std::sqrt(sided*squared)*amplitude_scale;
@@ -111,26 +114,68 @@ double projected_spectrum_value(SpectrumProjection projection,double real,double
     }
     return 0;
 }
+bool valid_projection_options(const SpectrumProjectionOptions& options) noexcept {
+    return !spectrum_projection_name(options.representation).empty() &&
+        unsigned(options.magnitude_norm)<=unsigned(ComplexMagnitudeNorm::ScaledRatioFma) &&
+        unsigned(options.zero_phase)<=unsigned(ZeroMagnitudePhase::Atan2) &&
+        std::isfinite(options.magnitude_exponent) &&
+        (!options.compensate || (options.representation!=SpectrumProjection::Magnitude && options.representation!=SpectrumProjection::WindowScaledMagnitude) || options.magnitude_exponent==1);
+}
+float projected_magnitude_value(SpectrumProjectionOptions options,float real,float imaginary,
+    ComplexPolarOptions polar,float sided,float scale) noexcept {
+    float magnitude=0;
+    if(!complex_polar_value(real,imaginary,&magnitude,nullptr,polar))return std::numeric_limits<float>::quiet_NaN();
+    if(options.representation==SpectrumProjection::PeakAmplitude)return sided*magnitude*scale;
+    return magnitude_power(magnitude,options.magnitude_exponent,magnitude)?magnitude*scale:std::numeric_limits<float>::quiet_NaN();
+}
+float projected_spectrum_value(SpectrumProjectionOptions options,float real,float imaginary,bool real_axis,
+    float sided,float amplitude_scale,float power_scale,float psd_scale) noexcept {
+    float phase=0;
+    const ComplexPolarOptions polar{options.zero_phase,options.magnitude_norm,real_axis};
+    switch(options.representation){
+    case SpectrumProjection::Real:return real;
+    case SpectrumProjection::Imaginary:return imaginary;
+    case SpectrumProjection::Phase:
+        return complex_polar_value(real,imaginary,nullptr,&phase,polar)?phase:std::numeric_limits<float>::quiet_NaN();
+    case SpectrumProjection::Magnitude:
+    case SpectrumProjection::WindowScaledMagnitude:
+    case SpectrumProjection::PeakAmplitude:
+        return projected_magnitude_value(options,real,imaginary,polar,sided,amplitude_scale);
+    case SpectrumProjection::Power:return sided*(real*real+(real_axis?0.f:imaginary*imaginary))*power_scale;
+    case SpectrumProjection::Psd:
+    case SpectrumProjection::BinPower:return sided*(real*real+(real_axis?0.f:imaginary*imaginary))*psd_scale;
+    case SpectrumProjection::RmsAmplitude:return std::sqrt(sided*(real*real+(real_axis?0.f:imaginary*imaginary)));
+    }
+    return 0;
+}
 }
 void hann_window(std::span<float> output) { for(std::size_t i=0;i<output.size();++i)output[i]=window_coefficient(i,output.size(),WindowFunction::Hann); }
-void window(std::span<float> output,WindowFunction function) { for(std::size_t i=0;i<output.size();++i)output[i]=window_coefficient(i,output.size(),function); }
-PreparedWindows::PreparedWindows(std::size_t maximum) {
-    (void)prepare(maximum);
+void window(std::span<float> output,WindowFunction function,bool periodic) { for(std::size_t i=0;i<output.size();++i)output[i]=window_coefficient(i,output.size(),function,periodic); }
+PreparedWindows::PreparedWindows(std::size_t maximum,bool periodic) {
+    (void)prepare(maximum,periodic);
 }
-bool PreparedWindows::prepare(std::size_t maximum) {
+void PreparedWindows::prepare_rotations(std::span<Rotation> rotations,std::size_t maximum,bool periodic) {
+    for (std::size_t length = 0; length <= maximum; ++length) {
+        const double angle = length < 2 ? 0 : 6.2831853071795864769 / (double(length)-(periodic?0:1));
+        rotations[length] = {std::cos(angle), std::sin(angle)};
+    }
+}
+
+bool PreparedWindows::prepare(std::size_t maximum,bool periodic) {
     std::size_t bytes = 0;
     if (!storage_bytes(maximum, bytes) || maximum > bank_.max_size() / window_function_names.size() || maximum >= rotations_.max_size())
         return false;
     std::vector<float> bank(maximum * window_function_names.size());
     std::vector<Rotation> rotations(maximum + 1);
-    prepare_window_bank(bank,maximum);
-    for (std::size_t length = 0; length <= maximum; ++length) {
-        const double angle = length < 2 ? 0 : 6.2831853071795864769 / double(length - 1);
-        rotations[length] = {std::cos(angle), std::sin(angle)};
-    }
+    std::size_t actual=0;
+    if(!prepared_storage::add_array(actual,bank.capacity(),sizeof(float)) ||
+       !prepared_storage::add_array(actual,rotations.capacity(),sizeof(Rotation)) || actual>bytes)return false;
+    prepare_window_bank(bank,maximum,periodic);
+    prepare_rotations(rotations,maximum,periodic);
     bank_.swap(bank);
     rotations_.swap(rotations);
     maximum_ = maximum;
+    periodic_ = periodic;
     prepared_ = true;
     return true;
 }
@@ -155,7 +200,7 @@ bool PreparedWindows::coefficients(WindowFunction function, std::span<float> out
     double cosine = 1, sine = 0;
     std::size_t i=0;
     for (auto& value : output) {
-        value=window_from_cosine(i++,output.size(),function,cosine);
+        value=window_from_cosine(i++,output.size(),function,cosine,periodic_);
         const auto next = cosine * rotation.cosine - sine * rotation.sine;
         sine = sine * rotation.cosine + cosine * rotation.sine;
         cosine = next;
@@ -197,6 +242,14 @@ bool MagnitudeSpectrum::prepare(std::size_t n, bool radix4) {
 static void copy_magnitude_bins(std::span<const float> scratch,std::span<float> output) noexcept {
     for(std::size_t i=0;i<output.size();++i)output[i]=scratch[2*i];
 }
+static bool publish_polar_spectrum(std::span<float> scratch,std::size_t n,int scale,
+                                  std::span<float> output,std::span<float> phase) noexcept {
+    const double restore=scale?std::scalbn(1.,scale):1.;
+    if(!(phase.empty()?stage_magnitude_bins(scratch,n,output.size(),restore):stage_polar_bins(scratch,n,restore)))return false;
+    copy_magnitude_bins(scratch,output);
+    for(std::size_t bin=0;bin<phase.size();++bin)phase[bin]=scratch[2*bin+1];
+    return true;
+}
 static void scale_fft_plane(std::span<float> scratch,std::size_t samples,int scale) noexcept {
     if(!scale)return;
     const float factor=std::scalbn(1.f,-scale);
@@ -213,18 +266,19 @@ static signal_contracts::Status prepare_fft_plane_input(const signal_contracts::
     return Status::ok;
 }
 bool MagnitudeSpectrum::process(std::span<const float> input, std::span<float> output) {
+    return process(input,output,{});
+}
+bool MagnitudeSpectrum::process(std::span<const float> input, std::span<float> output,std::span<float> phase) {
     const auto n = scratch_.size() / 2;
-    if (!n || input.size() != n || output.size() != n / 2)
+    if (!n || input.size() != n || output.size() != n / 2 ||
+        (!phase.empty() && phase.size()!=output.size()) || output_planes_overlap(output,phase))
         return false;
     const auto scale=fft_scale(input,n);if(scale==INT_MIN)return false;
     stage_real_fft_input(input,{scratch_.data(),scratch_.size()},scale);
     if (!detail::transform(scratch_.data(), n, radix4_))
         return false;
-    const double restore = scale ? std::scalbn(1., scale) : 1.;
     // Stage results in the consumed real scratch lane before publishing.
-    if(!stage_magnitude_bins({scratch_.data(),scratch_.size()},n,output.size(),restore))return false;
-    copy_magnitude_bins({scratch_.data(),scratch_.size()},output);
-    return true;
+    return publish_polar_spectrum({scratch_.data(),scratch_.size()},n,scale,output,phase);
 }
 signal_contracts::Status MagnitudeSpectrum::process_plane(const signal_contracts::NumericView& input,
     signal_contracts::MutableNumericView& output, std::size_t plane) {
@@ -255,7 +309,9 @@ bool FFT::prepare(std::size_t n, bool radix4) {
     scratch_.clear();
     if (n < 4 || n > max_fft_samples || (n & (n - 1)) ||
         (radix4 && (n & 0x55555555) == 0) || !detail::prepare_backend(n, radix4)) return false;
-    if(!scratch_.resize(2 * n))return false;
+    std::size_t bound=0;if(!storage_bytes(n,bound))return false;
+    detail::FftStorage next;if(!next.resize(2*n))return false;scratch_.swap(next);
+    if(workspace_bytes()>bound)return false;
     radix4_ = radix4;
     return true;
 }
@@ -323,20 +379,26 @@ void PreparedRfft::publish_configuration(std::size_t n,bool radix4,bool mixed,Sp
     samples_ = n;
 
 }
-bool PreparedRfft::prepare(std::size_t n, bool radix4, Split split, const Options* options) {
-    samples_ = 0;
-    platform_optimizations_ = !options || options->platform_optimizations;
-    if (n < 8 || n > max_fft_samples || (n & (n - 1)) ||
-        (split != Split::Automatic && split != Split::Scalar)) return false;
+bool PreparedRfft::prepare_plan(std::size_t n,bool radix4,Split split,std::size_t bound) {
     const auto packed = n / 2;
     const bool mixed = radix4 && (packed & 0x55555555) == 0;
     if (!detail::prepare_backend(mixed ? packed / 2 : packed, radix4)) return false;
     // The split pairs k and N/2-k share sine and opposite cosine. Keep only
     // the first quadrant; the mixed-radix butterfly uses the same symmetry.
     if(!prepare_rfft_storage(scratch_,twiddles_,mixed_,n,mixed))return false;
-    if(!prepare_twiddles(n,packed,mixed,split))return false;
+    if(!prepare_twiddles(n,packed,mixed,split) || workspace_bytes()>bound)return false;
     publish_configuration(n,radix4,mixed,split);
     return true;
+}
+
+bool PreparedRfft::prepare(std::size_t n, bool radix4, Split split, const Options* options) {
+    reset();
+    platform_optimizations_ = !options || options->platform_optimizations;
+    if (n < 8 || n > max_fft_samples || (n & (n - 1)) ||
+        (split != Split::Automatic && split != Split::Scalar)) return false;
+    std::size_t bound=0;
+    if(!storage_bytes(n,radix4,bound))return false;
+    return prepare_plan(n,radix4,split,bound);
 }
 bool PreparedRfft::prepare_twiddles(std::size_t n,std::size_t packed,bool mixed,Split split) noexcept {
     float twiddle_scale=1.f;
@@ -613,79 +675,68 @@ bool PreparedSpectrumPower::process(std::span<const float> input,std::span<float
 }
 bool PreparedSpectrumScaling::prepare(double rate,double sum,double squares,SpectrumProjectionOptions options,std::size_t fft_samples) noexcept {
     ready_=false;
-    if(spectrum_projection_name(options.representation).empty() || !std::isfinite(rate) || rate<=0 ||
+    if(!valid_projection_options(options) || !std::isfinite(rate) || rate<0 ||
+       (options.compensate && options.representation==SpectrumProjection::Psd && rate==0) ||
        !std::isfinite(sum) || sum<=0 || !std::isfinite(squares) || squares<=0 ||
        (options.representation==SpectrumProjection::BinPower && options.compensate && !fft_samples))return false;
     options_=options;amplitude_scale_=options.compensate?1/sum:1;
-    power_scale_=amplitude_scale_*amplitude_scale_;psd_scale_=options.compensate?(1/rate)/squares:1;bin_power_scale_=options.compensate?(1/double(fft_samples?fft_samples:1))/squares:1;
+    power_scale_=amplitude_scale_*amplitude_scale_;psd_scale_=options.compensate?(1/(rate?rate:1))/squares:1;bin_power_scale_=options.compensate?(1/double(fft_samples?fft_samples:1))/squares:1;
     const auto valid=[](double value){return std::isfinite(value) && value>0;};
     ready_=valid(amplitude_scale_) && valid(power_scale_) && valid(psd_scale_) && valid(bin_power_scale_);
     return ready_;
 }
-bool PreparedSpectrumScaling::project(float real,float imaginary,bool paired,float& output) const noexcept {
+bool PreparedSpectrumScaling::prepare(double rate,std::span<const float> coefficients,SpectrumProjectionOptions options,std::size_t fft_samples) noexcept {
+    ready_=false;
+    if(!fft_samples || coefficients.size()>fft_samples)return false;
+    auto scaling=WindowScaling{fft_samples,double(fft_samples),double(fft_samples)};
+    if(!coefficients.empty()){
+        const auto values=window_scaling(coefficients);if(!values)return false;
+        scaling=*values;
+    }
+    return prepare(rate,scaling.sum,scaling.sum_squares,options,fft_samples);
+}
+bool PreparedSpectrumScaling::prepare_raw(SpectrumProjectionOptions options) noexcept {
+    options.compensate=false;return prepare(1,1,1,options);
+}
+bool PreparedSpectrumScaling::project(float real,float imaginary,bool paired,float& output,bool real_axis) const noexcept {
     if(!ready_ || !std::isfinite(real) || !std::isfinite(imaginary))return false;
-    const double sided=options_.compensate && paired?2.:1.;
-    const double value=projected_spectrum_value(options_.representation,real,imaginary,sided,
-        amplitude_scale_,power_scale_,psd_scale_,bin_power_scale_);
+    const bool endpoint=options_.real_endpoints && real_axis;
+    const double value=options_.compensate && options_.representation!=SpectrumProjection::Phase?
+        projected_calibrated_value(options_,real,endpoint?0:imaginary,paired?2.:1.,
+            amplitude_scale_,power_scale_,psd_scale_,bin_power_scale_):
+        projected_spectrum_value(options_,real,imaginary,endpoint,1.f,1.f,1.f,1.f);
     if(!std::isfinite(value) || std::abs(value)>std::numeric_limits<float>::max())return false;
     output=float(value);return true;
 }
 bool PreparedSpectrumProjection::prepare(std::size_t n,double rate,WindowScaling window,SpectrumProjectionOptions options) {
-    samples_=0;
-    if(n<8 || n>max_fft_samples || (n&(n-1)) || window.samples!=n || !scaling_.prepare(rate,window.sum,window.sum_squares,options,n))return false;
-    scratch_.resize(n/2+1);samples_=n;return true;
+    if(n<8 || n>max_fft_samples || (n&(n-1))){geometry_={};published_=false;return false;}
+    return prepare({n,n/2+1,0,true},rate,window,options);
+}
+bool PreparedSpectrumProjection::prepare(SpectrumProjectionGeometry geometry,double rate,WindowScaling window,SpectrumProjectionOptions options) {
+    geometry_={};published_=false;
+    if(!geometry.fft_size || !geometry.bins || geometry.bins>SIZE_MAX/(2*sizeof(float)) || window.samples!=geometry.fft_size)return false;
+    const auto maximum=geometry.one_sided?geometry.fft_size/2+1:geometry.fft_size;
+    if(geometry.first_bin>=maximum || geometry.bins>maximum-geometry.first_bin ||
+       !scaling_.prepare(rate,window.sum,window.sum_squares,options,geometry.fft_size))return false;
+    scratch_.resize(geometry.bins);geometry_=geometry;return true;
 }
 bool PreparedSpectrumProjection::process(std::span<const float> input,std::span<float> output) noexcept {
-    if(!samples_ || input.size()!=samples_+2 || output.size()!=samples_/2+1)return false;
+    published_=false;
+    if(!geometry_.fft_size || input.size()!=2*geometry_.bins || output.size()!=geometry_.bins)return false;
     const auto first=reinterpret_cast<std::uintptr_t>(input.data()),second=reinterpret_cast<std::uintptr_t>(output.data());
     if(first<=second?second-first<input.size_bytes():first-second<output.size_bytes())return false;
-    for(std::size_t k=0;k<output.size();++k)
-        if(!scaling_.project(input[2*k],input[2*k+1],k!=0 && k!=samples_/2,scratch_[k]))return false;
-    std::copy(scratch_.begin(),scratch_.end(),output.begin());return true;
-}
-static void prepare_mel_boundaries(std::span<double> boundaries,std::size_t bands,double nyquist) noexcept {
-    for(std::size_t i=0;i<boundaries.size();++i)
-        boundaries[i]=mel_frequency(double(i)/double(bands+1),nyquist);
-}
-static bool prepare_mel_storage(std::vector<double>& boundaries,std::vector<double>& weights,
-                                std::size_t bins,std::size_t rate,std::size_t bands,
-                                std::span<const double> frequencies_hz) {
-    if(bins>max_fft_samples/2 || bands>max_mel_bands ||
-       (bands && bins>SIZE_MAX/bands) ||
-       (!frequencies_hz.empty() && frequencies_hz.size()!=bins))return false;
-    boundaries.assign(bands+2,0);
-    weights.assign(bins*bands,0);
-    return (bins && rate) || frequencies_hz.empty();
-}
-bool MelFilterBank::prepare(std::size_t bins, std::size_t rate, std::size_t bands,
-                            std::span<const double> frequencies_hz) {
-    bins_ = bands_ = 0;
-    boundaries_.clear();
-    weights_.clear();
-    if(!prepare_mel_storage(boundaries_,weights_,bins,rate,bands,frequencies_hz))return false;
-    bins_ = bins;bands_ = bands;
-    if (!bins || !rate)return true; // Legacy zero-rate frames produce zero Mel.
-    const double nyquist = double(rate) * .5;
-    prepare_mel_boundaries(boundaries_,bands,nyquist);
-    if(!prepare_mel_weights(bins,rate,bands,frequencies_hz,boundaries_,weights_)){
-        bins_=bands_=0;
-        return false;
+    for(std::size_t k=0;k<output.size();++k){
+        const auto bin=k+geometry_.first_bin;
+        const bool endpoint=bin==0 || (!(geometry_.fft_size%2) && bin==geometry_.fft_size/2);
+        if(!scaling_.project(input[2*k],input[2*k+1],geometry_.one_sided && !endpoint,scratch_[k],endpoint))return false;
     }
-    return true;
-}
-bool MelFilterBank::process(std::span<const float> input, std::span<float> output) const {
-    if (input.size() != bins_ || output.size() != bands_ || boundaries_.empty() ||
-        weights_.size() != bins_*bands_)
-        return false;
-    for(const float value:input)if(!std::isfinite(value))return false;
-    for(std::size_t band=0;band<bands_;++band)
-        if(!mel_band_energy(input,weights_,band,output[band]))return false;
-    return true;
+    std::copy(scratch_.begin(),scratch_.end(),output.begin());published_=true;return true;
 }
 bool StereoProcessor::prepare(std::size_t n, std::size_t rate, std::size_t bands) {
     // Invalidate both plans on invalid geometry, avoiding stale Mel state.
     const bool fft_ready = fft_.prepare(bands <= max_mel_bands ? n : 0, (n & 0x55555555) != 0);
-    const bool mel_ready = mel_.prepare(fft_ready ? n / 2 : max_fft_samples, rate, bands);
+    const bool mel_ready = fft_ready && mel_.prepare(n / 2, rate, bands);
+    if(!fft_ready || !mel_ready)mel_=MelFilterBank{};
     return fft_ready && mel_ready;
 }
 bool StereoProcessor::process(std::span<float> left, std::span<float> right, std::span<const float> window,

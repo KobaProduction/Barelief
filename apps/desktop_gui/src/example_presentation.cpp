@@ -36,6 +36,28 @@ void apply_stream_labels(NumericEditorGraphModel* model,const NumericExampleStre
     presentation["stream_names"]=labels;
     node->set_presentation(presentation);
 }
+QJsonArray port_order_json(const std::vector<domain::PortId>& ports) {
+    QJsonArray result;
+    for(const auto port:ports)result.append(int(port));
+    return result;
+}
+void apply_port_order(NumericEditorGraphModel* model,const NumericExamplePortOrder& order) {
+    auto* node=model->delegateModel<AudioNodeModel>(order.node);if(!node)return;
+    auto presentation=node->presentation();
+    presentation["input_port_order"]=port_order_json(order.inputs);
+    presentation["output_port_order"]=port_order_json(order.outputs);
+    node->set_presentation(presentation);
+}
+
+void apply_node_label(NumericEditorGraphModel* model,const NumericExampleNodeName& name) {
+    auto* node=model->delegateModel<AudioNodeModel>(name.node);
+    if(!node)return;
+    auto presentation=node->presentation();
+    const auto title=ui::text(name.label).trimmed();
+    if(title.isEmpty())presentation.remove("display_name");
+    else presentation["display_name"]=title;
+    node->set_presentation(presentation);
+}
 }
 
 QJsonObject example_view_preferences(const NumericExampleGraph& example,const QString& device,const QString& graph) {
@@ -64,4 +86,6 @@ void apply_example_labels(NumericEditorGraphModel* model,const NumericExampleGra
     if(!model)return;
     for(const auto& names:example.scalar_names)apply_scalar_labels(model,names);
     for(const auto& stream:example.streams)apply_stream_labels(model,stream);
+    for(const auto& name:example.node_names)apply_node_label(model,name);
+    for(const auto& order:example.port_orders)apply_port_order(model,order);
 }

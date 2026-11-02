@@ -6,9 +6,20 @@ namespace domain::detail {
 namespace {
 constexpr float broadband_boundaries[]{0,60,120,250,400,600,900,1300,1800,2500,3500,4800,6500,8500,11000,14000,16384};
 constexpr ParameterDescriptor projection[]{
+        {"normalize",C::Processing,V::Boolean,0,1,1,{}},
         {"fft_size",C::Processing,V::Integer,2,4294967295.,4096,{}},
         {"sample_rate",C::Processing,V::Number,1,4294967295.,32768,{}},
         {"representation",C::Processing,V::String,0,0,0,"magnitude"},
+        {"first_bin",C::Processing,V::Integer,0,4294967295.,0,{}},
+        {"positive_half",C::Processing,V::Boolean,0,1,1,{}},
+        {"magnitude_norm",C::Processing,V::String,0,0,0,"hypot"},
+        {"zero_phase",C::Processing,V::String,0,0,0,"zero"},
+        {"magnitude_exponent",C::Processing,V::Number,0,3.4e38,1,{}},
+        {"real_endpoints",C::Processing,V::Boolean,0,1,0,{}},
+        {"periodic",C::Processing,V::Boolean,0,1,0,{}},
+        {"scaling_source",C::Processing,V::String,0,0,0,"window"},
+        {"coherent_gain",C::Processing,V::Number,1e-15,1e15,1,{}},
+        {"power_gain",C::Processing,V::Number,1e-15,1e15,1,{}},
         {"window_function",C::Processing,V::WindowFunction,0,0,0,"hann"}};
 constexpr auto normalizer=with_calibration_frontend(std::array{
     ParameterDescriptor{"mode",C::Processing,V::String,0,0,0,"off"},
@@ -79,8 +90,38 @@ constexpr ParameterDescriptor rhythm[]{
     {"sample_rate",C::Processing,V::Number,1,4294967295.,32768,{}},
     {"mode",C::Processing,V::String,0,0,0,"gated"},
     {"budget_ops",C::Processing,V::Integer,0,4294967295.,30000,{}}};
-constexpr ParameterDescriptor rhythm_features[]{{"feature_bins",C::Processing,V::Integer,64,96,64,{}}};
+constexpr ParameterDescriptor rhythm_features[]{
+    {"feature_bins",C::Processing,V::Integer,64,96,64,{}},
+    {"input_representation",C::Processing,V::String,0,0,0,"complex"}};
+constexpr ParameterDescriptor tempo_evidence[]{
+    {"frame_rate_fps",C::Processing,V::Integer,10,1000,60,{}},
+    {"short_fft",C::Processing,V::Integer,32,16384,512,{}},
+    {"long_fft",C::Processing,V::Integer,32,16384,4096,{}},
+    {"min_bpm",C::Processing,V::Number,20,29999,40,{}},
+    {"max_bpm",C::Processing,V::Number,20,29999,240,{}},
+    {"min_observation_s",C::Processing,V::Number,.001,3600,4,{}},
+    {"mature_observation_s",C::Processing,V::Number,.001,3600,8,{}}};
+constexpr ParameterDescriptor librosa_onset[]{
+    {"lag",C::Processing,V::Integer,1,4294967295.,1,{}},
+    {"max_size",C::Processing,V::Integer,1,4294967295.,1,{}},
+    {"n_fft",C::Processing,V::Integer,1,4294967295.,2048,{}},
+    {"hop_length",C::Processing,V::Integer,1,4294967295.,512,{}},
+    {"center",C::Processing,V::Boolean,0,1,1,{}},
+    {"detrend",C::Processing,V::Boolean,0,1,0,{}},
+    {"aggregate",C::Processing,V::String,0,0,0,"mean"}};
+constexpr ParameterDescriptor spectral_flux[]{{"half_wave",C::Processing,V::Boolean,0,1,1,{}}};
+constexpr ParameterDescriptor complex_difference[]{{"half_wave",C::Processing,V::Boolean,0,1,0,{}}};
+constexpr ParameterDescriptor phase_deviation[]{
+    {"weighted",C::Processing,V::Boolean,0,1,0,{}},
+    {"magnitude_threshold",C::Processing,V::Number,0,1e30,0,{}}};
+constexpr ParameterDescriptor hfc[]{{"squared",C::Processing,V::Boolean,0,1,0,{}}};
 constexpr ParameterSet sets[]{
+    {NodeKind::SpectralFlux,spectral_flux},
+    {NodeKind::ComplexSpectralDifference,complex_difference},
+    {NodeKind::PhaseDeviation,phase_deviation},
+    {NodeKind::HighFrequencyContent,hfc},
+    {NodeKind::OnsetStrength,librosa_onset},
+    {NodeKind::TempoEvidence,tempo_evidence},
     {NodeKind::RhythmAnalyzer,rhythm},
     {NodeKind::RhythmFeatures,rhythm_features},
     {NodeKind::SpectrumProjection,projection},
@@ -104,6 +145,9 @@ ProcessingContentContinuity processing_output_continuity(const ResolvedProcessin
     switch(*kind) {
     case NodeKind::BroadbandFeatures:case NodeKind::NoteSalience:case NodeKind::MusicalSpectrogram:
     case NodeKind::BroadbandRow:case NodeKind::NoteSpectrum:case NodeKind::SpectralQuantize:
+    case NodeKind::RhythmFeatures:case NodeKind::RhythmAnalyzer:case NodeKind::TempoEvidence:
+    case NodeKind::OnsetStrength:case NodeKind::SpectralFlux:case NodeKind::ComplexSpectralDifference:
+    case NodeKind::PhaseDeviation:case NodeKind::HighFrequencyContent:
         return ProcessingContentContinuity::PartitionOutput;
     default:return ProcessingContentContinuity::PreserveInput;
     }

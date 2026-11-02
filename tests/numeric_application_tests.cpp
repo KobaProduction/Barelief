@@ -5,12 +5,15 @@
 #include "numeric_application_oracle.h"
 #include "performance_report.h"
 #include <QTimer>
+#include <QUndoStack>
+#include <tuple>
 #include <QMessageBox>
 #include <QAbstractButton>
 #include <QPushButton>
 #include <QSettings>
 #include <core_app/workspace/workspace_window.h>
 #include <core_app/workspace/ui_command_registry.h>
+#include "basic_signal_probe.h"
 #include "shipped_examples_probe.h"
 #include "shipped_examples_gui_probe.h"
 #include <core_app/core_application.h>
@@ -87,19 +90,32 @@ static domain::NumericProcessingGraph native_mono_example(domain::NumericProcess
         }
     return graph;
 }
+static void capture_scene(SchemeEditorWidget* editor,const QString& folder,const QString& name,const std::vector<domain::NodeId>& ids) {
+    auto* scene=editor->findChild<QtNodes::DataFlowGraphicsScene*>();if(!scene || !QDir().mkpath(folder))return;
+    QRectF bounds;
+    for(const auto id:ids)if(auto* item=scene->nodeGraphicsObject(QtNodes::NodeId(id)))bounds=bounds.united(item->sceneBoundingRect());
+    if(bounds.isEmpty())return;
+    bounds=bounds.adjusted(-25,-25,25,25);const auto scale=std::min(1.,2400./bounds.width());
+    QImage image(QSize(qCeil(bounds.width()*scale),qCeil(bounds.height()*scale)),QImage::Format_ARGB32_Premultiplied);
+    image.fill(QApplication::palette().color(QPalette::Window));QPainter painter(&image);painter.setRenderHint(QPainter::Antialiasing);
+    scene->render(&painter,QRectF(image.rect()),bounds);painter.end();image.save(QDir(folder).filePath(name));
+}
+static void export_reference_scenes(SchemeEditorWidget* editor) {
+    const auto folder=qEnvironmentVariable("NUMERIC_TEST_SCENE_DIR");if(folder.isEmpty())return;
+    capture_scene(editor,folder,"reference-window.png",{1,20,21,22,23});
+    capture_scene(editor,folder,"reference-spectrum-onset.png",{24,25,26,29,30,3});
+    capture_scene(editor,folder,"reference-tempo.png",{27,31,34,35,4,90,82,84,13,37,48});
+}
+
 static void export_startup_scenes(SchemeEditorWidget* editor,NumericEditorGraphModel* model) {
     const auto folder=qEnvironmentVariable("NUMERIC_TEST_SCENE_DIR");if(folder.isEmpty())return;
-    auto* scene=editor->findChild<QtNodes::DataFlowGraphicsScene*>();if(!scene || !QDir().mkpath(folder))return;
-    const auto capture=[&](const QString& name,const std::vector<domain::NodeId>& ids){QRectF bounds;
-        for(const auto id:ids)if(auto* item=scene->nodeGraphicsObject(QtNodes::NodeId(id)))bounds=bounds.united(item->sceneBoundingRect());
-        if(bounds.isEmpty())return;bounds=bounds.adjusted(-25,-25,25,25);const auto scale=std::min(1.,2400./bounds.width());
-        QImage image(QSize(qCeil(bounds.width()*scale),qCeil(bounds.height()*scale)),QImage::Format_ARGB32_Premultiplied);image.fill(QApplication::palette().color(QPalette::Window));
-        QPainter painter(&image);painter.setRenderHint(QPainter::Antialiasing);scene->render(&painter,QRectF(image.rect()),bounds);painter.end();image.save(QDir(folder).filePath(name));
-    };
-    capture("startup-sources.png",{1,13,14,101,200,250,332,333});
+    capture_scene(editor,folder,"startup-sources.png",{1,13,14,101,200,250,332,333});
     const auto graph=model->numeric_graph();std::vector<domain::NodeId> spectrum{4};auto next=domain::NodeId{4};
-    for(unsigned depth=0;depth<3;++depth){const auto edge=std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& e){return e.from==next && e.output_port==0 && e.input_port==0;});if(edge==graph.edges.end())break;next=edge->to;spectrum.push_back(next);}
-    capture("startup-fourier.png",spectrum);
+    for(unsigned depth=0;depth<3;++depth){
+        const auto edge=std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& e){return e.from==next && e.output_port==0 && e.input_port==0;});
+        if(edge==graph.edges.end())break;next=edge->to;spectrum.push_back(next);
+    }
+    capture_scene(editor,folder,"startup-fourier.png",spectrum);
 }
 static bool exact_policy(const domain::NumericProcessingGraph& graph) {
     if(graph.nodes.size()!=1)return false;
@@ -117,14 +133,24 @@ static bool exact_policy(const domain::NumericProcessingGraph& graph) {
 
 #define CHECK(x) if(test_assertions::verify(bool(x),#x,__FILE__,__LINE__)) {} else return 1
 // Answer only this test process's explicit overwrite warning.
+static void report_overwrite_wait(const QString& expectedTarget) {
+    auto* modal=QApplication::activeModalWidget();
+    std::fprintf(stderr,"overwrite wait: modal=%s object=%s target=%s\n",modal?modal->metaObject()->className():"none",modal?qPrintable(modal->objectName()):"",qPrintable(expectedTarget));
+}
+
 static bool respond_to_overwrite(bool accept,const std::function<void()>& save,const QString& expectedTarget={}) {
     QTimer timer;timer.setInterval(5);bool seen=false,defaults=false;
+    QElapsedTimer elapsed;elapsed.start();bool reported=false;
     QObject::connect(&timer,&QTimer::timeout,&timer,[&]{
         for(const auto items_1=QApplication::topLevelWidgets();auto* widget:items_1)if(auto* dialog=qobject_cast<QMessageBox*>(widget);dialog && dialog->objectName()=="confirmConfigurationOverwrite"){
             seen=true;defaults=dialog->defaultButton()==dialog->button(QMessageBox::Cancel) && dialog->escapeButton()==dialog->button(QMessageBox::Cancel) && dialog->icon()==QMessageBox::Warning && dialog->testOption(QMessageBox::Option::DontUseNativeDialog) && (expectedTarget.isEmpty() || dialog->text().contains(expectedTarget));timer.stop();
             auto* button=dialog->button(QMessageBox::Cancel);
             if(accept)for(const auto buttons=dialog->buttons();auto* candidate:buttons)if(dialog->buttonRole(candidate)==QMessageBox::AcceptRole)button=candidate;
             button->click();return;
+        }
+        if(!reported && elapsed.elapsed()>1000){
+            report_overwrite_wait(expectedTarget);
+            reported=true;
         }
     });
     timer.start();save();return seen && defaults;
@@ -369,7 +395,7 @@ static int workspace_acceptance_invalid_load(CoreApplication& app,MainWindow*& w
 
 }
 static int workspace_acceptance_import_recovery(CoreApplication& app,MainWindow*& window,NumericEditorGraphModel*& model){
-CHECK(!app.presenter().file_protection_warning().isEmpty());auto* example=window->findChild<QAction*>("example-startup");CHECK(example);example->trigger();auto* buffer=model->delegateModel<AudioNodeModel>(2);CHECK(buffer && buffer->parameter_model()->editLiteral("size","512",0));
+CHECK(!app.presenter().file_protection_warning().isEmpty());auto* example=window->findChild<QAction*>("example-basic-signal");CHECK(example);example->trigger();auto* buffer=model->delegateModel<AudioNodeModel>(2);CHECK(buffer && buffer->parameter_model()->editLiteral("size","512",0));
 return 0;
 }
 static int workspace_acceptance_loaded_windows(MainWindow*& window,auto& dockFor,WorkspaceDock*& flow){
@@ -457,12 +483,16 @@ static int matrix_bypass_validate_frame(CoreApplication& app,auto& id){
             CHECK(wait_until([&]{return app.pipeline().query_numeric({"main",id,domain::PortDirection::Output,0},frame)==signal_contracts::Status::ok&&frame.frame&&frame.frame.view().stamp.available;},6000));
             const auto matrix=std::get<signal_contracts::NumericView>(frame.frame.view().payload);
             CHECK(!matrix.ring.capacity&&matrix.actual[0]==400&&matrix.actual[1]==50);
+            const auto expected_quantity=id==23?signal_contracts::Quantity::Unspecified:signal_contracts::Quantity::MelEnergy;
+            CHECK(matrix.contract->quantity==expected_quantity);
             double energy=0;
             for(std::size_t row=0;row<matrix.actual[0];++row)for(std::size_t col=0;col<matrix.actual[1];++col){
                 float value=0;CHECK(signal_contracts::load_element(matrix,{0,row,col},value)==signal_contracts::Status::ok&&std::isfinite(value)&&value>=0);
                 energy+=double(value)*value;
             }
-            CHECK(energy>0);
+            // MatrixCenter changes physical quantity, so its disabled output is
+            // typed zero. MatrixWindow keeps the contract and copies ring values.
+            CHECK(id==23?energy==0:energy>0);
 
 return 0;
 }
@@ -476,7 +506,7 @@ const auto tap=app.pipeline().subscribe_numeric_tap({{"main",23,domain::PortDire
         CHECK(wait_until([&]{return app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history_frame,&history_ordinal)==signal_contracts::Status::ok&&history_ordinal>=10;},6000));
         for(int id:{23,22}){if(const int failure=matrix_bypass_validate_frame(app,id);failure)return failure;}
         CHECK(read(path)==original);
-        std::puts("Direct History ring -> bypassed MatrixCenter/MatrixWindow: ordinary matrices delivered and retained, synthetic/offscreen PASS");return 0;
+        std::puts("Direct History ring -> disabled MatrixCenter typed zero / compatible MatrixWindow ring copy: ordinary matrices delivered and retained, synthetic/offscreen PASS");return 0;
 
 }
 static int scenario_matrix_bypass(const QString& path) {
@@ -519,8 +549,24 @@ static int scenario_export_temporal(char** argv,const QString& path) {
         std::puts("Matrix transpose/window/row FFT example exported with measured non-overlapping layout; existing files untouched");return 0;
     }
 
+static void report_application_phase(const char* phase) {
+    QElapsedTimer timer;timer.start();
+    std::fprintf(stderr,"application phase=%s monotonic_ms=%lld\n",phase,static_cast<long long>(timer.msecsSinceReference()));
+    std::fflush(stderr);
+}
+struct ApplicationPhaseGuard {
+    const char* phase;
+    ~ApplicationPhaseGuard(){report_application_phase(phase);}
+};
+static void report_history_timeout(const char* example,domain::NodeId node,signal_contracts::Status status,const pipeline::DeliveredNumericFrame& frame,std::uint64_t ordinal,std::uint64_t filled,CoreApplication& app) {
+    std::fprintf(stderr,"current History example=%s node=%d port=0 status=%u ordinal=%llu filled=%llu\n",example,int(node),unsigned(status),(unsigned long long)ordinal,(unsigned long long)filled);
+    shipped_probe::report_numeric_frame("current History",frame);
+    shipped_probe::report_engine_snapshot("current History",app.pipeline().snapshot());
+}
+
 static void report_temporal_phase(const char* phase,CoreApplication& app,int detail=-1) {
-    std::fprintf(stderr,"Temporal phase=%s detail=%d revision=%llu pending=%d\n",phase,detail,
+    QElapsedTimer timer;timer.start();
+    std::fprintf(stderr,"Temporal phase=%s monotonic_ms=%lld detail=%d revision=%llu pending=%d\n",phase,static_cast<long long>(timer.msecsSinceReference()),detail,
         static_cast<unsigned long long>(app.presenter().client().snapshot().graph_revision),int(app.presenter().graph_request_pending()));
     std::fflush(stderr);
 }
@@ -541,7 +587,7 @@ const auto saved_selector=std::find_if(saved_graph.nodes.begin(),saved_graph.nod
             std::printf("MatrixCenter diagnostics: calls=%s errors=%s max_self_ns=%s\n",qPrintable(stats["calls"].toVariant().toString()),qPrintable(stats["errors"].toVariant().toString()),qPrintable(stats["max_self_nanoseconds"].toVariant().toString()));
         }
         CHECK(center_stats_seen);
-        std::printf("Temporal FFT application: mono generator/loopback switching without resampling, 8 silent changing tones, 50x256 matrix, cadence %.9f Hz/bin, selected first/last/middle bands, window on/off, History continuity, canonical SaveAs PASS\n",step);
+        std::printf("Temporal FFT application: mono generator/loopback switching without resampling, 8 silent changing tones, 50x257 raw matrix (DC/Nyquist included), cadence %.9f Hz/bin, selected first/last/middle bands, window on/off, History continuity, canonical SaveAs PASS\n",step);
         return 0;
     }
 
@@ -572,10 +618,9 @@ static int temporal_save(auto& path,auto& next,auto& runtime_graph,auto& origina
 
 static int temporal_switched_matrix(CoreApplication& app,auto& matrix_frame,auto& history,auto& ordinal,auto& filled,auto& expected_bin_hz,auto& previous_ordinal) {
 const auto switched=std::get<signal_contracts::NumericView>(matrix_frame.frame.view().payload);
-            CHECK(switched.actual[0]==50&&switched.actual[1]==256);
-            double switched_bin_hz=0;std::memcpy(&switched_bin_hz,switched.coordinates.axes[1].data()+sizeof(double),sizeof(double));
-            CHECK(std::abs(switched_bin_hz-expected_bin_hz)<1e-6);
-            for(std::size_t band=0;band<50;++band)for(std::size_t bin=0;bin<256;++bin) {
+            double switched_bin_hz=0;
+            CHECK(numeric_application_oracle::temporal_matrix(switched,expected_bin_hz,switched_bin_hz));
+            for(std::size_t band=0;band<50;++band)for(std::size_t bin=0;bin<257;++bin) {
                 float value=0;CHECK(signal_contracts::load_element(switched,{0,band,bin},value)==signal_contracts::Status::ok&&std::isfinite(value));
             }
             CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=previous_ordinal);
@@ -598,15 +643,24 @@ static int temporal_selector_stream(auto& stream,CoreApplication& app,AudioNodeM
     report_temporal_phase("selector",app,int(stream));
 
             const auto revision=app.presenter().client().snapshot().graph_revision;
+            report_temporal_phase("selector History query begin",app,int(stream));
             CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok);
+            report_temporal_phase("selector History query end",app,int(stream));
             const auto previous_ordinal=ordinal;
+            report_temporal_phase("selector select begin",app,int(stream));
             CHECK(selector->select_input(domain::PortId(stream)));
+            report_temporal_phase("selector select end",app,int(stream));
             pipeline::DeliveredNumericFrame pcm_frame;
+            report_temporal_phase("selector wait begin",app,int(stream));
             const bool switched_ready=wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision
                 &&query(17,matrix_frame)&&query(19,selected_frame)&&query(200,pcm_frame);},6000);
-            if(!switched_ready)std::fprintf(stderr,"Temporal switch %d: %s\n",stream,QJsonDocument(app.pipeline().snapshot().diagnostics).toJson(QJsonDocument::Compact).constData());
+            report_temporal_phase("selector wait end",app,int(stream));
+            if(!switched_ready){shipped_probe::report_numeric_frame("temporal matrix17",matrix_frame);shipped_probe::report_numeric_frame("temporal selected19",selected_frame);shipped_probe::report_numeric_frame("temporal PCM200",pcm_frame);shipped_probe::report_engine_snapshot("temporal switch failure",app.pipeline().snapshot());}
             CHECK(switched_ready);
-            return temporal_pcm_stream(stream,app,matrix_frame,history,ordinal,filled,temporal_rate,loopback_energy,expected_bin_hz,pcm_frame,previous_ordinal);
+            report_temporal_phase("selector validation begin",app,int(stream));
+            const int result=temporal_pcm_stream(stream,app,matrix_frame,history,ordinal,filled,temporal_rate,loopback_energy,expected_bin_hz,pcm_frame,previous_ordinal);
+            report_temporal_phase("selector validation end",app,int(stream));
+            return result;
 }
 
 static int temporal_selector(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,auto& ordinal,auto& filled,auto& history) {
@@ -646,7 +700,7 @@ static int temporal_silence(auto& path,auto& next,auto& temporal_rate,auto& runt
         CHECK(numeric_application_oracle::zero_matrix(silence));
         CHECK(model->edit_node(original_generator.id,original_generator));
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(17,matrix_frame);},6000));
-        return temporal_selector(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,ordinal,filled,history);
+        return 0;
 }
 
 static int temporal_center_method(CoreApplication& app,auto& query,auto& matrix_frame,AudioNodeModel*& center,auto& centered_frame,auto& method) {
@@ -673,7 +727,7 @@ static int temporal_center_changes(auto& path,auto& next,auto& temporal_rate,aut
             CHECK(center->parameter_model()->setBypassed(bypass));
             CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(23,centered_frame)&&query(17,matrix_frame);},6000));
         }
-        return temporal_silence(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,ordinal,filled,history);
+        return 0;
 }
 
 static int temporal_window_burst(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,AudioNodeModel*& window_function,AudioNodeModel*& center,auto& ordinal,auto& filled,auto& history,auto& centered_frame) {
@@ -687,7 +741,7 @@ const auto before_burst=app.presenter().client().snapshot().graph_revision;
         std::printf("Discrete window burst during pending Apply: latest selection delivered in %lld ms\n",static_cast<long long>(burst.elapsed()));
         CHECK(window_function->parameter_model()->setBypassed(true));
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(17,matrix_frame);},6000));
-        return temporal_center_changes(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,center,ordinal,filled,history,centered_frame);
+        return 0;
 }
 
 static int temporal_window_changes(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,AudioNodeModel*& window_function,AudioNodeModel*& center,auto& ordinal,auto& filled,auto& history,auto& before_ordinal,auto& centered_frame) {
@@ -703,7 +757,7 @@ static int temporal_window_changes(auto& path,auto& next,auto& temporal_rate,aut
             CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=before_ordinal);
         }
         std::printf("Offscreen window functions: all four revisions available; slowest synchronous edit %lld ms, Apply+delivery %lld ms\n",static_cast<long long>(slowest_window_edit),static_cast<long long>(slowest_window_switch));
-        return temporal_window_burst(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,window_function,center,ordinal,filled,history,centered_frame);
+        return 0;
 }
 
 static int temporal_window_bypass(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,auto& centered_frame,AudioNodeModel*& window_function,AudioNodeModel*& center,auto& ordinal,auto& filled,auto& history,auto& before_ordinal) {
@@ -716,7 +770,7 @@ for(bool bypass:{false,true}) {
         }
         CHECK(window_function->parameter_model()->setBypassed(false));
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(17,matrix_frame);},6000));
-        return temporal_window_changes(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,window_function,center,ordinal,filled,history,before_ordinal,centered_frame);
+        return 0;
 }
 
 static int temporal_selected_band(CoreApplication& app,auto& query,auto& selected_frame,auto& band,AudioNodeModel*& row) {
@@ -725,7 +779,7 @@ static int temporal_selected_band(CoreApplication& app,auto& query,auto& selecte
             const auto revision=app.presenter().client().snapshot().graph_revision;
             CHECK(row->parameter_model()->edit("row",signal_contracts::NumericLiteral{std::uint64_t(band)}));
             CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(19,selected_frame);},6000));
-            CHECK(std::get<signal_contracts::NumericView>(selected_frame.frame.view().payload).actual[0]==256);
+            CHECK(std::get<signal_contracts::NumericView>(selected_frame.frame.view().payload).actual[0]==257);
 
 return 0;
 }
@@ -756,7 +810,31 @@ static int temporal_row_window(auto& path,auto& next,auto& temporal_rate,auto& r
         for(std::uint64_t band:{49u,0u,24u}) {if(const int failure=temporal_selected_band(app,query,selected_frame,band,row);failure)return failure;}
         if(const int failure=temporal_rejected_row(app,model,row);failure)return failure;
         CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=before_ordinal);
-        return temporal_window_bypass(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame,window_function,center,ordinal,filled,history,before_ordinal);
+        return 0;
+}
+
+static int temporal_stage(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,
+                          CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,auto& centered_frame) {
+    const auto& stage=query.stage;
+    if(stage=="matrices")return 0;
+    if(stage=="rows")return temporal_row_window(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame);
+    auto* window_function=model->delegateModel<AudioNodeModel>(22);auto* center=model->delegateModel<AudioNodeModel>(23);
+    CHECK(window_function&&center);
+    std::uint64_t ordinal=0,filled=0;pipeline::DeliveredNumericFrame history;
+    CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok);
+    const auto before_ordinal=ordinal;
+    if(stage=="window-bypass")return temporal_window_bypass(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame,window_function,center,ordinal,filled,history,before_ordinal);
+    if(stage=="window-functions"||stage=="window-burst"){
+        const auto revision=app.presenter().client().snapshot().graph_revision;
+        CHECK(window_function->parameter_model()->setBypassed(false));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(17,matrix_frame);},6000));
+        if(stage=="window-functions")return temporal_window_changes(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,window_function,center,ordinal,filled,history,before_ordinal,centered_frame);
+        return temporal_window_burst(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,window_function,center,ordinal,filled,history,centered_frame);
+    }
+    if(stage=="center")return temporal_center_changes(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,center,ordinal,filled,history,centered_frame);
+    if(stage=="silence")return temporal_silence(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,ordinal,filled,history);
+    CHECK(stage=="selector-save");
+    return temporal_selector(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,ordinal,filled,history);
 }
 
 static int temporal_matrices(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query) {
@@ -782,7 +860,7 @@ static int temporal_matrices(auto& path,auto& next,auto& temporal_rate,auto& run
         double step=0;
         CHECK(numeric_application_oracle::temporal_matrix(matrix,expected_bin_hz,step));
         CHECK(numeric_application_oracle::positive_matrix_energy(matrix));
-        return temporal_row_window(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame);
+        return temporal_stage(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame);
 }
 
 static bool query_temporal_frame(CoreApplication& app,auto& id,auto& frame,auto& selected_mutex,auto& selected_latest,auto& pcm_latest,auto& center_latest) {
@@ -801,6 +879,7 @@ struct TemporalFrameQuery {
     pipeline::NumericEngine& engine;
     std::uint64_t tap;
     std::function<bool(int,pipeline::DeliveredNumericFrame&)> read;
+    QByteArray stage;
     void set_required(std::initializer_list<int> nodes) {
         std::vector<pipeline::EndpointIdentity> endpoints;endpoints.reserve(nodes.size());
         for(const auto node:nodes)endpoints.push_back({"main",node,domain::PortDirection::Output,0});
@@ -809,7 +888,7 @@ struct TemporalFrameQuery {
     bool operator()(int id,pipeline::DeliveredNumericFrame& frame)const {return read(id,frame);}
 };
 
-static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model) {
+static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,const QByteArray& stage) {
     report_temporal_phase("startup",app);
         std::mutex selected_mutex;pipeline::DeliveredNumericFrame selected_latest,pcm_latest,center_latest;
         const auto tap=app.pipeline().subscribe_numeric_tap({{"main",17,domain::PortDirection::Output,0},
@@ -831,7 +910,7 @@ static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& run
         CHECK(started);
         TemporalFrameQuery query{app.pipeline(),tap,[&](int id,pipeline::DeliveredNumericFrame& frame) {
             return query_temporal_frame(app,id,frame,selected_mutex,selected_latest,pcm_latest,center_latest);
-        }};
+        },stage};
         return temporal_matrices(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query);
 }
 
@@ -856,7 +935,7 @@ static int temporal_start(auto& argv,auto& path,auto& next) {
         const bool imported=model->set_numeric_graph(runtime_graph,&native_error);
         if(!imported)std::fprintf(stderr,"Temporal native import %u Hz: %s\n",temporal_rate,native_error.toUtf8().constData());
         CHECK(imported);
-        return temporal_delivery(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model);
+        return temporal_delivery(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,argv[2]?QByteArray(argv[2]):QByteArray("matrices"));
 }
 
 static int validate_temporal_ports(auto& node,auto& rate,auto& port) {
@@ -1088,20 +1167,107 @@ const auto current=app.presenter().client().snapshot();auto* validation=window->
 return 0;
 }
 
-static int validate_current_history(CoreApplication& app,auto& node) {
-
+static int validate_current_history(const char* example,CoreApplication& app,auto& node) {
                 pipeline::DeliveredNumericFrame frame;std::uint64_t ordinal=0,filled=0;
-                CHECK(wait_until([&]{return app.pipeline().query_numeric({"main",node.id,domain::PortDirection::Output,0},frame,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=3;}));
-                const auto capacity=std::get<domain::HistoryProcessingParameters>(node.parameters).capacity;
-                CHECK(std::get<signal_contracts::NumericView>(frame.frame.view().payload).actual[0]==capacity&&filled>0&&filled<=capacity);
-
+                auto status=signal_contracts::Status::unavailable;
+                const bool ready=wait_until([&]{status=app.pipeline().query_numeric({"main",node.id,domain::PortDirection::Output,0},frame,&ordinal,&filled);return status==signal_contracts::Status::ok&&ordinal>=3;});
+                if(!ready)report_history_timeout(example,node.id,status,frame,ordinal,filled,app);
+                CHECK(ready);
+                CHECK(frame.frame&&frame.frame.view().stamp.available);
+                const auto& parameters=std::get<domain::HistoryProcessingParameters>(node.parameters);
+                const auto capacity=parameters.capacity;
+                const auto numeric=std::get<signal_contracts::NumericView>(frame.frame.view().payload);
+                const auto expected=std::get<signal_contracts::NumericContract>(node.outputs.front().contract.view());
+                CHECK(same_contract(node.outputs.front().contract.view(),*numeric.contract));
+                CHECK(filled>0&&filled==std::min(ordinal,capacity));
+                CHECK(numeric.actual[0]==(parameters.filled_only?filled:capacity));
+                CHECK(numeric.actual[0]>=expected.shape.extents[0].minimum&&numeric.actual[0]<=expected.shape.extents[0].maximum);
+                CHECK(numeric.actual[1]>=expected.shape.extents[1].minimum&&numeric.actual[1]<=expected.shape.extents[1].maximum);
+                CHECK(signal_contracts::validate_view(frame.frame.view(),numeric_editor::limits().frame)==signal_contracts::Status::ok);
+                double sum=0;CHECK(shipped_probe::Observation::energy(numeric,sum));
 return 0;
 }
 
+struct ReferenceDelivery {
+    std::atomic<unsigned> received{0};
+    void observe(const pipeline::DeliveredNumericFrame& delivered) {
+        if(!delivered.frame || !delivered.context)return;
+        const auto frame=delivered.frame.view();const auto* value=std::get_if<signal_contracts::NumericView>(&frame.payload);
+        if(!frame.stamp.available || !value || !value->actual[0] || signal_contracts::validate_view(frame,numeric_editor::limits().frame)!=signal_contracts::Status::ok)return;
+        const auto& endpoint=delivered.context->endpoint;
+        if(endpoint.node==3 && value->contract->shape.rank==signal_contracts::Rank::Scalar)received.fetch_or(1u);
+        if(endpoint.node==4 && endpoint.port==0)received.fetch_or(2u);
+        if(endpoint.node==35 && value->contract->shape.rank==signal_contracts::Rank::Scalar)received.fetch_or(4u);
+        if(value->actual[0]==128 && endpoint.node==30)received.fetch_or(8u);
+    }
+};
+static int reference_parameter_fields(NumericEditorGraphModel* model) {
+    auto* mel=model->delegateModel<AudioNodeModel>(26)->parameter_model();CHECK(mel && !mel->field("bin_hz"));
+    CHECK(!mel->field("sample_rate"));
+    CHECK(!mel->editLiteral("sample_rate","44100",0));
+    auto* onset=model->delegateModel<AudioNodeModel>(30)->parameter_model();CHECK(onset && !onset->field("n_fft") && !onset->field("hop_length"));
+    CHECK(model->delegateModel<AudioNodeModel>(30)->nPorts(QtNodes::PortType::In)==1);
+    CHECK(model->nodeExists(49));
+    const auto& bpm=model->delegateModel<AudioNodeModel>(35)->numeric_node()->outputs.front().contract;
+    CHECK(std::get<signal_contracts::NumericContract>(bpm.view()).shape.rank==signal_contracts::Rank::Scalar);
+    auto* beat=model->delegateModel<AudioNodeModel>(4)->parameter_model();
+    const auto* strictness=beat->field("tightness");CHECK(strictness && strictness->literal_type && !strictness->help.isEmpty());
+    CHECK(!beat->field("input0Dtype"));
+    CHECK(model->delegateModel<AudioNodeModel>(35)->caption()==ui::text("Tempo estimation"));
+    CHECK(model->delegateModel<AudioNodeModel>(34)->portCaption(QtNodes::PortType::Out,0).startsWith(ui::text("Normalized autocorrelation")));
+    return 0;
+}
+
+static int reference_saved_layout(NumericEditorGraphModel* model) {
+    const auto graph=model->numeric_graph();CHECK(graph.nodes.size()==37 && graph.edges.size()==52);
+    for(const auto id:{36,46,83,85,86,87,88,91,92,93,94,97})CHECK(!model->nodeExists(id));
+    for(const auto& order:numeric_reference_beat_example().port_orders){
+        QJsonArray expected;for(const auto port:order.inputs)expected.append(int(port));
+        CHECK(model->delegateModel<AudioNodeModel>(order.node)->presentation().value("input_port_order").toArray()==expected);
+    }
+    CHECK(std::any_of(graph.edges.begin(),graph.edges.end(),[](const auto& edge){return edge.from==22 && edge.to==25 && edge.input_port==domain::window_coefficients_input;}));
+    return 0;
+}
+
+static int reference_contracts(NumericEditorGraphModel* model) {
+    for(const auto& node:model->numeric_graph().nodes)
+        CHECK(node.kind!="PcmOnsetEnvelope" && node.kind!="PcmResampler" && node.kind!="FrameBuffer" && node.kind!="EnvelopeBeatPath" && node.kind!="FrequencyStep" && node.kind!="IndexExtract");
+    for(const auto id:{20,25,26,27})CHECK(!model->delegateModel<AudioNodeModel>(id)->presentation().contains("display_name"));
+    CHECK(model->nodeData(80,QtNodes::NodeRole::Position).toPointF().y()>model->nodeData(25,QtNodes::NodeRole::Position).toPointF().y());
+    if(const auto failure=reference_saved_layout(model))return failure;
+    CHECK(model->nodeData(20,QtNodes::NodeRole::Position).toPointF().x()>model->nodeData(1,QtNodes::NodeRole::Position).toPointF().x());
+    return reference_parameter_fields(model);
+}
+static void export_reference_document(const NumericEditorGraphModel* model) {
+    const auto folder=qEnvironmentVariable("NUMERIC_TEST_SCENE_DIR");if(folder.isEmpty())return;
+    QFile file(folder+"/reference-scene.json");
+    if(file.open(QIODevice::WriteOnly))file.write(QJsonDocument(model->save()).toJson(QJsonDocument::Indented));
+}
+
+static int current_reference(CoreApplication& app,MainWindow* window,SchemeEditorWidget* editor) {
+    auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
+    if(const auto failure=reference_contracts(model))return failure;
+    const auto graph=model->numeric_graph().graph_id;
+    const auto observation=std::make_shared<ReferenceDelivery>();
+    const auto tap=app.pipeline().subscribe_numeric_tap({{graph,3,domain::PortDirection::Output,0},{graph,4,domain::PortDirection::Output,0},
+        {graph,35,domain::PortDirection::Output,0},{graph,30,domain::PortDirection::Output,0}},[observation](const auto& frame){observation->observe(frame);},{});
+    CHECK(tap);
+    window->show();emit editor->graph_open_requested(10,0);emit editor->graph_open_requested(11,0);
+    const bool delivered=wait_until([&]{return observation->received.load()==15;},6000);app.pipeline().unsubscribe_numeric_tap(tap);CHECK(delivered);
+    CHECK(wait_until([&]{
+        unsigned ready=0;for(auto* dock:window->workspaceDocks()){
+            if(dock->property("graphNode").toInt()!=10 && dock->property("graphNode").toInt()!=11)continue;
+            const auto* panel=qobject_cast<GraphPanel*>(dock->widget());if(panel&&panel->active_chart()&&panel->active_chart()->value_count()>0)++ready;
+        }return ready==2;
+    },3000));
+    export_reference_scenes(editor);export_reference_document(model);
+    std::puts("Lean rhythm UI: named nodes/ports, hidden connected fields, fixed numeric editors, no Mel display history PASS");return 0;
+}
 static int current_example_outputs(auto& example,CoreApplication& app,MainWindow*& window,SchemeEditorWidget*& editor) {
+if(QByteArray(example.id)=="reference-beat")return current_reference(app,window,editor);
 if(QByteArray(example.id)=="startup") { if(const int failure=current_startup(app,window,editor);failure)return failure; }
             if(QByteArray(example.id)=="temporal-fft") { if(const int failure=current_temporal(app);failure)return failure; }
-            for(const auto& node:example.graph.nodes)if(node.kind=="Spectrogram") {if(const int failure=validate_current_history(app,node);failure)return failure;}
+            for(const auto& node:example.graph.nodes)if(node.kind=="Spectrogram") {if(const int failure=validate_current_history(example.id,app,node);failure)return failure;}
             if(QByteArray(example.id)=="stereo-sources") { if(const int failure=current_stereo(app);failure)return failure; }
               if(QByteArray(example.id)=="two-streams") { if(const int failure=current_stream_measurements(app);failure)return failure; }
             std::printf("Current example %s: actual menu Apply and all History branches PASS\n",example.id);
@@ -1121,7 +1287,7 @@ static int current_example(auto& example,CoreApplication& app,MainWindow*& windo
             return current_example_outputs(example,app,window,editor);
 }
 
-static int scenario_current_examples(const QString& path,const QString& next) {
+static int scenario_current_examples(const QString& path,const QString& next,const QByteArray& selected) {
         auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
         CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));install_synthetic_capture_discovery(app,48000,2);
@@ -1131,7 +1297,9 @@ static int scenario_current_examples(const QString& path,const QString& next) {
         CHECK(started);
         MainWindow* window=nullptr;for(const auto items_12=QApplication::topLevelWidgets();auto* widget:items_12)if(auto* found=qobject_cast<MainWindow*>(widget))window=found;
         CHECK(window);auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
-        for(const auto& example:numeric_example_graphs()) { if(const int failure=current_example(example,app,window,editor);failure)return failure; }
+        bool found=false;
+        for(const auto& example:numeric_example_graphs())if(selected==example.id){found=true;if(const int failure=current_example(example,app,window,editor);failure)return failure;}
+        CHECK(found);
         app.save_configuration_as(next);CHECK(QFile::exists(next));return 0;
     }
 
@@ -1167,7 +1335,7 @@ return 0;
 static int startup_menu_verify_selector(CoreApplication& app,MainWindow*& window,NumericEditorGraphModel*& model,auto& path,auto& original_file,auto& old_builtin,auto& stored_presets,auto& startup_revision){
 export_startup_scenes(window->findChild<SchemeEditorWidget*>(),model);
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>startup_revision && !app.presenter().graph_request_pending();}));
-        CHECK(verify_startup_selector(app,window,false));
+        CHECK(verify_startup_selector(app,window,false,"initial"));
         CHECK(app._ctx.file_configs.ui.pipeline_presets==stored_presets&&read(path)==original_file);
         std::printf("unconditional generatorLoopbackPreset existing config old_builtin=%d: full stereo draft/layout/views/selector/card/History; original file and stored presets unchanged PASS\n",int(old_builtin));return 0;
 
@@ -1186,7 +1354,7 @@ CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0
         return startup_menu_verify_selector(app,window,model,path,original_file,old_builtin,stored_presets,startup_revision);
 }
 static int startup_menu_routes(CoreApplication& app,MainWindow*& window,NumericEditorGraphModel*& model,auto& path,auto& original_file,auto& old_builtin,auto& stored_presets){
-auto* demo=window->findChild<QAction*>("example-startup");CHECK(demo&&demo->isEnabled()&&demo->isVisible());
+auto* demo=window->findChild<QAction*>("example-basic-signal");CHECK(demo&&demo->isEnabled()&&demo->isVisible());
         auto* menu=window->findChild<QMenu*>("pipelinePresetsMenu");auto* display_menu=window->findChild<QMenu*>("graphsMenu");
         auto* presets_button=window->findChild<QToolButton*>("pipelinePresets");
         CHECK(menu&&display_menu&&presets_button&&menu->actions().contains(demo));
@@ -1255,7 +1423,7 @@ static int scenario_startup_selector(char** argv,const QString& path) {
         auto* autosave=window->findChild<QCheckBox*>("enableAutosave");CHECK(autosave);autosave->setChecked(false);
         QObject::connect(&app.presenter(),&GuiPresenter::graph_apply_finished,&app,[](quint64,bool ok,const QString& error){if(!ok)std::fprintf(stderr,"startup rejected: %s\n",qPrintable(error));});
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();},6000));
-        CHECK(verify_startup_selector(app,window,unavailable));CHECK(unavailable?read(path)==original:!QFile::exists(path));return 0;
+        CHECK(verify_startup_selector(app,window,unavailable,argv[2]?QByteArray(argv[2]):QByteArray("transitions")));CHECK(unavailable?read(path)==original:!QFile::exists(path));return 0;
     }
 
 static int shipped_rejected_admission(auto& persisted,auto& candidate,auto& diagnostic,auto& before) {
@@ -1295,21 +1463,50 @@ static int shipped_persisted_admission(auto& shipped,NumericEditorGraphModel*& m
             return shipped_rejected_admission(persisted,candidate,diagnostic,before);
 }
 
-static bool inspect_shipped_example(auto& label,SchemeEditorWidget*& editor,NumericEditorGraphModel*& model,auto& gui_workflow,CoreApplication& app,MainWindow*& window) {
+static QSet<QPair<int,int>> shipped_positions(NumericEditorGraphModel* model) {
+    QSet<QPair<int,int>> positions;
+    for(const auto items=model->allNodeIds();auto id:items){
+        const auto p=model->nodeData(id,QtNodes::NodeRole::Position).toPointF();
+        positions.insert({qRound(p.x()),qRound(p.y())});
+    }
+    return positions;
+}
+static bool shipped_graph_matches(const domain::NumericProcessingGraph& graph,const char* label,QString& error) {
+    auto expected=numeric_startup_graph();
+    for(const auto& example:numeric_example_graphs())if(QByteArray(label)==example.id)expected=example.graph;
+    const auto channels=2u;
+    for(const auto& source:graph.nodes)if(source.kind=="AudioSource"&&source.id!=1)
+        if(!desktop::resolve_numeric_source_format(expected,source.id,48000,channels,numeric_editor::limits(),&error))return false;
+    if(graph.nodes.size()!=expected.nodes.size()||graph.edges.size()!=expected.edges.size()||
+       !std::is_permutation(graph.edges.begin(),graph.edges.end(),expected.edges.begin(),expected.edges.end())||
+       !std::is_permutation(graph.configuration_bindings.begin(),graph.configuration_bindings.end(),expected.configuration_bindings.begin(),expected.configuration_bindings.end()))return false;
+    return true;
+}
+static bool shipped_current_assertions(const char* label,CoreApplication& app,MainWindow*& window,SchemeEditorWidget*& editor) {
+    for(const auto& example:numeric_example_graphs())if(QByteArray(label)==example.id){
+        if(QByteArray(example.id)=="two-streams"&&current_two_streams(example)!=0)return false;
+        if(current_example_outputs(example,app,window,editor)!=0)return false;
+    }
+    return true;
+}
+static int shipped_saved_preset(CoreApplication& app,SchemeEditorWidget* editor,auto& inspect) {
+    CHECK(editor->load_preset("builtin-test-signal"));
+    CHECK(wait_until([&]{return !app.presenter().graph_request_pending();}));
+    CHECK(inspect("My-presets/builtin-test-signal"));
+    return 0;
+}
 
-            domain::NumericProcessingGraph graph;QString error;if(!editor->numeric_draft(graph,&error)){std::fprintf(stderr,"%s draft: %s\n",label,qPrintable(error));return false;}
-            auto expected=numeric_startup_graph();
-            if(QByteArray(label)=="stereo-sources")for(const auto& example:numeric_example_graphs())if(QByteArray(example.id)=="stereo-sources")expected=example.graph;
-             const auto channels=QByteArray(label)=="stereo-sources"?2u:1u;
-             for(const auto& source:graph.nodes)if(source.kind=="AudioSource" && source.id!=1)
-                 if(!desktop::resolve_numeric_source_format(expected,source.id,48000,channels,numeric_editor::limits(),&error))return false;
-            if(graph.nodes.size()!=expected.nodes.size()||graph.edges.size()!=expected.edges.size()||!std::is_permutation(graph.configuration_bindings.begin(),graph.configuration_bindings.end(),expected.configuration_bindings.begin(),expected.configuration_bindings.end()))return false;
-            QSet<QPair<int,int>> positions;for(const auto items_17=model->allNodeIds();auto id:items_17){const auto p=model->nodeData(id,QtNodes::NodeRole::Position).toPointF();positions.insert({qRound(p.x()),qRound(p.y())});}
-            if(positions.size()!=int(graph.nodes.size())){std::fprintf(stderr,"%s overlapping startup positions: %d\n",label,int(positions.size()));return false;}
-            const bool delivered=gui_workflow?measure_shipped_gui(app,window,label):measure_shipped_example(graph,label,pipeline::AudioSourceKind::TestSignal);
-            std::fflush(stdout);
-            return delivered;
-        }
+static bool inspect_shipped_example(auto& label,SchemeEditorWidget*& editor,NumericEditorGraphModel*& model,auto& gui_workflow,CoreApplication& app,MainWindow*& window) {
+    domain::NumericProcessingGraph graph;QString error;
+    if(!editor->numeric_draft(graph,&error)){std::fprintf(stderr,"%s draft: %s\n",label,qPrintable(error));return false;}
+    if(!shipped_graph_matches(graph,label,error))return false;
+    const auto positions=shipped_positions(model);
+    if(positions.size()!=int(graph.nodes.size())){std::fprintf(stderr,"%s overlapping startup positions: %d\n",label,int(positions.size()));return false;}
+    const bool delivered=gui_workflow?measure_shipped_gui(app,window,label):measure_shipped_example(graph,label,pipeline::AudioSourceKind::TestSignal);
+    if(gui_workflow&&delivered&&!shipped_current_assertions(label,app,window,editor))return false;
+    std::fflush(stdout);
+    return delivered;
+}
 
 static int shipped_menu_example(CoreApplication& app,MainWindow*& window,auto& id,auto& inspect) {
 
@@ -1322,37 +1519,110 @@ static int shipped_menu_example(CoreApplication& app,MainWindow*& window,auto& i
 return 0;
 }
 
-static int shipped_ui_examples(const QString& path,auto& gui_workflow,CoreApplication& app,NumericEditorGraphModel*& model,MainWindow*& window,SchemeEditorWidget*& editor) {
-auto inspect=[&](const char* label){ return inspect_shipped_example(label,editor,model,gui_workflow,app,window); };
-        CHECK(wait_until([&]{QSet<QPair<int,int>> positions;for(const auto items_18=model->allNodeIds();auto id:items_18){const auto p=model->nodeData(id,QtNodes::NodeRole::Position).toPointF();positions.insert({qRound(p.x()),qRound(p.y())});}return positions.size()==numeric_startup_graph().nodes.size();}));
-        CHECK(inspect("missing-config"));
-        for(const auto* id:{"startup","stereo-sources"}) {if(const int failure=shipped_menu_example(app,window,id,inspect);failure)return failure;}
-        CHECK(editor->load_preset("builtin-test-signal"));QCoreApplication::processEvents();
-        CHECK(inspect("My-presets/builtin-test-signal"));
-        CHECK(!QFile::exists(path));
-        if(gui_workflow){CHECK(verify_example_autosave(app,window,path));}
-        std::puts("all shipped examples actual UI selection / synthetic full-chain Apply Run PASS");return 0;
+static int shipped_ui_examples(const QString& path,auto& gui_workflow,CoreApplication& app,NumericEditorGraphModel*& model,MainWindow*& window,SchemeEditorWidget*& editor,const QByteArray& selected) {
+    auto inspect=[&](const char* label){return inspect_shipped_example(label,editor,model,gui_workflow,app,window);};
+    CHECK(wait_until([&]{return shipped_positions(model).size()==numeric_startup_graph().nodes.size();}));
+    if(selected=="startup-load"){CHECK(inspect("missing-config"));}
+    else if(selected=="saved-preset"){
+        if(const int failure=shipped_saved_preset(app,editor,inspect);failure)return failure;
     }
+    else if(selected=="autosave"){CHECK(verify_example_autosave(app,window,path));return 0;}
+    else {const auto* id=selected.constData();if(const int failure=shipped_menu_example(app,window,id,inspect);failure)return failure;}
+    CHECK(!QFile::exists(path));
+    std::puts("all shipped examples actual UI selection / synthetic full-chain Apply Run PASS");return 0;
+}
+
+static bool flush_gui_turns(QObject& witness) {
+    bool done=false;
+    QTimer::singleShot(0,&witness,[&]{QTimer::singleShot(0,&witness,[&]{done=true;});});
+    return wait_until([&]{return done;});
+}
+static int saved_builtin_labels(CoreApplication& app,const QString& path,const NumericExampleGraph& example) {
+    app.save_configuration_as(path);CHECK(QFile::exists(path));
+    desktop::NumericProjectDocument saved;domain::NumericProcessingGraph graph;desktop::NumericDraftPresentation display;
+    CHECK(desktop::load_numeric_project(path,saved,graph)&&desktop::read_numeric_presentation(saved,display));
+    for(const auto& name:example.node_names)
+        CHECK(display.node_presentations[QString::number(name.node)].toObject()["display_name"]=="Batch label");
+    return 0;
+}
+static int builtin_label_payload(CoreApplication& app,NumericEditorGraphModel* model,const NumericExampleGraph& example,
+                                 const domain::NumericProcessingGraph& before,std::uint64_t revision) {
+    for(const auto& name:example.node_names)CHECK(model->delegateModel<AudioNodeModel>(name.node)->presentation()["display_name"]=="Batch label");
+    CHECK(application::same_numeric_processing_graph(before,model->numeric_graph()));
+    CHECK(!app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision==revision);
+    return 0;
+}
+static int builtin_manual_label_undo(CoreApplication& app,NumericEditorGraphModel* model,SchemeEditorWidget* editor,
+                                    QObject& witness,std::uint64_t revision) {
+    auto* node=model->delegateModel<AudioNodeModel>(1);CHECK(node);
+    CHECK(node->edit_display_name("Manual label")&&editor->history().index()==1&&editor->history().count()==1);
+    editor->history().undo();CHECK(node->presentation().value("display_name")=="Batch label");
+    editor->history().redo();CHECK(node->presentation().value("display_name")=="Manual label");
+    CHECK(flush_gui_turns(witness));
+    CHECK(!app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision==revision);
+    return 0;
+}
+
+static int builtin_label_batch(CoreApplication& app,NumericEditorGraphModel* model,SchemeEditorWidget* editor,const QString& path) {
+    auto example=numeric_startup_example();example.node_names.clear();
+    const auto before=model->numeric_graph();
+    for(const auto& node:before.nodes)example.node_names.push_back({node.id,"  Batch label  "});
+    CHECK(example.node_names.size()==3&&example.node_names.size()==before.nodes.size()&&editor->history().index()==0&&editor->history().count()==0);
+    const auto revision=app.presenter().client().snapshot().graph_revision;
+    QObject witness;CHECK(flush_gui_turns(witness));unsigned undo_changes=0,drafts=0;
+    QObject::connect(&editor->history(),&QUndoStack::indexChanged,&witness,[&](int){++undo_changes;});
+    QObject::connect(editor,&SchemeEditorWidget::numeric_draft_changed,&witness,[&]{++drafts;});
+    apply_example_labels(model,example);
+    CHECK(flush_gui_turns(witness));
+    CHECK(!undo_changes&&editor->history().index()==0&&editor->history().count()==0&&drafts==1);
+    const auto batch_drafts=drafts;
+    if(const int failure=builtin_label_payload(app,model,example,before,revision);failure)return failure;
+    if(const int failure=saved_builtin_labels(app,path,example);failure)return failure;
+    if(const int failure=builtin_manual_label_undo(app,model,editor,witness,revision);failure)return failure;
+    std::printf("Builtin labels=%zu undo_changes_before_manual=0 coalesced_draft_notifications=%u graph_revision=%llu PASS\n",example.node_names.size(),batch_drafts,(unsigned long long)revision);
+    return 0;
+}
+static int scenario_builtin_labels(const QString& path) {
+    auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
+    char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
+    CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));install_synthetic_capture_discovery(app,48000,2);
+    app._ctx.file_configs.ui.autosave_enabled=false;
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();},6000));
+    MainWindow* window=nullptr;
+    for(const auto widgets=QApplication::topLevelWidgets();auto* item:widgets)if(auto* found=qobject_cast<MainWindow*>(item))window=found;
+    CHECK(window);auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
+    auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
+    return builtin_label_batch(app,model,editor,path);
+}
+
+static int shipped_example_surface(CoreApplication& app,NumericEditorGraphModel*& model,
+                                   MainWindow*& window,SchemeEditorWidget*& editor) {
+    model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
+    for(const auto items_16=QApplication::topLevelWidgets();auto* candidate:items_16)if(auto* found=qobject_cast<MainWindow*>(candidate))window=found;
+    CHECK(window);window->show();editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
+    auto* automatic=window->findChild<QCheckBox*>("pipelineAutoApply");auto* autosave=window->findChild<QCheckBox*>("enableAutosave");
+    CHECK(!automatic&&autosave);autosave->setChecked(false);
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();},5000));
+    CHECK(app.presenter().client().snapshot().statuses.value("analyzer").state==pipeline::State::Running);
+    return 0;
+}
 
 static int scenario_shipped_examples(char** argv,const QString& path) {
-        const bool gui_workflow=QByteArray(argv[1])=="--shipped-examples-ui";
-        CHECK(test_fixture::isolated_gui_platform());
-        auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
-        char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
-        CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));
-        install_synthetic_capture_discovery(app,48000,2);
-        app._ctx.file_configs.ui.autosave_enabled=false;app._ctx.file_configs.ui.pipeline_auto_apply=false;
-        auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
-        MainWindow* window=nullptr;for(const auto items_16=QApplication::topLevelWidgets();auto* candidate:items_16)if(auto* found=qobject_cast<MainWindow*>(candidate))window=found;
-        CHECK(window);window->show();auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
-        auto* automatic=window->findChild<QCheckBox*>("pipelineAutoApply");auto* autosave=window->findChild<QCheckBox*>("enableAutosave");
-        CHECK(!automatic&&autosave);autosave->setChecked(false);
-        CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0 && !app.presenter().graph_request_pending();},5000));
-        CHECK(app.presenter().client().snapshot().statuses.value("analyzer").state==pipeline::State::Running);
-        // Exercise the actual editor admission after both JSON persistence
-        // boundaries, independently of whichever draft is currently displayed.
-        for(const auto& shipped:{numeric_default_graph(),numeric_generator_graph(),numeric_startup_graph()}) { if(const int failure=shipped_persisted_admission(shipped,model);failure)return failure; }
-        return shipped_ui_examples(path,gui_workflow,app,model,window,editor);
+    const bool gui_workflow=QByteArray(argv[1])=="--shipped-examples-ui";
+    const QByteArray selected=argv[2]?QByteArray(argv[2]):QByteArray("startup-load");
+    CHECK(test_fixture::isolated_gui_platform());
+    auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
+    char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
+    CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));
+    install_synthetic_capture_discovery(app,48000,2);
+    app._ctx.file_configs.ui.autosave_enabled=false;app._ctx.file_configs.ui.pipeline_auto_apply=false;
+    NumericEditorGraphModel* model=nullptr;MainWindow* window=nullptr;SchemeEditorWidget* editor=nullptr;
+    if(const int failure=shipped_example_surface(app,model,window,editor);failure)return failure;
+    if(selected=="admission"){
+        for(const auto& shipped:{numeric_default_graph(),numeric_generator_graph(),numeric_startup_graph()}){if(const int failure=shipped_persisted_admission(shipped,model);failure)return failure;}
+        return 0;
+    }
+    return shipped_ui_examples(path,gui_workflow,app,model,window,editor,selected);
 }
 
 static int first_run_performance(CoreApplication& app,auto& graph) {
@@ -1478,10 +1748,12 @@ using namespace signal_contracts;
             const auto view=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.id==8;});
             const auto joined=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.kind=="ArrayConcat";});
             const auto quantizer=std::find_if(current->nodes.begin(),current->nodes.end(),[](const auto& n){return n.kind=="SpectralQuantize";});
-            if(history==current->nodes.end() || view==current->nodes.end() || joined==current->nodes.end() || quantizer==current->nodes.end())return false;
-            if(!same_contract(quantizer->inputs[0].contract.view(),joined->outputs[0].contract.view()) || !same_contract(history->inputs[0].contract.view(),quantizer->outputs[0].contract.view()) || !same_contract(history->outputs[0].contract.view(),view->inputs[0].contract.view()))return false;
+            if(history==current->nodes.end() || view==current->nodes.end() || joined==current->nodes.end() || quantizer!=current->nodes.end())return false;
+            if(!same_contract(history->inputs[0].contract.view(),joined->outputs[0].contract.view()) || !same_contract(history->outputs[0].contract.view(),view->inputs[0].contract.view()))return false;
             const auto matrix=std::get<NumericContract>(history->outputs[0].contract.view());
-            if(matrix.shape.extents[0].maximum!=512 || matrix.shape.extents[1].maximum!=total || matrix.dtype!=DType::UInt8)return false;
+            if(matrix.shape.extents[0].maximum!=512 || matrix.shape.extents[1].maximum!=total || matrix.dtype!=DType::Float32)return false;
+    if(std::find(current->edges.begin(),current->edges.end(),domain::Edge{joined->id,history->id,0,0})==current->edges.end() ||
+               std::find(current->edges.begin(),current->edges.end(),domain::Edge{history->id,view->id,0,0})==current->edges.end())return false;
 return musical_scalar_agreement(model,noteId,current,note);
 }
 
@@ -1549,7 +1821,11 @@ static int validate_window_calibration(auto& n) {
             const auto cg=std::visit([](auto v){return double(v);},std::get<signal_contracts::NumericLiteral>(gain));CHECK(std::abs(cg-(.54*2048-.46))<1e-3);
             CHECK(domain::resolve_processing_parameter(r,"power_gain",gain)==signal_contracts::Status::ok);
             const auto energy=std::visit([](auto v){return double(v);},std::get<signal_contracts::NumericLiteral>(gain));CHECK(std::abs(energy-(.3974*2048-.391))<1e-3);
-            CHECK(std::none_of(n.inputs.begin(),n.inputs.end(),[](const auto& port){return port.id==domain::window_size_input;}));
+            CHECK(std::any_of(n.inputs.begin(),n.inputs.end(),[](const auto& port){return port.id==domain::window_size_input;}));
+            CHECK(domain::numeric_parameter_key(n.kind,domain::window_size_input)=="fft_size");
+            domain::ProcessingParameterView size;
+            CHECK(domain::resolve_processing_parameter(r,"fft_size",size)==signal_contracts::Status::ok);
+            CHECK(std::holds_alternative<signal_contracts::NumericLiteral>(size)&&std::visit([](auto value){return value==2048;},std::get<signal_contracts::NumericLiteral>(size)));
 
 return 0;
 }
@@ -1592,7 +1868,36 @@ static int isolated_first_spectrum_draft(CoreApplication& app,NumericEditorGraph
     return 0;
 }
 
+static int rejected_spectrum_contract(domain::NumericProcessingGraph& requested,domain::NodeId id,const char* representation) {
+    for(const auto& [node,kind,key]:std::array{std::tuple{id,"AmplitudePhase","representation"},std::tuple{6,"BroadbandRow","input_representation"},std::tuple{1006,"NoteSpectrum","input_representation"}})
+        if(const int failure=set_first_spectrum_text(requested,node,kind,key,representation);failure)return failure;
+    domain::NumericProcessingGraph evaluated,executable;
+    const auto result=domain::resolve_numeric_parameter_bindings(requested,numeric_editor::limits(),evaluated,executable,id);
+    CHECK(!result&&result.node==1102&&result.port==0);
+    return 0;
+}
+
+static int rejected_first_spectrum_representation(CoreApplication& app,AudioNodeModel*& projection,int mode) {
+    constexpr const char* representations[]{"magnitude","peak_amplitude","power","psd","rms_amplitude","bin_power","window_scaled_magnitude"};
+    auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
+    const auto original=model->numeric_graph();auto requested=original;
+    const auto id=projection->numeric_node()->id;
+    if(const int failure=rejected_spectrum_contract(requested,id,representations[mode]);failure)return failure;
+    const auto revision=app.presenter().client().snapshot().graph_revision;
+    QString error;CHECK(!model->edit_nodes(requested.nodes,&error)&&!error.isEmpty());
+    CHECK(application::same_numeric_processing_graph(original,model->numeric_graph()));
+    auto exported=original;QString export_error;
+    CHECK(model->export_numeric_graph(exported,&export_error)&&export_error.isEmpty());
+    CHECK(application::same_numeric_processing_graph(original,exported));
+    CHECK(!app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision==revision);
+    const auto working=app.presenter().applied_numeric_graph();CHECK(working&&application::same_numeric_processing_graph(original,*working));
+    CHECK(!app.presenter().graph_request_pending()&&model->node_error(*model->delegateModel<AudioNodeModel>(id)->numeric_node()).isEmpty());
+    projection=model->delegateModel<AudioNodeModel>(id);CHECK(projection);
+    return 0;
+}
+
 static int validate_spectrum_representation(auto& mode,CoreApplication& app,AudioNodeModel*& projectionModel,auto& quantities) {
+            if(mode==2||mode==3||mode==5)return rejected_first_spectrum_representation(app,projectionModel,mode);
 
             const auto revision=app.presenter().client().snapshot().graph_revision;
             const auto* descriptor=projectionModel->parameter_model()->field("representation");CHECK(descriptor&&descriptor->read);
@@ -1615,7 +1920,7 @@ const auto spectral=std::find_if(changedWindow->nodes.begin(),changedWindow->nod
         const auto beforeRestoreAmplitude=app.presenter().client().snapshot().graph_revision;
         if(const int failure=edit_first_spectrum_representation(app,projectionModel,1);failure)return failure;
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>beforeRestoreAmplitude && !app.presenter().graph_request_pending();},5000));
-        return first_run_musical(app,model,graph,window);
+        return 0;
 }
 
 static int validate_first_spectrum_node(auto& n) {
@@ -1661,8 +1966,9 @@ static int first_run_window_geometry(NumericEditorGraphModel* model) {
     auto requested=model->numeric_graph();
     const auto window=std::find_if(requested.nodes.begin(),requested.nodes.end(),[](const auto& node){return node.id==2&&node.kind=="Window";});
     const auto fourier=std::find_if(requested.nodes.begin(),requested.nodes.end(),[](const auto& node){return node.id==4&&node.kind=="RealFourier";});
-    CHECK(window!=requested.nodes.end()&&fourier!=requested.nodes.end());
-    first_run_fft_literal(*window,"size");first_run_fft_literal(*fourier,"fft_size");
+    const auto polar=std::find_if(requested.nodes.begin(),requested.nodes.end(),[](const auto& node){return node.id==5&&node.kind=="AmplitudePhase";});
+    CHECK(window!=requested.nodes.end()&&fourier!=requested.nodes.end()&&polar!=requested.nodes.end());
+    first_run_fft_literal(*window,"size");first_run_fft_literal(*fourier,"fft_size");first_run_fft_literal(*polar,"fft_size");
     domain::NumericProcessingGraph evaluated,executable;
     CHECK(bool(domain::resolve_numeric_parameter_bindings(requested,numeric_editor::limits(),evaluated,executable,2)));
     CHECK(model->edit_nodes(evaluated.nodes));
@@ -1678,13 +1984,29 @@ const auto beforeWindowRevision=app.presenter().client().snapshot().graph_revisi
         return first_run_spectrum(app,model,graph,window);
 }
 
+static bool first_run_current_analysis_kind(const domain::ConfiguredProcessingNode& node) {
+    if(node.kind=="Mel"||node.kind=="ComplexPolar")return false;
+    return node.kind!="UInt32Constant" && node.kind!="BarkWeighting";
+}
+static bool first_run_has_role(const domain::NumericProcessingGraph& graph,domain::NodeId id,const char* kind) {
+    return std::any_of(graph.nodes.begin(),graph.nodes.end(),[&](const auto& node){return node.id==id && node.kind==kind;});
+}
+static int first_run_current_analysis_roles(const domain::NumericProcessingGraph& graph) {
+    for(const auto& [id,kind]:std::array{std::pair{domain::NodeId{4},"RealFourier"},std::pair{domain::NodeId{5},"AmplitudePhase"},
+        std::pair{domain::NodeId{15},"ArrayMultiply"},std::pair{domain::NodeId{6},"BroadbandRow"},std::pair{domain::NodeId{1006},"NoteSpectrum"},
+        std::pair{domain::NodeId{7},"Spectrogram"},std::pair{domain::NodeId{1007},"ArrayConcat"},std::pair{domain::NodeId{1102},"RhythmAnalyzer"}})
+        CHECK(first_run_has_role(graph,id,kind));
+    for(const auto& node:graph.nodes)CHECK(first_run_current_analysis_kind(node));
+    return 0;
+}
+
 static int first_run_window(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,MainWindow*& window,AudioNodeModel*& resamplerModel) {
         const auto priorRevision=app.presenter().client().snapshot().graph_revision;
         CHECK(resamplerModel->parameter_model()->editLiteral("output_rate","32000",0));
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>priorRevision && !app.presenter().graph_request_pending();},5000));
         const auto applied=app.presenter().applied_numeric_graph();CHECK(applied);
         for(const auto& node:applied->nodes)if(node.id==332){if(const int failure=validate_first_resampler_node(node);failure)return failure;}
-        for(const auto& node:applied->nodes)CHECK(node.kind!="UInt32Constant" && node.kind!="BarkWeighting" && node.kind!="Mel" && node.kind!="ComplexPolar");
+        if(const int failure=first_run_current_analysis_roles(*applied);failure)return failure;
         const auto step=std::find_if(applied->nodes.begin(),applied->nodes.end(),[](const auto& n){return n.kind=="FrequencyStep";});CHECK(step!=applied->nodes.end());
         CHECK(std::get<signal_contracts::NumericContract>(step->outputs[0].contract.view()).dtype==signal_contracts::DType::Float64);
         CHECK(std::any_of(applied->edges.begin(),applied->edges.end(),[&](const auto& edge){return edge.from==step->id && edge.input_port==domain::frequency_step_input;}));
@@ -1760,7 +2082,7 @@ static int first_run_resampling(CoreApplication& app,NumericEditorGraphModel*& m
         auto* frequencyPanel=qobject_cast<GraphPanel*>(frequencyDock->widget());CHECK(frequencyPanel);
         auto* resamplerModel=model->delegateModel<AudioNodeModel>(332);CHECK(resamplerModel);
         for(const auto rate:{36000u,48000u}){if(const int failure=first_run_rate(app,rate,frequencyPanel,resamplerModel);failure)return failure;}
-        return first_run_window(app,model,graph,window,resamplerModel);
+        return 0;
 }
 
 static void observe_first_source(auto& delivered,auto& pcm_frames,auto& nonzero) {
@@ -1775,7 +2097,7 @@ const bool live=wait_until([&]{return rejected||(accepted && pcm_frames>=3 && no
         if(!live)std::fprintf(stderr,"first-run live: accepted=%d rejected=%d frames=%d nonzero=%d revision=%llu pending=%d status=%s\n",int(accepted),int(rejected),pcm_frames,int(nonzero),static_cast<unsigned long long>(app.presenter().client().snapshot().graph_revision),int(app.presenter().graph_request_pending()),qPrintable(app.presenter().apply_status()));
         CHECK(live);CHECK(accepted && !rejected && pcm_frames>=3 && nonzero);
         CHECK(wait_until([&]{return startup_primary_views_open(window);}));
-        return first_run_resampling(app,model,graph,window);
+        return 0;
 }
 
 static int first_run_delivery(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph) {
@@ -1846,7 +2168,21 @@ for(auto id:{domain::NodeId{13}}) {
         return first_run_graph_contracts(app,model,graph,clock);
 }
 
-static int scenario_first_run(const QString& path) {
+static int first_run_stage(const QByteArray& stage,CoreApplication& app,NumericEditorGraphModel*& model,const auto& graph,const auto& clock) {
+    if(stage=="startup")return first_run_source_contracts(app,model,graph,clock);
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();},6000));
+    MainWindow* window=nullptr;
+    for(const auto widgets=QApplication::topLevelWidgets();auto* item:widgets)if(auto* found=qobject_cast<MainWindow*>(item))window=found;
+    CHECK(window);window->show();
+    if(stage=="resampling")return first_run_resampling(app,model,graph,window);
+    if(stage=="musical")return first_run_musical(app,model,graph,window);
+    CHECK(stage=="spectrum");
+    if(const int failure=first_run_identity_coefficients(app,model);failure)return failure;
+    auto* resampler=model->delegateModel<AudioNodeModel>(332);CHECK(resampler);
+    return first_run_window(app,model,graph,window,resampler);
+}
+
+static int scenario_first_run(const QString& path,const QByteArray& stage) {
         CHECK(!QFile::exists(path));auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
         CoreApplication app(count,arguments,test_fixture::startup_capture_factory(false,2));
@@ -1862,7 +2198,7 @@ static int scenario_first_run(const QString& path) {
         CHECK(capture!=graph.nodes.end() && capture->kind=="AudioSource");
         const auto expected=native_mono_example(numeric_startup_graph());
         CHECK(std::is_permutation(graph.configuration_bindings.begin(),graph.configuration_bindings.end(),expected.configuration_bindings.begin(),expected.configuration_bindings.end()));
-        return first_run_source_contracts(app,model,graph,clock);
+        return first_run_stage(stage,app,model,graph,clock);
 }
 
 static int scenario_reload_project(char** argv) {
@@ -1901,8 +2237,9 @@ const auto replaced=read(path);CHECK(replaced!=rejected && !replaced.isEmpty());
 }
 
 static int rejected_recovery(auto& path,auto& next,auto& rejected,CoreApplication& app,MainWindow*& diagnosticWindow,auto& saveAction,SchemeEditorWidget*& diagnosticEditor) {
-        // An out-of-range native rate deterministically fails execution export,
-        // while persistence retains the last valid stored contracts.
+        // The product has no capture source; use the explicit fixture for this
+        // stored-contract versus native-execution export regression.
+        QString fixtureError;CHECK(diagnosticEditor->load_numeric_draft(numeric_startup_graph(),&fixtureError));
         unsigned discoveryCalls=0;
         auto* saveModel=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(saveModel);
         saveModel->set_capture_device_provider([&discoveryCalls](int,QString*) {
@@ -1921,7 +2258,7 @@ static int rejected_recovery(auto& path,auto& next,auto& rejected,CoreApplicatio
 }
 
 static int rejected_example_recovery(const QString& path,const QString& next,CoreApplication& app,auto& rejected,MainWindow*& diagnosticWindow,auto& saveAction,SchemeEditorWidget*& diagnosticEditor) {
-auto* example=diagnosticWindow->findChild<QAction*>("example-startup");CHECK(example);example->trigger();
+auto* example=diagnosticWindow->findChild<QAction*>("example-basic-signal");CHECK(example);example->trigger();
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>0;}));
         CHECK(respond_to_overwrite(false,[&]{app.save_configuration_as(path);}));CHECK(read(path)==rejected);
 #ifdef Q_OS_WIN
@@ -1945,12 +2282,14 @@ auto* diagnosticEditor=diagnosticWindow->findChild<SchemeEditorWidget*>();CHECK(
 }
 
 static int rejected_save_warning(const QString& path,const QString& next,CoreApplication& app,auto& rejected,MainWindow*& diagnosticWindow) {
+report_application_phase("rejected save warning");
 auto* saveAction=diagnosticWindow->findChild<QAction*>("saveSettings");CHECK(saveAction);
         CHECK(saveAction->shortcut()==QKeySequence("Ctrl+S") && saveAction->shortcutContext()==Qt::ApplicationShortcut);
         // A rejected draft must not swallow the explicit save warning.
         CHECK(respond_to_overwrite(false,[&]{trigger_save_action(diagnosticWindow,saveAction);},path));CHECK(read(path)==rejected);
         CHECK(respond_to_overwrite(true,[&]{trigger_save_action(diagnosticWindow,saveAction);},path));CHECK(read(path)==rejected);
 
+        report_application_phase("rejected warning details");
         return rejected_warning_details(path,next,app,rejected,diagnosticWindow,saveAction);
 }
 
@@ -1959,8 +2298,14 @@ static int scenario_reject_project(const QString& path,const QString& next) {
         QFile file(path); CHECK(file.open(QIODevice::WriteOnly)); file.write(rejected); file.close();
         auto encoded=path.toLocal8Bit(); char executable[]="numeric_application_tests", option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr}; int count=3;
+        ApplicationPhaseGuard destroyed{"rejected CoreApplication destroyed"};
+        report_application_phase("rejected CoreApplication construct begin");
         CoreApplication app(count,arguments,test_fixture::synthetic_capture_factory());
+        ApplicationPhaseGuard destroying{"rejected CoreApplication unwind begin"};
+        report_application_phase("rejected CoreApplication construct end");
+        report_application_phase("rejected capture discovery begin");
         install_synthetic_capture_discovery(app);
+        report_application_phase("rejected capture discovery end");
         CHECK(app._ctx.data_flow_graph->allNodeIds().empty());
         CHECK(app.presenter().client().snapshot().graph_revision==0);
         CHECK(!app.presenter().file_protection_warning().isEmpty());
@@ -2166,23 +2511,80 @@ static bool scenario_mode(int argc,char** argv,int count,std::initializer_list<c
     return std::any_of(modes.begin(),modes.end(),[&](const char* value){return QByteArray(argv[1])==value;});
 }
 
+static bool basic_view_ready(MainWindow* window,std::size_t size) {
+    const auto docks=window->workspaceDocks();
+    for(auto* dock:docks){
+        if(dock->property("graphNode").toInt()!=3||dock->property("graphKind").toString()!="VectorLineView"||!dock->property("renderExposed").toBool())continue;
+        const auto* panel=qobject_cast<GraphPanel*>(dock->widget());
+        if(panel&&panel->active_chart()&&panel->active_chart()->value_count()==size)return true;
+    }
+    return false;
+}
+static int basic_window_delivery(CoreApplication& app,NumericEditorGraphModel* model,MainWindow* window,std::size_t size) {
+    CHECK(basic_signal_probe::graph_is_basic(model->numeric_graph(),size));
+    const auto state=app.presenter().client().snapshot();
+    const auto observation=std::make_shared<basic_signal_probe::Observation>(size,pipeline::DeliveryStamp{state.graph_revision,state.epoch});
+    const auto tap=app.pipeline().subscribe_numeric_tap(basic_signal_probe::endpoints(),[observation](const auto& frame){observation->observe(frame);},{});
+    CHECK(tap);
+    const bool ready=wait_until([&]{return observation->ready();},5000);
+    app.pipeline().unsubscribe_numeric_tap(tap);observation->report("GUI");
+    CHECK(ready&&observation->good());
+    CHECK(wait_until([&]{return basic_view_ready(window,size);},3000));
+    return 0;
+}
+static int basic_live_window(CoreApplication& app,NumericEditorGraphModel* model,MainWindow* window) {
+    const auto revision=app.presenter().client().snapshot().graph_revision;
+    auto* buffer=model->delegateModel<AudioNodeModel>(2);CHECK(buffer&&buffer->parameter_model());
+    CHECK(buffer->parameter_model()->editLiteral("size","1024",0));
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>revision&&!app.presenter().graph_request_pending();},5000));
+    return basic_window_delivery(app,model,window,1024);
+}
+static int basic_menu_reset(CoreApplication& app,NumericEditorGraphModel* model,MainWindow* window) {
+    unsigned entries=0;
+    const auto actions=window->findChildren<QAction*>();
+    for(auto* action:actions)if(action->objectName().startsWith("example-"))++entries;
+    CHECK(entries==2);
+    auto* action=window->findChild<QAction*>("example-basic-signal");CHECK(action);
+    const auto revision=app.presenter().client().snapshot().graph_revision;action->trigger();
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>revision&&!app.presenter().graph_request_pending();},5000));
+    auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);emit editor->graph_open_requested(3,0);
+    return basic_window_delivery(app,model,window,500);
+}
+static int scenario_basic_signal(const QString& path) {
+    CHECK(test_fixture::isolated_gui_platform());
+    auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
+    char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
+    CoreApplication app(count,arguments,test_fixture::startup_capture_factory());
+    app._ctx.file_configs.ui.autosave_enabled=false;
+    MainWindow* window=nullptr;
+    for(const auto widgets=QApplication::topLevelWidgets();auto* item:widgets)if(auto* found=qobject_cast<MainWindow*>(item))window=found;
+    auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(window&&model);window->show();
+    auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);emit editor->graph_open_requested(3,0);
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();},5000));
+    if(const int failure=basic_window_delivery(app,model,window,500);failure)return failure;
+    if(const int failure=basic_live_window(app,model,window);failure)return failure;
+    return basic_menu_reset(app,model,window);
+}
+
 int main(int argc, char** argv) {
     QTemporaryDir directory;
     CHECK(directory.isValid());
     const auto path=directory.filePath("project.json"), next=directory.filePath("saved.json");
     if(scenario_mode(argc,argv,3,{"--save-file-copy","--fft-file-copy","--resampler-file-copy","--music-file-copy"}))return scenario_file_copy(argv,path);
+    if(scenario_mode(argc,argv,2,{"--basic-signal"}))return scenario_basic_signal(path);
+    if(scenario_mode(argc,argv,2,{"--builtin-labels"}))return scenario_builtin_labels(path);
     if(scenario_mode(argc,argv,2,{"--workspace-persistence"}))return scenario_workspace_persistence(argc,argv,path,next);
     if(scenario_mode(argc,argv,4,{"--workspace-phase"}))return scenario_workspace_phase(argv);
     if(scenario_mode(argc,argv,2,{"--matrix-center-ring-bypass"}))return scenario_matrix_bypass(path);
     if(scenario_mode(argc,argv,3,{"--export-temporal-project"}))return scenario_export_temporal(argv,path);
     if(scenario_mode(argc,argv,0,{"--temporal-fft","--temporal-fft-44100"}))return scenario_temporal_fft(argv,path,next);
     if(scenario_mode(argc,argv,3,{"--export-current-project"}))return scenario_export_current(argv);
-    if(scenario_mode(argc,argv,0,{"--current-examples"}))return scenario_current_examples(path,next);
+    if(scenario_mode(argc,argv,0,{"--current-examples"}))return scenario_current_examples(path,next,argc>2?QByteArray(argv[2]):QByteArray("startup"));
     if(scenario_mode(argc,argv,3,{"--verify-project"}))return scenario_verify_project(argv,path);
     if(scenario_mode(argc,argv,0,{"--startup-menu-empty","--startup-menu-old"}))return scenario_startup_menu(argv,path);
     if(scenario_mode(argc,argv,0,{"--startup-selector","--startup-selector-unavailable"}))return scenario_startup_selector(argv,path);
     if(scenario_mode(argc,argv,0,{"--shipped-examples","--shipped-examples-ui"}))return scenario_shipped_examples(argv,path);
-    if(scenario_mode(argc,argv,0,{"--first-run"}))return scenario_first_run(path);
+    if(scenario_mode(argc,argv,0,{"--first-run"}))return scenario_first_run(path,argc>2?QByteArray(argv[2]):QByteArray("startup"));
     if(scenario_mode(argc,argv,3,{"--reload"}))return scenario_reload_project(argv);
     if(scenario_mode(argc,argv,0,{"--rejected"}))return scenario_reject_project(path,next);
     return scenario_default(path,next);

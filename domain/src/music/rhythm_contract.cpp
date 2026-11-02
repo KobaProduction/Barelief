@@ -13,7 +13,8 @@ bool number(const ConfiguredProcessingNode& node,std::string_view key,double& re
     result=std::visit([](auto v){return double(v);},*literal);return std::isfinite(result);
 }
 bool geometry(const NumericContract& input,double bins) noexcept {
-    return input.dtype==DType::UInt8 && input.shape.rank==Rank::Matrix
+    const bool linear=input.unit==NumericUnit::Values || input.unit==NumericUnit::RawAmplitude || input.unit==NumericUnit::NormalizedAmplitude;
+    return input.dtype==DType::Float32 && linear && input.shape.rank==Rank::Matrix
         && input.shape.axes[0]==Axis::Time && input.shape.axes[1]==Axis::Band
         && input.shape.extents[0].maximum==512 && input.shape.extents[1]==ExtentBounds{std::uint64_t(bins),std::uint64_t(bins)}
         && input.channel_order.size()==1 && input.representation.encoding==StorageEncoding::Native
@@ -55,13 +56,31 @@ bool peak_amplitude_input(const NumericContract& c) noexcept {
         && c.representation.normalization==Normalization::None && !c.representation.valid_bits && c.channel_order.size()==1;
 }
 }
+bool rhythm_feature_representation(const ResolvedProcessingNode& node,RhythmFeatureRepresentation& output) noexcept {
+    ProcessingParameterView parameter;
+    if(resolve_processing_parameter(node,"input_representation",parameter)!=Status::ok)return false;
+    const auto* value=std::get_if<std::string_view>(&parameter);
+    if(!value)return false;
+    if(*value=="complex")output=RhythmFeatureRepresentation::Complex;
+    else if(*value=="peak_amplitude")output=RhythmFeatureRepresentation::PeakAmplitude;
+    else return false;
+    return true;
+}
+namespace {
+bool feature_input_valid(const ConfiguredProcessingNode& node,const NumericContract& input) noexcept {
+    const ResolvedProcessingNode view{node.id,node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,node.inputs,node.outputs,&node.parameters,node.enabled};
+    RhythmFeatureRepresentation representation{};
+    if(!rhythm_feature_representation(view,representation))return false;
+    return representation==RhythmFeatureRepresentation::Complex?complex_input(input):peak_amplitude_input(input);
+}
+}
 Status rhythm_features_output_contract(const ConfiguredProcessingNode& node,const NumericContract& input,OwnedProcessingContract& owner) noexcept {
     double bins=0;
     if(!number(node,"feature_bins",bins) || (bins!=64 && bins!=96) ||
-       (!complex_input(input) && !peak_amplitude_input(input)))return Status::incompatible_contract;
-    auto output=input;output.dtype=DType::UInt8;output.semantic=Semantic::Numeric;output.quantity=Quantity::Unspecified;output.unit=NumericUnit::Values;
+       !feature_input_valid(node,input))return Status::incompatible_contract;
+    auto output=input;output.dtype=DType::Float32;output.semantic=Semantic::Numeric;output.quantity=Quantity::Unspecified;output.unit=NumericUnit::Values;
     output.shape={Rank::Vector,{Axis::Band,Axis::None},{ExtentBounds{std::uint64_t(bins),std::uint64_t(bins)},ExtentBounds{}}};
-    output.coordinates={};output.representation.alignment=1;
+    output.coordinates={};output.representation.alignment=alignof(float);
     return own_processing_contract(output,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,owner);
 }
 Status rhythm_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,

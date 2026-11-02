@@ -166,9 +166,9 @@ struct DspContracts {NumericContract pcm,win,windowed,spectrum,mono,mel,hist,cou
 DspContracts dsp_contracts(){NumericContract pcm;pcm.dtype=DType::Float32;pcm.semantic=Semantic::PCM;pcm.quantity=Quantity::Amplitude;pcm.unit=NumericUnit::NormalizedAmplitude;
  pcm.shape.rank=Rank::Vector;pcm.shape.axes={Axis::Sample,Axis::None};pcm.shape.extents={ExtentBounds{1,4096},ExtentBounds{1,1}};pcm.channel_order=channels;
  pcm.clock={"audio.test",{1,48000},48000};auto win=pcm;win.semantic=Semantic::Window;win.shape.extents[0]={512,512};auto windowed=win;windowed.semantic=Semantic::Windowed;
- auto spectrum=win;spectrum.semantic=Semantic::SpectrumMagnitude;spectrum.quantity=Quantity::SpectrumMagnitude;spectrum.unit=NumericUnit::Values;spectrum.shape.axes[0]=Axis::Bin;spectrum.shape.extents[0]={256,256};
+ auto spectrum=win;spectrum.semantic=Semantic::SpectrumMagnitude;spectrum.quantity=Quantity::SpectrumMagnitude;spectrum.unit=NumericUnit::RawAmplitude;spectrum.shape.axes[0]=Axis::Bin;spectrum.shape.extents[0]={256,256};
  spectrum.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{48000,512}};auto mono=spectrum;mono.channel_order=std::span(channels).first(1);
- auto mel=mono;mel.semantic=Semantic::MelEnergy;mel.quantity=Quantity::MelEnergy;mel.shape.axes[0]=Axis::Band;mel.shape.extents[0]={8,8};mel.coordinates[0]={};
+ auto mel=mono;mel.semantic=Semantic::MelEnergy;mel.quantity=Quantity::MelEnergy;mel.shape.axes[0]=Axis::Band;mel.shape.extents[0]={8,8};mel.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{1,1}};
  auto hist=mel;hist.semantic=Semantic::History;hist.history_element=Semantic::MelEnergy;hist.shape.rank=Rank::Matrix;hist.shape.axes={Axis::Time,Axis::Band};hist.shape.extents={ExtentBounds{0,3},mel.shape.extents[0]};hist.coordinates={AxisCoordinates{},mel.coordinates[0]};
  NumericContract count;count.dtype=DType::UInt64;count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;count.channel_order=mono.channel_order;count.clock=pcm.clock;
 
@@ -176,7 +176,6 @@ return {pcm,win,windowed,spectrum,mono,mel,hist,count};
 }
 ConfiguredProcessingNode dsp_transform(NodeId id,const char* kind,const NumericContract& from,const NumericContract& to){
    auto n=node(id,kind,&from,&to);TransformProcessingParameters parameters;
-   if(std::string_view(kind)=="Window")parameters.values.push_back({"input_rate",NumericLiteral{std::uint64_t(from.clock.sample_rate)}});
    if(std::string_view(kind)=="BarkWeighting" || std::string_view(kind)=="Mel")parameters.values={
      {"sample_rate",NumericLiteral{std::uint64_t(from.clock.sample_rate)}},
      {"bin_hz",NumericLiteral{double(from.clock.sample_rate)/512.}},
@@ -230,13 +229,14 @@ void float_dsp_scenario(bool retag=false){auto g=dsp_graph();
  CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);if(!pending)return;CHECK(executor.apply(std::move(pending))==Status::ok);
  const auto contract=std::get<NumericContract>(g.nodes[0].outputs[0].contract.view());std::array<float,8192> samples{};std::array<PlaneLayout,2> layout{{{0,{4,0}},{4096*sizeof(float),{4,0}}}};
 DspCapture capture;deliver_float_dsp(executor,contract,samples,layout,capture);
- CHECK(capture.windows==10&&capture.rows==10&&capture.ordinal==10&&capture.count==3&&capture.timestamp==8000&&capture.changed);
+ // Window publishes once per input packet, independently of analysis rate.
+ CHECK(capture.windows==2&&capture.rows==2&&capture.ordinal==2&&capture.count==2&&capture.timestamp==4096&&capture.changed);
  auto disconnected=g;disconnected.edges.erase(disconnected.edges.begin()+6);
  CHECK(executor.prepare_numeric(disconnected,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
  FrameStamp silence_stamp;silence_stamp.sequence=3;silence_stamp.producer_epoch=5;silence_stamp.timestamp_ticks=8192;
  NumericView silence_view{&contract,std::as_bytes(std::span(samples)),std::span(layout).first(1),{4096,1},{},{},false};
  auto before=allocations;CHECK(executor.process_numeric_ports(1,{silence_stamp,silence_view},{},{dsp_output,nullptr,dsp_history,&capture})==Status::ok);CHECK(allocations==before);
- CHECK(capture.windows==15&&capture.rows==15&&capture.ordinal==15&&capture.count==3&&capture.timestamp==12000);
+ CHECK(capture.windows==3&&capture.rows==3&&capture.ordinal==3&&capture.count==3&&capture.timestamp==8192);
  refuse_float64_dsp(g,executor,p,pending);
 
 }
@@ -467,7 +467,10 @@ void local_history_coordinates(){auto p=profile();auto g=graph();
  std::array<double,3> expected_times{-98,-97,-96};const auto expected=std::as_bytes(std::span(expected_times));
  CHECK(view.coordinates.axes[0].size()==expected.size()&&std::equal(view.coordinates.axes[0].begin(),view.coordinates.axes[0].end(),expected.begin()));
  const auto expected_features=std::as_bytes(std::span(features));CHECK(std::equal(view.coordinates.axes[1].begin(),view.coordinates.axes[1].end(),expected_features.begin()));
- g.nodes[4].enabled=false;CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
+ // History has no bypass. Typed silence is routed through the upstream Gate.
+ auto disabled_history=g;disabled_history.nodes[4].enabled=false;
+ CHECK(executor.prepare_numeric(disabled_history,application::NumericRuntimeLimits{p.admission,p.resources},pending)!=Status::ok && !pending);
+ g.nodes[3].enabled=false;CHECK(executor.prepare_numeric(g,application::NumericRuntimeLimits{p.admission,p.resources},pending)==Status::ok);CHECK(executor.apply(std::move(pending))==Status::ok);
  auto f=frame(contract,bytes,5);f.stamp.timestamp_ticks=-95;std::get<NumericView>(f.payload).coordinates.axes[0]=expected_features;
  CHECK(executor.process_numeric_ports(1,f,{})==Status::ok);CHECK(executor.plan()->history(5,0,*executor.context(),snapshot)==Status::ok);
  CHECK(validate_view(snapshot,limits)==Status::ok);view=std::get<NumericView>(snapshot.payload);std::int64_t value=1;
@@ -659,11 +662,10 @@ void pcm_resampler_full_chain(){
  std::array<float,8192> samples{};constexpr std::array<PlaneLayout,2> planes{{{0,{4,0}},{4096*4,{4,0}}}};
  DspCapture capture;
  deliver_resampled_dsp(executor,input,samples,planes,capture);
- // 8192 samples at48k produce2731 samples on the16k grid. At60Hz,
- // ten analysis apertures end at floor(10*16000/60)=2666 exclusive.
- // Resampler supplies an explicit interval, so timestamp is its last sample.
- if(capture.windows!=10 || capture.rows!=10 || capture.ordinal!=10 || capture.timestamp!=2665 || !capture.changed)std::fprintf(stderr,"resampled chain windows=%zu rows=%zu ordinal=%llu timestamp=%lld changed=%d\n",capture.windows,capture.rows,(unsigned long long)capture.ordinal,(long long)capture.timestamp,int(capture.changed));
- CHECK(capture.windows==10 && capture.rows==10 && capture.ordinal==10 && capture.timestamp==std::int64_t(10*16000/60-1) && capture.changed);
+ // Each resampler packet updates Window once. Window preserves its timestamp;
+ // the second output packet begins at ceil(4096*16000/48000)=1366.
+ CHECK(capture.windows==2 && capture.rows==2 && capture.ordinal==2 && capture.count==2 &&
+       capture.timestamp==std::int64_t((4096*16000+48000-1)/48000) && capture.changed);
 }
  struct ResamplerObservation{std::size_t frames=0,markers=0,samples=0;std::uint64_t sequence=0;std::int64_t ticks=0;bool discontinuity=false,require_zero=false;std::uint32_t rate=16000;static void receive(void* user,const NumericPortFrameView& f){auto& seen=*static_cast<ResamplerObservation*>(user);
    CHECK(f.frame.stamp.sequence>seen.sequence);seen.sequence=f.frame.stamp.sequence;

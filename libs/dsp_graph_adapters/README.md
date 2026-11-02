@@ -1,0 +1,102 @@
+# Portable DSP graph adapters
+
+This target binds the existing `dsp_kernels` implementations to the existing
+`NumericOperationFactory`/`PreparedGraph` protocol. It has no Qt, platform I/O,
+reference-port/GPL dependency, model loader or executor of its own. Classical
+model parameters enter through the owning `ClassicalModelProvider` port.
+
+## Common operations
+
+All analytical payloads are mono native Float32, except exact histogram counts
+(UInt64). Inputs and output capacities are declared contracts. Parameters are
+registered by `domain/numeric/common_operations.h`; no library names select DSP.
+
+| Stable kind | Explicit settings / inputs | Outputs |
+| --- | --- | --- |
+| FilterMatrixProjection | Vector or row-major matrix; band-major `weights`, optional `centers_hz`, `compensated`, `square_input` | Projected values; weight matrix; supplied centers, empty when absent |
+| LogCompression | Vector; `multiply`, `add`, `base` (0 ten, 1 natural, 2 two), `signed_input` | Shared logarithmic compression; zero argument may produce −Inf |
+| VectorNormalize | Vector; `method` (0 none, 1 max, 2 min, 3 L0, 4 Lp), `exponent` | Shared normalized vector |
+| RecursiveFilter | Vector chunks; `numerator`, `denominator`, `form` (0 transposed II, 1 direct I), `subnormal`, `input_zero_threshold` | Filtered chunk; current delay state |
+| DirectCorrelation | Two equal-length vectors; signed `first_lag`, `lags`, `normalization` (raw/unbiased/biased/overlap-energy) | Shared cross-correlation with signed lag coordinates in frames |
+| CurveInterpolation | Values and query vectors; explicit `coordinates`, method/order/fill/extrapolation/bounds settings | Shared interpolation, including explicitly allowed IEEE results |
+| CombFilterBank | Vector chunks; positive integer `delays`, scalar/per-filter `alpha`, forward/backward `direction` | `[time][filter]` values; delay settings |
+| ValueHistogram | Vector; `bins`, `method` (0 uniform range, 1 rounded counts), positive `step` | Exact UInt64 counts; Float32 bin centers |
+| InterpolatedPeaks | Vector; `threshold`, `endpoints`, explicit coordinate `origin`/`step` | Variable peak positions; original bin heights; per-bin quadratic offsets |
+| SameConvolution | Vector; explicit `kernel`, `crop` (0 largest, 1 input) | Shared zero-padded same convolution |
+| InverseFourier | Full N-bin real and imaginary vectors; `fft_size` | Full real/imaginary inverse using existing `PreparedFourierTransform`, normalized by 1/N |
+
+There is no second FFT/frontend. Existing `TemporalFrame`, Fourier/RealFourier,
+MatrixFFT, ComplexPolar, AmplitudePhase, SpectrumProjection, Mel, PowerToDb,
+MatrixCenter, MatrixAutocorrelation, SpectralAutocorrelation and tempogram blocks
+remain the reusable stages for framing/windows/padding/rotation, raw complex
+transforms, source polar rules, calibration, filtering and correlation.
+InverseFourier has a distinct full complex input shape; it does not guess an
+inverse from a magnitude spectrum or fabricate conjugate symmetry.
+
+Shape-preserving transforms retain declared axes and transport clocks. Matrix
+projection retains the row axis and publishes supplied band centers as Hertz;
+without supplied centers its band index remains an index. Correlation labels
+lags, not seconds; there is no hidden Fs from another node. Queries and peak
+positions are explicit payloads/settings. No metadata supplies DSP parameters.
+
+The recursive and comb blocks retain state between chunks and reset on explicit
+runtime reset/discontinuity. Other common blocks process independent batches.
+Input/output shape, finite/domain policy and disjointness are checked before
+source mutation. An arithmetic failure may consume a source prefix: the runtime
+invalidates every output and applies ResetState. No old result is published as
+current. Disabled blocks emit typed zeros without advancing DSP state.
+Coordinates are always finite. Only LogCompression and CurveInterpolation
+explicitly permit nonfinite numerical results; this is not an implicit clipping
+or replacement policy.
+
+Cold clone copies each common operation's mutable buffers independently.
+Compatible warm transfer is conservatively rejected, so the existing runtime
+performs an explicit reset. Pure assessment calls static checked storage queries,
+never prepare/FFT/factorization; cold preparation checks actual capacities against
+the admitted bound before replacing a processor. Descriptor payload, primitive
+storage and bounded packet/row scratch are counted once. Runtime owns latch,
+output, coordinate and stream storage separately. Hot calls allocate nothing and
+retain no borrowed input/output views or full history snapshot.
+
+## Explicit production composition
+
+Link `dsp_graph_adapters` explicitly and use the existing executor:
+
+```cpp
+#include <dsp_graph_adapters/profile.h>
+
+auto profile = dsp_graph_adapters::with_dsp_operations(
+    configured_profile, classical_models);
+auto capabilities = dataflow_runtime::PreparedGraph::numeric_capabilities(profile);
+dataflow_runtime::GraphExecutor executor{std::move(profile)};
+```
+
+The caller supplies admission/resource limits and classical model parameters;
+the helper does not enlarge budgets. The previous factory is the final fallback.
+To opt into the optional reference-port target, explicitly link
+`rhythm_graph_adapters` and instead call
+`rhythm_graph_adapters::with_reference_operations(configured_profile,
+classical_models, window_resampler)`. Routing is common primitives → classical
+DSP sequences → optional reference bindings → prior factory. Main application
+and SDK acquire no implicit GPL/AGPL linkage. Missing factories/models/backends
+remain unsupported capabilities.
+
+Stage-chain examples, with explicit compatible N/Fs/axes and owned bounded
+packet delivery at each edge:
+
+- TemporalFrame → RealFourier → ComplexPolar → FilterMatrixProjection →
+  LogCompression. Keep the separate DC output or deliberately select first_bin1.
+- Explicit onset-envelope batch → VectorNormalize → SpectralAutocorrelation →
+  InterpolatedPeaks; compare with DirectCorrelation on the same explicit data.
+- Explicit complex tempogram planes → InverseFourier for a selected full
+  complex row. Positive-half data require an explicit source reconstruction,
+  never a guessed negative half.
+- Explicit values → RecursiveFilter → SameConvolution → ValueHistogram;
+  inspect the separate filter-state/count/center outputs.
+
+Sequence-family bindings are implemented in the separately owned sequence files.
+Their catalogue and source-chain descriptions live in
+`domain/numeric/sequence_operations.h`. Current source registration does not
+establish complete five-library coverage, numerical parity or integration-test
+acceptance. Ring-history ingress still follows the existing runtime retention
+and gather rules; these adapters do not retain asynchronous borrowed histories.

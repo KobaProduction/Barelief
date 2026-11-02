@@ -2,6 +2,103 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Rhythm autocorrelation</source><translation>Автокорреляция ритма</translation></message>
+    <message><source>Tempo estimation</source><translation>Оценка темпа</translation></message>
+    <message><source>Beat grid</source><translation>Сетка долей</translation></message>
+    <message><source>Power logarithm (dB)</source><translation>Логарифм мощности (dB)</translation></message>
+    <message><source>Accumulator size, elements</source><translation>Размер накопителя, элементов</translation></message>
+    <message><source>Normalized autocorrelation</source><translation>Нормированная автокорреляция</translation></message>
+    <message><source>Raw autocorrelation</source><translation>Автокорреляция до нормирования</translation></message>
+    <message><source>Windowed onset history</source><translation>Атаки после оконной функции</translation></message>
+    <message><source>Tempo scale, BPM</source><translation>Шкала темпа, BPM</translation></message>
+    <message><source>Autocorrelation profile</source><translation>Профиль автокорреляции</translation></message>
+    <message><source>Tempo prior</source><translation>Предпочтения темпа</translation></message>
+    <message><source>Estimated tempo, BPM</source><translation>Оценка темпа, BPM</translation></message>
+    <message><source>Beat positions (0/1)</source><translation>Позиции долей (0/1)</translation></message>
+    <message><source>Local beat score</source><translation>Локальная оценка долей</translation></message>
+    <message><source>Accumulated path score</source><translation>Накопленная оценка пути</translation></message>
+    <message><source>Previous beat index</source><translation>Индекс предыдущей доли</translation></message>
+    <message><source>Linear power</source><translation>Линейная мощность</translation></message>
+    <message><source>Log power, dB</source><translation>Логарифмическая мощность, dB</translation></message>
+    <message><source>New values</source><translation>Новые значения</translation></message>
+    <message><source>Accumulated values</source><translation>Накопленные значения</translation></message>
+    <message><source>Mel band power</source><translation>Мощность Mel-полос</translation></message>
+    <message><source>Feature values</source><translation>Значения признаков</translation></message>
+    <message><source>Aggregated feature</source><translation>Агрегированный признак</translation></message>
+    <message><source>Input frames</source><translation>Входные кадры</translation></message>
+    <message><source>Selected frames</source><translation>Выбранные кадры</translation></message>
+    <message><source>Preferred tempo, BPM</source><translation>Ожидаемый темп, BPM</translation></message>
+    <message><source>Tempo preference width, octaves</source><translation>Ширина предпочтения темпа, октав</translation></message>
+    <message><source>Limit maximum tempo</source><translation>Ограничивать максимальный темп</translation></message>
+    <message><source>Tempo aggregation</source><translation>Объединение оценок темпа</translation></message>
+    <message><source>Beat interval strictness</source><translation>Строгость интервалов</translation></message>
+    <message><source>Trim weak edge beats</source><translation>Убирать слабые крайние доли</translation></message>
+    <message><source>Maximum beat interval, frames</source><translation>Максимальный интервал между долями, кадров</translation></message>
+    <message><source>Analysis window length, frames</source><translation>Длина окна анализа, кадров</translation></message>
+    <message><source>Window step, frames</source><translation>Шаг окна, кадров</translation></message>
+    <message><source>Analysis window index</source><translation>Индекс окна анализа</translation></message>
+    <message><source>Time origin, seconds</source><translation>Начало временной оси, с</translation></message>
+    <message><source>Last window rule</source><translation>Обработка последнего окна</translation></message>
+    <message><source>Explicit window coefficients</source><translation>Явные коэффициенты окна</translation></message>
+    <message><source>Round odd-window centering upward</source><translation>Округлять центр нечётного окна вверх</translation></message>
+    <message><source>Emit centered frame for empty input</source><translation>Создавать центральный кадр для пустого входа</translation></message>
+    <message><source>Autocorrelation FFT length rule</source><translation>Выбор размера FFT для автокорреляции</translation></message>
+    <message><source>Profile normalization</source><translation>Нормирование профиля</translation></message>
+    <message><source>Normalization exponent</source><translation>Показатель степени нормирования</translation></message>
+    <message><source>Window padding</source><translation>Дополнение окна</translation></message>
+    <message><source>Input frame rate, Hz</source><translation>Частота входных кадров, Гц</translation></message>
+    <message><source>Spectrum divisor</source><translation>Делитель спектра</translation></message>
+    <message><source>Spectral magnitude exponent</source><translation>Степень модуля спектра</translation></message>
+    <message><source>Inverse transform scale</source><translation>Масштаб обратного преобразования</translation></message>
+    <message><source>Correlation scaling</source><translation>Масштабирование автокорреляции</translation></message>
+    <message><source>Inverse transform result</source><translation>Результат обратного преобразования</translation></message>
+    <message><source>Fourier transform mode</source><translation>Режим преобразования Фурье</translation></message>
+    <message><source>Center analysis window</source><translation>Центрировать окно анализа</translation></message>
+    <message><source>Correlation FFT size (0: automatic)</source><translation>Размер FFT корреляции (0: автоматически)</translation></message>
+    <message><source>Reference power</source><translation>Опорная мощность</translation></message>
+    <message><source>Penalty for beat intervals that differ from the tempo period. Higher values favor a steadier grid.</source><translation>Штраф за отклонение интервалов между долями от периода темпа. Больше — ровнее сетка.</translation></message>
+    <message><source>Remove weak beats at the beginning and end of the analyzed history.</source><translation>Удалять слабые доли в начале и конце анализируемой истории.</translation></message>
+    <message><source>Center of the tempo preference. The detected tempo may differ.</source><translation>Центр предпочтительного диапазона. Найденный темп может отличаться.</translation></message>
+    <message><source>Width of the tempo preference in octaves.</source><translation>Ширина предпочтительного диапазона темпа в октавах.</translation></message>
+    <message><source>Number of retained elements. New values replace the oldest values.</source><translation>Число хранимых элементов. Новые значения заменяют самые старые.</translation></message>
+    <message><source>Reference power used by 10 log10(P/reference).</source><translation>Опорная мощность в формуле 10 log10(P/опорная мощность).</translation></message>
+    <message><source>No normalization</source><translation>Без нормирования</translation></message>
+    <message><source>Maximum absolute value</source><translation>По максимальному модулю</translation></message>
+    <message><source>Minimum absolute value</source><translation>По минимальному модулю</translation></message>
+    <message><source>Nonzero count</source><translation>По числу ненулевых значений</translation></message>
+    <message><source>Zero padding</source><translation>Нулями</translation></message>
+    <message><source>Linear ramp</source><translation>Линейное затухание</translation></message>
+    <message><source>Repeat edge</source><translation>Повторять крайнее значение</translation></message>
+    <message><source>Reflect</source><translation>Отражение</translation></message>
+    <message><source>Symmetric</source><translation>Симметричное отражение</translation></message>
+    <message><source>Power of two</source><translation>Степень двойки</translation></message>
+    <message><source>Smooth length (2, 3, 5)</source><translation>Произведение степеней 2, 3 и 5</translation></message>
+    <message><source>Complex FFT</source><translation>Комплексное FFT</translation></message>
+    <message><source>Real FFT</source><translation>Вещественное FFT</translation></message>
+    <message><source>Real part</source><translation>Действительная часть</translation></message>
+    <message><source>Complex magnitude</source><translation>Модуль комплексного результата</translation></message>
+    <message><source>Raw correlation</source><translation>Без масштабирования</translation></message>
+    <message><source>Divide by full length</source><translation>Делить на длину ряда</translation></message>
+    <message><source>Divide by overlap length</source><translation>Делить на длину перекрытия</translation></message>
+    <message><source>Complete windows only</source><translation>Только полные окна</translation></message>
+    <message><source>Cover signal end</source><translation>Захватывать конец сигнала</translation></message>
+    <message><source>Center covers signal end</source><translation>Центр последнего окна за концом сигнала</translation></message>
+    <message><source>Window origin inside input</source><translation>Начало окна внутри сигнала</translation></message>
+    <message><source>Per-frame tempo</source><translation>Темп каждого кадра</translation></message>
+    <message><source>Window length, frames</source>
+        <translation>Длина окна, кадров</translation>
+    </message>
+    <message>
+        <source>Analysis step, samples</source><translation>Шаг анализа, отсчётов</translation></message>
+    <message><source>Log-spectrum input</source><translation>Вход логарифмического спектра</translation></message>
+    <message><source>Positive spectral differences</source><translation>Положительные разности спектров</translation></message>
+    <message><source>Return zero tempo without activity</source><translation>Нулевой темп при отсутствии активности</translation></message>
+    <message><source>Value supplied by a connection; disconnect it to edit locally</source><translation>Значение задано связью; отключите её для ручной настройки</translation></message>
+    <message><source>Mel spectrogram</source><translation>Mel-спектрограмма</translation></message>
+    <message><source>Autocorrelation</source><translation>Автокорреляция</translation></message>
+    <message><source>Tempo history</source><translation>История темпа</translation></message>
+    <message><source>Value accumulator</source><translation>Накопитель значений</translation></message>
+    <message><source>Array size, elements</source><translation>Размер массива, элементов</translation></message>
     <message><source>Sum of power-spectrum values (Y)</source><translation>Сумма значений спектра мощности (Y)</translation></message>
     <message><source>Mean of power-spectrum values (Y)</source><translation>Среднее значений спектра мощности (Y)</translation></message>
     <message><source>Root sum of power-spectrum values (Y)</source><translation>Корень суммы значений спектра мощности (Y)</translation></message>
@@ -171,6 +268,40 @@
     <message><source>Quiet RMS</source><translation>RMS тихих кадров</translation></message>
     <message><source>Minimum frame RMS</source><translation>Минимальный RMS кадра</translation></message>
     <message><source>No completed scan to save</source><translation>Нет завершённого сканирования для сохранения</translation></message>
+    <message><source>Power to dB</source><translation>Мощность в дБ</translation></message>
+    <message><source>FFT size, samples</source><translation>Размер FFT, отсчётов</translation></message>
+    <message><source>Mel filter count</source><translation>Количество Mel-фильтров</translation></message>
+    <message><source>Mel minimum frequency, Hz</source><translation>Нижняя частота Mel, Гц</translation></message>
+    <message><source>Mel maximum frequency, Hz (0: Nyquist)</source><translation>Верхняя частота Mel, Гц (0: Найквист)</translation></message>
+    <message><source>Mel scale</source><translation>Шкала Mel</translation></message>
+    <message><source>Mel filter normalization</source><translation>Нормирование Mel-фильтров</translation></message>
+    <message><source>Mel Lp exponent</source><translation>Показатель степени Lp для Mel</translation></message>
+    <message><source>dB reference mode</source><translation>Выбор опорной мощности для дБ</translation></message>
+    <message><source>Minimum power for logarithm</source><translation>Минимальная мощность для логарифма</translation></message>
+    <message><source>Limit dB dynamic range</source><translation>Ограничить динамический диапазон дБ</translation></message>
+    <message><source>Dynamic range, dB</source><translation>Динамический диапазон, дБ</translation></message>
+    <message><source>Reference and peak reduction axes</source><translation>Оси вычисления опоры и максимума</translation></message>
+    <message><source>Slaney area</source><translation>Площадь Slaney</translation></message>
+    <message><source>L0 count</source><translation>Количество ненулевых (L0)</translation></message>
+    <message><source>Lp norm</source><translation>Норма Lp</translation></message>
+    <message><source>Maximum norm</source><translation>Максимальная норма</translation></message>
+    <message><source>Minimum norm</source><translation>Минимальная норма</translation></message>
+    <message><source>Explicit reference</source><translation>Заданная опорная мощность</translation></message>
+    <message><source>Matrix maximum</source><translation>Максимум матрицы</translation></message>
+    <message><source>Entire matrix</source><translation>Вся матрица</translation></message>
+    <message><source>Reduce rows</source><translation>По строкам</translation></message>
+    <message><source>Reduce columns</source><translation>По столбцам</translation></message>
+    <message><source>Spectral S history</source><translation>История спектральных значений S</translation></message>
+    <message><source>Onset envelope</source><translation>Огибающая атак</translation></message>
+    <message><source>Median</source><translation>Медиана</translation></message>
+    <message><source>Onset strength (S input)</source><translation>Сила атак (вход S)</translation></message>
+    <message><source>Onset lag, frames</source><translation>Задержка сравнения атак, кадров</translation></message>
+    <message><source>Frequency max-filter width</source><translation>Ширина частотного max-фильтра</translation></message>
+    <message><source>Frontend FFT size (centering)</source><translation>Размер FFT входного анализа (центрирование)</translation></message>
+    <message><source>Frontend hop, samples</source><translation>Шаг входного анализа, отсчётов</translation></message>
+    <message><source>Center onset envelope</source><translation>Центрирование огибающей атак</translation></message>
+    <message><source>Remove onset DC trend</source><translation>Удаление постоянной составляющей атак</translation></message>
+    <message><source>Feature aggregation</source><translation>Объединение признаков</translation></message>
     <message><source>Rhythm analysis: candidates, confidence and phase</source><translation>Анализ ритма: кандидаты, достоверность и фаза</translation></message>
     <message><source>Rhythm analyzer (experimental)</source><translation>Анализатор ритма (экспериментальный)</translation></message>
     <message><source>Rhythm features (R4 diagnostic)</source><translation>Признаки ритма (диагностический профиль R4)</translation></message>
@@ -224,6 +355,44 @@
     <message><source>Resampler settings</source><translation>Настройки ресэмплера</translation></message>
     <message><source>Spectrum peak</source><translation>Пик спектра</translation></message>
     <message><source>Window coefficient sum</source><translation>Сумма коэффициентов окна</translation></message>
+    <message><source>Window coefficients</source><translation>Коэффициенты окна</translation></message>
+    <message><source>Sample frame buffer</source><translation>Формирователь кадров</translation></message>
+    <message><source>Frame update cadence</source><translation>Шаг выдачи кадров</translation></message>
+    <message><source>Emit every N input frames</source><translation>Выдавать каждый N-й входной кадр</translation></message>
+    <message><source>Per-band differences</source><translation>Разности по полосам</translation></message>
+    <message><source>Rhythm: streaming spectral pipeline</source><translation>Ритм: потоковая спектральная цепочка</translation></message>
+    <message><source>PCM block assembly</source><translation>Формирование блоков PCM</translation></message>
+    <message><source>Signal window</source><translation>Накопитель сигнала</translation></message>
+    <message><source>Window length</source><translation>Длина окна</translation></message>
+    <message><source>Apply window coefficients</source><translation>Применение коэффициентов окна</translation></message>
+    <message><source>Real Fourier transform</source><translation>Преобразование Real FFT</translation></message>
+    <message><source>Raw spectral power, compensation optional</source><translation>Мощность спектра, компенсация по настройке</translation></message>
+    <message><source>Linear Slaney Mel bands</source><translation>Линейные Mel-полосы Slaney</translation></message>
+    <message><source>Mel feature history</source><translation>История Mel-признаков</translation></message>
+    <message><source>Onset update cadence</source><translation>Шаг обновления атак</translation></message>
+    <message><source>Tempo update cadence</source><translation>Шаг обновления темпа</translation></message>
+    <message><source>Power to decibels</source><translation>Перевод мощности в децибелы</translation></message>
+    <message><source>Positive log-Mel differences</source><translation>Положительные разности log-Mel</translation></message>
+    <message><source>Median across Mel bands</source><translation>Медиана по Mel-полосам</translation></message>
+    <message><source>Onset strength history</source><translation>История силы атак</translation></message>
+    <message><source>Beat grid history</source><translation>История сетки долей</translation></message>
+    <message><source>Short signal window</source><translation>Короткое окно сигнала</translation></message>
+    <message><source>Fourier real values</source><translation>Действительная часть FFT</translation></message>
+    <message><source>Fourier imaginary values</source><translation>Мнимая часть FFT</translation></message>
+    <message><source>Spectral power</source><translation>Мощность спектра</translation></message>
+    <message><source>Linear Mel values</source><translation>Линейные значения Mel</translation></message>
+    <message><source>Log-Mel history</source><translation>История log-Mel</translation></message>
+    <message><source>Per-band onset differences</source><translation>Разности атак по полосам</translation></message>
+    <message><source>Rhythm: librosa beat tracker, 8 seconds</source><translation>Ритм: сетка долей librosa, 8 секунд</translation></message>
+    <message><source>Live audio input</source><translation>Вход живого звука</translation></message>
+    <message><source>Eight-second analysis frames</source><translation>Кадры анализа по 8 секунд</translation></message>
+    <message><source>Log-Mel onset envelope</source><translation>Атаки по Log-Mel</translation></message>
+    <message><source>Tempo and dynamic beat path</source><translation>Темп и сетка долей</translation></message>
+    <message><source>Onset strength, last 8 seconds</source><translation>Сила атак за 8 секунд</translation></message>
+    <message><source>Beat grid, last 8 seconds</source><translation>Сетка долей за 8 секунд</translation></message>
+    <message><source>Global tempo</source><translation>Общий темп</translation></message>
+    <message><source>Tempo, BPM</source><translation>Темп, BPM</translation></message>
+    <message><source>Beat local scores</source><translation>Локальные оценки долей</translation></message>
     <message><source>Window coefficient square sum</source><translation>Сумма квадратов коэффициентов окна</translation></message>
     <message><source>FFT and window compensation</source><translation>Компенсация FFT и окна</translation></message>
     <message><source>On</source><translation>Вкл.</translation></message>
@@ -309,6 +478,26 @@
     <message><source>%1 Hz</source><translation>%1 Гц</translation></message>
     <message><source>Matrix transpose</source><translation>Транспонирование матрицы</translation></message>
     <message><source>Matrix row centering</source><translation>Центрирование строк</translation></message>
+    <message><source>Linear autocorrelation of rows</source><translation>Линейная автокорреляция строк</translation></message>
+    <message><source>Maximum lag, frames</source><translation>Максимальная задержка, кадров</translation></message>
+    <message><source>Input cadence, frames/s</source><translation>Частота входных кадров, кадров/с</translation></message>
+      <message><source>Tempo evidence</source><translation>Свидетельства темпа</translation></message>
+      <message><source>Short Fourier size</source><translation>Размер короткого Fourier</translation></message>
+      <message><source>Long Fourier size</source><translation>Размер длинного Fourier</translation></message>
+      <message><source>Minimum tempo, BPM</source><translation>Минимальный темп, BPM</translation></message>
+      <message><source>Maximum tempo, BPM</source><translation>Максимальный темп, BPM</translation></message>
+      <message><source>Minimum observation, seconds</source><translation>Минимальное наблюдение, с</translation></message>
+      <message><source>Mature observation, seconds</source><translation>Зрелое наблюдение, с</translation></message>
+      <message><source>Short Fourier magnitude</source><translation>Модуль короткого Fourier</translation></message>
+      <message><source>Long Fourier magnitude</source><translation>Модуль длинного Fourier</translation></message>
+      <message><source>Short linear ACF</source><translation>Короткая линейная ACF</translation></message>
+      <message><source>Long linear ACF</source><translation>Длинная линейная ACF</translation></message>
+      <message><source>Short history filled</source><translation>Заполненность короткой истории</translation></message>
+      <message><source>Long history filled</source><translation>Заполненность длинной истории</translation></message>
+      <message><source>Tempo hypotheses</source><translation>Гипотезы темпа</translation></message>
+      <message><source>Candidate count</source><translation>Число кандидатов</translation></message>
+      <message><source>Observation maturity</source><translation>Зрелость наблюдения</translation></message>
+      <message><source>Harmonic ambiguity</source><translation>Неоднозначность кратности</translation></message>
     <message><source>Centering method</source><translation>Метод центрирования</translation></message>
     <message><source>Subtract mean</source><translation>Вычесть среднее</translation></message>
     <message><source>Center between minimum and maximum</source><translation>Центрировать между минимумом и максимумом</translation></message>
@@ -1721,7 +1910,23 @@ Escape — отмена. Поддерживаются все раскладки.
     <message><source>You are using the latest version.</source><translation>Вы используете последнюю версию.</translation></message>
     <message><source>No published releases are available yet.</source><translation>Опубликованных релизов пока нет.</translation></message>
     <message><source>Could not check for updates. Please try again later.</source><translation>Не удалось проверить обновления. Повторите попытку позже.</translation></message>
-  </context>
+  <message><source>HTK</source><translation>HTK</translation></message>
+<message><source>Slaney</source><translation>Slaney</translation></message>
+<message><source>Rhythm: Fourier periodicity, 512 frames</source><translation>Ритм: периодичность по Фурье, 512 кадров</translation></message>
+<message><source>Rhythm: Fourier periodicity, 4096 frames</source><translation>Ритм: периодичность по Фурье, 4096 кадров</translation></message>
+<message><source>Rhythm: autocorrelation, 512 frames</source><translation>Ритм: автокорреляция, 512 кадров</translation></message>
+<message><source>Rhythm: autocorrelation, 4096 frames</source><translation>Ритм: автокорреляция, 4096 кадров</translation></message>
+<message><source>Rhythm: multiscale tempo evidence</source><translation>Ритм: многомасштабные оценки темпа</translation></message>
+<message><source>Onsets: log-Mel strength</source><translation>Начала звуков: сила по логарифмическому Mel-спектру</translation></message>
+<message><source>Onsets: max-filter log-Mel strength</source><translation>Начала звуков: сила по логарифмическому Mel-спектру с фильтром максимума</translation></message>
+<message><source>Onsets: spectral flux</source><translation>Начала звуков: спектральный поток</translation></message>
+<message><source>Onsets: complex spectral difference</source><translation>Начала звуков: комплексная разность</translation></message>
+<message><source>Onsets: phase deviation</source><translation>Начала звуков: фазовое отклонение</translation></message>
+<message><source>Onsets: high frequency content</source><translation>Начала звуков: высокочастотная составляющая</translation></message>
+<message><source>Tempo evidence candidates</source><translation>Кандидаты оценки темпа</translation></message>
+<message><source>Tempo evidence metrics</source><translation>Метрики оценки темпа</translation></message>
+<message><source>Evidence maturity</source><translation>Зрелость оценки</translation></message>
+</context>
     <context><name>Ui</name>
     <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
     <message><source>Open settings…</source><translation>Открыть настройки…</translation></message>
@@ -2607,5 +2812,65 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Fixed hop: %1 samples</source><translation>Фиксированный шаг: %1 отсчётов</translation></message>
 <message><source>Interval: %1/%2 s (fractional sample steps)</source><translation>Интервал: %1/%2 с (дробный шаг отсчётов)</translation></message>
 <message><source>Completed scan: %1 Hz; FFT %2; %3; %4; %5; %6 tracks</source><translation>Анализ завершён: %1 Гц; FFT %2; %3; %4; %5; %6 композиций</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Audio history · 4096 samples</source><translation>Аудиоокно · 4096 отсчётов</translation></message>
+<message><source>Real FFT · shared complex spectrum</source><translation>Real FFT · общий комплексный спектр</translation></message>
+<message><source>Linear feature history · 512 frames</source><translation>Линейная история признаков · 512 кадров</translation></message>
+<message><source>Experimental rhythm tracker</source><translation>Экспериментальный трекер ритма</translation></message>
+<message><source>Short activity history · 512 frames</source><translation>Короткая история активности · 512 кадров</translation></message>
+<message><source>Long activity history · 4096 frames</source><translation>Длинная история активности · 4096 кадров</translation></message>
+<message><source>Short Fourier periodicity</source><translation>Периодичность Fourier · короткая история</translation></message>
+<message><source>Long Fourier periodicity</source><translation>Периодичность Fourier · длинная история</translation></message>
+<message><source>Short autocorrelation</source><translation>Автокорреляция · короткая история</translation></message>
+<message><source>Long autocorrelation</source><translation>Автокорреляция · длинная история</translation></message>
+<message><source>Tempo candidates · experimental</source><translation>Кандидаты темпа · эксперимент</translation></message>
+<message><source>Linear spectral power</source><translation>Линейная мощность спектра</translation></message>
+<message><source>Mel filter bank · 128 bands</source><translation>Mel-фильтробанк · 128 полос</translation></message>
+<message><source>Linear Mel history · 512 frames</source><translation>Линейная Mel-история · 512 кадров</translation></message>
+<message><source>Log power · onset branch</source><translation>Логарифм мощности · ветвь атак</translation></message>
+<message><source>Spectral onset envelope</source><translation>Огибающая спектральных атак</translation></message>
+<message><source>Onset strength over time</source><translation>Интенсивность атак во времени</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Periodic window (DFT)</source><translation>Периодическое окно (DFT)</translation></message>
+<message><source>Hann · periodic</source><translation>Hann · периодическое</translation></message>
+<message><source>Apply periodic window</source><translation>Применение периодического окна</translation></message>
+<message><source>Real FFT · symmetric Hann</source><translation>Real FFT · симметричное Hann</translation></message>
+<message><source>Real FFT · periodic Hann</source><translation>Real FFT · периодическое Hann</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Only filled history rows</source><translation>Только заполненные строки истории</translation></message>
+</context>
+<context><name>Ui</name>
+<message><source>Spectral flux</source><translation>Спектральный поток</translation></message>
+<message><source>Reference PCM · 44100 Hz</source><translation>Эталонный PCM · 44100 Гц</translation></message>
+<message><source>Max-filter onset · lag 2 / width 3</source><translation>Атаки с max-фильтром · лаг 2 / ширина 3</translation></message>
+<message><source>Max-filter onset over time</source><translation>Атаки с max-фильтром во времени</translation></message>
+<message><source>Reference frames · 2048 / hop 512</source><translation>Эталонные кадры · 2048 / шаг 512</translation></message>
+<message><source>Window hop, samples (0: graph cadence)</source><translation>Шаг окна, отсчёты (0: частота схемы)</translation></message>
+<message><source>Pad initial window with zeros</source><translation>Дополнять начальное окно нулями</translation></message>
+
+<message><source>Complex spectral difference</source><translation>Комплексная спектральная разность</translation></message>
+<message><source>Phase deviation</source><translation>Фазовое отклонение</translation></message>
+<message><source>High frequency content</source><translation>Высокочастотная активность</translation></message>
+<message><source>Only increasing magnitudes</source><translation>Только возрастающие амплитуды</translation></message>
+<message><source>Weight phase deviation by magnitude</source><translation>Взвешивать фазовое отклонение амплитудой</translation></message>
+<message><source>Use squared magnitudes</source><translation>Использовать квадраты амплитуд</translation></message>
+<message><source>Minimum phase magnitude</source><translation>Минимальная амплитуда для фазового анализа</translation></message>
+<message><source>Spectral flux history</source><translation>История спектрального потока</translation></message>
+<message><source>Spectral flux over time</source><translation>Спектральный поток во времени</translation></message>
+<message><source>Complex difference history</source><translation>История комплексной разности</translation></message>
+<message><source>Complex difference over time</source><translation>Комплексная разность во времени</translation></message>
+<message><source>Phase deviation history</source><translation>История фазового отклонения</translation></message>
+<message><source>Phase deviation over time</source><translation>Фазовое отклонение во времени</translation></message>
+<message><source>HFC history</source><translation>История высокочастотной активности</translation></message>
+<message><source>HFC over time</source><translation>Высокочастотная активность во времени</translation></message>
+</context>
+<context>
+<name>Ui</name>
+<message><source>Signal generator and sample window</source><translation>Генератор и накопитель сигнала</translation></message>
+<message><source>Signal sample window</source><translation>Накопитель сигнала</translation></message>
+<message><source>Signal waveform</source><translation>График сигнала</translation></message>
 </context>
 </TS>

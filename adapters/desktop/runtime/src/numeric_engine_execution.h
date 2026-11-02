@@ -8,7 +8,10 @@
 
 namespace pipeline::numeric_engine_detail {
 using namespace signal_contracts;
-inline constexpr FrameLimits frame_limits{8,131072,524288,16384,256,8192};
+// Coordinate storage across both axes is charged to frame metadata. Async
+// arenas must reserve this complete admitted ceiling, including descriptions.
+inline constexpr std::size_t history_coordinate_bytes=4096*sizeof(double);
+inline constexpr FrameLimits frame_limits{8,800000,3200000,16384+history_coordinate_bytes,256,history_coordinate_bytes};
 inline std::uint64_t steady_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }

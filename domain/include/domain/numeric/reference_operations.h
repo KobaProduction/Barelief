@@ -1,0 +1,14 @@
+#pragma once
+#include <span>
+#include <string_view>
+#include <vector>
+namespace signal_contracts { enum class Status; struct NumericContract; }
+namespace domain {
+struct ParameterDescriptor;
+struct ConfiguredProcessingNode;
+class OwnedProcessingContract;
+bool reference_operation_kind(std::string_view) noexcept;
+std::span<const ParameterDescriptor> reference_operation_parameters(std::string_view) noexcept;
+signal_contracts::Status reference_operation_output_contracts(const ConfiguredProcessingNode&,
+    const signal_contracts::NumericContract&,std::vector<OwnedProcessingContract>&) noexcept;
+}

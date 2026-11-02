@@ -1,5 +1,6 @@
 #include "core_app/scheme_editor/numeric_editor_model.h"
 #include "core_app/scheme_editor/audio_node_model.h"
+#include "core_app/scheme_editor/node_parameter_model.h"
 #include "barelief/ui_text.h"
 #include <desktop/numeric_project_document.h>
 #include <desktop/numeric_source_format.h>
@@ -34,6 +35,21 @@ NumericEditorGraphModel::NumericEditorGraphModel(std::shared_ptr<QtNodes::NodeDe
     connect(this,&NumericEditorGraphModel::connectionCreated,this,invalidate);
     connect(this,&NumericEditorGraphModel::connectionDeleted,this,invalidate);
     connect(this,&NumericEditorGraphModel::connection_diagnostics_changed,this,invalidate);
+    connect(this,&NumericEditorGraphModel::connectionCreated,this,[this](auto edge){refresh_bound_parameters(edge.inNodeId);});
+    connect(this,&NumericEditorGraphModel::connectionDeleted,this,[this](auto edge){refresh_bound_parameters(edge.inNodeId);});
+}
+void NumericEditorGraphModel::refresh_bound_parameters() {
+    for(const auto id:allNodeIds())refresh_bound_parameters(id);
+}
+
+void NumericEditorGraphModel::refresh_bound_parameters(QtNodes::NodeId id) {
+    auto* model=delegateModel<AudioNodeModel>(id);if(!model || !model->numeric_node())return;
+    QStringList keys;
+    for(const auto edge:allConnectionIds(id))if(edge.inNodeId==id && edge.inPortIndex<model->nPorts(QtNodes::PortType::In)){
+        const auto key=domain::numeric_parameter_key(model->numeric_node()->kind,model->port_id(QtNodes::PortType::In,edge.inPortIndex));
+        if(!key.empty())keys.append(QString::fromUtf8(key.data(),int(key.size())));
+    }
+    model->parameter_model()->setBoundParameters(std::move(keys));
 }
 bool NumericEditorGraphModel::has_numeric_nodes() const {return true;}
 void NumericEditorGraphModel::set_admission_limits(std::optional<domain::ProcessingAdmissionLimits> limits) {

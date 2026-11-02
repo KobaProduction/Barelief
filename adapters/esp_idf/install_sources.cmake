@@ -36,6 +36,8 @@ install(DIRECTORY "${embedded_source_root}/libs/bdsp_protocol/vendor/nanopb/"
     PATTERN "generator" EXCLUDE)
 install(DIRECTORY "${embedded_source_root}/libs/dsp_kernels/vendor/esp_dsp/"
     DESTINATION "${embedded_destination}/libs/dsp_kernels/vendor/esp_dsp")
+install(DIRECTORY "${embedded_source_root}/libs/dsp_kernels/vendor/pocketfft/"
+    DESTINATION "${embedded_destination}/libs/dsp_kernels/vendor/pocketfft")
 # Keep the documentation topology: the SDK guide links to sibling reference
 # and architecture pages, and to the installed examples two levels above it.
 install(DIRECTORY "${embedded_source_root}/docs/"

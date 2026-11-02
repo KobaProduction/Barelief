@@ -14,8 +14,14 @@ std::optional<NumericParameterBounds> matrix_row_bounds(const ConfiguredProcessi
 }
 constexpr ParameterDescriptor integer[]{{"value",C::Processing,V::Integer,0,4294967295.,4096,{}}};
 constexpr ParameterDescriptor length[]{{"axis",C::Processing,V::Integer,0,1,0,{}}};
-constexpr ParameterDescriptor matrix_fft[]{{"fft_size",C::Processing,V::Integer,2,4294967295.,512,{}}};
-constexpr ParameterDescriptor matrix_window[]{{"function",C::Processing,V::WindowFunction,0,0,0,"hann"}};
+constexpr ParameterDescriptor matrix_fft[]{
+    {"fft_size",C::Processing,V::Integer,2,4294967295.,512,{}},
+    {"sample_rate",C::Processing,V::Integer,1,4294967295.,120,{}},
+    {"radix",C::Processing,V::String,0,0,0,"radix2"}};
+constexpr ParameterDescriptor matrix_acf[]{
+    {"max_lag",C::Processing,V::Integer,0,4095,120,{}},
+    {"frame_rate_fps",C::Processing,V::Integer,1,1000000,60,{}}};
+constexpr ParameterDescriptor matrix_window[]{{"function",C::Processing,V::WindowFunction,0,0,0,"hann"},{"periodic",C::Processing,V::Boolean,0,1,0,{}}};
 constexpr ParameterDescriptor matrix_row[]{{"row",C::Processing,V::Integer,0,2147483647,0,{},{},matrix_row_bounds}};
 constexpr ParameterDescriptor matrix_center[]{
         {"method",C::Processing,V::Integer,0,2,0,{}},
@@ -28,13 +34,14 @@ constexpr ParameterDescriptor value[]{{"value",C::Processing,V::Number,-1e30,1e3
 constexpr ParameterDescriptor product[]{{"frame_input",C::Processing,V::Integer,0,65535,0,{}},{"operation",C::Processing,V::String,0,0,0,"multiply"},{"floor_enabled",C::Processing,V::Boolean,0,1,0,{}},{"floor",C::Processing,V::Number,-1e30,1e30,-120,{}}};
 constexpr ParameterDescriptor reduce[]{
         {"data_type",C::Processing,V::FrameType,0,0,0,"mel"},{"operation",C::Processing,V::Integer,0,2,0,{}}};
-constexpr ParameterDescriptor history[]{{"history_size",C::Processing,V::Integer,2,2000,400,{}}};
-constexpr ParameterDescriptor number_history[]{{"capacity",C::Processing,V::Integer,2,2000,400,{}}};
+constexpr ParameterDescriptor history[]{{"history_size",C::Processing,V::Integer,2,4096,400,{}}};
+constexpr ParameterDescriptor number_history[]{{"capacity",C::Processing,V::Integer,2,4096,400,{}}};
 constexpr ParameterSet sets[]{
     {NodeKind::MatrixFFT,matrix_fft},
     {NodeKind::MatrixWindowFunction,matrix_window},
     {NodeKind::MatrixRow,matrix_row},
     {NodeKind::MatrixCenter,matrix_center},
+    {NodeKind::MatrixAutocorrelation,matrix_acf},
     {NodeKind::UInt32Constant,integer},
     {NodeKind::Number,value},
     {NodeKind::ArrayFill,fill_parameters},

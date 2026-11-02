@@ -65,12 +65,32 @@ void floor_continuity() {
     std::fill(t.peak_spectrum.begin(),t.peak_spectrum.end(),0);std::string error;const auto before=p.gains;
     assert(!build_frequency_curve(frontend(),std::span(&t,1),{},p,error) && p.gains==before);
 }
+void rejects_unsupported_grid(const FrequencyProfile& source,const ProfileCompatibility& target) {
+    auto output=source;
+    std::string error;
+    assert(!resample_frequency_profile(source,target,output,error));
+    assert(!error.empty());
+    assert(profile_mismatches(output,source.compatibility).empty());
+    assert(output.gains==source.gains);
+    assert(output.mean_spectrum==source.mean_spectrum);
+    assert(output.peak_spectrum==source.peak_spectrum);
+    assert(output.frequency_presence==source.frequency_presence);
+    assert(output.compositions.size()==source.compositions.size());
+    assert(output.compositions.front().mean_spectrum==source.compositions.front().mean_spectrum);
+    assert(output.compositions.front().peak_spectrum==source.compositions.front().peak_spectrum);
+    assert(output.curve.has_value());
+    assert(valid_frequency_curve(output));
+    assert(output.curve->coefficients==source.curve->coefficients && output.curve->knot_hz==source.curve->knot_hz);
+    assert(output.curve->log_amplitude==source.curve->log_amplitude && output.curve->slopes==source.curve->slopes);
+}
+
 void grids_and_support() {
     auto t=track();t.measured_max_hz=16000;
     auto p=curve({},std::span(&t,1));
     assert(frequency_curve_gain(p,0)==1 && frequency_curve_gain(p,16001)==1 && frequency_curve_gain(p,25000)==1);
     for(double rate:{32768.,44100.,48000.})for(std::size_t fft:{512,2048,4096,8192}){
         auto c=frontend();c.sample_rate=rate;c.fft_size=fft;FrequencyProfile converted;std::string error;
+        if(fft>max_fft_samples){rejects_unsupported_grid(p,c);continue;}
         assert(resample_frequency_profile(p,c,converted,error));
         assert(converted.gains.size()==fft/2+1 && converted.gains[0]==1);
         for(std::size_t k=1;k<converted.gains.size();++k){
@@ -79,6 +99,8 @@ void grids_and_support() {
             if(hz>p.curve->maximum_hz)assert(converted.gains[k]==1);
         }
     }
+    auto unsupported=frontend();unsupported.fft_size=max_fft_samples*2;
+    rejects_unsupported_grid(p,unsupported);
 }
 void logarithmic_knot_resolution(){
     auto calibration=frontend();

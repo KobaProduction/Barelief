@@ -1,29 +1,52 @@
 #pragma once
 #include "music_execution.h"
 #include "prepared_node.h"
+#include "tempo_evidence_execution.h"
+#include "temporal_operation_execution.h"
 #include <dsp_kernels/dsp.h>
 #include <dsp_kernels/musical_features.h>
 #include <dsp_kernels/frequency_profile.h>
 #include <dsp_kernels/rhythm.h>
+#include <dsp_kernels/onset_strength.h>
+#include <dsp_kernels/spectral_descriptors.h>
+#include <dsp_kernels/mel_filter_bank.h>
+#include <dsp_kernels/power_to_db.h>
 namespace dataflow_runtime::detail {
 
 
 struct OperationKernelState {
     std::optional<dsp_kernels::rhythm::Analyzer> rhythm;
+    std::optional<PreparedTempoEvidenceOperation> tempo;
+    std::optional<PreparedTemporalOperation> temporal;
+    std::optional<dsp_kernels::PreparedOnsetStrength> onset_strength;
+    bool onset_features=false,rhythm_peak_amplitudes=false;
+    std::vector<float> onset_envelope;
+    std::vector<float> onset_history,onset_current;
+    std::size_t onset_position=0,onset_filled=0,onset_lag=0;
+    std::optional<dsp_kernels::MelFilterBank> mel;
+    std::optional<dsp_kernels::PreparedPowerToDb> db;
+    bool db_needs_peak=false;
     double rhythm_sample_rate=0;
     std::variant<std::monostate,dsp_kernels::FFT,dsp_kernels::PreparedRfft,dsp_kernels::PreparedSpectrumProjection,
-        dsp_kernels::BroadbandFeatures,dsp_kernels::NoteSalience,dsp_kernels::MusicalSpectrogram,dsp_kernels::SpectralQuantizer,dsp_kernels::PreparedFrequencyNormalizer> operation;
+        dsp_kernels::BroadbandFeatures,dsp_kernels::NoteSalience,dsp_kernels::MusicalSpectrogram,dsp_kernels::SpectralQuantizer,dsp_kernels::PreparedFrequencyNormalizer,dsp_kernels::PreparedSpectralDescriptor> operation;
     std::vector<float> input,output;
     std::vector<float> imaginary;
     std::vector<float> factors;
     std::vector<std::uint8_t> factor_ready,factor_initial_ready;
+    std::vector<std::array<std::size_t,2>> factor_actual;
+    std::array<std::size_t,2> product_actual{1,1};
     std::size_t frame_input=0;
+    std::size_t fourier_size=0;
     std::uint32_t note_first_midi=21;
     bool product_pending=false,add_arrays=false,clamp_floor=false;
     FrameStamp product_stamp{};
     std::vector<char> data_stream;std::size_t stream_size=0;
     std::vector<float> note_power;
     dsp_kernels::PreparedSpectrumScaling spectrum_scaling;
+    dsp_kernels::SpectrumProjectionOptions polar_options;
+    dsp_kernels::SpectrumProjectionGeometry polar_geometry;
+    std::array<std::array<std::vector<std::byte>,2>,2> pair_coordinates;
+    std::array<std::array<std::size_t,2>,2> pair_actual{};
     dsp_kernels::PreparedSpectrumPower spectrum_power;
     double minimum=0,bin_hz=1;
     std::array<FrameStamp,2> stamps{};
@@ -35,6 +58,14 @@ signal_contracts::Status prepare_signal_operation(OperationKernelState&,PlanNode
 signal_contracts::Status prepare_signal_features(OperationKernelState&,PlanNode&,State&,const domain::ResolvedProcessingNode&);
 signal_contracts::Status prepare_music_operation(OperationKernelState&,PlanNode&,State&,const domain::ResolvedProcessingNode&);
 signal_contracts::Status prepare_rhythm(OperationKernelState&,const domain::ResolvedProcessingNode&);
+signal_contracts::Status prepare_rhythm_features(OperationKernelState&,const domain::ResolvedProcessingNode&);
+bool onset_strength_resources(const domain::ResolvedProcessingNode&,domain::ProcessingResources&) noexcept;
+signal_contracts::Status prepare_onset_strength(OperationKernelState&,const domain::ResolvedProcessingNode&);
+signal_contracts::Status prepare_spectral_descriptor(OperationKernelState&,const domain::ResolvedProcessingNode&);
+bool spectral_frontend_resources(const domain::ResolvedProcessingNode&,domain::ProcessingResources&) noexcept;
+signal_contracts::Status prepare_spectral_frontend(OperationKernelState&,State&,const domain::ResolvedProcessingNode&);
+signal_contracts::Status execute_spectral_frontend(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
+signal_contracts::Status execute_onset_strength(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
 signal_contracts::Status execute_rhythm(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
 signal_contracts::Status execute_rhythm_features(OperationKernelState&,const PlanNode&,State&,const signal_contracts::DataFrameView&) noexcept;
 signal_contracts::Status accept_array_product(OperationKernelState&,const PlanNode&,State&,std::size_t,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;

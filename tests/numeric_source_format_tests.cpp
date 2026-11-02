@@ -53,10 +53,10 @@ void declared_source_rate_bounds(){
     unchanged_node(find(independent_sources(),1),find(graph,1));
 }
 void incompatible_route_is_atomic(){
-    auto graph=independent_sources();graph.nodes.push_back(make("Number",30));graph.nodes.push_back(make("Window",31));
+    auto graph=independent_sources();graph.nodes.push_back(make("Number",30));graph.nodes.push_back(make("RealFourier",31));
     graph.edges.push_back({30,31,0,0});
     QByteArray before,after;require(bool(desktop::encode_numeric_graph(graph,before)),"serialize incompatible draft before discovery");
-    QString error;require(!desktop::resolve_numeric_source_format(graph,13,44100,1,limits,&error),"incompatible scalar-to-window route must refuse reconciliation");
+    QString error;require(!desktop::resolve_numeric_source_format(graph,13,44100,1,limits,&error),"incompatible scalar-to-FFT route must refuse reconciliation");
     require(!error.isEmpty(),"incompatible route gives reason");
     require(desktop::encode_numeric_graph(graph,after) && before==after,"refused native format changed the draft");
 }

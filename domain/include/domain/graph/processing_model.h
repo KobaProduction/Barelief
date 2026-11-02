@@ -20,6 +20,8 @@ inline constexpr PortId frequency_step_input=65526;
 inline constexpr PortId power_gain_output=65527, power_gain_input=65528;
 inline constexpr PortId coherent_gain_output=65529, coherent_gain_input=65530, input_sample_rate_input=65531, target_sample_rate_input=65532, window_size_input=65533, sample_rate_output=65534;
 bool has_sample_rate_output(std::string_view kind) noexcept;
+inline constexpr PortId window_coefficients_input=65523;
+inline constexpr PortId hop_samples_input=65522;
 inline constexpr PortId spectrum_first_bin_input=65524;
 inline constexpr PortId wled_peak_hz_input=1, wled_magnitude_input=2;
 
@@ -50,7 +52,7 @@ struct ReduceProcessingParameters {
     signal_contracts::PrecisionLoss precision_loss = signal_contracts::PrecisionLoss::RejectInexact;
     signal_contracts::Rounding rounding = signal_contracts::Rounding::NearestTiesEven;
 };
-struct HistoryProcessingParameters { std::uint64_t capacity = 0; };
+struct HistoryProcessingParameters { std::uint64_t capacity = 0; bool filled_only = false; };
 struct SignalGeneratorProcessingParameters { std::vector<signal_contracts::OscillatorParameters> oscillators{{}}; bool operator==(const SignalGeneratorProcessingParameters&) const = default; };
 struct SampleClockProcessingParameters { std::uint32_t sample_rate=48000; std::string domain="local"; bool operator==(const SampleClockProcessingParameters&) const = default; };
 enum class MixerMode { WeightedSum, WeightedMean, WeightedRMS, MaxAbsolute };
@@ -70,9 +72,9 @@ struct ConfiguredProcessingNode {
     bool enabled = true;
     NodeId clock_node=-1; // Configuration dependency, never a numeric edge.
 };
-enum class ProcessingOperation { Source, Sink, Transform, Converter, Splitter, Switch, Gate, Reduce, History, WLEDEncoder, InputSelector, Extract, Mixer, Clock, ChannelComparison, MatrixTranspose, MatrixWindowFunction, MatrixFFT, MatrixRow, MatrixCenter, MusicTransform, Fourier, ComplexPolar, Metadata, Axis, ArrayFill, ArrayProduct, ArrayConcat, SpectrumPeak };
+enum class ProcessingOperation { Source, Sink, Transform, Converter, Splitter, Switch, Gate, Reduce, History, WLEDEncoder, InputSelector, Extract, Mixer, Clock, ChannelComparison, MatrixTranspose, MatrixWindowFunction, MatrixFFT, MatrixRow, MatrixCenter, MusicTransform, Fourier, ComplexPolar, Metadata, Axis, ArrayFill, ArrayProduct, ArrayConcat, SpectrumPeak, MatrixAutocorrelation, TempoEvidence, NumericExtension };
 constexpr bool numeric_constant_kind(std::string_view kind) noexcept {return kind=="Fs" || kind=="UInt32Constant" || kind=="Number";}
-constexpr bool paired_processing(ProcessingOperation op) noexcept {return op==ProcessingOperation::Fourier || op==ProcessingOperation::ComplexPolar || op==ProcessingOperation::ArrayProduct || op==ProcessingOperation::ArrayConcat;}
+constexpr bool paired_processing(ProcessingOperation op) noexcept {return op==ProcessingOperation::Fourier || op==ProcessingOperation::ComplexPolar || op==ProcessingOperation::ArrayProduct || op==ProcessingOperation::ArrayConcat || op==ProcessingOperation::TempoEvidence || op==ProcessingOperation::NumericExtension;}
 constexpr bool complex_processing(ProcessingOperation op) noexcept {return op==ProcessingOperation::Fourier || op==ProcessingOperation::ComplexPolar;}
 struct ResolvedProcessingNode {
     NodeId id = -1;

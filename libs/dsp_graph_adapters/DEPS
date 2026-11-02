@@ -1,0 +1,5 @@
+include_rules = [
+    '+dsp_graph_adapters', '+dataflow_runtime', '+domain', '+dsp_kernels', '+signal_contracts',
+    '-rhythm_reference_ports', '-rhythm_graph_adapters', '-application', '-Qt',
+    '-adapters', '-desktop', '-control', '-embedded_support', '-bdsp_protocol',
+]

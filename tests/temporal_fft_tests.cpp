@@ -1,4 +1,5 @@
 #include <dataflow_runtime/runtime.h>
+#include <domain/graph/node_factory.h>
 #include <dsp_kernels/dsp.h>
 #include <algorithm>
 #include <array>
@@ -48,18 +49,26 @@ NumericProcessingGraph graph(std::size_t samples=512,bool window=false,std::stri
     taper.outputs={{0,PortDirection::Output,windowed}};
     ConfiguredProcessingNode fft;fft.id=3;fft.kind="MatrixFFT";fft.inputs={{0,PortDirection::Input,windowed}};
     fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t(samples)}}}};
-    OwnedProcessingContract transformed;require(matrix_fft_output_contract(std::get<NumericContract>(windowed.view()),samples,transformed)==Status::ok,"derive row FFT matrix");
-    fft.outputs={{0,PortDirection::Output,transformed}};
+    OwnedProcessingContract transformed;require(matrix_fft_output_contract(std::get<NumericContract>(windowed.view()),samples,transformed,120)==Status::ok,"derive row FFT matrix with explicit 120Hz cadence");
+    std::array<OwnedProcessingContract,2> polar;
+    require(matrix_fft_output_contracts(std::get<NumericContract>(windowed.view()),samples,polar,120)==Status::ok,"derive both Fourier outputs");
+    fft.outputs={{0,PortDirection::Output,polar[0]},{1,PortDirection::Output,polar[1]}};
     ConfiguredProcessingNode row;row.id=4;row.kind="MatrixRow";row.parameters=TransformProcessingParameters{{{"row",NumericLiteral{std::uint64_t{3}}}}};
     row.inputs={{0,PortDirection::Input,transformed}};OwnedProcessingContract vector;
     require(matrix_row_output_contract(std::get<NumericContract>(transformed.view()),vector)==Status::ok,"derive row vector");row.outputs={{0,PortDirection::Output,vector}};
     NumericProcessingGraph g;g.graph_id="matrix-fft-oracle";g.nodes={source,retained,fft,row,transpose,taper};g.edges={{1,2},{2,5},{5,6},{6,3},{3,4}};return g;
 }
 struct Observation {
-    std::array<float,bands*256> matrix{};std::array<float,256> row{};std::array<double,256> hz{};
+    std::array<float,bands*257> matrix{},imaginary{};std::array<float,257> row{};std::array<double,257> hz{};
     std::size_t bins=0,available=0,unavailable=0;bool last_available=false,row_available=false;
     Status last_status=Status::ok,row_status=Status::ok;bool typed_unavailable=false;
     static void output(void* user,const NumericPortFrameView& frame){auto& o=*static_cast<Observation*>(user);
+        if(frame.identity.node==3 && frame.identity.port==1 && frame.frame.stamp.available){
+            const auto& value=std::get<NumericView>(frame.frame.payload);
+            for(std::size_t band=0;band<value.actual[0];++band)for(std::size_t bin=0;bin<value.actual[1];++bin)
+                require(load_element(value,{0,band,bin},o.imaginary[band*257+bin])==Status::ok,"read raw imaginary modulation bin");
+        }
+        if(frame.identity.port!=0)return;
         if(frame.identity.node!=3 && frame.identity.node!=4)return;
         if(frame.identity.node==4){o.row_available=frame.frame.stamp.available;o.row_status=frame.status;if(!o.row_available)return;
             const auto& value=std::get<NumericView>(frame.frame.payload);for(std::size_t i=0;i<value.actual[0];++i)require(load_element(value,{0,i,0},o.row[i])==Status::ok,"read selected row");return;}
@@ -67,9 +76,12 @@ struct Observation {
             const auto* value=std::get_if<NumericView>(&frame.frame.payload);o.typed_unavailable=value && value->contract && value->contract->shape.rank==Rank::Matrix && value->storage.empty();return;}++o.available;
         const auto& value=std::get<NumericView>(frame.frame.payload);o.bins=value.actual[1];
         require(value.actual[0]==bands && !value.ring.capacity && value.contract->semantic!=Semantic::History,"ordinary [band][bin] matrix");
-        require(o.bins<=256,"bounded test observation");
+        require(o.bins<=257,"bounded test observation including Nyquist");
         for(std::size_t band=0;band<bands;++band)for(std::size_t bin=0;bin<o.bins;++bin)
-            require(load_element(value,{0,band,bin},o.matrix[band*256+bin])==Status::ok && std::isfinite(o.matrix[band*256+bin]),"read finite modulation bin");
+            require(load_element(value,{0,band,bin},o.matrix[band*257+bin])==Status::ok && std::isfinite(o.matrix[band*257+bin]),"read finite modulation bin");
+        const auto& axis=value.contract->coordinates[1];
+        if(axis.mode==CoordinateMode::Regular)for(std::size_t i=0;i<o.bins;++i)
+            o.hz[i]=double(axis.origin.numerator)/double(axis.origin.denominator)+double(i)*double(axis.step.numerator)/double(axis.step.denominator);
         if(value.contract->coordinates[1].mode==CoordinateMode::ExplicitFloat64LE){require(value.coordinates.axes[1].size()==o.bins*8,"explicit Hz payload");
             for(std::size_t i=0;i<o.bins;++i){std::uint64_t bits=0;for(std::size_t b=0;b<8;++b)bits|=std::uint64_t(std::to_integer<unsigned char>(value.coordinates.axes[1][i*8+b]))<<(8*b);std::memcpy(&o.hz[i],&bits,8);}}
     }
@@ -98,6 +110,46 @@ Status feed(Running& running,const NumericProcessingGraph& g,std::size_t ordinal
     return result;
 }
 void near(double actual,double expected,const char* why,double tolerance=2e-5){require(std::abs(actual-expected)<tolerance,why);}
+void filled_history_snapshot(Running& running,std::size_t ordinal,std::size_t expected_rows,std::size_t expected_filled=SIZE_MAX){
+    DataFrameView frame;std::uint64_t filled=0,observed=0;
+    const auto before=allocations;
+    require(running.plan->history(2,0,*running.state,frame,&filled,&observed)==Status::ok,"filled snapshot is available including empty startup");
+    if(expected_filled==SIZE_MAX)expected_filled=std::min(ordinal,std::size_t(8));
+    if(allocations!=before || filled!=expected_filled || observed!=ordinal)
+        std::fprintf(stderr,"filled snapshot ordinal=%zu rows=%zu expected_count=%zu count=%llu actual_ordinal=%llu allocations=%zu\n",ordinal,expected_rows,expected_filled,static_cast<unsigned long long>(filled),static_cast<unsigned long long>(observed),allocations-before);
+    require(allocations==before && filled==expected_filled && observed==ordinal,"query preserves count/ordinal without allocations");
+    const auto& view=std::get<NumericView>(frame.payload);
+    require(view.actual[0]==expected_rows && validate_view(frame,limits)==Status::ok,"selected snapshot shape and coordinates validate");
+    for(std::size_t row=0;row<filled;++row){
+        float value=0;
+        require(load_element(view,{0,expected_rows-filled+row,0},value)==Status::ok,"read retained row without cloning history");
+        const auto source=ordinal-filled+row;
+        near(value,float(.8+.3*std::cos(tau*3*double(source)/512.)),"snapshot retains chronological real rows",1e-6);
+    }
+}
+void toggle_history_publication(NumericProcessingGraph& g,Running& running,std::size_t ordinal){
+    std::get<HistoryProcessingParameters>(g.nodes[1].parameters).filled_only=false;
+    running.replace(g,"filled to padded publication preserves partial history");filled_history_snapshot(running,ordinal,8);
+    std::get<HistoryProcessingParameters>(g.nodes[1].parameters).filled_only=true;
+    running.replace(g,"padded to filled publication preserves partial history");filled_history_snapshot(running,ordinal,ordinal);
+}
+void filled_history_tests(){
+    auto g=graph(512,false,"hann",true,8);g.nodes.resize(2);g.edges={{1,2}};
+    std::get<HistoryProcessingParameters>(g.nodes[1].parameters).filled_only=true;
+    require(bool(derive_processing_node_contracts(g.nodes[1],profile().admission)),"start from canonical history geometry before resize");
+    Running running(g);Observation observed;
+    filled_history_snapshot(running,0,0);
+    for(std::size_t ordinal=1;ordinal<=11;++ordinal){
+        feed(running,g,ordinal-1,observed);
+        filled_history_snapshot(running,ordinal,std::min(ordinal,std::size_t(8)));
+        if(ordinal==3)toggle_history_publication(g,running,ordinal);
+    }
+    for(const std::size_t capacity:{5u,12u}){
+        std::get<HistoryProcessingParameters>(g.nodes[1].parameters).capacity=capacity;
+        require(bool(derive_processing_node_contracts(g.nodes[1],profile().admission)),"derive resized filled history");
+        running.replace(g,"resize preserves only real newest rows");filled_history_snapshot(running,11,5,5);
+    }
+}
 void prepared_window_tests(){
     constexpr std::size_t maximum=512;
     dsp_kernels::PreparedWindows bank(maximum);
@@ -126,6 +178,31 @@ void prepared_window_tests(){
     require(!invalid.coefficients(dsp_kernels::WindowFunction::Hann,std::span(values).first(1)),"unprepared bank cannot process");
     const auto retained=bank.coefficients(dsp_kernels::WindowFunction::Hann).data();
     require(!bank.prepare(SIZE_MAX) && bank.prepared() && bank.coefficients(dsp_kernels::WindowFunction::Hann).data()==retained,"invalid cold reprepare preserves accepted window bank");
+}
+void periodic_window_tests(){
+    constexpr std::size_t maximum=4096;
+    dsp_kernels::PreparedWindows bank(maximum,true);
+    std::array<float,maximum> values{};std::array<float,maximum+1> symmetric{};
+    require(bank.periodic(),"prepared bank records its sampling convention");
+    for(std::size_t index=0;index<dsp_kernels::window_function_names.size();++index){
+        const auto function=dsp_kernels::WindowFunction(index);
+        for(const std::size_t length:{0u,1u,2u,17u,512u,4096u}){
+            const auto before=allocations;
+            require(bank.coefficients(function,std::span(values).first(length)),"periodic prepared variable coefficients");
+            require(before==allocations,"periodic lookup allocates nothing");
+            dsp_kernels::window(std::span(symmetric).first(length+1),function);
+            for(std::size_t i=0;i<length;++i)
+                near(values[i],length==1?1:symmetric[i],"periodic N is symmetric N+1 with final sample removed",1e-6);
+        }
+    }
+    near(dsp_kernels::window_sum(512,dsp_kernels::WindowFunction::Hann,true),256,"periodic Hann coherent sum",1e-5);
+    near(dsp_kernels::window_square_sum(512,dsp_kernels::WindowFunction::Hann,true),192,"periodic Hann squared sum",1e-5);
+    const auto retained=bank.coefficients(dsp_kernels::WindowFunction::Hann).data();
+    require(!bank.prepare(SIZE_MAX,false) && bank.periodic() && bank.coefficients(dsp_kernels::WindowFunction::Hann).data()==retained,"failed preparation preserves periodic mode and bank");
+    ConfiguredProcessingNode node;node.kind="WindowFunction";
+    node.parameters=TransformProcessingParameters{{{"function",std::string{"hann"}},{"periodic",true}}};
+    near(processing_window_gain(node,512),256,"declared window coherent sum includes periodic mode",1e-5);
+    near(processing_window_gain(node,512,true),192,"declared window power sum includes periodic mode",1e-5);
 }
     struct WindowSwitchCapture {
         std::array<float,bands*8> values{};std::size_t columns=0;
@@ -166,9 +243,11 @@ void window_switch_tests(){
     std::array<float,bands*8> values{};values.fill(1.f);
     const std::array<PlaneLayout,1> planes{{{0,{8*4,4}}}};
     std::uint64_t sequence=0;
-    for(auto function:{dsp_kernels::WindowFunction::Hann,dsp_kernels::WindowFunction::Blackman,dsp_kernels::WindowFunction::Hamming,dsp_kernels::WindowFunction::Rectangular}){
+    for(unsigned variant=0;variant<8;++variant){
+        const auto function=std::array{dsp_kernels::WindowFunction::Hann,dsp_kernels::WindowFunction::Blackman,dsp_kernels::WindowFunction::Hamming,dsp_kernels::WindowFunction::Rectangular}[variant/2];
+        const bool periodic=variant%2;
         const auto name=function==dsp_kernels::WindowFunction::Hann?"hann":function==dsp_kernels::WindowFunction::Hamming?"hamming":function==dsp_kernels::WindowFunction::Blackman?"blackman":"rectangular";
-        g.nodes[1].parameters=TransformProcessingParameters{{{"function",std::string{name}}}};
+        g.nodes[1].parameters=TransformProcessingParameters{{{"function",std::string{name}},{"periodic",periodic}}};
         running.replace(g,"variable window function");
         for(std::size_t length:{5u,8u,0u,1u,7u,5u}){
             FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=3;stamp.generation=1;
@@ -176,7 +255,7 @@ void window_switch_tests(){
             const auto before=allocations;
             require(running.plan->process_numeric_ports(1,frame,*running.state,{}, {WindowSwitchCapture::receive,nullptr,nullptr,&capture})==Status::ok,"window switching processes variable matrix");
             require(before==allocations && capture.columns==length,"variable window switch has no allocations or stale extent");
-            std::array<float,8> expected{};dsp_kernels::window(std::span(expected).first(length),function);
+            std::array<float,8> expected{};dsp_kernels::window(std::span(expected).first(length),function,periodic);
             for(std::size_t row=0;row<bands;++row)for(std::size_t col=0;col<length;++col)
                 near(capture.values[row*8+col],expected[col],"changed function uses new coefficients at the same variable length",1e-6);
         }
@@ -187,19 +266,21 @@ void oracle(Running& running,const Observation& o,std::size_t samples,dsp_kernel
     DataFrameView frame;std::uint64_t filled=0;require(running.plan->history(2,0,*running.state,frame,&filled)==Status::ok,"retained snapshot");
     const auto& history=std::get<NumericView>(frame.payload);const auto used=std::min(history.actual[0],samples);
     std::vector<float> coefficients(history.actual[0]);dsp_kernels::window(coefficients,function);
-    for(std::size_t band=0;band<bands;++band)for(std::size_t bin=0;bin<samples/2;++bin){double re=0,im=0;
+    for(std::size_t band=0;band<bands;++band)for(std::size_t bin=0;bin<=samples/2;++bin){double re=0,im=0;
         for(std::size_t row=0;row<used;++row){float value=0;require(load_element(history,{0,history.actual[0]-used+row,band},value)==Status::ok,"read wrapped history oracle");
             const auto v=double(value)*(enabled?coefficients[history.actual[0]-used+row]:1.);const auto phase=tau*double(bin)*double(row)/double(samples);re+=v*std::cos(phase);im-=v*std::sin(phase);}
-        near(o.matrix[band*256+bin],std::hypot(re,im)/double(samples),"direct DFT independently matches every band/bin");}
+        const auto tolerance=8*std::numeric_limits<float>::epsilon()*double(samples);
+        near(o.matrix[band*257+bin],re,"raw real plane matches independent DFT",tolerance);
+        near(o.imaginary[band*257+bin],im,"raw imaginary plane matches independent DFT",tolerance);}
 }
 void numerical_window_case(std::size_t samples,dsp_kernels::WindowFunction function){
         const auto name=function==dsp_kernels::WindowFunction::Hann?"hann":function==dsp_kernels::WindowFunction::Hamming?"hamming":function==dsp_kernels::WindowFunction::Blackman?"blackman":"rectangular";
         auto g=graph(samples,true,name);Running running(g);Observation o;
         feed(running,g,0,o);require(o.last_available && o.row_available,"first finite zero-padded matrix does not wait for timestamps");
         for(std::size_t i=1;i<413;++i)feed(running,g,i,o);
-        require(o.last_available && o.row_available && o.bins==samples/2,"all temporal outputs available after ring wrap");
-        oracle(running,o,samples,function,true);near(o.hz[1],120./double(samples),"temporal cadence uses 120Hz observed times, not 48000Hz audio Fs",1e-10);
-        for(std::size_t bin=0;bin<o.bins;++bin)near(o.row[bin],o.matrix[3*256+bin],"MatrixRow matches selected band exactly",1e-10);
+        require(o.last_available && o.row_available && o.bins==samples/2+1,"raw temporal outputs include DC and Nyquist after ring wrap");
+        oracle(running,o,samples,function,true);near(o.hz[1],120./double(samples),"temporal frequency axis uses its explicit 120Hz setting",1e-10);
+        for(std::size_t bin=0;bin<o.bins;++bin)near(o.row[bin],o.matrix[3*257+bin],"MatrixRow matches selected band exactly",1e-10);
 }
 void timestamp_origin_cases(){
     auto large_origin=graph();Running large_run(large_origin);Observation large_observation;
@@ -223,12 +304,12 @@ void numerical_tests(){
     DataFrameView ordinary;require(running.plan->history(3,0,*running.state,ordinary)==Status::incompatible_contract,"ordinary temporal matrix is never an ancestor History snapshot");
     std::get<TransformProcessingParameters>(g.nodes[3].parameters).values[0].value=NumericLiteral{std::uint64_t{7}};
     running.replace(g,"row selection");DataFrameView before;std::uint64_t filled=0;require(running.plan->history(2,0,*running.state,before,&filled)==Status::ok && filled==400,"row selection preserves History");
-    feed(running,g,413,o);for(std::size_t bin=0;bin<o.bins;++bin)near(o.row[bin],o.matrix[7*256+bin],"last row selectable",1e-10);
+    feed(running,g,413,o);for(std::size_t bin=0;bin<o.bins;++bin)near(o.row[bin],o.matrix[7*257+bin],"last row selectable",1e-10);
     feed(running,g,414,o,std::int64_t(414*400+30));require(o.last_available && o.row_available,"irregular timestamps do not gate the declared analysis cadence");
     timestamp_origin_cases();
     auto indices=graph(512,false,"hann",false);Running index_run(indices);Observation index_observation;
     for(std::size_t i=0;i<25;++i)feed(index_run,indices,i,index_observation,std::int64_t(i*400+i*i));
-    require(index_observation.last_available,"unknown cadence remains useful as bin indices");oracle(index_run,index_observation,512,dsp_kernels::WindowFunction::Hann,false);
+    require(index_observation.last_available,"missing time coordinates preserve the explicit FFT grid");oracle(index_run,index_observation,512,dsp_kernels::WindowFunction::Hann,false);
     feed(index_run,indices,25,index_observation,-1,true);require(!index_observation.last_available,"nonfinite values do not publish stale spectrum");
     auto disabled=graph(512,false,"hann",false);disabled.nodes[2].enabled=false;Running disabled_run(disabled);Observation zero;
     feed(disabled_run,disabled,0,zero);require(zero.last_available,"disabled known matrix emits typed zeros");for(float value:zero.matrix)require(value==0,"disabled temporal FFT is zero");
@@ -247,7 +328,7 @@ void disconnected_history(Running& running,const NumericProcessingGraph& enlarge
     for(std::size_t ordinal=432;ordinal<943;++ordinal)feed(running,disconnected,ordinal,observed);
     require(observed.last_available && observed.row_available,"fully aged-out disconnected result remains available");
     for(std::size_t band=0;band<bands;++band)for(std::size_t bin=0;bin<observed.bins;++bin)
-        require(observed.matrix[band*256+bin]==0,"disconnected temporal output contains no stale spectrum");
+        require(observed.matrix[band*257+bin]==0,"disconnected temporal output contains no stale spectrum");
     for(std::size_t bin=0;bin<observed.bins;++bin)require(observed.row[bin]==0,"selected disconnected spectrum contains no stale values");
     near(observed.hz[1],120./512.,"disconnected zeros retain real signal-clock cadence",1e-10);
 }
@@ -312,12 +393,15 @@ NumericProcessingGraph clock_warmup_graph(){
     OwnedProcessingContract transposed,windowed,matrix,vector;
     require(matrix_transpose_output_contract(history,transposed)==Status::ok,"clock transpose contract");
     require(matrix_window_output_contract(std::get<NumericContract>(transposed.view()),windowed)==Status::ok,"clock window contract");
-    require(matrix_fft_output_contract(std::get<NumericContract>(windowed.view()),512,matrix)==Status::ok,"clock matrix FFT contract");
+    require(matrix_fft_output_contract(std::get<NumericContract>(windowed.view()),512,matrix,1000)==Status::ok,"clock matrix FFT contract");
     g.nodes[4].inputs={port(PortDirection::Input,history)};g.nodes[4].outputs={{0,PortDirection::Output,transposed}};
     g.nodes[5].inputs={{0,PortDirection::Input,transposed}};g.nodes[5].outputs={{0,PortDirection::Output,windowed}};
     g.nodes[2].inputs={{0,PortDirection::Input,windowed}};
+    std::get<TransformProcessingParameters>(g.nodes[2].parameters).values.push_back({"sample_rate",NumericLiteral{std::uint64_t{1000}}});
     require(matrix_row_output_contract(std::get<NumericContract>(matrix.view()),vector)==Status::ok,"clock row contract");
-    g.nodes[2].outputs={{0,PortDirection::Output,matrix}};
+    std::array<OwnedProcessingContract,2> polar;
+    require(matrix_fft_output_contracts(std::get<NumericContract>(windowed.view()),512,polar,1000)==Status::ok,"clock imaginary contract");
+    g.nodes[2].outputs={{0,PortDirection::Output,polar[0]},{1,PortDirection::Output,polar[1]}};
     g.nodes[3].inputs={{0,PortDirection::Input,matrix}};g.nodes[3].outputs={{0,PortDirection::Output,vector}};
     ConfiguredProcessingNode clock;clock.id=7;clock.kind="SampleClock";
     clock.parameters=SampleClockProcessingParameters{8000,"audio-origin"};g.nodes.push_back(std::move(clock));
@@ -368,6 +452,7 @@ void clock_warmup_tests(){
 NumericProcessingGraph variable_row_graph(){
     auto fixture=graph();auto input=std::get<NumericContract>(fixture.nodes[2].outputs[0].contract.view());
     input.shape.extents[0]={0,bands};
+    input.shape.extents[1]={256,256};
     input.coordinates[1]={CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}};
     ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={port(PortDirection::Output,input)};
     ConfiguredProcessingNode row;row.id=4;row.kind="MatrixRow";
@@ -415,7 +500,7 @@ void continuous_silence_tests(){
         const auto ticks=ordinal%3==0?std::int64_t{48000}:std::int64_t{0};
         require(feed(running,g,ordinal,observed,ticks,false,true)==Status::ok,"every paused zero frame processes successfully");
         require(observed.last_available && observed.row_available,"every paused zero frame publishes FFT and selected row");
-        near(observed.hz[1],(11025./92.)/512.,"explicit timestamps use actual declared 44.1k analysis interval",1e-10);
+        near(observed.hz[1],120./512.,"timestamp jumps preserve the explicit FFT frequency grid",1e-10);
         if(ordinal>=440){for(float value:observed.matrix)require(value==0,"fully zero History yields exactly zero FFT");
             for(float value:observed.row)require(value==0,"fully zero History yields exactly zero selected row");}
     }
@@ -470,8 +555,9 @@ void contracts_tests(){
     auto g=graph();auto input=std::get<NumericContract>(g.nodes[2].inputs[0].contract.view());OwnedProcessingContract output;
     require(matrix_fft_output_contract(input,300,output)!=Status::ok,"non-power-of-two refused");
     input.coordinates[1]={CoordinateMode::Regular,NumericUnit::Seconds,{0,1},{1,60}};
-    require(matrix_fft_output_contract(input,512,output)==Status::ok,"derive regular seconds");
-    auto result=std::get<NumericContract>(output.view());require(result.coordinates[1].step==Ratio{15,128} && result.clock.sample_rate==48000,"exact temporal reciprocal and audio provenance");
+    require(matrix_fft_output_contract(input,512,output,60)==Status::ok,"derive explicit 60Hz independent of input time coordinates");
+    auto result=std::get<NumericContract>(output.view());const auto step=result.coordinates[1].step;
+    require(step.numerator*128==15*std::int64_t(step.denominator) && result.clock.sample_rate==48000,"exact temporal reciprocal and audio provenance");
     input.coordinates[1]={};require(matrix_fft_output_contract(input,512,output)==Status::ok,"derive unknown cadence");
     result=std::get<NumericContract>(output.view());require(result.coordinates[1].unit==NumericUnit::Values,"unknown cadence uses indices");
     auto defaults=graph();defaults.nodes[2].parameters=TransformProcessingParameters{};
@@ -488,4 +574,4 @@ void* operator new(std::size_t bytes){++allocations;auto* p=std::malloc(bytes?by
 void* operator new[](std::size_t bytes){return ::operator new(bytes);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
-int main(){prepared_window_tests();window_switch_tests();contracts_tests();numerical_tests();resize_and_disconnect_tests();rolling_cadence_recovery_tests();clock_warmup_tests();variable_matrix_row_tests();continuous_silence_tests();transpose_bits_and_ring_tests();std::puts("separate matrix transpose/window/FFT, DFT/padding/ring/bits/coordinates/cadence/silence/resume/no-allocation PASS");}
+int main(){filled_history_tests();prepared_window_tests();periodic_window_tests();window_switch_tests();contracts_tests();numerical_tests();resize_and_disconnect_tests();rolling_cadence_recovery_tests();clock_warmup_tests();variable_matrix_row_tests();continuous_silence_tests();transpose_bits_and_ring_tests();std::puts("separate matrix transpose/window/FFT, DFT/padding/ring/bits/coordinates/cadence/silence/resume/no-allocation PASS");}

@@ -3,6 +3,9 @@
 #include <domain/processing_contracts.h>
 #include <optional>
 #include <initializer_list>
+#include <vector>
+
+struct NumericExampleGraph;
 
 namespace examples {
 using domain::NodeId;
@@ -27,4 +30,8 @@ private:
 domain::TransformProcessingParameters transform(std::initializer_list<domain::ProcessingParameter>);
 void add_window(Builder&,NodeId source,NodeId buffer,NodeId coefficients,NodeId length,NodeId product,std::uint64_t size,PortId source_port=0);
 void add_frequency_step(Builder&,NodeId source,NodeId length,NodeId step);
+void add_startup_input(Builder&);
+void add_calibrated_features(Builder&);
+void describe_rhythm_example(NumericExampleGraph&);
+std::vector<NumericExampleGraph> rhythm_examples();
 }

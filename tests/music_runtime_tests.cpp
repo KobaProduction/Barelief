@@ -55,10 +55,10 @@ NumericProcessingGraph graph(unsigned cadence=60,unsigned bits=8){
     pcm.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{1,1024},ExtentBounds{}}};pcm.clock={"music-clock",{1,32768},32768};
     ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={port(PortDirection::Output,0,pcm)};
     auto g=numeric_test_builders::graph("music-runtime-regression",{1,cadence},{source},{});
-    auto window=source;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{number("size",4096),number("input_rate",32768)}};window.inputs={port(PortDirection::Input,0,pcm)};
+    auto window=source;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{number("size",4096)}};window.inputs={port(PortDirection::Input,0,pcm)};
     pcm.shape.extents[0]={4096,4096};pcm.semantic=Semantic::Window;window.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(window);g.edges.push_back({1,2});
     auto [length,product]=window_coefficients(g,window,pcm);
-    g.nodes.push_back(transform(4,"RFFT",pcm));g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});
+    g.nodes.push_back(transform(4,"RFFT",pcm,{number("fft_size",4096),number("sample_rate",32768)}));g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});
     music_branches(g,bits);g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
 }
 struct Observation {

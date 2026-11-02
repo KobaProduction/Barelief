@@ -16,7 +16,7 @@ void add_shadows(Engine& e) noexcept {
     for(std::size_t i=0;i<count;++i){const double period=e.periods.values[i];e.propose(period/2);e.propose(period*2);}
 }
 void support_group(Candidate& c,const Group& g,std::size_t slot) noexcept {
-    const double io=ioi_support(g.times,c.period_s);
+    const float io=ioi_support(g.times,c.period_s);
     c.ioi=std::max(c.ioi,io);c.group_support[slot]=g.id==0?std::max(io,c.acf):io;
     const auto phase=phase_fit(g.times,c.period_s);
     if(better_phase(phase,g.id,c)){c.phase=phase.value;c.phase_support=phase.fit;c.phase_group=g.id;c.phase_t_obs=g.times.back();}
@@ -26,20 +26,21 @@ void fallback_phase(const Engine& e,Candidate& c) noexcept {
     const auto phase=phase_fit(e.times,c.period_s);c.phase=phase.value;c.phase_support=phase.fit;
     if(e.times.count)c.phase_t_obs=e.times.back();
 }
-double event_support(const Engine& e,Candidate& c) noexcept {
-    unsigned active=0;double support=0;
+float event_support(const Engine& e,Candidate& c) noexcept {
+    unsigned active=0;float support=0;
     for(std::size_t i=0;i<e.groups.count;++i){
         const auto& g=e.groups.values[i];
         if(g.times.count<3)continue;
         support_group(c,g,i);support+=c.group_support[i];++active;
     }
-    if(active)return support/active;
+    if(active)return support/float(active);
     fallback_phase(e,c);
     return 0;
 }
-double temporal_penalty(const Engine& e,const Candidate& c,double now) noexcept {
+float temporal_penalty(const Engine& e,const Candidate& c,double now) noexcept {
     if(!e.last_determined || now-e.last_determined->second>e.cfg.max_age_s)return 0;
-    return std::min(.1,.1*std::abs(60/c.period_s-e.last_determined->first)/std::max(1.,e.last_determined->first));
+    const float relative=float(std::abs(60/c.period_s-e.last_determined->first))/std::max(1.f,e.last_determined->first);
+    return std::min(.1f,.1f*relative);
 }
 void group_proposals(Engine& e,const Group& g) noexcept {
     if(g.times.count<3)return;
@@ -56,9 +57,9 @@ void unique_periods(Engine& e,bool descending) noexcept {
 }
 struct FamilyCluster {
     Candidate best;
-    double first=0,previous=0;
+    float first=0,previous=0;
     void append(Engine& e,const Candidate& value) noexcept {
-        const bool joined=first>0 && value.bpm-previous<=.015*value.bpm && value.bpm-first<=.03*value.bpm;
+        const bool joined=first>0 && value.bpm-previous<=.015f*value.bpm && value.bpm-first<=.03f*value.bpm;
         if(joined){if(family_preference(value,best))best=value;}
         else {if(first>0)e.families.push(family(best));best=value;first=value.bpm;}
         previous=value.bpm;
@@ -66,25 +67,25 @@ struct FamilyCluster {
 };
 }
 void Engine::propose(double period) noexcept {
-    if(period>=60/cfg.max_bpm && period<=60/cfg.min_bpm)periods.push(rounded(period,6));
+    if(period>=60.0/static_cast<double>(cfg.max_bpm) && period<=60.0/static_cast<double>(cfg.min_bpm))periods.push(rounded(period,6));
 }
 void Engine::proposals(bool use_acf) noexcept {
     periods.clear();
     for(const auto& g:groups.span())group_proposals(*this,g);
-    if(use_acf)for(const auto& value:acf.span())if(value.score>0)propose(60/value.bpm);
+    if(use_acf)for(const auto& value:acf.span())if(value.score>0)propose(60.0/static_cast<double>(value.bpm));
     // Match Python's set before adding shadows, including rounded periods.
     unique_periods(*this,false);add_shadows(*this);unique_periods(*this,true);
 }
 void Engine::candidate_support(Candidate& c,double now,bool use_acf) noexcept {
     if(use_acf)for(const auto& value:acf.span())if(std::abs(value.bpm-60/c.period_s)<1.05)c.acf=std::max(c.acf,value.score);
-    const double support=event_support(*this,c);
+    const float support=event_support(*this,c);
     if(c.acf>0 && last_heavy_obs)latest(c.t_obs,*last_heavy_obs);
-    const double temporal=temporal_penalty(*this,c,now);
-    c.phase_penalty=c.phase?.1*(1-c.phase_support):0;
-    c.score=rounded(std::max(0.,support-temporal-c.phase_penalty),6);
+    const float temporal=temporal_penalty(*this,c,now);
+    c.phase_penalty=c.phase?.1f*(1.f-c.phase_support):0;
+    c.score=rounded(std::max(0.f,support-temporal-c.phase_penalty),6);
 }
 Candidate Engine::candidate(double period,double now,bool use_acf) noexcept {
-    Candidate value;value.period_s=period;value.bpm=rounded(60/period,4);
+    Candidate value;value.period_s=period;value.bpm=rounded(float(60/period),4);
     candidate_support(value,now,use_acf);
     value.accent=hierarchy(period,now);candidate_phases(value);
     value.ioi=rounded(value.ioi,6);value.acf=rounded(value.acf,6);
@@ -113,12 +114,12 @@ void keep_salient(Engine& e,double now,bool use_acf) noexcept {
     }
     for(const auto* value:best)if(value)e.keep_candidate(e.candidate(value->period_s,now,use_acf));
 }
-void keep_octave(Engine& e,double aim,double now,bool use_acf) noexcept {
+void keep_octave(Engine& e,float aim,double now,bool use_acf) noexcept {
     if(aim<e.cfg.min_bpm || aim>e.cfg.max_bpm)return;
     const Family* closest=nullptr;
     for(const auto& value:e.families.span()){
-        const double distance=std::abs(value.bpm-aim);
-        if(distance>.015*aim)continue;
+        const float distance=std::abs(value.bpm-aim);
+        if(distance>.015f*aim)continue;
         if(!closest || std::tuple{distance,-value.score}<std::tuple{std::abs(closest->bpm-aim),-closest->score})closest=&value;
     }
     if(closest)e.keep_candidate(e.candidate(closest->period_s,now,use_acf));
@@ -128,7 +129,7 @@ void Engine::rank(double now,bool use_acf) noexcept {
     proposals(use_acf);cluster(now,use_acf);out.candidate_count=0;
     for(std::size_t i=0;i<std::min(std::size_t{12},families.count);++i)keep_candidate(candidate(families.values[i].period_s,now,use_acf));
     keep_salient(*this,now,use_acf);const auto count=out.candidate_count;
-    for(std::size_t i=0;i<count;++i){const double bpm=out.candidates[i].bpm;keep_octave(*this,bpm*.5,now,use_acf);keep_octave(*this,bpm*2,now,use_acf);}
+    for(std::size_t i=0;i<count;++i){const float bpm=out.candidates[i].bpm;keep_octave(*this,bpm*.5f,now,use_acf);keep_octave(*this,bpm*2,now,use_acf);}
     std::sort(out.candidates.begin(),out.candidates.begin()+std::ptrdiff_t(out.candidate_count),rank_order<Candidate>);
 }
 }

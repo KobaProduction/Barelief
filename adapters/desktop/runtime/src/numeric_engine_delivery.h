@@ -9,16 +9,16 @@
 
 namespace pipeline::numeric_engine_detail {
 struct DeliveryArena {
-    static constexpr std::size_t slot_count=128,payload_bytes=262144,metadata_bytes=16384;
+    static constexpr std::size_t slot_count=128,payload_bytes=262144,metadata_bytes=frame_limits.max_metadata_bytes;
     std::vector<std::byte> payload{slot_count*payload_bytes},metadata{slot_count*metadata_bytes};
     std::array<BufferSlot,slot_count> payload_slots{},metadata_slots{};
     BufferPool payload_pool{payload,payload_slots,payload_bytes};
     BufferPool metadata_pool{metadata,metadata_slots,metadata_bytes};
 };
-// Full history is queried on demand, separately from compact realtime rows.
-// Eight bounded snapshot leases avoid enlarging all 256 delivery/preview slots.
+// Full history snapshots and large computed frames share eight bounded leases.
+// Ordinary delivery/preview slots and compact realtime rows stay small.
 struct HistorySnapshotArena {
-    static constexpr std::size_t slot_count=8,payload_bytes=524288,metadata_bytes=16384;
+    static constexpr std::size_t slot_count=8,payload_bytes=524288,metadata_bytes=frame_limits.max_metadata_bytes;
     std::vector<std::byte> payload{slot_count*payload_bytes},metadata{slot_count*metadata_bytes};
     std::array<BufferSlot,slot_count> payload_slots{},metadata_slots{};
     BufferPool payload_pool{payload,payload_slots,payload_bytes};
@@ -94,6 +94,7 @@ struct DeliveryHub {
     std::size_t count_preview_matches(const EndpointIdentity&);
     bool discard_preview(const DeliveredNumericFrame&,const EndpointIdentity&,const FrameStamp&,bool,std::size_t&,std::size_t) const;
     void commit_tap_frame(ContextIterator,LatestIterator,const dataflow_runtime::NumericPortFrameView&,DeliveredNumericFrame,Status);
+    Status retain_delivery(ContextIterator,const dataflow_runtime::NumericPortFrameView&,const DataFrameView&,DeliveryArena&,DeliveredNumericFrame&);
     ContextIterator history_context(const dataflow_runtime::NumericHistoryRowView&);
     void record_transport_drop(ContextIterator);
     void update_tap_budget();

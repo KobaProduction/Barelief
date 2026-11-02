@@ -29,7 +29,9 @@ bool finite_channels(std::span<const float> values,std::size_t count,std::size_t
 
 }
 PreparedResampler::PreparedResampler(const PreparedResampler& other) {
-    if(other.prepared_ && prepare(other.config_,other.factory_))copy_state_from(other);
+    if(!other.prepared_)return;
+    const bool ready=other.window_mode_?prepare_window(other.window_config_,other.factory_):prepare(other.config_,other.factory_);
+    if(ready)copy_state_from(other);
 }
 PreparedResampler& PreparedResampler::operator=(const PreparedResampler& other) {
     if(this!=&other){PreparedResampler candidate(other);*this=std::move(candidate);}return *this;
@@ -65,27 +67,29 @@ void PreparedResampler::reset() noexcept {
     until_=0;fraction_=0;produced_=0;anchor_=next_input_=0;anchored_=input_expected_=has_input_=false;
 }
 bool PreparedResampler::start_at(std::int64_t output_tick,std::uint32_t numerator) noexcept {
-    if(!prepared_ || has_input_ || anchored_ || numerator>=config_.input_rate)return false;
+    if(!prepared_ || window_mode_ || has_input_ || anchored_ || numerator>=config_.input_rate)return false;
     if(fir_mode(config_.mode) && !existing_.initial_position(numerator))return false;
     if(backend_ && !backend_->initial_position(numerator,config_.output_rate))return false;
     until_=numerator/config_.output_rate+std::size_t(numerator%config_.output_rate!=0);
     fraction_=numerator%config_.output_rate;anchor_=output_tick;anchored_=true;return true;
 }
 bool PreparedResampler::copy_state_from(const PreparedResampler& other) noexcept {
-    if(!prepared_ || !other.prepared_ || config_!=other.config_ || bool(backend_)!=bool(other.backend_))return false;
-    if(fir_mode(config_.mode) && !existing_.copy_state_from(other.existing_))return false;
+    if(!prepared_ || !other.prepared_ || config_!=other.config_ || window_mode_!=other.window_mode_ ||
+        (window_mode_ && window_config_!=other.window_config_) || bool(backend_)!=bool(other.backend_))return false;
+    if(!window_mode_ && fir_mode(config_.mode) && !existing_.copy_state_from(other.existing_))return false;
     if(backend_ && !backend_->copy_state_from(*other.backend_))return false;
     iir_state_=other.iir_state_;previous_=other.previous_;until_=other.until_;fraction_=other.fraction_;
     produced_=other.produced_;anchor_=other.anchor_;next_input_=other.next_input_;anchored_=other.anchored_;
     input_expected_=other.input_expected_;has_input_=other.has_input_;return true;
 }
 bool PreparedResampler::advance_input(std::int64_t ticks,std::size_t count) noexcept {
-    if(!std::in_range<std::int64_t>(count) || ticks>INT64_MAX-std::int64_t(count))return false;
+    if(window_mode_ || !std::in_range<std::int64_t>(count) || ticks>INT64_MAX-std::int64_t(count))return false;
     next_input_=ticks+std::int64_t(count);input_expected_=true;return true;
 }
 ResamplerResources PreparedResampler::resources() const noexcept {
     ResamplerResources result;result.owned_bytes=sizeof(*this);if(!prepared_)return result;
     if(backend_){result=backend_->resources();result.owned_bytes+=sizeof(*this);return result;}
+    if(window_mode_)return result;
     result=fir_mode(config_.mode)?fir_resources(existing_.filter_geometry()):mode_resources(config_);
     result.owned_bytes=sizeof(*this)+result.coefficient_bytes+result.state_bytes;return result;
 }
@@ -166,7 +170,8 @@ bool PreparedResampler::process_non_fir(ProcessBuffers& buffers) noexcept {
 }
 bool PreparedResampler::process(std::span<const float> input,std::size_t count,std::size_t stride,
     std::span<float> output,std::size_t capacity,std::size_t& written) noexcept {
-    written=0;const auto& config=config_;const auto bound=maximum_output(count,config.input_rate,config.output_rate);
+    written=0;if(window_mode_)return false;
+    const auto& config=config_;const auto bound=maximum_output(count,config.input_rate,config.output_rate);
     if(!prepared_||stride<count||stride>input.size()/config.channels||capacity>output.size()/config.channels||capacity<bound||produced_>UINT64_MAX-bound)return false;
     ProcessBuffers buffers{input,count,stride,output,capacity,written};
     if(fir_mode(config.mode))return process_fir(buffers);

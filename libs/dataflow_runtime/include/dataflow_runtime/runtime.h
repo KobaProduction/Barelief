@@ -4,6 +4,7 @@
 #include <dsp_kernels/kernel_support.h>
 #include <dsp_kernels/prepared_resampler.h>
 #include <dsp_kernels/frequency_profile.h>
+#include <dataflow_runtime/numeric_operation.h>
 
 namespace dataflow_runtime {
 using signal_contracts::Status;
@@ -12,6 +13,8 @@ struct NodeStats {
     domain::NodeId node=-1;
     std::uint64_t calls=0,produced=0,errors=0,self_nanoseconds=0,max_self_nanoseconds=0,deadline_misses=0;
     std::array<std::uint64_t,16> self_histogram{};
+    std::uint64_t clipped_frames=0,clipped_values=0;
+    float maximum_before_clamp=0;
 };
 struct MixerInputStats {domain::PortId port=0;std::size_t depth=0,capacity=0;std::uint64_t dropped_samples=0,underrun_samples=0;};
 struct NumericRuntimeProfile {
@@ -29,6 +32,9 @@ struct NumericRuntimeProfile {
     const dsp_kernels::ResamplerBackendFactory* resampler_backend=nullptr;
     bool experimental_resampling_enabled=false;
     domain::PreparationValueProvider preparation_values;
+    // Optional adapter/composition boundary. The profile, prepared graph and
+    // contexts pin this immutable factory; no unowned provider callbacks.
+    std::shared_ptr<const NumericOperationFactory> operation_factory;
 };
 struct NumericPortFrameView {
     std::string_view graph_id;

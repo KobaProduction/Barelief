@@ -1,5 +1,6 @@
 #pragma once
 #include "pcm_resampler.h"
+#include <dsp_kernels/resampling_window.h>
 #include <signal_contracts/resampling_policy.h>
 #include <array>
 #include <memory>
@@ -27,6 +28,7 @@ public:
     virtual ~ResamplerBackend()=default;
     virtual bool process(std::span<const float>,std::size_t,std::size_t,
         std::span<float>,std::size_t,std::size_t&) noexcept=0;
+    virtual bool process_window(std::span<const float>,std::size_t,std::span<float>,std::size_t,std::size_t& written) noexcept {written=0;return false;}
     virtual void reset() noexcept=0;
     virtual bool initial_position(std::uint32_t numerator,std::uint32_t denominator) noexcept {return numerator==0 && denominator!=0;}
     virtual bool copy_state_from(const ResamplerBackend&) noexcept=0;
@@ -37,6 +39,8 @@ public:
     virtual ~ResamplerBackendFactory()=default;
     virtual std::unique_ptr<ResamplerBackend> prepare(const ResamplerConfig&) const=0;
     virtual bool query(const ResamplerConfig&,ResamplerResources&) const noexcept {return false;}
+    virtual std::unique_ptr<ResamplerBackend> prepare_window(const ResamplingWindowConfig&) const {return {};}
+    virtual bool query_window(const ResamplingWindowConfig&,ResamplerResources&) const noexcept {return false;}
 };
 // Prepared, streaming, planar Float32 resampling. Output timestamps lie on the
 // exact rational output grid; delay describes content, not a timestamp shift.
@@ -53,6 +57,21 @@ public:
     PreparedResampler(PreparedResampler&&) noexcept=default;
     PreparedResampler& operator=(PreparedResampler&&) noexcept=default;
     bool prepare(const ResamplerConfig&,const ResamplerBackendFactory* external=nullptr);
+    // Independent complete windows, without streaming clocks/continuity.
+    // Sinc has fresh zero extension/end-of-input on every call, even at ratio1.
+    // EndpointLinear is portable, needs no factory and preserves both endpoints.
+    bool prepare_window(const ResamplingWindowConfig&,const ResamplerBackendFactory* =nullptr);
+    bool process_window(std::span<const float>,std::size_t input_stride,
+        std::span<float>,std::size_t output_stride,std::size_t& written) noexcept;
+    // Only EndpointLinear accepts actual_count <= prepared input capacity.
+    // The output count is (actual_count-1)*factor+1, or zero for an empty input.
+    // Whole spans must be disjoint; exact same-layout in-place identity is valid.
+    // Output is valid only on success; failure publishes written=0.
+    bool process_window_prefix(std::span<const float>,std::size_t actual_count,std::size_t input_stride,
+        std::span<float>,std::size_t output_stride,std::size_t& written) noexcept;
+    std::size_t window_output_samples(std::size_t actual_count) const noexcept;
+    static bool window_resource_requirements(const ResamplingWindowConfig&,const ResamplerBackendFactory*,ResamplerResources&) noexcept;
+    const ResamplingWindowConfig* window_config() const noexcept {return window_mode_?&window_config_:nullptr;}
     bool prepare(std::uint32_t in,std::uint32_t out,std::size_t channels) {
         return prepare({ResamplerMode::ExistingFir,in,out,channels,5});
     }
@@ -65,6 +84,7 @@ public:
     void reset() noexcept;
     bool copy_state_from(const PreparedResampler&) noexcept;
     ResamplerResources resources() const noexcept;
+    // Streaming configuration only; window_config() is the finite-window contract.
     const ResamplerConfig& config() const noexcept {return config_;}
     std::uint32_t output_rate() const noexcept {return config_.output_rate;}
     bool input_contiguous(std::int64_t ticks) const noexcept {return !input_expected_ || ticks==next_input_;}
@@ -86,6 +106,7 @@ private:
     bool process_backend(ProcessBuffers&) noexcept;
     bool process_identity(ProcessBuffers&) noexcept;
     bool process_interpolated(ProcessBuffers&) noexcept;
+    bool process_endpoint_window(ProcessBuffers&) noexcept;
     bool filter_sample(const ProcessBuffers&,std::size_t,std::array<float,2>&) noexcept;
     float filter_iir(float,std::size_t) noexcept;
     bool emit_sample(ProcessBuffers&,const std::array<float,2>&) noexcept;
@@ -93,6 +114,8 @@ private:
     bool reject_output(std::size_t&) noexcept;
     struct Biquad {float b0=0,b1=0,b2=0,a1=0,a2=0;};
     ResamplerConfig config_{};
+    ResamplingWindowConfig window_config_{};
+    bool window_mode_=false;
     PcmResampler existing_;
     std::unique_ptr<ResamplerBackend> backend_;
     const ResamplerBackendFactory* factory_=nullptr;

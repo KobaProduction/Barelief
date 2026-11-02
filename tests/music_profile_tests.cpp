@@ -164,8 +164,8 @@ void channel_selection_oracle(const QString& path){
 }
 static void budget_and_cancel(const QTemporaryDir& temp,auto& options,std::atomic_bool& cancel) {
 using namespace dsp_kernels;using namespace desktop_analysis::offline;
-        AnalysisOptions over_budget;over_budget.preview_time_bins=2048;over_budget.preview_frequency_bins=2048;QStringList many;for(unsigned i=0;i<4096;++i)many.append(temp.filePath("short.wav"));
-        require(!analyze_music_files(many,over_budget,cancel).success,"Oversized preview allocation rejected before processing");
+        AnalysisOptions over_budget;over_budget.preview_time_bins=2049;over_budget.preview_frequency_bins=2048;QStringList many;for(unsigned i=0;i<4096;++i)many.append(temp.filePath("short.wav"));
+        require(!analyze_music_files(many,over_budget,cancel).success,"Out-of-range preview dimensions rejected before processing");
         cancel=true;auto stopped=analyze_music_files({temp.filePath("long.wav")},options,cancel);require(stopped.cancelled&&!stopped.success,"Cancellation ignored");
 }
 

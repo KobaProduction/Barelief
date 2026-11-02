@@ -13,7 +13,7 @@ bool any_octave(std::span<const Candidate> values) noexcept {
 Octave ambiguous(Reason reason) noexcept {return {Status::Ambiguous,reason,{},{},0};}
 struct Rivals {
     bool relevant=false,comparable=false,acf=false;
-    double octave_score=0,other_score=0;
+    float octave_score=0,other_score=0;
 };
 void compare_rival(Rivals& result,const Candidate& c,const Candidate& winner,unsigned fps) noexcept {
     if(&c==&winner)return;
@@ -45,8 +45,8 @@ const Group* find_group(const Engine& e,std::uint32_t id) noexcept {
     return nullptr;
 }
 Octave arbitrate(const Candidate& winner,const Candidate& second,const Rivals& other,const Config& cfg) noexcept {
-    const double gap=winner.accent.score-other.octave_score;
-    const double other_gap=other.acf?winner.score-other.other_score:winner.accent.score-second.accent.score;
+    const float gap=winner.accent.score-other.octave_score;
+    const float other_gap=other.acf?winner.score-other.other_score:winner.accent.score-second.accent.score;
     const bool ok=winner.accent.score>=cfg.octave_accent_min && gap>=cfg.octave_accent_margin && other_gap>=(other.acf?cfg.score_margin:cfg.octave_accent_margin);
     return {ok?Status::Determined:Status::Ambiguous,ok?Reason::TypedPhase:Reason::AccentContrast,
         ok?std::optional{winner.bpm}:std::nullopt,rounded(std::min(gap,other_gap),6),winner.accent.groups};
@@ -84,7 +84,7 @@ std::optional<std::size_t> Engine::relock(double now) const noexcept {
     if(!pending_change(*this,now))return {};
     const auto* g=find_group(*this,*anchor);
     if(!g || !g->strong.count || now-g->strong.back()>cfg.max_age_s)return {};
-    double empirical=0,relative=0;
+    double empirical=0;float relative=0;
     if(!recent_intervals(g->strong,empirical,relative))return {};
     const auto chosen=closest_relock(*this,empirical);
     if(chosen && blocked_relock(out,out.candidates[*chosen],cfg))return {};

@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QCoreApplication>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QThread>
 #include <map>
 #include <tuple>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <type_traits>
 #include <optional>
+#include <array>
 
 // Test the actual canonical source/executor/owned-delivery path, including
 // every DSP branch and graph-view input. Capture remains in-memory.
@@ -37,9 +39,9 @@ inline bool allows_missing(const domain::NumericProcessingGraph& graph,domain::N
  const auto edge=std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& value){return value.to==id&&value.input_port==input;});
  return edge!=graph.edges.end()&&allows_missing(graph,edge->from,domain::PortDirection::Output,edge->output_port,remaining-1);
 }
-template<class Predicate> bool wait(const Predicate& predicate){
+template<class Predicate> bool wait(const Predicate& predicate,int timeout=5000){
  QElapsedTimer timer;timer.start();
- while(timer.elapsed()<5000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}
+ while(timer.elapsed()<timeout){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(2);}
  return predicate();
 }
 inline AudioSourceKind source_kind(const domain::ConfiguredProcessingNode& node){
@@ -49,9 +51,130 @@ inline AudioSourceKind source_kind(const domain::ConfiguredProcessingNode& node)
    if(const auto* value=std::get_if<std::int64_t>(literal))kind=AudioSourceKind(*value);
  return kind;
 }
+inline void report_engine_snapshot(const char* phase,const EngineSnapshot& snapshot) {
+ QJsonObject statuses;
+ for(auto at=snapshot.statuses.cbegin();at!=snapshot.statuses.cend();++at)
+  statuses.insert(at.key(),QJsonObject{{"state",int(at->state)},{"error",at->error},{"revision",QString::number(at->revision)}});
+ const QJsonObject report{{"epoch",QString::number(snapshot.epoch)},{"revision",QString::number(snapshot.revision)},
+  {"graph_revision",QString::number(snapshot.graph_revision)},{"statuses",statuses},{"diagnostics",snapshot.diagnostics}};
+ const auto bytes=QJsonDocument(report).toJson(QJsonDocument::Compact);
+ std::fprintf(stderr,"%s snapshot=%s\n",phase,bytes.constData());std::fflush(stderr);
+}
+inline void report_numeric_frame(const char* label,const DeliveredNumericFrame& frame) {
+ std::fprintf(stderr,"%s status=%u present=%d delivery=%llu/%llu\n",label,unsigned(frame.status),int(bool(frame.frame)),
+  (unsigned long long)frame.delivery.epoch,(unsigned long long)frame.delivery.graph_revision);
+ if(!frame.frame)return;
+ const auto view=frame.frame.view();
+ std::fprintf(stderr," stamp available=%d producer=%llu generation=%llu sequence=%llu\n",int(view.stamp.available),
+  (unsigned long long)view.stamp.producer_epoch,(unsigned long long)view.stamp.generation,(unsigned long long)view.stamp.sequence);
+ if(const auto* numeric=std::get_if<NumericView>(&view.payload);numeric&&numeric->contract)
+  std::fprintf(stderr," numeric dtype=%u rank=%u actual=%zu/%zu planes=%zu semantic=%u quantity=%u\n",unsigned(numeric->contract->dtype),
+   unsigned(numeric->contract->shape.rank),numeric->actual[0],numeric->actual[1],numeric->planes.size(),unsigned(numeric->contract->semantic),unsigned(numeric->contract->quantity));
+ std::fflush(stderr);
+}
+
+struct EvidenceObservation {
+ domain::NodeId node=0;
+ std::array<float,56> values{};
+ std::uint32_t count=0;
+ float maturity=0;
+ std::uint64_t matrix_sequence=0,count_sequence=0;
+ bool table_seen=false;
+ bool matrix(const NumericView& view,std::uint64_t sequence) {
+  if(view.actual[0]!=8||view.actual[1]!=7)return false;
+  for(std::size_t row=0;row<8;++row)for(std::size_t column=0;column<7;++column)
+   if(load_element(view,{0,row,column},values[row*7+column])!=Status::ok||!std::isfinite(values[row*7+column]))return false;
+  matrix_sequence=sequence;return true;
+ }
+ bool record(domain::PortId port,const NumericView& view,std::uint64_t sequence) {
+  if(port==0)return matrix(view,sequence);
+  if(port==1){count_sequence=sequence;return load_element(view,{},count)==Status::ok&&count<=8;}
+  if(port==2)return load_element(view,{},maturity)==Status::ok&&std::isfinite(maturity)&&maturity>=0&&maturity<=1;
+  std::uint8_t ambiguous=2;
+  return port==3&&load_element(view,{},ambiguous)==Status::ok&&ambiguous<=1;
+ }
+ bool row(std::size_t index)const {
+  const auto* value=values.data()+index*7;
+  if(index>=count)return std::all_of(value,value+7,[](float x){return x==0;});
+  for(std::size_t column=2;column<6;++column)if(value[column]<0)return false;
+  return value[0]>=40&&value[0]<=240&&value[1]>=0&&
+   value[6]>=1&&value[6]<=15&&std::floor(value[6])==value[6];
+ }
+ bool observe(domain::PortId port,const NumericView& view,std::uint64_t sequence) {
+  if(!record(port,view,sequence))return false;
+  if(matrix_sequence!=count_sequence||!matrix_sequence)return true;
+  for(std::size_t index=0;index<8;++index)if(!row(index))return false;
+  table_seen=true;return true;
+ }
+ bool ready()const {return !node||(table_seen&&maturity>=.5f);}
+};
+inline int delivery_timeout(const domain::NumericProcessingGraph& graph) {
+ return std::any_of(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.kind=="TempoEvidence";})?10000:5000;
+}
+
+inline const domain::ConfiguredProcessingNode* evidence_graph_node(const domain::NumericProcessingGraph& graph,domain::NodeId id) {
+    const auto at=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& node){return node.id==id;});
+    return at==graph.nodes.end()?nullptr:&*at;
+}
+
+inline bool evidence_table_endpoint(const domain::NumericProcessingGraph& graph,domain::NodeId id,
+                                    domain::PortDirection direction,domain::PortId port) {
+    if(port!=0)return false;
+    const auto* node=evidence_graph_node(graph,id);
+    if(!node)return false;
+    if(direction==domain::PortDirection::Output)return node->kind=="TempoEvidence";
+    if(node->kind!="MatrixImageView")return false;
+    const auto edge=std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& value){return value.to==id&&value.input_port==port;});
+    if(edge==graph.edges.end()||edge->output_port!=0)return false;
+    const auto* producer=evidence_graph_node(graph,edge->from);
+    return producer&&producer->kind=="TempoEvidence";
+}
+
+inline bool inactive_route_output(const domain::NumericProcessingGraph& graph,domain::NodeId id,domain::PortId port) {
+    const auto* node=evidence_graph_node(graph,id);
+    if(!node||node->kind!="Switch")return false;
+    const auto* route=std::get_if<domain::RouteProcessingParameters>(&node->parameters);
+    return route&&route->channels_per_stream&&port<route->outputs*route->channels_per_stream&&
+        (!route->open||port/route->channels_per_stream!=route->selected);
+}
+inline bool inactive_route_endpoint(const domain::NumericProcessingGraph& graph,domain::NodeId id,
+                                    domain::PortDirection direction,domain::PortId port) {
+    if(direction==domain::PortDirection::Output)return inactive_route_output(graph,id,port);
+    const auto* node=evidence_graph_node(graph,id);
+    if(!node)return false;
+    const auto kind=domain::node_kind(node->kind);
+    if(!kind||domain::node_role(*kind)!=domain::NodeRole::Sink)return false;
+    const auto edge=std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& e){return e.to==id&&e.input_port==port;});
+    return edge!=graph.edges.end()&&inactive_route_output(graph,edge->from,edge->output_port);
+}
+template<class Value> bool zero_element(const NumericView& view,ElementIndex index) {
+    Value value{};
+    return load_element(view,index,value)==Status::ok&&value==Value{};
+}
+inline bool zero_element(const NumericView& view,ElementIndex index) {
+    switch(view.contract->dtype){
+    case DType::Float32:return zero_element<float>(view,index);
+    case DType::Float64:return zero_element<double>(view,index);
+    case DType::UInt8:return zero_element<std::uint8_t>(view,index);
+    case DType::UInt16:return zero_element<std::uint16_t>(view,index);
+    case DType::UInt32:return zero_element<std::uint32_t>(view,index);
+    case DType::UInt64:return zero_element<std::uint64_t>(view,index);
+    default:return false;
+    }
+}
+inline bool zero_values(const NumericView& view) {
+    const auto columns=view.contract->shape.rank==Rank::Matrix?view.actual[1]:1;
+    for(std::size_t plane=0;plane<view.planes.size();++plane)
+        for(std::size_t row=0;row<view.actual[0];++row)
+            for(std::size_t column=0;column<columns;++column)
+                if(!zero_element(view,{plane,row,column}))return false;
+    return true;
+}
+
 struct Observation {
  const domain::NumericProcessingGraph& graph;
  std::mutex mutex;std::map<Key,Stage> stages;std::map<domain::NodeId,History> histories;std::map<Key,NumericLiteral> prepared;
+ EvidenceObservation evidence;
  bool bad=false;unsigned opens=0;std::map<AudioSourceKind,unsigned> opened,expected_opens;
  explicit Observation(const domain::NumericProcessingGraph& g):graph(g){for(const auto& node:graph.nodes)register_node(node);}
  auto node(domain::NodeId id)const{return std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});}
@@ -78,8 +201,8 @@ struct Observation {
  }
  bool record_prepared_value(const Key& key,const NumericLiteral& value,Status status,domain::PreparationValueKind kind){
   if(status==Status::unavailable&&kind==domain::PreparationValueKind::Routed)return false;
-  if(status!=Status::ok){bad=true;return true;}
-  if(!std::visit([](auto scalar){return std::isfinite(double(scalar));},value))bad=true;
+  if(status!=Status::ok){mark_bad(key,"prepared status");return true;}
+  if(!std::visit([](auto scalar){return std::isfinite(double(scalar));},value))mark_bad(key,"prepared nonfinite value");
   prepared.emplace(key,value);return true;
  }
  bool prepared_output(domain::NodeId id,domain::PortId port,const Key& key){
@@ -113,6 +236,7 @@ struct Observation {
    if(!compact_history_port(configured,port)&&!prepared_port(configured,port,domain::PortDirection::Input))stages[{configured.id,domain::PortDirection::Input,port.id}]={};
  }
  void register_node(const domain::ConfiguredProcessingNode& configured){
+  if(configured.kind=="TempoEvidence")evidence.node=configured.id;
   if(configured.kind=="AudioSource"||configured.kind=="TestSignal")++expected_opens[source_kind(configured)];
   if(configured.kind=="AudioSource"||configured.kind=="TestSignal"||configured.kind=="SampleClock"||configured.kind=="PcmResampler")return;
   register_history(configured);
@@ -125,32 +249,41 @@ struct Observation {
   const auto port=std::find_if(ports.begin(),ports.end(),[&](const auto& p){return p.id==endpoint.port;});
   return port!=ports.end()&&same_contract(port->contract.view(),*numeric.contract);
  }
- template<class Value> static bool element_energy(const NumericView& numeric,std::size_t plane,std::size_t i,double& energy){
-  Value x=0;if(load_element(numeric,{plane,i,0},x)!=Status::ok)return false;
+ template<class Value> static bool element_energy(const NumericView& numeric,std::size_t plane,std::size_t i,std::size_t column,double& energy){
+  Value x=0;if(load_element(numeric,{plane,i,column},x)!=Status::ok)return false;
   if constexpr(std::is_floating_point_v<Value>){if(!std::isfinite(x))return false;energy+=double(x)*x;}
   else energy+=double(x);
   return true;
  }
- static bool element(const NumericView& numeric,std::size_t plane,std::size_t i,double& energy){
+ static bool element(const NumericView& numeric,std::size_t plane,std::size_t i,std::size_t column,double& energy){
   switch(numeric.contract->dtype){
-   case DType::Float32:return element_energy<float>(numeric,plane,i,energy);
-   case DType::Float64:return element_energy<double>(numeric,plane,i,energy);
-   case DType::UInt8:return element_energy<std::uint8_t>(numeric,plane,i,energy);
-   case DType::UInt16:return element_energy<std::uint16_t>(numeric,plane,i,energy);
-   case DType::UInt32:return element_energy<std::uint32_t>(numeric,plane,i,energy);
-   case DType::UInt64:return element_energy<std::uint64_t>(numeric,plane,i,energy);
+   case DType::Float32:return element_energy<float>(numeric,plane,i,column,energy);
+   case DType::Float64:return element_energy<double>(numeric,plane,i,column,energy);
+   case DType::UInt8:return element_energy<std::uint8_t>(numeric,plane,i,column,energy);
+   case DType::UInt16:return element_energy<std::uint16_t>(numeric,plane,i,column,energy);
+   case DType::UInt32:return element_energy<std::uint32_t>(numeric,plane,i,column,energy);
+   case DType::UInt64:return element_energy<std::uint64_t>(numeric,plane,i,column,energy);
    default:return false;
   }
  }
  static bool energy(const NumericView& numeric,double& sum){
   for(std::size_t plane=0;plane<numeric.planes.size();++plane)for(std::size_t i=0;i<numeric.actual[0];++i)
-   if(!element(numeric,plane,i,sum))return false;
+   for(std::size_t column=0;column<(numeric.contract->shape.rank==Rank::Matrix?numeric.actual[1]:1);++column)
+    if(!element(numeric,plane,i,column,sum))return false;
   return true;
  }
+ bool read_stage_energy(const EndpointIdentity& endpoint,const NumericView& numeric,double& sum){
+  if(!energy(numeric,sum)){mark_bad({endpoint.node,endpoint.direction,endpoint.port},"element read or finiteness");return false;}
+  if(inactive_route_endpoint(graph,endpoint.node,endpoint.direction,endpoint.port)&&!zero_values(numeric)){mark_bad({endpoint.node,endpoint.direction,endpoint.port},"inactive Switch is not exact typed zero");return false;}
+  return true;
+ }
+
  void observe_stage(const DeliveredNumericFrame& delivered,const EndpointIdentity& endpoint,Stage& state){
   const auto view=delivered.frame.view();const auto* numeric=std::get_if<NumericView>(&view.payload);
-  if(!numeric||!matches_port(endpoint,*numeric)){bad=true;return;}
-  double sum=0;if(!energy(*numeric,sum)){bad=true;return;}
+  if(!numeric||!matches_port(endpoint,*numeric)){mark_bad({endpoint.node,endpoint.direction,endpoint.port},"payload or declared contract mismatch");return;}
+  double sum=0;if(!read_stage_energy(endpoint,*numeric,sum))return;
+  if(endpoint.node==evidence.node&&!evidence.observe(endpoint.port,*numeric,view.stamp.sequence))mark_bad({endpoint.node,endpoint.direction,endpoint.port},"TempoEvidence count/table/maturity");
+  if(state.frames&&view.stamp.sequence<state.last)mark_bad({endpoint.node,endpoint.direction,endpoint.port},"sequence regressed");
   update_stage(state,view.stamp.sequence,sum);
  }
  void observe(const DeliveredNumericFrame& delivered){
@@ -176,15 +309,20 @@ struct Observation {
  void history_lifecycle(const DeliveredNumericHistoryRow& row,History& history){
   if((row.event==NumericHistoryEvent::Empty||row.event==NumericHistoryEvent::Unavailable)&&row.filled_count==0&&row.capacity==history.capacity)history.unavailable=true;
  }
+ void observe_history_row(const DeliveredNumericHistoryRow& row,const EndpointIdentity& endpoint,History& history,std::uint64_t capacity) {
+  if(row.capacity!=capacity||row.filled_count!=std::min(row.accepted_row_ordinal,capacity)||row.accepted_row_ordinal<=history.ordinal)
+   mark_bad({endpoint.node,endpoint.direction,endpoint.port},"History capacity/filled/ordinal");
+  history.ordinal=row.accepted_row_ordinal;++history.rows;
+  if(!history_payload(row.compact,history))mark_bad({endpoint.node,endpoint.direction,endpoint.port},"History payload read or finiteness");
+ }
+
  void observe_history(const DeliveredNumericHistoryRow& row){
   if(!row.compact.context)return;
   const auto& endpoint=row.compact.context->endpoint;std::lock_guard lock(mutex);
   const auto at=histories.find(endpoint.node);if(at==histories.end())return;
   const auto capacity=at->second.capacity;
   if(row.event!=NumericHistoryEvent::Row){history_lifecycle(row,at->second);return;}
-  bad|=row.capacity!=capacity||row.filled_count!=std::min(row.accepted_row_ordinal,capacity)||row.accepted_row_ordinal<=at->second.ordinal;
-  at->second.ordinal=row.accepted_row_ordinal;++at->second.rows;
-  if(!history_payload(row.compact,at->second))bad=true;
+  observe_history_row(row,endpoint,at->second,capacity);
  }
  bool scalar_agreement(domain::NodeId id,const domain::ConfiguredProcessingNode& configured)const {
   if(configured.kind!="ScalarView")return false;
@@ -205,7 +343,7 @@ struct Observation {
   const auto& ports=std::get<1>(key)==domain::PortDirection::Output?configured->outputs:configured->inputs;
   const auto port=std::find_if(ports.begin(),ports.end(),[&](const auto& value){return value.id==std::get<2>(key);});
   const auto c=port->contract.view();const auto* numeric=std::get_if<NumericContract>(&c);
-  return s.frames>=5&&s.last>s.first&&((numeric&&numeric->shape.rank==Rank::Scalar)||signed_metric(key,*configured)||s.positive);
+  return s.frames>=5&&s.last>s.first&&((numeric&&numeric->shape.rank==Rank::Scalar)||inactive_route_endpoint(graph,std::get<0>(key),std::get<1>(key),std::get<2>(key))||(evidence.count==0&&evidence_table_endpoint(graph,std::get<0>(key),std::get<1>(key),std::get<2>(key)))||signed_metric(key,*configured)||s.positive);
  }
  bool history_ready(domain::NodeId id,const History& history)const {
   const auto configured=node(id);const auto side=configured->outputs.empty()?domain::PortDirection::Input:domain::PortDirection::Output;
@@ -216,12 +354,31 @@ struct Observation {
   if(bad)return true;
   for(const auto& [key,s]:stages)if(!stage_ready(key,s))return false;
   for(const auto& [id,h]:histories)if(!history_ready(id,h))return false;
-  return true;
+  return evidence.ready();
  }
+ void mark_bad(const Key& key,const char* reason) {
+  if(!bad)std::fprintf(stderr,"shipped invalid node=%lld direction=%u port=%u reason=%s\n",(long long)std::get<0>(key),unsigned(std::get<1>(key)),unsigned(std::get<2>(key)),reason);
+  bad=true;
+ }
+ void report_contract(const Key& key)const {
+  const auto configured=node(std::get<0>(key));if(configured==graph.nodes.end())return;
+  const auto& ports=std::get<1>(key)==domain::PortDirection::Output?configured->outputs:configured->inputs;
+  const auto port=std::find_if(ports.begin(),ports.end(),[&](const auto& value){return value.id==std::get<2>(key);});if(port==ports.end())return;
+  const auto contract=port->contract.view();const auto* numeric=std::get_if<NumericContract>(&contract);if(!numeric)return;
+  std::printf("  contract kind=%s dtype=%u rank=%u extents=%llu..%llu/%llu..%llu axes=%u/%u semantic=%u quantity=%u unit=%u\n",configured->kind.c_str(),unsigned(numeric->dtype),unsigned(numeric->shape.rank),
+   (unsigned long long)numeric->shape.extents[0].minimum,(unsigned long long)numeric->shape.extents[0].maximum,(unsigned long long)numeric->shape.extents[1].minimum,(unsigned long long)numeric->shape.extents[1].maximum,
+   unsigned(numeric->shape.axes[0]),unsigned(numeric->shape.axes[1]),unsigned(numeric->semantic),unsigned(numeric->quantity),unsigned(numeric->unit));
+ }
+ void report_stage(const Key& key,const Stage& state)const {
+  const bool ready=stage_ready(key,state);
+  std::printf(" stage%lld/%u/%u frames=%u positive=%d seq=%llu..%llu unavailable=%u ready=%d\n",(long long)std::get<0>(key),unsigned(std::get<1>(key)),unsigned(std::get<2>(key)),state.frames,int(state.positive),(unsigned long long)state.first,(unsigned long long)state.last,state.unavailable,int(ready));
+  if(!ready)report_contract(key);
+ }
+
  void report(const char* name,bool good)const {
-  std::printf("shipped %s: opens=%u stages=%zu history=%zu prepared=%zu %s\n",name,opens,stages.size(),histories.size(),prepared.size(),good?"PASS":"FAIL");
-  if(!good)for(const auto& [key,s]:stages)std::printf(" stage%lld/%u/%u frames=%u positive=%d seq=%llu..%llu\n",(long long)std::get<0>(key),unsigned(std::get<1>(key)),unsigned(std::get<2>(key)),s.frames,int(s.positive),(unsigned long long)s.first,(unsigned long long)s.last);
-  if(!good)for(const auto& [id,h]:histories)std::printf(" history%lld rows=%u capacity=%llu missing=%d ready=%d\n",(long long)id,h.rows,(unsigned long long)h.capacity,int(h.unavailable),int(history_ready(id,h)));
+  std::printf("shipped %s: opens=%u stages=%zu history=%zu prepared=%zu bad=%d %s\n",name,opens,stages.size(),histories.size(),prepared.size(),int(bad),good?"PASS":"FAIL");
+  if(!good)for(const auto& [key,state]:stages)report_stage(key,state);
+  if(!good)for(const auto& [id,history]:histories)std::printf(" history%lld rows=%u ordinal=%llu capacity=%llu missing=%d ready=%d\n",(long long)id,history.rows,(unsigned long long)history.ordinal,(unsigned long long)history.capacity,int(history.unavailable),int(history_ready(id,history)));
  }
 };
 inline bool apply(NumericEngine& engine,const domain::NumericProcessingGraph& graph,const char* name){
@@ -233,9 +390,9 @@ inline bool apply(NumericEngine& engine,const domain::NumericProcessingGraph& gr
  engine.set_reply_handler({});return result;
 }
 }
-inline bool finish_observation(pipeline::NumericEngine& engine,std::uint64_t tap,shipped_probe::Observation& observation,const char* name){
+inline bool finish_observation(pipeline::NumericEngine& engine,std::uint64_t tap,shipped_probe::Observation& observation,const char* name,int timeout){
  using namespace shipped_probe;
- const bool delivered=wait([&]{std::lock_guard lock(observation.mutex);return observation.ready();});
+ const bool delivered=wait([&]{std::lock_guard lock(observation.mutex);return observation.ready();},timeout);
  engine.unsubscribe_numeric_tap(tap);
  std::lock_guard lock(observation.mutex);
  const bool good=delivered&&!observation.bad&&observation.opened==observation.expected_opens&&observation.ready();
@@ -248,5 +405,5 @@ inline bool measure_shipped_example(const domain::NumericProcessingGraph& graph,
  if(!apply(engine,graph,name))return false;
  const auto tap=engine.subscribe_numeric_tap({},[&](const auto& frame){observation.observe(frame);},[&](const auto& row){observation.observe_history(row);});
  if(!tap)return false;
- return finish_observation(engine,tap,observation,name);
+ return finish_observation(engine,tap,observation,name,delivery_timeout(graph));
 }

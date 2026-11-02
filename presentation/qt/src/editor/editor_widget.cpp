@@ -1769,6 +1769,12 @@ bool SchemeEditorWidget::eventFilter(QObject* object,QEvent* event) {
     return QWidget::eventFilter(object,event);
 }
 void SchemeEditorWidget::initialize_default_layout() { _initial_layout_pending=true;_initial_layout_fit=true;schedule_initial_layout(); }
+void SchemeEditorWidget::initialize_preset_layout(const QJsonObject& positions) {
+    if(positions.isEmpty()){initialize_default_layout();return;}
+    restore_node_positions(positions);
+    const auto generation=_document_generation;
+    QTimer::singleShot(0,this,[this,generation]{if(generation==_document_generation)fit_nodes();});
+}
 void SchemeEditorWidget::restore_node_positions(const QJsonObject& positions) {
     if(positions.isEmpty())return;
     // A load can already have queued a default layout for the first Show event.
@@ -2544,13 +2550,15 @@ public:
     }
 private:
     bool arrange_curated_graph() {
-        if (!_graph.nodeExists(1111) || !_graph.nodeExists(1102) ||
+        if (!_graph.nodeExists(1304) || !_graph.nodeExists(1102) ||
             !_graph.nodeExists(1007) || !_graph.nodeExists(1005))return false;
         const std::vector<std::vector<QtNodes::NodeId>> columns{
-            {1,13,16},{200},{332},{2,9,1000,1003},{3,1001},
-            {4},{5,1004},{1005,15,1110,10},{6,1006},
-            {1008,1010,1007,11,12},{1111},{7},
-            {8,1009,1011,1102},{1103,1105},{1106}};
+            {1,13,16},{200},{332,1313},{2,9,1000,1003,1314,1315},{3,1001,1310,1311},
+            {4,1312},{5,1004,1300,1320,1330,1340,1350},{1005,15,1110,10,1301,1321,1331,1341,1351},{6,1006,1302,1322,1332,1342,1352},
+            {1008,1010,1007,11,12,1303},{7,1304,1360},
+            {8,1009,1011,1102,1305,1306,1361},{1103,1105,1200,1210},
+            {1106,1201,1211},{1202,1212},{1203,1207,1213,1217},
+            {1204,1208,1214,1218},{1250,1260},{1205,1209,1215,1219},{1206,1216,1220}};
         double x=0;
         for(const auto& ids:columns)x+=place_curated_column(ids,x)+92;
         return true;
@@ -2558,12 +2566,27 @@ private:
     double place_curated_column(const std::vector<QtNodes::NodeId>& ids,double x) {
         double y=0,width=0;
         for(const auto id:ids)if(auto* item=_scene.nodeGraphicsObject(id)){
+            y=std::max(y,curated_lane_origin(id));
             const auto bounds=item->boundingRect();
             _positions[id]=QPointF(x-bounds.left(),y-bounds.top());
             width=std::max(width,bounds.width());
             y+=bounds.height()+84;
         }
         return width;
+    }
+    static double tempogram_lane_origin(QtNodes::NodeId id) {
+        if(id==1250)return 4000;
+        if(id==1260)return 5800;
+        if(id>=1200 && id<=1209)return 4000;
+        if(id>=1210 && id<=1219)return 5800;
+        return id==1220?7600:0;
+    }
+
+    static double curated_lane_origin(QtNodes::NodeId id) {
+        if(id>=1320 && id<=1352)return 9000+1200*((id-1320)/10);
+        if(id>=1300 && id<=1315)return 2200;
+        if(id>=1360 && id<=1361)return 3400;
+        return tempogram_lane_origin(id);
     }
     void build_edges() {
         for (const auto id : _graph.allNodeIds()) { _incoming[id] = 0; _layer[id] = 0; }

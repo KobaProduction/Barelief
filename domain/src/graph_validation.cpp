@@ -30,7 +30,7 @@ std::string_view parameter_error(NodeKind,const FFTViewParameters& p) noexcept {
     return checked("merge",merge_valid(p.merge));
 }
 std::string_view parameter_error(NodeKind kind,const WindowParameters& p) noexcept {
-    return checked("size",within(kind,"size",p.size) && !(p.size & (p.size-1)));
+    return checked("size",within(kind,"size",p.size));
 }
 std::string_view parameter_error(NodeKind,const WindowFunctionParameters& p) noexcept {
     return checked("function",p.function>=WindowFunction::Hann && p.function<=WindowFunction::FlatTop);

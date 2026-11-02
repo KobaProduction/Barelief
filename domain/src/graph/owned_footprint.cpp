@@ -1,10 +1,12 @@
 #include "processing_admission.h"
+#include <algorithm>
 namespace domain {
 namespace {
 using namespace signal_contracts;
 struct Footprint {
     const ProcessingAdmissionLimits& limits;
     std::size_t bytes;
+    bool include_contracts=true;
     bool container(std::size_t count,std::size_t width=1) noexcept {
         std::size_t extra=0;
         return detail::checked_mul(count,width,extra) && detail::checked_add(bytes,extra);
@@ -28,7 +30,7 @@ struct Footprint {
     }
     bool ports(const std::vector<ProcessingPort>& values) noexcept {
         if(!charge(values.capacity(),sizeof(ProcessingPort)))return false;
-        for(const auto& port:values)if(!charge(port.contract.owned_bytes()))return false;
+        for(const auto& port:values)if(include_contracts && !charge(port.contract.owned_bytes()))return false;
         return true;
     }
     bool parameters(const ProcessingParameters& parameters) noexcept;
@@ -51,6 +53,21 @@ bool graph_container_bytes(const NumericProcessingGraph& graph,Footprint& footpr
         footprint.container(graph.configuration_bindings.capacity(),sizeof(ConfigurationBinding)) &&
         footprint.container(graph.edges.capacity(),sizeof(Edge)) && footprint.container(graph.graph_id.capacity()) && footprint.container(1);
 }
+}
+bool processing_node_owned_bytes(const ConfiguredProcessingNode& node,const ProcessingAdmissionLimits& limits,std::size_t& out,bool include_contracts) noexcept {
+    Footprint footprint{limits,sizeof(ConfiguredProcessingNode),include_contracts};
+    if(!footprint.text(node.kind,node.kind.capacity()) || !footprint.ports(node.inputs) || !footprint.ports(node.outputs) || !footprint.parameters(node.parameters))return false;
+    out=footprint.bytes;return true;
+}
+bool processing_node_required_bytes(const ResolvedProcessingNode& node,const ProcessingAdmissionLimits& limits,std::size_t& out,bool include_contracts) noexcept {
+    if(!node.parameters)return false;
+    Footprint footprint{limits,sizeof(ConfiguredProcessingNode),include_contracts};
+    // Direct string construction avoids incremental append growth; the inline
+    // string object size also bounds its small-string representation.
+    const auto text_capacity=std::max(node.kind.size(),sizeof(std::string));
+    if(!footprint.text(node.kind,text_capacity) || !footprint.charge(node.inputs.size(),sizeof(ProcessingPort)) || !footprint.charge(node.outputs.size(),sizeof(ProcessingPort)) || !footprint.parameters(*node.parameters))return false;
+    if(include_contracts)for(auto ports:{node.inputs,node.outputs})for(const auto& port:ports)if(!footprint.charge(port.contract.owned_bytes()))return false;
+    out=footprint.bytes;return true;
 }
 namespace detail {
 bool processing_node_owned_bytes(const ConfiguredProcessingNode& node,const ProcessingAdmissionLimits& limits,std::size_t& out) noexcept {

@@ -1,4 +1,6 @@
 #include "preparation_support.h"
+#include "music_execution.h"
+#include <domain/music/contracts.h>
 #include "signal_time.h"
 #include <wled_protocol/wled_packet.h>
 #include <cmath>
@@ -57,7 +59,13 @@ class ResourceAdmission {
         return !scalar || numeric_add(out.resources.plan_bytes,n.inputs.size()*sizeof(PlanNode::ScalarInput));
     }
     bool music() noexcept {
-        const bool musical=n.kind=="MusicalSpectrogram" || n.kind=="NoteSpectrum" || n.kind=="NoteSalience" || n.kind=="RhythmAnalyzer" || n.kind=="RhythmFeatures";
+        if(n.operation==ProcessingOperation::NumericExtension){
+            const auto support=PreparedNumericExtension::assess(n,p);
+            return support.supported && numeric_add(out.resources.plan_bytes,support.resources.plan_bytes) && numeric_add(out.resources.payload_bytes,support.resources.payload_bytes) &&
+                numeric_add(out.resources.scratch_bytes,support.resources.scratch_bytes) && numeric_add(out.resources.stack_bytes,support.resources.stack_bytes) &&
+                numeric_add(out.resources.plan_bytes,sizeof(PlanNode::EndpointPlan)+n.inputs.size()*sizeof(PlanNode::ScalarInput));
+        }
+        const bool musical=n.kind=="MusicalSpectrogram" || n.kind=="NoteSpectrum" || n.kind=="NoteSalience" || n.kind=="RhythmAnalyzer" || n.kind=="RhythmFeatures" || n.kind=="TempoEvidence" || n.kind=="OnsetStrength" || spectral_descriptor_kind(n.kind);
         if(musical && !p.music_enabled)return false;
         if((n.operation==ProcessingOperation::MusicTransform || paired_processing(n.operation)) && !music_support(n,out.resources,p))return false;
         return !paired_processing(n.operation) || numeric_add(out.resources.plan_bytes,sizeof(PlanNode::EndpointPlan)+n.inputs.size()*sizeof(PlanNode::ScalarInput));
@@ -101,7 +109,8 @@ class ResourceAdmission {
         if((n.operation==ProcessingOperation::Mixer || n.operation==ProcessingOperation::ChannelComparison) && !mixer())return false;
         if(!numeric_add(out.resources.payload_bytes,p.admission.frame.max_string_bytes+n.outputs.size()*(sizeof(FrameStamp)+sizeof(bool))))return false;
         // Conservative callback/dispatch reservation, not a native ABI measurement.
-        if(!numeric_mul(p.admission.max_nodes,1536,out.resources.stack_bytes) || !numeric_add(out.resources.stack_bytes,4096))return false;
+        std::size_t dispatch=0;
+        if(!numeric_mul(p.admission.max_nodes,1536,dispatch) || !numeric_add(dispatch,4096) || !numeric_add(out.resources.stack_bytes,dispatch))return false;
         return !numeric_constant_kind(n.kind) || constant_conversion_resources(n,p,out.resources);
     }
     bool output_objects(const ProcessingPort& port) noexcept {
@@ -131,7 +140,7 @@ class ResourceAdmission {
         if(!numeric_metadata(contract))return false;
         std::size_t bytes=0,stride=0,plane=0;std::array<std::size_t,2> shape;
         if(!numeric_geometry(contract,bytes,stride,plane,shape) || bytes>p.admission.frame.max_payload_bytes)return false;
-        const bool shared_zero=zero_bytes(contract) && (port.direction==PortDirection::Input || (n.operation==ProcessingOperation::Source && n.kind!="SignalGenerator" && !numeric_constant_kind(n.kind)) || (n.operation==ProcessingOperation::Transform && n.kind=="Window" && direct_window(contract)));
+        const bool shared_zero=zero_bytes(contract) && (port.direction==PortDirection::Input || (n.operation==ProcessingOperation::Source && n.kind!="SignalGenerator" && !numeric_constant_kind(n.kind)));
         // Inline input objects are charged by endpoints(); output vectors own objects.
         return (shared_zero || numeric_add(out.resources.payload_bytes,bytes)) && numeric_add(out.resources.plan_bytes,contract.channel_order.size()*sizeof(PlaneLayout)) && output_objects(port);
     }
@@ -172,27 +181,43 @@ class ResourceAdmission {
 
         return true;
     }
-    bool matrix_fft() noexcept {
+    bool matrix_correlation() noexcept {
         const auto input=std::get<NumericContract>(numeric_port(n.inputs,0)->contract.view());
         const auto output=std::get<NumericContract>(numeric_port(n.outputs,0)->contract.view());
-        const auto samples=std::size_t(output.shape.extents[1].maximum)*2;
+        const auto samples=input.shape.extents[1].maximum;
+        if(!matrix_center() || samples>p.kernels.max_elements)return false;
+        std::size_t input_bytes=0,output_bytes=0;
+        return numeric_mul(std::size_t(samples),sizeof(float),input_bytes) &&
+            numeric_mul(std::size_t(output.shape.extents[1].maximum),sizeof(float),output_bytes) &&
+            numeric_add(out.resources.payload_bytes,input_bytes) && numeric_add(out.resources.payload_bytes,output_bytes);
+    }
+    bool matrix_fft() noexcept {
+        const auto input=std::get<NumericContract>(numeric_port(n.inputs,0)->contract.view());
+        double size=0;if(!numeric_parameter(n,"fft_size",size))return false;
+        const auto samples=std::size_t(size);
         if(input.representation.encoding!=StorageEncoding::Native || input.representation.layout!=ChannelLayout::Planar ||
            input.representation.valid_bits || (input.representation.normalization!=Normalization::None && input.representation.normalization!=Normalization::FloatUnit) ||
            samples>dsp_kernels::max_fft_samples)return false;
-        // One reusable FFT and one row staging vector.
+        // One reusable raw RFFT and bounded row/complex staging.
         // estimate_memory has a legacy minimum of 512; the backend supports 256.
         const auto memory=dsp_kernels::estimate_memory(std::max(samples,std::size_t{512}),0);if(!memory)return false;
-        if(!numeric_add(out.resources.payload_bytes,(samples+samples/2)*sizeof(float)) ||
-           !numeric_add(out.resources.scratch_bytes,samples*2*sizeof(float)+memory->shared_radix2_tables_bytes))return false;
+        if(!numeric_add(out.resources.payload_bytes,(samples*2+2)*sizeof(float)) ||
+           !numeric_add(out.resources.scratch_bytes,(samples*5+8)*sizeof(float)+memory->shared_radix2_tables_bytes))return false;
 
         return true;
+    }
+    bool transform_storage() noexcept {
+        if(n.kind=="FrameStride")return true;
+        if(n.kind=="FrameBuffer")return get(n.inputs).dtype==DType::Float32 && numeric_add(out.resources.payload_bytes,std::size_t(get(n.outputs).shape.extents[0].maximum)*sizeof(float));
+        return n.operation!=ProcessingOperation::Transform || n.kind=="Window" || numeric_float_dsp(n,out.resources);
     }
     bool operations() noexcept {
         if(n.operation==ProcessingOperation::WLEDEncoder && !wled())return false;
         if(n.operation==ProcessingOperation::MatrixCenter && !matrix_center())return false;
+        if(n.operation==ProcessingOperation::MatrixAutocorrelation && !matrix_correlation())return false;
         if(n.operation==ProcessingOperation::MatrixWindowFunction && !matrix_window())return false;
         if(n.operation==ProcessingOperation::MatrixFFT && !matrix_fft())return false;
-        return n.operation!=ProcessingOperation::Transform || numeric_float_dsp(n,out.resources);
+        return transform_storage();
     }
     bool history_masks() noexcept {
         const auto rows=get(n.operation==ProcessingOperation::Source?n.outputs:n.inputs).shape.extents[0].maximum;std::size_t mask_bytes=0;
@@ -371,13 +396,6 @@ class FloatingAdmission {
             result<dsp_kernels::PcmResampler::maximum_output(columns,input.clock.sample_rate,output.clock.sample_rate))return false;
         return numeric_add(resources.payload_bytes,(columns+result)*planes*sizeof(float));
     }
-    bool Window() noexcept {
-        double parameter=0;
-        if(output.coordinates[0].mode==CoordinateMode::ExplicitFloat64LE && input.coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE)return false;
-        if(input.shape.rank!=Rank::Vector || !planes || !input.clock.sample_rate || !numeric_parameter(n,"size",parameter) || parameter!=double(result))return false;
-        if(result<512 || result>dsp_kernels::max_fft_samples || (result&(result-1)))return false;
-        return numeric_add(resources.payload_bytes,result*planes*sizeof(float));
-    }
     bool WindowFunction() noexcept {
 
         ProcessingParameterView value;if(resolve_processing_parameter(n,"function",value)!=Status::ok || !std::holds_alternative<std::string_view>(value))return false;
@@ -412,23 +430,9 @@ class FloatingAdmission {
         if(planes!=1 || columns!=result || !numeric_parameter(n,"gain",parameter))return false;
         return true;
     }
-    bool Mel() noexcept {
-        double parameter=0;
-        if(output.coordinates[0].mode==CoordinateMode::ExplicitFloat64LE && output.coordinates[0].unit!=NumericUnit::Hertz && output.coordinates[0].unit!=NumericUnit::Values)return false;
-        if(planes!=1 || !input.clock.sample_rate || columns>dsp_kernels::max_fft_samples/2 || result>dsp_kernels::max_mel_bands ||
-           !numeric_parameter(n,"bands",parameter) || parameter!=double(result))return false;
-        if(input.coordinates[0].mode!=CoordinateMode::None &&
-           input.coordinates[0].unit!=NumericUnit::Hertz)return false;
-        std::size_t weight_cells=0,weight_bytes=0;
-        if(!numeric_mul(columns,result,weight_cells) || !numeric_mul(weight_cells,sizeof(double),weight_bytes))return false;
-        if(!numeric_add(resources.scratch_bytes,(result+2)*sizeof(double)) || !numeric_add(resources.payload_bytes,(result+2)*sizeof(double)))return false;
-        return numeric_add(resources.payload_bytes,(columns+result)*sizeof(float)+columns*sizeof(double)) &&
-               numeric_add(resources.payload_bytes,weight_bytes);
-    }
     bool signal(NodeKind kind) noexcept {
         switch(kind){
         case NodeKind::PcmResampler:return PcmResampler();
-        case NodeKind::Window:return Window();
         case NodeKind::WindowFunction:return WindowFunction();
         case NodeKind::StereoFFT:return StereoFFT();
         default:return false;
@@ -440,7 +444,6 @@ class FloatingAdmission {
         case NodeKind::BarkWeighting:return BarkWeighting();
         case NodeKind::SpectrumMerge:return SpectrumMerge();
         case NodeKind::SpectrumGain:return SpectrumGain();
-        case NodeKind::Mel:return Mel();
         default:return signal(kind);
         }
     }
@@ -458,6 +461,7 @@ public:
 };
 }
 bool numeric_float_dsp(const ResolvedProcessingNode& node,ProcessingResources& resources) noexcept {
+    if(node.kind=="Mel" || node.kind=="PowerToDb")return spectral_frontend_resources(node,resources);
     return FloatingAdmission(node,resources).assess();
 }
 
@@ -470,8 +474,9 @@ namespace {
 ProcessingGeometryLimits runtime_geometry(const void* context,std::string_view kind) noexcept {
     const auto& profile=*static_cast<const NumericRuntimeProfile*>(context);
     const auto capacity=std::min<std::size_t>(dsp_kernels::max_fft_samples,profile.kernels.max_elements);
-    const bool raw=kind=="Fourier" || kind=="RealFourier" || kind=="MatrixFFT";
-    return {raw?256u:512u,std::uint32_t(capacity),1,768000};
+    if(kind=="Fourier")return {4,std::uint32_t(capacity),0,0};
+    if(kind=="RealFourier")return {8,std::uint32_t(capacity),0,0};
+    return {kind=="MatrixFFT"?256u:512u,std::uint32_t(capacity),1,768000};
 }
 }
 NumericDeviceCapabilities PreparedGraph::numeric_capabilities(const NumericRuntimeProfile& p) noexcept {

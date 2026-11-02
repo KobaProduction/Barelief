@@ -42,7 +42,9 @@ void music_transform(examples::Builder& b) {
     b.connect(200,201,1,input_sample_rate_input);
     examples::add_window(b,201,2,3,1000,1001,music_fft_size);
     examples::add_frequency_step(b,201,1000,1003);
-    b.chain(4,"RFFT",1001);
+    b.chain(4,"RFFT",1001,examples::transform({{"fft_size",NumericLiteral{music_fft_size}},
+        {"sample_rate",NumericLiteral{std::uint64_t{music_sample_rate}}}}));
+    b.connect(201,4,sample_rate_output,target_sample_rate_input);
     b.chain(5,"SpectrumProjection",4,examples::transform({{"representation",std::string{"power"}},
         {"fft_size",NumericLiteral{music_fft_size}},{"sample_rate",NumericLiteral{double(music_sample_rate)}},
         {"window_function",std::string{"hann"}}}));

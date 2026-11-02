@@ -1,0 +1,9 @@
+{
+  "repository": "mreineck/pocketfft",
+  "revision": "9367142748fcc9696a1c9e5a99b76ed9897c9daa",
+  "file": "pocketfft_hdronly.h",
+  "upstream_sha256": "50f4ddbe60432325f560c706b6f1c49f9e0949fc7f20ae6499f2299e37d9790c",
+  "local_sha256": "fd0fd2654c0f8a5981e0b9dd3dfc75d686d5701b1f8a683c7b668e6380eb1dd2",
+  "local_patch": "rfftp::exec optional caller-owned scratch and const prepared_storage_bytes accessor; no FFT formula changes",
+  "execution": "prepared rfftp<double>, POCKETFFT_NO_MULTITHREADING, no high-level allocating API"
+}

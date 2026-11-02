@@ -205,11 +205,15 @@ class NodeRun {
         for(auto child:n.children)if(!runtime.nodes[child].scalar_view() && runtime.nodes[child].parent_port==port)send_child(child,frame,status);
         for(const auto& route:n.selector_destinations)if(route.output==port)send_child(route.node,frame,status,route.input);
     }
+    Status frame_status(PortId port,const DataFrameView& frame) const noexcept {
+        if(state.extension)return state.extension->output_status(port);
+        return frame.stamp.available?Status::ok:downstream_status==Status::ok?Status::unavailable:downstream_status;
+    }
     void emit(PortId port) noexcept {
         auto& frame=state.numeric_frames[port];++state.stats.produced;selector_storage(frame,port);
         if(auto* numeric=std::get_if<NumericView>(&frame.payload))numeric->contract=&std::get<NumericContract>(n.numeric_outputs[port]);
         stamp_state(state,frame.stamp);
-        if(callbacks.output || callbacks.sink_input)port_delivery.output(endpoint(n,PortDirection::Output,port,frame,frame.stamp.available?Status::ok:downstream_status==Status::ok?Status::unavailable:downstream_status),n.internal_conversion);
+        if(callbacks.output || callbacks.sink_input)port_delivery.output(endpoint(n,PortDirection::Output,port,frame,frame_status(port,frame)),n.internal_conversion);
         deliver_scalar_views(port,frame);deliver_mixers(port,frame);deliver_children(port,frame);
     }
     bool sequence_marker() noexcept {
@@ -260,6 +264,14 @@ class NodeRun {
     }
     std::optional<Status> process_mixture() noexcept {state.numeric_frames[0]=current;
 
+        return {};
+    }
+    std::optional<Status> process_extension() noexcept {
+        if(!state.extension)return reject(Status::unavailable);
+        status=state.extension->accept(n,state,selector_lane,current,limits);
+        if(status==Status::would_block)return Status::ok;
+        if(status==Status::unavailable)marker_stamp.discontinuity=true;
+        if(status!=Status::ok)return reject(status,status==Status::unavailable);
         return {};
     }
     std::optional<Status> process_paired() noexcept {
@@ -494,9 +506,10 @@ std::optional<Status> publish_wled_ready() noexcept {
     void kernel_continuity() noexcept {
         // Do not assemble a window from samples spanning a selector switch,
         // source restart or unavailable interval. Retained History stays intact.
-        if(n.node.kind==NodeKind::Window && (current.stamp.discontinuity || !current.stamp.available ||
+        if((n.node.kind==NodeKind::Window || n.node.kind==NodeKind::FrameBuffer || n.node.kind==NodeKind::FrameStride) && (current.stamp.discontinuity || !current.stamp.available ||
             (state.numeric_marker && !state.numeric_stamp.available && current.stamp.available))){
             state.progress=state.remainder=state.hop=0;
+            if(n.node.kind==NodeKind::FrameBuffer)state.frames=state.oldest=0;
             std::fill(state.pcm.begin(),state.pcm.end(),0);
             state.pending_discontinuity=true;
         }
@@ -523,7 +536,7 @@ std::optional<Status> publish_wled_ready() noexcept {
         if(disconnected){const auto* history=std::get_if<NumericView>(&current.payload);
             if(!history || !history->ring.capacity)current.payload=zero_value(n.numeric_input,state.numeric_zero);
         }
-        if(!state.route_masks.empty() && std::get<NumericView>(current.payload).ring.capacity && (n.operation==ProcessingOperation::Sink || n.operation==ProcessingOperation::Reduce || n.operation==ProcessingOperation::Converter || n.operation==ProcessingOperation::MatrixTranspose || n.operation==ProcessingOperation::MatrixWindowFunction || n.operation==ProcessingOperation::MatrixFFT || n.operation==ProcessingOperation::MatrixRow || n.operation==ProcessingOperation::MatrixCenter)){
+        if(!state.route_masks.empty() && std::get<NumericView>(current.payload).ring.capacity && (n.operation==ProcessingOperation::Sink || n.operation==ProcessingOperation::Reduce || n.operation==ProcessingOperation::Converter || matrix_processing(n.operation) || n.operation==ProcessingOperation::MatrixRow)){
             auto& value=std::get<NumericView>(current.payload);value=history_route(state,value,0,disconnected || (!n.node.enabled && !n.identity_bypass),first,
                 history_producer(n.parent!=absent?n.parent:n.numeric_clock_parent),current.stamp);
         }
@@ -534,7 +547,7 @@ std::optional<Status> publish_wled_ready() noexcept {
         // source discontinuities clear its state and set pending_discontinuity.
         if(n.operation==ProcessingOperation::History)current.stamp.discontinuity=state.pending_discontinuity ||
             (n.clock!=absent && runtime.nodes[n.clock].operation==ProcessingOperation::InputSelector && incoming.stamp.discontinuity);
-        if(state.pending_discontinuity && n.node.kind!=NodeKind::Window && n.node.kind!=NodeKind::PcmResampler){current.stamp.discontinuity=true;
+        if(state.pending_discontinuity && n.node.kind!=NodeKind::Window && n.node.kind!=NodeKind::FrameBuffer && n.node.kind!=NodeKind::PcmResampler){current.stamp.discontinuity=true;
             // An unavailable History marker does not append a row. Preserve the
             // boundary until the first retained row after recovery is emitted.
             if(n.operation!=ProcessingOperation::History || current.stamp.available)state.pending_discontinuity=false;}
@@ -629,7 +642,8 @@ const auto& source=std::get<NumericView>(current.payload);const auto producer=hi
         if(const auto* structured=std::get_if<StructuredContract>(&n.numeric_outputs[port])){frame.payload=StructuredView{structured,{}};return;}
         auto output=mutable_output(n,state,port);
         if(n.operation==ProcessingOperation::History || state.history_origin_valid){output.ring={output.actual[0],state.oldest,{}};output.actual[0]=state.frames;}
-        auto unavailable=output.view();unavailable.storage={};frame.payload=unavailable;
+        auto unavailable=output.view();if(n.operation==ProcessingOperation::History && port==0)select_filled_history(n,state,unavailable);
+        unavailable.storage={};frame.payload=unavailable;
     }
     void initialize_markers() noexcept {
         marker_stamp=current.stamp;
@@ -693,14 +707,18 @@ const auto& source=std::get<NumericView>(current.payload);const auto producer=hi
         default:return process_auxiliary();
         }
     }
-    std::optional<Status> process_operation() noexcept {
-        if(n.operation==ProcessingOperation::WLEDEncoder)return process_wled();
-        if(!current.stamp.available)return process_unavailable();
+    std::optional<Status> process_available() noexcept {
         if(n.identity_bypass && !((n.operation==ProcessingOperation::MatrixCenter || n.operation==ProcessingOperation::MatrixWindowFunction) && std::get<NumericView>(current.payload).ring.capacity))return process_bypass();
         if(n.operation==ProcessingOperation::Mixer || n.operation==ProcessingOperation::ChannelComparison)return process_mixture();
         if(paired_processing(n.operation))return process_paired();
-        if(n.operation==ProcessingOperation::MatrixTranspose || n.operation==ProcessingOperation::MatrixWindowFunction || n.operation==ProcessingOperation::MatrixFFT || n.operation==ProcessingOperation::MatrixCenter)return process_matrix();
+        if(matrix_processing(n.operation))return process_matrix();
         return process_values();
+    }
+    std::optional<Status> process_operation() noexcept {
+        if(n.operation==ProcessingOperation::WLEDEncoder)return process_wled();
+        if(n.operation==ProcessingOperation::NumericExtension)return process_extension();
+        if(!current.stamp.available)return process_unavailable();
+        return process_available();
     }
     void prepare_current() noexcept {
         bind_contract();selector_continuity();kernel_continuity();route_disconnected();retain_stamp();

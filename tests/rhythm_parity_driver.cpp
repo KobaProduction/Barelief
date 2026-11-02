@@ -50,7 +50,7 @@ void process_stream(r::Analyzer& analyzer,unsigned width) {
 }
 int run() {
     unsigned mode=0,fps=0,width=0;std::cin>>mode>>fps>>width;
-    r::Analyzer analyzer;r::Config config;config.feature_rate_fps=fps;
+    r::Analyzer analyzer;r::Config config;config.feature_rate_fps=fps;config.feature_count=width;
     if(!analyzer.prepare(config,r::Mode(mode)))return 2;
     process_stream(analyzer,width);
     return 0;

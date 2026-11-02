@@ -221,7 +221,7 @@ static QByteArray closed_view_session(){
     floating->floatingDockContainer()->move(88,107);
     check(wait([&]{return ui.workspace.value("ads_state").toString()!=beforeMove;},3500),
         "moving and resizing a floating spectrogram did not schedule workspace persistence");
-    for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))dock->toggleView(false);
+    for(const auto docks=app.window->workspaceDocks();auto* dock:docks)if(dock!=app.dock("dataFlowDock"))dock->toggleView(false);
     auto* save=app.window->findChild<QAction*>("saveSettings");
     check(save,"workspace save action");save->trigger();
     QFile file(QString::fromLocal8Bit(app.path));check(file.open(QIODevice::ReadOnly),"saved closed workspace source");
@@ -230,7 +230,7 @@ static QByteArray closed_view_session(){
 static void check_closed_view_restart(const QByteArray& stored){
     using namespace gui_fixture;
     App app(numeric_default_graph(),{},stored);app.apply();
-    for(auto* dock:app.window->workspaceDocks())if(dock!=app.dock("dataFlowDock"))
+    for(const auto docks=app.window->workspaceDocks();auto* dock:docks)if(dock!=app.dock("dataFlowDock"))
         check(dock->isClosed(),"closed graph or spectrogram reopened during process restart");
 }
 static bool run_closed_workspace_phase(int argc,char** argv){

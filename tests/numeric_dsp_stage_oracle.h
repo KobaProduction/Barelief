@@ -4,6 +4,7 @@
 // prepared-graph stage. Reference DFT/filter weights do not call DSP kernels.
 namespace {
 constexpr std::size_t trace_n=4096,trace_bins=trace_n/2,trace_bands=50;
+constexpr std::size_t trace_samples=19*256,trace_timestamp=trace_samples-256;
 constexpr double trace_pi=3.1415926535897932384626433832795;
 float trace_sample(std::size_t sample,std::size_t channel) {
     constexpr std::array<double,8> bins{3,8,31.25,67,113.5,241,503,997};
@@ -36,7 +37,7 @@ void trace_copy_stage(const NumericView& view,std::vector<float>& values) {
 }
 void stage_trace_output(void* user,const NumericPortFrameView& frame) {
     const auto stage=frame.identity.node==21?3:frame.identity.node;
-    if(stage<2||stage>8||frame.identity.node==3||frame.identity.port!=0||frame.frame.stamp.timestamp_ticks!=4800)return;
+    if(stage<2||stage>8||frame.identity.node==3||frame.identity.port!=0||frame.frame.stamp.timestamp_ticks!=trace_timestamp)return;
     auto& trace=*static_cast<StageTrace*>(user);
     CHECK(frame.status==Status::ok);
     if(frame.status!=Status::ok)return;
@@ -68,7 +69,6 @@ void trace_setting(ConfiguredProcessingNode& node,const char* key,NumericLiteral
 void trace_transform_geometry(ConfiguredProcessingNode& node) {
     if(node.kind=="Window") {
         trace_setting(node,"size",std::uint64_t(trace_n));
-        trace_setting(node,"input_rate",std::uint64_t{48000});
     }
     if(node.kind=="BarkWeighting"||node.kind=="Mel") {
         trace_setting(node,"sample_rate",std::uint64_t{48000});
@@ -129,7 +129,7 @@ bool trace_process_block(GraphExecutor& executor,const NumericContract& pcm,Stag
 }
 bool trace_ingress(GraphExecutor& executor,const NumericContract& pcm,StageTrace& trace) {
     std::array<float,512> samples{};
-    for(std::size_t block=0;block<19;++block) {
+    for(std::size_t block=0;block<trace_samples/256;++block) {
         for(std::size_t channel=0;channel<1;++channel)for(std::size_t sample=0;sample<256;++sample)
             samples[channel*256+sample]=trace_sample(block*256+sample,channel);
         if(!trace_process_block(executor,pcm,trace,block,samples))return false;
@@ -140,7 +140,7 @@ using TraceWindow=std::array<std::array<double,trace_n>,1>;
 TraceWindow trace_window_reference(const StageTrace& trace) {
     TraceWindow windowed{};
     for(std::size_t channel=0;channel<1;++channel)for(std::size_t sample=0;sample<trace_n;++sample) {
-        const auto input=trace_sample(4800-trace_n+sample,channel);
+        const auto input=trace_sample(trace_samples-trace_n+sample,channel);
         const auto value=double(input)*(.5*(1-std::cos(2*trace_pi*sample/(trace_n-1))));
         trace_close(trace.stages[2][channel*trace_n+sample],input);
         trace_close(trace.stages[3][channel*trace_n+sample],value);

@@ -1,4 +1,5 @@
 #include "dsp_kernels/musical_features.h"
+#include <dsp_kernels/peaks.h>
 
 #include <algorithm>
 #include <cmath>
@@ -219,9 +220,7 @@ double interpolated_peak_frequency(std::span<const float> y,std::span<const doub
             const auto left_step = frequency - input_frequencies_[k - 1];
             const auto right_step = input_frequencies_[k + 1] - frequency;
             if (std::abs(left_step - right_step) <= 1e-9 * std::max(left_step, right_step)) {
-                const double denominator = double(y[k - 1]) - 2 * double(y[k]) + y[k + 1];
-                if (denominator < 0) frequency += left_step * std::clamp(
-                    .5 * (double(y[k - 1]) - y[k + 1]) / denominator, -.5, .5);
+                frequency += left_step * quadratic_peak_offset(y[k-1],y[k],y[k+1]);
             }
         }
     return frequency;

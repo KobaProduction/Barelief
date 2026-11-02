@@ -4,7 +4,7 @@
 #include <memory>
 #include <signal_contracts/data_frame.h>
 
-namespace dataflow_runtime { struct NumericRuntimeProfile; }
+namespace dataflow_runtime { struct NumericRuntimeProfile;struct NodeStats; }
 namespace dataflow_runtime::detail {
 struct PlanNode;struct State;struct OperationKernelState;
 // Cold-owned prepared operation state; numeric, signal and music handlers are separate.
@@ -16,6 +16,7 @@ public:
     void reset() noexcept;
     void invalidate_product_lane(std::size_t lane) noexcept;
     bool copy_state_from(const PreparedOperationKernel&) noexcept;
+    void copy_rhythm_clipping_stats(NodeStats&) const noexcept;
 private:
     std::unique_ptr<OperationKernelState> value_;
     friend bool music_support(const domain::ResolvedProcessingNode&,domain::ProcessingResources&,const NumericRuntimeProfile&) noexcept;
@@ -23,6 +24,7 @@ private:
     friend signal_contracts::Status execute_music(const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
     friend signal_contracts::Status accept_fourier(const PlanNode&,State&,std::size_t,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
 };
+bool spectral_frontend_resources(const domain::ResolvedProcessingNode&,domain::ProcessingResources&) noexcept;
 bool music_support(const domain::ResolvedProcessingNode&,domain::ProcessingResources&,const NumericRuntimeProfile&) noexcept;
 signal_contracts::Status prepare_music(PlanNode&,State&,const domain::ResolvedProcessingNode&,const NumericRuntimeProfile&);
 signal_contracts::Status execute_music(const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;

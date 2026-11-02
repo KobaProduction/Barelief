@@ -36,6 +36,13 @@ bool SourceIngress::physical_output_supported(const domain::ProcessingPort& port
     rate=c->clock.sample_rate;
     return true;
 }
+struct CaptureQueueBounds {std::size_t samples=0,packets=0;};
+static CaptureQueueBounds capture_queue_bounds(std::uint32_t rate,std::size_t block) noexcept {
+    const auto burst=std::max<std::size_t>(1,rate/4);
+    if(!block || block>(SIZE_MAX-burst)/2)return {};
+    const auto samples=burst+block*2;
+    return {samples,samples/block+2};
+}
 static bool reserve_add(std::size_t value,std::size_t& bytes) noexcept {
     if(value>SIZE_MAX-bytes)return false;bytes+=value;return true;
 }
@@ -86,9 +93,11 @@ Status SourceIngress::reserve_capture_port(const domain::ProcessingPort& port,st
                 const auto data=port.contract.view();const auto* lane=std::get_if<NumericContract>(&data);
                 std::size_t ingress=0;
                 if(!lane)return Status::incompatible_contract;
+                const auto queue=capture_queue_bounds(lane->clock.sample_rate,std::size_t(lane->shape.extents[0].maximum));
+                if(!queue.samples)return Status::overflow;
                 if(!reserve_multiply(std::size_t(lane->shape.extents[0].maximum),sizeof(float),ingress) ||
                     !reserve_add(ingress,bytes) || !reserve_add(ingress,bytes) ||
-                    !reserve_add(dataflow_runtime::PcmPacketQueue::storage_bytes(std::size_t(lane->shape.extents[0].maximum)*2,4),bytes) ||
+                    !reserve_add(dataflow_runtime::PcmPacketQueue::storage_bytes(queue.samples,queue.packets),bytes) ||
                     !reserve_add(sizeof(CaptureInput),bytes) || !reserve_add(port.contract.owned_bytes(),bytes))return Status::overflow;
         return Status::ok;
     }
@@ -217,9 +226,10 @@ Status SourceIngress::stage_capture_node(const domain::ConfiguredProcessingNode&
     return Status::ok;
 }
 Status SourceIngress::prepare_capture_storage(CaptureInput& input,std::uint32_t rate) {
+    const auto queue=capture_queue_bounds(rate,input.block);
     input.bytes.resize(input.block*sizeof(float));input.planes[0]={0,{sizeof(float),0}};
     input.packet_scratch.resize(input.block);
-    if(!input.packets.prepare(rate,input.block*2,4))return Status::incompatible_contract;
+    if(!queue.samples || !input.packets.prepare(rate,queue.samples,queue.packets))return Status::incompatible_contract;
     return Status::ok;
 }
 Status SourceIngress::configure_capture_input(const domain::ConfiguredProcessingNode& node,

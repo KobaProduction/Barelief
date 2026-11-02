@@ -363,7 +363,7 @@ static SignalGeneratorProcessingParameters exact_tones() {
 }
 static NumericProcessingGraph parameter_alternatives() {
     auto graph=sample();
-    append_parameter_node(graph,8,"Spectrogram",HistoryProcessingParameters{18446744073709551615ULL});
+    append_parameter_node(graph,8,"Spectrogram",HistoryProcessingParameters{18446744073709551615ULL,true});
     append_parameter_node(graph,9,"Gate",RouteProcessingParameters{2,1,false});
     append_parameter_node(graph,10,"ScalarReduce",selected_channel_reduction());
     append_parameter_node(graph,11,"TestSignal",EndpointProcessingParameters{{{"amplitude",NumericLiteral{18446744073709551615ULL}}}});

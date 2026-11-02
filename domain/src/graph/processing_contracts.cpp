@@ -1,4 +1,10 @@
+#include <domain/numeric/temporal_operations.h>
+#include <domain/numeric/interval_operations.h>
+#include <domain/numeric/common_operations.h>
+#include <domain/numeric/sequence_operations.h>
+#include <domain/numeric/reference_operations.h>
 #include <domain/processing_contracts.h>
+#include <domain/music/contracts.h>
 #include "node_validation.h"
 #include "processing_admission.h"
 #include <algorithm>
@@ -57,7 +63,7 @@ template<class T> bool typed_parameters_equal(const T& a,const T& b) noexcept {r
 bool typed_parameters_equal(const EndpointProcessingParameters& a,const EndpointProcessingParameters& b) noexcept {return parameters_equal(a.values,b.values);}
 bool typed_parameters_equal(const TransformProcessingParameters& a,const TransformProcessingParameters& b) noexcept {return parameters_equal(a.values,b.values);}
 bool typed_parameters_equal(const ConverterProcessingParameters& a,const ConverterProcessingParameters& b) noexcept {return policy_equal(a.policy,b.policy);}
-bool typed_parameters_equal(const HistoryProcessingParameters& a,const HistoryProcessingParameters& b) noexcept {return a.capacity==b.capacity;}
+bool typed_parameters_equal(const HistoryProcessingParameters& a,const HistoryProcessingParameters& b) noexcept {return a.capacity==b.capacity && a.filled_only==b.filled_only;}
 bool typed_parameters_equal(const RouteProcessingParameters& a,const RouteProcessingParameters& b) noexcept {
     return a.outputs==b.outputs && a.selected==b.selected && a.open==b.open && a.channels_per_stream==b.channels_per_stream;
 }
@@ -75,14 +81,22 @@ std::optional<ProcessingOperation> numerical_operation(NodeKind k) noexcept {
     if(k==NodeKind::ArrayLength || k==NodeKind::SampleRate || k==NodeKind::WindowGain || k==NodeKind::FrequencyStep)return ProcessingOperation::Metadata;
     return {};
 }
+std::optional<ProcessingOperation> music_operation(NodeKind k) noexcept {
+    if(temporal_operation_kind(kind_id(k)))return ProcessingOperation::MusicTransform;
+    if(interval_operation_kind(kind_id(k)) || common_operation_kind(kind_id(k)) || sequence_operation_kind(kind_id(k)) || reference_operation_kind(kind_id(k)))return ProcessingOperation::NumericExtension;
+    if(k==NodeKind::TempoEvidence)return ProcessingOperation::TempoEvidence;
+    if(k==NodeKind::RhythmAnalyzer || k==NodeKind::RhythmFeatures || k==NodeKind::OnsetStrength || spectral_descriptor_kind(kind_id(k)))return ProcessingOperation::MusicTransform;
+    if(k==NodeKind::RFFT || k==NodeKind::SpectrumProjection || k==NodeKind::FrequencyNormalizer ||
+       k==NodeKind::BroadbandFeatures || k==NodeKind::NoteSalience || k==NodeKind::MusicalSpectrogram || k==NodeKind::BroadbandRow || k==NodeKind::NoteSpectrum || k==NodeKind::SpectralQuantize)return ProcessingOperation::MusicTransform;
+    return {};
+}
 std::optional<ProcessingOperation> signal_operation(NodeKind k) noexcept {
-    if(k==NodeKind::RhythmAnalyzer || k==NodeKind::RhythmFeatures)return ProcessingOperation::MusicTransform;
+    if(k==NodeKind::PowerToDb)return ProcessingOperation::Transform;
+    if(const auto music=music_operation(k))return music;
     if(k==NodeKind::SpectrumPeak)return ProcessingOperation::SpectrumPeak;
     if(k==NodeKind::SampleClock)return ProcessingOperation::Clock;
     if(k==NodeKind::Mixer)return ProcessingOperation::Mixer;
     if(k==NodeKind::ChannelComparison)return ProcessingOperation::ChannelComparison;
-    if(k==NodeKind::RFFT || k==NodeKind::SpectrumProjection || k==NodeKind::FrequencyNormalizer ||
-       k==NodeKind::BroadbandFeatures || k==NodeKind::NoteSalience || k==NodeKind::MusicalSpectrogram || k==NodeKind::BroadbandRow || k==NodeKind::NoteSpectrum || k==NodeKind::SpectralQuantize)return ProcessingOperation::MusicTransform;
     return {};
 }
 std::optional<ProcessingOperation> routing_operation(NodeKind k) noexcept {
@@ -111,6 +125,7 @@ ProcessingOperation matrix_operation(NodeKind k) noexcept {
     case NodeKind::MatrixFFT:return ProcessingOperation::MatrixFFT;
     case NodeKind::MatrixRow:return ProcessingOperation::MatrixRow;
     case NodeKind::MatrixCenter:return ProcessingOperation::MatrixCenter;
+    case NodeKind::MatrixAutocorrelation:return ProcessingOperation::MatrixAutocorrelation;
     default:return scalar_operation(k);
     }
 }
@@ -334,8 +349,9 @@ struct NodeResolution {
 ProcessingDiagnostic inspect_parameter_port(const NodeResolution& state,const ProcessingPort& port) {
     const auto key=numeric_parameter_key(state.configured.kind,port.id);
     const auto data=port.contract.view();const auto* scalar=std::get_if<NumericContract>(&data);
-    const auto dtype=port.id==coherent_gain_input || port.id==power_gain_input || port.id==frequency_step_input?DType::Float64:DType::UInt32;
-    if(key.empty() || port.direction!=PortDirection::Input || !scalar || scalar->dtype!=dtype || scalar->shape.rank!=Rank::Scalar || scalar->channel_order.size()!=1)return state.error(ProcessingError::InvalidPort,port.id);
+    const bool vector=port.id==window_coefficients_input;
+    const auto dtype=vector?DType::Float32:port.id==coherent_gain_input || port.id==power_gain_input || port.id==frequency_step_input?DType::Float64:DType::UInt32;
+    if(key.empty() || port.direction!=PortDirection::Input || !scalar || scalar->dtype!=dtype || scalar->shape.rank!=(vector?Rank::Vector:Rank::Scalar) || scalar->channel_order.size()!=1)return state.error(ProcessingError::InvalidPort,port.id);
     if(scalar->representation.encoding!=StorageEncoding::Native || scalar->representation.normalization!=Normalization::None || validate_contract(data,state.limits.frame)!=Status::ok)return state.error(ProcessingError::InvalidPort,port.id);
     return {};
 }
@@ -416,9 +432,21 @@ ProcessingDiagnostic route_arity(NodeResolution& state) {
 void paired_arity(NodeResolution& state) {
     const auto op=state.operation;
     if(op==ProcessingOperation::WLEDEncoder)state.input_count=3;
-    if(op==ProcessingOperation::SpectrumPeak)state.output_count=2;
-    if(op==ProcessingOperation::Fourier){state.input_count=state.kind==NodeKind::Fourier?2:1;state.output_count=4;}
+    if(op==ProcessingOperation::SpectrumPeak || op==ProcessingOperation::MatrixFFT)state.output_count=2;
+    if(op==ProcessingOperation::Fourier){state.input_count=state.kind==NodeKind::Fourier?2:1;state.output_count=state.kind==NodeKind::Fourier?2:3;}
     if(op==ProcessingOperation::ComplexPolar){state.input_count=2;state.output_count=2;}
+}
+void numeric_extension_arity(NodeResolution& state) {
+    if(sequence_operation_kind(state.configured.kind) || reference_operation_kind(state.configured.kind)){state.input_count=state.inputs.size();state.output_count=state.outputs.size();}
+    if(const auto* spec=common_operation_spec(state.configured.kind)){state.input_count=spec->inputs;state.output_count=spec->outputs;}
+    if(temporal_operation_kind(state.configured.kind))state.output_count=temporal_operation_output_count(state.configured.kind);
+    if(interval_operation_kind(state.configured.kind))state.output_count=interval_operation_output_count(state.configured.kind);
+}
+void music_arity(NodeResolution& state) {
+    numeric_extension_arity(state);
+    if(state.kind==NodeKind::MusicalSpectrogram || state.kind==NodeKind::NoteSpectrum)state.output_count=4;
+    if(state.kind==NodeKind::RhythmAnalyzer)state.output_count=rhythm_output_count;
+    if(state.operation==ProcessingOperation::TempoEvidence){state.input_count=tempo_evidence_inputs;state.output_count=tempo_evidence_outputs;}
 }
 void fixed_arity(NodeResolution& state) {
     const auto op=state.operation;
@@ -426,8 +454,7 @@ void fixed_arity(NodeResolution& state) {
     if(op==ProcessingOperation::Clock){state.input_count=state.output_count=0;return;}
     if(op==ProcessingOperation::ChannelComparison || op==ProcessingOperation::ArrayConcat)state.input_count=2;
     paired_arity(state);
-    if(state.kind==NodeKind::MusicalSpectrogram || state.kind==NodeKind::NoteSpectrum)state.output_count=4;
-    if(state.kind==NodeKind::RhythmAnalyzer)state.output_count=rhythm_output_count;
+    music_arity(state);
     if(op==ProcessingOperation::History)state.output_count=2;
 }
 ProcessingDiagnostic selector_arity(NodeResolution& state) {
@@ -449,7 +476,7 @@ ProcessingDiagnostic variable_arity(NodeResolution& state) {
     return selector_arity(state);
 }
 bool sparse_input_ports(const NodeResolution& state) {
-    return state.operation==ProcessingOperation::InputSelector || state.operation==ProcessingOperation::Mixer || state.operation==ProcessingOperation::ArrayProduct || (state.kind && is_scalar_view(*state.kind));
+    return state.operation==ProcessingOperation::NumericExtension || state.operation==ProcessingOperation::InputSelector || state.operation==ProcessingOperation::Mixer || state.operation==ProcessingOperation::ArrayProduct || (state.kind && is_scalar_view(*state.kind));
 }
 ProcessingDiagnostic inspect_dense_ports(const NodeResolution& state) {
     if(!sparse_input_ports(state))for(std::size_t i=0;i<state.input_count;++i)if(!find_port(state.inputs,PortId(i)))return state.error(ProcessingError::InvalidPort,PortId(i));

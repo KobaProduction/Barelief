@@ -1,5 +1,6 @@
 #include <pipeline/numeric_engine.h>
 #include <pipeline/capture_buffer.h>
+#include <domain/graph/node_factory.h>
 #include <core_app/numeric_default_graph.h>
 #include <desktop/numeric_project_document.h>
 #include <QCoreApplication>
@@ -60,12 +61,27 @@ static domain::NumericProcessingGraph graph_with_two_sources() {
     source.id=1;sink.id=3;graph.nodes={source,sink};source.id=2;sink.id=4;
     graph.nodes.push_back(source);graph.nodes.push_back(sink);graph.edges={{1,3,0,0},{2,4,0,0}};return graph;
 }
+static void append_capture_history(domain::NumericProcessingGraph& graph,const domain::ProcessingAdmissionLimits& limits) {
+    const auto full=numeric_default_graph();
+    auto history=*std::find_if(full.nodes.begin(),full.nodes.end(),[](const auto& node){return node.id==7;});
+    history.id=5;std::get<domain::HistoryProcessingParameters>(history.parameters).capacity=2;
+    require(bool(domain::configure_processing_input(history,graph.nodes.front().outputs.front().contract.view(),limits)),"native capture History fixture");
+    graph.nodes.push_back(std::move(history));graph.edges.push_back({1,5,0,0});
+}
+
+static void queue_native_capture(CaptureBuffer& buffer,std::array<float,512>& interleaved,const AudioFrame& frame) {
+    buffer.reset(frame.sample_rate,frame.channel_count);
+    for(std::size_t i=0;i<frame.frame_count;++i){interleaved[i*2]=.25f;interleaved[i*2+1]=-.75f;}
+    require(buffer.push(interleaved.data(),frame.frame_count,frame.timestamp_ns,frame.sample_position),"native callback queues bounded PCM");
+}
+
 static void selected_native_lane() {
     using namespace signal_contracts;
     auto graph=graph_with_two_sources();
     std::get<domain::EndpointProcessingParameters>(graph.nodes[0].parameters).values.push_back({"output_count",NumericLiteral{std::uint64_t{1}}});
     std::vector<std::shared_ptr<Probe>> probes;
     NumericEngine engine([&](auto){auto p=std::make_shared<Probe>();probes.push_back(p);return std::make_unique<ProbeSource>(p);});
+    append_capture_history(graph,engine.capabilities().numeric->runtime.admission);
     QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"limited native graph encode");
     bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
     EngineCommand command;command.kind=EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();engine.submit(command);
@@ -78,15 +94,28 @@ static void selected_native_lane() {
         float value=0;exact=exact && load_element(*data,{0,0,0},value)==Status::ok && value==.25f;++received;
     },{});
     auto frame=tones();frame.channel_count=2;frame.samples.assign(512,-.75f);std::fill_n(frame.samples.begin(),256,.25f);
-    probes[0]->audio(frame);require(wait([&]{return received>0;})&&exact,"mono output selects first native stereo lane without mixing");
+    const EndpointIdentity output{graph.graph_id,5,domain::PortDirection::Output,0};
+    DeliveredNumericFrame before,queued;std::uint64_t prior=0,current=0;
+    const auto priorStatus=engine.query_numeric(output,before,&prior);
+    CaptureBuffer buffer;
+    std::array<float,512> interleaved;
+    queue_native_capture(buffer,interleaved,frame);
+    require(engine.query_numeric(output,queued,&current)==priorStatus && current==prior && received==0,
+            "device-ring producer must not execute DSP before consumer dispatch");
+    require(buffer.pop(frame) && buffer.dropped()==0,"native consumer receives queued PCM without drops");
+    probes[0]->audio(frame);
+    require(engine.query_numeric(output,queued,&current)==Status::ok && current==prior+1,
+            "direct consumer callback processes one prepared block without a GUI turn");
+    require(wait([&]{return received>0;})&&exact,"mono output selects first native stereo lane without mixing");
     engine.unsubscribe_numeric_tap(token);
 }
 static void observe_downstream_error(const DeliveredNumericFrame& delivered,domain::NodeId source,
  domain::NodeId product,domain::NodeId window,unsigned& sourceFrames,unsigned& boundaries,unsigned& errors,std::size_t& windowPrefix) {
  using namespace signal_contracts;
-        if(!delivered.context || !delivered.frame)return;const auto frame=delivered.frame.view();
+        if(!delivered.context)return;
+        if(delivered.context->endpoint.node==product && delivered.status==Status::overflow)++errors;
+        if(!delivered.frame)return;const auto frame=delivered.frame.view();
         if(delivered.context->endpoint.node==source && delivered.context->endpoint.port==0){++sourceFrames;boundaries+=frame.stamp.discontinuity;}
-        if(delivered.context->endpoint.node==product && !frame.stamp.available)++errors;
         if(delivered.context->endpoint.node==window && frame.stamp.available){
             const auto& values=std::get<NumericView>(frame.payload);windowPrefix=0;
             for(std::size_t i=0;i<values.actual[0];++i){float value=0;require(load_element(values,{0,i,0},value)==Status::ok,"window read");if(value!=0)break;++windowPrefix;}
@@ -202,6 +231,29 @@ static void deliver_lanes(const std::shared_ptr<Probe>& probe,unsigned lanes,std
                 std::fill_n(frame.samples.begin()+lane*count,count,base+float(lane));probe->audio(frame);
 }
 
+static bool resumed_window_ready(const DeliveredNumericFrame& frame) {
+    using namespace signal_contracts;
+    if(!frame.frame || !frame.context)return false;
+    const auto view=frame.frame.view();
+    const auto* values=std::get_if<NumericView>(&view.payload);
+    if(!values || values->actual[0]!=1024)return false;
+    float first=0;
+    return load_element(*values,{0,0,0},first)==Status::ok &&
+        first==10+float(frame.context->endpoint.node-10);
+}
+static void describe_resumed_windows(const auto& frames) {
+    using namespace signal_contracts;
+    for(const auto& frame:frames){
+        if(!frame.frame || !frame.context){std::fputs("resume: no frame\n",stderr);continue;}
+        const auto view=frame.frame.view();const auto* values=std::get_if<NumericView>(&view.payload);
+        float first=0,last=0;
+        if(values){load_element(*values,{0,0,0},first);load_element(*values,{0,values->actual[0]-1,0},last);}
+        std::fprintf(stderr,"resume node=%d generation=%llu producer=%llu begin=%lld count=%llu first=%g last=%g\n",
+            frame.context->endpoint.node,static_cast<unsigned long long>(view.stamp.generation),
+            static_cast<unsigned long long>(view.stamp.producer_epoch),static_cast<long long>(view.stamp.sample_begin),
+            static_cast<unsigned long long>(view.stamp.sample_count),double(first),double(last));
+    }
+}
 static void verify_resumed_lanes(unsigned lanes,const auto& observed) {
 using namespace signal_contracts;
         for(std::uint16_t lane=0;lane<lanes;++lane) {
@@ -233,7 +285,10 @@ static void downstream_error_preserves_capture_continuity() {
         // Eight finite tones are accepted PCM; their product overflows Float32
         // only in the separate downstream branch.
         for(auto& value:frame.samples)value*=1e22f;
-        probe->audio(frame);QCoreApplication::processEvents();
+        probe->audio(frame);
+        // The bounded tap FIFO may drop a burst; observe each accepted source
+        // packet before sending the next so this checks capture continuity.
+        require(wait([&]{return sourceFrames==packet+1;}),"paced source packet was not delivered");
     }
     const bool observed=wait([&]{return sourceFrames==32 && errors>0;});
     std::fprintf(stderr,"error isolation: source=%u boundaries=%u rejected=%u windowPrefix=%zu\n",sourceFrames,boundaries,errors,windowPrefix);
@@ -297,8 +352,13 @@ static void capture_multichannel() {
         std::vector<DeliveredNumericFrame> observed(lanes);
         const auto tap=engine.subscribe_numeric_tap(selected,[&](DeliveredNumericFrame frame){const auto lane=frame.context->endpoint.node-10;if(lane>=0 && std::size_t(lane)<observed.size())observed[std::size_t(lane)]=std::move(frame);},{});
         require(tap!=0,"N-lane Window tap");
-        deliver(1,0,1024,1);deliver(2,0,1024,10);deliver(2,1024,512,10);
-        require(wait([&]{return std::all_of(observed.begin(),observed.end(),[](const auto& frame){return bool(frame.frame);});}),"resumed Window delivery");
+        deliver(1,0,1024,1);
+        require(wait([&]{return std::all_of(observed.begin(),observed.end(),[](const auto& frame){return bool(frame.frame);});}),"initial Window delivery");
+        for(auto& frame:observed)frame={};
+        deliver(2,0,1024,10);deliver(2,1024,512,10);
+        const auto resumed=wait([&]{return std::all_of(observed.begin(),observed.end(),resumed_window_ready);});
+        if(!resumed){describe_resumed_windows(observed);std::fprintf(stderr,"%s\n",QJsonDocument(engine.snapshot().diagnostics).toJson(QJsonDocument::Compact).constData());}
+        require(resumed,"resumed Window delivery");
         verify_resumed_lanes(lanes,observed);
         engine.unsubscribe_numeric_tap(tap);
     }

@@ -34,9 +34,10 @@ QString parameter_choice_text(const ProcessingParameterValue& value) {
     const auto* number=std::get_if<NumericLiteral>(&value);
     return number?QString::number(std::visit([](auto v){return double(v);},*number),'g',16):QString::fromStdString(std::get<std::string>(value));
 }
-std::optional<int> parameter_literal_type(const ConfiguredProcessingNode& node,const ParameterDescriptor& descriptor) {
-    if(descriptor.value_kind!=ParameterValueKind::Integer)return std::nullopt;
-    return domain::numeric_constant_kind(node.kind)?1:0;
+std::optional<int> parameter_literal_type(const ConfiguredProcessingNode& node,const ParameterDescriptor& descriptor,const ProcessingParameterValue& value) {
+    if(descriptor.value_kind==ParameterValueKind::Integer)return domain::numeric_constant_kind(node.kind)?1:0;
+    if(descriptor.value_kind==ParameterValueKind::Number && !domain::numeric_constant_kind(node.kind))return int(std::get<NumericLiteral>(value).index());
+    return std::nullopt;
 }
 NumericArray parse_parameter_array(const QString& text) {
     NumericArray value;
@@ -62,13 +63,40 @@ void NodeParameterModel::putParameter(ConfiguredProcessingNode& n,std::string_vi
     const auto found=std::find_if(values.begin(),values.end(),[&](const auto& p){return p.key==key;});
     if(found==values.end())values.push_back({std::string(key),std::move(value)});else found->value=std::move(value);
 }
+namespace {
+bool streamed_onset_field(const ConfiguredProcessingNode& node,std::string_view key) {
+    if(node.kind!="OnsetStrength" || node.inputs.empty())return false;
+    const auto input=node.inputs.front().contract.view();const auto* numeric=std::get_if<NumericContract>(&input);
+    if(!numeric || numeric->shape.rank!=Rank::Vector)return false;
+    constexpr std::string_view batch_only[]{"n_fft","hop_length","center","detrend","aggregate"};
+    return std::find(std::begin(batch_only),std::end(batch_only),key)!=std::end(batch_only);
+}
+bool matrix_offset_available(const ConfiguredProcessingNode& node) {
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,
+        node.inputs,node.outputs,&node.parameters,node.enabled};
+    ProcessingParameterView field;
+    if(resolve_processing_parameter(resolved,"method",field)!=Status::ok)return false;
+    const auto* number=std::get_if<NumericLiteral>(&field);
+    return number && std::visit([](auto value){return value==2;},*number);
+}
+}
+bool NodeParameterModel::specializedParameterVisible(const ParameterDescriptor& descriptor) const {
+    if(_node.kind=="Mel" && parameterNumber(NodeKind::Mel,"fft_size")>0)
+        return descriptor.key!="bin_hz" && descriptor.key!="frequencies_hz";
+    const bool temporal=_node.kind=="TempoEstimate" || _node.kind=="DynamicBeatPath" || _node.kind=="AutocorrelationTempogram";
+    if(temporal && parameterNumber(*node_kind(_node.kind),"sample_rate")>0)
+        return descriptor.key!="frame_rate" && descriptor.key!="input_rate";
+    return !streamed_onset_field(_node,descriptor.key);
+}
+
 bool NodeParameterModel::parameterVisible(const ParameterDescriptor& descriptor) const {
     if(descriptor.classification!=ParameterClassification::Processing || descriptor.key=="enabled" || descriptor.value_kind==ParameterValueKind::FrameType)return false;
+    if(_bound_parameters.contains(QString::fromUtf8(descriptor.key.data(),int(descriptor.key.size()))))return false;
     if(_node.kind=="AudioSource" && descriptor.key=="sample_rate")return false;
     if(_node.kind=="InputSelector" && descriptor.key=="channels_per_stream")return false;
     if(_node.kind=="FFTView" && descriptor.key=="bin_hz")return false;
-    if(_node.kind=="AmplitudePhase" && descriptor.key=="fft_size")return false;
-    return true;
+    if(descriptor.key=="window_coefficients")return false;
+    return specializedParameterVisible(descriptor);
 }
 void NodeParameterModel::append_registered_fields() {
     const auto kind=node_kind(_node.kind);
@@ -77,7 +105,7 @@ void NodeParameterModel::append_registered_fields() {
 }
 void NodeParameterModel::appendParameterField(const ParameterDescriptor& descriptor) {
     const auto key=QString::fromUtf8(descriptor.key.data(),int(descriptor.key.size()));
-    const auto title=numeric_editor::parameter_title(key);
+    const auto title=numeric_editor::parameter_title(key,QString::fromStdString(_node.kind));
     if(!matches_parameter_kind(parameterValue(descriptor),descriptor.value_kind)) {
         appendInvalidParameter(title,key);
         return;
@@ -95,15 +123,10 @@ void NodeParameterModel::appendInvalidParameter(const QString& title,const QStri
     _fields.push_back(std::move(field));
 }
 void NodeParameterModel::configureParameterAvailability(const ParameterDescriptor& descriptor) {
-    auto& f=_fields.back();
-    if(const auto bounds=processing_parameter_numeric_bounds(_node,descriptor.key)){f.numeric_minimum=bounds->minimum;f.numeric_maximum=bounds->maximum;}
-    if(_node.kind=="MatrixCenter" && descriptor.key=="offset")f.available=[this]{
-        const auto* method=parameter_descriptor(NodeKind::MatrixCenter,"method");
-        if(!method)return false;
-        const auto value=parameterValue(*method);
-        const auto* numeric=std::get_if<NumericLiteral>(&value);
-        return numeric && std::visit([](auto number){return number==2;},*numeric);
-    };
+    auto& field=_fields.back();
+    if(const auto bounds=processing_parameter_numeric_bounds(_node,descriptor.key)){field.numeric_minimum=bounds->minimum;field.numeric_maximum=bounds->maximum;}
+    if(_node.kind=="MatrixCenter" && descriptor.key=="offset")field.available=[this]{return matrix_offset_available(_node);};
+    field.help=numeric_editor::parameter_help(QString::fromStdString(_node.kind),field.key);
 }
 
 void NodeParameterModel::appendParameterChoice(const ParameterDescriptor& descriptor,const QString& title,const QStringList& values,const QStringList& labels) {
@@ -144,6 +167,6 @@ void NodeParameterModel::appendParameterValue(const ParameterDescriptor& descrip
     auto get=[this,descriptor](const auto&){return parameterValue(descriptor);};
     auto put=[key](auto& n,ProcessingParameterValue value){putParameter(n,key.toStdString(),std::move(value));};
     if(descriptor.value_kind==ParameterValueKind::Integer || descriptor.value_kind==ParameterValueKind::Number){
-        literal(title,key,[get](const auto& n){return std::get<NumericLiteral>(get(n));},[put](auto& n,NumericLiteral v){put(n,v);},parameter_literal_type(_node,descriptor));
+        literal(title,key,[get](const auto& n){return std::get<NumericLiteral>(get(n));},[put](auto& n,NumericLiteral v){put(n,v);},parameter_literal_type(_node,descriptor,parameterValue(descriptor)));
     }else appendNonNumericParameter(descriptor,title,key);
 }

@@ -129,4 +129,6 @@ private:
     mutable std::map<std::tuple<QtNodes::NodeId,QtNodes::PortIndex,QtNodes::NodeId,QtNodes::PortIndex>,int> _connection_visual_states;
     bool _allow_connection_clock_adaptation=true;
     bool _atomic_edit_in_progress=false;
+    void refresh_bound_parameters(QtNodes::NodeId);
+    void refresh_bound_parameters();
 };

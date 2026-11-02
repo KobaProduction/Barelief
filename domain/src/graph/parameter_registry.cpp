@@ -1,3 +1,8 @@
+#include <domain/numeric/temporal_operations.h>
+#include <domain/numeric/interval_operations.h>
+#include <domain/numeric/common_operations.h>
+#include <domain/numeric/sequence_operations.h>
+#include <domain/numeric/reference_operations.h>
 #include "parameter_sets.h"
 #include "calibration_parameter_specs.h"
 namespace domain {
@@ -9,6 +14,12 @@ constexpr DescriptorFamily families[]{detail::numeric_parameter_descriptors,deta
     detail::adapter_parameter_descriptors,detail::view_parameter_descriptors};
 }
 std::span<const ParameterDescriptor> parameter_descriptors(NodeKind kind) noexcept {
+    const auto id=kind_id(kind);
+    if(temporal_operation_kind(id))return temporal_operation_parameters(id);
+    if(interval_operation_kind(id))return interval_operation_parameters(id);
+    if(common_operation_kind(id))return common_operation_parameters(id);
+    if(sequence_operation_kind(id))return sequence_operation_parameters(id);
+    if(reference_operation_kind(id))return reference_operation_parameters(id);
     // Calibration fields extend the generic fill schema at the composition boundary.
     if(kind==NodeKind::ArrayFill)return calibrated_fill;
     for(const auto family:families) {

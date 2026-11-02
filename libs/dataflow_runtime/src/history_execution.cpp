@@ -4,6 +4,14 @@
 #include <cmath>
 #include <cstring>
 namespace dataflow_runtime::detail {
+void select_filled_history(const PlanNode& node,const State& state,NumericView& view) noexcept {
+    if(!node.history_filled_only || !view.ring.capacity)return;
+    const auto missing=view.ring.capacity-state.progress;
+    view.actual[0]=state.progress;
+    view.ring.oldest=(view.ring.oldest+missing)%view.ring.capacity;
+    if(!view.coordinates.axes[0].empty())view.coordinates.axes[0]=view.coordinates.axes[0].subspan(missing*8,state.progress*8);
+    if(!view.ring.silence_mask.empty())view.ring.silence_mask=view.ring.silence_mask.subspan(missing,state.progress);
+}
 namespace {
 class HistoryWriter {
     const PlanNode& node;
@@ -13,10 +21,10 @@ class HistoryWriter {
     const NumericView& source;
     const std::size_t capacity,physical;
     bool scalar() const noexcept {return output.contract->shape.rank==Rank::Vector;}
-    Status copy_element(const NumericView& zero,std::size_t plane,std::size_t column) noexcept {
+    Status copy_element(std::size_t plane,std::size_t column) noexcept {
                 std::uint64_t bits=0;
                 const auto input_index=scalar()?ElementIndex{plane,0,0}:ElementIndex{plane,column,0};
-                auto status=load_bits(node.node.enabled?source:zero,input_index,source.contract->dtype,bits);
+                auto status=load_bits(source,input_index,source.contract->dtype,bits);
                 if(status!=Status::ok)return status;
                 const auto output_index=scalar()?ElementIndex{plane,physical,0}:ElementIndex{plane,physical,column};
                 status=store_bits(output,output_index,output.contract->dtype,bits);
@@ -24,11 +32,10 @@ class HistoryWriter {
         return Status::ok;
     }
     Status copy_row() noexcept {
-        const auto zero=std::get<NumericView>(zero_value(node.numeric_input,state.numeric_zero));
         const auto width=scalar()?std::size_t{1}:source.actual[0];
         for(std::size_t plane=0;plane<output.planes.size();++plane)
             for(std::size_t column=0;column<width;++column){
-                const auto status=copy_element(zero,plane,column);if(status!=Status::ok)return status;
+                const auto status=copy_element(plane,column);if(status!=Status::ok)return status;
             }
         return Status::ok;
     }
@@ -59,7 +66,8 @@ class HistoryWriter {
     }
     Status publish() noexcept {
         auto stamp=current.stamp;stamp.sequence=++state.output_sequence;
-        state.numeric_frames[0]={stamp,output.view()};
+        auto view=output.view();select_filled_history(node,state,view);
+        state.numeric_frames[0]={stamp,view};
         auto count=mutable_output(node,state,1);
         const auto status=store_element(count,{0,0,0},std::uint64_t(state.progress));
         if(status!=Status::ok)return status;

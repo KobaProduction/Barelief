@@ -5,6 +5,14 @@
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <QStatusBar>
 
+namespace {
+QJsonObject preset_positions(const NumericExampleGraph& example) {
+    QJsonObject positions;
+    for(const auto& point:example.positions)positions[QString::number(point.node)]=QJsonObject{{"x",point.x},{"y",point.y}};
+    return positions;
+}
+}
+
 void CoreApplication::_load_example(SchemeEditorWidget* editor,NumericExampleGraph example) {
     if(_presenter->graph_request_pending())return;
     auto* model=dynamic_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get());
@@ -15,7 +23,7 @@ void CoreApplication::_load_example(SchemeEditorWidget* editor,NumericExampleGra
         return;
     }
     apply_example_labels(dynamic_cast<NumericEditorGraphModel*>(_ctx.data_flow_graph.get()),example);
-    editor->initialize_default_layout();
+    editor->initialize_preset_layout(preset_positions(example));
     emit editor->preset_presentation_requested(example_presentation(example,_presenter->device_id(),
         QString::fromStdString(example.graph.graph_id)));
     _presenter->apply_pipeline_graph({});

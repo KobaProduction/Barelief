@@ -200,7 +200,9 @@ void fourier_port_roundtrip(const std::shared_ptr<QtNodes::NodeDelegateModelRegi
         check(a->numeric_node()->outputs.size()==4 && b->numeric_node()->outputs.size()==4,"Fourier exposes Re/Im and separate DC scalars");
         for(const auto edge:std::array{QtNodes::ConnectionId{real,0,polar,0},QtNodes::ConnectionId{real,1,polar,1}}){
             check(fourier.connectionPossible(edge),"Fourier Re/Im can feed the polar projection");fourier.addConnection(edge);check(fourier.connectionExists(edge),"Polar connection persists");}
-        domain::NumericProcessingGraph graph;QString error;check(fourier.export_numeric_graph(graph,&error),"Fourier/polar graph exports");
+        domain::NumericProcessingGraph graph;QString error;const bool exported=fourier.export_numeric_graph(graph,&error);
+        if(!exported)std::fprintf(stderr,"Fourier/polar export diagnostic: %s\n",qPrintable(error));
+        check(exported,"Fourier/polar graph exports");
         QByteArray encoded;check(bool(desktop::encode_numeric_graph(graph,encoded)),"Fourier graph serializes");
         domain::NumericProcessingGraph restored;check(bool(desktop::decode_numeric_graph(encoded,restored)),"Fourier graph deserializes");
         desktop::NumericProjectDocument document;
@@ -311,8 +313,8 @@ return centerForm;
 void temporal_geometry_edits(NumericEditorGraphModel& temporal,QUndoStack& undo,QtNodes::NodeId mel,QtNodes::NodeId history,QtNodes::NodeId transpose,QtNodes::NodeId center,QtNodes::NodeId window,QtNodes::NodeId fft,QtNodes::NodeId row,QtNodes::NodeId map,QtNodes::NodeId line,AudioNodeModel* rowModel,NodeParameterModel* fftParameters,NodeParameterModel* rowParameters,const QString& temporalRejection,const auto& matrix){
         undo.clear();const auto before=temporal.save();
         check(fftParameters->editLiteral("fft_size","256",0),"Connected FFT size change accepted");
-        check(matrix().shape.extents[1].maximum==128 && std::get<signal_contracts::NumericContract>(rowModel->numeric_node()->outputs[0].contract.view()).shape.extents[0].maximum==128 &&
-            std::get<signal_contracts::NumericContract>(temporal.delegateModel<AudioNodeModel>(line)->numeric_node()->inputs[0].contract.view()).shape.extents[0].maximum==128,"FFT shape changes propagate through row selection to vector view");
+        check(matrix().shape.extents[1].maximum==129 && std::get<signal_contracts::NumericContract>(rowModel->numeric_node()->outputs[0].contract.view()).shape.extents[0].maximum==129 &&
+            std::get<signal_contracts::NumericContract>(temporal.delegateModel<AudioNodeModel>(line)->numeric_node()->inputs[0].contract.view()).shape.extents[0].maximum==129,"FFT shape changes propagate through row selection to vector view");
         const auto after=temporal.save();undo.undo();check(temporal.save()==before,"Temporal shape edit undo is atomic");undo.redo();check(temporal.save()==after,"Temporal shape edit redo is atomic");
         auto* melParameters=temporal.delegateModel<AudioNodeModel>(mel)->parameter_model();
         check(edit_row(rowParameters,49),"Select final band before upstream reduction");undo.clear();const auto beforeReduction=temporal.save();
@@ -327,7 +329,7 @@ void temporal_geometry_edits(NumericEditorGraphModel& temporal,QUndoStack& undo,
         check(contractOf(mel,true).shape.extents[0].maximum==32 && contractOf(history,false).shape.extents[0].maximum==32 && contractOf(history,true).shape.extents[1].maximum==32 &&
             contractOf(transpose,false).shape.extents[1].maximum==32 && contractOf(transpose,true).shape.extents[0].maximum==32 && contractOf(center,false).shape.extents[0].maximum==32 && contractOf(center,true).shape.extents[0].maximum==32 && contractOf(window,false).shape.extents[0].maximum==32 && contractOf(window,true).shape.extents[0].maximum==32 && contractOf(fft,false).shape.extents[0].maximum==32 && contractOf(fft,true).shape.extents[0].maximum==32 && contractOf(row,false).shape.extents[0].maximum==32 && contractOf(map,false).shape.extents[0].maximum==32,
             "Mel geometry propagates through separate transpose, window, FFT, row and matrix view");
-        check(contractOf(row,true).shape.extents[0].maximum==128 && contractOf(line,false).shape.extents[0].maximum==128 && rowParameters->field("row")->numeric_maximum.value_or(-1)==31,"Upstream bands preserve FFT size and refresh selection bounds");
+        check(contractOf(row,true).shape.extents[0].maximum==129 && contractOf(line,false).shape.extents[0].maximum==129 && rowParameters->field("row")->numeric_maximum.value_or(-1)==31,"Upstream bands preserve FFT size and refresh selection bounds");
         const auto reduced=temporal.save();undo.undo();check(temporal.save()==compatibleBefore,"Upstream Mel geometry undo restores entire branch");undo.redo();check(temporal.save()==reduced,"Upstream Mel geometry redo restores entire branch");
         check(melParameters->editLiteral("bands","8",0) && rowParameters->field("row")->numeric_maximum.value_or(-1)==7 && matrix().shape.extents[0].maximum==8,"Reduction to eight bands succeeds with selected band zero");
 
@@ -347,7 +349,7 @@ void temporal_matrix_chain(const std::shared_ptr<QtNodes::NodeDelegateModelRegis
             check(temporal.connectionPossible(edge),"Temporal analysis connection preflight");temporal.addConnection(edge);check(temporal.connectionExists(edge),"Temporal analysis connection accepted");
         }
         const auto matrix=[&]{return std::get<signal_contracts::NumericContract>(fftModel->numeric_node()->outputs[0].contract.view());};
-        check(matrix().shape.axes[0]==signal_contracts::Axis::Band && matrix().shape.axes[1]==signal_contracts::Axis::Bin && matrix().shape.extents[0].maximum==50 && matrix().shape.extents[1].maximum==256,"Matrix row FFT output is a band-by-bin ordinary matrix");
+        check(matrix().shape.axes[0]==signal_contracts::Axis::Band && matrix().shape.axes[1]==signal_contracts::Axis::Bin && matrix().shape.extents[0].maximum==50 && matrix().shape.extents[1].maximum==257,"Matrix row FFT output is a band-by-bin ordinary matrix");
         const auto transposed=std::get<signal_contracts::NumericContract>(transposeModel->numeric_node()->outputs[0].contract.view());
         const auto centered=std::get<signal_contracts::NumericContract>(centerModel->numeric_node()->outputs[0].contract.view());
         check(centered.shape==transposed.shape && centered.coordinates==transposed.coordinates && centered.clock.domain==transposed.clock.domain && centered.clock.sample_rate==transposed.clock.sample_rate && centered.clock.tick_seconds==transposed.clock.tick_seconds && centered.semantic==signal_contracts::Semantic::Numeric && centered.representation.normalization==signal_contracts::Normalization::None,"Centering preserves matrix geometry and physical coordinates without a normalization claim");
@@ -1626,6 +1628,29 @@ static int connection_diagnostics_only(const std::shared_ptr<QtNodes::NodeDelega
 static void native_clock_editor_cases(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry) {
     native_source_contract(registry);source_rate_undo(registry);clock_rate_dependency(registry);resampler_editor(registry);
 }
+static int accumulator_connections(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
+    for(const auto* sourceKind:{"Number","UInt32Constant","SignalGenerator"}){
+        NumericEditorGraphModel model(registry);model.set_admission_limits(numeric_editor::limits());
+        const auto source=model.addNode(sourceKind),buffer=model.addNode("Window");
+        const QtNodes::ConnectionId edge{source,0,buffer,0};check(model.connectionPossible(edge),"Scalar/vector connects to generic accumulator");
+        model.addConnection(edge);check(model.connectionExists(edge),"Accumulator data edge retained");
+        auto* node=model.delegateModel<AudioNodeModel>(buffer);check(node,"Accumulator editor exists");if(!node)return 1;
+        auto* parameters=node->parameter_model();check(!parameters->supportsBypass() && !parameters->setBypassed(true),"Accumulator cannot bypass");
+        check(node->port_index(QtNodes::PortType::In,domain::input_sample_rate_input)==QtNodes::InvalidPortIndex,"Accumulator has no Fs input");
+        for(const auto size:{1,10,200,500}){
+            check(parameters->editLiteral("size",QString::number(size),0),"Arbitrary accumulator N accepted");
+            domain::NumericProcessingGraph graph;QString error;check(model.export_numeric_graph(graph,&error,false),qPrintable(error));
+            const auto output=node->numeric_node()->outputs.front().contract.view();
+            check(std::get<signal_contracts::NumericContract>(output).shape.extents[0].maximum==std::uint64_t(size),"Requested N retained exactly");
+        }
+    }
+    return failures?1:0;
+}
+static std::shared_ptr<QtNodes::NodeDelegateModelRegistry> editor_test_registry(){
+    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
+    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    return registry;
+}
 int main(int argc,char** argv){
 
     QApplication app(argc,argv);
@@ -1637,9 +1662,8 @@ int main(int argc,char** argv){
     if(argc==3 && QString::fromLocal8Bit(argv[1])=="--native-path")return native_history_path(argv[2]);
 
 
-    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-
-    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    auto registry=editor_test_registry();
+    if(argc==2 && QString::fromLocal8Bit(argv[1])=="--accumulator-only")return accumulator_connections(registry);
     if(argc==2 && QString::fromLocal8Bit(argv[1])=="--connection-diagnostics")return connection_diagnostics_only(registry);
     coefficient_port_identity(app);
     axis_range_controls();

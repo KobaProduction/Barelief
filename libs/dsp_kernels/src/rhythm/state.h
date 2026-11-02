@@ -1,5 +1,9 @@
 #pragma once
 #include <dsp_kernels/rhythm.h>
+#include <dsp_kernels/onset_fusion.h>
+#include <dsp_kernels/correlation.h>
+#include <dsp_kernels/sequence_statistics.h>
+#include <dsp_kernels/onset_strength.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -35,32 +39,39 @@ struct Group {
     Ring<double,24> strong;
     std::optional<double> stable_period;
 };
-struct Acf {double bpm=0, score=0;};
-struct Family {double period_s=0,bpm=0,score=0,accent_score=0;bool accented=false;};
-struct Phase {std::optional<double> value;double fit=0;};
+using Acf=LagEvidence;
+struct Family {double period_s=0;float bpm=0,score=0,accent_score=0;bool accented=false;};
+struct Phase {std::optional<double> value;float fit=0;};
 double rounded(double value,unsigned digits) noexcept;
+float rounded(float value,unsigned digits) noexcept;
 double modulo(double value,double period) noexcept;
 bool strong(Kind kind) noexcept;
-bool octave(double a,double b) noexcept;
+bool octave(float a,float b) noexcept;
 bool equivalent(double a,double b,unsigned fps) noexcept;
 Phase phase_fit(std::span<const double> times,double period) noexcept;
 Phase phase_fit(const Ring<double,96>& times,double period) noexcept;
-double ioi_support(const Ring<double,96>& times,double period) noexcept;
-Estimate estimate(Status status,std::optional<double> score,std::optional<double> observed,
+float ioi_support(const Ring<double,96>& times,double period) noexcept;
+Estimate estimate(Status status,std::optional<float> score,std::optional<double> observed,
                   const Frame& frame,Reason reason=Reason::None) noexcept;
 bool valid_config(const Config& config,Mode mode) noexcept;
 bool valid_frame(const Frame& frame) noexcept;
+std::size_t feature_count(const Frame& frame) noexcept;
+float feature_value(const Frame& frame,std::size_t index) noexcept;
 void clear_output(Output& output) noexcept;
 struct Engine {
     Config cfg;
+    PreparedOnsets onsets;
+    PreparedOnsetFusion onset_fusion;
     Mode mode=Mode::Gated;
     Output out;
+    ClippingStatistics clipping;
     bool initialized=false;
     std::uint64_t epoch=0,profile=0,seq=0,sample_index=0,event_sequence=0;
     double sample_rate=0,t_obs=0;
-    std::array<std::uint8_t,96> features{};
+    std::array<float,96> features{},current_features{};
+    std::size_t feature_format=0;
     unsigned width=0,history_count=0,overflow=0,recovery=0;
-    Ring<double,511> flux;
+    Ring<float,511> flux;
     Ring<double,96> times;
     Ring<Accent,256> typed,seen;
     List<Group,8> groups;
@@ -69,7 +80,7 @@ struct Engine {
     std::optional<double> primary_conflict,subdivision_conflict;
     std::optional<std::uint64_t> last_heavy_seq;
     std::optional<std::uint32_t> anchor;
-    std::optional<std::pair<double,double>> last_determined;
+    std::optional<std::pair<float,double>> last_determined;
     std::optional<double> spectral_last,spectral_stable;
     Ring<double,23> spectral_initial,spectral_pending;
     Change change,spectral_change;
@@ -78,8 +89,11 @@ struct Engine {
     // With max/min BPM <= 10, the bounded 1.5% family clustering needs < 312.
     List<Family,512> families;
     List<double,256> salient,weak;
-    std::array<double,96> contributions{};
-    std::array<double,512> centered{};
+    std::array<float,96> contributions{};
+    std::array<float,512> centered{},lag_scores{};
+    std::size_t centered_count=0,lag_count=0,first_lag=0;
+    // Tick indices are time coordinates, separate from analytical ACF scratch.
+    std::array<double,256> occupied_ticks{};
 
     void reset(bool preserve_sequence=false) noexcept;
     Reset accept_source(const Frame& frame) noexcept;
@@ -88,15 +102,15 @@ struct Engine {
     void expire(double now) noexcept;
     Group* group(std::uint32_t id,bool create=false) noexcept;
     void strong_change(const Event& event) noexcept;
-    void confirm_change(Group& group,double period,double start,double now,double spread) noexcept;
+    void confirm_change(Group& group,double period,double start,double now,float spread) noexcept;
     void spectral_rate(const Event& event) noexcept;
     void subdivision(const Event& event) noexcept;
     void track_changes() noexcept;
-    bool recent_intervals(const Ring<double,24>& values,double& period,double& spread) const noexcept;
+    bool recent_intervals(const Ring<double,24>& values,double& period,float& spread) const noexcept;
     void trim_episode(double start) noexcept;
     unsigned possible_ops() const noexcept;
     void refine(const Frame& frame,bool ambiguous) noexcept;
-    void calculate_acf(unsigned length) noexcept;
+    bool calculate_acf(unsigned length) noexcept;
     void propose(double period) noexcept;
     void proposals(bool use_acf) noexcept;
     Hierarchy hierarchy(double period,double now) noexcept;

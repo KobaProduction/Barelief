@@ -19,6 +19,7 @@ Status prepare_product(OperationKernelState& kernel,PlanNode& node,const Resolve
     kernel.frame_input=node.product_frame_input;
     kernel.factors.resize(kernel.input.size()*n.inputs.size());
     kernel.factor_ready.resize(n.inputs.size());kernel.factor_initial_ready.resize(n.inputs.size());
+    kernel.factor_actual.resize(n.inputs.size());
     kernel.data_stream.resize(profile.admission.frame.max_string_bytes);
     for(std::size_t i=0;i<n.inputs.size();++i)
         if(node.endpoint_plan->inputs[i].parent==absent)kernel.factor_ready[i]=kernel.factor_initial_ready[i]=true;

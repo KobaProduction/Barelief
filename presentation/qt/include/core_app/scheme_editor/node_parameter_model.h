@@ -49,6 +49,7 @@ class NodeParameterModel final : public QObject {
     void setNode(const domain::ConfiguredProcessingNode &, bool rebuild);
     void setAdapter(QJsonObject);
     void setPresentation(QJsonObject);
+    void setBoundParameters(QStringList);
     void setEditHandlers(std::function<bool(const domain::ConfiguredProcessingNode &)>,
                          std::function<bool(const QJsonObject &)>, std::function<bool(const QString &, bool)>);
     void setCaptureDeviceProvider(std::function<QJsonArray(int, QString *)>);
@@ -78,6 +79,7 @@ class NodeParameterModel final : public QObject {
 
   private:
     domain::ConfiguredProcessingNode _node;
+    QStringList _bound_parameters;
     QJsonObject _adapter, _presentation;
     std::vector<Field> _fields;
     QMap<QString, EditState> _edits;
@@ -135,6 +137,7 @@ class NodeParameterModel final : public QObject {
     domain::ProcessingParameterValue parameterValue(const domain::ParameterDescriptor&) const;
     static void putParameter(domain::ConfiguredProcessingNode&,std::string_view,domain::ProcessingParameterValue);
     bool parameterVisible(const domain::ParameterDescriptor&) const;
+    bool specializedParameterVisible(const domain::ParameterDescriptor&) const;
     void appendParameterField(const domain::ParameterDescriptor&);
     void appendInvalidParameter(const QString&,const QString&);
     void configureParameterAvailability(const domain::ParameterDescriptor&);

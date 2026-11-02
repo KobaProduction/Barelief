@@ -39,7 +39,6 @@ constexpr std::array fixed_view_modes{
 };
 struct OperationGroup { const char* kind; const char* family; const char* operation; };
 constexpr std::array operation_groups{
-    OperationGroup{"Window","Signal processing","Windowing"},
     OperationGroup{"WindowFunction","Signal processing","Windowing"},
     OperationGroup{"MatrixWindowFunction","Signal processing","Windowing"},
     OperationGroup{"WindowGain","Signal processing","Windowing"},
@@ -64,6 +63,7 @@ constexpr std::array operation_groups{
     OperationGroup{"FrequencyStep","Signal processing","Resampling and timing"},
     OperationGroup{"MatrixTranspose","Numeric operations","Arrays and matrices"},
     OperationGroup{"MatrixCenter","Numeric operations","Arrays and matrices"},
+    OperationGroup{"MatrixAutocorrelation","Numeric operations","Arrays and matrices"},
     OperationGroup{"MatrixRow","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayFill","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayMultiply","Numeric operations","Arrays and matrices"},
@@ -77,6 +77,13 @@ constexpr std::array operation_groups{
     OperationGroup{"SpectralQuantize","Music analysis","Features"},
     OperationGroup{"RhythmFeatures","Music analysis","Features"},
     OperationGroup{"RhythmAnalyzer","Music analysis","Features"},
+    OperationGroup{"TempoEvidence","Music analysis","Features"},
+    OperationGroup{"OnsetStrength","Music analysis","Features"},
+    OperationGroup{"SpectralFlux","Music analysis","Features"},
+    OperationGroup{"ComplexSpectralDifference","Music analysis","Features"},
+    OperationGroup{"PhaseDeviation","Music analysis","Features"},
+    OperationGroup{"HighFrequencyContent","Music analysis","Features"},
+    OperationGroup{"PowerToDb","Signal analysis","Spectrum and scaling"},
     OperationGroup{"ScalarReduce","Signal analysis","Measurements"},
     OperationGroup{"ChannelComparison","Signal analysis","Measurements"},
     OperationGroup{"Mixer","Signal processing","Mixing"},
@@ -158,14 +165,15 @@ int capture_source_kind(const ConfiguredProcessingNode& node) {
 }
 QStringList catalog() {
     QStringList result;
-    for(const auto& descriptor:node_descriptors())if(descriptor.id!="WLED" && descriptor.id!="Splitter" && descriptor.id!="SpectrumMerge" && descriptor.id!="TestSignal")result.append(QString::fromUtf8(descriptor.id.data(),int(descriptor.id.size())));
+    constexpr std::string_view internal[]{"WLED","Splitter","SpectrumMerge","TestSignal","StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"};
+    for(const auto& descriptor:node_descriptors())if(std::find(std::begin(internal),std::end(internal),descriptor.id)==std::end(internal))result.append(QString::fromUtf8(descriptor.id.data(),int(descriptor.id.size())));
     // Converter is an explicit operation of the canonical configured-node resolver.
     if(!result.contains("Converter"))result.append("Converter");
     return result;
 }
 QStringList visible_catalog() {
     auto result=catalog();
-    for(const auto* alias:{"StereoFFT","RFFT","WindowGain","UInt32Constant","ScalarView",
+    for(const auto* alias:{"UInt32Constant","ScalarView",
                             "FFTView","MelView","WindowView","WindowedView","WindowFunctionView",
                             "AudioView","SpectrogramView"})result.removeAll(alias);
     return result;
@@ -179,8 +187,8 @@ bool is_graph_view(const QString& kind) {return draft_view(kind.toStdString());}
 namespace {
 QString processing_direction_group(const QString& kind) {
     if(is_graph_view(kind))return "Graphs";
-    if(QStringList{"InputSelector","Switch","Splitter","Gate","Reroute"}.contains(kind))return "Routing";
-    if(kind=="Spectrogram" || kind=="NumberAccumulator")return "Accumulation";
+    if(QStringList{"InputSelector","Switch","Splitter","Gate","Reroute","FrameStride"}.contains(kind))return "Routing";
+    if(kind=="Window" || kind=="Spectrogram" || kind=="NumberAccumulator" || kind=="FrameBuffer")return "Accumulation";
     return "Operations";
 }
 }

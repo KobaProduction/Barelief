@@ -1,5 +1,6 @@
 #include <dsp_kernels/spectral_weights.h>
 #include "transform_execution.h"
+#include "music_execution.h"
 #include "resampler_execution.h"
 #include "window_execution.h"
 #include "frame_access.h"
@@ -21,6 +22,13 @@ TransformResult window_coefficients(const PlanNode& node,State& state,const Data
     if(load_element(source,{0,0,0},size)!=Status::ok || size!=output.actual[0])return {delivery.reject(delivery.user,Status::incompatible_contract),true};
     state.numeric_frames[0]={current.stamp,output.view()};return {Status::ok,false};
 }
+TransformResult frame_stride(const PlanNode& node,State& state,const DataFrameView& current) noexcept {
+    if(current.stamp.discontinuity)state.progress=0;
+    const bool publish=state.progress==0;
+    state.progress=(state.progress+1)%node.frame_hop;
+    if(publish)state.numeric_frames[0]=current;
+    return {Status::ok,!publish};
+}
 class SpectralExecution {
     const PlanNode& node;
     State& state;
@@ -31,7 +39,7 @@ class SpectralExecution {
     MutableNumericView output;
     const std::size_t columns,count;
     Status validate_frequency_coordinates() const noexcept {
-        if(source.contract->coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE || (node.node.kind!=NodeKind::BarkWeighting && node.node.kind!=NodeKind::Mel))return Status::ok;
+        if(source.contract->coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE || (node.node.kind!=NodeKind::BarkWeighting))return Status::ok;
         if(source.coordinates.axes[0].size()!=columns*sizeof(double) || state.frequencies.size()!=columns)return Status::incompatible_contract;
         for(std::size_t column=0;column<columns;++column){
             const auto hz=explicit_coordinate(source.coordinates.axes[0],column);
@@ -44,19 +52,12 @@ class SpectralExecution {
         if(output.contract->coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE)return Status::ok;
         auto& coordinates=state.numeric_outputs[0].coordinates[0];
         if(node.node.kind==NodeKind::StereoFFT)write_fft_coordinates(coordinates);
-        else if(node.node.kind==NodeKind::Mel)write_mel_coordinates(coordinates);
         else if(!copy_source_coordinates(coordinates))return Status::incompatible_contract;
         output.coordinates.axes[0]={coordinates.data(),count*8};return Status::ok;
     }
     void write_fft_coordinates(std::span<std::byte> coordinates) const noexcept {
         for(std::size_t column=0;column<count;++column)
             write_coordinate(coordinates,column,double(column)*source.contract->clock.sample_rate/double(columns));
-    }
-    void write_mel_coordinates(std::span<std::byte> coordinates) const noexcept {
-        const auto& kernel=std::get<dsp_kernels::MelFilterBank>(state.kernel);
-        for(std::size_t column=0;column<count;++column)
-            write_coordinate(coordinates,column,output.contract->coordinates[0].unit==NumericUnit::Hertz?
-                kernel.center_hz(column):double(column));
     }
     bool copy_source_coordinates(std::span<std::byte> coordinates) const noexcept {
         if(source.coordinates.axes[0].size()!=count*8)return false;
@@ -65,29 +66,6 @@ class SpectralExecution {
     }
     Status prepare_coordinates() noexcept {
         const auto status=validate_frequency_coordinates();return status==Status::ok?output_coordinates():status;
-    }
-    Status load_mel_plane(std::size_t plane) noexcept {
-        for(std::size_t column=0;column<columns;++column){const auto status=load_element(source,{plane,column,0},state.left[column]);if(status!=Status::ok)return status;}
-        return Status::ok;
-    }
-    bool process_mel() noexcept {
-        auto& kernel=std::get<dsp_kernels::MelFilterBank>(state.kernel);
-        return kernel.process(state.left,state.values);
-    }
-    Status store_mel_plane(std::size_t plane) noexcept {
-        for(std::size_t column=0;column<count;++column){
-            if(!std::isfinite(state.values[column]))return Status::overflow;
-            const auto status=store_element(output,{plane,column,0},state.values[column]);if(status!=Status::ok)return status;
-        }
-        return Status::ok;
-    }
-    Status mel() noexcept {
-        for(std::size_t plane=0;plane<output.planes.size();++plane){
-            {const auto status=load_mel_plane(plane);if(status!=Status::ok)return status;}
-            if(!process_mel())return Status::unavailable;
-            const auto status=store_mel_plane(plane);if(status!=Status::ok)return status;
-        }
-        return Status::ok;
     }
     Status fft() noexcept {
         auto& kernel=std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel);
@@ -125,7 +103,6 @@ class SpectralExecution {
         if(!node.node.enabled)return fill_silence(output,limits);
         const auto status=validate_values(source,ValueDomain::FiniteOnly,limits);if(status!=Status::ok)return status;
         if(node.node.kind==NodeKind::StereoFFT)return fft();
-        if(node.node.kind==NodeKind::Mel)return mel();
         return pointwise();
     }
 public:
@@ -139,9 +116,12 @@ public:
 }
 TransformResult execute_transform(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits,TransformDelivery delivery) noexcept {
     switch(node.node.kind){
+    case NodeKind::FrameStride:return frame_stride(node,state,current);
+    case NodeKind::Mel:case NodeKind::PowerToDb:return {execute_music(node,state,current,limits),false};
     case NodeKind::WindowFunction:return window_coefficients(node,state,current,delivery);
     case NodeKind::PcmResampler:return execute_resampler(node,state,current,delivery);
     case NodeKind::Window:return execute_window(node,state,current,delivery);
+    case NodeKind::FrameBuffer:return execute_frame_buffer(node,state,current,limits,delivery);
     default:return SpectralExecution(node,state,current,limits,delivery).process();
     }
 }

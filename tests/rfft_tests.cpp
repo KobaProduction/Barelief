@@ -280,6 +280,22 @@ void verify_extreme_projection(std::size_t n,dsp_kernels::SpectrumProjection kin
             require(!projection.process(raw, output) && output == preserved, "Projection late NaN is not atomic");
             raw.back() = original.back();
 }
+void projection_subset_geometry() {
+    using namespace dsp_kernels;
+    constexpr std::size_t n=1024,bins=100;
+    std::array<float,2*bins> raw{};std::array<float,bins> output{};
+    for(std::size_t bin=0;bin<bins;++bin){raw[2*bin]=3;raw[2*bin+1]=4;}
+    for(const auto norm:{ComplexMagnitudeNorm::Hypot,ComplexMagnitudeNorm::SquaredNorm}){
+        SpectrumProjectionOptions options{SpectrumProjection::BinPower,true};options.magnitude_norm=norm;
+        PreparedSpectrumProjection projection;
+        require(projection.prepare({n,bins,10,true},48000,{n,2,4},options),"prepare explicit FFT subset");
+        require(projection.process(raw,output),"project explicit FFT subset");
+        for(const auto value:output)require(value==50.f/(n*4),"bin power uses declared N rather than subset width");
+        options.representation=SpectrumProjection::WindowScaledMagnitude;
+        require(projection.prepare({n,bins,10,true},48000,{n,2,4},options) && projection.process(raw,output),"project selected calibrated magnitude norm");
+        for(const auto value:output)require(value==2.5f,"calibrated magnitude norm preserves square-root interpretation");
+    }
+}
 void projection_extremes(std::size_t n) {
     std::vector<float> raw(n+2),output(n/2+1),expected(n/2+1);
     const dsp_kernels::WindowScaling scaling{n,double(n),double(n)};
@@ -574,6 +590,7 @@ int main(int argc, char** argv) {
         }
         edge_cases(512);
         projection_extremes(512);
+        projection_subset_geometry();
 
         if (dsp_kernels::max_fft_samples >= 4096) {
             edge_cases(4096);

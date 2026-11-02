@@ -1,0 +1,2 @@
+# NumericEngine composes the portable numerical operation factory at preparation.
+include_rules = ['+dsp_graph_adapters']

@@ -2,6 +2,7 @@
 #include <cmath>
 #include <numeric>
 #include <utility>
+#include <new>
 namespace domain {
 using namespace signal_contracts;
 Status numeric_metadata_output_contract(const NumericContract& input,bool sample_rate,OwnedProcessingContract& out) noexcept {
@@ -21,14 +22,35 @@ Status materialize_polar_contracts(const NumericContract& input,std::array<Owned
 }
 }
 Status complex_polar_output_contracts(const NumericContract& input,std::array<OwnedProcessingContract,2>& out) noexcept {
-    if(input.dtype!=DType::Float32 || (input.shape.rank!=Rank::Scalar && input.shape.rank!=Rank::Vector) ||
-       input.shape.extents[0].minimum!=input.shape.extents[0].maximum || input.channel_order.size()!=1 ||
+    if(input.dtype!=DType::Float32 ||
+       (input.shape.rank!=Rank::Matrix && input.shape.extents[0].minimum!=input.shape.extents[0].maximum) || input.shape.extents[1].minimum!=input.shape.extents[1].maximum || input.channel_order.size()!=1 ||
        input.representation.encoding!=StorageEncoding::Native || input.representation.valid_bits ||
        input.representation.layout!=ChannelLayout::Planar)return Status::incompatible_contract;
-    // Explicit coordinate payloads require a separate owning axis join; this
-    // arithmetic primitive currently supports index/regular-coordinate inputs.
-    for(const auto& axis:input.coordinates)if(axis.mode==CoordinateMode::ExplicitFloat64LE)return Status::incompatible_contract;
     return materialize_polar_contracts(input,out);
+}
+namespace {
+bool polar_policy(const ResolvedProcessingNode& node) {
+    ProcessingParameterView norm,zero;
+    if(resolve_processing_parameter(node,"magnitude_norm",norm)!=Status::ok || resolve_processing_parameter(node,"zero_phase",zero)!=Status::ok)return false;
+    const auto* n=std::get_if<std::string_view>(&norm);const auto* z=std::get_if<std::string_view>(&zero);
+    return n && z && (*n=="hypot" || *n=="squared_norm") && (*z=="zero" || *z=="atan2");
+}
+bool polar_geometry(const ResolvedProcessingNode& node,const NumericContract& input) {
+    ProcessingParameterView size,first,half;
+    if(resolve_processing_parameter(node,"fft_size",size)!=Status::ok || resolve_processing_parameter(node,"first_bin",first)!=Status::ok ||
+       resolve_processing_parameter(node,"positive_half",half)!=Status::ok)return false;
+    const auto* n=std::get_if<NumericLiteral>(&size);const auto* f=std::get_if<NumericLiteral>(&first);const auto* h=std::get_if<bool>(&half);
+    if(!n || !f || !h)return false;
+    const auto fft=std::visit([](auto v){return double(v);},*n),begin=std::visit([](auto v){return double(v);},*f);
+    const auto available=*h?std::floor(fft/2)+1:fft;
+    return fft>=1 && fft<=UINT32_MAX && std::floor(fft)==fft && begin>=0 && std::floor(begin)==begin &&
+        begin<available && input.shape.extents[input.shape.rank==Rank::Matrix?1:0].maximum<=available-begin;
+}
+}
+Status complex_polar_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,std::array<OwnedProcessingContract,2>& out) noexcept {
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::ComplexPolar,node.inputs,node.outputs,&node.parameters,node.enabled};
+    if(!polar_policy(resolved) || !polar_geometry(resolved,input))return Status::invalid_argument;
+    return complex_polar_output_contracts(input,out);
 }
 namespace {
 Status fourier_parameters(const ConfiguredProcessingNode& node,double& n) {
@@ -39,7 +61,7 @@ Status fourier_parameters(const ConfiguredProcessingNode& node,double& n) {
        resolve_processing_parameter(resolved,"radix",radix)!=Status::ok || !std::holds_alternative<std::string_view>(radix))return Status::invalid_argument;
     n=std::visit([](auto value){return double(value);},std::get<NumericLiteral>(size));
     const auto method=std::get<std::string_view>(radix);
-    if(n<2 || n>UINT32_MAX || std::floor(n)!=n || (std::size_t(n)&(std::size_t(n)-1)) ||
+    if(n<(node.kind=="Fourier"?4:8) || n>UINT32_MAX || std::floor(n)!=n || (std::size_t(n)&(std::size_t(n)-1)) ||
        (method!="radix2" && method!="radix4") ||
        (node.kind=="Fourier" && method=="radix4" && (std::size_t(n)&0x55555555)==0))return Status::invalid_argument;
     return Status::ok;
@@ -48,32 +70,52 @@ NumericContract fourier_bin_contract(const ConfiguredProcessingNode& node,const 
     auto value=input;value.semantic=Semantic::Numeric;value.history_element=Semantic::Numeric;
     value.quantity=Quantity::SpectrumReal;value.unit=NumericUnit::RawAmplitude;
     value.representation.normalization=Normalization::None;value.coordinates={};
-    value.shape.axes={Axis::Bin,Axis::None};
-    const auto count=node.kind=="Fourier"?std::uint64_t(n)-1:std::uint64_t(n)/2;
-    value.shape.extents[0]={count,count};
+    const auto axis=input.shape.rank==Rank::Matrix?1u:0u;
+    if(axis)value.coordinates[0]=input.coordinates[0];
+    value.coordinates[axis]={CoordinateMode::Regular,NumericUnit::Values,{node.kind=="Fourier"?0:1,1},{1,1}};
+    value.shape.axes[axis]=Axis::Bin;
+    const auto count=node.kind=="Fourier"?std::uint64_t(n):std::uint64_t(n)/2;
+    value.shape.extents[axis]={count,count};
     return value;
 }
-Status materialize_fourier_contracts(const NumericContract& value,std::array<OwnedProcessingContract,4>& out) {
-    std::array<OwnedProcessingContract,4> candidate;
+NumericContract fourier_port_contract(const NumericContract& value,bool real,std::size_t port) {
+    auto result=value;result.quantity=port==1?Quantity::SpectrumImaginary:Quantity::SpectrumReal;
+    const auto axis=value.shape.rank==Rank::Matrix?1u:0u;
+    if(real && port==1){--result.shape.extents[axis].minimum;--result.shape.extents[axis].maximum;}
+    if(port==2){
+        if(axis){result.shape.rank=Rank::Vector;result.shape.axes[1]=Axis::None;result.shape.extents[1]={};result.coordinates[1]={};}
+        else{result.shape={};result.coordinates={};}
+    }
+    return result;
+}
+Status materialize_fourier_contracts(const NumericContract& value,bool real,std::vector<OwnedProcessingContract>& out) {
+#if defined(__cpp_exceptions)
+    try {
+#endif
+    std::vector<OwnedProcessingContract> candidate;candidate.reserve(real?3:2);
     constexpr FrameLimits bounds{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX};
-    for(std::size_t port=0;port<4;++port){
-        auto c=value;c.quantity=port%2?Quantity::SpectrumImaginary:Quantity::SpectrumReal;
-        if(port>=2)c.shape={Rank::Scalar,{Axis::None,Axis::None},{ExtentBounds{},ExtentBounds{}}};
-        const auto status=own_processing_contract(c,bounds,16384,candidate[port]);if(status!=Status::ok)return status;
+    for(std::size_t port=0;port<(real?3u:2u);++port){
+        OwnedProcessingContract contract;
+        const auto status=own_processing_contract(fourier_port_contract(value,real,port),bounds,SIZE_MAX,contract);if(status!=Status::ok)return status;
+        candidate.push_back(std::move(contract));
     }
     out=std::move(candidate);return Status::ok;
+#if defined(__cpp_exceptions)
+    }catch(const std::bad_alloc&){return Status::exhausted;}
+#endif
 }
 }
 Status fourier_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,
-    std::array<OwnedProcessingContract,4>& out) noexcept {
+    std::vector<OwnedProcessingContract>& out) noexcept {
     if(node.kind!="Fourier" && node.kind!="RealFourier")return Status::invalid_argument;
     double n=0;
     if(fourier_parameters(node,n)!=Status::ok)return Status::invalid_argument;
-    if(input.dtype!=DType::Float32 || input.shape.rank!=Rank::Vector || input.channel_order.size()!=1 ||
-       input.shape.extents[0]!=ExtentBounds{std::uint64_t(n),std::uint64_t(n)} ||
+    const auto axis=input.shape.rank==Rank::Matrix?1u:0u;
+    if(input.dtype!=DType::Float32 || (input.shape.rank!=Rank::Vector && input.shape.rank!=Rank::Matrix) || input.channel_order.size()!=1 ||
+       input.shape.extents[axis]!=ExtentBounds{std::uint64_t(n),std::uint64_t(n)} ||
        input.representation.encoding!=StorageEncoding::Native || input.representation.valid_bits ||
        input.representation.layout!=ChannelLayout::Planar)return Status::incompatible_contract;
-    return materialize_fourier_contracts(fourier_bin_contract(node,input,n),out);
+    return materialize_fourier_contracts(fourier_bin_contract(node,input,n),node.kind=="RealFourier",out);
 }
 
 }

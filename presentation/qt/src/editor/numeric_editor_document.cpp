@@ -38,6 +38,7 @@ void NumericEditorGraphModel::load(const QJsonObject& json){
     QScopedValueRollback<bool> strict(_allow_connection_clock_adaptation,false);
     DataFlowGraphModel::load(json);
     restore_document_nodes(decoded);
+    refresh_bound_parameters();
 }
 void NumericEditorGraphModel::load_document_policies(const QJsonObject& json) {
     const auto saved_connections=json.value("connections").toArray();
@@ -286,6 +287,7 @@ void NumericEditorGraphModel::install_draft_graph(const domain::NumericProcessin
     _graph_id=graph.graph_id;_versions=graph.versions;_execution_interval=graph.execution_interval;
     install_draft_nodes(graph,candidate);
     install_draft_edges(graph);
+    refresh_bound_parameters();
 }
 void NumericEditorGraphModel::install_draft_nodes(const domain::NumericProcessingGraph& graph,const NumericEditorGraphModel& candidate) {
     for(const auto& node:graph.nodes){

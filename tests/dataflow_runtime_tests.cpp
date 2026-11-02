@@ -102,7 +102,7 @@ struct SelectiveResetFixture {
  void process_right(){auto frame=right.frame(256);const auto before=allocations;
   check(executor.process_numeric_ports(21,frame,{}, {})==Status::ok&&allocations==before,"right branch process/noalloc");}
  void start(){prepare(executor,graph,pending);const auto admission=pending.plan->numeric_admission();
-  check(admission && admission->resources.payload_bytes>=2*2048*50*sizeof(double) && admission->resources.payload_bytes<=profile().resources.maximum.payload_bytes,"both retained Mel plans charged within bounded two-branch payload budget");
+  check(admission && admission->resources.payload_bytes>=2*2048*50*sizeof(float) && admission->resources.payload_bytes<=profile().resources.maximum.payload_bytes,"both retained Float32 Mel plans charged within bounded two-branch payload budget");
   check(executor.apply(std::move(pending))==Status::ok,"two branches Apply");
   for(int i=0;i<32;++i){left.process(executor,256);process_right();}
   check(rows(executor,27)==rows(executor,7),"two branches counts");}
@@ -643,7 +643,7 @@ static void aligned_regressions(){AlignedRunner runner;
 static NumericRuntimeProfile startup_profile(){
  // Match the desktop engine's actual admission/kernel/reservation profile.
  constexpr std::size_t fixed=256*(262144+16384)+(384+48)*1024*1024;
- constexpr FrameLimits desktopLimits{8,131072,524288,16384,256,8192};
+ constexpr FrameLimits desktopLimits{8,131072,524288,16384+4096*sizeof(double),256,4096*sizeof(double)};
  NumericRuntimeProfile p{{512,2048,16,32,1024*1024,4*1024*1024,desktopLimits},
   {{16*1024*1024,32*1024*1024,16*1024*1024,1024*1024},fixed,576*1024*1024},
   {32768,8,262144,262144,16*1024*1024},{true,true,true},true};
@@ -668,8 +668,21 @@ static NumericProcessingGraph startup_fragment(const NumericProcessingGraph& gra
  std::erase_if(fragment.configuration_bindings,[&](const auto& b){return !retained(b.from)||!retained(b.to);});
  return fragment;
 }
+static void diagnose_startup_rhythm(const NumericProcessingGraph& graph){
+ const auto analyzer=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.id==1102;});
+ const auto history=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.id==7;});
+ if(analyzer==graph.nodes.end() || history==graph.nodes.end())return;
+ const auto input=std::get<NumericContract>(analyzer->inputs[0].contract.view());
+ const auto output=std::get<NumericContract>(history->outputs[0].contract.view());
+ std::fprintf(stderr,"startup rhythm dtype=%u unit=%u axes=%u/%u size=%llu/%llu fs=%u; history dtype=%u axes=%u/%u size=%llu/%llu fs=%u\n",
+  unsigned(input.dtype),unsigned(input.unit),unsigned(input.shape.axes[0]),unsigned(input.shape.axes[1]),
+  (unsigned long long)input.shape.extents[0].maximum,(unsigned long long)input.shape.extents[1].maximum,input.clock.sample_rate,
+  unsigned(output.dtype),unsigned(output.shape.axes[0]),unsigned(output.shape.axes[1]),
+  (unsigned long long)output.shape.extents[0].maximum,(unsigned long long)output.shape.extents[1].maximum,output.clock.sample_rate);
+}
 static void diagnose_startup_failure(const NumericProcessingGraph& graph,const NumericRuntimeProfile& profile,Status status){
  std::fprintf(stderr,"startup prepare status=%d nodes=%zu\n",int(status),graph.nodes.size());
+ diagnose_startup_rhythm(graph);
  NumericProcessingGraph evaluated,executable;
  const auto diagnostic=resolve_numeric_parameter_bindings(graph,profile.admission,evaluated,executable);
  std::fprintf(stderr,"startup bindings error=%u node=%lld port=%u\n",unsigned(diagnostic.error),static_cast<long long>(diagnostic.node),unsigned(diagnostic.port));
@@ -689,7 +702,9 @@ static void mono_source_discovery(NumericProcessingGraph& graph,NodeId source_id
  std::erase_if(graph.edges,[&](const auto& edge){return edge.from==source_id && edge.output_port!=0 && edge.output_port!=sample_rate_output;});
 }
 static void mono_selector_variants(NumericProcessingGraph& graph,const NumericRuntimeProfile& profile){
- for(std::uint64_t selected=0;selected<2;++selected){
+ const auto streams=data_inputs(node(graph,200)).size()/2;
+ check(streams>0,"shipped selector has declared PCM/Fs stream pairs");
+ for(std::uint64_t selected=0;selected<streams;++selected){
   auto& selector=std::get<TransformProcessingParameters>(node(graph,200).parameters);
   for(auto& field:selector.values)if(field.key=="selected_input")field.value=NumericLiteral{selected};
   std::shared_ptr<const PreparedGraph> mono_plan;std::unique_ptr<RuntimeContext> mono_state;
@@ -703,7 +718,8 @@ static void startup_preparation_oracle(){auto graph=numeric_startup_graph();cons
  const auto status=PreparedGraph::prepare_numeric(graph,profile,plan,context);
  if(status!=Status::ok)diagnose_startup_failure(graph,profile,status);
  check(status==Status::ok,"startup complete preparation");
- mono_source_discovery(graph,13);
+ check(std::any_of(graph.nodes.begin(),graph.nodes.end(),[](const auto& source){return source.kind=="AudioSource";}),"shipped selector includes a capture stream");
+ for(const auto& source:graph.nodes)if(source.kind=="AudioSource")mono_source_discovery(graph,source.id);
  mono_selector_variants(graph,profile);
 }
 #include "aligned_numerical_acceptance.h"

@@ -617,7 +617,7 @@ ConfiguredProcessingNode scalar_window_fixture(const NumericContract& pcm) {
     auto scalar=pcm;scalar.shape={};scalar.channel_order=std::span(channels).first(1);scalar.clock.sample_rate=48000;
     auto window=pcm;window.semantic=Semantic::Window;window.shape.extents[0]={512,512};window.channel_order=scalar.channel_order;window.clock=scalar.clock;
     ConfiguredProcessingNode node;node.id=2;node.kind="Window";
-    node.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{512}}},{"input_rate",NumericLiteral{std::uint64_t{48000}}}}};
+    node.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{512}}}}};
     node.inputs={port(0,PortDirection::Input,scalar)};node.outputs={port(0,PortDirection::Output,window)};return node;
 }
 void scalar_window_device_admission(AdmissionFixture& fixture,const ConfiguredProcessingNode& node) {
@@ -627,7 +627,7 @@ void scalar_window_device_admission(AdmissionFixture& fixture,const ConfiguredPr
 }
 void scalar_window_semantics(ConfiguredProcessingNode node) {
     node.kind="StereoFFT";node.parameters=TransformProcessingParameters{};expect(resolve(node).error==ProcessingError::IncompatiblePorts);
-    node.kind="Window";node.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{512}}},{"input_rate",NumericLiteral{std::uint64_t{48000}}}}};
+    node.kind="Window";node.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{512}}}}};
     const auto retained=node.inputs[0].contract;auto data=retained.view();std::get<NumericContract>(data).semantic=Semantic::Scalar;
     node.inputs[0].contract=owned(data);expect(resolve(node));
 }
@@ -1251,9 +1251,9 @@ void window_auxiliary_port_limit_regression() {
     auto node=coefficient_generator_fixture(vector_contract(DType::Float32));
     const auto before=node;
     auto bounded=limits;
-    bounded.max_ports_per_node=2;
+    bounded.max_ports_per_node=1;
     const auto allocations=allocation_probe::allocations;
-    expect(attach_numeric_parameter_ports(node,bounded)==Status::exhausted);
+    expect(attach_numeric_parameter_ports(node,bounded)==Status::ok);
     expect(allocation_probe::allocations==allocations);
     check_parameter_ports_unchanged(node.inputs,before.inputs);
     check_parameter_ports_unchanged(node.outputs,before.outputs);
@@ -1272,9 +1272,9 @@ void window_auxiliary_ports_preserve_identity() {
     auto node=coefficient_generator_fixture(vector_contract(DType::Float32));
     const auto original=node.outputs.front();
     auto bounded=limits;
-    bounded.max_ports_per_node=3;
+    bounded.max_ports_per_node=1;
     expect(attach_numeric_parameter_ports(node,bounded)==Status::ok);
-    expect(node.outputs.size()==3);
+    expect(node.outputs.size()==1);
     expect(node.outputs.front().id==original.id);
     expect(same_contract(node.outputs.front().contract.view(),original.contract.view()));
     const auto before=node;

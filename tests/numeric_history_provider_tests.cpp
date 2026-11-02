@@ -227,7 +227,9 @@ class HistoryProviderScenario {
         return after.ordinal;
     }
     std::uint64_t compatible_apply() {
-        const auto before=capture_before_apply();graph.nodes[8].enabled=false;apply();
+        const auto before=capture_before_apply();
+        for(auto& node:graph.nodes)if(node.id==8)node.enabled=false;
+        apply();
         require(wait_for([this,&before]{return sink.ordinal>=before.ordinal+6 && count_value>=before.ordinal+6
             && scalar_value>=before.ordinal+6;}),"compatible Apply resets or stalls History/count");
         verify_delivery_boundary(before);

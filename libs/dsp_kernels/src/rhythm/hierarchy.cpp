@@ -20,18 +20,18 @@ std::size_t occupied_ticks(std::span<const double> times,double phase,double per
     }
     return occupied;
 }
-double coverage(std::span<const double> times,double phase,double period,double tolerance,std::span<double> workspace) noexcept {
+float coverage(std::span<const double> times,double phase,double period,double tolerance,std::span<double> workspace) noexcept {
     const double first=std::ceil((times.front()-phase)/period-1e-8);
     const double last=std::floor((times.back()-phase)/period+1e-8);
     const double total=last-first+1;
     if(total<3)return -1;
     if(!std::isfinite(total))return 0;
-    return double(occupied_ticks(times,phase,period,tolerance,first,last,workspace))/total;
+    return float(double(occupied_ticks(times,phase,period,tolerance,first,last,workspace))/total);
 }
-double offbeats(std::span<const double> times,double phase,double period,double tolerance) noexcept {
+float offbeats(std::span<const double> times,double phase,double period,double tolerance) noexcept {
     unsigned count=0;
     for(double t:times)if(std::abs(modulo(t-phase,period)-period/2)<=tolerance)++count;
-    return double(count)/double(times.size());
+    return float(count)/float(times.size());
 }
 std::uint8_t group_bit(const Engine& e,std::uint32_t id) noexcept {
     for(std::size_t i=0;i<e.groups.count;++i)if(e.groups.values[i].id==id)return std::uint8_t(1U<<i);
@@ -51,13 +51,12 @@ Hierarchy score_hierarchy(Engine& e,double period,std::uint8_t groups) noexcept 
     result.strong_count=unsigned(e.salient.count);result.weak_count=unsigned(e.weak.count);
     const auto phase=phase_fit(e.salient.span(),period);
     if(!phase.value)return result;
-    // ACF and candidate ranking are sequential; reuse prepared ACF scratch.
-    const double occupied=coverage(e.salient.span(),*phase.value,period,e.cfg.accent_phase_tolerance*period,e.centered);
+    const float occupied=coverage(e.salient.span(),*phase.value,period,e.cfg.accent_phase_tolerance*period,e.occupied_ticks);
     if(occupied<0)return {};
-    const double weak_fit=offbeats(e.weak.span(),*phase.value,period,e.cfg.accent_phase_tolerance*period);
+    const float weak_fit=offbeats(e.weak.span(),*phase.value,period,e.cfg.accent_phase_tolerance*period);
     result.phase=rounded(*phase.value,8);result.fit=rounded(phase.fit,6);
     result.coverage=rounded(occupied,6);result.weak_offbeat=rounded(weak_fit,6);
-    result.score=rounded(std::clamp(.5*phase.fit+.3*occupied+.2*weak_fit,0.,1.),6);
+    result.score=rounded(std::clamp(.5f*phase.fit+.3f*occupied+.2f*weak_fit,0.f,1.f),6);
     return result;
 }
 }

@@ -80,12 +80,18 @@ struct GraphComposition {
     Status mel(const NumericContract& spectrum,NumericContract& output) {
         output=spectrum;output.semantic=Semantic::MelEnergy;output.quantity=Quantity::MelEnergy;
         output.shape.axes[0]=Axis::Band;output.shape.extents[0]={profile.mel_bands,profile.mel_bands};output.coordinates[0]={};
-        return node("Mel",&spectrum,&output,domain::TransformProcessingParameters{{
+        const auto created=node("Mel",&spectrum,&output,domain::TransformProcessingParameters{{
             {"bands",NumericLiteral{std::uint64_t{profile.mel_bands}}},
             {"sample_rate",NumericLiteral{std::uint64_t{profile.sample_rate}}},
             {"bin_hz",NumericLiteral{double(profile.sample_rate)/profile.fft_size}},
             {"first_bin",NumericLiteral{std::uint64_t{0}}},
             {"frequencies_hz",domain::NumericArray{}}}});
+        if(created!=Status::ok)return created;
+        domain::OwnedProcessingContract derived;
+        const auto status=domain::mel_output_contract(graph.nodes.back(),spectrum,derived);
+        if(status!=Status::ok)return status;
+        graph.nodes.back().outputs[0].contract=std::move(derived);
+        output=std::get<NumericContract>(graph.nodes.back().outputs[0].contract.view());return Status::ok;
     }
     Status analysis(const NumericContract& pcm,NumericContract& output) {
         if(!profile.spectral){output=pcm;return Status::ok;}

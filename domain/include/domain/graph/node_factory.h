@@ -16,7 +16,7 @@ ProcessingDiagnostic make_processing_node(NodeKind,NodeId,
 ProcessingDiagnostic derive_processing_node_contracts(ConfiguredProcessingNode&,
     const ProcessingAdmissionLimits&);
 // Assign a declared primary input and derive output contracts atomically.
-// PcmResampler and Window materialize this input configuration as input_rate;
+// PcmResampler materializes this input configuration as input_rate;
 // their scalar Fs bindings can override it. A zero input_rate means unavailable,
 // while a nonzero rate inconsistent with the declared input is incompatible.
 ProcessingDiagnostic configure_processing_input(ConfiguredProcessingNode&,const signal_contracts::DataContract&,

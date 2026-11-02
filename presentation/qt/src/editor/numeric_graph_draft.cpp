@@ -1,6 +1,7 @@
 #include "numeric_graph_draft.h"
 #include <domain/graph/node_factory.h>
 #include <algorithm>
+#include <variant>
 namespace numeric_editor {
 bool music_operation(std::string_view kind) {
     if(kind=="RhythmAnalyzer" || kind=="RhythmFeatures")return true;
@@ -40,17 +41,35 @@ domain::ConfiguredProcessingNode* find_destination(domain::NumericProcessingGrap
     auto to=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==edge.to;});
     return to==graph.nodes.end()?nullptr:&*to;
 }
-bool connect_candidate(const domain::Edge& edge,domain::NumericProcessingGraph& candidate,domain::NodeId& destination) {
-    auto from=std::find_if(candidate.nodes.begin(),candidate.nodes.end(),[&](const auto& n){return n.id==edge.from;});
-    auto* to=find_destination(candidate,edge);
-    if(from==candidate.nodes.end() || !to)return false;
-    const auto out=std::find_if(from->outputs.begin(),from->outputs.end(),[&](const auto& p){return p.id==edge.output_port;});
-    auto in=std::find_if(to->inputs.begin(),to->inputs.end(),[&](const auto& p){return p.id==edge.input_port;});
-    if(out==from->outputs.end() || in==to->inputs.end())return false;
-    in->contract=out->contract;candidate.edges.push_back(edge);
-    if(domain::numeric_parameter_key(to->kind,edge.input_port).empty() && !domain::derive_processing_node_contracts(*to,limits()))return false;
-    destination=to->id;
+bool same_connected_numeric_dtype(const domain::ProcessingPort& source,const domain::ProcessingPort& target) {
+    const auto from=source.contract.view(),to=target.contract.view();
+    const auto* input=std::get_if<signal_contracts::NumericContract>(&from);
+    const auto* previous=std::get_if<signal_contracts::NumericContract>(&to);
+    return input && previous && input->dtype==previous->dtype;
+}
+bool adopt_connected_input(const domain::NumericProcessingGraph& graph,const domain::Edge& edge,domain::ConfiguredProcessingNode& target,bool fresh) {
+    const auto from=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& node){return node.id==edge.from;});
+    auto in=std::find_if(target.inputs.begin(),target.inputs.end(),[&](const auto& port){return port.id==edge.input_port;});
+    if(from==graph.nodes.end() || in==target.inputs.end())return false;
+    const auto out=std::find_if(from->outputs.begin(),from->outputs.end(),[&](const auto& port){return port.id==edge.output_port;});
+    if(out==from->outputs.end())return false;
+    if(!fresh && !same_connected_numeric_dtype(*out,*in))return true;
+    in->contract=out->contract;return true;
+}
+bool adopt_connected_inputs(const domain::NumericProcessingGraph& graph,domain::ConfiguredProcessingNode& target,const domain::Edge& added) {
+    for(const auto& edge:graph.edges)if(edge.to==target.id)
+        if(!adopt_connected_input(graph,edge,target,&edge==&added))return false;
     return true;
+}
+
+bool connect_candidate(const domain::Edge& edge,domain::NumericProcessingGraph& candidate,domain::NodeId& destination) {
+    auto* to=find_destination(candidate,edge);if(!to)return false;
+    candidate.edges.push_back(edge);
+    // Retained same-dtype draft inputs also receive their directly connected
+    // contracts. Existing conversions and complete preparation remain authoritative.
+    if(!adopt_connected_inputs(candidate,*to,candidate.edges.back()))return false;
+    if(domain::numeric_parameter_key(to->kind,edge.input_port).empty() && !domain::derive_processing_node_contracts(*to,limits()))return false;
+    destination=to->id;return true;
 }
 }
 bool adapt_connection_clock(const domain::Edge& edge,domain::NumericProcessingGraph& graph,const NodeCheck& check) {

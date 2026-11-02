@@ -2,7 +2,7 @@
 #include <domain/graph/admission.h>
 
 namespace domain {
-enum class PreparationValueKind { Streaming, UnsignedInteger, FiniteScalar, Routed };
+enum class PreparationValueKind { Streaming, UnsignedInteger, FiniteScalar, FiniteVector, Routed };
 struct PreparationValueCapability {
     PreparationValueKind kind=PreparationValueKind::Streaming;
     explicit operator bool() const noexcept { return kind!=PreparationValueKind::Streaming; }
@@ -13,9 +13,14 @@ struct PreparationValueProvider {
     using Resolve=signal_contracts::Status (*)(const void*,const NumericProcessingGraph&,NodeId,PortId,signal_contracts::NumericLiteral&) noexcept;
     const void* context=nullptr;
     Resolve resolve=nullptr;
+    using ResolveVector=signal_contracts::Status (*)(const void*,const NumericProcessingGraph&,NodeId,PortId,NumericArray&);
+    ResolveVector resolve_vector=nullptr;
 };
 signal_contracts::Status resolve_preparation_value(const NumericProcessingGraph&,NodeId,PortId,
     signal_contracts::NumericLiteral&,const PreparationValueProvider* provider=nullptr) noexcept;
+// Owned finite coefficients are evaluated on the cold preparation path only.
+signal_contracts::Status resolve_preparation_vector(const NumericProcessingGraph&,NodeId,PortId,
+    NumericArray&,const PreparationValueProvider* provider=nullptr);
 // Ordinary scalar parameter wires are evaluated before buffers are prepared.
 // The evaluated graph retains those wires; executable_graph strips them.
 // changed_node seeds downstream contract derivation after a local parameter edit.

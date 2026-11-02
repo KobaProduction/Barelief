@@ -1,5 +1,10 @@
 add_library(dataflow_runtime STATIC
     src/runtime.cpp
+    src/numeric_operation.cpp src/numeric_extension_preparation.cpp
+    src/numeric_extension_resources.cpp src/numeric_extension_latch.cpp
+    src/numeric_extension_storage.cpp
+    src/numeric_extension_join.cpp src/numeric_extension_publication.cpp
+    src/numeric_extension_process.cpp src/temporal_operation_execution.cpp
     src/runtime_context.cpp
     src/runtime_queries.cpp
     src/graph_preparation.cpp
@@ -11,7 +16,7 @@ add_library(dataflow_runtime STATIC
     src/history_execution.cpp
     src/conversion_execution.cpp
     src/resampler_execution.cpp
-    src/window_execution.cpp
+    src/window_execution.cpp src/frame_buffer_execution.cpp
     src/capability_admission.cpp
     src/buffer_preparation.cpp
     src/node_state.cpp
@@ -28,6 +33,10 @@ add_library(dataflow_runtime STATIC
     src/signal_operation_execution.cpp
     src/music_operation_execution.cpp
     src/rhythm_execution.cpp
+    src/tempo_evidence_execution.cpp
+    src/onset_strength_execution.cpp
+    src/spectral_descriptor_execution.cpp
+    src/spectral_frontend_execution.cpp
     src/prepared_operation_process.cpp
     src/pcm_packet_queue.cpp
     src/transform_execution.cpp

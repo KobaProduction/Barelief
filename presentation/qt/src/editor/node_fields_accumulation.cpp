@@ -30,11 +30,15 @@ void write_history_capacity(domain::ConfiguredProcessingNode& node,const signal_
 }
 void NodeParameterModel::append_accumulation_fields() {
     using namespace signal_contracts;using namespace domain;
-    if (std::holds_alternative<HistoryProcessingParameters>(_node.parameters))
+    if (std::holds_alternative<HistoryProcessingParameters>(_node.parameters)){
         literal(
             _node.kind=="NumberAccumulator"?"History capacity, values":"History capacity, frames", "numericCapacity",
             [](const auto &n) { return NumericLiteral{std::get<HistoryProcessingParameters>(n.parameters).capacity}; },
             write_history_capacity,1);
+        boolean("Only filled history rows","numericFilledOnly",
+            [](const auto& n){return std::get<HistoryProcessingParameters>(n.parameters).filled_only;},
+            [](auto& n,bool value){std::get<HistoryProcessingParameters>(n.parameters).filled_only=value;});
+    }
     if (std::holds_alternative<ReduceProcessingParameters>(_node.parameters))
         choice(
             "Operation", "numericReduction", {"Maximum absolute", "Mean", "RMS"},

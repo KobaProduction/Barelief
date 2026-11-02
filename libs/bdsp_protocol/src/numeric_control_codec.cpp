@@ -169,9 +169,24 @@ class Writer final : public Archive {
         auto measure = pb_ostream_t PB_OSTREAM_SIZING;
         Writer m(state, codec_, schema, depth_ + 2, true, nullptr, &measure);
         if (!f(m, p, index) || !pb_encode_varint(pb_, measure.bytes_written)) return state.fail(Status::CodecFailure);
+        if (sizing_)
+            return pb_write(pb_, nullptr, measure.bytes_written) || state.fail(Status::CodecFailure);
         Writer w(state, codec_, schema, depth_ + 2, sizing_, nullptr, pb_);
         return f(w, p, index);
     }
+    bool protobuf_object(unsigned tag, Schema schema, void *value, Visit f) noexcept {
+        if (!key(tag, PB_WT_STRING))
+            return false;
+        auto measure = pb_ostream_t PB_OSTREAM_SIZING;
+        Writer m(state, codec_, schema, depth_ + 1, true, nullptr, &measure);
+        if (!m.map(value, f) || !pb_encode_varint(pb_, measure.bytes_written))
+            return state.fail(Status::CodecFailure);
+        if (sizing_)
+            return pb_write(pb_, nullptr, measure.bytes_written) || state.fail(Status::CodecFailure);
+        Writer w(state, codec_, schema, depth_ + 1, sizing_, nullptr, pb_);
+        return w.map(value, f);
+    }
+
     bool protobuf_sequence(unsigned tag, Schema schema, void *p, std::size_t n, ElementVisit f) noexcept {
         for (std::size_t i = 0; i < n; ++i)
             if (!protobuf_element(tag, schema, p, i, f)) return false;
@@ -247,14 +262,7 @@ class Writer final : public Archive {
             Writer w(state, codec_, schema, depth_ + 1, sizing_, cbor_, nullptr);
             return w.map(value, f);
         }
-        if (!key(tag, PB_WT_STRING))
-            return false;
-        auto measure = pb_ostream_t PB_OSTREAM_SIZING;
-        Writer m(state, codec_, schema, depth_ + 1, true, nullptr, &measure);
-        if (!m.map(value, f) || !pb_encode_varint(pb_, measure.bytes_written))
-            return state.fail(Status::CodecFailure);
-        Writer w(state, codec_, schema, depth_ + 1, sizing_, nullptr, pb_);
-        return w.map(value, f);
+        return protobuf_object(tag, schema, value, f);
     }
     bool sequence_size(unsigned, std::size_t &) noexcept override {
         return true;

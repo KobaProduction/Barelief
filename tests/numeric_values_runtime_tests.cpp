@@ -150,15 +150,15 @@ void parameter_bindings(){
  input.clock={"source",{1,48000},48000};input.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{1,256},ExtentBounds{}}};
  ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={{0,PortDirection::Output,own(input)}};
  auto output=input;output.semantic=Semantic::Window;output.shape.extents[0]={4096,4096};
- ConfiguredProcessingNode window;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{4096}}},{"input_rate",NumericLiteral{std::uint64_t{48000}}}}};
+ ConfiguredProcessingNode window;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{4096}}}}};
  window.inputs={{0,PortDirection::Input,own(input)}};window.outputs={{0,PortDirection::Output,own(output)}};
- check(attach_numeric_parameter_ports(window,limits)==Status::ok,"attach explicit Fs and size parameter inputs");
+ check(attach_numeric_parameter_ports(window,limits)==Status::ok,"attach size parameter input");
  check(std::count_if(window.inputs.begin(),window.inputs.end(),[](const auto& port){return port.id==window_size_input;})==1,"factory exposes exactly one size parameter input");
  ConfiguredProcessingNode constant;constant.id=3;constant.kind="UInt32Constant";constant.parameters=EndpointProcessingParameters{{{"value",NumericLiteral{std::uint64_t{2048}}}}};constant.outputs={{0,PortDirection::Output,own(base())}};
  NumericProcessingGraph graph;graph.graph_id="parameter-bindings";graph.nodes={source,window,constant};graph.edges={{1,2,0,0},{3,2,0,window_size_input}};
  NumericProcessingGraph evaluated,executable;
  check(bool(resolve_numeric_parameter_bindings(graph,limits,evaluated,executable)),"evaluate N connection");
- check(evaluated.nodes[1].inputs.size()==3 && executable.nodes[1].inputs.size()==1 && executable.edges.size()==1,"parameter wire retained in editable graph and removed from execution schedule");
+ check(evaluated.nodes[1].inputs.size()==2 && executable.nodes[1].inputs.size()==1 && executable.edges.size()==1,"parameter wire retained in editable graph and removed from execution schedule");
  check(std::get<NumericContract>(evaluated.nodes[1].outputs[0].contract.view()).shape.extents[0].maximum==2048,"N wire changes prepared window geometry");
  std::array<std::size_t,64> workspace{};ProcessingGraphAdmission admission;
  const auto admitted=admit_processing_graph(executable,limits,PreparedGraph::numeric_capabilities(profile()),workspace,admission);
@@ -217,19 +217,18 @@ void native_selector(){
 }
  struct SpectrumObservation {float tone=0,nyquist=0,dc=0;unsigned count=0;const std::byte* amplitude_data=nullptr;static void output(void* context,const NumericPortFrameView& event){auto& self=*static_cast<SpectrumObservation*>(context);if(!event.frame.stamp.available)return;const auto& data=std::get<NumericView>(event.frame.payload);
    if(event.identity.node==6){double delta=0;check(load_element(data,{0,0,0},delta)==Status::ok && delta==93.75,"runtime divides actual Fs by N into ordinary Float64");}
-   if(event.identity.node==4)self.amplitude_data=data.storage.data();
+   if(event.identity.node==4 && !event.identity.port)self.amplitude_data=data.storage.data();
    if(event.identity.node==2 && event.identity.port==2)check(load_element(data,{0,0,0},self.dc)==Status::ok,"raw DC load");
-   if(event.identity.node==4){check(data.actual[0]==256,"nonzero half includes exactly N/2 amplitudes");check(load_element(data,{0,4,0},self.tone)==Status::ok && load_element(data,{0,255,0},self.nyquist)==Status::ok,"peak amplitude loads");check(data.contract->coordinates[0].mode==CoordinateMode::None,"amplitude stays indexed without coordinate annotation");++self.count;}
+   if(event.identity.node==4 && !event.identity.port){check(data.actual[0]==256,"nonzero half includes exactly N/2 amplitudes");check(load_element(data,{0,4,0},self.tone)==Status::ok && load_element(data,{0,255,0},self.nyquist)==Status::ok,"peak amplitude loads");const auto axis=data.contract->coordinates[0];check(axis.mode==CoordinateMode::Regular && axis.unit==NumericUnit::Hertz && double(axis.step.numerator)/double(axis.step.denominator)==93.75,"amplitude constructs its explicitly configured frequency grid");++self.count;}
  }};
 NumericProcessingGraph explicit_spectrum_graph(const NumericContract& input){
  ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={{0,PortDirection::Output,own(input)}};check(attach_numeric_parameter_ports(source,limits)==Status::ok,"spectral source Fs");
  ConfiguredProcessingNode fft;fft.id=2;fft.kind="RealFourier";fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};fft.inputs={{0,PortDirection::Input,own(input)}};
- std::array<OwnedProcessingContract,4> transformed;check(fourier_output_contracts(fft,input,transformed)==Status::ok,"spectral transform outputs");for(PortId p=0;p<4;++p)fft.outputs.push_back({p,PortDirection::Output,transformed[p]});
- ConfiguredProcessingNode polar;polar.id=3;polar.kind="ComplexPolar";polar.parameters=TransformProcessingParameters{};polar.inputs={{0,PortDirection::Input,transformed[0]},{1,PortDirection::Input,transformed[1]}};
- std::array<OwnedProcessingContract,2> projected;check(complex_polar_output_contracts(std::get<NumericContract>(transformed[0].view()),projected)==Status::ok,"spectral polar outputs");polar.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]}};
- ConfiguredProcessingNode amplitude;amplitude.id=4;amplitude.kind="SpectrumAmplitude";amplitude.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};amplitude.inputs={{0,PortDirection::Input,projected[0]}};OwnedProcessingContract peak;check(spectrum_amplitude_output_contract(amplitude,std::get<NumericContract>(projected[0].view()),peak)==Status::ok,"spectral peak geometry");amplitude.outputs={{0,PortDirection::Output,peak}};check(attach_numeric_parameter_ports(amplitude,limits)==Status::ok,"amplitude N");
+ std::vector<OwnedProcessingContract> transformed;check(fourier_output_contracts(fft,input,transformed)==Status::ok,"spectral transform outputs");for(PortId p=0;p<transformed.size();++p)fft.outputs.push_back({p,PortDirection::Output,transformed[p]});
+ ConfiguredProcessingNode amplitude;amplitude.id=4;amplitude.kind="AmplitudePhase";amplitude.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}},{"sample_rate",NumericLiteral{std::uint64_t{48000}}}}};amplitude.inputs={{0,PortDirection::Input,transformed[0]},{1,PortDirection::Input,transformed[1]}};
+ std::array<OwnedProcessingContract,2> projected;check(amplitude_phase_output_contracts(amplitude,std::get<NumericContract>(transformed[0].view()),projected)==Status::ok,"spectral polar outputs");amplitude.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]}};
  ConfiguredProcessingNode step;step.id=6;step.kind="FrequencyStep";step.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};step.inputs={{0,PortDirection::Input,source.outputs.back().contract}};OwnedProcessingContract delta;check(frequency_step_output_contract(std::get<NumericContract>(step.inputs[0].contract.view()),delta)==Status::ok,"ordinary frequency step contract");step.outputs={{0,PortDirection::Output,delta}};check(attach_numeric_parameter_ports(step,limits)==Status::ok,"step accepts measured N");
- NumericProcessingGraph graph;graph.graph_id="spectrum-pipeline";graph.nodes={source,fft,polar,amplitude,step};graph.edges={{1,2,0,0},{2,3,0,0},{2,3,1,1},{3,4,0,0},{1,6,sample_rate_output,0}};
+ NumericProcessingGraph graph;graph.graph_id="spectrum-pipeline";graph.nodes={source,fft,amplitude,step};graph.edges={{1,2,0,0},{2,4,0,0},{2,4,1,1},{1,6,sample_rate_output,0}};
  return graph;
 }
 void spectrum_pipeline(){
@@ -402,7 +401,7 @@ std::array<float,48> expected_note_row(const std::array<float,256>& real,
 }
 
     struct CorrectedMusicalObservation{double gain=0,power_gain=0;float amplitude=0,nyquist=0,normalized=0,phase=0;std::array<float,256> re{},im{},projected{};std::array<float,48> notes{};unsigned rows=0,gain_events=0,power_events=0;static void output(void* p,const NumericPortFrameView& e){auto& r=*static_cast<CorrectedMusicalObservation*>(p);if(!e.frame.stamp.available)return;const auto& v=std::get<NumericView>(e.frame.payload);
-      if(e.identity.node==3 && e.identity.port<2)for(std::size_t i=0;i<256;++i)check(load_element(v,{0,i,0},e.identity.port?r.im[i]:r.re[i])==Status::ok,"retain same Re/Im for batch/graph comparison");
+      if(e.identity.node==3 && e.identity.port<2)for(std::size_t i=0;i<v.actual[0];++i)check(load_element(v,{0,i,0},e.identity.port?r.im[i]:r.re[i])==Status::ok,"retain same Re/Im for batch/graph comparison");
       if(e.identity.node==4 && e.identity.port==0)for(std::size_t i=0;i<256;++i)check(load_element(v,{0,i,0},r.projected[i])==Status::ok,"retain graph spectral values");
       if(e.identity.node==2 && e.identity.port==0){float first=0,middle=0;check(v.actual[0]==512 && load_element(v,{0,0,0},first)==Status::ok && load_element(v,{0,256,0},middle)==Status::ok && std::isfinite(first) && middle>.99f,"generator publishes full coefficient bank, not multiplied signal");}
       if(e.identity.node==2 && e.identity.port==coherent_gain_output){check(load_element(v,{0,0,0},r.gain)==Status::ok,"window gain load");++r.gain_events;}
@@ -415,18 +414,18 @@ std::array<float,48> expected_note_row(const std::array<float,256>& real,
 auto corrected_window_nodes(ConfiguredProcessingNode& window,const NumericContract& input,const NumericContract& windowed,const char* function){
     window.id=2;window.kind="WindowFunction";window.enabled=std::string_view(function)!="bypass";window.parameters=TransformProcessingParameters{{{"function",std::string(window.enabled?function:"hann")}}};window.inputs={{0,PortDirection::Input,own(input)}};
     auto length=metadata(7,"ArrayLength",input);window.inputs={{0,PortDirection::Input,length.outputs[0].contract}};std::get<TransformProcessingParameters>(window.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{512}}});OwnedProcessingContract window_coefficients;check(array_generator_output_contract(window,std::get<NumericContract>(length.outputs[0].contract.view()),window_coefficients)==Status::ok,"window generator numeric N contract");window.outputs={{0,PortDirection::Output,window_coefficients}};
-    ConfiguredProcessingNode apply_window;apply_window.id=9;apply_window.kind="ArrayMultiply";apply_window.parameters=TransformProcessingParameters{};apply_window.inputs={{0,PortDirection::Input,own(input)},{1,PortDirection::Input,window_coefficients}};apply_window.outputs={{0,PortDirection::Output,own(windowed)}};check(attach_numeric_parameter_ports(window,limits)==Status::ok,"window exposes float64 coherent gain");
+    ConfiguredProcessingNode apply_window;apply_window.id=9;apply_window.kind="ArrayMultiply";apply_window.parameters=TransformProcessingParameters{};apply_window.inputs={{0,PortDirection::Input,own(input)},{1,PortDirection::Input,window_coefficients}};apply_window.outputs={{0,PortDirection::Output,own(windowed)}};check(attach_numeric_parameter_ports(window,limits)==Status::ok && window.outputs.size()==1,"window exposes coefficient array only");
     return std::array{std::move(length),std::move(apply_window)};
 }
 auto corrected_fft_node(const NumericContract& windowed){
-    ConfiguredProcessingNode fft;fft.id=3;fft.kind="RealFourier";fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};fft.inputs={{0,PortDirection::Input,own(windowed)}};std::array<OwnedProcessingContract,4> frequency;check(fourier_output_contracts(fft,windowed,frequency)==Status::ok,"fused FFT contract");for(PortId p=0;p<4;++p)fft.outputs.push_back({p,PortDirection::Output,frequency[p]});
+    ConfiguredProcessingNode fft;fft.id=3;fft.kind="RealFourier";fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};fft.inputs={{0,PortDirection::Input,own(windowed)}};std::vector<OwnedProcessingContract> frequency;check(fourier_output_contracts(fft,windowed,frequency)==Status::ok,"fused FFT contract");for(PortId p=0;p<frequency.size();++p)fft.outputs.push_back({p,PortDirection::Output,frequency[p]});
     return std::pair{std::move(fft),std::move(frequency)};
 }
-auto corrected_polar_node(const char* representation,bool normalize,const std::array<OwnedProcessingContract,4>& frequency){
-    ConfiguredProcessingNode polar;polar.id=4;polar.kind="AmplitudePhase";polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}},{"representation",std::string{representation}},{"normalize",normalize}}};polar.inputs={{0,PortDirection::Input,frequency[0]},{1,PortDirection::Input,frequency[1]}};std::array<OwnedProcessingContract,2> projection;check(amplitude_phase_output_contracts(polar,std::get<NumericContract>(frequency[0].view()),projection)==Status::ok,"fused amplitude phase contract");polar.outputs={{0,PortDirection::Output,projection[0]},{1,PortDirection::Output,projection[1]}};check(attach_numeric_parameter_ports(polar,limits)==Status::ok,"fused numeric inputs");
+auto corrected_polar_node(const char* representation,bool normalize,const std::vector<OwnedProcessingContract>& frequency){
+    ConfiguredProcessingNode polar;polar.id=4;polar.kind="AmplitudePhase";polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}},{"sample_rate",NumericLiteral{std::uint64_t{48000}}},{"representation",std::string{representation}},{"normalize",normalize}}};polar.inputs={{0,PortDirection::Input,frequency[0]},{1,PortDirection::Input,frequency[1]}};std::array<OwnedProcessingContract,2> projection;check(amplitude_phase_output_contracts(polar,std::get<NumericContract>(frequency[0].view()),projection)==Status::ok,"fused amplitude phase contract");polar.outputs={{0,PortDirection::Output,projection[0]},{1,PortDirection::Output,projection[1]}};check(attach_numeric_parameter_ports(polar,limits)==Status::ok,"fused numeric inputs");
     return std::pair{std::move(polar),std::move(projection)};
 }
-auto corrected_fill_nodes(const std::array<OwnedProcessingContract,4>& frequency){
+auto corrected_fill_nodes(const std::vector<OwnedProcessingContract>& frequency){
     ConfiguredProcessingNode fill;fill.id=8;fill.kind="ArrayFill";fill.parameters=TransformProcessingParameters{{{"value",NumericLiteral{2.}},{"values",NumericArray{}}}};auto spectrum_length=metadata(10,"ArrayLength",std::get<NumericContract>(frequency[0].view()));std::get<TransformProcessingParameters>(fill.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{256}}});fill.inputs={{0,PortDirection::Input,spectrum_length.outputs[0].contract}};OwnedProcessingContract fill_coefficients;check(array_generator_output_contract(fill,std::get<NumericContract>(spectrum_length.outputs[0].contract.view()),fill_coefficients)==Status::ok,"coefficient generator numeric N contract");fill.outputs={{0,PortDirection::Output,fill_coefficients}};
     return std::array{std::move(fill),std::move(spectrum_length)};
 }
@@ -455,7 +454,7 @@ NumericProcessingGraph corrected_musical_graph(const char* function,const char* 
     auto [fill,spectrum_length]=corrected_fill_nodes(frequency);const auto fill_coefficients=fill.outputs[0].contract;
     auto norm=corrected_normalizer(projection[0],fill_coefficients);const auto normalized=projection[0];
     auto row=corrected_note_row(window,normalized,representation,normalize);
-    NumericProcessingGraph graph;graph.graph_id="window-corrected-musical-row";graph.nodes={source,window,fft,polar,norm,row,length,fill,apply_window,spectrum_length};graph.edges={{7,2,0,0},{1,9,0,0},{2,9,0,1},{9,3,0,0},{3,4,0,0},{3,4,1,1},{2,4,coherent_gain_output,coherent_gain_input},{1,7,0,0},{3,10,0,0},{10,8,0,0},{8,5,0,1},{5,6,0,0},{2,4,power_gain_output,power_gain_input}};
+    NumericProcessingGraph graph;graph.graph_id="window-corrected-musical-row";graph.nodes={source,window,fft,polar,norm,row,length,fill,apply_window,spectrum_length};graph.edges={{7,2,0,0},{1,9,0,0},{2,9,0,1},{9,3,0,0},{3,4,0,0},{3,4,1,1},{2,4,0,window_coefficients_input},{1,7,0,0},{3,10,0,0},{10,8,0,0},{8,5,0,1},{5,6,0,0}};
     graph.edges.push_back({4,5,0,0});
     return graph;
 }
@@ -472,14 +471,11 @@ std::vector<RoutingAlias> corrected_graph_admission(const NumericProcessingGraph
     if(!admission)std::fprintf(stderr,"full admission error=%u node=%d port=%u\n",unsigned(admission.error),admission.node,unsigned(admission.port));check(bool(admission),"full graph admission");
     return calibration_aliases;
 }
-void corrected_calibration(Running& running,const std::vector<RoutingAlias>& calibration_aliases,CorrectedMusicalObservation& result){
-    for(const auto port:{coherent_gain_output,power_gain_output}) {
-      const auto alias=std::find_if(calibration_aliases.begin(),calibration_aliases.end(),[&](const auto& item){return item.node==2&&item.port==port;});
-      check(alias!=calibration_aliases.end(),"both window calibration outputs have explicit prepared constant aliases");
-      const auto before=allocations;
-      check(running.plan->process_clock(alias->source,tick(),*running.state,{},NumericRuntimeCallbacks{CorrectedMusicalObservation::output,nullptr,nullptr,&result})==Status::ok && allocations==before,"window calibration publishes on configuration clock without allocation");
-    }
-    check(result.gain_events==1 && result.power_events==1 && result.rows==0,"calibration is observable before signal delivery without running spectral DSP");
+void corrected_calibration(const ConfiguredProcessingNode& window,const std::vector<RoutingAlias>& calibration_aliases,CorrectedMusicalObservation& result){
+    check(std::none_of(calibration_aliases.begin(),calibration_aliases.end(),[](const auto& alias){return alias.node==2 && (alias.port==coherent_gain_output || alias.port==power_gain_output);}),"no scalar window-gain aliases");
+    std::array<float,512> coefficients;check(window_function_coefficients(window,coefficients)==Status::ok,"shared coefficient producer");
+    const auto scaling=dsp_kernels::window_scaling(coefficients);check(bool(scaling),"coefficient correction oracle");
+    result.gain=scaling->sum;result.power_gain=scaling->sum_squares;
 }
 double expected_calibrated_tone(std::string_view mode,bool normalize,double amplitude,bool nyquist,double cg,double pg){
     const double paired=nyquist?1.:2.;const double magnitude=amplitude*cg/paired;
@@ -505,7 +501,7 @@ void corrected_musical_oracle(const ConfiguredProcessingNode& window,double wind
     const auto tone=expected_calibrated_tone(representation,normalize,.3,false,cg,pg),nyquist=expected_calibrated_tone(representation,normalize,.2,true,cg,pg);
     if(std::abs(result.amplitude-tone)>std::max(.001,std::abs(tone)*.001))std::fprintf(stderr,"function=%s representation=%s actual=%g expected=%g\n",function,representation,result.amplitude,tone);
     check(std::abs(result.amplitude-tone)<std::max(.001,std::abs(tone)*.001) && std::abs(result.nyquist-nyquist)<std::max(.001,std::abs(nyquist)*.001) && std::abs(result.normalized-2*tone)<std::max(.002,std::abs(tone)*.002) && result.rows==1 && std::abs(result.phase)<.0001f,"four linear representations, window correction, Nyquist, array multiplication and musical row");
-    check(result.gain_events==1 && result.power_events==1,"PCM does not republish configuration calibration outputs");
+    check(result.gain_events==0 && result.power_events==0,"window publishes no scalar normalization outputs");
     check(std::abs(result.power_gain-pg)<1e-12,"published power window correction equals prepared squared coefficient sum");
     check(std::abs(result.gain-processing_window_gain(window,512))<1e-12,"published window correction equals prepared parameter");
 }
@@ -514,17 +510,20 @@ void stale_polar_fft_setting(NumericProcessingGraph& graph){
     check(polar!=graph.nodes.end(),"polar geometry fixture");
     auto& fields=std::get<TransformProcessingParameters>(polar->parameters).values;
     const auto size=std::find_if(fields.begin(),fields.end(),[](const auto& field){return field.key=="fft_size";});
-    check(size!=fields.end(),"legacy polar FFT setting fixture");size->value=NumericLiteral{std::uint64_t{4096}};
+    check(size!=fields.end(),"explicit polar FFT setting fixture");size->value=NumericLiteral{std::uint64_t{4096}};
 }
 void corrected_musical_case(const char* function,const char* representation,bool normalize){
     NumericContract input;ConfiguredProcessingNode window;auto graph=corrected_musical_graph(function,representation,normalize,input,window);
     const std::string_view mode=representation;const double window_gain=processing_window_gain(window,512);
-    if(mode=="bin_power")stale_polar_fft_setting(graph);
+    if(mode=="bin_power"){
+        auto stale=graph;stale_polar_fft_setting(stale);NumericProcessingGraph evaluated,executable;
+        check(!resolve_numeric_parameter_bindings(stale,limits,evaluated,executable),"stale explicit polar FFT size is rejected rather than inferred from spectrum width");
+    }
     const auto calibration_aliases=corrected_graph_admission(graph,function);
     Running running(graph);
     CorrectedMusicalObservation result;
 
-    corrected_calibration(running,calibration_aliases,result);
+    corrected_calibration(window,calibration_aliases,result);
     std::array<float,512> data{};for(std::size_t i=0;i<data.size();++i)data[i]=.3f*float(std::cos(2*3.14159265358979323846*5*i/512))+.07f*float(std::cos(2*3.14159265358979323846*13*i/512))+.05f*float(std::sin(2*3.14159265358979323846*27*i/512))+.03f*float(std::cos(2*3.14159265358979323846*61*i/512))+(i%2?-.2f:.2f);
     const PlaneLayout plane{0,{sizeof(float),0}};NumericView frame{&input,std::as_bytes(std::span(data)),std::span(&plane,1),{512,1},{},{}};auto stamp=tick();stamp.sample_count=512;
     const auto before=allocations;check(running.plan->process_numeric_ports(1,{stamp,frame},*running.state,{},NumericRuntimeCallbacks{CorrectedMusicalObservation::output,nullptr,nullptr,&result})==Status::ok && allocations==before,"window-corrected musical path has no hot allocations");

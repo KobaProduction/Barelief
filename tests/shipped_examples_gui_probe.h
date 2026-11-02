@@ -63,12 +63,14 @@ struct Stage {
     Rank rank;
     DType dtype;
     std::size_t width;
+    std::size_t rows=0;
     unsigned count=0;
     std::uint64_t first=0,last=0;
     bool positive=false;
     std::uint64_t producer_epoch=0,generation=0;
     unsigned received=0,unavailable=0,exhausted=0;
-    bool history=false,optional=false,missing=false;
+    bool history=false,optional=false,missing=false,positive_required=true,zero_required=false;
+    std::array<ExtentBounds,2> extents{};
 };
 struct RawWindowObservation {
     std::mutex mutex;
@@ -110,6 +112,8 @@ struct RawScalarObservation {
     static bool valid_value(const NumericView& view,DType dtype) {
         if(!view.contract||view.contract->dtype!=dtype||view.contract->shape.rank!=Rank::Scalar)return false;
         switch(dtype) {
+        case DType::UInt8:return finite_scalar<std::uint8_t>(view);
+        case DType::UInt16:return finite_scalar<std::uint16_t>(view);
         case DType::Float32:return finite_scalar<float>(view);
         case DType::Float64:return finite_scalar<double>(view);
         case DType::UInt32:return finite_scalar<std::uint32_t>(view);
@@ -119,7 +123,10 @@ struct RawScalarObservation {
     }
     void sequence(Entry& entry,const FrameStamp& stamp) {
         if(entry.count&&(entry.producer_epoch!=stamp.producer_epoch||entry.generation!=stamp.generation))entry.count=0;
-        if(entry.count&&stamp.sequence<entry.last){bad=true;return;}
+        if(entry.count&&stamp.sequence<entry.last){
+            if(!bad)std::fprintf(stderr,"raw scalar invalid node=%d port=%u reason=sequence regression prior=%llu current=%llu\n",int(entry.endpoint.node),unsigned(entry.endpoint.port),(unsigned long long)entry.last,(unsigned long long)stamp.sequence);
+            bad=true;return;
+        }
         if(entry.count&&stamp.sequence==entry.last)return;
         if(!entry.count)entry.first=stamp.sequence;
         entry.producer_epoch=stamp.producer_epoch;entry.generation=stamp.generation;
@@ -130,6 +137,16 @@ struct RawScalarObservation {
         if(frame.status!=Status::ok||!frame.frame||!frame.frame.view().stamp.available){++unavailable;return false;}
         return true;
     }
+    void observe_readable(Entry& entry,const DeliveredNumericFrame& frame) {
+        const auto frame_view=frame.frame.view();
+        const auto* view=std::get_if<NumericView>(&frame_view.payload);
+        if(!view||!valid_value(*view,entry.dtype)){
+            if(!bad){std::fprintf(stderr,"raw scalar invalid node=%d port=%u reason=payload/dtype/rank/read/finiteness\n",int(entry.endpoint.node),unsigned(entry.endpoint.port));shipped_probe::report_numeric_frame("raw scalar invalid",frame);}
+            bad=true;return;
+        }
+        sequence(entry,frame_view.stamp);
+    }
+
     void observe(const DeliveredNumericFrame& frame) {
         std::lock_guard lock(mutex);
         if(!frame.context)return;
@@ -140,10 +157,7 @@ struct RawScalarObservation {
                 (frame.status==Status::ok&&frame.frame&&!frame.frame.view().stamp.available);
             return;
         }
-        const auto frame_view=frame.frame.view();
-        const auto* view=std::get_if<NumericView>(&frame_view.payload);
-        if(!view||!valid_value(*view,entry->dtype)){bad=true;return;}
-        sequence(*entry,frame_view.stamp);
+        observe_readable(*entry,frame);
     }
     bool complete() const {
         std::lock_guard lock(mutex);
@@ -184,6 +198,8 @@ class ShippedGuiProbe {
     std::vector<EndpointIdentity> endpoints;
     QObject witness;
     bool bad=false;
+    shipped_probe::EvidenceObservation evidence;
+    QElapsedTimer delivered_time;
     std::uint64_t ordinal=0;
     std::shared_ptr<RawWindowObservation> rawWindow;
     std::uint64_t rawWindowTap=0;
@@ -197,8 +213,47 @@ class ShippedGuiProbe {
         return presenter.client().snapshot().graph_revision>before&&!presenter.graph_request_pending()&&
             presenter.client().snapshot().statuses.value("analyzer").state==State::Running;
     }
+bool reuse_applied_graph(std::uint64_t before) {
+        if(const auto active=presenter.applied_numeric_graph();active&&!presenter.graph_request_pending()&&before){
+            expected=*active;revision=before;epoch=presenter.client().snapshot().epoch;return true;
+        }
+        return false;
+    }
+void register_scalar_stage(const EndpointIdentity& endpoint,const NumericContract& numeric) {
+        if(numeric.shape.rank!=Rank::Scalar)return;
+        rawScalars->entries.push_back({endpoint,numeric.dtype});
+        rawScalars->entries.back().optional=stages.back().optional;
+    }
+
+    void register_numeric_stage(const auto& node,const auto& port,bool view,const NumericContract& numeric) {
+        EndpointIdentity endpoint{expected.graph_id,node.id,view?domain::PortDirection::Input:domain::PortDirection::Output,port.id};
+        stages.push_back({endpoint,numeric.shape.rank,numeric.dtype,
+            numeric.shape.extents[numeric.shape.rank==Rank::Matrix?1:0].maximum,numeric.shape.extents[0].maximum});
+        stages.back().extents=numeric.shape.extents;
+        stages.back().zero_required=shipped_probe::inactive_route_endpoint(expected,node.id,endpoint.direction,port.id);
+        stages.back().history=numeric.semantic==Semantic::History;
+        stages.back().positive_required=!shipped_probe::evidence_table_endpoint(expected,node.id,endpoint.direction,port.id);
+        if(node.kind=="TempoEvidence")evidence.node=node.id;
+        stages.back().optional=shipped_probe::allows_missing(expected,node.id,endpoint.direction,port.id,expected.nodes.size());
+        endpoints.push_back(endpoint);
+        register_scalar_stage(endpoint,numeric);
+    }
+    void subscribe_stages() {
+        connect_observers();start_raw_window();start_raw_scalars();
+        presenter.set_editor_numeric_endpoints(std::move(endpoints));
+        has_history=std::any_of(expected.nodes.begin(),expected.nodes.end(),[](const auto& n){return n.kind=="Spectrogram";});
+    }
+    bool prepare_stages() {
+        collect_stages();
+        if(stages.empty())return false;
+        delivered_time.start();
+        subscribe_stages();
+        return true;
+    }
+
     bool apply_graph() {
         const auto before=presenter.client().snapshot().graph_revision;
+        if(reuse_applied_graph(before))return true;
         AppliedGuiTurn gui;
         QObject::connect(&presenter,&GuiPresenter::processing_state_changed,&gui.witness,[&]{gui.observe(presenter,before);});
         presenter.apply_pipeline_graph({});
@@ -233,16 +288,7 @@ class ShippedGuiProbe {
         const auto contract=port.contract.view();
         const auto* numeric=std::get_if<NumericContract>(&contract);
         if(!numeric)return;
-        EndpointIdentity endpoint{expected.graph_id,node.id,view?domain::PortDirection::Input:domain::PortDirection::Output,port.id};
-        stages.push_back({endpoint,numeric->shape.rank,numeric->dtype,
-            numeric->shape.extents[numeric->shape.rank==Rank::Matrix?1:0].maximum});
-        stages.back().history=numeric->semantic==Semantic::History;
-        stages.back().optional=shipped_probe::allows_missing(expected,node.id,endpoint.direction,port.id,expected.nodes.size());
-        endpoints.push_back(endpoint);
-        if(numeric->shape.rank==Rank::Scalar) {
-            rawScalars->entries.push_back({endpoint,numeric->dtype});
-            rawScalars->entries.back().optional=stages.back().optional;
-        }
+        register_numeric_stage(node,port,view,*numeric);
     }
     void collect_stages() {
         for(const auto& node:expected.nodes) {
@@ -254,9 +300,10 @@ class ShippedGuiProbe {
         }
     }
     void fail(const Stage& stage,const DeliveredNumericFrame& frame,const char* reason) {
-            if(!bad)std::fprintf(stderr,"GUI %s stage%d:%u invalid: %s producer=%llu/%llu sequence=%llu prior=%llu/%llu/%llu\n",label,int(stage.endpoint.node),unsigned(stage.endpoint.port),reason,
+            if(!bad){std::fprintf(stderr,"GUI %s stage%d:%u invalid: %s producer=%llu/%llu sequence=%llu prior=%llu/%llu/%llu\n",label,int(stage.endpoint.node),unsigned(stage.endpoint.port),reason,
                 (unsigned long long)frame.frame.view().stamp.producer_epoch,(unsigned long long)frame.frame.view().stamp.generation,(unsigned long long)frame.frame.view().stamp.sequence,
                 (unsigned long long)stage.producer_epoch,(unsigned long long)stage.generation,(unsigned long long)stage.last);
+            shipped_probe::report_numeric_frame("GUI invalid frame",frame);}
             bad=true;
     }
     template<class T> bool scalar_energy(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,
@@ -269,20 +316,28 @@ class ShippedGuiProbe {
         energy=square?value*value:double(value);
         return true;
     }
-    template<class Value=float> bool float_energy(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,double& energy) {
-        if(numeric.planes.size()!=1 || numeric.actual[0]==0 || numeric.actual[0]>stage.width ||
-           (stage.rank==Rank::Matrix && numeric.actual[0]!=stage.width)) {
-            fail(stage,frame,"Float32 geometry");
-            return false;
-        }
-        for(std::size_t i=0;i<numeric.actual[0];++i) {
+    bool float_geometry(const Stage& stage,const NumericView& numeric)const {
+        if(numeric.planes.size()!=1||numeric.actual[0]==0)return false;
+        if(stage.rank==Rank::Matrix&&!stage.history)return numeric.actual[0]>=stage.extents[0].minimum&&numeric.actual[0]<=stage.rows&&
+            numeric.actual[1]>=stage.extents[1].minimum&&numeric.actual[1]<=stage.width;
+        return numeric.actual[0]<=stage.width&&(stage.rank!=Rank::Matrix||numeric.actual[0]==stage.width);
+    }
+    template<class Value> bool float_row_energy(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,std::size_t row,double& energy) {
+        const auto columns=stage.rank==Rank::Matrix&&!stage.history?numeric.actual[1]:std::size_t{1};
+        for(std::size_t column=0;column<columns;++column) {
             Value value=0;
-            if(load_element(numeric,{0,i,0},value)!=Status::ok||!std::isfinite(value)) {
-                fail(stage,frame,"Float32 read or finiteness");
-                return false;
+            if(load_element(numeric,{0,row,column},value)!=Status::ok||!std::isfinite(value)) {
+                fail(stage,frame,"Float32 read or finiteness");return false;
             }
             energy+=double(value)*value;
         }
+        return true;
+    }
+
+    template<class Value=float> bool float_energy(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,double& energy) {
+        if(!float_geometry(stage,numeric)){fail(stage,frame,"Float32 geometry");return false;}
+        for(std::size_t row=0;row<numeric.actual[0];++row)
+            if(!float_row_energy<Value>(stage,frame,numeric,row,energy))return false;
         return true;
     }
     bool energy_of(Stage& stage,const DeliveredNumericFrame& frame,const NumericView& numeric,double& energy) {
@@ -315,6 +370,8 @@ class ShippedGuiProbe {
         if(!numeric||numeric->contract->dtype!=stage.dtype) {fail(stage,frame,"payload or dtype mismatch");return;}
         double energy=0;
         if(!energy_of(stage,frame,*numeric,energy))return;
+        if(stage.zero_required&&!shipped_probe::zero_values(*numeric)){fail(stage,frame,"inactive Switch is not exact typed zero");return;}
+        if(stage.endpoint.node==evidence.node&&!evidence.observe(stage.endpoint.port,*numeric,view.stamp.sequence)){fail(stage,frame,"TempoEvidence count/table/maturity");return;}
         sequence(stage,frame,energy);
     }
     void observe(const DeliveredNumericFrame& frame,bool compact) {
@@ -387,9 +444,9 @@ class ShippedGuiProbe {
         for(const auto& stage:stages) {
             if(stage.optional&&stage.missing)continue;
             if(stage.rank==Rank::Scalar){if(!stage.count)return false;}
-            else if(stage.count<5||stage.last<=stage.first||!stage.positive)return false;
+            else if(stage.count<5||stage.last<=stage.first||(!stage.zero_required&&!stage.positive&&(stage.positive_required||evidence.count>0)))return false;
         }
-        return rawScalars->complete()&&(!has_history||ordinal>=5);
+        return evidence.ready()&&rawScalars->complete()&&(!has_history||ordinal>=5);
     }
     void report() {
         std::printf("GUI %s own engine epoch=%llu revision=%llu History=%llu prepared=%zu",label,(unsigned long long)epoch,
@@ -398,18 +455,16 @@ class ShippedGuiProbe {
             unsigned(stage.endpoint.port),stage.count,(unsigned long long)stage.last,stage.received,stage.unavailable,stage.exhausted,int(stage.positive));
         if(rawWindowTap)rawWindow->report();
         rawScalars->report();
+        std::printf(" delivery_ms=%lld configured_analysis_hz=%.6g processing_hz=%.6g",(long long)delivered_time.elapsed(),
+            double(expected.execution_interval.denominator)/expected.execution_interval.numerator,app.pipeline().snapshot().diagnostics["processing_hz"].toDouble());
     }
 public:
     ShippedGuiProbe(CoreApplication& app,MainWindow* window,const char* label)
         :app(app),window(window),label(label),presenter(app.presenter()){}
     bool run() {
         if(!apply_graph())return false;
-        collect_stages();
-        if(stages.empty())return false;
-        connect_observers();start_raw_window();start_raw_scalars();
-        presenter.set_editor_numeric_endpoints(std::move(endpoints));
-        has_history=std::any_of(expected.nodes.begin(),expected.nodes.end(),[](const auto& n){return n.kind=="Spectrogram";});
-        const bool delivered=wait([&]{return bad||complete();});
+        if(!prepare_stages())return false;
+        const bool delivered=wait([&]{return bad||complete();},shipped_probe::delivery_timeout(expected));
         return finish(delivered);
     }
     bool finish(bool delivered) {
@@ -418,7 +473,7 @@ public:
         report();
         auto* validation=window->findChild<QLabel*>("pipelineValidation");
         good&=validation&&validation->toolTip().isEmpty();
-        if(!good)std::fprintf(stderr,"GUI completion delivered=%d complete=%d bad=%d validation=%s\n",int(delivered),int(complete()),int(bad),validation?qPrintable(validation->toolTip()):"missing");
+        if(!good){std::fprintf(stderr,"GUI completion delivered=%d complete=%d bad=%d validation=%s\n",int(delivered),int(complete()),int(bad),validation?qPrintable(validation->toolTip()):"missing");shipped_probe::report_engine_snapshot("GUI shipped failure",app.pipeline().snapshot());}
         std::printf(" %s\n",good?"PASS":"FAIL");
         return good;
     }
@@ -459,6 +514,7 @@ class StartupSelectorProbe {
     unsigned generator_frames=0,capture_frames=0,selected_frames=0,unavailable_frames=0,fft_frames=0;
     ads::CDockWidget* fftDock=nullptr;
     int phase=0;
+    bool accepted=false;
     std::optional<DiagnosticGuard> diagnostic;
     std::optional<TapGuard> rawGuard;
     SpectrogramGraph* surface=nullptr;
@@ -548,6 +604,7 @@ class StartupSelectorProbe {
         return true;
     }
     void print_diagnostic() {
+        if(!accepted)shipped_probe::report_engine_snapshot("startup selector failure",app.pipeline().snapshot());
         const auto snapshot=presenter.client().snapshot();
         domain::NumericProcessingGraph selectorDraft;QString selectorDraftError;
         const bool validDraft=editor->numeric_draft(selectorDraft,&selectorDraftError);
@@ -856,6 +913,15 @@ class StartupSelectorProbe {
         diagnostic.emplace([&]{print_diagnostic();});
         return true;
     }
+bool run_stage(const QByteArray& stage) {
+        if(stage=="transitions"&&!transitions())return false;
+        if(stage=="device"&&!capture_device())return false;
+        if(stage=="growth"&&(!grow_selector()||!pending_edit()))return false;
+        if(stage=="surface"&&!surface_projection())return false;
+        if(stage!="initial"&&stage!="transitions"&&stage!="device"&&stage!="growth"&&stage!="surface")return false;
+        return true;
+    }
+
     bool initial_subscriptions() {
         connect_observers();
         if(!wait([&]{return !presenter.graph_request_pending()&&presenter.client().snapshot().statuses.value("analyzer").state==State::Running;}))return false;
@@ -865,17 +931,18 @@ class StartupSelectorProbe {
 public:
     StartupSelectorProbe(CoreApplication& app,MainWindow* window,bool unavailable)
         :app(app),window(window),unavailable(unavailable),presenter(app.presenter()){}
-    bool run() {
+    bool run(const QByteArray& stage) {
         if(!source_card()||!editor_fixture())return false;
         transition_after=presenter.client().snapshot().graph_revision;
         if(!open_fft()||!initial_subscriptions())return false;
-        if(!transitions()||!capture_device()||!grow_selector()||!pending_edit()||!surface_projection())return false;
-        return presenter.client().snapshot().statuses.value("analyzer").state==State::Running&&!bad;
+        if(!run_stage(stage))return false;
+        accepted=presenter.client().snapshot().statuses.value("analyzer").state==State::Running&&!bad;
+        return accepted;
     }
 };
 } // namespace shipped_gui_probe
-inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool unavailable) {
-    return shipped_gui_probe::StartupSelectorProbe(app,window,unavailable).run();
+inline bool verify_startup_selector(CoreApplication& app,MainWindow* window,bool unavailable,const QByteArray& stage="transitions") {
+    return shipped_gui_probe::StartupSelectorProbe(app,window,unavailable).run(stage);
 }
 
 namespace shipped_gui_probe {

@@ -94,7 +94,10 @@ void SourceIngress::process_capture_input(CaptureInput& input,domain::NodeId nod
     const bool interval_gap=input.last_frame_ns && !input.synthetic &&
         frame.generation==input.generation && frame.sample_position!=input.next_sample;
     const bool capture_gap=frame.discontinuity || frame.generation!=input.generation || input.synthetic || interval_gap;
-    if(capture_gap){input.filled=0;input.gap=true;}
+    if(capture_gap){
+        input.dropped_samples+=input.packets.stats().queued_samples+input.filled;
+        input.packets.clear();input.filled=0;input.gap=true;
+    }
     update_capture_timeline(input,frame,resumed_epoch);
     process_capture_samples(input,frame,capture_gap);
 }
@@ -112,8 +115,10 @@ void SourceIngress::enqueue_capture_packets(CaptureInput& input,const AudioFrame
         const auto packet=capture_packet_stamp(input,frame,offset,count,capture_gap);
         const auto pushed=input.packets.push({samples+offset,count},packet);
         if(pushed!=Status::ok){input.gap=true;input.filled=0;input.dropped_samples+=count;break;}
-        offset+=count;
+        // Each accepted packet contains at most one prepared block. Reuse the
+        // bounded drain without processing an unrelated backlog in this callback.
         drain_capture_packets(input);
+        offset+=count;
     }
 }
 void SourceIngress::append_capture_samples(CaptureInput& input,std::size_t written,const FrameStamp& accepted) {
@@ -123,10 +128,12 @@ void SourceIngress::append_capture_samples(CaptureInput& input,std::size_t writt
         input.filled+=written;if(input.filled==input.block)emit_input(input);
 }
 void SourceIngress::drain_capture_packets(CaptureInput& input) {
-    while(input.packets.stats().queued_samples){
+    auto remaining=input.block-input.filled;
+    while(remaining && input.packets.stats().queued_samples){
         std::size_t written=0;FrameStamp accepted;
-        const auto popped=input.packets.pop(std::span(input.packet_scratch).first(input.block-input.filled),written,accepted);
+        const auto popped=input.packets.pop(std::span(input.packet_scratch).first(remaining),written,accepted);
         if(popped!=Status::ok){input.gap=true;input.filled=0;break;}
+        remaining-=written;
         append_capture_samples(input,written,accepted);
     }
 }
@@ -162,6 +169,9 @@ void SourceIngress::advance_clocks() {
         core::perf::Scope clock_tick(core::perf::Stage::NumericClockTick);
         std::lock_guard lock(mutex);if(!executor.running())return;
         const auto now=steady_ns();
+        // Reclaim queued PCM alongside clock work with one block per input.
+        // Capture callbacks share this bounded drain after each accepted packet.
+        for(auto& input:inputs)drain_capture_packets(input);
         advance_sample_clocks(now);
         advance_missing_inputs(now);
         advance_failed_sources(now);

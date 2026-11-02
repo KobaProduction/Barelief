@@ -4,6 +4,7 @@
 #include <desktop/numeric_project_document.h>
 #include <control/numeric_remote_support.h>
 #include <dataflow_runtime/runtime.h>
+#include <dsp_graph_adapters/profile.h>
 #include <speex_backend.h>
 #include <QJsonDocument>
 #include <QDebug>
@@ -33,7 +34,9 @@ dataflow_runtime::NumericRuntimeProfile desktop_profile() {
     // Process admission charges bounded delivery and control ownership ceilings
     // separately from the graph's plan/payload/scratch. These are reservations,
     // not an assertion that each ceiling is allocated at startup.
-    constexpr std::size_t fixed=256*(262144+16384)+8*(524288+16384)+(384+48)*1024*1024+remote_numeric::ControlTransportReservationBytes;
+    constexpr std::size_t fixed=2*DeliveryArena::slot_count*(DeliveryArena::payload_bytes+DeliveryArena::metadata_bytes)
+        +HistorySnapshotArena::slot_count*(HistorySnapshotArena::payload_bytes+HistorySnapshotArena::metadata_bytes)
+        +(384+48)*1024*1024+remote_numeric::ControlTransportReservationBytes;
     auto profile=dataflow_runtime::NumericRuntimeProfile{{512,2048,16,32,1024*1024,4*1024*1024,frame_limits},
         {{16*1024*1024,32*1024*1024,16*1024*1024,1024*1024},fixed,576*1024*1024+remote_numeric::ControlTransportReservationBytes},
         {32768,8,262144,262144,16*1024*1024},{true,true,true},true};
@@ -43,7 +46,7 @@ dataflow_runtime::NumericRuntimeProfile desktop_profile() {
     profile.monotonic_nanoseconds=[](void*) noexcept -> std::uint64_t {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     };
-    return profile;
+    return dsp_graph_adapters::with_dsp_operations(std::move(profile));
 }
 
 }
@@ -454,16 +457,26 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         result.busy_fraction=double(stats.self_nanoseconds-prior->second.self_nanoseconds)/(summary.seconds*1000000000.);
         return result;
     }
+    static void append_rhythm_clipping_statistics(const domain::ConfiguredProcessingNode& node,
+                                                 const dataflow_runtime::NodeStats& stats,QJsonObject& entry) {
+        if(node.kind!="RhythmAnalyzer")return;
+        entry.insert("clipped_frames",QString::number(stats.clipped_frames));
+        entry.insert("clipped_values",QString::number(stats.clipped_values));
+        entry.insert("maximum_before_clamp",double(stats.maximum_before_clamp));
+    }
+
     void append_node_statistics(const domain::ConfiguredProcessingNode& node,const dataflow_runtime::NodeStats& stats,
                                 const NodeRate& rate,QJsonArray& nodes,QJsonArray& mixers) {
         const auto count=[](std::uint64_t value){return QString::number(value);};
         QJsonArray histogram;for(auto value:stats.self_histogram)histogram.append(count(value));
-        nodes.append(QJsonObject{{"node",node.id},{"calls",count(stats.calls)},{"produced",count(stats.produced)},
+        QJsonObject entry{{"node",node.id},{"calls",count(stats.calls)},{"produced",count(stats.produced)},
             {"errors",count(stats.errors)},{"self_nanoseconds",count(stats.self_nanoseconds)},
             {"max_self_nanoseconds",count(stats.max_self_nanoseconds)},
             {"deadline_misses",count(stats.deadline_misses)},{"self_histogram",histogram},
             {"calls_hz",rate.calls_hz},{"produced_hz",rate.produced_hz},{"active",rate.calls!=0},
-            {"errors_delta",count(rate.errors)},{"busy_fraction",rate.busy_fraction}});
+            {"errors_delta",count(rate.errors)},{"busy_fraction",rate.busy_fraction}};
+        append_rhythm_clipping_statistics(node,stats,entry);
+        nodes.append(entry);
         for(const auto& port:node.inputs)if(const auto input=executor.mixer_input_stats(node.id,port.id))
             mixers.append(QJsonObject{{"node",node.id},{"port",int(port.id)},{"depth",count(input->depth)},
                 {"capacity",count(input->capacity)},{"dropped_samples",count(input->dropped_samples)},

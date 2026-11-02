@@ -20,19 +20,21 @@ std::optional<r::Mode> read_mode(std::string_view value) noexcept {
     if(value=="gated")return r::Mode::Gated;
     return {};
 }
-Status read_features(std::span<std::uint8_t> destination,const NumericView& row) noexcept {
+template<class T> Status read_features(std::span<T> destination,const NumericView& row) noexcept {
     for(std::size_t i=0;i<destination.size();++i){
-        std::uint8_t value=0;const auto loaded=load_element(row,{0,i,0},value);
+        T value=0;const auto loaded=load_element(row,{0,i,0},value);
         if(loaded!=Status::ok)return loaded;
         destination[i]=value;
     }
     return Status::ok;
 }
 Status read_latest_row(OperationKernelState& kernel,const NumericView& source) noexcept {
-    if(!source.actual[0] || source.actual[1]!=kernel.quantized8.size())return Status::incompatible_contract;
+    const auto width=kernel.input.size();
+    if(!source.actual[0] || source.actual[1]!=width)return Status::incompatible_contract;
     NumericContract contract;NumericView row;std::array<PlaneLayout,1> planes{};
     const auto status=history_row(source,source.actual[0]-1,row,contract,planes);
-    return status==Status::ok?read_features(kernel.quantized8,row):status;
+    if(status!=Status::ok)return status;
+    return read_features(std::span{kernel.input},row);
 }
 bool source_frame(const OperationKernelState& kernel,const DataFrameView& current,r::Frame& frame) noexcept {
     const auto& clock=std::get<NumericView>(current.payload).contract->clock;
@@ -40,8 +42,9 @@ bool source_frame(const OperationKernelState& kernel,const DataFrameView& curren
     const double sample=std::round(observed*kernel.rhythm_sample_rate);
     if(!std::isfinite(sample) || sample<0 || sample>=double(UINT64_MAX))return false;
     frame.epoch=current.stamp.epoch;frame.sequence=current.stamp.sequence;frame.sample_index=std::uint64_t(sample);
-    frame.profile=kernel.quantized8.size();frame.sample_rate_hz=kernel.rhythm_sample_rate;
-    frame.t_obs=observed;frame.t_ready=observed;frame.t_pub=observed;frame.features=kernel.quantized8;
+    frame.sample_rate_hz=kernel.rhythm_sample_rate;
+    frame.t_obs=observed;frame.t_ready=observed;frame.t_pub=observed;
+    frame.features=std::span<const float>{kernel.input};
     return true;
 }
 std::optional<double> normalized_phase(const r::Output& output) noexcept {
@@ -75,10 +78,13 @@ Status process_rhythm_frame(OperationKernelState& kernel,const DataFrameView& cu
 Status prepare_rhythm(OperationKernelState& kernel,const ResolvedProcessingNode& node) {
     r::Config config;const auto mode=read_mode(operation_text(node,"mode"));
     if(!mode || !read_config(node,config,kernel.rhythm_sample_rate))return Status::invalid_argument;
+    const auto contract=std::get<NumericContract>(node.inputs[0].contract.view());
+    if(contract.dtype!=DType::Float32)return Status::incompatible_contract;
+    config.feature_count=unsigned(contract.shape.extents[1].maximum);
     kernel.rhythm.emplace();
     if(!kernel.rhythm->prepare(config,*mode))return Status::invalid_argument;
-    const auto contract=std::get<NumericContract>(node.inputs[0].contract.view());
-    kernel.quantized8.resize(std::size_t(contract.shape.extents[1].maximum));return Status::ok;
+    kernel.input.resize(config.feature_count);
+    return Status::ok;
 }
 Status execute_rhythm(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
     const auto& source=std::get<NumericView>(current.payload);
@@ -88,18 +94,26 @@ Status execute_rhythm(OperationKernelState& kernel,const PlanNode& node,State& s
     const auto processed=process_rhythm_frame(kernel,current,state.pending_discontinuity);if(processed!=Status::ok)return processed;
     return publish(kernel,node,state,current);
 }
+Status prepare_rhythm_features(OperationKernelState& kernel,const ResolvedProcessingNode& node) {
+    RhythmFeatureRepresentation representation{};
+    if(!rhythm_feature_representation(node,representation))return Status::invalid_argument;
+    kernel.rhythm_peak_amplitudes=representation==RhythmFeatureRepresentation::PeakAmplitude;
+    if(kernel.input.size()!=(kernel.rhythm_peak_amplitudes?2048u:4098u) ||
+       (kernel.output.size()!=64 && kernel.output.size()!=96))return Status::incompatible_contract;
+    return Status::ok;
+}
 Status execute_rhythm_features(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current) noexcept {
     r::PackingStatistics stats;
     if(node.node.enabled){
-        const bool packed=kernel.input.size()==2048
-            ? r::pack_peak_amplitudes(kernel.input,kernel.quantized8,stats)
-            : r::pack_rfft(kernel.input,kernel.quantized8,stats);
-        if(!packed)return Status::invalid_argument;
+        const bool projected=kernel.rhythm_peak_amplitudes
+            ? r::project_peak_amplitude_features(kernel.input,kernel.output,stats)
+            : r::project_rfft_features(kernel.input,kernel.output,stats);
+        if(!projected)return Status::invalid_argument;
     }
-    else std::fill(kernel.quantized8.begin(),kernel.quantized8.end(),0);
+    else std::fill(kernel.output.begin(),kernel.output.end(),0.f);
     auto target=mutable_output(node,state,0);
-    for(std::size_t i=0;i<kernel.quantized8.size();++i){
-        const auto status=store_element(target,{0,i,0},kernel.quantized8[i]);if(status!=Status::ok)return status;
+    for(std::size_t i=0;i<kernel.output.size();++i){
+        const auto status=store_element(target,{0,i,0},kernel.output[i]);if(status!=Status::ok)return status;
     }
     state.numeric_frames[0]={current.stamp,target.view()};return Status::ok;
 }

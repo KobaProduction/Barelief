@@ -4,6 +4,7 @@
 void append_startup_rhythm(examples::Builder&);
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <stdexcept>
 namespace {
 using namespace domain;using namespace signal_contracts;
@@ -124,7 +125,8 @@ void add_temporal_transform(examples::Builder& b) {
     b.chain(21,"MatrixTranspose",7);
     b.chain(23,"MatrixCenter",21,examples::transform({{"method",NumericLiteral{std::int64_t{0}}},{"offset",NumericLiteral{0.0}}}));
     b.chain(22,"MatrixWindowFunction",23,examples::transform({{"function",std::string{"hann"}}}));b.node(22).enabled=false;
-    b.chain(17,"MatrixFFT",22,examples::transform({{"fft_size",NumericLiteral{std::uint64_t{512}}}}));
+    b.chain(17,"MatrixFFT",22,examples::transform({{"fft_size",NumericLiteral{std::uint64_t{512}}},
+        {"sample_rate",NumericLiteral{std::uint64_t{120}}}}));
     b.chain(18,"AudioSurfaceView",17);b.chain(19,"MatrixRow",17,examples::transform({{"row",NumericLiteral{std::uint64_t{0}}}}));
     b.chain(20,"AudioLineView",19,examples::transform({{"first_bin",NumericLiteral{std::uint64_t{0}}}}));
     b.number(1020,120.0/512.0,NumericUnit::Hertz);
@@ -163,6 +165,14 @@ NumericProcessingGraph spectral_mix_example() {
     b.chain(104,"StereoFFT",1004);b.chain(115,"BarkWeighting",104,regular_spectrum_grid(48000,4096));
     add_mixer(b,200,15,115);replace_source(b,15,200);return b.finish();
 }
+}
+domain::NumericProcessingGraph numeric_basic_signal_graph(std::uint32_t sample_rate,std::uint64_t window_size) {
+    examples::Builder builder({sample_rate,4096,256,400});
+    builder.add(1,"SignalGenerator");
+    set_generator_tones(builder,1,1);
+    builder.chain(2,"Window",1,examples::transform({{"size",NumericLiteral{window_size}}}));
+    builder.chain(3,"VectorLineView",2);
+    return builder.finish();
 }
 domain::NumericProcessingGraph numeric_default_graph(std::uint32_t sample_rate) {
     examples::Builder b({sample_rate,4096,256,400});b.add(1,"AudioSource");examples::add_window(b,1,2,3,1000,1001,4096);
@@ -213,13 +223,11 @@ void add_startup_spectrum(examples::Builder& b) {
         {"output_rate",signal_contracts::NumericLiteral{std::uint64_t{32768}}}}));
     b.connect(200,332,1,input_sample_rate_input);
     examples::add_window(b,332,2,3,1000,1001,4096);
-    b.connect(332,2,sample_rate_output,input_sample_rate_input);
-    b.chain(4,"RealFourier",1001);
-    b.chain(5,"AmplitudePhase",4,examples::transform({
-        {"sample_rate",signal_contracts::NumericLiteral{std::uint64_t{32768}}}}));
+    b.chain(4,"RealFourier",1001,examples::transform({{"fft_size",NumericLiteral{std::uint64_t{4096}}}}));
+    b.chain(5,"AmplitudePhase",4,examples::transform({{"fft_size",NumericLiteral{std::uint64_t{4096}}},
+        {"sample_rate",NumericLiteral{std::uint64_t{32768}}}}));
     b.connect(4,5,1,1);
-    b.connect(3,5,coherent_gain_output,coherent_gain_input);
-    b.connect(3,5,power_gain_output,power_gain_input);
+    b.connect(3,5,0,window_coefficients_input);
     b.connect(332,5,sample_rate_output,target_sample_rate_input);
     examples::add_frequency_step(b,332,1000,1003);
 }
@@ -241,35 +249,35 @@ void add_startup_correction(examples::Builder& b) {
     b.connect(1005,15,0,1);
     b.derive(15);
 }
-void add_startup_features(examples::Builder& b) {
+void add_startup_feature_rows(examples::Builder& b) {
     using namespace domain;
     b.chain(6,"BroadbandRow",15,examples::transform({{"input_representation",std::string{"peak_amplitude"}},
-        {"bin_hz",signal_contracts::NumericLiteral{8.0}},
         {"peak_weight",std::string{"squared_value"}},
         {"low_reduction",std::string{"maximum"}},
         {"low_count",signal_contracts::NumericLiteral{std::uint64_t{24}}},
         {"mid_count",signal_contracts::NumericLiteral{std::uint64_t{8}}},
         {"high_count",signal_contracts::NumericLiteral{std::uint64_t{16}}},
+        {"bin_hz",signal_contracts::NumericLiteral{32768.0/4096.0}},
         {"first_bin",signal_contracts::NumericLiteral{std::uint64_t{1}}}}));
     b.chain(1006,"NoteSpectrum",15,examples::transform({{"input_representation",std::string{"peak_amplitude"}},
-        {"bin_hz",signal_contracts::NumericLiteral{8.0}},
         {"first_midi",signal_contracts::NumericLiteral{std::uint64_t{36}}},
         {"last_midi",signal_contracts::NumericLiteral{std::uint64_t{83}}},
         {"peak_weight",std::string{"squared_value"}},
+        {"bin_hz",signal_contracts::NumericLiteral{32768.0/4096.0}},
         {"first_bin",signal_contracts::NumericLiteral{std::uint64_t{1}}}}));
     b.connect(1003,6,0,frequency_step_input);
     b.connect(1003,1006,0,frequency_step_input);
+}
+void add_startup_features(examples::Builder& b) {
+    add_startup_feature_rows(b);
     b.add(1007,"ArrayConcat");
     b.connect(6,1007);
     b.connect(1006,1007,0,1);
     b.derive(1007);
-    // The existing concatenated broadband + note row drives one 512x96 history.
-    // A standard 8-bit quantizer adapts Float32 levels for the unchanged rhythm kernel.
-    b.chain(1111,"SpectralQuantize",1007,examples::transform({
-        {"bits",signal_contracts::NumericLiteral{std::uint64_t{8}}},
-        {"min_value",signal_contracts::NumericLiteral{0.}},
-        {"max_value",signal_contracts::NumericLiteral{1.}}}));
-    b.chain(7,"Spectrogram",1111,domain::HistoryProcessingParameters{512});
+    // Retain the original Float32 row for analysis and presentation.
+    b.chain(7,"Spectrogram",1007,domain::HistoryProcessingParameters{512});
+}
+void add_startup_feature_views(examples::Builder& b) {
     b.chain(8,"AudioSurfaceView",7);
     b.chain(1008,"Spectrogram",6);
     b.chain(1009,"AudioSurfaceView",1008);
@@ -287,16 +295,17 @@ void add_startup_views(examples::Builder& b) {
     b.connect(1006,12,2,1);
 }
 }
+namespace examples {
+void add_startup_input(Builder& builder) {add_startup_sources(builder);}
+void add_calibrated_features(Builder& builder) {
+    add_startup_spectrum(builder);add_startup_correction(builder);add_startup_features(builder);
+}
+}
 domain::NumericProcessingGraph numeric_startup_graph() {
     examples::Builder builder;
-    add_startup_sources(builder);
-    add_startup_spectrum(builder);
-    add_startup_correction(builder);
-    add_startup_features(builder);
-    add_startup_views(builder);
-    append_startup_rhythm(builder);
-    builder.graph.execution_interval={1,60};
-    return builder.finish();
+    examples::add_startup_input(builder);examples::add_calibrated_features(builder);
+    add_startup_feature_views(builder);add_startup_views(builder);append_startup_rhythm(builder);
+    builder.graph.execution_interval={1,60};return builder.finish();
 }
 
 namespace {
@@ -315,20 +324,21 @@ void add_startup_sections(NumericExampleGraph& example) {
     example.sections.push_back({8,"Notes",begin,notes[3]});example.sections.push_back({1011,"Notes",0,notes[3]});
 }
 }
-NumericExampleGraph numeric_startup_example() {
+static NumericExampleGraph numeric_calibrated_fixture_example() {
     NumericExampleGraph result{"startup","Spectrogram and rhythm: Loopback",numeric_startup_graph(),{8,1009,1011},{},{{200,{"Generator","Loopback"}}}};
-    result.scalar_names.push_back({1103,{"Candidate tempo, BPM","Accepted tempo, BPM",
-        "Decision score (not probability)","Tempo status: 0 unknown, 1 ambiguous, 2 determined",
-        "Beat phase, 0...1","Next beat, source seconds","Tempo change, BPM/s","Spectral activity",
-        "Periodicity support","ACF cost units (not time)","Accent strength",
-        "Grid status: 0 unknown, 1 ambiguous, 2 determined"}});
-    add_startup_sections(result);return result;
+    examples::describe_rhythm_example(result);add_startup_sections(result);return result;
+}
+NumericExampleGraph numeric_startup_example() {
+    NumericExampleGraph result{"basic-signal","Signal generator and sample window",numeric_basic_signal_graph()};
+    result.node_names={{1,"Signal generator"},{2,"Signal sample window"},{3,"Signal waveform"}};
+    return result;
 }
 std::vector<NumericExampleGraph> numeric_example_graphs() {
-    return {
-        numeric_startup_example(),
-        []{auto result=numeric_startup_example();result.id="rhythm-research";
-            result.title_key="Spectrogram and rhythm: shared 96-band history";return result;}(),
+    return {numeric_startup_example(),numeric_reference_beat_example()};
+}
+std::vector<NumericExampleGraph> numeric_fixture_examples() {
+    std::vector<NumericExampleGraph> result{
+        numeric_calibrated_fixture_example(),
         {"music-research","Music spectrum: RFFT, profiles and note salience",numeric_music_graph(),{8},{},{{200,{"Generator","Loopback"}}}},
         {"stereo-sources","Stereo: generator, loopback, microphone",source_selector_graph(2),{8},{},{{200,{"Generators","Loopback","Microphone"}}}},
         {"pcm-mix","Two channels: PCM mixer",pcm_mix_example(),{8}},
@@ -338,4 +348,7 @@ std::vector<NumericExampleGraph> numeric_example_graphs() {
         {"spectral-mix","Two channels: spectrum mixer",spectral_mix_example(),{8}},
         {"temporal-fft","Mel bands: transpose and row FFT",numeric_temporal_fft_graph(),{8,18},{},{{200,{"Generator","Loopback"}}}}
     };
+    auto rhythm=examples::rhythm_examples();
+    result.insert(result.begin()+1,std::make_move_iterator(rhythm.begin()),std::make_move_iterator(rhythm.end()));
+    return result;
 }

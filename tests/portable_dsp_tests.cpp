@@ -107,9 +107,8 @@ static void fft_oracles(dsp_core::MagnitudeSpectrum& fft,dsp_core::MagnitudeSpec
 static void mel_oracles(){
         dsp_core::MelFilterBank mel;
         std::vector<float> spectrum(32, 1), output(50, -1);
-        mel.prepare(32, 0, 50);
-        require(mel.process(spectrum, output), "Zero-rate Mel failed");
-        require(std::all_of(output.begin(), output.end(), [](float x) { return x == 0; }), "Zero-rate Mel not silent");
+        require(!mel.prepare(32, 0, 50), "Undefined Mel frequency grid accepted");
+        require(std::all_of(output.begin(), output.end(), [](float x) { return x == -1; }), "Rejected preparation changed caller output");
         mel.prepare(32, 48000, 50);
         require(mel.process(spectrum, output), "Mel failed");
         require(mel.workspace_bytes() >= 52 * sizeof(double), "Mel workspace excludes boundary capacity");

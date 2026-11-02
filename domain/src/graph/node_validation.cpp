@@ -1,3 +1,8 @@
+#include <domain/numeric/temporal_operations.h>
+#include <domain/numeric/interval_operations.h>
+#include <domain/numeric/common_operations.h>
+#include <domain/numeric/sequence_operations.h>
+#include <domain/numeric/reference_operations.h>
 #include "node_validation.h"
 #include <domain/processing_contracts.h>
 #include <domain/signal/contracts.h>
@@ -28,8 +33,8 @@ bool policy_structural(const ConversionPolicy& p) noexcept {
 }
 bool integer_parameter_valid(const ProcessingParameterValue& value,const ParameterDescriptor& d) noexcept {
     const auto* numeric=std::get_if<NumericLiteral>(&value);if(!numeric)return false;
-    if(const auto* v=std::get_if<std::uint64_t>(numeric))return *v>=std::uint64_t(d.minimum) && *v<=std::uint64_t(d.maximum);
-    if(const auto* v=std::get_if<std::int64_t>(numeric))return *v>=std::int64_t(d.minimum) && *v<=std::int64_t(d.maximum);
+    if(const auto* v=std::get_if<std::uint64_t>(numeric))return static_cast<long double>(*v)>=static_cast<long double>(d.minimum) && static_cast<long double>(*v)<=static_cast<long double>(d.maximum);
+    if(const auto* v=std::get_if<std::int64_t>(numeric))return static_cast<long double>(*v)>=static_cast<long double>(d.minimum) && static_cast<long double>(*v)<=static_cast<long double>(d.maximum);
     return false;
 }
 bool number_parameter_valid(const ProcessingParameterValue& value,const ParameterDescriptor& d) noexcept {
@@ -159,16 +164,16 @@ ProcessingDiagnostic expected_outputs(const OperationValidation& context,std::sp
 }
 ProcessingDiagnostic validate_complexpolar(const OperationValidation& context) noexcept {
     if(!context.input || !transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
-    const auto pair=validate_complex_pair(context);if(!pair)return pair;
+    if(context.kind!=NodeKind::AmplitudePhase){const auto pair=validate_complex_pair(context);if(!pair)return pair;}
     std::array<OwnedProcessingContract,2> expected;
-    const auto status=context.kind==NodeKind::AmplitudePhase?amplitude_phase_output_contracts(context.configured,*context.input,expected):complex_polar_output_contracts(*context.input,expected);
+    const auto status=context.kind==NodeKind::AmplitudePhase?amplitude_phase_output_contracts(context.configured,*context.input,expected):complex_polar_output_contracts(context.configured,*context.input,expected);
     if(status!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return expected_outputs(context,expected);
 }
 ProcessingDiagnostic validate_fourier(const OperationValidation& context) noexcept {
     if(!context.input || !transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
-    if(context.input_count==2 && !same_physical_contract(context.node.inputs[0].contract.view(),context.node.inputs[1].contract.view()))return context.error(ProcessingError::IncompatiblePorts,1);
-    std::array<OwnedProcessingContract,4> expected;
+    if(context.input_count==2){const auto pair=validate_complex_pair(context);if(!pair)return pair;}
+    std::vector<OwnedProcessingContract> expected;
     if(fourier_output_contracts(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return expected_outputs(context,expected);
 }
@@ -436,7 +441,7 @@ ProcessingDiagnostic validate_reduce(const OperationValidation& context) noexcep
 }
 NumericContract retained_history_contract(const NumericContract& input,const NumericContract& output,std::size_t capacity) {
     auto expected=input;expected.semantic=Semantic::History;expected.history_element=input.semantic;
-    expected.shape.rank=Rank::Matrix;expected.shape.axes={Axis::Time,input.shape.axes[0]};
+    expected.shape.rank=Rank::Matrix;expected.shape.axes={Axis::Time,input.shape.rank==Rank::Scalar?Axis::Band:input.shape.axes[0]};
     expected.shape.extents={ExtentBounds{0,capacity},input.shape.extents[0]};expected.coordinates={output.coordinates[0],input.coordinates[0]};
     return expected;
 }
@@ -454,7 +459,7 @@ ProcessingDiagnostic validate_history_count(const OperationValidation& context) 
 }
 ProcessingDiagnostic validate_history_geometry(const OperationValidation& context,bool scalar) noexcept {
     const auto* input=context.input;const auto* output=context.output;
-    if(input->shape.rank!=(scalar?Rank::Scalar:Rank::Vector) ||
+    if((scalar?input->shape.rank!=Rank::Scalar:(input->shape.rank!=Rank::Scalar && input->shape.rank!=Rank::Vector)) ||
        output->shape.rank!=(scalar?Rank::Vector:Rank::Matrix))return context.error(ProcessingError::InvalidContract);
     if(!scalar && input->shape.extents[0].minimum!=input->shape.extents[0].maximum)
         return context.error(ProcessingError::InvalidContract);
@@ -507,10 +512,11 @@ bool contextual_row_in_range(const ConfiguredProcessingNode& node,std::size_t ro
 }
 Status expected_matrix_contract(const OperationValidation& context,std::size_t number,OwnedProcessingContract& expected) noexcept {
     switch(context.operation) {
-    case ProcessingOperation::MatrixFFT:return matrix_fft_output_contract(*context.input,number,expected);
     case ProcessingOperation::MatrixTranspose:return matrix_transpose_output_contract(*context.input,expected);
     case ProcessingOperation::MatrixWindowFunction:return matrix_window_output_contract(*context.input,expected);
     case ProcessingOperation::MatrixCenter:return matrix_center_output_contract(*context.input,expected);
+    case ProcessingOperation::MatrixAutocorrelation:return matrix_autocorrelation_output_contract(*context.input,
+        unsigned_parameter(context,"max_lag"),unsigned_parameter(context,"frame_rate_fps"),expected);
     default:return matrix_row_output_contract(*context.input,expected);
     }
 }
@@ -518,11 +524,30 @@ ProcessingDiagnostic validate_matrixtranspose(const OperationValidation& context
     if(!context.input || !context.output || !transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
     const auto operation=context.operation;
     std::size_t number=0;
-    if(operation==ProcessingOperation::MatrixFFT || operation==ProcessingOperation::MatrixRow)
-        number=unsigned_parameter(context,operation==ProcessingOperation::MatrixFFT?"fft_size":"row");
+    if(operation==ProcessingOperation::MatrixRow)number=unsigned_parameter(context,"row");
     OwnedProcessingContract expected;
     if(expected_matrix_contract(context,number,expected)!=Status::ok || (operation==ProcessingOperation::MatrixRow && !contextual_row_in_range(context.configured,number)))return context.error(ProcessingError::InvalidContract);
     return same_physical_contract(expected.view(),context.outgoing)?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
+}
+ProcessingDiagnostic validate_matrixfft(const OperationValidation& context) noexcept {
+    if(!context.input || !transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
+    ProcessingParameterView radix;
+    if(resolve_processing_parameter(context.resolved(),"radix",radix)!=Status::ok || !std::holds_alternative<std::string_view>(radix) ||
+       (std::get<std::string_view>(radix)!="radix2" && std::get<std::string_view>(radix)!="radix4"))return context.error(ProcessingError::InvalidParameters);
+    std::array<OwnedProcessingContract,2> expected;
+    if(matrix_fft_output_contracts(*context.input,unsigned_parameter(context,"fft_size"),expected,unsigned_parameter(context,"sample_rate"))!=Status::ok)
+        return context.error(ProcessingError::InvalidContract);
+    return expected_outputs(context,expected);
+}
+ProcessingDiagnostic validate_portable_operation(const OperationValidation& context) noexcept {
+    if(!context.input || !transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
+    std::vector<OwnedProcessingContract> expected;
+    const auto status=common_operation_kind(context.node.kind)?common_operation_output_contracts(context.configured,*context.input,expected):
+        sequence_operation_kind(context.node.kind)?sequence_operation_output_contracts(context.configured,*context.input,expected):
+        reference_operation_kind(context.node.kind)?reference_operation_output_contracts(context.configured,*context.input,expected):
+        temporal_operation_kind(context.node.kind)?temporal_operation_output_contracts(context.configured,*context.input,expected):interval_operation_output_contracts(context.configured,*context.input,expected);
+    if(status!=Status::ok)return context.error(ProcessingError::InvalidContract);
+    return expected_outputs(context,expected);
 }
 ProcessingDiagnostic validate_musical_rows(const OperationValidation& context) noexcept {
     std::array<OwnedProcessingContract,4> expected;
@@ -538,6 +563,13 @@ ProcessingDiagnostic music_calibration_diagnostic(const OperationValidation& con
     if(context.kind==NodeKind::FrequencyNormalizer)
         return frequency_normalizer_diagnostic(context.configured,*context.input);
     return note_salience_calibration_diagnostic(context.configured,*context.input);
+}
+ProcessingDiagnostic validate_tempo_evidence(const OperationValidation& context) noexcept {
+    TempoEvidenceParameters p;std::array<OwnedProcessingContract,tempo_evidence_outputs> expected;
+    if(!context.input || !transform_parameters_valid(context) || !tempo_evidence_parameters(context.configured,p) ||
+       !tempo_evidence_inputs_valid(context.configured,p) || tempo_evidence_output_contracts(context.configured,*context.input,expected)!=Status::ok)
+        return context.error(ProcessingError::InvalidContract);
+    return expected_outputs(context,expected);
 }
 ProcessingDiagnostic validate_music_operation(const OperationValidation& context) noexcept {
     const auto diagnostic=music_calibration_diagnostic(context);
@@ -639,7 +671,7 @@ ProcessingDiagnostic validate_spectral_coordinates(const OperationValidation& co
         context.error(ProcessingError::IncompatiblePorts);
 }
 ProcessingDiagnostic validate_spectral_weight_grid(const OperationValidation& context) {
-    if(context.kind!=NodeKind::BarkWeighting && context.kind!=NodeKind::Mel)return {};
+    if(context.kind!=NodeKind::BarkWeighting)return {};
     const auto node=context.resolved();const auto& input=*context.input;
     double fs=0,step=0,first=0;
     if(!spectral_grid_number(node,"sample_rate",fs) || !spectral_grid_number(node,"bin_hz",step) ||
@@ -649,30 +681,42 @@ ProcessingDiagnostic validate_spectral_weight_grid(const OperationValidation& co
         return context.error(ProcessingError::IncompatiblePorts);
     return validate_spectral_coordinates(context,node,input,fs,step,first);
 }
-ProcessingDiagnostic validate_window_rate(const OperationValidation& context) {
-    if(context.kind!=NodeKind::Window)return {};
-    double rate=0;
-    if(!spectral_grid_number(context.resolved(),"input_rate",rate) || rate<=0)
-        return context.error(ProcessingError::InvalidParameters);
-    return rate==context.input->clock.sample_rate?ProcessingDiagnostic{}:
-        context.error(ProcessingError::IncompatiblePorts);
-}
 ProcessingDiagnostic validate_generated_transform(const OperationValidation& context) {
     OwnedProcessingContract expected;
     const auto status=context.kind==NodeKind::SpectrumAmplitude?spectrum_amplitude_output_contract(context.configured,*context.input,expected):array_generator_output_contract(context.configured,*context.input,expected);
     return status==Status::ok && same_physical_contract(expected.view(),context.outgoing)?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
 }
+ProcessingDiagnostic validate_buffer_size(const OperationValidation& context) noexcept {
+    double size=0;
+    const bool valid=spectral_grid_number(context.resolved(),"size",size) &&
+        context.output->shape.extents[0]==ExtentBounds{std::uint64_t(size),std::uint64_t(size)} &&
+        context.output->coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE;
+    return valid?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
+}
+ProcessingDiagnostic validate_weighted_transform(const OperationValidation& context) noexcept {
+    const auto grid=validate_spectral_weight_grid(context);
+    return grid?validate_transform_identity(context):grid;
+}
 ProcessingDiagnostic validate_transform_processing(const OperationValidation& context) noexcept {
+    if(context.kind==NodeKind::FrameStride)return same_physical_contract(context.incoming,context.outgoing)?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
+    if(context.kind==NodeKind::FrameBuffer && context.input->dtype!=DType::Float32)return context.error(ProcessingError::InvalidContract);
     const auto geometry=validate_transform_geometry(context);if(!geometry)return geometry;
+    if(context.kind==NodeKind::Window || context.kind==NodeKind::FrameBuffer)return validate_buffer_size(context);
     if(context.kind==NodeKind::PcmResampler)return validate_resampler(context);
-    const auto rate=validate_window_rate(context);if(!rate)return rate;
-    const auto grid=validate_spectral_weight_grid(context);if(!grid)return grid;
-    return validate_transform_identity(context);
+    return validate_weighted_transform(context);
+}
+ProcessingDiagnostic validate_spectral_frontend(const OperationValidation& context) noexcept {
+    OwnedProcessingContract expected;
+    const auto status=context.kind==NodeKind::Mel?mel_output_contract(context.configured,*context.input,expected):
+        power_to_db_output_contract(context.configured,*context.input,expected);
+    if(status!=Status::ok)return context.error(ProcessingError::InvalidContract);
+    return same_physical_contract(expected.view(),*context.output)?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
 }
 ProcessingDiagnostic validate_transform(const OperationValidation& context) noexcept {
     if(!context.input || !context.output || context.input->channel_order.size()!=1 || context.output->channel_order.size()!=1)return context.error(ProcessingError::InvalidContract);
     const auto* parameters=std::get_if<TransformProcessingParameters>(&context.node.parameters);
     if(!parameters || !context.kind || !parameter_fields_valid(*context.kind,parameters->values,context.limits))return context.error(ProcessingError::InvalidParameters);
+    if(context.kind==NodeKind::Mel || context.kind==NodeKind::PowerToDb)return validate_spectral_frontend(context);
     if(context.kind==NodeKind::SpectrumAmplitude || context.kind==NodeKind::WindowFunction)return validate_generated_transform(context);
     return validate_transform_processing(context);
 }
@@ -703,13 +747,19 @@ constexpr OperationRule operation_rules[]{
     {ProcessingOperation::MatrixTranspose,validate_matrixtranspose},
     {ProcessingOperation::MatrixWindowFunction,validate_matrixtranspose},
     {ProcessingOperation::MatrixCenter,validate_matrixtranspose},
-    {ProcessingOperation::MatrixFFT,validate_matrixtranspose},
+    {ProcessingOperation::MatrixAutocorrelation,validate_matrixtranspose},
+    {ProcessingOperation::TempoEvidence,validate_tempo_evidence},
+    {ProcessingOperation::NumericExtension,validate_portable_operation},
+    {ProcessingOperation::MatrixFFT,validate_matrixfft},
     {ProcessingOperation::MatrixRow,validate_matrixtranspose},
     {ProcessingOperation::MusicTransform,validate_musictransform},
     {ProcessingOperation::Transform,validate_transform},
 };
 }
 ProcessingDiagnostic validate_operation(const OperationValidation& context) noexcept {
+    if(!context.node.enabled && (context.kind==NodeKind::Window || context.kind==NodeKind::FrameBuffer || context.operation==ProcessingOperation::History))
+        return context.error(ProcessingError::InvalidParameters);
+    if(temporal_operation_kind(context.node.kind))return validate_portable_operation(context);
     for(const auto& rule:operation_rules)if(rule.operation==context.operation)return rule.validate(context);
     return {ProcessingError::UnsupportedCombination,context.configured.id};
 }

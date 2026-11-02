@@ -7,8 +7,25 @@
 #include <algorithm>
 #include <numeric>
 #include <cmath>
+#include <limits>
 namespace dataflow_runtime {
 namespace {
+Status prepare_emission_stride(detail::PlanNode& node,const ResolvedProcessingNode& source,std::string_view key) {
+    double count=0;
+    if(!numeric_parameter(source,key,count) || count<1 || count>UINT32_MAX || std::floor(count)!=count)return Status::invalid_argument;
+    node.frame_hop=std::size_t(count);return Status::ok;
+}
+Status prepare_declared_window(detail::PlanNode& node,const ResolvedProcessingNode& source,std::size_t count,const detail::PlanNode* previous) {
+    ProcessingParameterView function,periodic;
+    if(resolve_processing_parameter(source,"function",function)!=Status::ok || !std::holds_alternative<std::string_view>(function) ||
+       !dsp_kernels::parse_window_function(std::get<std::string_view>(function),node.window_function))return Status::invalid_argument;
+    if(resolve_processing_parameter(source,"periodic",periodic)!=Status::ok || !std::holds_alternative<bool>(periodic))return Status::invalid_argument;
+    node.periodic_window=std::get<bool>(periodic);
+    if(previous && previous->windows && previous->windows->maximum()==count && previous->windows->periodic()==node.periodic_window)
+        node.windows=previous->windows;
+    else node.windows=std::make_shared<const dsp_kernels::PreparedWindows>(count,node.periodic_window);
+    return node.windows->prepared()?Status::ok:Status::exhausted;
+}
 Status convert_constant(const NumericView& source,MutableNumericView& output,const NumericRuntimeProfile& profile,std::uint64_t& bits){
     dsp_kernels::PreparedConversion conversion;
     const auto prepared=dsp_kernels::prepare_conversion({*source.contract,*output.contract,{},profile.kernels,profile.admission.frame},profile.capabilities,conversion);
@@ -93,6 +110,7 @@ Status NumericPreparation::prepare_node_buffers(NodeFrame& frame){
     return prepare_selector(frame);
 }
 Status NumericPreparation::prepare_node_outputs(NodeFrame& frame){
+    if(frame.n.operation==ProcessingOperation::History)frame.n.history_filled_only=std::get<HistoryProcessingParameters>(frame.cn.parameters).filled_only;
     {const auto status=prepare_output_contracts(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_output_storage(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_constant(frame);if(status!=Status::ok)return status;}
@@ -120,6 +138,7 @@ Status NumericPreparation::prepare_node_kernels(NodeFrame& frame){
 Status NumericPreparation::prepare_matrix_operations(NodeFrame& frame){
     {const auto status=prepare_matrix_window(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_matrix_fft(frame);if(status!=Status::ok)return status;}
+    {const auto status=prepare_matrix_correlation(frame);if(status!=Status::ok)return status;}
     {const auto status=prepare_matrix_values(frame);if(status!=Status::ok)return status;}
     return Status::ok;
 }
@@ -244,8 +263,8 @@ Status NumericPreparation::prepare_output_storage(NodeFrame& frame){
     auto& n=frame.n;
     auto& state=frame.state;
         state.numeric_outputs.resize(cn.outputs.size());state.numeric_frames.resize(cn.outputs.size());state.source_stamps.resize(cn.outputs.size());state.source_markers.resize(cn.outputs.size());state.stream_storage.resize(profile.admission.frame.max_string_bytes);
-        for(std::size_t j=0;j<cn.outputs.size();++j){const auto* output=std::get_if<NumericContract>(&n.numeric_outputs[j]);
-            const bool shared=(n.operation==ProcessingOperation::Source && n.node.kind!=NodeKind::SignalGenerator && !numeric_constant_kind(cn.kind)) || (n.operation==ProcessingOperation::Transform && n.node.kind==NodeKind::Window && output && direct_window(*output));
+        for(std::size_t j=0;j<cn.outputs.size();++j){
+            const bool shared=n.operation==ProcessingOperation::Source && n.node.kind!=NodeKind::SignalGenerator && !numeric_constant_kind(cn.kind);
             const auto status=numeric_buffer(n.numeric_outputs[j],state.numeric_outputs[j],shared?plan->impl_->silence:nullptr);if(status!=Status::ok)return status;}
     return Status::ok;
 }
@@ -455,43 +474,42 @@ Status NumericPreparation::prepare_packet_gain(NodeFrame& frame){
     return Status::ok;
 }
 Status NumericPreparation::prepare_matrix_window(NodeFrame& frame){
-    auto& resolved=frame.resolved;
-    auto& n=frame.n;
-    auto& state=frame.state;
-    const auto old=frame.old;
-        if(n.operation==ProcessingOperation::MatrixWindowFunction){
-            const auto& in=std::get<NumericContract>(n.numeric_input);
-            ProcessingParameterView value;resolve_processing_parameter(resolved,"function",value);const auto function=std::get<std::string_view>(value);
-            if(!dsp_kernels::parse_window_function(function,n.window_function))return Status::invalid_argument;
-            const auto columns=std::size_t(in.shape.extents[1].maximum);
-            if(old!=absent && previous->impl_->nodes[old].windows && previous->impl_->nodes[old].windows->maximum()==columns)
-                n.windows=previous->impl_->nodes[old].windows;
-            else n.windows=std::make_shared<const dsp_kernels::PreparedWindows>(columns);
-            state.coefficients.resize(columns);
-        }
+    if(frame.n.operation!=ProcessingOperation::MatrixWindowFunction)return Status::ok;
+    const auto columns=std::size_t(std::get<NumericContract>(frame.n.numeric_input).shape.extents[1].maximum);
+    const auto* prior=frame.old==absent?nullptr:&previous->impl_->nodes[frame.old];
+    const auto status=prepare_declared_window(frame.n,frame.resolved,columns,prior);if(status!=Status::ok)return status;
+    frame.state.coefficients.resize(columns);
     return Status::ok;
 }
 Status NumericPreparation::prepare_matrix_fft(NodeFrame& frame){
-    auto& n=frame.n;
-    auto& state=frame.state;
-        if(n.operation==ProcessingOperation::MatrixFFT){
-            const auto& in=std::get<NumericContract>(n.numeric_input);const auto& out=std::get<NumericContract>(n.numeric_outputs[0]);
-            const auto samples=std::size_t(out.shape.extents[1].maximum)*2;
-            state.left.resize(samples);state.values.resize(samples/2);
-            state.kernel.emplace<dsp_kernels::MagnitudeSpectrum>();if(!std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel).prepare(samples))return Status::unavailable;
-        }
+    if(frame.n.operation!=ProcessingOperation::MatrixFFT)return Status::ok;
+    double size=0;if(!numeric_parameter(frame.resolved,"fft_size",size))return Status::invalid_argument;
+    const auto samples=std::size_t(size);auto& state=frame.state;
+    ProcessingParameterView radix;
+    if(resolve_processing_parameter(frame.resolved,"radix",radix)!=Status::ok || !std::holds_alternative<std::string_view>(radix))return Status::invalid_argument;
+    state.left.resize(samples);state.values.resize(samples+2);
+    state.kernel.emplace<dsp_kernels::PreparedRfft>();
+    return std::get<dsp_kernels::PreparedRfft>(state.kernel).prepare(samples,std::get<std::string_view>(radix)=="radix4")?Status::ok:Status::unavailable;
+}
+Status NumericPreparation::prepare_matrix_correlation(NodeFrame& frame){
+    if(frame.n.operation!=ProcessingOperation::MatrixAutocorrelation)return Status::ok;
+    const auto& input=std::get<NumericContract>(frame.n.numeric_input);
+    const auto& output=std::get<NumericContract>(frame.n.numeric_outputs[0]);
+    frame.state.left.resize(std::size_t(input.shape.extents[1].maximum));
+    frame.state.values.resize(std::size_t(output.shape.extents[1].maximum));
     return Status::ok;
 }
 Status NumericPreparation::prepare_matrix_values(NodeFrame& frame){
     auto& resolved=frame.resolved;
     auto& n=frame.n;
         if(n.operation==ProcessingOperation::MatrixRow){double row=0;if(!numeric_parameter(resolved,"row",row))return Status::invalid_argument;n.matrix_row=std::size_t(row);}
-        if(n.operation==ProcessingOperation::MatrixCenter){double method=0;
-            if(!numeric_parameter(resolved,"method",method) || !numeric_parameter(resolved,"offset",n.center_offset))return Status::invalid_argument;
-            n.center_method=unsigned(method);}
+        if(n.operation==ProcessingOperation::MatrixCenter){double method=0,offset=0;
+            if(!numeric_parameter(resolved,"method",method) || !numeric_parameter(resolved,"offset",offset) || std::abs(offset)>std::numeric_limits<float>::max())return Status::invalid_argument;
+            n.center_method=unsigned(method);n.center_offset=float(offset);}
     return Status::ok;
 }
 Status NumericPreparation::prepare_operation(NodeFrame& frame){
+    if(frame.n.operation==ProcessingOperation::NumericExtension){frame.state.extension.emplace();return frame.state.extension->prepare(frame.resolved,profile);}
     auto& resolved=frame.resolved;
     auto& n=frame.n;
     auto& state=frame.state;
@@ -517,42 +535,11 @@ Status NumericPreparation::prepare_transform_pcm_resampler(NodeFrame& frame){
                 return Status::ok;
 
 }
-Status NumericPreparation::prepare_transform_window(NodeFrame& frame){
-    auto& n=frame.n;
-    auto& state=frame.state;
-    const auto& in=std::get<NumericContract>(frame.n.numeric_input);
-    const auto& out=std::get<NumericContract>(frame.n.numeric_outputs[0]);
-    const auto columns=std::size_t(in.shape.extents[0].maximum);
-    const auto count=std::size_t(out.shape.extents[0].maximum);
-    double input_rate=0;
-    if(!numeric_parameter(frame.resolved,"input_rate",input_rate) || input_rate<1 ||
-       input_rate>UINT32_MAX || std::floor(input_rate)!=input_rate)return Status::invalid_argument;
-    const auto status=prepare_hop(n,std::uint32_t(input_rate));
-    if(status!=Status::ok)return status;
-    const auto emissions=columns/n.hop_base+(columns%n.hop_base!=0);
-    if(emissions>profile.max_windows_per_ingress ||
-       (emissions && g.nodes.size()>profile.max_callback_deliveries_per_ingress/emissions) ||
-       (emissions && g.nodes.size() &&
-        profile.admission.max_ports_per_node>profile.max_callback_deliveries_per_ingress/emissions/g.nodes.size()))
-        return Status::exhausted;
-    state.pcm.resize(count*in.channel_order.size());
-    return Status::ok;
-}
 Status NumericPreparation::prepare_transform_window_function(NodeFrame& frame){
-    auto& resolved=frame.resolved;
-    auto& n=frame.n;
-    const auto old=frame.old;
-    const auto& out=std::get<NumericContract>(frame.n.numeric_outputs[0]);
-    const auto count=std::size_t(out.shape.extents[0].maximum);
- {
-                ProcessingParameterView value;resolve_processing_parameter(resolved,"function",value);const auto function=std::get<std::string_view>(value);
-                if(!dsp_kernels::parse_window_function(function,n.window_function))return Status::invalid_argument;
-                if(old!=absent && previous->impl_->nodes[old].windows && previous->impl_->nodes[old].windows->maximum()==count)
-                    n.windows=previous->impl_->nodes[old].windows;
-                else n.windows=std::make_shared<const dsp_kernels::PreparedWindows>(count);
-                return prepare_window_coefficients(frame,count);}
-
-
+    const auto count=std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum);
+    const auto* prior=frame.old==absent?nullptr:&previous->impl_->nodes[frame.old];
+    const auto status=prepare_declared_window(frame.n,frame.resolved,count,prior);if(status!=Status::ok)return status;
+    return prepare_window_coefficients(frame,count);
 }
 Status NumericPreparation::prepare_window_coefficients(NodeFrame& frame,std::size_t count){
     auto& n=frame.n;auto& state=frame.state;
@@ -576,21 +563,6 @@ Status NumericPreparation::prepare_transform_stereo_fft(NodeFrame& frame){
     const auto columns=std::size_t(in.shape.extents[0].maximum);
 state.kernel.emplace<dsp_kernels::MagnitudeSpectrum>();if(!std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel).prepare(columns))return Status::unavailable;return Status::ok;
 
-}
-Status NumericPreparation::prepare_transform_mel(NodeFrame& frame){
-    auto& state=frame.state;
-    const auto& in=std::get<NumericContract>(frame.n.numeric_input);
-    const auto& out=std::get<NumericContract>(frame.n.numeric_outputs[0]);
-    const auto columns=std::size_t(in.shape.extents[0].maximum);
-    const auto count=std::size_t(out.shape.extents[0].maximum);
-    double sample_rate=0;
-    if(!numeric_parameter(frame.resolved,"sample_rate",sample_rate) || sample_rate<1 ||
-       sample_rate>UINT32_MAX || std::floor(sample_rate)!=sample_rate ||
-       !declared_frequency_values(frame.resolved,columns,state.frequencies))return Status::invalid_argument;
-    state.left.resize(columns);state.values.resize(count);
-    state.kernel.emplace<dsp_kernels::MelFilterBank>();
-    return std::get<dsp_kernels::MelFilterBank>(state.kernel).prepare(
-        columns,std::size_t(sample_rate),count,state.frequencies)?Status::ok:Status::unavailable;
 }
 Status NumericPreparation::prepare_transform_spectrum_merge(NodeFrame& frame){
     auto& resolved=frame.resolved;
@@ -618,14 +590,19 @@ Status NumericPreparation::prepare_transform_spectrum_amplitude(NodeFrame& frame
 Status NumericPreparation::prepare_transform(NodeFrame& frame){
     if(frame.n.operation!=ProcessingOperation::Transform)return Status::ok;
     switch(frame.n.node.kind){
-    case NodeKind::PcmResampler:case NodeKind::Window:case NodeKind::WindowFunction:case NodeKind::StereoFFT:return prepare_signal_transform(frame);
+    case NodeKind::FrameStride:case NodeKind::PcmResampler:case NodeKind::Window:case NodeKind::FrameBuffer:case NodeKind::WindowFunction:case NodeKind::StereoFFT:return prepare_signal_transform(frame);
     default:return prepare_spectrum_transform(frame);
     }
 }
 Status NumericPreparation::prepare_signal_transform(NodeFrame& frame){
     switch(frame.n.node.kind){
     case NodeKind::PcmResampler:return prepare_transform_pcm_resampler(frame);
-    case NodeKind::Window:return prepare_transform_window(frame);
+    case NodeKind::Window:return Status::ok;
+    case NodeKind::FrameStride:return prepare_emission_stride(frame.n,frame.resolved,"every_n");
+    case NodeKind::FrameBuffer:{
+        const auto status=prepare_emission_stride(frame.n,frame.resolved,"hop_samples");if(status!=Status::ok)return status;
+        frame.state.pcm.resize(std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum));return Status::ok;
+    }
     case NodeKind::WindowFunction:return prepare_transform_window_function(frame);
     case NodeKind::StereoFFT:return prepare_transform_stereo_fft(frame);
     default:return Status::invalid_argument;
@@ -634,7 +611,7 @@ Status NumericPreparation::prepare_signal_transform(NodeFrame& frame){
 Status NumericPreparation::prepare_spectrum_transform(NodeFrame& frame){
     switch(frame.n.node.kind){
     case NodeKind::BarkWeighting:return prepare_transform_bark_weighting(frame);
-    case NodeKind::Mel:return prepare_transform_mel(frame);
+    case NodeKind::Mel:case NodeKind::PowerToDb:return prepare_music(frame.n,frame.state,frame.resolved,profile);
     case NodeKind::SpectrumMerge:return prepare_transform_spectrum_merge(frame);
     case NodeKind::SpectrumGain:return prepare_transform_spectrum_gain(frame);
     case NodeKind::SpectrumAmplitude:return prepare_transform_spectrum_amplitude(frame);
