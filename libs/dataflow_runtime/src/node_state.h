@@ -98,6 +98,7 @@ struct State {
     // A node owns only its prepared numerical operation; contexts copy independently.
     std::variant<std::monostate,dsp_kernels::MagnitudeSpectrum,dsp_kernels::PreparedRfft,ResamplerKernel,OscillatorKernel,PreparedOperationKernel> kernel;
     std::vector<float> left, values, coefficients, pcm;
+    std::vector<std::int16_t> left_pcm16,values_pcm16,pcm16;
     std::size_t window_extent=0;
     std::vector<MixerQueue> mixer_queues;
     NodeStats stats;
@@ -150,6 +151,7 @@ struct State {
         clear_history_state();
         clear_kernel();
         std::fill(pcm.begin(),pcm.end(),0);
+        std::fill(pcm16.begin(),pcm16.end(),0);
         pending_discontinuity=true;numeric_marker=false;owned_ingress={};ingress_owner.reset();
         clear_operation_inputs();
     }

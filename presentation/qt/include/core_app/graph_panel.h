@@ -5,6 +5,8 @@
 #include <barelief/quick/numeric_render_ports.h>
 class AbstractChartView;
 class NumericImageView;
+class CompactSpectrogramView;
+class ClassicSpectrogramWidget;
 class NumericPieView;
 class NumericPianoView;
 class NumericMetricsView;
@@ -46,6 +48,7 @@ public:
     SpectrogramGraph* owned_surface() const {return _surface;}
     QObject* surface_model() const;
     NumericImageView* image_view() const;
+    ClassicSpectrogramWidget* compact_view() const;
     NumericPieView* pie_view() const;
     NumericPianoView* piano_view() const;
     void set_first_midi(unsigned);
@@ -117,10 +120,13 @@ private:
     void bind_surface_events();
     void store_surface_preference(const QString&,const QJsonValue&,bool notify_state=true);
     void restore_surface_preferences();
+    void restore_compact_preferences();
+    void set_auxiliary_render_visibility(bool visible);
     void initialize_ports();
     void initialize_chart_port();
     void initialize_surface_port();
     void initialize_matrix_port();
+    void initialize_compact_port();
     void initialize_auxiliary_ports();
     void initialize_metric_port();
     void set_value_source(bool,int);
@@ -145,6 +151,7 @@ private:
     AbstractChartView* _chart=nullptr;
     SpectrogramGraph* _surface=nullptr;
     NumericImageView* _image=nullptr;
+    ClassicSpectrogramWidget* _compact=nullptr;
     NumericPieView* _pie=nullptr;
     NumericPianoView* _piano=nullptr;
     NumericMetricsView* _metrics=nullptr;
@@ -168,6 +175,7 @@ private:
     presentation::NumericChartPort _chart_port;
     presentation::NumericSurfacePort _surface_port;
     presentation::NumericImagePort _image_port;
+    presentation::NumericImagePort _compact_port;
     presentation::NumericPiePort _pie_port;
     presentation::NumericPianoPort _piano_port;
     presentation::NumericMetricsPort _metrics_port;

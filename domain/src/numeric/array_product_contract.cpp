@@ -57,8 +57,18 @@ bool operation_valid(const ConfiguredProcessingNode& node) {
     const auto* text=std::get_if<std::string_view>(&field);
     return text && (*text=="multiply" || *text=="add");
 }
-Status own_product_contract(const ConfiguredProcessingNode& node,std::size_t driver,OwnedProcessingContract& result) {
+NumericContract product_value_contract(const ConfiguredProcessingNode& node,std::size_t driver) {
     const auto contract=node.inputs[driver].contract.view();auto output=std::get<NumericContract>(contract);
+    if(output.quantity!=Quantity::Unspecified || output.unit!=NumericUnit::Values)return output;
+    for(const auto& input:node.inputs) {
+        const auto data=input.contract.view();const auto& value=std::get<NumericContract>(data);
+        if(value.quantity!=Quantity::Unspecified || value.unit!=NumericUnit::Values)return value;
+    }
+    return output;
+}
+Status own_product_contract(const ConfiguredProcessingNode& node,std::size_t driver,OwnedProcessingContract& result) {
+    auto output=node.enabled?product_value_contract(node,driver):std::get<NumericContract>(node.inputs[driver].contract.view());
+    output.clock=std::get<NumericContract>(node.inputs[driver].contract.view()).clock;
     if(node.enabled)output.representation.normalization=Normalization::None;
     return own_processing_contract(output,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,result);
 }

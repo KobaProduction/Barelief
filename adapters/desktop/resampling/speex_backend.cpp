@@ -66,6 +66,9 @@ private:
 class SpeexFactory final:public dsp_kernels::ResamplerBackendFactory {
 public:
     bool query(const dsp_kernels::ResamplerConfig& c,dsp_kernels::ResamplerResources& r) const noexcept override {
+#ifdef BARELIEF_SPEEX_Q15_ENABLED
+        if(c.mode==dsp_kernels::ResamplerMode::SpeexDspQ15)return query_speex_q15(c,r);
+#endif
         r={};if(c.mode!=dsp_kernels::ResamplerMode::SpeexDsp || !dsp_kernels::PcmResampler::supported(c.input_rate,c.output_rate) || !c.channels || c.channels>2 || c.quality>10)return false;
         unsigned delay=0;
         if(!qtvis_speex_query(c.input_rate,c.output_rate,unsigned(c.channels),c.quality,&r.coefficient_bytes,&r.state_bytes,&delay))return false;
@@ -73,6 +76,9 @@ public:
         r.owned_bytes=sizeof(SpeexBackend)+r.coefficient_bytes+r.state_bytes;return true;
     }
     std::unique_ptr<dsp_kernels::ResamplerBackend> prepare(const dsp_kernels::ResamplerConfig& c) const override {
+#ifdef BARELIEF_SPEEX_Q15_ENABLED
+        if(c.mode==dsp_kernels::ResamplerMode::SpeexDspQ15)return prepare_speex_q15(c);
+#endif
         if(c.mode!=dsp_kernels::ResamplerMode::SpeexDsp || !dsp_kernels::PcmResampler::supported(c.input_rate,c.output_rate) ||
             !c.channels || c.channels>2 || c.quality>10)return {};
         auto result=std::make_unique<SpeexBackend>(c);if(!result->valid())return {};return result;

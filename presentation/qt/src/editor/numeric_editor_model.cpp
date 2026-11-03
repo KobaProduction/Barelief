@@ -540,19 +540,39 @@ bool resolve_edited_configuration(domain::NumericProcessingGraph& graph){
     if(valid_configuration)graph=std::move(configured);
     return valid_configuration;
 }
-bool resolve_edited_parameters(domain::NumericProcessingGraph& graph,domain::NodeId id){
+bool resolve_edited_parameters(domain::NumericProcessingGraph& graph,domain::NodeId id,bool resized){
     domain::NumericProcessingGraph evaluated,executable;
-    const bool valid_parameters=bool(domain::resolve_numeric_parameter_bindings(graph,numeric_editor::limits(),evaluated,executable,id));
+    bool valid_parameters=bool(domain::resolve_numeric_parameter_bindings(graph,numeric_editor::limits(),evaluated,executable,id));
+    if(!valid_parameters && resized)valid_parameters=bool(domain::derive_numeric_draft_contracts(graph,numeric_editor::limits(),evaluated,id));
     if(valid_parameters)graph=std::move(evaluated);
     return valid_parameters;
 }
+bool port_geometry_changed(const domain::ProcessingPort& before,const domain::ProcessingPort& after) {
+    const auto old_data=before.contract.view(),new_data=after.contract.view();
+    const auto* old=std::get_if<signal_contracts::NumericContract>(&old_data);
+    const auto* next=std::get_if<signal_contracts::NumericContract>(&new_data);
+    return old && next && (old->dtype!=next->dtype || old->shape!=next->shape);
+}
+bool port_geometries_changed(const std::vector<domain::ProcessingPort>& before,const std::vector<domain::ProcessingPort>& after) {
+    if(before.size()!=after.size())return true;
+    for(const auto& port:before) {
+        const auto next=std::find_if(after.begin(),after.end(),[&](const auto& value){return value.id==port.id;});
+        if(next==after.end() || port_geometry_changed(port,*next))return true;
+    }
+    return false;
+}
+bool node_geometry_changed(const domain::NumericProcessingGraph& graph,const domain::ConfiguredProcessingNode& changed) {
+    const auto before=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& node){return node.id==changed.id;});
+    return before==graph.nodes.end() || port_geometries_changed(before->inputs,changed.inputs) || port_geometries_changed(before->outputs,changed.outputs);
+}
 bool prepare_parameter_edit(domain::NumericProcessingGraph& graph,domain::ConfiguredProcessingNode changed,domain::NodeId prior_clock){
     if(!domain::derive_processing_node_contracts(changed,numeric_editor::limits()))return false;
+    const bool resized=node_geometry_changed(graph,changed);
     for(auto& node:graph.nodes)if(node.id==changed.id)node=changed;
     bind_changed_clock(graph,changed,prior_clock);
     if(!update_sample_clock_consumers(graph,changed))return false;
     const bool valid_configuration=resolve_edited_configuration(graph);
-    const bool valid_parameters=resolve_edited_parameters(graph,changed.id);
+    const bool valid_parameters=resolve_edited_parameters(graph,changed.id,resized);
     // The edited node's own ports were derived before this transaction. A
     // downstream refusal remains a visible, non-executable draft; keeping that
     // edge allows the user to repair explicit spectral Fs/N/calibration inputs.

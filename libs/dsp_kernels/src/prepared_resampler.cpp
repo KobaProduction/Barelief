@@ -3,6 +3,11 @@
 
 namespace dsp_kernels {
 namespace {
+std::size_t copy_pcm16_identity(std::span<const std::int16_t> input,std::size_t count,std::size_t stride,
+    std::span<std::int16_t> output,std::size_t capacity,std::size_t channels) noexcept {
+    for(std::size_t c=0;c<channels;++c)std::memcpy(output.data()+c*capacity,input.data()+c*stride,count*sizeof(std::int16_t));
+    return count;
+}
 bool fir_mode(ResamplerMode mode) noexcept {
     return mode==ResamplerMode::ExistingFir || mode==ResamplerMode::CompactFir;
 }
@@ -50,7 +55,8 @@ bool PreparedResampler::prepare_mode(const ResamplerBackendFactory* external){
     case ResamplerMode::Bypass:case ResamplerMode::LinearDiagnostic:return true;
     case ResamplerMode::ExistingFir:case ResamplerMode::CompactFir:return existing_.prepare(config_.input_rate,config_.output_rate,config_.channels,fir_quality(config_.mode));
     case ResamplerMode::IirExperimental:design_iir();return true;
-    case ResamplerMode::SpeexDsp:if(!external)return false;backend_=external->prepare(config_);return bool(backend_);
+    case ResamplerMode::SpeexDsp:case ResamplerMode::SpeexDspQ15:
+        if(!external)return false;backend_=external->prepare(config_);return bool(backend_);
     default:return false;
     }
 }
@@ -95,7 +101,7 @@ ResamplerResources PreparedResampler::resources() const noexcept {
 }
 bool PreparedResampler::resource_requirements(const ResamplerConfig& config,const ResamplerBackendFactory* factory,ResamplerResources& result) noexcept {
     result={};if(!valid_config(config))return false;
-    if(config.mode==ResamplerMode::SpeexDsp){if(!factory||!factory->query(config,result))return false;result.owned_bytes+=sizeof(PreparedResampler);return true;}
+    if(config.mode==ResamplerMode::SpeexDsp || config.mode==ResamplerMode::SpeexDspQ15){if(!factory||!factory->query(config,result))return false;result.owned_bytes+=sizeof(PreparedResampler);return true;}
     switch(config.mode){
     case ResamplerMode::Bypass:case ResamplerMode::IirExperimental:case ResamplerMode::LinearDiagnostic:result=mode_resources(config);break;
     case ResamplerMode::ExistingFir:case ResamplerMode::CompactFir:result=fir_resources(PcmResampler::geometry(config.input_rate,config.output_rate,config.channels,fir_quality(config.mode)));break;
@@ -177,5 +183,17 @@ bool PreparedResampler::process(std::span<const float> input,std::size_t count,s
     if(fir_mode(config.mode))return process_fir(buffers);
     if(!finite_channels(input,count,stride,config.channels))return false;
     return process_non_fir(buffers);
+}
+bool PreparedResampler::process_pcm16(std::span<const std::int16_t> input,std::size_t count,std::size_t stride,
+    std::span<std::int16_t> output,std::size_t capacity,std::size_t& written) noexcept {
+    written=0;
+    if(!prepared_ || (config_.mode!=ResamplerMode::SpeexDspQ15 && config_.mode!=ResamplerMode::Bypass))return false;
+    const auto bound=maximum_output(count,config_.input_rate,config_.output_rate);
+    if(stride<count || stride>input.size()/config_.channels || capacity>output.size()/config_.channels ||
+       capacity<bound || produced_>UINT64_MAX-bound)return false;
+    if(config_.mode==ResamplerMode::Bypass) {
+        written=copy_pcm16_identity(input,count,stride,output,capacity,config_.channels);
+    } else if(!backend_ || !backend_->process_pcm16(input,count,stride,output,capacity,written) || written>capacity)return reject_output(written);
+    produced_+=written;has_input_=has_input_ || count!=0;return true;
 }
 }

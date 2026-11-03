@@ -35,7 +35,9 @@ constexpr std::array fixed_view_modes{
     FixedViewMode{"AudioBarView","bars","Signals",true},
     FixedViewMode{"AudioPieView","pie","Signals",true},
     FixedViewMode{"AudioImageView","image2d","Matrices",true},
-    FixedViewMode{"AudioSurfaceView","surface3d","Matrices",true}
+    FixedViewMode{"AudioSurfaceView","surface3d","Matrices",true},
+    FixedViewMode{"CompactSpectrogramView","compact2d","Matrices",true},
+    FixedViewMode{"ClassicSpectrogramView","classic2d","Matrices",true}
 };
 struct OperationGroup { const char* kind; const char* family; const char* operation; };
 constexpr std::array operation_groups{

@@ -87,7 +87,7 @@ bool configuration_input_supported(const ConfiguredProcessingNode& node,Configur
     case NodeKind::ScalarView:case NodeKind::ScalarMetricsView:case NodeKind::ScalarSignedBarView:
     case NodeKind::VectorLineView:case NodeKind::VectorPointView:case NodeKind::VectorBarView:case NodeKind::VectorPieView:
     case NodeKind::MatrixImageView:case NodeKind::MatrixSurfaceView:
-    case NodeKind::AudioImageView:case NodeKind::AudioSurfaceView:return false;
+    case NodeKind::AudioImageView:case NodeKind::AudioSurfaceView:case NodeKind::CompactSpectrogramView:case NodeKind::ClassicSpectrogramView:return false;
     default:return true;
     }
 }

@@ -262,7 +262,7 @@ void changing_article_tones(dsp_kernels::MusicalSpectrogram& plan,dsp_kernels::M
         allocations=0; watch_allocations=true;
         const auto ok=plan.process(values,row,score);
         watch_allocations=false;
-        require(ok && allocations==0,"Changing seven-tone article projection allocated");
+        require(ok && allocations==0,"Changing seven-tone spectrogram projection allocated");
         for(std::size_t n=0;n<plan.counts()[3];++n) {
             const double f=440*std::pow(2.,(double(n)+60-69)/12);
             double expected=0;
@@ -419,10 +419,21 @@ void* operator new(std::size_t bytes) {
 }
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+static void broadband_without_dc() {
+    using namespace dsp_kernels;
+    const std::array<double,5> boundaries{5,15,25,35,40};
+    const std::array<float,4> no_dc{1,2,3,4};const std::array<float,5> with_dc{0,1,2,3,4};
+    std::array<float,4> left{},right{};BroadbandFeatures first,second;
+    require(first.prepare(4,10,boundaries,BandStatistic::Maximum,1),"Explicit first bin prepares a DC-free spectrum");
+    require(second.prepare(5,10,boundaries,BandStatistic::Maximum),"DC-inclusive reference spectrum");
+    require(first.process(no_dc,left) && second.process(with_dc,right) && left==no_dc && left==right,"Every DC-free band uses its actual frequency, including Nyquist");
+    require(!first.prepare(4,10,boundaries,BandStatistic::Maximum,2),"Only declared DC-inclusive/exclusive layouts are supported");
+}
 int main() {
     try {
         std::cout << std::setprecision(9);
         band_oracle();
+        broadband_without_dc();
         note_oracle();
         article_projection_oracle();
         article_peak_grid_oracle();

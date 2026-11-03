@@ -1,4 +1,5 @@
 #include <desktop/numeric_source_format.h>
+#include <core_app/numeric_default_graph.h>
 #include "core_app/scheme_editor/numeric_editor_model.h"
 #include "core_app/scheme_editor/numeric_node_operations.h"
 #include "../presentation/qt/src/editor/numeric_graph_draft.h"
@@ -134,9 +135,9 @@ void coefficient_port_identity(QApplication& app){
         set_parameter(changed,"size",signal_contracts::NumericLiteral{std::uint64_t{2048}});
         domain::OwnedProcessingContract bank;const auto input=changed.inputs[0].contract.view();
         check(domain::array_generator_output_contract(changed,std::get<signal_contracts::NumericContract>(input),bank)==signal_contracts::Status::ok,"resize coefficient bank contract");changed.outputs[0].contract=std::move(bank);
-        check(domain::attach_numeric_parameter_ports(changed,numeric_editor::limits())==signal_contracts::Status::ok,"retain scalar window outputs after resize");
+        check(domain::attach_numeric_parameter_ports(changed,numeric_editor::limits())==signal_contracts::Status::ok,"retain the coefficient-only window contract after resize");
         generator.set_numeric_node(changed);
-        check(aboutToDelete==0 && deleted==0 && generator.nPorts(QtNodes::PortType::Out)==3,"contract resize preserves stable port identities without QtNodes deletion/shift events");
+        check(aboutToDelete==0 && deleted==0 && generator.nPorts(QtNodes::PortType::Out)==1,"contract resize preserves the single coefficient port without QtNodes deletion/shift events");
         check(std::get<signal_contracts::NumericContract>(generator.numeric_node()->outputs[0].contract.view()).shape.extents[0].maximum==2048,"coefficient bank exposes updated geometry");
     }
 
@@ -923,7 +924,7 @@ void selector_growth_undo(NumericEditorGraphModel& graph,QUndoStack& undo,AudioN
 void selector_hit_geometry(QtNodes::DataFlowGraphicsScene& scene,QtNodes::NodeId selector,AudioNodeModel* model,QWidget* body,NumericEditorGraphModel& graph){
         for(const auto& language:{QString("ru"),QString("en")}) {
             ui::Language::instance().set(language);QApplication::processEvents();
-            check(model->portCaption(QtNodes::PortType::In,2)==model->stream_name(2)+" · "+ui::text("Channel %1").arg(1),"physical input captions match stable mono stream and channel numbering");
+            check(model->portCaption(QtNodes::PortType::In,2)==model->stream_name(2)+" В· "+ui::text("Channel %1").arg(1),"physical input captions match stable mono stream and channel numbering");
             scene.nodeGeometry().recomputeSize(selector);
             check(scene.nodeGeometry().boundingRect(selector).contains(QRectF(scene.nodeGeometry().widgetPosition(selector),body->size())),"node bounds contain compact controls");
         }
@@ -991,7 +992,8 @@ int selector_topology(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>&
 void window_function_edit(NumericEditorGraphModel& graph,QUndoStack& undo){
 
         std::fprintf(stderr,"editor fixture phase window-function\n");
-        const auto id=graph.addNode("WindowFunction");auto* window=graph.delegateModel<AudioNodeModel>(id);std::unique_ptr<QWidget> controls(window->parameter_widget());auto* function=controls->findChild<QComboBox*>("function");check(function && function->count()==7,"registered window-function choice editor exists");
+        const auto id=graph.addNode("WindowFunction");auto* window=graph.delegateModel<AudioNodeModel>(id);std::unique_ptr<QWidget> controls(window->parameter_widget());auto* function=controls->findChild<QComboBox*>("function");check(function && function->count()==int(signal_contracts::window_function_names.size()),"registered window-function choice editor exists");
+        check(function && function->findText(ui::text("Periodic Hann"))>=0,"periodic Hann is available in the registered editor");
 
         if(function)function->setCurrentIndex(1);
 
@@ -1223,9 +1225,9 @@ void port_labels(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& regi
         bool opened=false;
         QObject dialogCallbacks;
         QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());opened=dialog&&dialog->objectName()=="portContractsDialog";check(opened&&dialog->findChild<QComboBox*>("input0Dtype"),"Actual modal contains the contract editor");if(dialog)dialog->accept();});if(contracts)contracts->click();check(opened,"Contract dialog opens modally");
-        QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());auto* edit=dialog?dialog->findChild<QLineEdit*>("portLabel_input65531"):nullptr;check(edit,"Fs label editor uses stable port ID");if(edit)edit->setText("Моя частота");if(dialog)dialog->accept();});if(names)names->click();
+        QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());auto* edit=dialog?dialog->findChild<QLineEdit*>("portLabel_input65531"):nullptr;check(edit,"Fs label editor uses stable port ID");if(edit)edit->setText("РњРѕСЏ С‡Р°СЃС‚РѕС‚Р°");if(dialog)dialog->accept();});if(names)names->click();
         const auto port=node->port_index(QtNodes::PortType::In,domain::input_sample_rate_input);
-        check(node->portCaption(QtNodes::PortType::In,port).startsWith("Моя частота\n"),"Custom text is rendered on the port");
+        check(node->portCaption(QtNodes::PortType::In,port).startsWith("РњРѕСЏ С‡Р°СЃС‚РѕС‚Р°\n"),"Custom text is rendered on the port");
         QByteArray a,b;check(desktop::encode_numeric_graph(before,a)&&desktop::encode_numeric_graph(labels.numeric_graph(),b)&&a==b,"Label edit does not change processing graph or contracts");
         scene.undoStack().undo();check(!node->presentation().contains("port_labels"),"Label changes support Undo");scene.undoStack().redo();
         NumericEditorGraphModel restored(registry);restored.load(labels.save());check(restored.delegateModel<AudioNodeModel>(id)->portCaption(QtNodes::PortType::In,port)==node->portCaption(QtNodes::PortType::In,port),"Labels survive project reload");
@@ -1357,6 +1359,11 @@ void product_connection_order(const std::shared_ptr<QtNodes::NodeDelegateModelRe
         const QtNodes::ConnectionId data{amplitude,0,product,1},coefficient{bank,0,product,0};
         connect(coefficientsFirst?coefficient:data);connect(coefficientsFirst?data:coefficient);
         auto* model=factors.delegateModel<AudioNodeModel>(product);auto node=*model->numeric_node();
+        const auto productContract=node.outputs[0].contract.view();
+        const auto sourceContract=factors.delegateModel<AudioNodeModel>(amplitude)->numeric_node()->outputs[0].contract.view();
+        check(std::get<signal_contracts::NumericContract>(productContract).quantity==std::get<signal_contracts::NumericContract>(sourceContract).quantity &&
+              std::get<signal_contracts::NumericContract>(productContract).unit==std::get<signal_contracts::NumericContract>(sourceContract).unit,
+              "Coefficient-first multiplication preserves the signal quantity independently of frame input");
         std::get<domain::TransformProcessingParameters>(node.parameters).values.push_back({"frame_input",signal_contracts::NumericLiteral{std::uint64_t{1}}});
         check(factors.edit_node(product,node),"Product explicitly selects amplitude input as frame context");
         node=*model->numeric_node();
@@ -1537,7 +1544,7 @@ void presentation(){
     const auto beforeNameUndo=undo.count();
     std::fprintf(stderr,"editor converter before custom presentation node=%u exists=%d\n",unsigned(converter),int(graph.nodeExists(converter)));
     auto display=model->presentation();display["future_display_field"]="kept";model->set_presentation(display);
-    check(model->edit_display_name(QString::fromUtf8("Мой преобразователь")) && model->caption()==QString::fromUtf8("Мой преобразователь") && model->name()=="Converter","Custom caption preserves stable algorithm kind");
+    check(model->edit_display_name(QString::fromUtf8("РњРѕР№ РїСЂРµРѕР±СЂР°Р·РѕРІР°С‚РµР»СЊ")) && model->caption()==QString::fromUtf8("РњРѕР№ РїСЂРµРѕР±СЂР°Р·РѕРІР°С‚РµР»СЊ") && model->name()=="Converter","Custom caption preserves stable algorithm kind");
     QByteArray namedProcessing;desktop::encode_numeric_graph(graph.numeric_graph(),namedProcessing);
     check(namedProcessing==processingBefore && undo.count()==beforeNameUndo+1,"Node rename is one presentation-only undo command");
     const auto namedPresentation=model->presentation();
@@ -1545,8 +1552,8 @@ void presentation(){
     auto malformedName=model->save();auto invalidDisplay=namedPresentation;invalidDisplay["display_name"]=17;malformedName["presentation"]=invalidDisplay;
     AudioNodeModel malformedCaption("Converter");malformedCaption.load(malformedName);
     check(!malformedCaption.numeric_node(),"Malformed persisted display name must reject the node rather than silently discard metadata");
-    undo.undo();check(model->caption()!=QString::fromUtf8("Мой преобразователь") && model->presentation().value("future_display_field")=="kept","Rename undo preserves unknown presentation fields");
-    undo.redo();check(model->caption()==QString::fromUtf8("Мой преобразователь"),"Rename redo restores user caption");
+    undo.undo();check(model->caption()!=QString::fromUtf8("РњРѕР№ РїСЂРµРѕР±СЂР°Р·РѕРІР°С‚РµР»СЊ") && model->presentation().value("future_display_field")=="kept","Rename undo preserves unknown presentation fields");
+    undo.redo();check(model->caption()==QString::fromUtf8("РњРѕР№ РїСЂРµРѕР±СЂР°Р·РѕРІР°С‚РµР»СЊ"),"Rename redo restores user caption");
 
     const auto saved=graph.saveNode(converter);auto copied=saved;copied["id"]=100;graph.loadNode(copied);
 
@@ -1625,6 +1632,36 @@ static int connection_diagnostics_only(const std::shared_ptr<QtNodes::NodeDelega
     delivery_diagnostics(graph,undo);
     std::printf("connection diagnostics failures=%d\n",failures);return failures?1:0;
 }
+static signal_contracts::NumericContract spectrogram_port(NumericEditorGraphModel& graph,int id,bool output,int index=0) {
+    const auto& node=*graph.delegateModel<AudioNodeModel>(id)->numeric_node();
+    return std::get<signal_contracts::NumericContract>((output?node.outputs:node.inputs).at(index).contract.view());
+}
+static void spectrogram_size_edit(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry) {
+    NumericEditorGraphModel graph(registry);QUndoStack undo;graph.set_undo_stack(&undo);
+    check(graph.set_numeric_graph(numeric_compact_spectrogram_graph()),"Spectrogram preset loads into the real editor model");
+    const auto before=graph.save();auto window=*graph.delegateModel<AudioNodeModel>(2)->numeric_node();
+    for(auto& field:std::get<domain::TransformProcessingParameters>(window.parameters).values)
+        if(field.key=="size")field.value=signal_contracts::NumericLiteral{std::uint64_t{2048}};
+    check(graph.edit_node(2,window),"Window size edit remains editable with a fixed calibration table downstream");
+    for(const auto id:{203,1000})check(spectrogram_port(graph,id,false).shape.extents[0].maximum==2048,"Converter and length meter adopt the current window size");
+    check(spectrogram_port(graph,203,true).shape.extents[0].maximum==2048 && spectrogram_port(graph,3,true).shape.extents[0].maximum==2048,"Converted samples and window coefficients resize together");
+    for(const auto id:{4,5})for(const auto port:{0,1})check(spectrogram_port(graph,id,true,port).shape.extents[0].maximum==((id==4 && port==1)?1023:1024),"Separate Fourier and amplitude/phase outputs resize through explicit size wiring");
+    domain::NumericProcessingGraph exported;QString error;
+    check(!graph.export_numeric_graph(exported,&error),"Fixed calibration data with a different FFT grid cannot execute silently");
+    undo.undo();check(graph.save()==before,"Undo restores every dependent contract in one edit");
+    check(graph.export_numeric_graph(exported,&error),"Restored spectrogram preset is executable");
+}
+static void converter_controls() {
+    using M=NodeParameterModel;using namespace signal_contracts;
+    AudioNodeModel converter("Converter");auto* parameters=converter.parameter_model();
+    const auto* dtype=parameters->field("output0Dtype");const auto* scaling=parameters->field("numericScaling");
+    check(dtype && dtype->primary && !dtype->hide_inline && dtype->section==M::Section::Processing,"Target dtype is a normal converter control");
+    check(scaling && scaling->primary && scaling->section==M::Section::Processing,"Conversion method is a normal converter control");
+    check(parameters->edit("output0Dtype",int(DType::Float64)),"Select Float64 destination dtype");
+    const auto output=converter.numeric_node()->outputs[0].contract.view();
+    const auto& contract=std::get<NumericContract>(output);
+    check(contract.dtype==DType::Float64 && contract.representation.alignment==alignof(double),"Destination representation follows selected dtype");
+}
 static void native_clock_editor_cases(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry) {
     native_source_contract(registry);source_rate_undo(registry);clock_rate_dependency(registry);resampler_editor(registry);
 }
@@ -1666,6 +1703,7 @@ int main(int argc,char** argv){
     if(argc==2 && QString::fromLocal8Bit(argv[1])=="--accumulator-only")return accumulator_connections(registry);
     if(argc==2 && QString::fromLocal8Bit(argv[1])=="--connection-diagnostics")return connection_diagnostics_only(registry);
     coefficient_port_identity(app);
+    spectrogram_size_edit(registry);converter_controls();
     axis_range_controls();
     sparse_port_publication(registry);
 

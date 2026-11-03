@@ -153,7 +153,11 @@ void parameters() {
     }, {}, {});
     model.setNode(node, true);
     const auto *dtype = model.field("output0Dtype");
-    check(dtype && dtype->section == Model::Section::Contract && model.field("output0Caption") && model.field("output0Caption")->section==Model::Section::Contract, "read-only contracts and advanced contract editors classified by explicit metadata");
+    check(dtype && dtype->section==Model::Section::Processing && dtype->primary && !dtype->hide_inline,
+          "Converter target dtype is an explicit primary processing control");
+    check(model.field("output0Caption") && model.field("output0Caption")->section==Model::Section::Contract &&
+          model.field("input0Dtype") && model.field("input0Dtype")->section==Model::Section::Contract,
+          "Contract captions and advanced input editors retain their explicit contract classification");
     const auto *gain = model.field("numericGain"); check(gain && gain->editor == Model::Editor::Literal, "typed gain descriptor");
     check(model.editLiteral("numericGain", "18446744073709551615", 1), "exact UInt64 max accepted");
     check(std::get<std::uint64_t>(std::get<signal_contracts::NumericLiteral>(model.field("numericGain")->read())) == UINT64_MAX,

@@ -360,7 +360,7 @@
     <message><source>Frame update cadence</source><translation>Шаг выдачи кадров</translation></message>
     <message><source>Emit every N input frames</source><translation>Выдавать каждый N-й входной кадр</translation></message>
     <message><source>Per-band differences</source><translation>Разности по полосам</translation></message>
-    <message><source>Rhythm: streaming spectral pipeline</source><translation>Ритм: потоковая спектральная цепочка</translation></message>
+    <message><source>Rhythm analysis: librosa</source><translation>Анализ ритма: librosa</translation></message>
     <message><source>PCM block assembly</source><translation>Формирование блоков PCM</translation></message>
     <message><source>Signal window</source><translation>Накопитель сигнала</translation></message>
     <message><source>Window length</source><translation>Длина окна</translation></message>
@@ -2872,5 +2872,31 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Signal generator and sample window</source><translation>Генератор и накопитель сигнала</translation></message>
 <message><source>Signal sample window</source><translation>Накопитель сигнала</translation></message>
 <message><source>Signal waveform</source><translation>График сигнала</translation></message>
+<message><source>Periodic Hann</source><translation>Периодическое окно Ханна</translation></message>
+
+<message><source>SpeexDSP Q15 (PCM16)</source><translation>SpeexDSP Q15 (PCM16)</translation></message>
+<message><source>Broadband frequency, Hz (Z)</source><translation>Широкополосные каналы, Гц (Z)</translation></message>
+<message><source>Note frequency, Hz (Z)</source><translation>Нотные каналы, Гц (Z)</translation></message>
+<message><source>Compact spectrogram: frequencies and notes</source><translation>Компактная спектрограмма: частоты и ноты</translation></message>
+<message><source>Broadband</source><translation>Широкополосные каналы</translation></message>
+<message><source>Compact spectrogram 2D: frequencies and notes</source><translation>Компактная спектрограмма 2D: частоты и ноты</translation></message>
+<message><source>Notes, MIDI</source><translation>Ноты, MIDI</translation></message>
+<message><source>Age, seconds</source><translation>Возраст, с</translation></message>
+<message><source>Frame age</source><translation>Возраст кадра</translation></message>
+<message><source>Configure broadband frequency boundaries</source><translation>Задайте границы широкополосных частот</translation></message>
+<message><source>Classical spectrogram 2D</source><translation>Классическая спектрограмма 2D</translation></message>
+<message><source>Low frequencies</source><translation>Низкие частоты</translation></message>
+<message><source>Mid frequencies</source><translation>Средние частоты</translation></message>
+<message><source>High frequencies</source><translation>Высокие частоты</translation></message>
+<message><source>Time direction</source><translation>Направление времени</translation></message>
+<message><source>Bottom to top</source><translation>Снизу вверх</translation></message>
+<message><source>Left to right</source><translation>Слева направо</translation></message>
+<message><source>Bass</source><translation>Бас</translation></message>
+<message><source>Density</source><translation>Плотность</translation></message>
+<message><source>Impact</source><translation>Удар</translation></message>
+<message><source>Click</source><translation>Щелчок</translation></message>
+<message><source>Noise</source><translation>Шум</translation></message>
+<message><source>Rustle</source><translation>Шелест</translation></message>
+<message><source>Air</source><translation>Воздух</translation></message>
 </context>
 </TS>

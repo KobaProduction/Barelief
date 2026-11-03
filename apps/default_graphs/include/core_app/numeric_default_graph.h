@@ -14,6 +14,7 @@ domain::NumericProcessingGraph numeric_generator_graph(std::uint32_t sample_rate
 domain::NumericProcessingGraph numeric_startup_graph();
 // PC research pipeline, separate from startup and user projects.
 domain::NumericProcessingGraph numeric_music_graph();
+domain::NumericProcessingGraph numeric_compact_spectrogram_graph();
 domain::NumericProcessingGraph numeric_rhythm_graph();
 // Complete existing trace recipe for offline replay, outside the interactive catalogue.
 domain::NumericProcessingGraph numeric_rhythm_replay_graph();
@@ -44,6 +45,11 @@ struct NumericExamplePortOrder {
     std::vector<domain::PortId> inputs,outputs;
 };
 
+struct NumericExampleCompactLayout {
+    domain::NodeId view;
+    std::vector<double> broadband_centers_hz;
+    unsigned first_midi;
+};
 struct NumericExampleGraph {
     const char* id;
     const char* title_key;
@@ -55,6 +61,7 @@ struct NumericExampleGraph {
     std::vector<NumericExampleNodeName> node_names;
     std::vector<NumericExampleNodePosition> positions;
     std::vector<NumericExamplePortOrder> port_orders;
+    std::vector<NumericExampleCompactLayout> compact_layouts;
 };
 std::vector<NumericExampleGraph> numeric_example_graphs();
 // One pinned-library live recipe. All rates are explicit; no hidden resampling.
@@ -62,3 +69,4 @@ NumericExampleGraph numeric_reference_beat_example(std::uint32_t sample_rate=480
 // Complete numerical recipes retained for offline tests and replay consumers.
 std::vector<NumericExampleGraph> numeric_fixture_examples();
 NumericExampleGraph numeric_startup_example();
+NumericExampleGraph numeric_compact_spectrogram_example();

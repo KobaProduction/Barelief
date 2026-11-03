@@ -29,6 +29,8 @@ public:
     virtual bool process(std::span<const float>,std::size_t,std::size_t,
         std::span<float>,std::size_t,std::size_t&) noexcept=0;
     virtual bool process_window(std::span<const float>,std::size_t,std::span<float>,std::size_t,std::size_t& written) noexcept {written=0;return false;}
+    virtual bool process_pcm16(std::span<const std::int16_t>,std::size_t,std::size_t,
+        std::span<std::int16_t>,std::size_t,std::size_t&) noexcept {return false;}
     virtual void reset() noexcept=0;
     virtual bool initial_position(std::uint32_t numerator,std::uint32_t denominator) noexcept {return numerator==0 && denominator!=0;}
     virtual bool copy_state_from(const ResamplerBackend&) noexcept=0;
@@ -81,6 +83,8 @@ public:
         return PcmResampler::maximum_output(count,in,out);
     }
     bool process(std::span<const float>,std::size_t,std::size_t,std::span<float>,std::size_t,std::size_t&) noexcept;
+    bool process_pcm16(std::span<const std::int16_t>,std::size_t,std::size_t,
+        std::span<std::int16_t>,std::size_t,std::size_t&) noexcept;
     void reset() noexcept;
     bool copy_state_from(const PreparedResampler&) noexcept;
     ResamplerResources resources() const noexcept;

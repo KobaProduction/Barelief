@@ -318,7 +318,13 @@ static int edit_music_rate(CoreApplication& app,NumericEditorGraphModel* model,c
 static int resampler_modes_and_rate(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,const auto& edit) {
     pipeline::DeliveredNumericFrame pcm;
     if(const int failure=music_resampler_bypass_draft(app,model);failure)return failure;
-    for(int mode:{1,2,3,4,5,1})if(const int failure=music_resampler_mode(query,edit,mode);failure)return failure;
+    // This route carries Float32; Q15 has separate PCM16 pipeline coverage.
+    for(const std::string_view mode:{"existing_fir","compact_fir","speex","iir","linear","existing_fir"}) {
+        const auto choices=signal_contracts::resampler_policies();
+        const auto found=std::find_if(choices.begin(),choices.end(),[mode](const auto& choice){return choice.id==mode;});
+        CHECK(found!=choices.end());
+        if(const int failure=music_resampler_mode(query,edit,int(std::distance(choices.begin(),found)));failure)return failure;
+    }
     if(const int failure=edit_music_rate(app,model,query,32000);failure)return failure;
     CHECK(query(201,pcm));CHECK(std::get<NumericView>(pcm.frame.view().payload).contract->clock.sample_rate==32000);
     return edit_music_rate(app,model,query,32768);

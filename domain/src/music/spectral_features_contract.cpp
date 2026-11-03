@@ -34,7 +34,10 @@ struct SpectralContract {
 };
 bool ordinary_spectrum(const SpectralContract& context) {
     const auto& input=context.input;
-    return (input.quantity==Quantity::SpectrumPower || input.quantity==Quantity::SpectrumBinPower) && input.unit==NumericUnit::SquaredAmplitude &&
+    const bool power=(input.quantity==Quantity::SpectrumPower || input.quantity==Quantity::SpectrumBinPower) && input.unit==NumericUnit::SquaredAmplitude;
+    const bool amplitude=context.node.kind=="BroadbandFeatures" && context.text("statistic")=="maximum" &&
+        input.quantity==Quantity::SpectrumPeakAmplitude && input.unit==NumericUnit::RawAmplitude;
+    return (power || amplitude) &&
         input.representation.normalization==Normalization::None && input.shape.rank==Rank::Vector &&
         input.shape.axes[0]==Axis::Bin && context.fixed() && input.shape.extents[0].maximum>=2;
 }
@@ -43,13 +46,16 @@ bool spectrum_rate_matches(const NumericContract& input,const AxisCoordinates& a
     const auto factor=std::gcd(numerator,denominator);numerator/=factor;denominator/=factor;
     return numerator==input.clock.sample_rate/divisor && denominator==samples/divisor;
 }
-bool spectrum_grid(const SpectralContract& context) {
-    if(!ordinary_spectrum(context))return false;
-    const auto& input=context.input;const auto& axis=input.coordinates[0];
-    const bool no_dc=axis.origin==axis.step;
+bool declared_band_grid(const SpectralContract& context,bool& no_dc) {
+    double first=0;if(!context.number("first_bin",first) || (first!=0 && first!=1))return false;
+    no_dc=first==1;
     double bin_hz=0;
-    if(!context.number("bin_hz",bin_hz) || bin_hz<=0 ||
-       !declared_frequency_axis_matches(axis,bin_hz,no_dc?1:0))return false;
+    return context.number("bin_hz",bin_hz) && bin_hz>0 &&
+        declared_frequency_axis_matches(context.input.coordinates[0],bin_hz,no_dc?1:0);
+}
+bool spectrum_grid(const SpectralContract& context) {
+    bool no_dc=false;if(!ordinary_spectrum(context) || !declared_band_grid(context,no_dc))return false;
+    const auto& input=context.input;const auto& axis=input.coordinates[0];
     const auto bins=input.shape.extents[0].maximum;
     if(bins>UINT32_MAX)return false;
     const auto samples=(no_dc?bins:bins-1)*2;const auto divisor=std::gcd(std::uint64_t(input.clock.sample_rate),samples);
@@ -63,16 +69,19 @@ bool declared_size(const SpectralContract& context,std::size_t& out) {
 bool declared_fft(const SpectralContract& context,std::size_t& out) {
     return declared_size(context,out) && !(out&(out-1));
 }
+Status real_fft_output(SpectralContract& context,std::size_t size,std::uint64_t rate) {
+    auto& output=context.output;output.quantity=Quantity::SpectrumComplex;output.unit=NumericUnit::RawAmplitude;
+    output.shape={Rank::Matrix,{Axis::Bin,Axis::Component},{ExtentBounds{size/2+1,size/2+1},ExtentBounds{2,2}}};
+    output.coordinates={context.frequency(size,rate),AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}}};
+    return Status::ok;
+}
 Status real_fft(SpectralContract& context) {
     std::size_t size=0;if(!declared_fft(context,size))return Status::invalid_argument;
     const auto radix=context.text("radix");if(radix!="radix2" && radix!="radix4")return Status::invalid_argument;
     const auto& input=context.input;
     if(input.shape.rank!=Rank::Vector || input.shape.axes[0]!=Axis::Sample || !context.fixed() || input.shape.extents[0].maximum!=size)return Status::incompatible_contract;
     double rate=0;if(!context.number("sample_rate",rate) || rate<1 || rate>UINT32_MAX || std::floor(rate)!=rate)return Status::invalid_argument;
-    auto& output=context.output;output.quantity=Quantity::SpectrumComplex;output.unit=NumericUnit::RawAmplitude;
-    output.shape={Rank::Matrix,{Axis::Bin,Axis::Component},{ExtentBounds{size/2+1,size/2+1},ExtentBounds{2,2}}};
-    output.coordinates={context.frequency(size,std::uint64_t(rate)),AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}}};
-    return Status::ok;
+    return real_fft_output(context,size,std::uint64_t(rate));
 }
 struct Projection {std::string_view id;Quantity quantity;NumericUnit unit;};
 constexpr Projection projections[]{
@@ -86,10 +95,8 @@ constexpr Projection projections[]{
     {"rms_amplitude",Quantity::SpectrumRmsAmplitude,NumericUnit::RawAmplitude},
     {"bin_power",Quantity::SpectrumBinPower,NumericUnit::SquaredAmplitude},
     {"window_scaled_magnitude",Quantity::SpectrumWindowScaledMagnitude,NumericUnit::RawAmplitude}};
-bool projection_input(const SpectralContract& context,std::size_t size) {
+bool projection_grid(const SpectralContract& context,std::size_t size) {
     const auto& input=context.input;
-    if(input.shape.rank!=Rank::Matrix || input.shape.axes!=std::array{Axis::Bin,Axis::Component})return false;
-    if(!context.fixed() || !context.fixed(1) || input.shape.extents[1].maximum!=2)return false;
     const ResolvedProcessingNode view{context.node.id,context.node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,context.node.inputs,context.node.outputs,&context.node.parameters,context.node.enabled};
     ProcessingParameterView half;double first=0;
     if(resolve_processing_parameter(view,"positive_half",half)!=Status::ok || !std::holds_alternative<bool>(half) || !context.number("first_bin",first))return false;
@@ -98,10 +105,21 @@ bool projection_input(const SpectralContract& context,std::size_t size) {
     if(input.coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE && !declared_frequency_axis_matches(input.coordinates[0],rate/double(size),std::uint64_t(first)))return false;
     return input.shape.extents[0].maximum<=available-first;
 }
+bool projection_input(const SpectralContract& context,std::size_t size) {
+    const auto& input=context.input;
+    return input.shape.rank==Rank::Matrix && input.shape.axes==std::array{Axis::Bin,Axis::Component} &&
+        context.fixed() && context.fixed(1) && input.shape.extents[1].maximum==2 && projection_grid(context,size);
+}
 bool projection_policy(const SpectralContract& context) {
     const auto norm=context.text("magnitude_norm"),zero=context.text("zero_phase"),scaling=context.text("scaling_source");
     if((norm!="hypot" && norm!="squared_norm") || (zero!="zero" && zero!="atan2") || (scaling!="window" && scaling!="coefficients"))return false;
     double exponent=0;return context.number("magnitude_exponent",exponent) && exponent>=0 && exponent<=std::numeric_limits<float>::max();
+}
+bool magnitude_units(std::string_view representation,bool normalized,double exponent,NumericContract& output) {
+    if(representation!="magnitude" || exponent==1)return true;
+    if(normalized)return false;
+    output.quantity=exponent==2?Quantity::SpectrumPower:Quantity::Unspecified;
+    output.unit=exponent==2?NumericUnit::SquaredAmplitude:NumericUnit::Values;return true;
 }
 bool projection_units(const SpectralContract& context,std::string_view representation,NumericContract& output) {
     const ResolvedProcessingNode view{context.node.id,context.node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,context.node.inputs,context.node.outputs,&context.node.parameters,context.node.enabled};
@@ -109,9 +127,7 @@ bool projection_units(const SpectralContract& context,std::string_view represent
     if(resolve_processing_parameter(view,"normalize",normalized)!=Status::ok || !std::holds_alternative<bool>(normalized) || !context.number("magnitude_exponent",exponent))return false;
     if(!std::get<bool>(normalized) && representation=="psd"){output.quantity=Quantity::SpectrumPower;output.unit=NumericUnit::SquaredAmplitude;}
     if(!std::get<bool>(normalized) && representation=="peak_amplitude"){output.quantity=Quantity::SpectrumMagnitude;output.unit=NumericUnit::RawAmplitude;}
-    if(representation=="magnitude" && exponent!=1){output.quantity=exponent==2?Quantity::SpectrumPower:Quantity::Unspecified;output.unit=exponent==2?NumericUnit::SquaredAmplitude:NumericUnit::Values;}
-    if(std::get<bool>(normalized) && representation=="magnitude" && exponent!=1)return false;
-    return true;
+    return magnitude_units(representation,std::get<bool>(normalized),exponent,output);
 }
 Status project_representation(SpectralContract& context) {
     const auto representation=context.text("representation");
@@ -156,15 +172,19 @@ Quantity broadband_quantity(const BandStatistic& statistic,Quantity input) {
     if(statistic.id=="rms")return Quantity::BroadbandBinPowerRms;
     return statistic.id=="maximum"?Quantity::BroadbandBinPowerMaximum:Quantity::BroadbandBinPowerFlux;
 }
+Status broadband_output(SpectralContract& context,std::size_t count,const BandStatistic& statistic) {
+    auto& output=context.output;output.shape.axes={Axis::Band,Axis::None};output.shape.extents[0]={count,count};
+    output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{0,1}};
+    output.quantity=broadband_quantity(statistic,context.input.quantity);output.unit=statistic.unit;
+    if(context.input.quantity==Quantity::SpectrumPeakAmplitude){output.quantity=Quantity::SpectrumPeakAmplitude;output.unit=NumericUnit::RawAmplitude;}
+    return Status::ok;
+}
 Status broadband_features(SpectralContract& context) {
     if(!spectrum_grid(context))return Status::incompatible_contract;
     std::size_t count=0;if(!band_boundaries(context,count))return Status::invalid_argument;
     const auto statistic=context.text("statistic");
     const auto selected=std::find_if(std::begin(band_statistics),std::end(band_statistics),[&](const auto& p){return p.id==statistic;});
-    if(selected==std::end(band_statistics))return Status::invalid_argument;
-    auto& output=context.output;output.shape.axes={Axis::Band,Axis::None};output.shape.extents[0]={count,count};
-    output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{0,1}};
-    output.quantity=broadband_quantity(*selected,context.input.quantity);output.unit=selected->unit;return Status::ok;
+    return selected==std::end(band_statistics)?Status::invalid_argument:broadband_output(context,count,*selected);
 }
 bool salience_representation(const SpectralContract& context) {
     const auto representation=context.text("input_representation");

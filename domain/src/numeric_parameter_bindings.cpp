@@ -22,6 +22,10 @@ namespace {
 bool audio_vector_view(std::string_view kind) noexcept {
     return kind=="AudioLineView" || kind=="AudioPointView" || kind=="AudioBarView" || kind=="AudioPieView";
 }
+bool frequency_step_consumer(std::string_view kind) noexcept {
+    constexpr std::string_view kinds[]{"SpectrumPeak","NoteSalience","BroadbandFeatures","MusicalSpectrogram","BroadbandRow","NoteSpectrum","FFTView","Mel"};
+    return audio_vector_view(kind) || std::find(std::begin(kinds),std::end(kinds),kind)!=std::end(kinds);
+}
 }
 std::span<const ProcessingPort> data_inputs(const ConfiguredProcessingNode& node) noexcept {
     const auto ports=std::span<const ProcessingPort>(node.inputs);
@@ -56,7 +60,7 @@ std::string_view spectral_parameter_key(std::string_view kind,PortId input) noex
     if((kind=="Mel" || kind=="EnvelopeBeatPath" || kind=="RhythmAnalyzer" || kind=="FrequencyNormalizer" || kind=="AmplitudePhase" || kind=="RFFT" || kind=="SpectrumProjection" || kind=="MatrixFFT") && input==target_sample_rate_input)return "sample_rate";
     if((kind=="Mel" || kind=="FrequencyStep" || kind=="SpectrumAmplitude" || kind=="FrequencyNormalizer" || kind=="Fourier" || kind=="RealFourier" || kind=="RFFT" || kind=="SpectrumProjection" || kind=="AmplitudePhase" || kind=="ComplexPolar" || kind=="MatrixFFT") && input==window_size_input)return "fft_size";
     if((kind=="SpectrumPeak" || kind=="NoteSalience") && input==spectrum_first_bin_input)return "first_bin";
-    if((kind=="Mel" || kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind)) && input==frequency_step_input)return "bin_hz";
+    if(frequency_step_consumer(kind) && input==frequency_step_input)return "bin_hz";
     return {};
 }
 }
@@ -98,7 +102,7 @@ void plan_parameter_inputs(const ConfiguredProcessingNode& node,ParameterPortPla
     if(window_size_parameter(node))plan.inputs[plan.input_count++]=window_size_input;
     if(!numeric_parameter_key(kind,target_sample_rate_input).empty())plan.inputs[plan.input_count++]=target_sample_rate_input;
     if(kind=="SpectrumPeak" || kind=="NoteSalience")plan.inputs[plan.input_count++]=spectrum_first_bin_input;
-    if(kind=="SpectrumPeak" || kind=="NoteSalience" || kind=="MusicalSpectrogram" || kind=="BroadbandRow" || kind=="NoteSpectrum" || kind=="FFTView" || audio_vector_view(kind))plan.inputs[plan.input_count++]=frequency_step_input;
+    if(frequency_step_consumer(kind))plan.inputs[plan.input_count++]=frequency_step_input;
     plan_gain_inputs(kind,plan);
 }
 void plan_gain_inputs(std::string_view kind,ParameterPortPlan& plan) noexcept {
@@ -736,27 +740,27 @@ ProcessingError preparation_scalar(const NumericProcessingGraph& graph,NodeId id
 }
 }
 namespace {
-ProcessingDiagnostic validate_parameter_connection(const NumericProcessingGraph& graph,std::size_t index,NodeId changed,const ProcessingPort& source,const ProcessingPort& target) {
+ProcessingDiagnostic validate_parameter_connection(const NumericProcessingGraph& graph,std::size_t index,NodeId changed,const ProcessingPort& source,const ProcessingPort& target,bool contracts) {
     const auto& edge=graph.edges[index];
     for(std::size_t i=0;i<index;++i)if(graph.edges[i].to==edge.to && graph.edges[i].input_port==edge.input_port)return {ProcessingError::MultipleInputs,edge.to,edge.input_port,index};
-    if(edge.from!=changed && numeric_parameter_key(graph.nodes[at(graph,edge.to)].kind,edge.input_port).empty() && !processing_ports_compatible(source,target) && !processing_ports_dtype_convertible(source,target))return {ProcessingError::IncompatiblePorts,edge.to,edge.input_port,index};
+    if(contracts && edge.from!=changed && numeric_parameter_key(graph.nodes[at(graph,edge.to)].kind,edge.input_port).empty() && !processing_ports_compatible(source,target) && !processing_ports_dtype_convertible(source,target))return {ProcessingError::IncompatiblePorts,edge.to,edge.input_port,index};
     return {};
 }
-ProcessingDiagnostic parameter_edge(const NumericProcessingGraph& graph,std::size_t index,NodeId changed) {
+ProcessingDiagnostic parameter_edge(const NumericProcessingGraph& graph,std::size_t index,NodeId changed,bool contracts=true) {
     const auto& edge=graph.edges[index];const auto from=at(graph,edge.from),to=at(graph,edge.to);
     if(from==graph.nodes.size() || to==graph.nodes.size())return {ProcessingError::MissingEndpoint,edge.to,edge.input_port,index};
     const auto* source=port(graph.nodes[from].outputs,edge.output_port);const auto* target=port(graph.nodes[to].inputs,edge.input_port);
     if(!source || !target)return {ProcessingError::InvalidPort,edge.to,edge.input_port,index};
-    return validate_parameter_connection(graph,index,changed,*source,*target);
+    return validate_parameter_connection(graph,index,changed,*source,*target,contracts);
 }
 ProcessingDiagnostic unique_parameter_node_ids(const NumericProcessingGraph& graph) {
     for(std::size_t i=0;i<graph.nodes.size();++i)for(std::size_t j=0;j<i;++j)if(graph.nodes[i].id==graph.nodes[j].id)return {ProcessingError::InvalidNode,graph.nodes[i].id};
     return {};
 }
-ProcessingDiagnostic prepare_incoming_counts(const NumericProcessingGraph& graph,NodeId changed,std::vector<std::size_t>& incoming) {
+ProcessingDiagnostic prepare_incoming_counts(const NumericProcessingGraph& graph,NodeId changed,std::vector<std::size_t>& incoming,bool contracts) {
     const auto unique=unique_parameter_node_ids(graph);if(!unique)return unique;
     for(std::size_t i=0;i<graph.edges.size();++i) {
-        const auto valid=parameter_edge(graph,i,changed);if(!valid)return valid;
+        const auto valid=parameter_edge(graph,i,changed,contracts);if(!valid)return valid;
         ++incoming[at(graph,graph.edges[i].to)];
     }
     return {};
@@ -767,9 +771,9 @@ void append_ready_successors(const NumericProcessingGraph& graph,NodeId source,s
 void append_initial_ready(std::span<const std::size_t> incoming,std::vector<std::size_t>& order) {
     for(std::size_t i=0;i<incoming.size();++i)if(!incoming[i])order.push_back(i);
 }
-ProcessingDiagnostic preparation_order(const NumericProcessingGraph& graph,NodeId changed,std::vector<std::size_t>& order) {
+ProcessingDiagnostic preparation_order(const NumericProcessingGraph& graph,NodeId changed,std::vector<std::size_t>& order,bool contracts=true) {
     std::vector<std::size_t> incoming(graph.nodes.size(),0);
-    const auto valid=prepare_incoming_counts(graph,changed,incoming);if(!valid)return valid;
+    const auto valid=prepare_incoming_counts(graph,changed,incoming,contracts);if(!valid)return valid;
     append_initial_ready(incoming,order);
     for(std::size_t cursor=0;cursor<order.size();++cursor)append_ready_successors(graph,graph.nodes[order[cursor]].id,incoming,order);
     return order.size()==graph.nodes.size()?ProcessingDiagnostic{}:ProcessingDiagnostic{ProcessingError::Cycle};
@@ -988,6 +992,24 @@ ProcessingDiagnostic resolve_numeric_parameter_bindings(const NumericProcessingG
     BindingContext context{candidate,limits,provider,changed};
     for(const auto index:order){const auto result=bind_node(context,index,changed_node);if(!result)return result;}
     return publish_parameter_graph(candidate,limits,evaluated,executable);
+}
+namespace {
+void derive_draft_nodes(NumericProcessingGraph& graph,const ProcessingAdmissionLimits& limits,std::span<const std::size_t> order,NodeId changed_node) {
+    std::vector<bool> changed(graph.nodes.size(),false);
+    BindingContext context{graph,limits,nullptr,changed};
+    for(const auto index:order) {
+        const auto result=bind_node(context,index,changed_node);
+        if(!result)context.changed[index]=false;
+    }
+}
+}
+ProcessingDiagnostic derive_numeric_draft_contracts(const NumericProcessingGraph& source,const ProcessingAdmissionLimits& limits,NumericProcessingGraph& evaluated,NodeId changed_node) {
+    if(source.nodes.size()>limits.max_nodes || source.edges.size()>limits.max_edges)return {ProcessingError::Limit};
+    std::vector<std::size_t> order;order.reserve(source.nodes.size());
+    const auto valid=preparation_order(source,-1,order,false);if(!valid)return valid;
+    auto candidate=source;
+    derive_draft_nodes(candidate,limits,order,changed_node);
+    evaluated=std::move(candidate);return {};
 }
 
 namespace {

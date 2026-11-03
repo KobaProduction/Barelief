@@ -212,8 +212,8 @@ void NumericViewAdapter::history_captions(const State& state,NumericRenderTarget
     const QStringList args{QString::number(state.history.filled_count())};
     const bool unavailable=state.status!=Status::ok || !state.history.available();
     if(!target.spectrogram || !target.spectrogram->paused())caption(target.exact_label,"Frames: %1",args,state.history.precision_loss(),unavailable);
-    caption(target.spectrogram,"Frames: %1",args,state.history.precision_loss(),unavailable);
-    caption(target.image,"Frames: %1",args,state.history.precision_loss(),unavailable);
+    caption(target.spectrogram,"",{},state.history.precision_loss(),unavailable);
+    caption(target.image,"",{},state.history.precision_loss(),unavailable);
     caption(target.pie,"Frames: %1",args,state.history.precision_loss(),unavailable);
 }
 Status NumericViewAdapter::render_history(State& state,NumericRenderTarget target){

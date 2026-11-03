@@ -26,6 +26,11 @@ Status prepare_declared_window(detail::PlanNode& node,const ResolvedProcessingNo
     else node.windows=std::make_shared<const dsp_kernels::PreparedWindows>(count,node.periodic_window);
     return node.windows->prepared()?Status::ok:Status::exhausted;
 }
+void allocate_pcm_packets(State& state,const NumericContract& input,std::size_t count) {
+    const auto columns=std::size_t(input.shape.extents[0].maximum),planes=input.channel_order.size();
+    if(input.dtype==DType::Int16){state.left_pcm16.resize(columns*planes);state.values_pcm16.resize(count*planes);}
+    else {state.left.resize(columns*planes);state.values.resize(count*planes);}
+}
 Status convert_constant(const NumericView& source,MutableNumericView& output,const NumericRuntimeProfile& profile,std::uint64_t& bits){
     dsp_kernels::PreparedConversion conversion;
     const auto prepared=dsp_kernels::prepare_conversion({*source.contract,*output.contract,{},profile.kernels,profile.admission.frame},profile.capabilities,conversion);
@@ -524,10 +529,8 @@ Status NumericPreparation::prepare_transform_pcm_resampler(NodeFrame& frame){
     auto& state=frame.state;
     const auto& in=std::get<NumericContract>(frame.n.numeric_input);
     const auto& out=std::get<NumericContract>(frame.n.numeric_outputs[0]);
-    const auto columns=std::size_t(in.shape.extents[0].maximum);
     const auto count=std::size_t(out.shape.extents[0].maximum);
-
-                state.left.resize(columns*in.channel_order.size());state.values.resize(count*in.channel_order.size());
+                allocate_pcm_packets(state,in,count);
                 state.kernel.emplace<ResamplerKernel>();
                 {dsp_kernels::ResamplerConfig config;if(!resampler_config(resolved,config) ||
                    !std::get<ResamplerKernel>(state.kernel).operation().prepare(config,profile.resampler_backend))return Status::invalid_argument;
@@ -601,7 +604,9 @@ Status NumericPreparation::prepare_signal_transform(NodeFrame& frame){
     case NodeKind::FrameStride:return prepare_emission_stride(frame.n,frame.resolved,"every_n");
     case NodeKind::FrameBuffer:{
         const auto status=prepare_emission_stride(frame.n,frame.resolved,"hop_samples");if(status!=Status::ok)return status;
-        frame.state.pcm.resize(std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum));return Status::ok;
+        const auto count=std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum);
+        if(std::get<NumericContract>(frame.n.numeric_input).dtype==DType::Int16)frame.state.pcm16.resize(count);
+        else frame.state.pcm.resize(count);return Status::ok;
     }
     case NodeKind::WindowFunction:return prepare_transform_window_function(frame);
     case NodeKind::StereoFFT:return prepare_transform_stereo_fft(frame);

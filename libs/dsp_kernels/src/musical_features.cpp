@@ -294,8 +294,8 @@ std::size_t MusicalSpectrogram::workspace_bytes() const noexcept {
 }
 
 namespace {
-bool valid_band_boundaries(std::size_t bins,double frequency_step_hz,std::span<const double> boundaries_hz) noexcept {
-    const auto nyquist = double(bins - 1) * frequency_step_hz;
+bool valid_band_boundaries(std::size_t bins,double frequency_step_hz,std::span<const double> boundaries_hz,unsigned first_bin) noexcept {
+    const auto nyquist = double(bins - 1 + first_bin) * frequency_step_hz;
     for (std::size_t i = 0; i < boundaries_hz.size(); ++i)
         if (!std::isfinite(boundaries_hz[i]) || boundaries_hz[i] < 0 || boundaries_hz[i] > nyquist ||
             (i && boundaries_hz[i] <= boundaries_hz[i - 1])) return false;
@@ -306,31 +306,33 @@ bool valid_band_boundaries(std::size_t bins,double frequency_step_hz,std::span<c
 void BroadbandFeatures::prepare_bands(std::size_t bins,double frequency_step_hz,std::span<const double> boundaries_hz) {
     std::size_t bin = 0;
     for (std::size_t i = 0; i < bands_.size(); ++i) {
-        while (bin < bins && double(bin) * frequency_step_hz < boundaries_hz[i]) ++bin;
+        while (bin < bins && double(bin+first_bin_) * frequency_step_hz < boundaries_hz[i]) ++bin;
         const auto begin = bin;
         const bool last = i + 1 == bands_.size();
-        while (bin < bins && (last ? double(bin) * frequency_step_hz <= boundaries_hz[i + 1] :
-                                    double(bin) * frequency_step_hz < boundaries_hz[i + 1])) ++bin;
+        while (bin < bins && (last ? double(bin+first_bin_) * frequency_step_hz <= boundaries_hz[i + 1] :
+                                    double(bin+first_bin_) * frequency_step_hz < boundaries_hz[i + 1])) ++bin;
         bands_[i] = {begin, bin};
         centers_[i] = boundaries_hz[i] + (boundaries_hz[i + 1] - boundaries_hz[i]) / 2;
     }
 
 }
+void BroadbandFeatures::allocate_bands(std::size_t count,bool flux) {
+    bands_.resize(count);centers_.resize(count);staging_.resize(count);
+    if(flux)previous_.resize(bins_);
+}
 bool BroadbandFeatures::prepare(std::size_t bins, double frequency_step_hz,
-    std::span<const double> boundaries_hz, BandStatistic statistic) {
+    std::span<const double> boundaries_hz, BandStatistic statistic,unsigned first_bin) {
     if (!valid_geometry(bins, frequency_step_hz) || !valid_statistic(statistic) ||
         boundaries_hz.size() < 2 || boundaries_hz.size() > maximum_bands + 1) return false;
-    if(!valid_band_boundaries(bins,frequency_step_hz,boundaries_hz))return false;
+    if(first_bin>1 || !valid_band_boundaries(bins,frequency_step_hz,boundaries_hz,first_bin))return false;
 
     BroadbandFeatures candidate;
     candidate.bins_ = bins;
+    candidate.first_bin_ = first_bin;
     candidate.step_ = frequency_step_hz;
     candidate.statistic_ = statistic;
     candidate.boundaries_.assign(boundaries_hz.begin(), boundaries_hz.end());
-    candidate.bands_.resize(boundaries_hz.size() - 1);
-    candidate.centers_.resize(candidate.bands_.size());
-    candidate.staging_.resize(candidate.bands_.size());
-    if (statistic == BandStatistic::Flux) candidate.previous_.resize(bins);
+    candidate.allocate_bands(boundaries_hz.size()-1,statistic==BandStatistic::Flux);
     // Compare actual bin centers rather than rounding frequency ratios near an
     // exact boundary. Each admitted bin belongs to at most one band.
     candidate.prepare_bands(bins,frequency_step_hz,boundaries_hz);
@@ -374,7 +376,7 @@ bool BroadbandFeatures::process(std::span<const float> power, std::span<float> o
 void BroadbandFeatures::reset() noexcept { has_previous_ = false; }
 
 bool BroadbandFeatures::copy_state_from(const BroadbandFeatures& other) noexcept {
-    if (!bins_ || bins_ != other.bins_ || step_ != other.step_ || statistic_ != other.statistic_ ||
+    if (!bins_ || bins_ != other.bins_ || first_bin_!=other.first_bin_ || step_ != other.step_ || statistic_ != other.statistic_ ||
         boundaries_ != other.boundaries_) return false;
     std::copy(other.previous_.begin(), other.previous_.end(), previous_.begin());
     has_previous_ = other.has_previous_;

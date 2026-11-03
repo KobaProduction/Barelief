@@ -33,7 +33,7 @@ std::string_view parameter_error(NodeKind kind,const WindowParameters& p) noexce
     return checked("size",within(kind,"size",p.size));
 }
 std::string_view parameter_error(NodeKind,const WindowFunctionParameters& p) noexcept {
-    return checked("function",p.function>=WindowFunction::Hann && p.function<=WindowFunction::FlatTop);
+    return checked("function",!signal_contracts::window_function_name(p.function).empty());
 }
 std::string_view test_signal_range_error(NodeKind kind,const TestSignalParameters& p) noexcept {
     if(!within(kind,"tones",p.tones))return "tones";

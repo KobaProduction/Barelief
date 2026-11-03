@@ -17,8 +17,8 @@ void encode_band_coordinates(State& state,std::span<const double> centers) {
 }
 Status prepare_broadband(OperationKernelState& kernel,PlanNode&,State& state,const ResolvedProcessingNode& node) {
     ProcessingParameterView supplied;
-    double bin_hz=0;
-    if(!numeric_parameter(node,"bin_hz",bin_hz) || bin_hz<=0 ||
+    double bin_hz=0,first_bin=0;
+    if(!numeric_parameter(node,"first_bin",first_bin) || !numeric_parameter(node,"bin_hz",bin_hz) || bin_hz<=0 ||
        resolve_processing_parameter(node,"boundaries_hz",supplied)!=Status::ok)return Status::invalid_argument;
     const auto* values=std::get_if<std::span<const float>>(&supplied);
     if(!values)return Status::invalid_argument;
@@ -29,7 +29,7 @@ Status prepare_broadband(OperationKernelState& kernel,PlanNode&,State& state,con
         mode=="maximum"?B::Maximum:mode=="flux"?B::Flux:B::SumEnergy;
     kernel.operation.emplace<dsp_kernels::BroadbandFeatures>();
     auto& feature=std::get<dsp_kernels::BroadbandFeatures>(kernel.operation);
-    if(!feature.prepare(kernel.input.size(),bin_hz,boundaries,statistic))return Status::invalid_argument;
+    if(!feature.prepare(kernel.input.size(),bin_hz,boundaries,statistic,unsigned(first_bin)))return Status::invalid_argument;
     encode_band_coordinates(state,feature.centers_hz());
     return Status::ok;
 }

@@ -235,7 +235,9 @@ constexpr NodeDescriptor nodes[]{
     {NodeKind::RhythmFeatures,"RhythmFeatures",NodeRole::Processor},
     {NodeKind::FrameBuffer,"FrameBuffer",NodeRole::Processor},
     {NodeKind::FrameStride,"FrameStride",NodeRole::Processor},
-    {NodeKind::FeatureAggregate,"FeatureAggregate",NodeRole::Processor}
+    {NodeKind::FeatureAggregate,"FeatureAggregate",NodeRole::Processor},
+    {NodeKind::CompactSpectrogramView,"CompactSpectrogramView",NodeRole::Sink,true},
+    {NodeKind::ClassicSpectrogramView,"ClassicSpectrogramView",NodeRole::Sink,true}
 };
 static_assert(std::size(nodes)==node_kind_count);
 bool configured_ports_valid(const NodeDefinition& node) noexcept {

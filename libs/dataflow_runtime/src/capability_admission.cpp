@@ -208,7 +208,7 @@ class ResourceAdmission {
     }
     bool transform_storage() noexcept {
         if(n.kind=="FrameStride")return true;
-        if(n.kind=="FrameBuffer")return get(n.inputs).dtype==DType::Float32 && numeric_add(out.resources.payload_bytes,std::size_t(get(n.outputs).shape.extents[0].maximum)*sizeof(float));
+        if(n.kind=="FrameBuffer")return (get(n.inputs).dtype==DType::Float32 || get(n.inputs).dtype==DType::Int16) && numeric_add(out.resources.payload_bytes,std::size_t(get(n.outputs).shape.extents[0].maximum)*(get(n.inputs).dtype==DType::Int16?sizeof(std::int16_t):sizeof(float)));
         return n.operation!=ProcessingOperation::Transform || n.kind=="Window" || numeric_float_dsp(n,out.resources);
     }
     bool operations() noexcept {
@@ -384,7 +384,22 @@ class FloatingAdmission {
         return input.dtype==DType::UInt32 && input.shape.rank==Rank::Scalar && output.dtype==DType::Float32 && dsp_kernels::PreparedWindows::storage_bytes(result,bytes) && numeric_add(resources.plan_bytes,sizeof(dsp_kernels::PreparedWindows)) && numeric_add(resources.payload_bytes,bytes);
     }
     bool representation() const noexcept {
+        if(n.kind=="PcmResampler") {
+            dsp_kernels::ResamplerConfig config;
+            if(!resampler_config(n,config))return false;
+            if(config.mode==dsp_kernels::ResamplerMode::SpeexDspQ15 && input.dtype!=DType::Int16)return false;
+        }
+        if(input.dtype==DType::Int16 && output.dtype==DType::Int16 &&
+           (n.kind=="Window" || n.kind=="PcmResampler"))return pcm16_representation();
         return input.dtype==DType::Float32 && output.dtype==DType::Float32 && input.representation.encoding==StorageEncoding::Native && input.representation.layout==ChannelLayout::Planar && !input.representation.valid_bits && (input.representation.normalization==Normalization::None || input.representation.normalization==Normalization::FloatUnit);
+    }
+    bool pcm16_representation() const noexcept {
+        if(input.representation.encoding!=StorageEncoding::Native || input.representation.layout!=ChannelLayout::Planar ||
+           input.representation.valid_bits || input.representation!=output.representation ||
+           (input.representation.normalization!=Normalization::None && input.representation.normalization!=Normalization::SignedUnit))return false;
+        if(n.kind=="Window")return true;
+        dsp_kernels::ResamplerConfig config;
+        return resampler_config(n,config) && (config.mode==dsp_kernels::ResamplerMode::SpeexDspQ15 || config.mode==dsp_kernels::ResamplerMode::Bypass);
     }
     bool SpectrumAmplitude() noexcept {
         return columns==result && planes==1;

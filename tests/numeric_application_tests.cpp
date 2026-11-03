@@ -1255,7 +1255,7 @@ static int current_reference(CoreApplication& app,MainWindow* window,SchemeEdito
     window->show();emit editor->graph_open_requested(10,0);emit editor->graph_open_requested(11,0);
     const bool delivered=wait_until([&]{return observation->received.load()==15;},6000);app.pipeline().unsubscribe_numeric_tap(tap);CHECK(delivered);
     CHECK(wait_until([&]{
-        unsigned ready=0;for(auto* dock:window->workspaceDocks()){
+        unsigned ready=0;const auto docks=window->workspaceDocks();for(auto* dock:docks){
             if(dock->property("graphNode").toInt()!=10 && dock->property("graphNode").toInt()!=11)continue;
             const auto* panel=qobject_cast<GraphPanel*>(dock->widget());if(panel&&panel->active_chart()&&panel->active_chart()->value_count()>0)++ready;
         }return ready==2;
@@ -1327,8 +1327,8 @@ static int startup_menu_locale(auto& locale,QComboBox*& language,QAction*& demo,
 
             language->setCurrentIndex(locale);QCoreApplication::processEvents();
             CHECK(demo->text()==ui::text("Spectrogram and rhythm: Loopback"));
-            CHECK(menu->title()==(locale==0?QString::fromUtf8("Пресеты"):QStringLiteral("Presets")));
-            CHECK(display_menu->title()==(locale==0?QString::fromUtf8("Отображение"):QStringLiteral("Display")));
+            CHECK(menu->title()==(locale==0?QString::fromUtf8("РџСЂРµСЃРµС‚С‹"):QStringLiteral("Presets")));
+            CHECK(display_menu->title()==(locale==0?QString::fromUtf8("РћС‚РѕР±СЂР°Р¶РµРЅРёРµ"):QStringLiteral("Display")));
 
 return 0;
 }
@@ -2543,11 +2543,12 @@ static int basic_menu_reset(CoreApplication& app,NumericEditorGraphModel* model,
     unsigned entries=0;
     const auto actions=window->findChildren<QAction*>();
     for(auto* action:actions)if(action->objectName().startsWith("example-"))++entries;
-    CHECK(entries==2);
-    auto* action=window->findChild<QAction*>("example-basic-signal");CHECK(action);
-    const auto revision=app.presenter().client().snapshot().graph_revision;action->trigger();
+    CHECK(entries==2 && !window->findChild<QAction*>("example-basic-signal"));
+    CHECK(window->findChild<QAction*>("example-reference-beat") && window->findChild<QAction*>("example-compact-spectrogram"));
+    auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
+    const auto revision=app.presenter().client().snapshot().graph_revision;emit editor->generator_loopback_graph_requested();
     CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>revision&&!app.presenter().graph_request_pending();},5000));
-    auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);emit editor->graph_open_requested(3,0);
+    emit editor->graph_open_requested(3,0);
     return basic_window_delivery(app,model,window,500);
 }
 static int scenario_basic_signal(const QString& path) {

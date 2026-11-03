@@ -26,6 +26,7 @@ constexpr auto normalizer=with_calibration_frontend(std::array{
     ParameterDescriptor{"manual_gain",C::Processing,V::Number,0,1000,1,{}},
     ParameterDescriptor{"gains",C::Processing,V::NumericArray,0,32768,0,{}}});
 constexpr ParameterDescriptor broad[]{
+        {"first_bin",C::Processing,V::Integer,0,1,0,{}},
         {"boundaries_hz",C::Processing,V::NumericArray,0,129,0,{},broadband_boundaries},
         {"statistic",C::Processing,V::String,0,0,0,"sum_energy"},
         {"bin_hz",C::Processing,V::Number,1e-9,4294967295.,1,{}}};

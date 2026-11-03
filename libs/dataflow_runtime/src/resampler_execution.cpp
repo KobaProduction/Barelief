@@ -3,6 +3,7 @@
 #include "preparation_support.h"
 #include "signal_time.h"
 #include <numeric>
+#include <cstring>
 namespace dataflow_runtime::detail {
 namespace {
 class ResamplerExecution {
@@ -18,10 +19,21 @@ class ResamplerExecution {
     std::size_t written=0;
     FrameStamp stamp;
     Status load_input() noexcept {
+        if(source.contract->dtype==DType::Int16)return load_pcm16();
         for(std::size_t plane=0;plane<source.planes.size();++plane)for(std::size_t column=0;column<columns;++column){
             float value=0;
             if(node.node.enabled){const auto status=load_element(source,{plane,column,0},value);if(status!=Status::ok)return status;}
             state.left[plane*input_stride+column]=value;
+        }
+        return Status::ok;
+    }
+    Status load_pcm16() noexcept {
+        for(std::size_t plane=0;plane<source.planes.size();++plane) {
+            const auto& layout=source.planes[plane];
+            for(std::size_t column=0;column<columns;++column) {
+                auto& value=state.left_pcm16[plane*input_stride+column];value=0;
+                if(node.node.enabled && !source.semantic_silence)std::memcpy(&value,source.storage.data()+layout.offset+column*layout.stride_bytes[0],sizeof(value));
+            }
         }
         return Status::ok;
     }
@@ -38,15 +50,29 @@ class ResamplerExecution {
     }
     Status process_input() noexcept {
         ordinal=resampler.produced();
-        if(!resampler.process(state.left,columns,input_stride,state.values,count,written)){state.pending_discontinuity=true;return Status::overflow;}
+        const bool success=source.contract->dtype==DType::Int16?
+            resampler.process_pcm16(state.left_pcm16,columns,input_stride,state.values_pcm16,count,written):
+            resampler.process(state.left,columns,input_stride,state.values,count,written);
+        if(!success){state.pending_discontinuity=true;return Status::overflow;}
         if(!resampler.advance_input(current.stamp.timestamp_ticks,columns)){resampler.reset();state.pending_discontinuity=true;return Status::overflow;}
         return Status::ok;
     }
     Status copy_output() noexcept {
         if(ordinal>std::uint64_t(INT64_MAX) || resampler.anchor_ticks()>INT64_MAX-std::int64_t(ordinal) || state.output_sequence==UINT64_MAX)return Status::overflow;
         output.actual[0]=written;
+        if(source.contract->dtype==DType::Int16)return copy_pcm16();
         for(std::size_t plane=0;plane<output.planes.size();++plane)for(std::size_t column=0;column<written;++column){
             const auto status=store_element(output,{plane,column,0},node.node.enabled?state.values[plane*count+column]:0.f);if(status!=Status::ok)return status;
+        }
+        return Status::ok;
+    }
+    Status copy_pcm16() noexcept {
+        for(std::size_t plane=0;plane<output.planes.size();++plane) {
+            const auto& layout=output.planes[plane];
+            for(std::size_t column=0;column<written;++column) {
+                const std::int16_t value=node.node.enabled?state.values_pcm16[plane*count+column]:0;
+                std::memcpy(output.storage.data()+layout.offset+column*layout.stride_bytes[0],&value,sizeof(value));
+            }
         }
         return Status::ok;
     }

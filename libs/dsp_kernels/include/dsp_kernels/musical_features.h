@@ -89,7 +89,8 @@ class MusicalSpectrogram {
 enum class BandStatistic { SumEnergy, MeanPower, Rms, Maximum, Flux };
 
 // Input is finite, nonnegative, one-sided coherent-corrected power, not PSD,
-// magnitude, dB or raw complex FFT. Uniform bin centers are k * frequency_step_hz.
+// magnitude, dB or raw complex FFT. Maximum also accepts calibrated amplitudes.
+// Uniform bin centers are (k + first_bin) * frequency_step_hz.
 // SumEnergy sums bin powers; MeanPower averages bin powers; Rms is sqrt(sum).
 // Maximum is the maximum bin power. Flux sums positive changes in bin power.
 // Bands are [low, high), with the final upper boundary inclusive. An empty band
@@ -98,7 +99,7 @@ enum class BandStatistic { SumEnergy, MeanPower, Rms, Maximum, Flux };
 class BroadbandFeatures {
   public:
     bool prepare(std::size_t bins, double frequency_step_hz,
-        std::span<const double> boundaries_hz, BandStatistic statistic);
+        std::span<const double> boundaries_hz, BandStatistic statistic, unsigned first_bin=0);
     bool process(std::span<const float> power, std::span<float> output,
         bool discontinuity = false) noexcept;
     void reset() noexcept;
@@ -108,9 +109,11 @@ class BroadbandFeatures {
   private:
     struct Band { std::size_t begin, end; };
     void prepare_bands(std::size_t,double,std::span<const double>);
+    void allocate_bands(std::size_t,bool);
     void accumulate_band(std::span<const float>,std::size_t,bool,bool,double&) const noexcept;
     bool process_band(std::span<const float>,std::size_t,bool,bool) noexcept;
     std::size_t bins_ = 0;
+    unsigned first_bin_ = 0;
     double step_ = 0;
     BandStatistic statistic_ = BandStatistic::SumEnergy;
     bool has_previous_ = false;

@@ -26,6 +26,7 @@ bool parameter_is_primary(const QString& kind,const QString& key) {
         {"AutocorrelationTempogram",{"window_length","sample_rate","hop_samples","normalization","center"}},
         {"SpectrumProjection",{"representation","normalize"}},{"AmplitudePhase",{"representation","normalize","positive_half"}},
         {"ArrayFill",{"value"}},{"ArrayMultiply",{"factorCount","operation"}},
+        {"Converter",{"output0Dtype","numericScaling"}},
         {"SpectrumPeak",{"bin_hz","first_bin"}},
         {"FrequencyNormalizer",{"mode","manual_gain"}},{"BroadbandFeatures",{"statistic","bin_hz"}},
         {"NoteSalience",{"notes","input_representation","first_bin","include_nyquist"}},
@@ -111,6 +112,7 @@ static const QMap<QString, const char *> titles{{"start_bpm","Preferred tempo, B
 {"input","Input contract"},{"grid","Frequency grid"},{"training","Training settings"},{"resampler","Resampler settings"},
 {"input_representation","Input representation"},{"peak_weight","Peak weighting"},{"power_bandwidth_hz","Power bandwidth, Hz"},
 {"power","Sum squared window coefficients"},
+{"window_coefficients","Window coefficients"},
 {"frontend_declared","Declared audio frontend"}, {"include_dc","Include DC"}, {"include_nyquist","Include Nyquist"},
 {"channel_policy","Channel policy"}, {"channel_index","Channel index"}, {"analysis_interval_num","Analysis interval numerator"}, {"analysis_interval_den","Analysis interval denominator"},
 {"resampler_mode","Resampling method"}, {"resampler_quality","Resampler quality"}, {"representation","Spectral representation"}, {"positive_half","One-sided spectrum (DC separate)"},
@@ -188,7 +190,7 @@ ParameterChoices representation_parameter_choices(const QString& kind,const QStr
 }
 ParameterChoices generic_parameter_choices(const QString& key) {
     if(key=="peak_weight")return {{"value","squared_value"},{"Input value","Squared input value"}};
-    if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top"}};
+    if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top","hann_periodic"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top","Periodic Hann"}};
     if(key=="radix")return {{"radix2","radix4"},{"Radix 2","Radix 4"}};
     if(key.endsWith("_reduction"))return {{"pass_through","mean","rms","weighted_mean","maximum"},{"Pass through bins","Arithmetic mean","RMS of spectral values","Weighted mean","Maximum"}};
     if(key=="channel_policy")return {{"mean","select"},{"Mean","Selected channel"}};

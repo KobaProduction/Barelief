@@ -3,6 +3,7 @@
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/scheme_editor/audio_node_model.h>
 #include <barelief/ui_text.h>
+#include <barelief/classic_spectrogram_colors.h>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <algorithm>
@@ -16,6 +17,23 @@ QJsonArray sections_for(const NumericExampleGraph& example,domain::NodeId view) 
         result.append(QJsonObject{{"label",QString::fromUtf8(section.label)},
             {"begin",qint64(section.begin)},{"count",qint64(section.count)}});
     return result;
+}
+void configure_compact_layout(QJsonObject& view,const NumericExampleGraph& example,domain::NodeId id) {
+    for(const auto& layout:example.compact_layouts)if(layout.view==id) {
+        QJsonArray boundaries;for(double value:layout.broadband_centers_hz)boundaries.append(value);
+        auto sections=sections_for(example,id);if(!sections.isEmpty())sections.removeLast();
+        view["compact_layout"]=QJsonObject{{"broadband_centers_hz",boundaries},{"first_midi",int(layout.first_midi)},{"broadband_sections",sections}};
+        view["minimum"]=0;view["maximum"]=255;view["auto_range"]=false;view["value_scale"]="linear";
+    }
+}
+void configure_research_surface(QJsonObject& view,const NumericExampleGraph& example) {
+    if(example.compact_layouts.empty() || view["kind"]!="AudioSurfaceView")return;
+    QJsonArray stops;
+    const auto colors=classicSpectrogramStops();
+    for(const auto& [position,color]:colors)stops.append(QJsonObject{{"position",position},{"color",color.name()}});
+    const QJsonObject options{{"gradient_stops",stops},{"y_range_mode","manual"},{"y_min",0},{"y_max",255}};
+    view["surface_override"]=QJsonObject{{"enabled",true},{"values",options}};
+    view["minimum"]=0;view["maximum"]=255;view["auto_range"]=false;view["value_scale"]="linear";
 }
 void apply_scalar_labels(NumericEditorGraphModel* model,const NumericExampleScalarNames& names) {
     auto* node=model->delegateModel<AudioNodeModel>(names.view);
@@ -58,6 +76,22 @@ void apply_node_label(NumericEditorGraphModel* model,const NumericExampleNodeNam
     else presentation["display_name"]=title;
     node->set_presentation(presentation);
 }
+void configure_research_modes(QJsonObject& view,std::string_view kind) {
+    if(kind=="CompactSpectrogramView")view["plot_modes"]=QJsonArray{"compact2d"};
+    if(kind=="ClassicSpectrogramView")view["plot_modes"]=QJsonArray{"classic2d"};
+}
+QJsonObject matrix_view_preferences(const NumericExampleGraph& example,const QString& device,const QString& graph,
+    const domain::ConfiguredProcessingNode& node) {
+    const auto id=node.id;
+        QJsonObject view{{"node",id},{"device",device},{"graph",graph},
+            {"kind",QString::fromStdString(node.kind)},{"instance",0},{"open",true},
+            {"plot_sections",sections_for(example,id)}};
+        const auto descriptor=presentation::plot_descriptor_preferences(
+            presentation::PlotDescriptor{{"image2d","surface3d"},{"Graphs","Audio","Signals"},true});
+        for(auto field=descriptor.begin();field!=descriptor.end();++field)view[field.key()]=field.value();
+        configure_compact_layout(view,example,id);configure_research_surface(view,example);
+        configure_research_modes(view,node.kind);return view;
+}
 }
 
 QJsonObject example_view_preferences(const NumericExampleGraph& example,const QString& device,const QString& graph) {
@@ -66,13 +100,7 @@ QJsonObject example_view_preferences(const NumericExampleGraph& example,const QS
         const auto node=std::find_if(example.graph.nodes.begin(),example.graph.nodes.end(),[=](const auto& value){return value.id==id;});
         if(node==example.graph.nodes.end())continue;
         const auto key=view_key(device,graph,id);
-        QJsonObject view{{"node",id},{"device",device},{"graph",graph},
-            {"kind",QString::fromStdString(node->kind)},{"instance",0},{"open",true},
-            {"plot_sections",sections_for(example,id)}};
-        const auto descriptor=presentation::plot_descriptor_preferences(
-            presentation::PlotDescriptor{{"image2d","surface3d"},{"Graphs","Audio","Signals"},true});
-        for(auto field=descriptor.begin();field!=descriptor.end();++field)view[field.key()]=field.value();
-        preferences[key]=view;
+        preferences[key]=matrix_view_preferences(example,device,graph,*node);
     }
     return preferences;
 }

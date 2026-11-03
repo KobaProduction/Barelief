@@ -25,8 +25,9 @@ void NodeParameterModel::appendConverterPolicy() {
 }
 void NodeParameterModel::appendConverterScaling() {
     const ConverterPolicy policy;
-    _field_section=Section::Additional;
+    _field_section=Section::Processing;
     choice("Scaling","numericScaling",{"Identity","Integer affine","Dyadic affine","PCM normalize","PCM denormalize","Binary64 affine"},[policy](const auto& node){return int(policy(node).scaling.mode);},[policy](auto& node,int value){policy(node).scaling.mode=ScaleMode(value);});
+    _field_section=Section::Additional;
     literal("Gain","numericGain",[policy](const auto& node){return policy(node).scaling.gain.numerator;},[policy](auto& node,auto value){policy(node).scaling.gain.numerator=value;});
     literal("Offset","numericOffset",[policy](const auto& node){return policy(node).scaling.offset.numerator;},[policy](auto& node,auto value){policy(node).scaling.offset.numerator=value;});
     appendConverterExponents();

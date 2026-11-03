@@ -44,8 +44,8 @@ int main(int argc,char** argv) {
     QCoreApplication application(argc,argv);
     try {
         const auto examples=numeric_example_graphs();
-        transport_fixture::require(examples.size()==2&&std::string_view(examples.front().id)=="basic-signal"&&std::string_view(examples.back().id)=="reference-beat","basic default and one reference pipeline");
-        transport_fixture::require(basic_signal_probe::graph_is_basic(examples.front().graph,500),"basic default is three nodes and N500");
+        transport_fixture::require(examples.size()==2&&std::string_view(examples.front().id)=="reference-beat"&&std::string_view(examples.back().id)=="compact-spectrogram","only the rhythm and compact spectrogram presets");
+        transport_fixture::require(basic_signal_probe::graph_is_basic(numeric_startup_example().graph,500),"basic default is three nodes and N500");
         for(const auto size:{1,10,200,500,1024})verify_basic_window(size);
         verify_live_reference();
         std::puts("Basic default plus one reference preset; arbitrary Window sizes, exact samples and progress PASS");return 0;

@@ -5,6 +5,7 @@ add_library(desktop_numeric_defaults STATIC
     src/numeric_reference_beat_graph.cpp
     src/numeric_rhythm_graph.cpp
     src/numeric_music_graph.cpp)
+target_sources(desktop_numeric_defaults PRIVATE src/numeric_compact_spectrogram_graph.cpp)
 set_target_properties(desktop_numeric_defaults PROPERTIES
     AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 target_compile_features(desktop_numeric_defaults PUBLIC cxx_std_20)

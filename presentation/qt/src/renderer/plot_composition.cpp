@@ -5,7 +5,7 @@ namespace presentation {
 namespace {
 QStringList preferred_plot_modes(const QJsonArray& modes) {
     QStringList selected;
-    const QStringList supported{"line","points","bars","pie","image2d","surface3d","piano","metrics","signedbar"};
+    const QStringList supported{"line","points","bars","pie","image2d","surface3d","compact2d","classic2d","piano","metrics","signedbar"};
     for(const auto& mode:modes)if(mode.isString() && supported.contains(mode.toString()) && !selected.contains(mode.toString()))
         selected.append(mode.toString());
     return selected;

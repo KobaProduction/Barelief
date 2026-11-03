@@ -64,6 +64,17 @@ Pane {
                 onActivated: (index) => root.presentation.selectMode(model[index])
             }
             ColumnLayout {
+                visible: root.presentation.displayMode === "compact2d" || root.presentation.displayMode === "classic2d"
+                Layout.fillWidth: true
+                Label { text: root.tr("Time direction") }
+                CompactComboBox {
+                    Layout.fillWidth: true
+                    model: [root.tr("Bottom to top"), root.tr("Left to right")]
+                    currentIndex: root.presentation.preferences.spectrogram_orientation === "horizontal" ? 1 : 0
+                    onActivated: function(index) { root.presentation.changePreference("spectrogram_orientation", index === 1 ? "horizontal" : "vertical") }
+                }
+            }
+            ColumnLayout {
                 visible: root.presentation.modes.indexOf("image2d") >= 0
                 Layout.fillWidth: true
                 spacing: 4
@@ -87,7 +98,7 @@ Pane {
                 }
             }
             ColumnLayout {
-                visible: root.presentation.audioScales && root.presentation.displayMode !== "piano" && root.presentation.displayMode !== "metrics" && root.presentation.displayMode !== "signedbar" && root.presentation.displayMode !== "pie"
+                visible: root.presentation.audioScales && root.presentation.displayMode !== "compact2d" && root.presentation.displayMode !== "classic2d" && root.presentation.displayMode !== "piano" && root.presentation.displayMode !== "metrics" && root.presentation.displayMode !== "signedbar" && root.presentation.displayMode !== "pie"
                 Layout.fillWidth: true
                 CompactButton {
                     objectName: "valueScaleMenu"

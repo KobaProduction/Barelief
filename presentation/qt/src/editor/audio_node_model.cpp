@@ -1175,6 +1175,8 @@ QString static_node_caption(const QString& kind) {
         {"AudioPointView","Audio point graph"},
         {"AudioBarView","Audio bar graph"},
         {"AudioPieView","Audio pie graph"},
+        {"ClassicSpectrogramView","Classical spectrogram 2D"},
+        {"CompactSpectrogramView","Compact spectrogram 2D: frequencies and notes"},
         {"AudioImageView","2D spectrogram"},
         {"AudioSurfaceView","3D spectrogram"},
         {"WLEDEncode","WLED packet encoder"},

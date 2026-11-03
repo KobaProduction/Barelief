@@ -107,7 +107,7 @@ Rectangle {
             model: root.axes.xTicks || []
             Text {
                 required property var modelData
-                x: modelData.position*plot.width-width/2; y: plot.height+5
+                x: Math.max(4-plot.x,Math.min(modelData.position*plot.width-width/2,root.width-plot.x-width-4)); y: plot.height+5
                 text: modelData.text; color: root.colors.text; textFormat: Text.PlainText
             }
         }

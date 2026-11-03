@@ -239,6 +239,7 @@ class StateRefresh {
     void copy_window(const Frame& frame) const noexcept {
         auto& next=frame.next;const auto& before=frame.before;
         if(next.pcm.size()==before.pcm.size())std::copy(before.pcm.begin(),before.pcm.end(),next.pcm.begin());
+        if(next.pcm16.size()==before.pcm16.size())std::copy(before.pcm16.begin(),before.pcm16.end(),next.pcm16.begin());
         if(frame.node.operation==ProcessingOperation::Mixer && !same_interval){next.progress=next.hop=0;next.remainder=0;next.pending_discontinuity=true;}
     }
     static bool needs_history_resize(const Frame& frame) noexcept {

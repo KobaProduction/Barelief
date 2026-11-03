@@ -1,8 +1,12 @@
 /* Standalone build of unmodified SpeexDSP 1.2.1 resample.c. See vendor/COPYING.
    Local extensions expose bounded state transfer and exact allocated payload. */
 #define OUTSIDE_SPEEX
+#ifndef FIXED_POINT
 #define FLOATING_POINT
+#endif
+#ifndef RANDOM_PREFIX
 #define RANDOM_PREFIX qtvis_speex
+#endif
 /* Count the vendor's own allocation calls as well as C++ allocations in the
    addressable hot-path regression. Relaxed counters add no allocation. */
 #include <stdlib.h>

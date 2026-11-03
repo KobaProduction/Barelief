@@ -26,4 +26,8 @@ signal_contracts::Status resolve_preparation_vector(const NumericProcessingGraph
 // changed_node seeds downstream contract derivation after a local parameter edit.
 ProcessingDiagnostic resolve_numeric_parameter_bindings(const NumericProcessingGraph&,
     const ProcessingAdmissionLimits&,NumericProcessingGraph& evaluated,NumericProcessingGraph& executable_graph,NodeId changed_node=-1,const PreparationValueProvider* provider=nullptr);
+// Derive editable contracts while retaining unrelated incompatible draft edges.
+ProcessingDiagnostic derive_numeric_draft_contracts(const NumericProcessingGraph&,
+    const ProcessingAdmissionLimits&,NumericProcessingGraph& evaluated,NodeId changed_node=-1);
+
 }

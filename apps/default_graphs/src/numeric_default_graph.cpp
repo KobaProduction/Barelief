@@ -334,7 +334,7 @@ NumericExampleGraph numeric_startup_example() {
     return result;
 }
 std::vector<NumericExampleGraph> numeric_example_graphs() {
-    return {numeric_startup_example(),numeric_reference_beat_example()};
+    return {numeric_reference_beat_example(),numeric_compact_spectrogram_example()};
 }
 std::vector<NumericExampleGraph> numeric_fixture_examples() {
     std::vector<NumericExampleGraph> result{

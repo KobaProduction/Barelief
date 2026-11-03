@@ -1,6 +1,6 @@
 # SpeexDSP resampler source
 
-`resample.c`, `arch.h`, `speex_resampler.h` and `COPYING` are unmodified files
+`resample.c`, `arch.h`, `fixed_generic.h`, `speex_resampler.h` and `COPYING` are unmodified files
 from Xiph SpeexDSP tag `SpeexDSP-1.2.1`:
 https://github.com/xiph/speexdsp/tree/SpeexDSP-1.2.1
 
@@ -13,4 +13,7 @@ with `OUTSIDE_SPEEX`, `FLOATING_POINT`, and prefix `qtvis_speex`; no SIMD or
 platform implementation is selected. The bridge adds compatible prepared state
 copy and allocation size inspection without modifying the vendor source.
 Only prepare allocates; process/reset/state-copy do not change rate or quality.
+`../speex_q15_bridge.c` compiles the same source with `FIXED_POINT` and the
+separate `qtvis_speex_q15` prefix. Its backend accepts native PCM16 packets;
+the Float32 processing interface does not implicitly change precision.
 The portable SDK does not compile or link this implementation.

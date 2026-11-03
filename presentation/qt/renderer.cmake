@@ -1,4 +1,5 @@
 add_library(barelief STATIC)
+target_sources(barelief PRIVATE src/renderer/compact_spectrogram_view.cpp include/barelief/compact_spectrogram_view.h include/barelief/classic_spectrogram_view.h)
 add_library(qt_touchpad_input STATIC ${CMAKE_CURRENT_LIST_DIR}/src/editor/touchpad_input.cpp)
 target_include_directories(qt_touchpad_input PUBLIC ${CMAKE_SOURCE_DIR}/presentation/qt/include)
 target_link_libraries(qt_touchpad_input PUBLIC Qt6::Widgets)

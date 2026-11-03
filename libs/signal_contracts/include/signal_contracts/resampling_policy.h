@@ -3,13 +3,14 @@
 #include <span>
 #include <string_view>
 namespace signal_contracts {
-enum class ResamplerMode { Bypass, ExistingFir, CompactFir, SpeexDsp, IirExperimental, LinearDiagnostic };
+enum class ResamplerMode { Bypass, ExistingFir, CompactFir, SpeexDsp, IirExperimental, LinearDiagnostic, SpeexDspQ15 };
 struct ResamplerPolicy {ResamplerMode mode;std::string_view id;};
 inline constexpr std::array resampler_policy_registry{
     ResamplerPolicy{ResamplerMode::Bypass,"bypass"},
     ResamplerPolicy{ResamplerMode::ExistingFir,"existing_fir"},
     ResamplerPolicy{ResamplerMode::CompactFir,"compact_fir"},
     ResamplerPolicy{ResamplerMode::SpeexDsp,"speex"},
+    ResamplerPolicy{ResamplerMode::SpeexDspQ15,"speex_q15"},
     ResamplerPolicy{ResamplerMode::IirExperimental,"iir"},
     ResamplerPolicy{ResamplerMode::LinearDiagnostic,"linear"}};
 inline std::span<const ResamplerPolicy> resampler_policies() noexcept {return resampler_policy_registry;}

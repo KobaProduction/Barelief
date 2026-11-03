@@ -145,5 +145,5 @@ NumericExampleGraph numeric_reference_beat_example(std::uint32_t rate) {
     const auto frames=std::size_t(rate)*8/512+1;
     examples::Builder b({rate,2048,512,400});b.graph.graph_id="reference-beat";
     spectral_frames(b);power_mel(b,rate);onset_history(b,frames);tempo(b,rate,frames);tracker(b,rate,frames);views(b);route_controls(b);route_data(b);
-    NumericExampleGraph graph{"reference-beat","Rhythm: streaming spectral pipeline",b.finish()};layout(graph);return graph;
+    NumericExampleGraph graph{"reference-beat","Rhythm analysis: librosa",b.finish()};layout(graph);return graph;
 }

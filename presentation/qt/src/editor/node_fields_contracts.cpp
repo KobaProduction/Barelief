@@ -63,6 +63,10 @@ void NodeParameterModel::appendContractDtype(domain::PortDirection direction,dom
     choice(direction==domain::PortDirection::Input?"Input dtype":"Output dtype",binding.prefix()+"Dtype",names,
         [binding](const auto& node){return binding.dtype(node);},
         [binding](auto& node,int value){if(!numeric_editor::set_dtype(node,binding.direction,binding.id,signal_contracts::DType(value)))throw std::invalid_argument("dtype");});
+    if(_node.kind=="Converter" && direction==PortDirection::Output) {
+        _fields.back().section=Section::Processing;
+        _fields.back().hide_inline=false;
+    }
 }
 void NodeParameterModel::appendContractShape(domain::PortDirection direction,domain::PortId id) {
     const ContractBinding binding{direction,id};

@@ -266,13 +266,17 @@ Rank view_rank(NodeKind kind) noexcept {
     switch(kind) {
     case NodeKind::ScalarView:case NodeKind::ScalarMetricsView:case NodeKind::ScalarSignedBarView:return Rank::Scalar;
     case NodeKind::SpectrogramView:case NodeKind::MatrixImageView:case NodeKind::MatrixSurfaceView:
-    case NodeKind::AudioImageView:case NodeKind::AudioSurfaceView:return Rank::Matrix;
+    case NodeKind::AudioImageView:case NodeKind::AudioSurfaceView:case NodeKind::CompactSpectrogramView:case NodeKind::ClassicSpectrogramView:return Rank::Matrix;
     default:return Rank::Vector;
     }
 }
 bool audio_vector_view(NodeKind kind) noexcept {
     return kind==NodeKind::AudioLineView || kind==NodeKind::AudioPointView
         || kind==NodeKind::AudioBarView || kind==NodeKind::AudioPieView;
+}
+bool compact_view_contract(const NumericContract& value) noexcept {
+    return value.dtype==DType::UInt8 && value.semantic==Semantic::History && value.channel_order.size()==1
+        && value.shape.extents[0].maximum<=512 && value.shape.extents[1]==ExtentBounds{96,96};
 }
 ProcessingDiagnostic validate_view_port(const OperationValidation& context,const ProcessingPort& port,NodeKind kind,Rank rank) {
         const auto data=port.contract.view();const auto* numeric=std::get_if<NumericContract>(&data);
@@ -282,6 +286,7 @@ ProcessingDiagnostic validate_view_port(const OperationValidation& context,const
             && numeric->shape.rank==Rank::Scalar && numeric->channel_order.size()==1;
         if(numeric->shape.rank!=rank && !scalar_frequency)return context.error(ProcessingError::InvalidContract,port.id);
         if(rank==Rank::Scalar && numeric->channel_order.size()!=1)return context.error(ProcessingError::InvalidContract,port.id);
+        if(kind==NodeKind::CompactSpectrogramView && !compact_view_contract(*numeric))return context.error(ProcessingError::InvalidContract,port.id);
     return {};
 }
 ProcessingDiagnostic validate_view_inputs(const OperationValidation& context) {
@@ -699,7 +704,7 @@ ProcessingDiagnostic validate_weighted_transform(const OperationValidation& cont
 }
 ProcessingDiagnostic validate_transform_processing(const OperationValidation& context) noexcept {
     if(context.kind==NodeKind::FrameStride)return same_physical_contract(context.incoming,context.outgoing)?ProcessingDiagnostic{}:context.error(ProcessingError::IncompatiblePorts);
-    if(context.kind==NodeKind::FrameBuffer && context.input->dtype!=DType::Float32)return context.error(ProcessingError::InvalidContract);
+    if(context.kind==NodeKind::FrameBuffer && context.input->dtype!=DType::Float32 && context.input->dtype!=DType::Int16)return context.error(ProcessingError::InvalidContract);
     const auto geometry=validate_transform_geometry(context);if(!geometry)return geometry;
     if(context.kind==NodeKind::Window || context.kind==NodeKind::FrameBuffer)return validate_buffer_size(context);
     if(context.kind==NodeKind::PcmResampler)return validate_resampler(context);

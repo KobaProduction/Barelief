@@ -207,12 +207,25 @@ void initialize_number_accumulator(Factory& f) {
     auto count=f.scalar(DType::UInt64,NumericUnit::Frames);count.clock=input.clock;count.quantity=Quantity::FilledFrameCount;
     f.port(PortDirection::Output,1,count);
 }
+void initialize_compact_view(NumericContract& input);
 void initialize_history_view(Factory& f,std::string_view kind,NumericContract& input) {
+    if(kind=="CompactSpectrogramView" || kind=="ClassicSpectrogramView")initialize_compact_view(input);
+    if(kind=="ClassicSpectrogramView")input.shape.extents={ExtentBounds{0,64},ExtentBounds{2048,2048}};
     if(kind=="SpectrogramView") {
         input.semantic=Semantic::History;input.history_element=Semantic::Numeric;input.shape.rank=Rank::Matrix;
         input.shape.axes={Axis::Time,Axis::Band};input.shape.extents={ExtentBounds{0,f.settings.history_capacity},ExtentBounds{50,50}};
         input.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
     }
+}
+void initialize_compact_view(NumericContract& input) {
+    input.dtype=DType::UInt8;input.representation.alignment=1;
+    input.semantic=Semantic::History;input.history_element=Semantic::Numeric;
+    input.shape={Rank::Matrix,{Axis::Time,Axis::Band},{ExtentBounds{0,512},ExtentBounds{96,96}}};
+    input.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
+}
+void initialize_matrix_input(NumericContract& input) {
+    input.shape.rank=Rank::Matrix;input.shape.axes={Axis::Sample,Axis::Component};
+    input.shape.extents={ExtentBounds{16,16},ExtentBounds{16,16}};
 }
 NumericContract view_input(Factory& f,std::string_view kind) {
     auto input=f.vector(Semantic::Numeric,f.settings.packet_samples);
@@ -220,11 +233,7 @@ NumericContract view_input(Factory& f,std::string_view kind) {
     if(kind=="FFTView")input=f.spectrum();
     if(kind=="MelView")input=f.vector(Semantic::MelEnergy,50,Axis::Band);
     if(kind=="WindowView" || kind=="WindowedView")input=f.vector(kind=="WindowView"?Semantic::Window:Semantic::Windowed,f.settings.fft_size);
-    if(one_of(kind,{"MatrixImageView","MatrixSurfaceView","AudioImageView","AudioSurfaceView"})) {
-        input.shape.rank=Rank::Matrix;
-        input.shape.axes={Axis::Sample,Axis::Component};
-        input.shape.extents={ExtentBounds{16,16},ExtentBounds{16,16}};
-    }
+    if(one_of(kind,{"MatrixImageView","MatrixSurfaceView","AudioImageView","AudioSurfaceView","CompactSpectrogramView"}))initialize_matrix_input(input);
     initialize_history_view(f,kind,input);
     return input;
 }

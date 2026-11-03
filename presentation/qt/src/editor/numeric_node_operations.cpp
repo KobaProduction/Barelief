@@ -132,10 +132,17 @@ bool bind_target_clock(ConfiguredProcessingNode& node,const ClockContract& clock
         if(own_processing_contract(data,limits().frame,limits().max_owned_metadata_bytes,p.contract)!=Status::ok)return false;}
     return true;
 }
+namespace {
+bool converter_dtype(NumericContract& numeric,DType type) {
+    const auto* dtype=dtype_descriptor(type);if(!dtype)return false;
+    numeric.representation={};numeric.representation.alignment=dtype->alignment;return true;
+}
+}
 bool set_dtype(ConfiguredProcessingNode& n,PortDirection direction,PortId id,DType type) {
     auto& ports=direction==PortDirection::Input?n.inputs:n.outputs;
     auto it=std::find_if(ports.begin(),ports.end(),[&](const auto& p){return p.id==id;});if(it==ports.end() || !it->contract)return false;
     auto c=it->contract.view();auto* numeric=std::get_if<NumericContract>(&c);if(!numeric)return false;numeric->dtype=type;
+    if(n.kind=="Converter" && direction==PortDirection::Output && !converter_dtype(*numeric,type))return false;
     return set_contract(n,direction,id,c);
 }
 namespace {
