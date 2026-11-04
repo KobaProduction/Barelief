@@ -63,8 +63,7 @@ bool zero_bytes(const NumericContract& c) noexcept {
 }
 Status allocate_numeric_storage(const NumericContract& contract,NumericBuffer& buffer,std::size_t bytes,
                                 const std::shared_ptr<const std::vector<std::byte>>& shared) {
-    if(shared && zero_bytes(contract)) {
-        if(bytes>shared->size())return Status::exhausted;
+    if(shared && zero_bytes(contract) && bytes<=shared->size()) {
         buffer.silence=shared;buffer.silence_bytes=bytes;
     }else if(contract.dtype==DType::Float32 && contract.representation.encoding==StorageEncoding::Native)
         buffer.floats.resize(bytes/sizeof(float));

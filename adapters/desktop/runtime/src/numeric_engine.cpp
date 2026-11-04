@@ -38,9 +38,9 @@ dataflow_runtime::NumericRuntimeProfile desktop_profile() {
         +HistorySnapshotArena::slot_count*(HistorySnapshotArena::payload_bytes+HistorySnapshotArena::metadata_bytes)
         +(384+48)*1024*1024+remote_numeric::ControlTransportReservationBytes;
     auto profile=dataflow_runtime::NumericRuntimeProfile{{512,2048,16,32,1024*1024,4*1024*1024,frame_limits},
-        {{16*1024*1024,32*1024*1024,16*1024*1024,1024*1024},fixed,576*1024*1024+remote_numeric::ControlTransportReservationBytes},
+        {{desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::payload_bytes,1024*1024},fixed,desktop::NumericFrameBudget::payload_bytes},
         {32768,8,262144,262144,16*1024*1024},{true,true,true},true};
-    profile.music_enabled=true;
+    profile.music_enabled=true;profile.shared_silence_bytes=0;
     profile.experimental_resampling_enabled=true;
     profile.resampler_backend=&desktop_resampling::speex_backend_factory();
     profile.monotonic_nanoseconds=[](void*) noexcept -> std::uint64_t {
@@ -261,10 +261,17 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         }
         return true;
     }
+    Status retained_platform_storage(dataflow_runtime::GraphExecutor::PreparationBase& base,std::size_t& bytes) {
+        std::lock_guard lock(mutex);base=executor.snapshot_preparation_base();bytes=ingress.working_capture_bytes;
+        const auto snapshots=delivery.history_snapshot_arena->extra_bytes();
+        if(snapshots>SIZE_MAX-bytes)return Status::overflow;
+        bytes+=snapshots;return Status::ok;
+    }
     Status prepare_capture_limits(const domain::NumericProcessingGraph& graph,
         dataflow_runtime::GraphExecutor::PreparationBase& base,application::NumericRuntimeLimits& limits) {
         std::size_t retained_capture_bytes=0;
-        {std::lock_guard lock(mutex);base=executor.snapshot_preparation_base();retained_capture_bytes=ingress.working_capture_bytes;}
+        const auto retained_status=retained_platform_storage(base,retained_capture_bytes);
+        if(retained_status!=Status::ok)return retained_status;
         std::size_t candidate_capture_bytes=0;
         const auto status=ingress.capture_reservation(graph,candidate_capture_bytes);
         if(status!=Status::ok)return status;
@@ -314,8 +321,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
     Status retain_history_query(const DataFrameView& borrowed,DeliveredNumericFrame& candidate) {
         Status retained;
         {core::perf::Scope copy(core::perf::Stage::NumericQueryCopy);
-            retained=retain_frame(borrowed,frame_limits,delivery.history_snapshot_arena->payload_pool,
-                                  delivery.history_snapshot_arena->metadata_pool,candidate.frame);}
+            retained=delivery.history_snapshot_arena->retain(borrowed,frame_limits,candidate.frame);}
         return retained;
     }
     Status retain_history_result(DataFrameView borrowed,const std::shared_ptr<const NumericDeliveryContext>& context,

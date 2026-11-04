@@ -18,9 +18,9 @@ Status SourceIngress::process(domain::NodeId node,const DataFrameView& frame,dom
 void SourceIngress::clear() {working_capture_bytes=0;inputs.clear();clocks.clear();external_inputs.clear();}
 Status SourceIngress::emit_input(CaptureInput& input) {
         core::perf::Scope input_trace(core::perf::Stage::NumericInputProcess);
-        NumericView numeric{&input.contract,input.bytes,input.planes,{input.block,1}};
         if(input.sequence==UINT64_MAX){input.gap=true;input.filled=0;return Status::overflow;}
         const auto stamp=input_stamp(input);
+        NumericView numeric{&input.contract,input.bytes,input.planes,{std::size_t(stamp.sample_count),1}};
         const auto result=process(input.node,{stamp,numeric},input.port);
         // A descendant can reject its own computation after this PCM packet
         // was accepted and delivered to other branches. Its error is not a
@@ -33,7 +33,7 @@ Status SourceIngress::emit_input(CaptureInput& input) {
 FrameStamp SourceIngress::input_stamp(CaptureInput& input) const {
     FrameStamp stamp;stamp.sequence=stamp.source_sequence=++input.sequence;stamp.generation=input.generation;
     stamp.epoch=state.epoch;stamp.producer_epoch=input.producer_epoch;stamp.graph_revision=state.graph_revision;
-    stamp.timestamp_ticks=input.ticks;stamp.sample_begin=input.ticks;stamp.sample_count=input.block;
+    stamp.timestamp_ticks=input.ticks;stamp.sample_begin=input.ticks;stamp.sample_count=input.filled?input.filled:input.block;
     stamp.has_sample_interval=true;stamp.discontinuity=input.gap;
     return stamp;
 }
@@ -136,6 +136,9 @@ void SourceIngress::drain_capture_packets(CaptureInput& input) {
         remaining-=written;
         append_capture_samples(input,written,accepted);
     }
+    // The maximum reserves capacity; variable-size contracts do not require
+    // another packet before available samples may enter the prepared graph.
+    if(input.filled && input.filled>=input.contract.shape.extents[0].minimum)emit_input(input);
 }
 void SourceIngress::note_external(domain::NodeId node,const DataFrameView& frame,Status status) {
         const auto found=external_inputs.find(node);if(found==external_inputs.end() || (status!=Status::ok && status!=Status::unavailable))return;

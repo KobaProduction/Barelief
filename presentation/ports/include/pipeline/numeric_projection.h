@@ -252,6 +252,8 @@ class HistoryPresentation {
         std::vector<RowTime> times;
         std::vector<double> coordinates;
         std::size_t loss_count=0;
+        signal_contracts::BorrowedNumericRows byte_rows;
+        std::vector<signal_contracts::PlaneLayout> byte_planes;
     };
 public:
     explicit HistoryPresentation(HistoryPresentationLimits limits):limits_(limits){}
@@ -277,7 +279,7 @@ public:
     }
     void clear() noexcept {
         clear_rows();context_.reset();capacity_=columns_=0;fence_seen_=false;authoritative_snapshot_=false;
-        ring_.clear();row_losses_.clear();row_times_.clear();staged_row_.clear();explicit_columns_.clear();
+        ring_.clear();row_losses_.clear();row_times_.clear();staged_row_.clear();explicit_columns_.clear();staged_snapshot_values_.clear();
     }
     std::size_t size() const noexcept{return count_;}
     std::size_t capacity() const noexcept{return capacity_;}
@@ -318,9 +320,11 @@ private:
         auto status=snapshot_geometry(snapshot,filled_count,plane,geometry);
         if(status!=Status::ok)return status;
         SnapshotProjection projection;
+        projection.values.swap(staged_snapshot_values_);
         status=project_snapshot(snapshot,geometry,plane,ordinal,projection);
-        if(status!=Status::ok)return status;
+        if(status!=Status::ok){staged_snapshot_values_.swap(projection.values);return status;}
         install_snapshot_storage(projection,geometry);
+        staged_snapshot_values_.swap(projection.values);
         install_snapshot_delivery(input,snapshot.frame.stamp,plane,ordinal,filled_count,projection.loss_count);
         return available_?Status::ok:Status::unavailable;
     }
@@ -624,6 +628,36 @@ private:
         }
         return Status::ok;
     }
+    static Status prepare_byte_rows(const signal_contracts::NumericView& numeric,SnapshotProjection& projection) {
+        if(numeric.contract->dtype!=signal_contracts::DType::UInt8 || numeric.contract->representation.valid_bits)return Status::ok;
+        const auto status=projection.byte_rows.prepare(numeric);
+        if(status==Status::ok)projection.byte_planes.resize(numeric.planes.size());
+        return status;
+    }
+    static Status project_byte_silence(const signal_contracts::NumericView& values,std::size_t plane,std::span<float> destination) {
+        std::uint8_t silence=0;
+        const auto status=signal_contracts::load_element(values,{plane,0,0},silence);
+        if(status==Status::ok)std::fill(destination.begin(),destination.end(),float(silence));
+        return status;
+    }
+    static void project_byte_values(const std::byte* bytes,std::size_t stride,std::span<float> destination) {
+        if(stride==1) {
+            std::transform(bytes,bytes+destination.size(),destination.begin(),[](std::byte value){return float(std::to_integer<std::uint8_t>(value));});
+            return;
+        }
+        for(std::size_t column=0;column<destination.size();++column)
+            destination[column]=float(std::to_integer<std::uint8_t>(bytes[column*stride]));
+    }
+    static Status project_byte_row(SnapshotProjection& projection,std::size_t plane,std::size_t row,std::span<float> destination) {
+        signal_contracts::NumericView values;
+        signal_contracts::NumericContract contract;
+        const auto status=projection.byte_rows.read(row,values,contract,projection.byte_planes);
+        if(status!=Status::ok)return status;
+        if(values.semantic_silence)return project_byte_silence(values,plane,destination);
+        const auto& layout=values.planes[plane];
+        project_byte_values(values.storage.data()+layout.offset,layout.stride_bytes[0],destination);
+        return Status::ok;
+    }
     static Status regular_row_coordinate(const signal_contracts::AxisCoordinates& axis,std::size_t row,RowTime& time) {
         if(!axis.origin.denominator || !axis.step.denominator)return Status::malformed;
         const double value=double(axis.origin.numerator)/axis.origin.denominator+double(row)*axis.step.numerator/axis.step.denominator;
@@ -646,7 +680,8 @@ private:
         std::uint64_t ordinal,std::size_t row,SnapshotProjection& projection) const {
         bool loss=false;
         const auto destination=std::span(projection.values).subspan(row*geometry.columns,geometry.columns);
-        const auto status=project_snapshot_values(snapshot.numeric(),plane,row,destination,loss);
+        const auto status=projection.byte_planes.empty()?project_snapshot_values(snapshot.numeric(),plane,row,destination,loss):
+            project_byte_row(projection,plane,row,destination);
         if(status!=Status::ok)return status;
         projection.losses[row]=loss;
         projection.loss_count+=loss;
@@ -673,7 +708,9 @@ private:
     }
     Status project_snapshot(const SnapshotInput& snapshot,const SnapshotGeometry& geometry,std::size_t plane,
         std::uint64_t ordinal,SnapshotProjection& projection) const {
-        projection.values.assign(std::size_t(geometry.capacity*geometry.columns),0.f);
+        const auto prepared=prepare_byte_rows(snapshot.numeric(),projection);
+        if(prepared!=Status::ok)return prepared;
+        projection.values.resize(std::size_t(geometry.capacity*geometry.columns));
         projection.losses.assign(std::size_t(geometry.capacity),false);
         projection.times.assign(std::size_t(geometry.capacity),RowTime{});
         const auto status=project_snapshot_rows(snapshot,geometry,plane,ordinal,projection);
@@ -761,6 +798,7 @@ private:
     std::shared_ptr<const NumericDeliveryContext> context_;
     std::vector<float> ring_;
     std::vector<float> staged_row_;
+    std::vector<float> staged_snapshot_values_;
     std::vector<bool> row_losses_;
     std::vector<RowTime> row_times_;
     std::vector<double> explicit_columns_;

@@ -140,7 +140,7 @@ class ResourceAdmission {
         if(!numeric_metadata(contract))return false;
         std::size_t bytes=0,stride=0,plane=0;std::array<std::size_t,2> shape;
         if(!numeric_geometry(contract,bytes,stride,plane,shape) || bytes>p.admission.frame.max_payload_bytes)return false;
-        const bool shared_zero=zero_bytes(contract) && (port.direction==PortDirection::Input || (n.operation==ProcessingOperation::Source && n.kind!="SignalGenerator" && !numeric_constant_kind(n.kind)));
+        const bool shared_zero=zero_bytes(contract) && bytes<=shared_silence_capacity(p) && (port.direction==PortDirection::Input || (n.operation==ProcessingOperation::Source && n.kind!="SignalGenerator" && !numeric_constant_kind(n.kind)));
         // Inline input objects are charged by endpoints(); output vectors own objects.
         return (shared_zero || numeric_add(out.resources.payload_bytes,bytes)) && numeric_add(out.resources.plan_bytes,contract.channel_order.size()*sizeof(PlaneLayout)) && output_objects(port);
     }
@@ -226,10 +226,19 @@ class ResourceAdmission {
 
         return true;
     }
+    bool history_source_metadata() noexcept {
+        const NumericGatherRequest request{get(n.outputs),{},
+            {p.admission.frame,p.admission.frame.max_payload_bytes,p.admission.frame.max_metadata_bytes,p.admission.frame.max_payload_bytes},false};
+        NumericGatherRequirements required;
+        return numeric_gather_requirements(request,required)==Status::ok &&
+            numeric_add(out.resources.plan_bytes,required.plan_metadata_bytes) &&
+            numeric_add(out.resources.plan_bytes,required.output_metadata_bytes) &&
+            numeric_add(out.resources.plan_bytes,sizeof(OwnedDataFrame));
+    }
     bool history_source() noexcept {
         std::size_t bytes=0,stride=0,plane=0;std::array<std::size_t,2> shape;
         if(!numeric_geometry(get(n.outputs),bytes,stride,plane,shape) || !numeric_add(out.resources.payload_bytes,bytes) ||
-           !numeric_add(out.resources.plan_bytes,p.admission.frame.max_metadata_bytes+sizeof(OwnedDataFrame)))return false;
+           !history_source_metadata())return false;
         return true;
     }
     bool history_contract() noexcept {const auto c=get(n.inputs);
@@ -496,7 +505,7 @@ ProcessingGeometryLimits runtime_geometry(const void* context,std::string_view k
 }
 NumericDeviceCapabilities PreparedGraph::numeric_capabilities(const NumericRuntimeProfile& p) noexcept {
     auto resources=p.resources;
-    if(!numeric_add(resources.retained_working_bytes,fixed_plan_reservation) || !numeric_add(resources.retained_working_bytes,p.admission.frame.max_payload_bytes))resources.retained_working_bytes=SIZE_MAX;
+    if(!numeric_add(resources.retained_working_bytes,fixed_plan_reservation) || !numeric_add(resources.retained_working_bytes,shared_silence_capacity(p)))resources.retained_working_bytes=SIZE_MAX;
     return {&p,numeric_support,resources,runtime_geometry};
 }
 

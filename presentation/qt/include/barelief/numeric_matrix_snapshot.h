@@ -5,6 +5,8 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <span>
+#include <barelief/numeric_plot_limits.h>
 
 // GUI-owned immutable projection, never a borrowed processing buffer. A
 // transposed view shares storage; only indexing changes, not sample order.
@@ -15,6 +17,9 @@ public:
     public:
         size_t size() const noexcept {return matrix_->transposed_?matrix_->storage_->size():matrix_->storage_->front().size();}
         bool empty() const noexcept {return size()==0;}
+        std::span<const float> contiguous_values() const noexcept {
+            return matrix_->transposed_?std::span<const float>{}:std::span<const float>((*matrix_->storage_)[row_]);
+        }
         float operator[](size_t column) const noexcept {
             return matrix_->transposed_?(*matrix_->storage_)[column][row_]:(*matrix_->storage_)[row_][column];
         }
@@ -30,7 +35,7 @@ public:
     }
     static bool valid(const Matrix& rows) noexcept {
         const auto columns=rows.empty()?0:rows.front().size();
-        if(rows.size()>16384 || columns>16384 || (columns && rows.size()>1048576/columns))return false;
+        if(!presentation::NumericPlotLimits::accepts(rows.size(),columns))return false;
         for(const auto& row:rows) {
             if(row.size()!=columns)return false;
             for(float value:row)if(!std::isfinite(value))return false;
@@ -44,6 +49,7 @@ public:
     Row front() const noexcept {return (*this)[0];}
     void clear() noexcept {*this={};}
     const void* storage_identity() const noexcept {return storage_.get();}
+    bool same_view(const NumericMatrixSnapshot& other) const noexcept {return storage_==other.storage_ && transposed_==other.transposed_;}
     size_t sample_count() const noexcept {return empty()?0:size()*front().size();}
     bool operator==(const NumericMatrixSnapshot& other) const noexcept {
         if(storage_==other.storage_ && transposed_==other.transposed_)return true;

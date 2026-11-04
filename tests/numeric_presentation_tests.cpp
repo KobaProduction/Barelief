@@ -810,4 +810,84 @@ void history_time_resynchronization() {
     }
 }
 }
-int main(){lifecycle();all_dtypes();history_delivery();packet_and_refusal();index_axes();history_time_resynchronization();padded_cold_snapshot();pcm_typed_padding();snapshot_unavailable_capacity_change();generic_column_coordinates();std::printf("numeric presentation: %d checks, %d failures\n",checks,failures);return failures?1:0;}
+struct ByteSnapshotScenario {
+    const std::array<std::uint32_t,2> ids{0,1};
+    NumericContract contract=resize_history_contract(3);
+    std::array<std::byte,36> bytes{};
+    const std::array<PlaneLayout,2> planes{{{0,{12,4}},{1,{12,4}}}};
+    const std::array<std::byte,3> mask{std::byte{0},std::byte{1},std::byte{0}};
+    Pools pools;
+    pipeline::HistoryPresentation trail{{8,2,256,{true,2}}};
+    ByteSnapshotScenario() {
+        contract.dtype=DType::UInt8;contract.channel_order=ids;
+        contract.representation.layout=ChannelLayout::Interleaved;
+        for(std::size_t i=0;i<bytes.size();++i)bytes[i]=std::byte(i+1);
+    }
+    NumericView view() const {return {&contract,bytes,planes,{3,2},{3,2,mask}};}
+    void compare_rows() const {
+        BorrowedNumericRows reader;
+        CHECK(reader.prepare(view())==Status::ok);
+        for(std::size_t row=0;row<3;++row) {
+            NumericView projected;NumericContract row_contract;std::array<PlaneLayout,2> row_planes;
+            CHECK(reader.read(row,projected,row_contract,row_planes)==Status::ok);
+            for(std::size_t plane=0;plane<2;++plane)for(std::size_t column=0;column<2;++column) {
+                std::uint8_t expected=0,actual=0;
+                CHECK(load_element(view(),{plane,row,column},expected)==Status::ok);
+                CHECK(load_element(projected,{plane,column,0},actual)==Status::ok);
+                CHECK(actual==expected);
+            }
+        }
+    }
+    void compare_snapshot() {
+        for(std::size_t plane=0;plane<2;++plane) {
+            pipeline::DeliveredNumericFrame snapshot{context(contract),{1,1},{},Status::ok};
+            CHECK(retain_frame({FrameStamp{},view()},limits,pools.p,pools.m,snapshot.frame)==Status::ok);
+            CHECK(trail.accept_snapshot(snapshot,7,2,plane)==Status::ok);
+            const auto projected=trail.render_snapshot();
+            for(std::size_t row=0;row<3;++row)for(std::size_t column=0;column<2;++column) {
+                std::uint8_t expected=0;
+                CHECK(load_element(view(),{plane,row,column},expected)==Status::ok);
+                CHECK(projected[row][column]==expected);
+            }
+        }
+    }
+    void refuse_malformed() const {
+        BorrowedNumericRows reader;
+        CHECK(reader.prepare(view())==Status::ok);
+        auto invalid=view();invalid.storage=invalid.storage.first(8);
+        CHECK(reader.prepare(invalid)==Status::buffer_too_small);
+        NumericView result;NumericContract row_contract;std::array<PlaneLayout,2> row_planes;
+        CHECK(reader.read(0,result,row_contract,row_planes)==Status::invalid_argument);
+        CHECK(!result.contract);
+    }
+    void run() {
+        for(auto normalization:{Normalization::None,Normalization::UnsignedUnit}) {
+            contract.representation.normalization=normalization;
+            compare_rows();compare_snapshot();refuse_malformed();
+        }
+        contract.representation.valid_bits=7;
+        for(auto& byte:bytes)byte=std::byte(std::to_integer<unsigned>(byte)&127);
+        compare_snapshot();
+    }
+};
+void byte_snapshots() {ByteSnapshotScenario scenario;scenario.run();}
+void reusable_snapshot_refusal() {
+    auto contract=resize_history_contract(3);
+    const auto ctx=context(contract);
+    std::array<float,6> values{1,2,3,4,5,6};
+    const std::array<PlaneLayout,1> planes{{{0,{8,4}}}};
+    Pools pools;
+    pipeline::HistoryPresentation trail{{8,2,256,{true,2}}};
+    for(unsigned iteration=0;iteration<3;++iteration) {
+        values.front()=iteration==2?9.f:1.f;
+        values.back()=iteration==1?std::numeric_limits<float>::quiet_NaN():6.f;
+        const NumericView view{&contract,std::as_bytes(std::span(values)),planes,{3,2},{3,0}};
+        FrameStamp stamp;stamp.sequence=3+iteration;
+        pipeline::DeliveredNumericFrame snapshot{ctx,{1,1},{},Status::ok};
+        CHECK(retain_frame({stamp,view},limits,pools.p,pools.m,snapshot.frame)==Status::ok);
+        CHECK(trail.accept_snapshot(snapshot,stamp.sequence,3)==(iteration==1?Status::malformed:Status::ok));
+        const std::vector<std::vector<float>> expected{{iteration==2?9.f:1.f,2},{3,4},{5,6}};
+        CHECK(trail.render_snapshot()==expected);
+    }
+}
+int main(){lifecycle();all_dtypes();history_delivery();packet_and_refusal();index_axes();history_time_resynchronization();padded_cold_snapshot();pcm_typed_padding();snapshot_unavailable_capacity_change();generic_column_coordinates();byte_snapshots();reusable_snapshot_refusal();std::printf("numeric presentation: %d checks, %d failures\n",checks,failures);return failures?1:0;}

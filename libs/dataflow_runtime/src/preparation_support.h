@@ -8,6 +8,9 @@ const ProcessingPort* numeric_port(std::span<const ProcessingPort>,PortId) noexc
 bool numeric_geometry(const NumericContract&,std::size_t&,std::size_t&,std::size_t&,std::array<std::size_t,2>&) noexcept;
 NumericContract constant_literal_contract(const NumericContract&,DType) noexcept;
 bool zero_bytes(const NumericContract&) noexcept;
+inline std::size_t shared_silence_capacity(const NumericRuntimeProfile& profile) noexcept {
+    return profile.shared_silence_bytes.value_or(profile.admission.frame.max_payload_bytes);
+}
 bool packet_contract(const StructuredContract&) noexcept;
 Status numeric_buffer(const NumericContract&,NumericBuffer&,const std::shared_ptr<const std::vector<std::byte>>& shared={});
 Status numeric_buffer(const DataContract&,NumericBuffer&,const std::shared_ptr<const std::vector<std::byte>>& shared={});

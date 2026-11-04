@@ -2,6 +2,7 @@
 #include <control/numeric_remote_wire.h>
 #include <control/numeric_processing_message_mapper.h>
 #include <desktop/numeric_project_document.h>
+#include <desktop/numeric_frame_budget.h>
 #include <QJsonDocument>
 #include <chrono>
 namespace pipeline::remote_numeric {
@@ -18,6 +19,8 @@ inline constexpr std::size_t ControlStorageBudgetBytes=17*1024*1024;
 inline constexpr std::size_t ControlTransportReservationBytes=ControlMaximumPeers*(ControlPeerBudgetBytes+ControlStorageBudgetBytes);
 inline nc::Limits control_limits() {
     auto l=nc::desktop_limits();l.nodes=512;l.edges=2048;l.ports=8192;l.parameters=16384;l.records=65536;l.capability_rows=512;
+    l.frame.max_elements=desktop::NumericFrameBudget::elements;l.frame.max_payload_bytes=desktop::NumericFrameBudget::payload_bytes;
+    l.frame.max_metadata_bytes=desktop::NumericFrameBudget::metadata_bytes;l.frame.max_coordinate_bytes=desktop::NumericFrameBudget::coordinate_bytes;
     // A profile is at most 1 MiB. A capability reply may repeat it in its
     // applied graph and capability combination, plus a maximal diagnostic.
     l.wire_bytes=l.arena_bytes=l.total_text_bytes=4*1024*1024;l.string_bytes=1024*1024;return l;

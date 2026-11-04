@@ -18,6 +18,7 @@
 #include "core_app/gui_presenter.h"
 #include "core_app/ui/settings_change_request.h"
 #include "core_app/numeric_view_adapter.h"
+#include <barelief/numeric_plot_limits.h>
 #include "barelief/numeric_metrics_view.h"
 #include "barelief/abstract/abs.h"
 #include "barelief/spectrograms/spectrogram_graph.h"
@@ -139,7 +140,7 @@ class MainWindow final : public WorkspaceWindow {
     };
     std::vector<VectorDeliveryQueue> _vector_delivery_queues;
     QString _vector_delivery_device;
-    presentation::NumericViewAdapter _numeric_views{{64,{2000,4096,8*1024*1024,{true,32768}},{true,32768}}};
+    presentation::NumericViewAdapter _numeric_views{{64,{presentation::NumericPlotLimits::rows,presentation::NumericPlotLimits::columns,presentation::NumericPlotLimits::bytes,{true,presentation::NumericPlotLimits::cells}},{true,32768}}};
     void clear_node_views();
     QString ensure_node_view(int node, const QString &kind, const QString &device, const QString &graph,
                              bool open = false, int instance = 0,

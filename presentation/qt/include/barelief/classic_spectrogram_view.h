@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QElapsedTimer>
 #include <QPen>
+#include <QStringList>
 
 class QTimer;
 
@@ -16,7 +17,7 @@ class ClassicSpectrogramWidget : public QWidget {
     Q_OBJECT
 public:
     explicit ClassicSpectrogramWidget(QWidget* parent=nullptr);
-    virtual bool accepts_columns(size_t count) const {return count>0 && count<=4096;}
+    virtual bool accepts_columns(size_t count) const;
     void set_orientation(const QString&);
     virtual bool set_layout(const QJsonObject&) {return true;}
     void set_snapshot(NumericMatrixSnapshot,bool age_order);
@@ -42,12 +43,19 @@ protected:
 protected:
     QRectF plot_rect(int group) const;
     void rebuild_raster();
-    void fill_raster_band(int band);
-    float raster_peak(size_t frame,size_t band,size_t frames,size_t bands) const;
+    void invalidate_raster();
+    void prepare_raster(size_t frames,size_t bands);
+    void reduce_raster(size_t frames,size_t bands);
+    void color_raster(size_t bands);
+    void invalidate_axes();
+    QStringList axis_labels() const;
+    void rebuild_axes();
+    void paint_axes_layer();
     void draw_group(QPainter&,int group);
     void draw_classical_axes(QPainter&,const QRectF&);
     void draw_horizontal_time_axis(QPainter&,const QRectF&);
     virtual void draw_axes(QPainter&,const QRectF&);
+    virtual void draw_plot_overlay(QPainter&,const QRectF&);
     virtual bool ready() const {return true;}
     virtual double legend_offset() const {return 24;}
     virtual int vertical_margin() const {return 180;}
@@ -58,6 +66,15 @@ protected:
     NumericMatrixSnapshot data_;
     SpectrogramAxisMetadata axes_;
     QImage raster_;
+    std::vector<float> raster_peaks_;
+    std::vector<size_t> raster_columns_;
+    size_t raster_bands_=0;
+    quint64 raster_revision_=0;
+    bool raster_dirty_=true;
+    QImage axis_layer_;
+    QStringList axis_labels_;
+    quint64 axis_revision_=0;
+    bool axis_dirty_=true;
     QString status_;
     bool horizontal_=false;
     double minimum_=0,maximum_=255;

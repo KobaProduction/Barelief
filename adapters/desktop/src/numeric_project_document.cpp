@@ -1,5 +1,6 @@
 #include <core/diagnostic_saves.h>
 #include <desktop/numeric_project_document.h>
+#include <desktop/numeric_frame_budget.h>
 #include <project_storage/numeric_array_codec.h>
 #include <QCoreApplication>
 #include <QFile>
@@ -45,7 +46,7 @@ using namespace project_storage;
 using Source=OwnedProjectSource;
 using Handle=NodeHandle;
 using NodeKind=project_storage::NodeKind;
-constexpr FrameLimits frame_limits{64,16777216,16777216,16777216,1024,16777216};
+constexpr FrameLimits frame_limits{64,NumericFrameBudget::elements,NumericFrameBudget::payload_bytes,NumericFrameBudget::metadata_bytes,1024,NumericFrameBudget::coordinate_bytes};
 std::string_view view(QByteArrayView b) { return {b.data(),static_cast<std::size_t>(b.size())}; }
 QByteArray bytes(std::string_view s) { return QByteArray(s.data(),static_cast<qsizetype>(s.size())); }
 QString text(std::string_view s) { return QString::fromUtf8(s.data(),static_cast<qsizetype>(s.size())); }

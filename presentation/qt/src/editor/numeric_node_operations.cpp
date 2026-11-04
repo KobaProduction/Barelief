@@ -1,4 +1,5 @@
 #include "numeric_graph_draft.h"
+#include <desktop/numeric_frame_budget.h>
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -6,7 +7,7 @@
 namespace numeric_editor {
 using namespace domain;
 using namespace signal_contracts;
-ProcessingAdmissionLimits limits() {return {128,256,64,128,1024*1024,16*1024*1024,{16,800000,16*1024*1024,65536,4096,65536}};}
+ProcessingAdmissionLimits limits() {return {128,256,64,128,1024*1024,16*1024*1024,{16,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,4096,desktop::NumericFrameBudget::coordinate_bytes}};}
 
 namespace {
 bool scalar_view_kind(std::string_view kind){const auto id=node_kind(kind);return id && is_scalar_view(*id);}

@@ -15,6 +15,7 @@ public:
     std::pair<int,int> section_range(size_t index) const;
 protected:
     void draw_axes(QPainter&,const QRectF&) override;
+    void draw_plot_overlay(QPainter&,const QRectF&) override;
     bool ready() const override {return boundaries_.size()==48;}
     double legend_offset() const override {return horizontal_?106:24;}
     int vertical_margin() const override {return 220;}

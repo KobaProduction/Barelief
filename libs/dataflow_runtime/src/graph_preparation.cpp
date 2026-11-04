@@ -119,7 +119,7 @@ Status NumericPreparation::count_content_outputs(){
 Status NumericPreparation::retain_previous_resources(){
     if(previous && old_context){const auto mem=previous->memory_requirements();std::size_t old=mem.state_bytes;
         if(!numeric_add(old,mem.buffer_bytes) || !numeric_add(old,mem.scratch_bytes))return Status::overflow;
-        if(previous->impl_->silence && previous->impl_->silence->size()==profile.admission.frame.max_payload_bytes)old-=previous->impl_->silence->size();
+        if(previous->impl_->silence && previous->impl_->silence->size()==shared_silence_capacity(profile))old-=previous->impl_->silence->size();
         if(!numeric_add(checked_profile.resources.retained_working_bytes,old))return Status::overflow;}
     return Status::ok;
 }
@@ -131,7 +131,7 @@ Status NumericPreparation::admit_definition(){
     // Domain peak already includes DTO ownership and topology workspace. Publish
     // retained plan ownership too, so a later Prepare cannot omit the old DTO.
     metadata_and_plan=admission.peak_bytes-checked_profile.resources.retained_working_bytes-order.size()*sizeof(std::size_t)-
-        admission.resources.payload_bytes-admission.resources.scratch_bytes-admission.resources.stack_bytes-profile.admission.frame.max_payload_bytes;
+        admission.resources.payload_bytes-admission.resources.scratch_bytes-admission.resources.stack_bytes-shared_silence_capacity(profile);
     return Status::ok;
 }
 Status NumericPreparation::allocate_bundle(){
@@ -139,9 +139,9 @@ Status NumericPreparation::allocate_bundle(){
     plan->impl_->numeric_graph=std::make_shared<const NumericProcessingGraph>(g);plan->impl_->numeric_profile=profile;
     plan->impl_->numeric_source_graph=source_bytes?std::make_shared<const NumericProcessingGraph>(evaluated):plan->impl_->numeric_graph;
     plan->impl_->routing_aliases=std::move(aliases);
-    plan->impl_->silence=previous && previous->impl_->silence && previous->impl_->silence->size()==profile.admission.frame.max_payload_bytes?
-        previous->impl_->silence:std::make_shared<const std::vector<std::byte>>(profile.admission.frame.max_payload_bytes);
-    plan->impl_->memory={metadata_and_plan+source_bytes+alias_bytes+retained_content_budget,admission.resources.payload_bytes+profile.admission.frame.max_payload_bytes,admission.resources.scratch_bytes};
+    plan->impl_->silence=previous && previous->impl_->silence && previous->impl_->silence->size()==shared_silence_capacity(profile)?
+        previous->impl_->silence:std::make_shared<const std::vector<std::byte>>(shared_silence_capacity(profile));
+    plan->impl_->memory={metadata_and_plan+source_bytes+alias_bytes+retained_content_budget,admission.resources.payload_bytes+shared_silence_capacity(profile),admission.resources.scratch_bytes};
     plan->impl_->numeric_admission=admission;
     plan->impl_->nodes.reserve(g.nodes.size());c->impl_->states.resize(g.nodes.size());
     return Status::ok;

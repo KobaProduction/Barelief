@@ -430,6 +430,37 @@ static void capture_partial_interval_gap() {
     for(std::size_t i=0;i<256;++i){float value=0;require(load_element(view,{0,i,0},value)==Status::ok&&value==9,"partial gap mixed old and new PCM");}
     engine.unsubscribe_numeric_tap(tap);
 }
+static void variable_capture_packet_cadence() {
+    using namespace signal_contracts;
+    auto graph=graph_with_two_sources();graph.nodes.resize(2);graph.edges.resize(1);
+    auto& port=graph.nodes[0].outputs.front();
+    auto contract=std::get<NumericContract>(port.contract.view());contract.shape.extents[0]={1,1024};
+    require(domain::own_processing_contract(contract,{8,32768,262144,16384,256,8192},16384,port.contract)==Status::ok,"variable capture contract");
+    graph.nodes[1].inputs.front().contract=port.contract;
+    std::shared_ptr<Probe> probe;
+    NumericEngine engine([&](auto){probe=std::make_shared<Probe>();return std::make_unique<ProbeSource>(probe);});
+    QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"variable capture graph encode");
+    bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
+    EngineCommand apply;apply.kind=EngineCommand::ApplyGraph;apply.graph=QJsonDocument::fromJson(bytes).object();engine.submit(apply);
+    require(wait([&]{return replied;})&&accepted&&probe,"variable capture Apply");
+    std::vector<DeliveredNumericFrame> observed;
+    const auto tap=engine.subscribe_numeric_tap({{"main",3,domain::PortDirection::Input,0}},[&](auto frame){observed.push_back(std::move(frame));},{});
+    std::size_t begin=0;
+    for(const auto count:{128u,64u,256u}) {
+        AudioFrame input;input.sample_rate=48000;input.channel_count=1;input.generation=1;
+        input.sequence=observed.size()+1;input.frame_count=count;input.samples.assign(count,.125f);input.sample_position=begin;
+        input.timestamp_ns=1000000+std::int64_t(begin)*1000000000/48000;
+        const auto prior=observed.size();probe->audio(input);
+        require(wait([&]{return observed.size()>prior;}),"available PCM waits for the maximum block");
+        require(observed.size()==prior+1,"variable capture duplicates a packet");
+        const auto frame=observed.back().frame.view();const auto& values=std::get<NumericView>(frame.payload);
+        require(values.actual[0]==count && frame.stamp.sample_count==count && frame.stamp.sample_begin==std::int64_t(begin),"partial capture geometry/clock mismatch");
+        for(std::size_t i=0;i<count;++i){float value=0;require(load_element(values,{0,i,0},value)==Status::ok && value==.125f,"partial capture values changed");}
+        begin+=count;
+    }
+    engine.unsubscribe_numeric_tap(tap);
+    std::puts("variable PCM packets publish immediately; exact sample intervals PASS");
+}
 static void capture_resource_admission() {
     std::vector<std::shared_ptr<Probe>> probes;
     NumericEngine engine([&](auto){auto p=std::make_shared<Probe>();probes.push_back(p);return std::make_unique<ProbeSource>(p);});
@@ -546,6 +577,11 @@ static void physical_discovery() {
 }
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);
-    try {if(argc>1 && QByteArray(argv[1])=="--physical-discovery")physical_discovery();else if(argc>1 && QByteArray(argv[1]).startsWith("--physical")){const auto mode=QByteArray(argv[1]);require(mode=="--physical"||mode=="--physical-nonzero"||mode=="--physical-pinned"||mode=="--physical-pinned-nonzero","unknown physical probe mode");physical_probe(mode.contains("nonzero"),mode.contains("pinned"));}else {downstream_error_preserves_capture_continuity();selected_native_lane();capture_lifecycle();capture_declared_rate();unavailable_provider();capture_device_selection();capture_multichannel();measured_processing_telemetry();test_signal_backend_identity();capture_partial_interval_gap();capture_resource_admission();external_clock_exhaustion();}return 0;}
+    try {
+        if(argc>1 && QByteArray(argv[1])=="--packet-cadence") {
+            variable_capture_packet_cadence();capture_partial_interval_gap();capture_multichannel();downstream_error_preserves_capture_continuity();selected_native_lane();return 0;
+        }
+        if(argc>1 && QByteArray(argv[1])=="--physical-discovery")physical_discovery();else if(argc>1 && QByteArray(argv[1]).startsWith("--physical")){const auto mode=QByteArray(argv[1]);require(mode=="--physical"||mode=="--physical-nonzero"||mode=="--physical-pinned"||mode=="--physical-pinned-nonzero","unknown physical probe mode");physical_probe(mode.contains("nonzero"),mode.contains("pinned"));}else {variable_capture_packet_cadence();downstream_error_preserves_capture_continuity();selected_native_lane();capture_lifecycle();capture_declared_rate();unavailable_provider();capture_device_selection();capture_multichannel();measured_processing_telemetry();test_signal_backend_identity();capture_partial_interval_gap();capture_resource_admission();external_clock_exhaustion();}return 0;
+    }
     catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 1;}
 }

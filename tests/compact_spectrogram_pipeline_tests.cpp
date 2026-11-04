@@ -118,6 +118,10 @@ struct Fixture {
         check(observed.boundaries.size()==49 && observed.boundaries.front()==40 && observed.boundaries.back()==16000,"48 explicit bands in 40..16000 Hz");
         const std::array joins{0,12,16,22,30,36,40,48};const std::array hz{40.f,250.f,800.f,1500.f,3500.f,6000.f,10000.f,16000.f};
         for(size_t i=0;i<joins.size();++i)check(observed.boundaries[size_t(joins[i])]==hz[i],"exact seven-section joins and channel budget");
+        for(size_t section=0;section+1<joins.size();++section)for(int band=joins[section];band<=joins[section+1];++band) {
+            const auto expected=std::lerp(double(hz[section]),double(hz[section+1]),double(band-joins[section])/(joins[section+1]-joins[section]));
+            check(std::abs(observed.boundaries[size_t(band)]-expected)<.002,"every percussive section uses linear Hz boundaries");
+        }
         check(std::any_of(graph.edges.begin(),graph.edges.end(),[](const auto& e){return e.from==1003 && e.to==31 && e.input_port==frequency_step_input;}),"explicit frequency step connection");
         const auto result=PreparedGraph::prepare_numeric(graph,profile(),plan,state);
         if(result!=Status::ok)std::fprintf(stderr,"prepare=%u\n",unsigned(result));check(result==Status::ok,"prepare complete spectrogram graph");

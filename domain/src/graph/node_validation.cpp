@@ -276,7 +276,7 @@ bool audio_vector_view(NodeKind kind) noexcept {
 }
 bool compact_view_contract(const NumericContract& value) noexcept {
     return value.dtype==DType::UInt8 && value.semantic==Semantic::History && value.channel_order.size()==1
-        && value.shape.extents[0].maximum<=512 && value.shape.extents[1]==ExtentBounds{96,96};
+        && value.shape.extents[1]==ExtentBounds{96,96};
 }
 ProcessingDiagnostic validate_view_port(const OperationValidation& context,const ProcessingPort& port,NodeKind kind,Rank rank) {
         const auto data=port.contract.view();const auto* numeric=std::get_if<NumericContract>(&data);

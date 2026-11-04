@@ -12,17 +12,17 @@ constexpr std::uint64_t fft_size=4096,rate=36000;
 constexpr std::uint64_t capture_packet_samples=1024;
 constexpr double bin_hz=double(rate)/fft_size;
 constexpr unsigned first_note_midi=48,last_note_midi=95;
-struct RhythmSection {const char* label;double low,high;unsigned count;bool logarithmic;};
+struct RhythmSection {const char* label;double low,high;unsigned count;};
 constexpr RhythmSection rhythm_sections[]{
-    {"Bass",40,250,12,false},{"Density",250,800,4,false},
-    {"Impact",800,1500,6,true},{"Click",1500,3500,8,true},
-    {"Noise",3500,6000,6,true},{"Rustle",6000,10000,4,true},
-    {"Air",10000,16000,8,false}};
+    {"Bass",40,250,12},{"Density",250,800,4},
+    {"Impact",800,1500,6},{"Click",1500,3500,8},
+    {"Noise",3500,6000,6},{"Rustle",6000,10000,4},
+    {"Air",10000,16000,8}};
 NumericArray rhythm_boundaries() {
     NumericArray result;result.values.push_back(40);
     for(const auto& section:rhythm_sections)for(unsigned i=1;i<=section.count;++i) {
         const double fraction=double(i)/section.count;
-        const double value=section.logarithmic?section.low*std::pow(section.high/section.low,fraction):std::lerp(section.low,section.high,fraction);
+        const double value=std::lerp(section.low,section.high,fraction);
         result.values.push_back(float(i==section.count?section.high:value));
     }
     return result;
@@ -112,8 +112,8 @@ void sources(examples::Builder& b) {
 void fourier(examples::Builder& b) {
     b.chain(4,"RealFourier",1001);
     b.connect(1000,4,0,window_size_input);
-    b.chain(5,"AmplitudePhase",4,examples::transform({{"representation",std::string{"peak_amplitude"}},{"sample_rate",NumericLiteral{rate}}}));
-    b.connect(4,5,1,1);
+    b.add(5,"AmplitudePhase",examples::transform({{"representation",std::string{"peak_amplitude"}},{"sample_rate",NumericLiteral{rate}},{"real_endpoints",true}}));
+    b.connect(4,5);b.connect(4,5,1,1);b.derive(5);
     b.connect(1000,5,0,window_size_input);
     b.connect(3,5,0,window_coefficients_input);
     b.connect(202,5,sample_rate_output,target_sample_rate_input);

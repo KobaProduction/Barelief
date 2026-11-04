@@ -437,6 +437,23 @@ static Status validate_history_row_source(const NumericView& view,std::size_t ro
     return validate_contract(DataContract{candidate},structural_limits);
 }
 
+Status BorrowedNumericRows::prepare(const NumericView& source) noexcept {
+    source_={};
+    if(!source.contract || (source.contract->shape.rank!=Rank::Matrix &&
+       (source.contract->shape.rank!=Rank::Vector || source.contract->semantic!=Semantic::History)) || !source.actual[0])
+        return Status::invalid_argument;
+    const auto status=validate_history_row_source(source,0);
+    if(status!=Status::ok)return status;
+    source_=source;
+    return Status::ok;
+}
+Status BorrowedNumericRows::read(std::size_t row,NumericView& out,NumericContract& contract,
+    std::span<PlaneLayout> planes) const noexcept {
+    if(!source_.contract || row>=source_.actual[0] || planes.size()<source_.planes.size())return Status::invalid_argument;
+    if(!history_outputs_disjoint(source_,out,contract,planes))return Status::invalid_argument;
+    publish_history_row(source_,row,out,contract,planes);
+    return Status::ok;
+}
     Status history_row(const NumericView& v,std::size_t row,NumericView& out,NumericContract& c,std::span<PlaneLayout> planes) noexcept {
     if(!v.contract || (v.contract->shape.rank!=Rank::Matrix &&
        (v.contract->shape.rank!=Rank::Vector || v.contract->semantic!=Semantic::History)) || row>=v.actual[0] ||

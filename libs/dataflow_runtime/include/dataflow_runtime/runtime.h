@@ -35,6 +35,9 @@ struct NumericRuntimeProfile {
     // Optional adapter/composition boundary. The profile, prepared graph and
     // contexts pin this immutable factory; no unowned provider callbacks.
     std::shared_ptr<const NumericOperationFactory> operation_factory;
+    // Null keeps the profile ceiling; a value reserves only this shared zero block.
+    // Larger zero buffers are owned and charged during cold preparation.
+    std::optional<std::size_t> shared_silence_bytes;
 };
 struct NumericPortFrameView {
     std::string_view graph_id;

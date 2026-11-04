@@ -16,17 +16,10 @@ namespace {
 void write_history_capacity(domain::ConfiguredProcessingNode& node,const signal_contracts::NumericLiteral& literal) {
     using namespace signal_contracts;
     const auto* capacity=std::get_if<std::uint64_t>(&literal);
-    if(!capacity)throw std::invalid_argument("capacity type");
-    const auto outputs=domain::data_outputs(node);
-    if(outputs.empty())throw std::invalid_argument("history output unavailable");
-    auto contract=outputs.front().contract.view();
-    auto* numeric=std::get_if<NumericContract>(&contract);
-    if(!numeric || (numeric->shape.rank!=Rank::Matrix && numeric->shape.rank!=Rank::Vector))
-        throw std::invalid_argument("history shape unavailable");
-    numeric->shape.extents[0].maximum=*capacity;
-    if(!numeric_editor::set_contract(node,domain::PortDirection::Output,outputs.front().id,contract))throw std::invalid_argument("capacity");
+    if(!capacity || !*capacity)throw std::invalid_argument("capacity type");
     std::get<domain::HistoryProcessingParameters>(node.parameters).capacity=*capacity;
 }
+
 }
 void NodeParameterModel::append_accumulation_fields() {
     using namespace signal_contracts;using namespace domain;
@@ -35,6 +28,7 @@ void NodeParameterModel::append_accumulation_fields() {
             _node.kind=="NumberAccumulator"?"History capacity, values":"History capacity, frames", "numericCapacity",
             [](const auto &n) { return NumericLiteral{std::get<HistoryProcessingParameters>(n.parameters).capacity}; },
             write_history_capacity,1);
+        _fields.back().numeric_minimum=1;
         boolean("Only filled history rows","numericFilledOnly",
             [](const auto& n){return std::get<HistoryProcessingParameters>(n.parameters).filled_only;},
             [](auto& n,bool value){std::get<HistoryProcessingParameters>(n.parameters).filled_only=value;});

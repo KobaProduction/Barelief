@@ -1,4 +1,5 @@
 #include "example_builder.h"
+#include <desktop/numeric_frame_budget.h>
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -26,7 +27,7 @@ void apply_parameters(domain::ConfiguredProcessingNode& node,domain::ProcessingP
 }
 }
 Builder::Builder(domain::NodeFactorySettings settings)
-    : limits{512,2048,64,128,1048576,16777216,{16,800000,16777216,65536,4096,65536}},settings_(settings) {
+    : limits{512,2048,64,128,1048576,16777216,{16,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,4096,desktop::NumericFrameBudget::coordinate_bytes}},settings_(settings) {
     graph.graph_id="main";
     graph.execution_interval={1,120};
 }

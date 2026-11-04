@@ -102,7 +102,9 @@ struct NumericRoutingAdapter::Impl {
     }
     void deliver_unavailable_history(Route& r,const DataFrameView& frame) {
         const auto limits=engine.capabilities().numeric->runtime.admission.frame;
-        if(!r.markers)r.markers=std::make_shared<MarkerStorage>(limits.max_metadata_bytes);
+        RetentionRequirements required;
+        if(retention_requirements(frame,limits,required)!=Status::ok)return;
+        if(!r.markers)r.markers=std::make_shared<MarkerStorage>(required.metadata_bytes);
         OwnedDataFrame owned;
         if(retain_frame(frame,limits,r.markers->payload_pool,r.markers->metadata_pool,owned)==Status::ok)
             engine.feed_numeric_owned(r.declaration.node,owned,r.ordinal,r.markers);

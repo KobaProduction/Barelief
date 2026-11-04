@@ -39,6 +39,17 @@ Status validate_values(const NumericView&,ValueDomain,const FrameLimits&) noexce
 // Borrow one logical row: Matrix -> Vector; scalar Vector History -> Scalar.
 Status history_row(const NumericView&,std::size_t row,NumericView& out,NumericContract& row_contract,
                    std::span<PlaneLayout> row_planes) noexcept;
+// Validate an immutable borrowed source once, then borrow its logical rows.
+// The source storage and all metadata must stay alive and unchanged until the
+// last read; this accessor never owns or retains a processing buffer.
+class BorrowedNumericRows {
+public:
+    Status prepare(const NumericView&) noexcept;
+    Status read(std::size_t row,NumericView& out,NumericContract& row_contract,
+                std::span<PlaneLayout> row_planes) const noexcept;
+private:
+    NumericView source_;
+};
 // Exact dtype access; packed24 logical Int32. Internal bits helpers never cast bytes to T*.
 Status load_bits(const NumericView&,ElementIndex,DType,std::uint64_t& out) noexcept;
 Status store_bits(MutableNumericView&,ElementIndex,DType,std::uint64_t bits) noexcept;

@@ -10,5 +10,5 @@ set_target_properties(desktop_numeric_defaults PROPERTIES
     AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 target_compile_features(desktop_numeric_defaults PUBLIC cxx_std_20)
 target_include_directories(desktop_numeric_defaults PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${CMAKE_SOURCE_DIR}/adapters/desktop/include)
 target_link_libraries(desktop_numeric_defaults PUBLIC graph_application PRIVATE window_math dsp_kernels)

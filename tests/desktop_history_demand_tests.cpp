@@ -3,6 +3,7 @@
 #include <domain/numeric/contracts.h>
 #include "numeric_transport_fixture.h"
 #include <core_app/numeric_default_graph.h>
+#include <desktop/numeric_frame_budget.h>
 #include <bit>
 #include <array>
 #include <cstdlib>
@@ -33,7 +34,7 @@ return graph;
 }
 
 static auto large_history_graph(const NumericContract& input,std::size_t rows=400,std::size_t columns=220) {
- constexpr FrameLimits limits{8,131072,524288,16384+4096*sizeof(double),256,4096*sizeof(double)};
+ constexpr FrameLimits limits{8,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,256,desktop::NumericFrameBudget::coordinate_bytes};
   auto historyContract=input;historyContract.semantic=Semantic::History;historyContract.history_element=input.semantic;
   historyContract.shape={Rank::Matrix,{Axis::Time,Axis::Band},{ExtentBounds{0,rows},ExtentBounds{columns,columns}}};
   historyContract.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
@@ -197,4 +198,32 @@ static void long_coordinate_delivery_and_snapshot() {
     std::puts("4096 explicit Time coordinates: tap, preview, partial cold snapshots, bounded leases, hot allocations and retained teardown PASS");
 }
 
-int main(int argc,char**argv){QCoreApplication app(argc,argv);try{measure(8,false);measure(400,false);measure(8,true);measure(400,true);measure(400,false,220);measure(400,true,220);large_snapshot_lifetime_and_bound();long_coordinate_delivery_and_snapshot();return 0;}catch(const std::exception&e){measuring=false;std::fprintf(stderr,"%s\n",e.what());return 1;}}
+static void verify_spectrogram_resize(NumericEngine& engine,const NumericContract& input,Replies& replies,std::size_t capacity,std::size_t filled) {
+    replies.accepted(apply(large_history_graph(input,capacity,2048)));
+    DeliveredNumericFrame snapshot;std::uint64_t count=0;
+    const EndpointIdentity output{"large-history-leases",7,domain::PortDirection::Output,0};
+    require(engine.query_numeric(output,snapshot,nullptr,&count)==Status::ok && count==filled,"resized history preserves occupancy");
+    const auto view=std::get<NumericView>(snapshot.frame.view().payload);std::uint8_t last=0;
+    require(view.actual==std::array<std::size_t,2>{capacity,2048} && load_element(view,{0,capacity-1,2047},last)==Status::ok && last==std::uint8_t(8200%256),"resized history preserves newest UInt8 row");
+}
+static void spectrogram_history_resize() {
+    auto input=contract(2048);input.dtype=DType::UInt8;input.representation.alignment=1;input.shape.axes[0]=Axis::Band;input.clock.tick_seconds={1,60};
+    NumericEngine engine;Replies replies(engine);replies.accepted(apply(large_history_graph(input,8193,2048)));
+    std::array<std::uint8_t,2048> values{};const PlaneLayout plane{0,{1,0}};
+    for(std::uint64_t sequence=1;sequence<=8200;++sequence) {
+        values.fill(std::uint8_t(sequence%256));auto stamp=feed_stamp(engine.snapshot(),sequence);
+        require(engine.feed_numeric(1,{stamp,NumericView{&input,std::as_bytes(std::span(values)),{&plane,1},{2048,1}}})==Status::ok,"feed full-width spectrogram row");
+    }
+    DeliveredNumericFrame snapshot;std::uint64_t filled=0;
+    const EndpointIdentity output{"large-history-leases",7,domain::PortDirection::Output,0};
+    require(engine.query_numeric(output,snapshot,nullptr,&filled)==Status::ok && filled==8193,"deliver full 8193x2048 history");
+    const auto view=std::get<NumericView>(snapshot.frame.view().payload);
+    require(view.storage.size()==8193u*2048 && view.contract->dtype==DType::UInt8,"user-sized processing history stays UInt8");
+    for(size_t row=0;row<8193;++row)for(const size_t column:{0u,2047u}) {
+        std::uint8_t code=0;require(load_element(view,{0,row,column},code)==Status::ok && code==std::uint8_t((8+row)%256),"wrapped rows retain chronological order");
+    }
+    verify_spectrogram_resize(engine,input,replies,128,128);verify_spectrogram_resize(engine,input,replies,256,128);
+    std::uint8_t retained=0;require(load_element(view,{0,8192,2047},retained)==Status::ok && retained==std::uint8_t(8200%256),"leased history survives graph resize");
+    std::puts("SPECTROGRAM_HISTORY_PASS 8193x2048 UInt8, ring order, shrink/grow continuity and owned delivery");
+}
+int main(int argc,char**argv){QCoreApplication app(argc,argv);try{if(argc==2 && QString::fromLocal8Bit(argv[1])=="--spectrogram-history"){spectrogram_history_resize();return 0;}spectrogram_history_resize();measure(8,false);measure(400,false);measure(8,true);measure(400,true);measure(400,false,220);measure(400,true,220);large_snapshot_lifetime_and_bound();long_coordinate_delivery_and_snapshot();return 0;}catch(const std::exception&e){measuring=false;std::fprintf(stderr,"%s\n",e.what());return 1;}}

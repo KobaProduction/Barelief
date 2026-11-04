@@ -1,7 +1,9 @@
 #include <barelief/compact_spectrogram_view.h>
 #include <barelief/ui_text.h>
 #include <barelief/classic_spectrogram_colors.h>
+#include <barelief/numeric_plot_limits.h>
 #include <QPainter>
+#include <QRegion>
 #include <QJsonArray>
 #include <QEvent>
 #include <QTimer>
@@ -9,9 +11,10 @@
 
 ClassicSpectrogramWidget::ClassicSpectrogramWidget(QWidget* parent):QWidget(parent) {
     setObjectName("classicSpectrogramView");setMinimumSize(480,240);
+    setAttribute(Qt::WA_OpaquePaintEvent);
     fps_clock_.start();fps_timer_=new QTimer(this);fps_timer_->setInterval(500);
     connect(fps_timer_,&QTimer::timeout,this,&ClassicSpectrogramWidget::sample_frame_rate);fps_timer_->start();
-    connect(&ui::Language::instance(),&ui::Language::changed,this,qOverload<>(&QWidget::update));
+    connect(&ui::Language::instance(),&ui::Language::changed,this,&ClassicSpectrogramWidget::invalidate_axes);
 }
 bool CompactSpectrogramView::set_sections(const QJsonArray& sections) {
     if(sections.isEmpty() || sections.size()>16)return false;
@@ -53,27 +56,38 @@ bool CompactSpectrogramView::set_layout(const QJsonObject& layout) {
     if(values.size()!=48 || midi<0 || midi>80)return false;
     auto centers=decode_band_centers(values);
     if(centers.size()!=48 || !set_sections(layout.value("broadband_sections").toArray()))return false;
-    boundaries_=std::move(centers);first_midi_=unsigned(midi);update();return true;
+    boundaries_=std::move(centers);first_midi_=unsigned(midi);invalidate_axes();return true;
+}
+bool ClassicSpectrogramWidget::accepts_columns(size_t count) const {return count>0 && count<=presentation::NumericPlotLimits::columns;}
+void ClassicSpectrogramWidget::invalidate_raster() {
+    raster_dirty_=true;
+    if(!render_visible_)return;
+    if(axis_dirty_ || axis_labels()!=axis_labels_)update();
+    else update(plot_rect(0).toAlignedRect().adjusted(-1,-1,1,1));
 }
 void ClassicSpectrogramWidget::set_snapshot(NumericMatrixSnapshot data,bool age_order) {
-    if(!data.empty() && (data.size()>512 || !accepts_columns(data.front().size())))data.clear();
-    data_=std::move(data);age_order_=age_order;rebuild_raster();if(render_visible_)update();
+    if(!data.empty() && (!presentation::NumericPlotLimits::accepts(data.size(),data.front().size()) || !accepts_columns(data.front().size())))data.clear();
+    if(data_.same_view(data) && age_order_==age_order)return;
+    data_=std::move(data);age_order_=age_order;invalidate_raster();
 }
 bool ClassicSpectrogramWidget::set_axis_metadata(const SpectrogramAxisMetadata& axes) {
-    if(axes.ages.size()>512 || axes.columns.size()>4096)return false;
+    if(axes.ages.size()>presentation::NumericPlotLimits::rows || axes.columns.size()>presentation::NumericPlotLimits::columns)return false;
+    if(axes_==axes)return true;
     for(double value:axes.ages)if(!std::isfinite(value))return false;
-    axes_=axes;if(render_visible_)update();emit axis_metadata_changed();return true;
+    axes_=axes;
+    if(render_visible_ && (axis_dirty_ || axis_labels()!=axis_labels_))update();
+    emit axis_metadata_changed();return true;
 }
 void ClassicSpectrogramWidget::set_projection_status(const QString& value) {
-    if(status_==value)return;status_=value;if(render_visible_)update();
+    if(status_==value)return;status_=value;invalidate_axes();
 }
 void ClassicSpectrogramWidget::set_value_range(double minimum,double maximum) {
     if(!std::isfinite(minimum) || !std::isfinite(maximum) || minimum>=maximum)return;
     if(minimum_==minimum && maximum_==maximum)return;
-    minimum_=minimum;maximum_=maximum;rebuild_raster();if(render_visible_)update();
+    minimum_=minimum;maximum_=maximum;invalidate_raster();invalidate_axes();
 }
 void ClassicSpectrogramWidget::set_orientation(const QString& value) {
-    const bool horizontal=value=="horizontal";if(horizontal_==horizontal)return;horizontal_=horizontal;rebuild_raster();update();
+    const bool horizontal=value=="horizontal";if(horizontal_==horizontal)return;horizontal_=horizontal;invalidate_raster();invalidate_axes();
 }
 void ClassicSpectrogramWidget::set_render_visible(bool visible) {
     if(render_visible_==visible)return;
@@ -119,31 +133,56 @@ QString plain_number(double value) {
 QRectF ClassicSpectrogramWidget::plot_rect(int) const {
     return {78,32.,double(std::max(1.,width()-148-legend_offset())),double(std::max(1,height()-(horizontal_?100:vertical_margin())))};
 }
-void ClassicSpectrogramWidget::fill_raster_band(int band) {
-    static const auto colors=classicSpectrogramColors();
-    const auto frames=size_t(horizontal_?raster_.width():raster_.height());
-    const auto bands=size_t(horizontal_?raster_.height():raster_.width());
-    for(size_t frame=0;frame<frames;++frame) {
-        const double fraction=std::clamp((raster_peak(frame,size_t(band),frames,bands)-minimum_)/(maximum_-minimum_),0.,1.);
-        const int x=horizontal_?int(frame):band,y=horizontal_?int(bands)-1-band:int(frame);
-        raster_.setPixel(x,y,colors[size_t(std::lround(fraction*255))]);
+void ClassicSpectrogramWidget::prepare_raster(size_t frames,size_t bands) {
+    const QSize size(horizontal_?int(frames):int(bands),horizontal_?int(bands):int(frames));
+    if(raster_.size()!=size)raster_=QImage(size,QImage::Format_RGB32);
+    const auto columns=data_.front().size();
+    if(raster_bands_!=bands || raster_columns_.size()!=columns) {
+        raster_columns_.resize(columns);raster_bands_=bands;
+        for(size_t column=0;column<columns;++column)raster_columns_[column]=((column+1)*bands-1)/columns;
+    }
+    raster_peaks_.assign(frames*bands,std::numeric_limits<float>::lowest());
+}
+namespace {
+template<class Values> void reduce_peak_row(Values values,std::span<const size_t> columns,std::span<float> peaks) {
+    for(size_t column=0;column<values.size();++column) {
+        auto& peak=peaks[columns[column]];peak=std::max(peak,values[column]);
     }
 }
-float ClassicSpectrogramWidget::raster_peak(size_t frame,size_t band,size_t frames,size_t bands) const {
-    const auto columns=data_.front().size();
-    float peak=std::numeric_limits<float>::lowest();
-    for(size_t row=frame*data_.size()/frames;row<(frame+1)*data_.size()/frames;++row)
-        for(size_t column=band*columns/bands;column<(band+1)*columns/bands;++column)
-            peak=std::max(peak,data_[row][column]);
-    return peak;
+}
+void ClassicSpectrogramWidget::reduce_raster(size_t frames,size_t bands) {
+    for(size_t row=0;row<data_.size();++row) {
+        const auto frame=((row+1)*frames-1)/data_.size();
+        const auto peaks=std::span(raster_peaks_).subspan(frame*bands,bands);const auto values=data_[row];
+        const auto contiguous=values.contiguous_values();
+        if(contiguous.empty())reduce_peak_row(values,raster_columns_,peaks);
+        else reduce_peak_row(contiguous,raster_columns_,peaks);
+    }
+}
+namespace {
+unsigned palette_code(double value) {
+    const auto lower=static_cast<unsigned>(value);
+    return lower+unsigned(value>=double(lower)+.5);
+}
+}
+void ClassicSpectrogramWidget::color_raster(size_t bands) {
+    static const auto colors=classicSpectrogramColors();const double scale=255/(maximum_-minimum_);
+    for(int y=0;y<raster_.height();++y) {
+        auto* pixels=reinterpret_cast<QRgb*>(raster_.scanLine(y));
+        for(int x=0;x<raster_.width();++x) {
+            const auto index=horizontal_?size_t(x)*bands+bands-1-size_t(y):size_t(y)*bands+size_t(x);
+            const auto code=palette_code(std::clamp((raster_peaks_[index]-minimum_)*scale,0.,255.));
+            pixels[x]=colors[size_t(code)];
+        }
+    }
 }
 void ClassicSpectrogramWidget::rebuild_raster() {
+    raster_dirty_=false;++raster_revision_;
     if(data_.empty()){raster_={};return;}
     const auto rect=plot_rect(0);const auto scale=devicePixelRatioF();
-    const int bands=std::min(int(data_.front().size()),std::max(1,int(std::floor((horizontal_?rect.height():rect.width())*scale))));
-    const int frames=std::min(int(data_.size()),std::max(1,int(std::floor((horizontal_?rect.width():rect.height())*scale))));
-    raster_=QImage(horizontal_?frames:bands,horizontal_?bands:frames,QImage::Format_RGB32);
-    for(int band=0;band<bands;++band)fill_raster_band(band);
+    const auto bands=std::min(data_.front().size(),size_t(std::max(1.,std::floor((horizontal_?rect.height():rect.width())*scale))));
+    const auto frames=std::min(data_.size(),size_t(std::max(1.,std::floor((horizontal_?rect.width():rect.height())*scale))));
+    prepare_raster(frames,bands);reduce_raster(frames,bands);color_raster(bands);
 }
 void CompactSpectrogramView::draw_range_ticks(QPainter& painter,const QRectF& rect,int begin,int count,bool notes) {
     const double pixels=rect.width()*count/96;
@@ -184,9 +223,25 @@ std::vector<int> CompactSpectrogramView::index_ticks() const {
 }
 void ClassicSpectrogramWidget::draw_group(QPainter& painter,int) {
     const auto rect=plot_rect(0);
+    painter.save();
+    if(!raster_.isNull())painter.setClipRegion(QRegion(this->rect()).subtracted(QRegion(rect.toAlignedRect().adjusted(1,1,-1,-1))),Qt::IntersectClip);
+    painter.drawImage(QPointF(0,0),axis_layer_);
+    painter.restore();
     if(!raster_.isNull())painter.drawImage(rect,raster_);
+    draw_plot_overlay(painter,rect);
+}
+void ClassicSpectrogramWidget::draw_plot_overlay(QPainter& painter,const QRectF& rect) {
     painter.drawRect(rect);
-    draw_axes(painter,rect);
+}
+void CompactSpectrogramView::draw_plot_overlay(QPainter& painter,const QRectF& rect) {
+    ClassicSpectrogramWidget::draw_plot_overlay(painter,rect);
+    if(horizontal_){painter.drawLine(QPointF(rect.left(),rect.center().y()),QPointF(rect.right(),rect.center().y()));return;}
+    painter.drawLine(QPointF(rect.center().x(),rect.top()),QPointF(rect.center().x(),rect.bottom()));
+    draw_index_grid(painter,rect);
+    for(const auto& section:sections_)if(section.begin) {
+        const double x=rect.left()+section.begin*rect.width()/96;
+        painter.drawLine(QPointF(x,rect.top()),QPointF(x,rect.bottom()));
+    }
 }
 void ClassicSpectrogramWidget::draw_axes(QPainter& painter,const QRectF& rect) {
     if(horizontal_){draw_classical_axes(painter,rect);return;}
@@ -231,8 +286,6 @@ void CompactSpectrogramView::draw_sections(QPainter& painter,const QRectF& rect)
         return (section.end-section.begin)*rect.width()/96<painter.fontMetrics().horizontalAdvance(ui::text(section.label.constData()))+8;
     });
     for(const auto& section:sections_) {
-        const double x=rect.left()+section.begin*rect.width()/96;
-        if(section.begin)painter.drawLine(QPointF(x,rect.top()),QPointF(x,rect.bottom()));
         draw_section_label(painter,rect,section,angled);
     }
     painter.drawText(QRectF(rect.center().x(),rect.bottom()+106,rect.width()/2,22),Qt::AlignHCenter,ui::text("Notes"));
@@ -245,9 +298,7 @@ void CompactSpectrogramView::draw_section_label(QPainter& painter,const QRectF& 
     painter.drawText(QRectF(0,-10,painter.fontMetrics().horizontalAdvance(label)+4,22),Qt::AlignLeft,label);painter.restore();
 }
 void CompactSpectrogramView::draw_axes(QPainter& painter,const QRectF& rect) {
-    if(horizontal_)painter.drawLine(QPointF(rect.left(),rect.center().y()),QPointF(rect.right(),rect.center().y()));
-    else painter.drawLine(QPointF(rect.center().x(),rect.top()),QPointF(rect.center().x(),rect.bottom()));
-    if(!horizontal_){draw_index_grid(painter,rect);draw_axis_frames(painter,rect);draw_sections(painter,rect);}
+    if(!horizontal_){draw_axis_frames(painter,rect);draw_sections(painter,rect);}
     draw_group_ticks(painter,rect,false);draw_group_ticks(painter,rect,true);draw_index_axis(painter,rect);
     if(horizontal_)draw_horizontal_time_axis(painter,rect);else draw_time_axis(painter,rect);
 }
@@ -289,18 +340,44 @@ void ClassicSpectrogramWidget::draw_value_scale(QPainter& painter) {
         painter.drawText(QRectF(legend.right()+6,y-10,45,20),Qt::AlignLeft|Qt::AlignVCenter,plain_number(minimum_+fraction*(maximum_-minimum_)));
     }
 }
+void ClassicSpectrogramWidget::invalidate_axes() {
+    axis_dirty_=true;if(render_visible_)update();
+}
+QStringList ClassicSpectrogramWidget::axis_labels() const {
+    const auto rows=data_.size(),bands=data_.empty()?0:data_.front().size();
+    QStringList labels{QString::number(rows),QString::number(bands),QString::number(axes_.time_coordinates),QString::number(axes_.column_coordinates)};
+    for(int tick=0;tick<=4;++tick)labels.push_back(rows?plain_number(age(size_t(std::lround(double(rows-1)*tick/4)))):QString{});
+    const int ticks=horizontal_?4:5;
+    for(int tick=0;tick<=ticks;++tick)labels.push_back(plain_number(frequency(size_t(std::lround(double(bands?bands-1:0)*tick/ticks)))));
+    return labels;
+}
+void ClassicSpectrogramWidget::rebuild_axes() {
+    auto labels=axis_labels();if(!axis_dirty_ && labels==axis_labels_)return;
+    axis_dirty_=false;axis_labels_=std::move(labels);++axis_revision_;
+    const auto scale=devicePixelRatioF();const QSize pixels(int(std::ceil(width()*scale)),int(std::ceil(height()*scale)));
+    if(axis_layer_.size()!=pixels)axis_layer_=QImage(pixels,QImage::Format_RGB32);
+    axis_layer_.setDevicePixelRatio(scale);axis_layer_.fill(palette().color(QPalette::Base));
+    paint_axes_layer();
+}
+void ClassicSpectrogramWidget::paint_axes_layer() {
+    QPainter painter(&axis_layer_);painter.setFont(font());painter.setPen(axis_pen());
+    draw_axes(painter,plot_rect(0));draw_value_scale(painter);
+    if(!status_.isEmpty())painter.drawText(QRectF(74,height()-20,width()-138,20),Qt::AlignLeft,status_);
+}
 void ClassicSpectrogramWidget::paintEvent(QPaintEvent*) {
     ++painted_frames_;
-    QPainter painter(this);painter.fillRect(rect(),palette().brush(QPalette::Base));painter.setPen(axis_pen());
-    if(!ready()){painter.drawText(rect(),Qt::AlignCenter,ui::text("Configure broadband frequency boundaries"));return;}
-    draw_group(painter,0);draw_value_scale(painter);
-    if(!status_.isEmpty())painter.drawText(QRectF(74,height()-20,width()-138,20),Qt::AlignLeft,status_);
+    QPainter painter(this);painter.setPen(axis_pen());
+    if(!ready()){painter.fillRect(rect(),palette().brush(QPalette::Base));painter.drawText(rect(),Qt::AlignCenter,ui::text("Configure broadband frequency boundaries"));return;}
+    if(raster_dirty_)rebuild_raster();
+    rebuild_axes();draw_group(painter,0);
 }
 void ClassicSpectrogramWidget::changeEvent(QEvent* event) {
     QWidget::changeEvent(event);
-    if(event->type()==QEvent::DevicePixelRatioChange)rebuild_raster();
-    if(event->type()==QEvent::PaletteChange || event->type()==QEvent::DevicePixelRatioChange)update();
+    if(event->type()==QEvent::DevicePixelRatioChange)invalidate_raster();
+    if(event->type()==QEvent::PaletteChange || event->type()==QEvent::DevicePixelRatioChange ||
+       event->type()==QEvent::FontChange || event->type()==QEvent::EnabledChange ||
+       event->type()==QEvent::ActivationChange || event->type()==QEvent::StyleChange)invalidate_axes();
 }
 void ClassicSpectrogramWidget::resizeEvent(QResizeEvent* event) {
-    QWidget::resizeEvent(event);rebuild_raster();
+    QWidget::resizeEvent(event);invalidate_raster();invalidate_axes();
 }
