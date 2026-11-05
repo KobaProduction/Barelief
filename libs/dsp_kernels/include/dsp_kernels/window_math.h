@@ -17,8 +17,8 @@ inline float cosine_series_value(std::size_t i,std::span<const float> coefficien
     for(std::size_t k=1;k<coefficients.size();++k)value+=coefficients[k]*std::cos(float(k)*angle);
     return value;
 }
-inline double cosine_series_value(std::size_t i,std::span<const double> coefficients,double period,bool mirror) noexcept {
-    const double position=mirror?std::min(double(i),period-double(i)):double(i);
+inline double cosine_series_value(std::size_t i,std::span<const double> coefficients,double period,bool mirror,double origin=0) noexcept {
+    const double position=(mirror?std::min(double(i),period-double(i)):double(i))+origin;
     const double angle=2.*std::numbers::pi*position/period;
     double value=coefficients[0];
     for(std::size_t k=1;k<coefficients.size();++k)value+=coefficients[k]*std::cos(double(k)*angle);
@@ -34,6 +34,18 @@ inline bool cosine_sum_window(std::span<float> output,std::span<const float> coe
     if(!std::all_of(coefficients.begin(),coefficients.end(),[](float x){return std::isfinite(x);}))return false;
     for(std::size_t i=0;i<output.size();++i){
         const float value=detail::cosine_series_value(i,coefficients,period,mirror);
+        if(!std::isfinite(value))return false;
+        output[i]=value;
+    }
+    return true;
+}
+
+inline bool cosine_sum_window(std::span<double> output,std::span<const double> coefficients,
+                              double period,bool mirror=false,double origin=0) noexcept {
+    if(output.empty() || coefficients.empty() || !std::isfinite(period) || period<=0 || !std::isfinite(origin))return false;
+    if(!std::all_of(coefficients.begin(),coefficients.end(),[](double x){return std::isfinite(x);}))return false;
+    for(std::size_t i=0;i<output.size();++i){
+        const double value=detail::cosine_series_value(i,coefficients,period,mirror,origin);
         if(!std::isfinite(value))return false;
         output[i]=value;
     }
@@ -61,6 +73,13 @@ inline bool symmetric_hamming_window(std::span<float> output) noexcept {
     if(output.size()==1)return false;
     constexpr std::array coefficients{.54f,-.46f};
     return cosine_sum_window(output,coefficients,float(output.size()-1),true);
+}
+inline bool symmetric_hamming_window(std::span<double> output) noexcept {
+    if(output.empty())return true;
+    if(output.size()==1)return false;
+    constexpr std::array coefficients{.54,.46};
+    const double period=double(output.size()-1);
+    return cosine_sum_window(output,coefficients,period,false,-period/2.);
 }
 
 using signal_contracts::WindowFunction;

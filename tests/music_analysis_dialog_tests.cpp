@@ -180,6 +180,73 @@ static int theme_dialog(QApplication& app,const QTemporaryDir& directory,const Q
     return 0;
 }
 
+static void connect_large_folder_chooser(QTimer& chooser_driver,core_app::MusicAnalysisDialog& dialog,
+                                         const QString& input,bool& file_dialog_seen,bool& confirmed) {
+    QObject::connect(&chooser_driver,&QTimer::timeout,&dialog,[&]{
+        const auto top_levels=QApplication::topLevelWidgets();
+        for(auto* top:top_levels) {
+            auto* chooser=qobject_cast<QFileDialog*>(top);
+            if(!chooser||!chooser->isVisible())continue;
+            file_dialog_seen=true;
+            if(!confirmed) {
+                confirmed=true;
+                chooser->setDirectory(input);
+                chooser->selectFile(input);
+                QMetaObject::invokeMethod(chooser,"accept",Qt::QueuedConnection);
+            }
+        }
+    });
+}
+static void connect_large_folder_deadline(QTimer& deadline,core_app::MusicAnalysisDialog& dialog) {
+    deadline.setSingleShot(true);
+    QObject::connect(&deadline,&QTimer::timeout,&dialog,[&]{
+        const auto top_levels=QApplication::topLevelWidgets();
+        for(auto* top:top_levels)
+            if(auto* chooser=qobject_cast<QFileDialog*>(top);chooser&&chooser->isVisible())chooser->reject();
+    });
+}
+static int verify_large_folder_list(QApplication& app,core_app::MusicAnalysisDialog& dialog,const QStringList& fake_paths) {
+    auto* list=dialog.findChild<QListWidget*>("musicFiles");
+    auto* count=dialog.findChild<QLabel*>("musicFileCount");
+    if(!list || !count || list->count()!=106574 ||
+       !count->text().contains("106574") ||
+       list->item(0)->text()!=fake_paths[0] ||
+       list->item(511)->text()!=fake_paths[511] ||
+       list->item(106573)->text()!=fake_paths[106573])
+        return failure(63,__LINE__);
+    // A normal Qt item view must be scrollable all the way to the last track.
+    list->scrollToItem(list->item(106573));
+    app.processEvents();
+    if(!list->verticalScrollBar() ||
+       list->verticalScrollBar()->value()!=list->verticalScrollBar()->maximum())
+        return failure(64,__LINE__);
+    list->scrollToTop();
+    app.processEvents();
+    if(list->verticalScrollBar()->value()!=list->verticalScrollBar()->minimum())
+        return failure(65,__LINE__);
+    return 0;
+}
+static int launch_large_folder_scan(QApplication& app,core_app::MusicAnalysisDialog& dialog,QTimer& refusal,
+                                    std::atomic_int& analyses,int& unexpected_dialogs) {
+    QObject::connect(&refusal,&QTimer::timeout,&dialog,[&]{
+        const auto top_levels=QApplication::topLevelWidgets();
+        for(auto* top:top_levels)
+            if(auto* chooser=qobject_cast<QFileDialog*>(top);chooser&&chooser->isVisible()){
+                ++unexpected_dialogs;
+                chooser->reject();
+            }
+    });
+    refusal.start(5);
+    dialog.findChild<QPushButton*>("musicRun")->click();
+    QElapsedTimer elapsed;elapsed.start();
+    while(analyses.load()==0 && elapsed.elapsed()<3000){
+        app.processEvents();QThread::msleep(1);
+    }
+    app.processEvents();refusal.stop();
+    if(unexpected_dialogs!=0 || analyses.load()!=1)return failure(66,__LINE__);
+    return 0;
+}
+
 static int large_folder_display_and_start(QApplication& app,const QTemporaryDir& directory) {
     using namespace desktop_analysis::offline;
     const auto input=directory.filePath("large-source");
@@ -207,82 +274,27 @@ static int large_folder_display_and_start(QApplication& app,const QTemporaryDir&
     dialog.resize(1600,900);dialog.show();app.processEvents();
     bool file_dialog_seen=false,confirmed=false;
     QTimer chooser_driver;
-    QObject::connect(&chooser_driver,&QTimer::timeout,&dialog,[&]{
-        for(auto* top:QApplication::topLevelWidgets()) {
-            auto* chooser=qobject_cast<QFileDialog*>(top);
-            if(!chooser||!chooser->isVisible())continue;
-            file_dialog_seen=true;
-            if(!confirmed) {
-                confirmed=true;
-                chooser->setDirectory(input);
-                chooser->selectFile(input);
-                QMetaObject::invokeMethod(chooser,"accept",Qt::QueuedConnection);
-            }
-        }
-    });
+    connect_large_folder_chooser(chooser_driver,dialog,input,file_dialog_seen,confirmed);
     chooser_driver.start(10);
     QTimer deadline;
-    deadline.setSingleShot(true);
-    QObject::connect(&deadline,&QTimer::timeout,&dialog,[&]{
-        for(auto* top:QApplication::topLevelWidgets())
-            if(auto* chooser=qobject_cast<QFileDialog*>(top);chooser&&chooser->isVisible())chooser->reject();
-    });
+    connect_large_folder_deadline(deadline,dialog);
     deadline.start(4000);
     dialog.findChild<QPushButton*>("musicAddFolder")->click();
     chooser_driver.stop();deadline.stop();app.processEvents();
     if(!file_dialog_seen || !confirmed || enumerations!=1)return failure(62,__LINE__);
-    auto* list=dialog.findChild<QListWidget*>("musicFiles");
-    auto* count=dialog.findChild<QLabel*>("musicFileCount");
-    if(!list || !count || list->count()!=106574 ||
-       !count->text().contains("106574") ||
-       list->item(0)->text()!=fake_paths[0] ||
-       list->item(511)->text()!=fake_paths[511] ||
-       list->item(106573)->text()!=fake_paths[106573])
-        return failure(63,__LINE__);
-    // A normal Qt item view must be scrollable all the way to the last track.
-    list->scrollToItem(list->item(106573));
-    app.processEvents();
-    if(!list->verticalScrollBar() ||
-       list->verticalScrollBar()->value()!=list->verticalScrollBar()->maximum())
-        return failure(64,__LINE__);
-    list->scrollToTop();
-    app.processEvents();
-    if(list->verticalScrollBar()->value()!=list->verticalScrollBar()->minimum())
-        return failure(65,__LINE__);
+    if(const int result=verify_large_folder_list(app,dialog,fake_paths);result)return result;
     int unexpected_dialogs=0;
     QTimer refusal;
-    QObject::connect(&refusal,&QTimer::timeout,&dialog,[&]{
-        for(auto* top:QApplication::topLevelWidgets())
-            if(auto* chooser=qobject_cast<QFileDialog*>(top);chooser&&chooser->isVisible()){
-                ++unexpected_dialogs;
-                chooser->reject();
-            }
-    });
-    refusal.start(5);
-    dialog.findChild<QPushButton*>("musicRun")->click();
-    QElapsedTimer elapsed;elapsed.start();
-    while(analyses.load()==0 && elapsed.elapsed()<3000){
-        app.processEvents();QThread::msleep(1);
-    }
-    app.processEvents();refusal.stop();
-    if(unexpected_dialogs!=0 || analyses.load()!=1)return failure(66,__LINE__);
+    if(const int result=launch_large_folder_scan(app,dialog,refusal,analyses,unexpected_dialogs);result)return result;
     dialog.close();
     return 0;
 }
 
-static int completed_collection_disables_last_batch_save(
-    QApplication& app,const QTemporaryDir& directory,const QString& fixture_path) {
+static desktop_analysis::offline::AnalysisResult completed_scan_batch(
+    const QStringList& batch,const desktop_analysis::offline::AnalysisOptions& options,
+    const std::atomic_bool& cancelled,const desktop_analysis::offline::AnalysisServices::Progress& progress,
+    const QString& fixture_path) {
     namespace offline=desktop_analysis::offline;
-    const auto input=directory.filePath("bulk-fixture-source");
-    if(!QDir().mkpath(input))return failure(70,__LINE__);
-    QStringList paths;
-    for(int i=0;i<129;++i)
-        paths.append(input+QString("/track-%1.wav").arg(i,4,10,QLatin1Char('0')));
-    auto services=analysis_services();
-    std::atomic_int calls=0;
-    services.scan_files=[&](const QStringList& batch,const offline::AnalysisOptions& options,
-                            const std::atomic_bool& cancelled,const offline::AnalysisServices::Progress& progress){
-        ++calls;
         const auto seed=offline::scan_music_files({fixture_path},options,cancelled);
         offline::AnalysisResult result;
         if(!seed.success)return result;
@@ -302,6 +314,22 @@ static int completed_collection_disables_last_batch_save(
         };
         if(progress)progress(std::size_t(batch.size()),std::size_t(batch.size()));
         return result;
+}
+
+static int completed_collection_disables_last_batch_save(
+    QApplication& app,const QTemporaryDir& directory,const QString& fixture_path) {
+    namespace offline=desktop_analysis::offline;
+    const auto input=directory.filePath("bulk-fixture-source");
+    if(!QDir().mkpath(input))return failure(70,__LINE__);
+    QStringList paths;
+    for(int i=0;i<129;++i)
+        paths.append(input+QString("/track-%1.wav").arg(i,4,10,QLatin1Char('0')));
+    auto services=analysis_services();
+    std::atomic_int calls=0;
+    services.scan_files=[&](const QStringList& batch,const offline::AnalysisOptions& options,
+                            const std::atomic_bool& cancelled,const offline::AnalysisServices::Progress& progress){
+        ++calls;
+        return completed_scan_batch(batch,options,cancelled,progress,fixture_path);
     };
     core_app::MusicAnalysisDialog dialog({}, {},std::move(services));
     dialog.resize(1300,900);dialog.show();app.processEvents();

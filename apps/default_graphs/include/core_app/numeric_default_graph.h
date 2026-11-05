@@ -18,6 +18,10 @@ domain::NumericProcessingGraph numeric_compact_spectrogram_graph();
 domain::NumericProcessingGraph numeric_rhythm_graph();
 // Complete existing trace recipe for offline replay, outside the interactive catalogue.
 domain::NumericProcessingGraph numeric_rhythm_replay_graph();
+namespace rhythm_replay_graph {
+inline constexpr domain::NodeId pcm_source=332,pcm_mixer=333,pcm_clock=334;
+inline constexpr std::uint32_t pcm_rate=32768;
+}
 
 struct NumericExampleSection {
     domain::NodeId view;

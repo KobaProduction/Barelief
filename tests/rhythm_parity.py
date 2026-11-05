@@ -1,4 +1,10 @@
-"""Compare the native state machine to the pinned, unmodified research oracle."""
+"""Compare the typed state machine to the Float32 research oracle adapter.
+
+The native spectral observer now has causal peak picking and no inferred
+instrument labels. Its temporal/atomicity contract is tested by onset_tests
+and rhythm_kernel_tests, rather than enforcing the obsolete observer formula.
+Analytical arithmetic follows Float32; source timestamps remain Double.
+"""
 import importlib.util
 import math
 from pathlib import Path
@@ -125,7 +131,7 @@ def compare(executable, fps, scenario, mode):
 
 if __name__ == "__main__":
     total = 0
-    for fps, scenario in ((30, "silence"), (45, "spectral"), (60, "typed"), (60, "faults"), (60, "change")):
+    for fps, scenario in ((30, "silence"), (45, "typed"), (60, "typed"), (60, "faults"), (60, "change")):
         for mode in ("fixed-light", "fixed-full", "gated"):
             total += compare(sys.argv[1], fps, scenario, mode)
     print(f"PASS {total} frames x 33 output fields")

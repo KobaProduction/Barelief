@@ -1,6 +1,7 @@
 #include "isolated_gui_platform.h"
 #include "test_assertions.h"
 #include "synthetic_capture.h"
+#include "music_gui_diagnostics.h"
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
 #include <core_app/numeric_default_graph.h>
@@ -42,9 +43,35 @@
 
 using namespace signal_contracts;
 #define CHECK(x) do { if(!test_assertions::verify(bool(x),#x,__FILE__,__LINE__))return 1; } while(false)
+static void trace_music_application() {
+    if(!music_gui_diagnostics::enabled())return;
+    music_gui_diagnostics::event("APPLICATION_QUERY_BEGIN");
+    auto* app=qobject_cast<CoreApplication*>(QCoreApplication::instance());
+    if(app)music_gui_diagnostics::application(app->presenter().client().snapshot().graph_revision,app->presenter().graph_request_pending());
+    music_gui_diagnostics::event("APPLICATION_QUERY_END");
+}
 static bool wait_until(const std::function<bool()>& predicate,int timeout=7000) {
+    music_gui_diagnostics::Scope trace("wait_until");
+    music_gui_diagnostics::event("WAIT_TIMEOUT",timeout);trace_music_application();
     QElapsedTimer timer;timer.start();
-    while(timer.elapsed()<timeout){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(5);}return predicate();
+    std::uint64_t iteration=0;
+    while(timer.elapsed()<timeout){
+        music_gui_diagnostics::iteration(++iteration);music_gui_diagnostics::event("PROCESS_EVENTS_BEGIN");
+        QCoreApplication::processEvents();music_gui_diagnostics::event("PROCESS_EVENTS_END");
+        music_gui_diagnostics::event("PREDICATE_BEGIN");const bool ready=predicate();music_gui_diagnostics::event("PREDICATE_END",ready);
+        if(ready){trace_music_application();return true;}
+        if(iteration%100==0)trace_music_application();
+        QThread::msleep(5);
+    }
+    music_gui_diagnostics::event("FINAL_PREDICATE_BEGIN");const bool ready=predicate();music_gui_diagnostics::event("FINAL_PREDICATE_END",ready);
+    trace_music_application();return ready;
+}
+static void trace_music_frame(int node,Status status,const pipeline::DeliveredNumericFrame& frame,long long filled=-1) {
+    if(!music_gui_diagnostics::enabled())return;
+    if(!frame.frame){music_gui_diagnostics::endpoint(node,int(status),false,0,0,filled);return;}
+    const auto& value=frame.frame.view();const auto* view=std::get_if<NumericView>(&value.payload);
+    if(!view || !view->contract){music_gui_diagnostics::endpoint(node,int(status),value.stamp.available,0,0,filled);return;}
+    music_gui_diagnostics::endpoint(node,int(status),value.stamp.available,view->actual[0],view->contract->shape.rank==Rank::Matrix?view->actual[1]:1,filled);
 }
 static QByteArray read(const QString& path) {QFile f(path);return f.open(QIODevice::ReadOnly)?f.readAll():QByteArray{};}
 static bool write_tones(const QString& path) {
@@ -98,6 +125,7 @@ public:
     void set_lifecycle_handler(LifecycleHandler h)override{worker_->set_lifecycle_handler(std::move(h));}
 };
 static int analysis_dialog_workflow(MainWindow* window,QMenu* tools,const QTemporaryDir& directory) {
+    music_gui_diagnostics::Scope trace("analysis_dialog_workflow");
     auto* analyze=tools->findChild<QAction*>("musicFileAnalysis");CHECK(analyze);analyze->trigger();
     auto* analysis=window->findChild<QDialog*>("musicAnalysisDialog");CHECK(analysis);
     auto* files=analysis->findChild<QListWidget*>("musicFiles");auto* analyze_run=analysis->findChild<QPushButton*>("musicRun");
@@ -134,6 +162,7 @@ static int benchmark_results(QDialog* dialog,QPushButton* run) {
 return 0;
 }
 static int benchmark_dialog_lifecycle(MainWindow* window,QMenu* menu) {
+    music_gui_diagnostics::Scope trace("benchmark_dialog_lifecycle");
     // Benchmark normal completion and destruction while its worker is running.
     auto* tools=window->findChild<QMenu*>("analysisToolsMenu");CHECK(tools);
     CHECK(!menu->findChild<QAction*>("resamplerComparison") && !menu->findChild<QAction*>("musicFileAnalysis"));
@@ -146,6 +175,7 @@ return 0;
 }
 
 static int publish_reloaded_music(CoreApplication& app,MainWindow* window,const QString& input_path,const QByteArray& original,const auto& reloaded,const auto& saved,const auto& query) {
+    music_gui_diagnostics::Scope trace("publish_reloaded_music");
 pipeline::DeliveredNumericFrame note;
     desktop::NumericDraftPresentation reloaded_display;CHECK(desktop::read_numeric_presentation(saved,reloaded_display));
     auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);QString reload_error;
@@ -163,6 +193,7 @@ static bool profile_gains_preserved(const domain::NumericProcessingGraph& graph,
     return false;
 }
 static int save_reload_workflow(CoreApplication& app,MainWindow* window,NumericEditorGraphModel* model,const QString& input_path,const QString& saved_path,const QByteArray& original,const QByteArray& profile_json,const auto& query) {
+    music_gui_diagnostics::Scope trace("save_reload_workflow");
 pipeline::DeliveredNumericFrame note;
     CHECK(read(input_path)==original);app.save_configuration_as(saved_path);CHECK(QFile::exists(saved_path));
     desktop::NumericProjectDocument saved;domain::NumericProcessingGraph reloaded;CHECK(desktop::load_numeric_project(saved_path,saved,reloaded));
@@ -175,6 +206,7 @@ return 0;
 }
 
 static int select_music_stream(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,int stream) {
+    music_gui_diagnostics::Scope trace("select_music_stream");
 pipeline::DeliveredNumericFrame note;
         auto* selector=model->delegateModel<AudioNodeModel>(200);CHECK(selector);
         const auto revision=app.presenter().client().snapshot().graph_revision;CHECK(selector->select_input(domain::PortId(stream)));
@@ -193,6 +225,7 @@ static QString profile_gains_text(const std::vector<float>& gains) {
     return values.join(',');
 }
 static int load_music_profile(NumericEditorGraphModel* model,const QString& path,const QByteArray& original,const auto& edit) {
+    music_gui_diagnostics::Scope trace("load_music_profile");
     desktop_analysis::offline::ProfileDocument loaded;QString error;
     CHECK(desktop_analysis::offline::load_profile(path,loaded,error));
     CHECK(desktop_analysis::offline::encode_profile(loaded)==original);
@@ -206,6 +239,7 @@ static int load_music_profile(NumericEditorGraphModel* model,const QString& path
     return 0;
 }
 static int profile_and_source_selection(CoreApplication& app,NumericEditorGraphModel* model,const QTemporaryDir& directory,const auto& query,const auto& edit,QByteArray& profile_json) {
+    music_gui_diagnostics::Scope trace("profile_and_source_selection");
 pipeline::DeliveredNumericFrame note;
     // A real canonical profile document from the offline export adapter.
     desktop_analysis::offline::ProfileDocument profile;
@@ -225,10 +259,12 @@ return 0;
 }
 
 static int music_projection_representations(const auto& edit) {
+    music_gui_diagnostics::Scope trace("music_projection_representations");
     for(int representation:{0,1,3,4,5,6,2})CHECK(edit(30,"representation",representation));
 return 0;
 }
 static int broadband_projection_cells(const auto& query,const auto& edit) {
+    music_gui_diagnostics::Scope trace("broadband_projection_cells");
 pipeline::DeliveredNumericFrame broad;
     if(const auto result=music_projection_representations(edit))return result;
     CHECK(edit(33,"bits",1));CHECK(query(7,broad));CHECK(std::get<NumericView>(broad.frame.view().payload).contract->dtype==DType::UInt16);
@@ -238,6 +274,7 @@ pipeline::DeliveredNumericFrame broad;
 return 0;
 }
 static int projection_and_cells(NumericEditorGraphModel* model,const auto& query,const auto& edit) {
+    music_gui_diagnostics::Scope trace("projection_and_cells");
 pipeline::DeliveredNumericFrame note;
     if(const auto result=broadband_projection_cells(query,edit))return result;
     CHECK(edit(32,"notes",NumericLiteral{std::int64_t{24}}));CHECK(query(7,note));CHECK(std::get<NumericView>(note.frame.view().payload).actual[1]==32);
@@ -248,6 +285,8 @@ return 0;
 }
 
 static int music_resampler_mode(const auto& query,const auto& edit,int mode) {
+    music_gui_diagnostics::Scope trace("music_resampler_mode");
+    music_gui_diagnostics::edit(201,"mode",mode);
 pipeline::DeliveredNumericFrame pcm;
         CHECK(edit(201,"mode",mode));CHECK(query(201,pcm));
         CHECK(std::get<NumericView>(pcm.frame.view().payload).contract->clock.sample_rate==32768);
@@ -262,14 +301,19 @@ static int verify_music_bypass_draft(CoreApplication& app,NumericEditorGraphMode
     return 0;
 }
 static int music_resampler_bypass_draft(CoreApplication& app,NumericEditorGraphModel* model) {
+    music_gui_diagnostics::Scope trace("music_resampler_bypass_draft");
     const auto working=app.presenter().applied_numeric_graph();CHECK(working);
     const auto revision=app.presenter().client().snapshot().graph_revision;
     auto* resampler=model->delegateModel<AudioNodeModel>(201);
     const auto* field=resampler?resampler->parameter_model()->field("mode"):nullptr;CHECK(field&&field->read);
     const auto original=field->read();
+    music_gui_diagnostics::edit(201,"bypass_mode",0);music_gui_diagnostics::event("BYPASS_EDIT_BEGIN");
     CHECK(resampler->parameter_model()->edit("mode",0));
+    music_gui_diagnostics::event("BYPASS_EDIT_END");
     if(const int failure=verify_music_bypass_draft(app,model,*working,revision);failure)return failure;
+    music_gui_diagnostics::event("BYPASS_RESTORE_BEGIN");
     CHECK(resampler->parameter_model()->edit("mode",original));
+    music_gui_diagnostics::event("BYPASS_RESTORE_END");
     domain::NumericProcessingGraph restored;QString error;CHECK(model->export_numeric_graph(restored,&error));
     return 0;
 }
@@ -290,6 +334,7 @@ static void music_fft_parameters(domain::ConfiguredProcessingNode& node,std::uin
     }
 }
 static int commit_music_geometry(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,const domain::NumericProcessingGraph& requested,int changed_node,int observed_node) {
+    music_gui_diagnostics::Scope trace("commit_music_geometry");
     const auto revision=app.presenter().client().snapshot().graph_revision;
     domain::NumericProcessingGraph evaluated,executable;
     CHECK(domain::resolve_numeric_parameter_bindings(requested,numeric_editor::limits(),evaluated,executable,changed_node));
@@ -304,18 +349,20 @@ static void music_text_parameter(domain::ConfiguredProcessingNode& node,const ch
     if(found==fields.end())fields.push_back({key,std::move(value)});else found->value=std::move(value);
 }
 static int edit_music_rate(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,std::uint64_t rate) {
+    music_gui_diagnostics::Scope trace("edit_music_rate");
+    music_gui_diagnostics::edit(201,"output_rate",static_cast<long long>(rate));
     auto requested=model->numeric_graph();
     const auto* fft=model->delegateModel<AudioNodeModel>(4)->numeric_node();
     const auto size=std::get<NumericContract>(fft->inputs[0].contract.view()).shape.extents[0].maximum;
     for(auto& node:requested.nodes){
         music_fft_parameters(node,size,double(rate));
-        if(node.id==2)music_fft_literal(node,"input_rate",rate);
         if(node.id==201)music_fft_literal(node,"output_rate",rate);
         if(node.id==5||node.id==6||node.id==30)music_fft_literal(node,"sample_rate",rate);
     }
     return commit_music_geometry(app,model,query,requested,201,201);
 }
 static int resampler_modes_and_rate(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,const auto& edit) {
+    music_gui_diagnostics::Scope trace("resampler_modes_and_rate");
     pipeline::DeliveredNumericFrame pcm;
     if(const int failure=music_resampler_bypass_draft(app,model);failure)return failure;
     // This route carries Float32; Q15 has separate PCM16 pipeline coverage.
@@ -340,7 +387,9 @@ static void music_window_calibration(domain::ConfiguredProcessingNode& node,sign
     }
 }
 static int music_window_function_choices(CoreApplication& app,NumericEditorGraphModel* model,const auto& query) {
+    music_gui_diagnostics::Scope trace("music_window_function_choices");
     for(int function:{1,2,3,4,5,6,0}){
+        music_gui_diagnostics::edit(3,"function",function);
         auto requested=model->numeric_graph();
         const auto* fft=model->delegateModel<AudioNodeModel>(4)->numeric_node();
         const auto input=std::get<NumericContract>(fft->inputs[0].contract.view());
@@ -350,6 +399,8 @@ static int music_window_function_choices(CoreApplication& app,NumericEditorGraph
     return 0;
 }
 static int edit_music_fft_geometry(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,std::uint64_t size) {
+    music_gui_diagnostics::Scope trace("edit_music_fft_geometry");
+    music_gui_diagnostics::edit(2,"size",static_cast<long long>(size));
     auto requested=model->numeric_graph();
     const auto* fft=model->delegateModel<AudioNodeModel>(4)->numeric_node();
     const auto sample_rate=std::get<NumericContract>(fft->inputs[0].contract.view()).clock.sample_rate;
@@ -357,6 +408,7 @@ static int edit_music_fft_geometry(CoreApplication& app,NumericEditorGraphModel*
     return commit_music_geometry(app,model,query,requested,2,4);
 }
 static int resamplers_and_fft(CoreApplication& app,NumericEditorGraphModel* model,const auto& query,const auto& edit) {
+    music_gui_diagnostics::Scope trace("resamplers_and_fft");
 pipeline::DeliveredNumericFrame fft;
     if(const auto result=resampler_modes_and_rate(app,model,query,edit))return result;
     if(const auto result=music_window_function_choices(app,model,query))return result;
@@ -369,12 +421,15 @@ return 0;
 }
 
 static bool edit_music_parameter(CoreApplication& app,NumericEditorGraphModel* model,MainWindow* window,QString& edit_rejection,const auto& query,int id,const char* field,const NodeParameterModel::Value& value) {
+    music_gui_diagnostics::Scope trace("edit_music_parameter");
+    music_gui_diagnostics::edit(id,field);trace_music_application();
 
         const auto revision=app.presenter().client().snapshot().graph_revision;
         edit_rejection.clear();auto* node=model->delegateModel<AudioNodeModel>(id);
         const auto* descriptor=node?node->parameter_model()->field(field):nullptr;
         const bool unchanged=descriptor&&descriptor->read&&descriptor->read()==value;
         const bool committed=node&&node->parameter_model()->edit(field,value);
+        music_gui_diagnostics::event("EDIT_COMMITTED",committed);
         const bool ready=committed&&wait_until([&]{pipeline::DeliveredNumericFrame result,changed;const auto current=app.presenter().client().snapshot().graph_revision;return !app.presenter().graph_request_pending()&&(unchanged?current==revision:current>revision)&&query(7,result)&&query(id,changed);});
         if(!ready) {
             pipeline::DeliveredNumericFrame changed;const bool delivered=query(id,changed);
@@ -383,10 +438,11 @@ static bool edit_music_parameter(CoreApplication& app,NumericEditorGraphModel* m
                 app.presenter().graph_request_pending(),delivered,edit_rejection.toUtf8().constData(),window->statusBar()->currentMessage().toUtf8().constData());
             std::fprintf(stderr,"Edit diagnostics=%s\n",QJsonDocument(app.pipeline().snapshot().diagnostics).toJson(QJsonDocument::Compact).constData());
         }
-        return ready;
+        music_gui_diagnostics::event("EDIT_RESULT",ready);return ready;
 }
 
 static int export_project(CoreApplication& app,MainWindow* window,const QString& export_path) {
+    music_gui_diagnostics::Scope trace("export_project");
     if(!export_path.isEmpty()) {
         CHECK(!QFile::exists(export_path));app.save_configuration_as(export_path);
         if(!QFile::exists(export_path))std::fprintf(stderr,"Save As failed: %s\n",window->statusBar()->currentMessage().toUtf8().constData());
@@ -396,6 +452,7 @@ return 0;
 }
 
 static int render_history_image(const pipeline::DeliveredNumericFrame& history,presentation::NumericViewAdapter& adapter,const auto& endpoint,const QString& image_dir) {
+    music_gui_diagnostics::Scope trace("render_history_image");
     NumericImageView image;image.resize(640,360);
     presentation::NumericImagePort port;port.set_matrix=[&](const auto& rows){image.set_matrix(rows);};
     port.set_axis_metadata=[&](const auto& axes){return image.set_axis_metadata(axes);};
@@ -414,6 +471,7 @@ static int render_history_image(const pipeline::DeliveredNumericFrame& history,p
     return 0;
 }
 static int render_histories(CoreApplication& app,const auto& endpoint,const QString& image_dir) {
+    music_gui_diagnostics::Scope trace("render_histories");
     // The single research History contains 512 x (16 broadband + 48 note) UInt8 codes.
     std::uint64_t ordinal=0,filled=0;pipeline::DeliveredNumericFrame history;
     CHECK(app.pipeline().query_numeric(endpoint(7),history,&ordinal,&filled)==Status::ok);
@@ -424,9 +482,12 @@ static int render_histories(CoreApplication& app,const auto& endpoint,const QStr
 }
 
 static int filled_histories(CoreApplication& app,const auto& endpoint) {
+    music_gui_diagnostics::Scope trace("filled_histories");
     pipeline::DeliveredNumericFrame history;
     std::uint64_t ordinal=0,filled=0;
-    CHECK(wait_until([&]{return app.pipeline().query_numeric(endpoint(7),history,&ordinal,&filled)==Status::ok&&filled==512;},16000));
+    CHECK(wait_until([&]{music_gui_diagnostics::event("HISTORY_QUERY_BEGIN");
+        const auto status=app.pipeline().query_numeric(endpoint(7),history,&ordinal,&filled);
+        trace_music_frame(7,status,history,filled);music_gui_diagnostics::event("HISTORY_QUERY_END");return status==Status::ok&&filled==512;},16000));
     const auto view=std::get<NumericView>(history.frame.view().payload);
     CHECK(view.actual[0]==512 && view.actual[1]==64 && view.contract->dtype==DType::UInt8);
     CHECK(view.contract->shape.rank==Rank::Matrix && 512*view.actual[1]==32768);
@@ -436,6 +497,7 @@ static int filled_histories(CoreApplication& app,const auto& endpoint) {
 }
 
 static int initial_music_delivery(CoreApplication& app,const auto& graph_id,const auto& endpoint,const auto& query) {
+    music_gui_diagnostics::Scope trace("initial_music_delivery");
     pipeline::DeliveredNumericFrame broad,pcm,fft,phase,power;
     const bool initial_ready=wait_until([&]{return query(7,broad)&&query(201,pcm)&&query(4,fft)&&query(5,power)&&query(30,phase);});
     if(!initial_ready) {
@@ -521,6 +583,7 @@ static int research_topology(NumericEditorGraphModel* model,const auto& initial_
 }
 
 static int fresh_rfft_parameter_edits(AudioNodeModel& node) {
+    music_gui_diagnostics::Scope trace("fresh_rfft_parameter_edits");
     const auto before=node.save();
     CHECK(!node.parameter_model()->edit("fft_size",NumericLiteral{std::uint64_t{512}}));
     CHECK(node.save()==before);
@@ -528,6 +591,7 @@ static int fresh_rfft_parameter_edits(AudioNodeModel& node) {
     return 0;
 }
 static int fresh_catalog_kind(NumericEditorGraphModel* model,const char* kind) {
+    music_gui_diagnostics::Scope trace("fresh_catalog_kind");
         NumericEditorGraphModel fresh(model->dataModelRegistry());
         domain::NumericProcessingGraph draft;draft.graph_id="fresh-catalog-node";
         auto node=numeric_editor::default_node(kind);node.id=900;draft.nodes={node};CHECK(fresh.set_numeric_graph(draft));
@@ -538,6 +602,7 @@ static int fresh_catalog_kind(NumericEditorGraphModel* model,const char* kind) {
 return 0;
 }
 static int fresh_catalog_edits(NumericEditorGraphModel* model) {
+    music_gui_diagnostics::Scope trace("fresh_catalog_edits");
     for(const auto* kind:{"SpectrumProjection","RFFT","SpectralQuantize"}) {
         if(const auto result=fresh_catalog_kind(model,kind))return result;
     }
@@ -545,6 +610,7 @@ return 0;
 }
 
 static int catalog_contracts() {
+    music_gui_diagnostics::Scope trace("catalog_contracts");
     for(const auto* kind:{"RFFT","SpectrumProjection","FrequencyNormalizer","BroadbandFeatures","NoteSalience","SpectralQuantize"}) {
         const auto node=numeric_editor::default_node(kind);domain::ResolvedProcessingNode resolved;
         CHECK(domain::resolve_processing_node(node,numeric_editor::limits(),resolved));
@@ -572,13 +638,17 @@ struct MusicFrameCache {
         latest[frame.context->endpoint.node]=std::move(frame);
     }
     bool query(CoreApplication& app,const auto& endpoint,int id,pipeline::DeliveredNumericFrame& frame) {
-        if(id==7)return app.pipeline().query_numeric(endpoint(id),frame)==Status::ok&&finite_values(frame);
-        {std::lock_guard lock(mutex);const auto found=latest.find(id);if(found==latest.end())return false;frame=found->second;}
+        music_gui_diagnostics::Scope trace("endpoint_query");music_gui_diagnostics::event("ENDPOINT_QUERY_BEGIN",id);
+        if(id==7){const auto status=app.pipeline().query_numeric(endpoint(id),frame);trace_music_frame(id,status,frame);return status==Status::ok&&finite_values(frame);}
+        {std::lock_guard lock(mutex);const auto found=latest.find(id);
+            if(found==latest.end()){music_gui_diagnostics::endpoint(id,-1,false,0,0,-1);return false;}frame=found->second;}
+        trace_music_frame(id,frame.status,frame);
         return frame.status==Status::ok&&frame.delivery.graph_revision==app.presenter().client().snapshot().graph_revision&&finite_values(frame);
     }
 };
 
 static int music_control_workflow(CoreApplication& app,MainWindow* window,NumericEditorGraphModel* model,QMenu* menu,const QTemporaryDir& directory,const QString& input_path,const QString& saved_path,const QByteArray& original,const QString& image_dir,const auto& query,const auto& edit) {
+    music_gui_diagnostics::Scope trace("music_control_workflow");
     if(const auto result=resamplers_and_fft(app,model,query,edit))return result;
     if(const auto result=projection_and_cells(model,query,edit))return result;
     QByteArray profile_json;
@@ -588,16 +658,18 @@ static int music_control_workflow(CoreApplication& app,MainWindow* window,Numeri
     if(const auto result=analysis_dialog_workflow(window,window->findChild<QMenu*>("analysisToolsMenu"),directory))return result;return 0;
 }
 static int music_processing_workflow(CoreApplication& app,MainWindow* window,NumericEditorGraphModel* model,QMenu* menu,const QTemporaryDir& directory,const QString& input_path,const QString& saved_path,const QByteArray& original,const QString& export_path,const QString& image_dir,QString& edit_rejection) {
+    music_gui_diagnostics::Scope trace("music_processing_workflow");
     const auto graph_id=model->numeric_graph().graph_id;
     auto endpoint=[&](int id,domain::PortId port=0){return pipeline::EndpointIdentity{graph_id,id,domain::PortDirection::Output,port};};
     MusicFrameCache cache;
     auto query=[&](int id,pipeline::DeliveredNumericFrame& frame){return cache.query(app,endpoint,id,frame);};
     std::vector<pipeline::EndpointIdentity> endpoints;
     for(int id:{200,201,2,3,4,5,6,30,31,32,35,33,7})endpoints.push_back(endpoint(id));
+    music_gui_diagnostics::event("SUBSCRIBE_BEGIN");
     const auto tap=app.pipeline().subscribe_numeric_tap(endpoints,[&](pipeline::DeliveredNumericFrame frame){
         cache.accept(std::move(frame));
-    },{});CHECK(tap);
-    struct Guard{pipeline::NumericEngine& engine;std::uint64_t tap;~Guard(){engine.unsubscribe_numeric_tap(tap);}} guard{app.pipeline(),tap};
+    },{});music_gui_diagnostics::event("SUBSCRIBE_END",static_cast<long long>(tap));CHECK(tap);
+    struct Guard{pipeline::NumericEngine& engine;std::uint64_t tap;~Guard(){music_gui_diagnostics::event("UNSUBSCRIBE_BEGIN");engine.unsubscribe_numeric_tap(tap);music_gui_diagnostics::event("UNSUBSCRIBE_END");}} guard{app.pipeline(),tap};
     if(const auto result=initial_music_delivery(app,graph_id,endpoint,query))return result;
     if(const auto result=filled_histories(app,endpoint))return result;
     if(const auto result=render_histories(app,endpoint,image_dir))return result;
@@ -611,8 +683,13 @@ return 0;
 }
 
 static int open_research_preset(CoreApplication& app,MainWindow* window,NumericEditorGraphModel* model,QMenu* menu,const auto& initial_graph) {
-    auto* preset=menu->findChild<QAction*>("example-music-research");CHECK(preset&&preset->isVisible());
-    const auto old_revision=app.presenter().client().snapshot().graph_revision;preset->trigger();
+    music_gui_diagnostics::Scope trace("open_research_preset");
+    CHECK(!menu->findChild<QAction*>("example-music-research"));
+    auto fixture=numeric_music_graph();fixture.graph_id=initial_graph.graph_id;
+    auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);QString error;
+    const auto old_revision=app.presenter().client().snapshot().graph_revision;
+    CHECK(editor->load_numeric_draft(fixture,&error));editor->initialize_default_layout();
+    CHECK(app.presenter().apply_pipeline_graph({}));
     CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>old_revision&&!app.presenter().graph_request_pending()&&separated_layout(window,model);}));
     if(const auto result=research_topology(model,initial_graph))return result;
     if(const auto result=view_configuration_inputs(model))return result;
@@ -629,13 +706,14 @@ return 0;
 }
 
 static int prepare_music_window(CoreApplication& app,NumericEditorGraphModel* model,unsigned native_rate,MainWindow*& window,QMenu*& menu) {
+    music_gui_diagnostics::Scope trace("prepare_music_window");
     model->set_capture_device_provider([native_rate](int,QString*) {
         return QJsonArray{QJsonObject{{"id","synthetic-capture"},{"name","Synthetic capture"},{"is_default",true},
             {"native_sample_rate",int(native_rate)},{"native_channels",1}}};
     });
     window=nullptr;
     const auto candidates=QApplication::topLevelWidgets();for(auto* candidate:candidates)if(auto* found=qobject_cast<MainWindow*>(candidate))window=found;
-    CHECK(window);window->show();
+    CHECK(window);music_gui_diagnostics::event("WINDOW_SHOW_BEGIN");window->show();music_gui_diagnostics::event("WINDOW_SHOW_END");
     CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();}));
     menu=window->findChild<QMenu*>("pipelinePresetsMenu");CHECK(menu);
 return 0;
@@ -650,6 +728,7 @@ static int scanner_gui_workflow(CoreApplication& app,const QTemporaryDir& direct
     return result;
 }
 static int music_window_workflow(CoreApplication& app,const QTemporaryDir& directory,const QString& input_path,const QString& saved_path,const QByteArray& original,const domain::NumericProcessingGraph& initial_graph,unsigned native_rate,const QString& export_path,const QString& image_dir) {
+    music_gui_diagnostics::Scope trace("music_window_workflow");
     if(const auto result=catalog_contracts())return result;
     app._ctx.file_configs.ui.autosave_enabled=false;
     auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
@@ -663,6 +742,7 @@ static int music_window_workflow(CoreApplication& app,const QTemporaryDir& direc
 return 0;
 }
 int main(int argc,char** argv) {
+    music_gui_diagnostics::Scope trace("main");
     CHECK(test_fixture::isolated_gui_platform());
     QCoreApplication::setAttribute(Qt::AA_UseSoftwareOpenGL);
     QString export_path,image_dir;unsigned native_rate=48000;bool scanner_only=false;
@@ -675,8 +755,10 @@ int main(int argc,char** argv) {
     if(const auto result=initial_project(input_path,initial_graph,original))return result;
     auto encoded=input_path.toLocal8Bit();char executable[]="music_gui_tests",option[]="--config";
     char* args[]{executable,option,encoded.data(),nullptr};int count=3;
+    music_gui_diagnostics::event("CORE_APPLICATION_CONSTRUCT_BEGIN",native_rate);
     CoreApplication app(count,args,[](pipeline::AudioSourceKind kind)->std::unique_ptr<pipeline::IAudioSource>{return std::make_unique<MusicCapture>(kind);});
+    music_gui_diagnostics::event("CORE_APPLICATION_CONSTRUCT_END");trace_music_application();
     if(scanner_only)return scanner_gui_workflow(app,directory,native_rate);
     if(const auto result=music_window_workflow(app,directory,input_path,saved_path,original,initial_graph,native_rate,export_path,image_dir))return result;
-    return 0;
+    music_gui_diagnostics::event("CORE_APPLICATION_DESTRUCT_NEXT");return 0;
 }

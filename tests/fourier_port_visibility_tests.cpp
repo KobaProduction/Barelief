@@ -38,43 +38,45 @@ void broadband_estimator_labels(){
 void check(bool ok,const char* message){if(!ok){std::fprintf(stderr,"FAIL Fourier visibility: %s\n",message);std::exit(1);}}
 std::shared_ptr<QtNodes::NodeDelegateModelRegistry> registry(){
     auto result=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    const auto kinds=numeric_editor::catalog();
+    const auto kinds=numeric_editor::model_catalog();
     for(const auto& kind:kinds)result->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     return result;
 }
 void ports(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,const QString& kind){
     NumericEditorGraphModel graph(registry);QUndoStack undo;graph.set_undo_stack(&undo);
     const auto id=graph.addNode(kind);auto* fft=graph.delegateModel<AudioNodeModel>(id);
-    check(fft && fft->numeric_node()->outputs.size()==4,"DSP contract retains all four stable outputs");
+    const unsigned count=kind=="RealFourier"?3:2,dc=count-1;
+    check(fft && fft->numeric_node()->outputs.size()==count,"DSP contract retains real/imaginary and supported DC outputs");
     check(fft->nPorts(QtNodes::PortType::Out)==2,"unused DC ports hidden by default");
     check(fft->port_id(QtNodes::PortType::Out,0)==0 && fft->port_id(QtNodes::PortType::Out,1)==1,"Re/Im IDs unchanged");
     check(fft->port_index(QtNodes::PortType::Out,2)==QtNodes::InvalidPortIndex,"hidden DC cannot be selected as visible port");
-    check(fft->edit_dc_outputs_shown(true) && fft->nPorts(QtNodes::PortType::Out)==4,"explicit show exposes actual ports");
+    if(kind=="Fourier"){check(fft->edit_dc_outputs_shown(true) && fft->nPorts(QtNodes::PortType::Out)==2,"complex Fourier keeps DC inside its full complex planes");return;}
+    check(fft->edit_dc_outputs_shown(true) && fft->nPorts(QtNodes::PortType::Out)==count,"explicit show exposes actual ports");
     undo.undo();check(fft->nPorts(QtNodes::PortType::Out)==2,"undo restores hidden ports");
-    undo.redo();check(fft->nPorts(QtNodes::PortType::Out)==4,"redo restores visible ports");
+    undo.redo();check(fft->nPorts(QtNodes::PortType::Out)==count,"redo restores visible ports");
     const auto sink=graph.addNode("ScalarView");auto scalar=*graph.delegateModel<AudioNodeModel>(sink)->numeric_node();
-    scalar.inputs[0].contract=fft->numeric_node()->outputs[3].contract;
+    scalar.inputs[0].contract=fft->numeric_node()->outputs[dc].contract;
     graph.delegateModel<AudioNodeModel>(sink)->set_numeric_node(scalar);
-    const QtNodes::ConnectionId edge{id,3,sink,0};check(graph.connectionPossible(edge),"DC Im is connectable scalar");graph.addConnection(edge);
+    const QtNodes::ConnectionId edge{id,dc,sink,0};check(graph.connectionPossible(edge),"DC Im is connectable scalar");graph.addConnection(edge);
     check(graph.connectionExists(edge),"DC Im connection created");
-    check(fft->edit_dc_outputs_shown(false) && fft->nPorts(QtNodes::PortType::Out)==4,"connected DC remains visible when explicit show disabled");
-    check(graph.numeric_graph().edges.front().output_port==3,"stable DC Im ID preserved");
+    check(fft->edit_dc_outputs_shown(false) && fft->nPorts(QtNodes::PortType::Out)==count,"connected DC remains visible when explicit show disabled");
+    check(graph.numeric_graph().edges.front().output_port==dc,"stable DC Im ID preserved");
     const auto saved=graph.save();NumericEditorGraphModel restored(registry);restored.load(saved);
     auto* reloaded=restored.delegateModel<AudioNodeModel>(id);
-    check(reloaded && !reloaded->dc_outputs_shown() && reloaded->nPorts(QtNodes::PortType::Out)==4,"connected hidden preference restores safely");
-    check(restored.connectionExists(edge) && restored.numeric_graph().edges.front().output_port==3,"reload retains DC connection");
+    check(reloaded && !reloaded->dc_outputs_shown() && reloaded->nPorts(QtNodes::PortType::Out)==count,"connected hidden preference restores safely");
+    check(restored.connectionExists(edge) && restored.numeric_graph().edges.front().output_port==dc,"reload retains DC connection");
     NumericEditorGraphModel imported(registry);check(imported.set_numeric_graph(graph.numeric_graph()),"physical graph import reveals connected DC before validation");
     check(imported.connectionExists(edge),"physical import retains DC Im endpoint");
     check(restored.deleteConnection(edge) && reloaded->nPorts(QtNodes::PortType::Out)==2,"last DC disconnect hides unused outputs");
-    check(reloaded->numeric_node()->outputs.size()==4,"hiding never removes DSP outputs");
-    restored.addConnection({id,3,QtNodes::NodeId{999999},0});
+    check(reloaded->numeric_node()->outputs.size()==count,"hiding never removes DSP outputs");
+    restored.addConnection({id,dc,QtNodes::NodeId{999999},0});
     check(reloaded->nPorts(QtNodes::PortType::Out)==2,"invalid DC reconnect leaves unrelated ports hidden");
     restored.addConnection(edge);
-    check(restored.connectionExists(edge) && reloaded->nPorts(QtNodes::PortType::Out)==4 && !reloaded->dc_outputs_shown(),"reconnect restores hidden-preference DC endpoint for Undo");
+    check(restored.connectionExists(edge) && reloaded->nPorts(QtNodes::PortType::Out)==count && !reloaded->dc_outputs_shown(),"reconnect restores hidden-preference DC endpoint for Undo");
     check(restored.deleteConnection(edge) && reloaded->nPorts(QtNodes::PortType::Out)==2,"reconnected DC hides after final disconnect");
     check(reloaded->edit_dc_outputs_shown(true),"manual optional ports reenabled");
     const auto savedShown=restored.save();NumericEditorGraphModel shown(registry);shown.load(savedShown);
-    check(shown.delegateModel<AudioNodeModel>(id)->dc_outputs_shown() && shown.delegateModel<AudioNodeModel>(id)->nPorts(QtNodes::PortType::Out)==4,"explicit show persists without connection");
+    check(shown.delegateModel<AudioNodeModel>(id)->dc_outputs_shown() && shown.delegateModel<AudioNodeModel>(id)->nPorts(QtNodes::PortType::Out)==count,"explicit show persists without connection");
     check(!AudioNodeModel::valid_presentation({{"show_dc_outputs",QStringLiteral("true")}}),"malformed visibility flag rejected");
 }
 void musical_layout_caption(){
@@ -96,6 +98,11 @@ void musical_layout_caption(){
         check(std::get<QString>(field->read())==expected,"caption follows canonical section counts after frequency-axis change");
     }
 }
+void projection_pair(domain::ConfiguredProcessingNode& node,const signal_contracts::NumericContract& real,std::size_t imaginary_count){
+    auto imaginary=real;imaginary.quantity=signal_contracts::Quantity::SpectrumImaginary;imaginary.shape.extents[0]={imaginary_count,imaginary_count};
+    check(domain::own_processing_contract(real,numeric_editor::limits().frame,65536,node.inputs[0].contract)==signal_contracts::Status::ok,"own explicit real spectrum");
+    check(domain::own_processing_contract(imaginary,numeric_editor::limits().frame,65536,node.inputs[1].contract)==signal_contracts::Status::ok,"own explicit imaginary spectrum");
+}
 void spectrum_normalization_controls(){
     using namespace domain;using namespace signal_contracts;
     auto node=numeric_editor::default_node("AmplitudePhase");
@@ -108,12 +115,14 @@ void spectrum_normalization_controls(){
     const auto* half=parameters.field("positive_half");check(half && half->primary,"input spectrum layout is explicit");
     auto array=std::get<NumericContract>(node.inputs[0].contract.view());array.shape.extents[0]={128,128};
     std::array<OwnedProcessingContract,2> outputs;
-    node.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{256}}},{"representation",std::string{"psd"}},{"normalize",false}}};
+    node.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{256}}},{"representation",std::string{"psd"}},{"normalize",false},{"sample_rate",NumericLiteral{std::uint64_t{48000}}}}};
+    projection_pair(node,array,127);
     check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"derive projection from explicit N and Re/Im geometry");
     auto value=std::get<NumericContract>(outputs[0].view());
     check(value.quantity==Quantity::SpectrumPower && value.unit==NumericUnit::SquaredAmplitude,"unnormalized PSD is labelled raw squared magnitude");
     check(value.coordinates[0].step==Ratio{48000,256},"frequency axis uses declared half-spectrum N");
     std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{512}};
+    projection_pair(node,array,128);
     check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"an explicit bounded spectral slice retains its independent N");
     check(std::get<NumericContract>(outputs[0].view()).coordinates[0].step==Ratio{48000,512},"same plane length does not override the N setting");
     std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{129}};
@@ -128,6 +137,7 @@ void normalization_widget(){
         ui::Language::instance().set(language);ui::Theme::instance().set(theme);
         NumericEditorGraphModel graph(registry());const auto id=graph.addNode("AmplitudePhase");
         auto* model=graph.delegateModel<AudioNodeModel>(id);
+        check(model->parameter_model()->edit("sample_rate",signal_contracts::NumericLiteral{std::uint64_t{48000}}),"PSD uses an explicit sampling rate");
         QWidget panel;QVBoxLayout layout(&panel);
         layout.addWidget(new QLabel(model->caption(),&panel));
         auto* form=new NodeParameterForm(model->parameter_model(),true,&panel);layout.addWidget(form);

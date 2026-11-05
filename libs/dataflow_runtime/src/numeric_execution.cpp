@@ -512,6 +512,7 @@ std::optional<Status> publish_wled_ready() noexcept {
             if(n.node.kind==NodeKind::FrameBuffer)state.frames=state.oldest=0;
             std::fill(state.pcm.begin(),state.pcm.end(),0);
             std::fill(state.pcm16.begin(),state.pcm16.end(),0);
+            if(n.node.kind==NodeKind::Window)clear_node_state(n,state);
             state.pending_discontinuity=true;
         }
         if(n.operation==ProcessingOperation::ArrayProduct && !current.stamp.available)

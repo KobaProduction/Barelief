@@ -92,7 +92,11 @@ class SourceFormatResolution {
     bool evaluate(NumericProcessingGraph& out) {
         NumericProcessingGraph evaluated,executable;
         const auto result=resolve_numeric_parameter_bindings(candidate,limits,evaluated,executable,id);
-        if(!result)return failure.reject(NumericSourceFormatError::IncompatibleRoute,"Native source format requires an explicit compatible route");
+        if(!result){
+            const auto detail=QString("Native source format requires an explicit compatible route: node %1, port %2, error %3, parameter %4")
+                .arg(result.node).arg(result.port).arg(unsigned(result.error)).arg(QString::fromUtf8(result.parameter.data(),qsizetype(result.parameter.size())));
+            return failure.reject(NumericSourceFormatError::IncompatibleRoute,detail.toUtf8().constData());
+        }
         out=std::move(evaluated);
         return true;
     }

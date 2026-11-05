@@ -1,0 +1,6 @@
+# These sources belong exclusively to the explicit optional research target.
+specific_include_rules = {
+    r'^numeric_(aubio|btrack|essentia)_reference_graph\.cpp$': [
+        '+rhythm_graph_adapters', '+rhythm_reference_ports',
+    ],
+}

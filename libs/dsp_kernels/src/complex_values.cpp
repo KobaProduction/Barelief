@@ -1,9 +1,12 @@
 #include <dsp_kernels/complex_values.h>
+#include <dsp_kernels/detail/fused_square_plus_one.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <numbers>
+#include <bit>
+#include <limits>
 
 // ScaledRatioFma finite-scalar operation order adapted from NumPy Developers,
 // numpy@a3d0ef1df045b858e68115001fdabc930bb3b68c,
@@ -11,6 +14,21 @@
 // Copyright (c) 2005-2025, NumPy Developers. BSD-3-Clause notice:
 // packaging/licenses/numpy.txt. Inputs are finite by this API's contract.
 
+namespace dsp_kernels::detail {
+float fused_square_plus_one(float ratio) noexcept {
+    static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<float>::digits==24 && sizeof(float)==4);
+    static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits==53 && sizeof(double)==8);
+    // The product of two binary32 values is exact in binary64, including the
+    // smallest subnormals. FastTwoSum recovers the addition's exact residual
+    // since 1 >= ratio^2. A first rounding can change binary32 RNE only when
+    // the binary64 sum lands exactly at a binary32 midpoint (29 discarded bits).
+    const double product=double(ratio)*double(ratio),sum=1.+product;
+    const double residual=product-(sum-1.);
+    auto bits=std::bit_cast<std::uint64_t>(sum);
+    if((bits&0x1fffffffu)==0x10000000u && residual!=0)bits=residual>0?bits+1:bits-1;
+    return float(std::bit_cast<double>(bits));
+}
+}
 namespace dsp_kernels {
 namespace {
 bool overlaps(std::span<const float> left,std::span<const float> right) noexcept {
@@ -27,7 +45,7 @@ float scaled_ratio_fma(float real,float imaginary) noexcept {
     const float larger=std::max(a,b),smaller=std::min(a,b);
     if(larger==0)return 0.f;
     const float ratio=smaller/larger;
-    return std::sqrt(std::fma(ratio,ratio,1.f))*larger;
+    return std::sqrt(detail::fused_square_plus_one(ratio))*larger;
 }
 float magnitude_value(float real,float imaginary,ComplexPolarOptions options) noexcept {
     if(options.real_axis)return std::abs(real);

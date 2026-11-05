@@ -1,12 +1,14 @@
 #pragma once
 #include <dsp_kernels/filter_projection.h>
 #include <dsp_kernels/frequency_bins.h>
+#include <dsp_kernels/numerical_precision.h>
 #include <span>
 #include <vector>
 namespace dsp_kernels {
 struct LogFrequencyFilterConfig {
     float bands_per_octave=24,fmin=30,fmax=17000,reference=440;
     bool unique_filters=true,normalize=true;
+    NumericalPrecision precision=NumericalPrecision::PortableFloat32;
 };
 // Source port of madmom LogarithmicFilterbank: explicit input frequencies,
 // reference-aligned octave grid, nearest-bin corners and overlapping discrete

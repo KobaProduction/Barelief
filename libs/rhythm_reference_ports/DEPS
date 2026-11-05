@@ -1,0 +1,6 @@
+include_rules = [
+    '+rhythm_reference_ports',
+    '-domain', '-application', '-dataflow_runtime', '-bdsp_protocol',
+    '-embedded_support', '-control', '-wled_protocol',
+    '+dsp_kernels', '+signal_contracts', '+libs/dsp_kernels', '+libs/signal_contracts',
+]

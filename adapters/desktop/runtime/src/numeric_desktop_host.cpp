@@ -292,8 +292,10 @@ struct NumericDesktopHost::Impl {
   static_cast<NumericRemoteEndpoint*>(endpoint.get())->set_numeric_history_snapshot_handler(
    [this](auto frame,std::uint64_t ordinal,std::uint64_t filled_count){publish_history_snapshot(std::move(frame),ordinal,filled_count);});
  }
- void initialize_local(AudioSourceFactory factory) {
-  auto engine=std::make_unique<NumericEngine>(std::move(factory));local=engine.get();
+ void initialize_local(AudioSourceFactory factory,LocalEngineFactory local_engine_factory) {
+  auto engine=local_engine_factory?local_engine_factory(std::move(factory)):
+      std::make_unique<NumericEngine>(std::move(factory));
+  local=engine.get();
   registry=std::make_unique<AggregatorClient>(AggregatorClientConfig{QUuid::createUuid(),ComponentType::data_sink,0});
   auto next_routing=std::make_unique<NumericRoutingAdapter>(*engine,registry.get());
   routing=next_routing.get();auto* routes=routing;
@@ -322,10 +324,12 @@ struct NumericDesktopHost::Impl {
  }
  ~Impl(){ {std::lock_guard lock(mutex);retired=true;}call([this]{server.reset();endpoint.reset();registry.reset();routing=nullptr;local=nullptr;});thread.quit();thread.wait();}
 };
-NumericDesktopHost::NumericDesktopHost(AudioSourceFactory factory,QString host,quint16 port,std::optional<desktop::SerialEndpoint> serial,QObject* parent):QObject(parent),impl_(std::make_unique<Impl>(*this)){
+NumericDesktopHost::NumericDesktopHost(AudioSourceFactory factory,QString host,quint16 port,
+ std::optional<desktop::SerialEndpoint> serial,QObject* parent,LocalEngineFactory local_engine_factory)
+ :QObject(parent),impl_(std::make_unique<Impl>(*this)){
  impl_->call([&,factory=std::move(factory),host=std::move(host),serial=std::move(serial)]()mutable{
   if(!host.isEmpty())impl_->initialize_remote(std::move(host),port,serial);
-  else impl_->initialize_local(std::move(factory));
+  else impl_->initialize_local(std::move(factory),local_engine_factory);
   impl_->bind_endpoint_handlers();
  });
 }

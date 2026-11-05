@@ -36,11 +36,22 @@ class FrameBufferExecution {
     }
     Status frame_stamp(std::size_t offset,FrameStamp& stamp) noexcept {
         stamp=input.stamp;stamp.sequence=++state.row_ordinal;stamp.discontinuity=state.pending_discontinuity;state.pending_discontinuity=false;
+        const auto shifted=shift_timestamp(offset,stamp);if(shifted!=Status::ok)return shifted;
+        return sample_interval(offset,stamp);
+    }
+    Status sample_interval(std::size_t offset,FrameStamp& stamp) noexcept {
         if(!stamp.has_sample_interval)return Status::ok;
         const auto advanced=std::int64_t(offset)+1,count=std::int64_t(output.actual[0]);
         if(stamp.sample_begin>INT64_MAX-advanced)return Status::overflow;
         const auto end=stamp.sample_begin+advanced;if(end<INT64_MIN+count)return Status::overflow;
-        stamp.sample_begin=end-count;stamp.sample_count=std::uint64_t(count);return end_timestamp(offset,stamp);
+        stamp.sample_begin=end-count;stamp.sample_count=std::uint64_t(count);return Status::ok;
+    }
+    Status shift_timestamp(std::size_t offset,FrameStamp& stamp) noexcept {
+        if(!source.contract->clock.sample_rate)return Status::ok;
+        std::int64_t delta=0;
+        if(!sample_offset_ticks(std::int64_t(offset)+1-std::int64_t(state.pcm.size()),source.contract->clock,delta))return Status::overflow;
+        if((delta>0 && stamp.timestamp_ticks>INT64_MAX-delta) || (delta<0 && stamp.timestamp_ticks<INT64_MIN-delta))return Status::overflow;
+        stamp.timestamp_ticks+=delta;return Status::ok;
     }
     Status emit(std::size_t offset) noexcept {
         FrameStamp stamp;const auto status=frame_stamp(offset,stamp);if(status!=Status::ok)return status;

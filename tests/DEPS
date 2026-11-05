@@ -1,0 +1,9 @@
+# The integration fixture consumes this opt-in app API explicitly.
+include_rules = ['+rhythm_reference_ports']
+specific_include_rules = {
+    r'^reference_array_geometry_tests\.cpp$': ['+dsp_graph_adapters'],
+    r'^(aubio|btrack|madmom|essentia)_reference_(pipeline_tests\.cpp|fixture\.h|export\.h|admission\.h|trace\.h)$': ['+dsp_graph_adapters', '+rhythm_graph_adapters'],
+    r'^reference_beat_pipeline_tests\.cpp$': ['+dsp_graph_adapters'],
+    r'^numeric_operation_lifecycle_fixture\.h$': ['+rhythm_graph_adapters'],
+    r'^rhythm_replay_tests\.cpp$': ['+rhythm_replay'],
+}

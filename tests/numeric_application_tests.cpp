@@ -1,4 +1,5 @@
 #include "isolated_gui_platform.h"
+#include "numeric_gui_fixture.h"
 #include <desktop/numeric_source_format.h>
 #include "synthetic_capture.h"
 #include "test_assertions.h"
@@ -172,7 +173,7 @@ static QByteArray read(const QString& path) {
     QFile file(path); return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
 }
 static bool wait_until(const std::function<bool()>& predicate,int timeout=3000) {
-    QElapsedTimer timer;timer.start();while(timer.elapsed()<timeout){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(5);}return predicate();
+    QElapsedTimer timer;timer.start();gui_fixture::phase_trace::Scope trace("temporal.wait",timeout);while(timer.elapsed()<timeout){trace.events();if(trace.predicate(predicate))return true;QThread::msleep(5);}return trace.predicate(predicate);
 }
 static bool wait_for_saved(MainWindow* window) {
     return wait_until([&]{auto* status=window->findChild<QLabel*>("configurationSaveStatus");
@@ -395,7 +396,10 @@ static int workspace_acceptance_invalid_load(CoreApplication& app,MainWindow*& w
 
 }
 static int workspace_acceptance_import_recovery(CoreApplication& app,MainWindow*& window,NumericEditorGraphModel*& model){
-CHECK(!app.presenter().file_protection_warning().isEmpty());auto* example=window->findChild<QAction*>("example-basic-signal");CHECK(example);example->trigger();auto* buffer=model->delegateModel<AudioNodeModel>(2);CHECK(buffer && buffer->parameter_model()->editLiteral("size","512",0));
+    CHECK(!app.presenter().file_protection_warning().isEmpty());
+    auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
+    emit editor->generator_loopback_graph_requested();
+    auto* buffer=model->delegateModel<AudioNodeModel>(2);CHECK(buffer && buffer->parameter_model()->editLiteral("size","512",0));
 return 0;
 }
 static int workspace_acceptance_loaded_windows(MainWindow*& window,auto& dockFor,WorkspaceDock*& flow){
@@ -446,8 +450,17 @@ static int workspace_acceptance_ready_phase(CoreApplication& app,auto& phase,aut
 if(phase=="load"){return workspace_acceptance_validate_loaded(window,model,dockFor,flow);}
         return workspace_acceptance_open_views(app,phase,source,window,editor,model,dockFor,invalid,flow);
 }
+static int workspace_acceptance_recovered_basic(CoreApplication& app,const QString& source,MainWindow* window,SchemeEditorWidget* editor,NumericEditorGraphModel* model,auto& dockFor){
+    if(const auto failure=workspace_acceptance_import_recovery(app,window,model))return failure;
+    CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0 && !app.presenter().graph_request_pending();},8000));
+    emit editor->graph_open_requested(3,0);
+    CHECK(wait_until([&]{return dockFor(3,true) && !dockFor(3,true)->isClosed();}));
+    dockFor(3,true)->close();window->close();
+    CHECK(wait_until([&]{return QFileInfo::exists(source+".workspace.ini");}));
+    return 0;
+}
 static int workspace_acceptance_running_phase(CoreApplication& app,auto& phase,auto& source,MainWindow*& window,SchemeEditorWidget*& editor,NumericEditorGraphModel*& model,auto& dockFor,auto& invalid){
-if(invalid){if(const int failure=workspace_acceptance_import_recovery(app,window,model);failure)return failure;}
+if(invalid)return workspace_acceptance_recovered_basic(app,source,window,editor,model,dockFor);
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>0 && !app.presenter().graph_request_pending() && dockFor(8);},8000));
         std::fprintf(stderr,"WORKSPACE %s ready\n",phase.constData());
         auto* flow=window->findChild<WorkspaceDock*>("dataFlowDock");CHECK(flow);
@@ -567,7 +580,7 @@ static void report_history_timeout(const char* example,domain::NodeId node,signa
 static void report_temporal_phase(const char* phase,CoreApplication& app,int detail=-1) {
     QElapsedTimer timer;timer.start();
     std::fprintf(stderr,"Temporal phase=%s monotonic_ms=%lld detail=%d revision=%llu pending=%d\n",phase,static_cast<long long>(timer.msecsSinceReference()),detail,
-        static_cast<unsigned long long>(app.presenter().client().snapshot().graph_revision),int(app.presenter().graph_request_pending()));
+        static_cast<unsigned long long>(gui_fixture::phase_trace::snapshot(app).graph_revision),int(app.presenter().graph_request_pending()));
     std::fflush(stderr);
 }
 
@@ -602,9 +615,9 @@ for(const auto& node:saved_graph.nodes)CHECK(node.kind!="PcmResampler"&&node.id!
 
 static int temporal_save(auto& path,auto& next,auto& runtime_graph,auto& original,CoreApplication& app,auto& step,AudioNodeModel*& selector) {
     report_temporal_phase("save",app);
-        const auto save_revision=app.presenter().client().snapshot().graph_revision;
+        const auto save_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
         CHECK(selector->select_input(1));
-        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>save_revision;},6000));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>save_revision;},6000));
         auto selector_presentation=selector->presentation();
         const QJsonArray custom_names{"My generator","Desktop audio"};
         selector_presentation["stream_names"]=custom_names;selector->set_presentation(selector_presentation);
@@ -642,7 +655,7 @@ const auto pcm=std::get<signal_contracts::NumericView>(pcm_frame.frame.view().pa
 static int temporal_selector_stream(auto& stream,CoreApplication& app,AudioNodeModel*& selector,auto& query,auto& matrix_frame,auto& selected_frame,auto& history,auto& ordinal,auto& filled,auto& temporal_rate,auto& loopback_energy,auto& expected_bin_hz) {
     report_temporal_phase("selector",app,int(stream));
 
-            const auto revision=app.presenter().client().snapshot().graph_revision;
+            const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
             report_temporal_phase("selector History query begin",app,int(stream));
             CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok);
             report_temporal_phase("selector History query end",app,int(stream));
@@ -652,7 +665,7 @@ static int temporal_selector_stream(auto& stream,CoreApplication& app,AudioNodeM
             report_temporal_phase("selector select end",app,int(stream));
             pipeline::DeliveredNumericFrame pcm_frame;
             report_temporal_phase("selector wait begin",app,int(stream));
-            const bool switched_ready=wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision
+            const bool switched_ready=wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision
                 &&query(17,matrix_frame)&&query(19,selected_frame)&&query(200,pcm_frame);},6000);
             report_temporal_phase("selector wait end",app,int(stream));
             if(!switched_ready){shipped_probe::report_numeric_frame("temporal matrix17",matrix_frame);shipped_probe::report_numeric_frame("temporal selected19",selected_frame);shipped_probe::report_numeric_frame("temporal PCM200",pcm_frame);shipped_probe::report_engine_snapshot("temporal switch failure",app.pipeline().snapshot());}
@@ -686,9 +699,9 @@ static int temporal_silence(auto& path,auto& next,auto& temporal_rate,auto& runt
     query.set_required({17,19});
         auto* generator=model->delegateModel<AudioNodeModel>(1);CHECK(generator);
         const auto original_generator=*generator->numeric_node();
-        const auto pause_revision=app.presenter().client().snapshot().graph_revision;
+        const auto pause_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
         CHECK(model->edit_node(original_generator.id,temporal_silent_generator(*generator)));
-        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>pause_revision&&query(17,matrix_frame);},6000));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>pause_revision&&query(17,matrix_frame);},6000));
         CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok);
         const auto pause_ordinal=ordinal;bool pause_unavailable=false;
         CHECK(wait_until([&]{
@@ -705,14 +718,15 @@ static int temporal_silence(auto& path,auto& next,auto& temporal_rate,auto& runt
 
 static int temporal_center_method(CoreApplication& app,auto& query,auto& matrix_frame,AudioNodeModel*& center,auto& centered_frame,auto& method) {
     report_temporal_phase("center",app,int(method));
+    gui_fixture::phase_trace::Scope trace("temporal.center.method",int(method));
 
-            const auto revision=app.presenter().client().snapshot().graph_revision;
-            CHECK(center->parameter_model()->edit("method",method));
-            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(23,centered_frame)&&query(17,matrix_frame);},6000));
+            const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
+            trace.mark("edit method BEGIN");CHECK(center->parameter_model()->edit("method",method));trace.mark("edit method END");
+            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(23,centered_frame)&&query(17,matrix_frame);},6000));
             if(method==2){
-                const auto offset_revision=app.presenter().client().snapshot().graph_revision;
-                CHECK(center->parameter_model()->edit("offset",signal_contracts::NumericLiteral{1.25}));
-                CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>offset_revision&&query(23,centered_frame);},6000));
+                const auto offset_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
+                trace.mark("edit offset 1.25 BEGIN");CHECK(center->parameter_model()->edit("offset",signal_contracts::NumericLiteral{1.25}));trace.mark("edit offset 1.25 END");
+                CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>offset_revision&&query(23,centered_frame);},6000));
             }
 
 return 0;
@@ -723,20 +737,21 @@ static int temporal_center_changes(auto& path,auto& next,auto& temporal_rate,aut
     query.set_required({17,23});
         for(int method:{1,2,0}){if(const int failure=temporal_center_method(app,query,matrix_frame,center,centered_frame,method);failure)return failure;}
         for(bool bypass:{true,false}){
-            const auto revision=app.presenter().client().snapshot().graph_revision;
-            CHECK(center->parameter_model()->setBypassed(bypass));
-            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(23,centered_frame)&&query(17,matrix_frame);},6000));
+            gui_fixture::phase_trace::Scope trace("temporal.center.bypass",int(bypass));
+            const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
+            trace.mark("setBypassed BEGIN");CHECK(center->parameter_model()->setBypassed(bypass));trace.mark("setBypassed END");
+            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(23,centered_frame)&&query(17,matrix_frame);},6000));
         }
         return 0;
 }
 
 static int temporal_window_burst(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,AudioNodeModel*& window_function,AudioNodeModel*& center,auto& ordinal,auto& filled,auto& history,auto& centered_frame) {
     report_temporal_phase("window burst",app);
-const auto before_burst=app.presenter().client().snapshot().graph_revision;
+const auto before_burst=gui_fixture::phase_trace::snapshot(app).graph_revision;
         CHECK(app.presenter().apply_pipeline_graph({})>0&&app.presenter().graph_request_pending());
         for(int function:{1,2,3})CHECK(window_function->parameter_model()->edit("function",function));
         QElapsedTimer burst;burst.start();
-        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>=before_burst+2&&query(17,matrix_frame);},6000));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>=before_burst+2&&query(17,matrix_frame);},6000));
         CHECK(std::get<int>(window_function->parameter_model()->field("function")->read())==3);
         std::printf("Discrete window burst during pending Apply: latest selection delivered in %lld ms\n",static_cast<long long>(burst.elapsed()));
         CHECK(window_function->parameter_model()->setBypassed(true));
@@ -748,13 +763,17 @@ static int temporal_window_changes(auto& path,auto& next,auto& temporal_rate,aut
     report_temporal_phase("window functions",app);
         qint64 slowest_window_switch=0,slowest_window_edit=0;
         for(int function:{1,2,3,0}) {
-            const auto revision=app.presenter().client().snapshot().graph_revision;
+            gui_fixture::phase_trace::Scope trace("temporal.window.function",function);
+            const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
             QElapsedTimer elapsed;elapsed.start();
-            CHECK(window_function->parameter_model()->edit("function",function));
+            trace.mark("edit function BEGIN");CHECK(window_function->parameter_model()->edit("function",function));trace.mark("edit function END");
             slowest_window_edit=std::max(slowest_window_edit,elapsed.elapsed());
-            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(17,matrix_frame);},6000));
+            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(17,matrix_frame);},6000));
             slowest_window_switch=std::max(slowest_window_switch,elapsed.elapsed());
-            CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=before_ordinal);
+            trace.mark("History query BEGIN");
+            const auto status=app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled);
+            gui_fixture::phase_trace::frame("temporal.History",7,history,status);
+            CHECK(status==signal_contracts::Status::ok&&ordinal>=before_ordinal);trace.mark("History query END");
         }
         std::printf("Offscreen window functions: all four revisions available; slowest synchronous edit %lld ms, Apply+delivery %lld ms\n",static_cast<long long>(slowest_window_edit),static_cast<long long>(slowest_window_switch));
         return 0;
@@ -764,9 +783,9 @@ static int temporal_window_bypass(auto& path,auto& next,auto& temporal_rate,auto
     report_temporal_phase("window bypass",app);
     query.set_required({17});
 for(bool bypass:{false,true}) {
-            const auto revision=app.presenter().client().snapshot().graph_revision;
+            const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
             CHECK(window_function->parameter_model()->setBypassed(bypass));
-            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(17,matrix_frame);},6000));
+            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(17,matrix_frame);},6000));
         }
         CHECK(window_function->parameter_model()->setBypassed(false));
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(17,matrix_frame);},6000));
@@ -776,9 +795,9 @@ for(bool bypass:{false,true}) {
 static int temporal_selected_band(CoreApplication& app,auto& query,auto& selected_frame,auto& band,AudioNodeModel*& row) {
     report_temporal_phase("row",app,int(band));
 
-            const auto revision=app.presenter().client().snapshot().graph_revision;
+            const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
             CHECK(row->parameter_model()->edit("row",signal_contracts::NumericLiteral{std::uint64_t(band)}));
-            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(19,selected_frame);},6000));
+            CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(19,selected_frame);},6000));
             CHECK(std::get<signal_contracts::NumericView>(selected_frame.frame.view().payload).actual[0]==257);
 
 return 0;
@@ -786,12 +805,12 @@ return 0;
 
 static int temporal_rejected_row(CoreApplication& app,NumericEditorGraphModel* model,AudioNodeModel* row) {
     auto executable=model->numeric_graph();QByteArray before;CHECK(desktop::encode_numeric_graph(executable,before));
-    const auto revision=app.presenter().client().snapshot().graph_revision;
+    const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
     CHECK(row->parameter_model()->edit("row",signal_contracts::NumericLiteral{std::uint64_t{50}}));
     CHECK(row->numeric_node()&&!model->node_error(*row->numeric_node()).isEmpty());
     QString error;CHECK(!model->export_numeric_graph(executable,&error));CHECK(!error.isEmpty());
     QByteArray after;CHECK(desktop::encode_numeric_graph(executable,after));CHECK(after==before);
-    CHECK(!app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision==revision);
+    CHECK(!app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision==revision);
     CHECK(row->parameter_model()->edit("row",signal_contracts::NumericLiteral{std::uint64_t{24}}));
     CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&model->node_error(*row->numeric_node()).isEmpty();}));
     return 0;
@@ -825,9 +844,9 @@ static int temporal_stage(auto& path,auto& next,auto& temporal_rate,auto& runtim
     const auto before_ordinal=ordinal;
     if(stage=="window-bypass")return temporal_window_bypass(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame,window_function,center,ordinal,filled,history,before_ordinal);
     if(stage=="window-functions"||stage=="window-burst"){
-        const auto revision=app.presenter().client().snapshot().graph_revision;
+        const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
         CHECK(window_function->parameter_model()->setBypassed(false));
-        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>revision&&query(17,matrix_frame);},6000));
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(17,matrix_frame);},6000));
         if(stage=="window-functions")return temporal_window_changes(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,window_function,center,ordinal,filled,history,before_ordinal,centered_frame);
         return temporal_window_burst(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,window_function,center,ordinal,filled,history,centered_frame);
     }
@@ -863,17 +882,28 @@ static int temporal_matrices(auto& path,auto& next,auto& temporal_rate,auto& run
         return temporal_stage(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,query,matrix_frame,selected_frame,step,centered_frame);
 }
 
+static bool temporal_frame_revision(CoreApplication& app,int id,const pipeline::DeliveredNumericFrame& frame,bool ready,signal_contracts::Status status) {
+    if(!ready){gui_fixture::phase_trace::frame("temporal.query",id,frame,status);return false;}
+    gui_fixture::phase_trace::Scope trace("temporal.frame_revision",id);trace.mark("expected revision BEGIN");
+    const auto expected=gui_fixture::phase_trace::snapshot(app).graph_revision;
+    trace.mark("expected revision END");
+    const bool matches=frame.delivery.graph_revision==expected;
+    gui_fixture::phase_trace::frame("temporal.query",id,frame,status,expected,true);return matches;
+}
 static bool query_temporal_frame(CoreApplication& app,auto& id,auto& frame,auto& selected_mutex,auto& selected_latest,auto& pcm_latest,auto& center_latest) {
-
-            if(id==19||id==200||id==23) {
-                std::lock_guard lock(selected_mutex);frame=id==19?selected_latest:id==200?pcm_latest:center_latest;
-                return frame.frame&&frame.status==signal_contracts::Status::ok&&frame.frame.view().stamp.available
-                    &&frame.delivery.graph_revision==app.presenter().client().snapshot().graph_revision;
-            }
-            return app.pipeline().query_numeric({"main",id,domain::PortDirection::Output,0},frame)==signal_contracts::Status::ok
-                &&frame.frame&&frame.frame.view().stamp.available
-                &&frame.delivery.graph_revision==app.presenter().client().snapshot().graph_revision;
-        }
+    gui_fixture::phase_trace::Scope trace("temporal.query",id);
+    if(id==19||id==200||id==23) {
+        trace.mark("cache mutex BEGIN");std::lock_guard lock(selected_mutex);trace.mark("cache mutex END");
+        frame=id==19?selected_latest:id==200?pcm_latest:center_latest;
+        const bool ready=frame.frame&&frame.status==signal_contracts::Status::ok&&frame.frame.view().stamp.available;
+        return temporal_frame_revision(app,id,frame,ready,frame.status);
+    }
+    trace.mark("engine query BEGIN");
+    const auto status=app.pipeline().query_numeric({"main",id,domain::PortDirection::Output,0},frame);
+    trace.mark("engine query END",int(status));
+    const bool ready=status==signal_contracts::Status::ok&&frame.frame&&frame.frame.view().stamp.available;
+    return temporal_frame_revision(app,id,frame,ready,status);
+}
 
 struct TemporalFrameQuery {
     pipeline::NumericEngine& engine;
@@ -881,15 +911,26 @@ struct TemporalFrameQuery {
     std::function<bool(int,pipeline::DeliveredNumericFrame&)> read;
     QByteArray stage;
     void set_required(std::initializer_list<int> nodes) {
+        gui_fixture::phase_trace::Scope trace("temporal.tap.set_required",int(nodes.size()));
         std::vector<pipeline::EndpointIdentity> endpoints;endpoints.reserve(nodes.size());
         for(const auto node:nodes)endpoints.push_back({"main",node,domain::PortDirection::Output,0});
-        engine.update_numeric_tap(tap,std::move(endpoints));
+        trace.mark("update_numeric_tap BEGIN");engine.update_numeric_tap(tap,std::move(endpoints));trace.mark("update_numeric_tap END");
     }
     bool operator()(int id,pipeline::DeliveredNumericFrame& frame)const {return read(id,frame);}
 };
 
+static void trace_temporal_delivery(const pipeline::DeliveredNumericFrame& frame,std::array<std::uint64_t,4>& revisions,std::array<bool,4>& seen) {
+    if(!gui_fixture::phase_trace::enabled.load(std::memory_order_relaxed))return;
+    const auto node=frame.context->endpoint.node;
+    const int slot=node==17?0:node==19?1:node==200?2:node==23?3:-1;
+    if(slot<0 || (seen[slot]&&revisions[slot]==frame.delivery.graph_revision))return;
+    seen[slot]=true;revisions[slot]=frame.delivery.graph_revision;
+    gui_fixture::phase_trace::frame("temporal.tap.first_revision",node,frame,frame.status);
+}
 static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,const QByteArray& stage) {
     report_temporal_phase("startup",app);
+    gui_fixture::phase_trace::Scope trace("temporal.delivery");
+        std::array<std::uint64_t,4> observed_revisions{};std::array<bool,4> observed{};
         std::mutex selected_mutex;pipeline::DeliveredNumericFrame selected_latest,pcm_latest,center_latest;
         const auto tap=app.pipeline().subscribe_numeric_tap({{"main",17,domain::PortDirection::Output,0},
             {"main",19,domain::PortDirection::Output,0}},[&](const pipeline::DeliveredNumericFrame& delivered){
@@ -898,13 +939,14 @@ static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& run
             if(delivered.context->endpoint.node==19)selected_latest=delivered;
             if(delivered.context->endpoint.node==200)pcm_latest=delivered;
             if(delivered.context->endpoint.node==23)center_latest=delivered;
+            trace_temporal_delivery(delivered,observed_revisions,observed);
         },{});CHECK(tap);
-        struct TapGuard {pipeline::NumericEngine& engine;std::uint64_t token;~TapGuard(){engine.unsubscribe_numeric_tap(token);}} guard{app.pipeline(),tap};
-        const bool started=wait_until([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();},6000);
+        struct TapGuard {pipeline::NumericEngine& engine;std::uint64_t token;~TapGuard(){gui_fixture::phase_trace::Scope trace("temporal.tap.unsubscribe");engine.unsubscribe_numeric_tap(token);}} guard{app.pipeline(),tap};
+        const bool started=wait_until([&]{return gui_fixture::phase_trace::snapshot(app).graph_revision>0&&!app.presenter().graph_request_pending();},6000);
         if(!started) {
             QString error;domain::NumericProcessingGraph exported;model->export_numeric_graph(exported,&error);
             std::fprintf(stderr,"Temporal startup: apply=%s saved=%s editor=%s\n",app.presenter().apply_status().toUtf8().constData(),app.presenter().saved_graph_warning().toUtf8().constData(),error.toUtf8().constData());
-            const auto snapshot=app.presenter().client().snapshot();
+            const auto snapshot=gui_fixture::phase_trace::snapshot(app);
             for(auto it=snapshot.statuses.begin();it!=snapshot.statuses.end();++it)std::fprintf(stderr,"component %s state=%d error=%s\n",qPrintable(it.key()),int(it.value().state),qPrintable(it.value().error));
         }
         CHECK(started);
@@ -916,6 +958,9 @@ static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& run
 
 static int temporal_start(auto& argv,auto& path,auto& next) {
         const unsigned temporal_rate=QByteArray(argv[1])=="--temporal-fft-44100"?44100:48000;
+        const QByteArray traced_stage=argv[2]?QByteArray(argv[2]):QByteArray("matrices");
+        gui_fixture::phase_trace::Session diagnostic_session(traced_stage=="center" || (temporal_rate==48000 && traced_stage=="window-functions"));
+        gui_fixture::phase_trace::Scope scenario("temporal.scenario",int(temporal_rate));
         auto runtime_graph=numeric_temporal_fft_graph(temporal_rate);QString native_error;
         CHECK(desktop::resolve_numeric_source_format(runtime_graph,13,temporal_rate,1,numeric_editor::limits(),&native_error));
         const auto expected_bin_hz=double(runtime_graph.execution_interval.denominator)/double(runtime_graph.execution_interval.numerator)/512.;
@@ -927,7 +972,10 @@ static int temporal_start(auto& argv,auto& path,auto& next) {
         CHECK(desktop::save_numeric_project(project,path));const auto original=read(path);
         auto encoded=path.toLocal8Bit();char executable[]="numeric_application_tests",option[]="--config";
         char* arguments[]={executable,option,encoded.data(),nullptr};int count=3;
-        CoreApplication app(count,arguments,test_fixture::startup_capture_factory());install_synthetic_capture_discovery(app,temporal_rate);
+        gui_fixture::phase_trace::Scope lifetime("temporal.CoreApplication");
+        CoreApplication app(count,arguments,test_fixture::startup_capture_factory());
+        lifetime.mark("constructed");gui_fixture::phase_trace::BeforeApplicationExit before_exit{lifetime};
+        lifetime.mark("capture discovery BEGIN");install_synthetic_capture_discovery(app,temporal_rate);lifetime.mark("capture discovery END");
         auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
         // The test's injected device catalog replaces host discovery before
         // startup Apply. Import through that same catalog so the displayed and
@@ -2258,7 +2306,7 @@ static int rejected_recovery(auto& path,auto& next,auto& rejected,CoreApplicatio
 }
 
 static int rejected_example_recovery(const QString& path,const QString& next,CoreApplication& app,auto& rejected,MainWindow*& diagnosticWindow,auto& saveAction,SchemeEditorWidget*& diagnosticEditor) {
-auto* example=diagnosticWindow->findChild<QAction*>("example-basic-signal");CHECK(example);example->trigger();
+    CHECK(diagnosticEditor);emit diagnosticEditor->generator_loopback_graph_requested();
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision>0;}));
         CHECK(respond_to_overwrite(false,[&]{app.save_configuration_as(path);}));CHECK(read(path)==rejected);
 #ifdef Q_OS_WIN
@@ -2541,7 +2589,8 @@ static int basic_live_window(CoreApplication& app,NumericEditorGraphModel* model
 }
 static int basic_menu_reset(CoreApplication& app,NumericEditorGraphModel* model,MainWindow* window) {
     unsigned entries=0;
-    const auto actions=window->findChildren<QAction*>();
+    const auto* menu=window->findChild<QMenu*>("pipelinePresetsMenu");CHECK(menu);
+    const auto actions=menu->actions();
     for(auto* action:actions)if(action->objectName().startsWith("example-"))++entries;
     CHECK(entries==2 && !window->findChild<QAction*>("example-basic-signal"));
     CHECK(window->findChild<QAction*>("example-reference-beat") && window->findChild<QAction*>("example-compact-spectrogram"));

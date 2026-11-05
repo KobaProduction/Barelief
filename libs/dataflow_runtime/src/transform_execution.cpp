@@ -22,12 +22,42 @@ TransformResult window_coefficients(const PlanNode& node,State& state,const Data
     if(load_element(source,{0,0,0},size)!=Status::ok || size!=output.actual[0])return {delivery.reject(delivery.user,Status::incompatible_contract),true};
     state.numeric_frames[0]={current.stamp,output.view()};return {Status::ok,false};
 }
-TransformResult frame_stride(const PlanNode& node,State& state,const DataFrameView& current) noexcept {
+Status copy_stride_plane(const NumericView& source,MutableNumericView& destination,std::size_t plane) noexcept {
+    for(std::size_t row=0;row<source.actual[0];++row)for(std::size_t column=0;column<source.actual[1];++column){
+        std::uint64_t bits=0;auto status=load_bits(source,{plane,row,column},source.contract->dtype,bits);if(status!=Status::ok)return status;
+        status=store_bits(destination,{plane,row,column},destination.contract->dtype,bits);if(status!=Status::ok)return status;
+    }
+    return Status::ok;
+}
+Status copy_stride_coordinates(const NumericView& source,NumericBuffer& buffer,MutableNumericView& destination) noexcept {
+    for(std::size_t axis=0;axis<2;++axis){
+        const auto bytes=source.coordinates.axes[axis];auto& target=buffer.coordinates[axis];
+        if(bytes.size()>target.size())return Status::buffer_too_small;
+        std::copy(bytes.begin(),bytes.end(),target.begin());destination.coordinates.axes[axis]={target.data(),bytes.size()};
+    }
+    return Status::ok;
+}
+Status populate_stride(const NumericView& source,NumericBuffer& buffer,MutableNumericView& output) noexcept {
+    for(std::size_t plane=0;plane<source.planes.size();++plane){
+        const auto status=copy_stride_plane(source,output,plane);if(status!=Status::ok)return status;
+    }
+    return copy_stride_coordinates(source,buffer,output);
+}
+Status materialize_stride(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
+    const auto& source=std::get<NumericView>(current.payload);auto output=mutable_output(node,state,0);
+    output.actual=source.actual;output.ring={};
+    const auto status=populate_stride(source,state.numeric_outputs[0],output);if(status!=Status::ok)return status;
+    const auto valid=validate_mutable(output,limits);if(valid!=Status::ok)return valid;
+    state.numeric_frames[0]={current.stamp,output.view()};return Status::ok;
+}
+TransformResult frame_stride(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits,TransformDelivery delivery) noexcept {
     if(current.stamp.discontinuity)state.progress=0;
     const bool publish=state.progress==0;
     state.progress=(state.progress+1)%node.frame_hop;
-    if(publish)state.numeric_frames[0]=current;
-    return {Status::ok,!publish};
+    if(!publish)return {Status::ok,true};
+    if(!node.materialize_stride){state.numeric_frames[0]=current;return {Status::ok,false};}
+    const auto status=materialize_stride(node,state,current,limits);
+    return {status==Status::ok?status:delivery.reject(delivery.user,status),status!=Status::ok};
 }
 class SpectralExecution {
     const PlanNode& node;
@@ -116,7 +146,7 @@ public:
 }
 TransformResult execute_transform(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits,TransformDelivery delivery) noexcept {
     switch(node.node.kind){
-    case NodeKind::FrameStride:return frame_stride(node,state,current);
+    case NodeKind::FrameStride:return frame_stride(node,state,current,limits,delivery);
     case NodeKind::Mel:case NodeKind::PowerToDb:return {execute_music(node,state,current,limits),false};
     case NodeKind::WindowFunction:return window_coefficients(node,state,current,delivery);
     case NodeKind::PcmResampler:return execute_resampler(node,state,current,delivery);

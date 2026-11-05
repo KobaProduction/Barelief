@@ -15,6 +15,8 @@ struct ComplexPolarOptions {
 // publishing abs(Re) and sign(Re)?pi:0 as required by explicit real endpoints.
 // ScaledRatioFma uses Float32 max/min ratio, fused ratio^2+1, sqrt and
 // multiplication by max. Existing Hypot/SquaredNorm values and defaults stay.
+// The bounded fused step uses exact binary64 product/residual and midpoint
+// correction to retain binary32 RNE even with an inaccurate platform fmaf.
 bool complex_polar_value(float real,float imaginary,float* magnitude,float* phase,
                          ComplexPolarOptions={}) noexcept;
 bool magnitude_power(float magnitude,float exponent,float& output) noexcept;

@@ -142,17 +142,25 @@ domain::ProcessingSupport pair_support(const domain::ResolvedProcessingNode& n,c
     common_resources(n,p,sizeof(Inverse),bytes,s);return s;
 }
 template<class T> PreparedCommon make(const domain::ResolvedProcessingNode& n){auto result=std::make_unique<T>();return result->prepare(n)?std::move(result):nullptr;}
-}
-PreparedCommon prepare_common_values(const domain::ResolvedProcessingNode& n){
-    if(n.kind=="FeatureAggregate")return prepare_feature_aggregate(n);
-    if(n.kind=="LogCompression")return make<Log>(n);
-    if(n.kind=="VectorNormalize")return make<Normalize>(n);
+PreparedCommon prepare_value_filters(const domain::ResolvedProcessingNode& n) {
     if(n.kind=="SameConvolution")return make<Convolution>(n);
     if(n.kind=="DirectCorrelation")return make<Correlation>(n);
     if(n.kind=="InverseFourier")return make<Inverse>(n);
     return {};
 }
+
+}
+PreparedCommon prepare_common_values(const domain::ResolvedProcessingNode& n){
+    if(n.kind=="TemporalFrameSequence")return prepare_temporal_frame_sequence(n);
+    if(n.kind=="ArrayReindex")return prepare_array_reindex(n);
+    if(n.kind=="FeatureAggregate")return prepare_feature_aggregate(n);
+    if(n.kind=="LogCompression")return make<Log>(n);
+    if(n.kind=="VectorNormalize")return make<Normalize>(n);
+    return prepare_value_filters(n);
+}
 domain::ProcessingSupport assess_common_values(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p) noexcept {
+    if(n.kind=="TemporalFrameSequence")return assess_temporal_frame_sequence(n,p);
+    if(n.kind=="ArrayReindex")return assess_array_reindex(n,p);
     if(n.kind=="FeatureAggregate")return assess_feature_aggregate(n,p);
     if(n.kind=="DirectCorrelation" || n.kind=="InverseFourier")return pair_support(n,p);
     std::size_t count=0;if(!common_vector(n,0,count))return {};

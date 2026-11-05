@@ -51,7 +51,7 @@ target_sources(dsp_kernels PRIVATE
 
 target_sources(dsp_kernels PRIVATE src/beat_state_decoder.cpp src/log_frequency_filter_bank.cpp src/complex_flux.cpp src/energy_novelty.cpp)
 target_sources(dsp_kernels PRIVATE src/complex_values.cpp src/spectral_descriptors.cpp src/log_compression.cpp src/activation_peaks.cpp src/activation_peak_matrix.cpp src/curve_interpolation.cpp src/sample_rotation.cpp)
-target_sources(dsp_kernels PRIVATE src/mel_filter_bank.cpp src/power_to_db.cpp)
+target_sources(dsp_kernels PRIVATE src/mel_filter_bank.cpp src/filter_projection.cpp src/power_to_db.cpp)
 target_sources(dsp_kernels PRIVATE
     src/reference_fourier.cpp src/reference_autocorrelation.cpp src/reference_hybrid.cpp)
 target_sources(dsp_kernels PRIVATE

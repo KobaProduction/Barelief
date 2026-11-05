@@ -243,7 +243,7 @@ bool input_axis(const domain::ResolvedProcessingNode& n,domain::PortId port,cons
     const auto& axis=c.coordinates[0];const double rate=input_rate(n,port);
     if(rate && (n.kind.starts_with("Pcm") || n.kind=="PatternFeatures") && c.clock.sample_rate && double(c.clock.sample_rate)!=rate)return false;
     if(axis.mode!=CoordinateMode::Regular || axis.unit!=NumericUnit::Seconds || !rate)return true;
-    if(!axis.origin.denominator || !axis.step.denominator || axis.origin.numerator)return false;
+    if(!axis.origin.denominator || !axis.step.denominator)return false;
     const double step=double(axis.step.numerator)/double(axis.step.denominator),expected=1/rate;
     return std::abs(step-expected)<=8*std::numeric_limits<double>::epsilon()*std::max(1.,expected);
 }
@@ -253,15 +253,20 @@ double axis_coordinate(std::span<const std::byte> bytes,std::size_t index) noexc
     return std::bit_cast<double>(bits);
 }
 
+bool uniform_snapshot_coordinates(std::span<const std::byte> bytes,std::size_t count,double rate) noexcept {
+    const double origin=axis_coordinate(bytes,0);double previous=origin;
+    for(std::size_t k=0;k<count;++k){
+        const double value=axis_coordinate(bytes,k),expected=origin+double(k)/rate;
+        if(!std::isfinite(value) || (k && value<=previous) || std::abs(value-expected)>8*std::numeric_limits<double>::epsilon()*std::max(1.,std::abs(expected)))return false;
+        previous=value;
+    }
+    return true;
+}
 bool explicit_input_axis(const NumericOperationInput& input,double rate) noexcept {
     const auto& axis=input.value.contract->coordinates[0];
     if(!rate || axis.mode!=CoordinateMode::ExplicitFloat64LE || axis.unit!=NumericUnit::Seconds)return true;
     const auto bytes=input.value.coordinates.axes[0];if(input.value.actual[0]>bytes.size()/8)return false;
-    for(std::size_t k=0;k<input.value.actual[0];++k){
-        const double value=axis_coordinate(bytes,k),expected=double(k)/rate;
-        if(!std::isfinite(value) || std::abs(value-expected)>8*std::numeric_limits<double>::epsilon()*std::max(1.,expected))return false;
-    }
-    return true;
+    return !input.value.actual[0] || uniform_snapshot_coordinates(bytes,input.value.actual[0],rate);
 }
 }
 namespace {

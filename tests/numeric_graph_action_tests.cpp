@@ -58,7 +58,7 @@ static WorkspaceDock* trigger(QtNodes::DataFlowGraphicsScene* scene,int node,con
 }
 static domain::NumericProcessingGraph graph_with_catalog_sinks(){
     auto graph=numeric_default_graph();int next=20;
-    const auto kinds=numeric_editor::catalog();
+    const auto kinds=numeric_editor::model_catalog();
     for(const auto& kind:kinds){
         auto configured=numeric_editor::default_node(kind);domain::ResolvedProcessingNode resolved;
         if(!domain::resolve_processing_node(configured,numeric_editor::limits(),resolved) || resolved.role!=domain::NodeRole::Sink)continue;

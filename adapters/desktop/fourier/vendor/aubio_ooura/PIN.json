@@ -1,0 +1,19 @@
+{
+  "repository": "aubio/aubio",
+  "revision": "ad5cf975aed08cc4562dd008cf9f83b12b82ffb8",
+  "upstream_path": "src/spectral/ooura_fft8g.c",
+  "license": "GPL-3.0-or-later as distributed in pinned aubio; full COPYING preserved",
+  "raw_source_sha256": "da70d1cd4cc9bd1ba387cdf2c3409cdcd4cc0af7e65917896a08b9b3e128c109",
+  "raw_COPYING_sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+  "configured_source_sha256": "0657684235d78e78866a33d64b2aa567f926d33285577aa1caf6840077431dd1",
+  "compatibility_header_sha256": "9e52ff63126a812630d591d4ba0f8c5dd2bcbb5d139872a655674841bcfc5f1a",
+  "genuine_config_files": {
+    "C:\\Users\\Koba\\.codex\\tmp\\rhythm-originals-20261027\\aubio-ad5cf975\\src\\aubio_priv.h": "5c52ce757fd438924252a0a6e3ceee4a1eee001dc1ca63f913f61b06f547efc4",
+    "C:\\Users\\Koba\\.codex\\tmp\\rhythm-originals-20261027\\aubio-ad5cf975\\src\\types.h": "25d5d902a3ce7a2c6c400f34b7b9fd4ba26311527c66c1ff6baddec7704068bd"
+  },
+  "exact_diff": "--- pinned-raw/ooura_fft8g.c\n+++ configured/ooura_fft8g.c\n@@ -7,7 +7,7 @@\n //  - declare initialization as static\n //  - prefix public function with aubio_ooura_\n \n-#include \"aubio_priv.h\"\n+#include \"ooura_compat.h\"\n \n void aubio_ooura_cdft(int n, int isgn, smpl_t *a, int *ip, smpl_t *w);\n void aubio_ooura_rdft(int n, int isgn, smpl_t *a, int *ip, smpl_t *w);\n",
+  "primitive": "smpl_t=float, COS=cosf SIN=sinf ATAN=atanf, as genuine default !HAVE_AUBIO_DOUBLE build",
+  "arithmetic_changes": [],
+  "symbols": "all6 aubio_ooura_* public functions privately prefixed by included compatibility symbols header",
+  "ownership": "per-plan cold ip/tables/data allocated in adapter; source lazy tables materialized by cold zero forward RDFT, no source allocation changes"
+}

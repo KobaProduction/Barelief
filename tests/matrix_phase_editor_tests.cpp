@@ -51,7 +51,7 @@ void phase_connections(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>
 int main(int argc,char** argv) {
     QApplication app(argc,argv);
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)
+    for(const auto kinds=numeric_editor::model_catalog();const auto& kind:kinds)
         registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     phase_connections(registry);
     std::puts("matrix Fourier phase routing/geometry/undo/redo/round-trip PASS");

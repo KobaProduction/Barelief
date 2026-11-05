@@ -9,6 +9,8 @@ namespace domain {
 using namespace signal_contracts;
 namespace {
 constexpr CommonOperationSpec catalogue[]{
+    {"TemporalFrameSequence",1,1,"complete input -> unwindowed bounded matrix of overlapping rows"},
+    {"ArrayReindex",1,1,"explicit zero-based indices -> selected/permuted vector"},
     {"FeatureAggregate",1,1,"explicit feature vector or matrix rows -> mean/median/sum"},
     {"FilterMatrixProjection",1,3,"explicit band-major weights -> linear projection; weights/centers outputs"},
     {"LogCompression",1,1,"explicit log base/add/multiply on linear values"},
@@ -22,10 +24,15 @@ constexpr CommonOperationSpec catalogue[]{
     {"SameConvolution",1,1,"explicit kernel -> zero-padded same convolution -> explicit crop"},
     {"InverseFourier",2,2,"full complex real/imaginary -> normalized IDFT -> real/imaginary outputs"}};
 using C=ParameterClassification;using V=ParameterValueKind;
+constexpr ParameterDescriptor framing[]{
+    {"window_length",C::Processing,V::Integer,2,65536,2048,{}},{"hop",C::Processing,V::Integer,1,65536,512,{}},
+    {"center",C::Processing,V::Boolean,0,1,0,{}},{"tail",C::Processing,V::Integer,0,1,1,{}}};
+constexpr ParameterDescriptor reindex[]{{"indices",C::Processing,V::NumericArray,0,0,0,{}}};
 constexpr ParameterDescriptor aggregate[]{{"method",C::Processing,V::Integer,1,3,2,{}}};
 constexpr ParameterDescriptor projection[]{
     {"weights",C::Processing,V::NumericArray,0,0,0,{}},{"centers_hz",C::Processing,V::NumericArray,0,0,0,{}},
-    {"compensated",C::Processing,V::Boolean,0,1,1,{}},{"square_input",C::Processing,V::Boolean,0,1,0,{}}};
+    {"compensated",C::Processing,V::Boolean,0,1,1,{}},{"square_input",C::Processing,V::Boolean,0,1,0,{}},
+    {"accumulation",C::Processing,V::String,0,0,0,"separate"}};
 constexpr ParameterDescriptor logarithm[]{
     {"multiply",C::Processing,V::Number,0,3.4e38,1,{}},{"add",C::Processing,V::Number,0,3.4e38,1,{}},
     {"base",C::Processing,V::Integer,0,2,0,{}},{"signed_input",C::Processing,V::Boolean,0,1,0,{}}};
@@ -69,12 +76,22 @@ bool size(const ConfiguredProcessingNode& n,std::string_view key,std::size_t fal
     const auto* l=std::get_if<NumericLiteral>(p);if(!l)return false;
     return std::visit([&](auto v){if constexpr(std::is_integral_v<decltype(v)>){if(!std::in_range<std::size_t>(v))return false;output=std::size_t(v);return true;}else return false;},*l);
 }
+bool projection_policy(const ConfiguredProcessingNode& node) noexcept {
+    const auto* field=parameter(node,"accumulation");
+    const auto* mode=field?std::get_if<std::string>(field):nullptr;
+    if(field && !mode)return false;
+    if(!mode || *mode=="separate")return true;
+    if(*mode!="sequential_fma")return false;
+    const auto* setting=parameter(node,"compensated");const auto* compensated=setting?std::get_if<bool>(setting):nullptr;
+    return compensated && !*compensated;
+}
 struct Geometry {Rank rank=Rank::Vector;std::size_t rows=1,columns=1;bool variable=false;DType type=DType::Float32;};
 bool filter_geometry(const ConfiguredProcessingNode& n,const NumericContract& in,std::array<Geometry,3>& shapes) noexcept {
+    if(!projection_policy(n))return false;
     const auto bins=std::size_t(in.shape.extents[in.shape.rank==Rank::Matrix?1:0].maximum);
     const auto weights=array(n,"weights");if(!bins || weights.empty() || weights.size()%bins)return false;
     const auto bands=weights.size()/bins;
-    shapes[0]={in.shape.rank,in.shape.rank==Rank::Matrix?std::size_t(in.shape.extents[0].maximum):bands,in.shape.rank==Rank::Matrix?bands:1,true};
+    shapes[0]={in.shape.rank,in.shape.rank==Rank::Matrix?std::size_t(in.shape.extents[0].maximum):bands,in.shape.rank==Rank::Matrix?bands:1,in.shape.rank==Rank::Matrix};
     shapes[1]={Rank::Matrix,bands,bins};shapes[2]={Rank::Vector,bands,1,true};return true;
 }
 bool recursive_shape(const ConfiguredProcessingNode& n,std::array<Geometry,3>& out) noexcept {
@@ -125,17 +142,29 @@ std::size_t initialize_vector_geometry(const NumericContract& input,Geometry& ge
     return count;
 }
 bool value_shapes(const ConfiguredProcessingNode& n,std::size_t count,std::array<Geometry,3>& out) noexcept {
+    if(n.kind=="ArrayReindex"){out[0]={Rank::Vector,array(n,"indices").size(),1,false};return out[0].rows!=0;}
     if(n.kind=="RecursiveFilter")return recursive_shape(n,out);
     if(n.kind=="DirectCorrelation")return size(n,"lags",count,out[0].rows) && out[0].rows;
     if(n.kind=="CurveInterpolation")return interpolation_shape(n,out);
     if(n.kind=="SameConvolution")return convolution_shape(n,count,out);
     return statistical_shape(n,count,out);
 }
+bool frame_sequence_shape(const ConfiguredProcessingNode& n,std::size_t count,std::array<Geometry,3>& out) noexcept {
+    std::size_t length=0,hop=0,tail=0;
+    if(!size(n,"window_length",2048,length) || length<2 || !size(n,"hop",512,hop) || !hop || !size(n,"tail",1,tail) || tail>1)return false;
+    const auto* centered=parameter(n,"center");
+    if(centered && (!std::holds_alternative<bool>(*centered) || std::get<bool>(*centered)))return false;
+    const auto rows=tail?(count<=length?std::size_t(count!=0):1+(count-length)/hop+std::size_t((count-length)%hop!=0)):(count<length?0:1+(count-length)/hop);
+    const auto bounded=tail && count?std::min(rows,1+(count-1)/hop):rows;
+    out[0]={Rank::Matrix,bounded,length,true};return bounded!=0;
+}
 bool shape(const ConfiguredProcessingNode& n,const NumericContract& in,std::array<Geometry,3>& out) noexcept {
     const auto count=initialize_vector_geometry(in,out[0]);
     if(n.kind=="FeatureAggregate"){
         out[0]=in.shape.rank==Rank::Matrix?Geometry{Rank::Vector,count,1,true}:Geometry{Rank::Scalar,1,1,false};return true;
     }
+    if(n.kind=="ArrayReindex" && in.shape.rank==Rank::Matrix){out[0]={Rank::Matrix,count,array(n,"indices").size(),true};return out[0].columns!=0;}
+    if(n.kind=="TemporalFrameSequence")return frame_sequence_shape(n,count,out);
     if(n.kind=="FilterMatrixProjection")return filter_geometry(n,in,out);
     if(n.kind=="InverseFourier")return inverse_fourier_shape(n,count,out);
     return value_shapes(n,count,out);
@@ -156,12 +185,18 @@ void retain_projection_axes(const ConfiguredProcessingNode& node,const NumericCo
     value.unit=input.unit;
 }
 
+void retain_reindex_axes(const NumericContract& input,NumericContract& value) noexcept {
+    value.unit=input.unit;value.quantity=input.quantity;
+    if(input.shape.rank!=Rank::Matrix)return;
+    value.shape.extents[0]=input.shape.extents[0];value.shape.axes[0]=input.shape.axes[0];value.coordinates[0]=input.coordinates[0];
+}
 void retain_axes(const ConfiguredProcessingNode& node,std::size_t port,const NumericContract& input,NumericContract& value) noexcept {
     if(port)return;
     if(node.kind=="LogCompression" || node.kind=="VectorNormalize" || node.kind=="RecursiveFilter"){
         value.shape=input.shape;value.coordinates=input.coordinates;value.clock=input.clock;value.channel_order=input.channel_order;
         if(node.kind=="RecursiveFilter")value.unit=input.unit;
     }
+    if(node.kind=="ArrayReindex")retain_reindex_axes(input,value);
     if(node.kind=="FilterMatrixProjection")retain_projection_axes(node,input,value);
 }
 NumericContract output_base(Geometry geometry) {
@@ -174,7 +209,7 @@ NumericContract output_base(Geometry geometry) {
 Status own(const ConfiguredProcessingNode& node,std::size_t port,const NumericContract& input,Geometry geometry,OwnedProcessingContract& output) noexcept {
     auto value=output_base(geometry);
     retain_axes(node,port,input,value);
-    if(node.kind=="FeatureAggregate")value.clock=input.clock;
+    if(node.kind=="FeatureAggregate" || node.kind=="ArrayReindex" || node.kind=="TemporalFrameSequence")value.clock=input.clock;
     if(node.kind=="FilterMatrixProjection" && port==2)value.unit=NumericUnit::Hertz;
     if(node.kind=="DirectCorrelation"){
         std::int64_t first=0;if(!signed_integer(node,"first_lag",first))return Status::invalid_argument;
@@ -188,7 +223,7 @@ const CommonOperationSpec* common_operation_spec(std::string_view kind) noexcept
 bool common_operation_kind(std::string_view kind) noexcept {return common_operation_spec(kind)!=nullptr;}
 std::span<const ParameterDescriptor> common_operation_parameters(std::string_view kind) noexcept {
     struct Parameters {std::string_view kind;std::span<const ParameterDescriptor> values;};
-    const Parameters sets[]{{"FeatureAggregate",aggregate},{"FilterMatrixProjection",projection},{"LogCompression",logarithm},{"VectorNormalize",normalization},
+    const Parameters sets[]{{"TemporalFrameSequence",framing},{"ArrayReindex",reindex},{"FeatureAggregate",aggregate},{"FilterMatrixProjection",projection},{"LogCompression",logarithm},{"VectorNormalize",normalization},
         {"RecursiveFilter",recursive},{"DirectCorrelation",correlation},{"CurveInterpolation",interpolation},
         {"CombFilterBank",comb},{"ValueHistogram",histogram},{"InterpolatedPeaks",peaks},{"SameConvolution",convolution},{"InverseFourier",inverse}};
     for(const auto& set:sets)if(set.kind==kind)return set.values;

@@ -70,8 +70,17 @@ struct ClockProvenance {
         NumericLiteral literal;
         return resolve_preparation_value(graph,node.id,endpoint.id,literal)==Status::ok;
     }
+    ClockOrigin merged_origin(const ConfiguredProcessingNode& node,std::size_t depth) const noexcept {
+        ClockOrigin common{OriginKind::Preparation};
+        for(const auto& input:node.inputs)if(numeric_parameter_key(node.kind,input.id).empty()) {
+            const auto* edge=parent(node.id,input.id);
+            const auto next=edge?edge_origin(*edge,depth):disconnected(input);
+            if(!combine(common,next))return {};
+        }
+        return common;
+    }
     ClockOrigin routed_origin(const ConfiguredProcessingNode& node,const ProcessingPort& endpoint,PortId output,std::size_t depth) const noexcept {
-        const auto input=passthrough_input(node,output);if(!input)return {};
+        const auto input=passthrough_input(node,output);if(!input)return merged_origin(node,depth);
         const auto* edge=parent(node.id,*input);
         return edge?edge_origin(*edge,depth):disconnected(endpoint);
     }

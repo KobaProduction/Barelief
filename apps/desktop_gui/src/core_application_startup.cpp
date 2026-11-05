@@ -23,6 +23,9 @@
 #include <utility>
 
 #include "core_application_state.h"
+#ifdef BARELIEF_RHYTHM_REFERENCE_GUI
+#include "research_gui_engine.h"
+#endif
 #include <core_app/product_identity.h>
 #include "product_information.h"
 #include <QIcon>
@@ -153,7 +156,7 @@ void CoreApplication::_create_startup_example(StartupState& state) {
 void CoreApplication::_create_editor_models() {
     _ctx.delegate_model_registry = std::make_shared<QtNodes::NodeDelegateModelRegistry>();
     _ctx.data_flow_graph = std::make_shared<NumericEditorGraphModel>(_ctx.delegate_model_registry);
-    const auto kinds=numeric_editor::catalog();
+    const auto kinds=numeric_editor::model_catalog();
     for (const auto &kind : kinds) {
         _ctx.delegate_model_registry->registerModel(
             [kind] { return std::make_unique<AudioNodeModel>(kind); }, numeric_editor::category(kind));
@@ -177,7 +180,11 @@ void CoreApplication::_load_initial_model(StartupState& state) {
     }
 }
 void CoreApplication::_compose_engine(StartupState& state,pipeline::AudioSourceFactory source_factory) {
+#ifdef BARELIEF_RHYTHM_REFERENCE_GUI
+    _engine_provider = std::make_shared<DesktopEngineProvider>(std::move(source_factory),make_research_gui_engine);
+#else
     _engine_provider = std::make_shared<DesktopEngineProvider>(std::move(source_factory));
+#endif
     const auto serial=pipeline::read_serial_binding(state.runtime_config);
     if(serial.configured) {
         _engine_provider->set_serial_endpoint(serial.endpoint);

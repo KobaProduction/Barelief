@@ -1,0 +1,3 @@
+# Offline label evaluation only; never imported by the DSP/runtime.
+mido==1.3.3
+packaging==26.3

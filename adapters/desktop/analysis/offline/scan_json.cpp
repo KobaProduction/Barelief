@@ -17,6 +17,37 @@
 namespace desktop_analysis::offline {
 namespace {
 constexpr qint64 limit=1024ll*1024*1024;
+bool read_scan_count(const QJsonObject& object,const char* key,std::size_t& value) {
+    const auto v=object.value(key);
+    if(!v.isDouble() || v.toDouble()<0 || v.toDouble()>10000000 ||
+       std::floor(v.toDouble())!=v.toDouble())return false;
+    value=std::size_t(v.toDouble());return true;
+}
+QJsonObject canonical_run_counts(const ProfileDocument& input) {
+    auto run=input.preserved.value("analysis_run").toObject();
+    if(!run.contains("processed_count"))run["processed_count"]=int(input.profile.compositions.size());
+    if(!run.contains("failed_count"))run["failed_count"]=0;
+    if(!run.contains("requested_count"))
+        run["requested_count"]=run.value("processed_count").toDouble()+run.value("failed_count").toDouble();
+    return run;
+}
+void encode_scan_run_counts(const ProfileDocument& input,QJsonObject& object) {
+    const auto run=input.preserved.value("analysis_run");
+    if(run.isUndefined() || run.isObject())object["analysis_run"]=canonical_run_counts(input);
+}
+bool complete_scan_counts(const ProfileDocument& input,MusicScanCollectionInfo& counts,QString& error) {
+    const auto value=input.preserved.value("analysis_run");
+    if(!value.isUndefined() && !value.isObject()){error="Invalid complete scan counters";return false;}
+    const auto run=canonical_run_counts(input);
+    if(!read_scan_count(run,"processed_count",counts.processed_count) ||
+       !read_scan_count(run,"failed_count",counts.failed_count) ||
+       !read_scan_count(run,"requested_count",counts.requested_count) ||
+       counts.requested_count!=counts.processed_count+counts.failed_count){
+        error="Invalid complete scan counters";return false;
+    }
+    return true;
+}
+
 ProfileDocument measurement_document(const ProfileDocument& input) {
     auto result=input;auto& p=result.profile;p.curve.reset();
     p.training.gain_mode=dsp_kernels::ProfileGainMode::MeanEqualization;p.training.min_gain=1;p.training.max_gain=1;
@@ -94,6 +125,7 @@ QJsonObject encode_scan_object(const ProfileDocument& input,ProfileArraySink* si
     object["kind"]="barelief.music_scan";object["version"]=3;
     auto metadata=object.value("metadata").toObject(),grid=metadata.value("grid").toObject();
     grid["kind"]="per_track_rfft_hz";grid.remove("step_hz");metadata["grid"]=grid;object["metadata"]=metadata;
+    encode_scan_run_counts(input,object);
     return object;
 }
 QByteArray encode_music_scan(const ProfileDocument& input){return QJsonDocument(encode_scan_object(input)).toJson(QJsonDocument::Compact);}
@@ -121,16 +153,14 @@ struct ScanCollectionReader {
     QByteArray manifest_digest,index_digest;
     bool cached=false;
     explicit ScanCollectionReader(const QString& path):file(path),zip(file){}
-    bool open(QString& error){
+    bool open_archive(QString& error) {
         if(!file.open(QIODevice::ReadOnly) || !zip.open(error,true)){
             if(error.isEmpty())error=file.errorString();
             return false;
         }
-        QByteArray main_bytes,index_bytes;
-        if(!zip.read("manifest.json",music_manifest_limit,main_bytes,error) ||
-           !zip.read("pack-index.json",music_manifest_limit,index_bytes,error))return false;
-        const auto main=QJsonDocument::fromJson(main_bytes).object();
-        const auto index=QJsonDocument::fromJson(index_bytes).object();
+        return true;
+    }
+    static bool valid_collection_schema(const QJsonObject& main,const QJsonObject& index,QString& error) {
         if(main.value("kind").toString()!="barelief.music_scan_collection" ||
            index.value("kind").toString()!="barelief.music_scan_pack" ||
            main.value("version").toInt()!=1 || index.value("version").toInt()!=1 ||
@@ -138,48 +168,79 @@ struct ScanCollectionReader {
            !main.value("parts").isArray() || !index.value("parts").isArray()){
             error="Unsupported .brscan collection archive";return false;
         }
+        return true;
+    }
+    void remember_manifest_lists(const QJsonObject& main,const QJsonObject& index,
+                                 const QByteArray& main_bytes,const QByteArray& index_bytes) {
         listed=main.value("parts").toArray();indexed=index.value("parts").toArray();
         cached=zip.entries().contains("summary.json");
         manifest_digest=QCryptographicHash::hash(main_bytes,QCryptographicHash::Sha256).toHex();
         index_digest=QCryptographicHash::hash(index_bytes,QCryptographicHash::Sha256).toHex();
+    }
+    bool valid_manifest_cardinality(QString& error) const {
         if(listed.empty() || listed.size()!=indexed.size() ||
            std::size_t(zip.entries().size())!=std::size_t(listed.size())+2+std::size_t(cached)){
             error="Incomplete or inconsistent .brscan collection";return false;
         }
-        const auto whole=[](const QJsonObject& obj,const char* key,std::size_t& value){
-            const auto v=obj.value(key);
-            if(!v.isDouble() || v.toDouble()<0 || v.toDouble()>10000000 ||
-               std::floor(v.toDouble())!=v.toDouble())return false;
-            value=std::size_t(v.toDouble());return true;
-        };
-        if(!whole(main,"requested_count",summary.requested_count) ||
-           !whole(main,"processed_count",summary.processed_count) ||
-           !whole(main,"failed_count",summary.failed_count) ||
+        return true;
+    }
+    bool read_manifest_documents(QJsonObject& main,QString& error) {
+        QByteArray main_bytes,index_bytes;
+        if(!zip.read("manifest.json",music_manifest_limit,main_bytes,error) ||
+           !zip.read("pack-index.json",music_manifest_limit,index_bytes,error))return false;
+        main=QJsonDocument::fromJson(main_bytes).object();
+        const auto index=QJsonDocument::fromJson(index_bytes).object();
+        if(!valid_collection_schema(main,index,error))return false;
+        remember_manifest_lists(main,index,main_bytes,index_bytes);
+        return valid_manifest_cardinality(error);
+    }
+    bool read_summary_counts(const QJsonObject& main,QString& error) {
+        if(!read_scan_count(main,"requested_count",summary.requested_count) ||
+           !read_scan_count(main,"processed_count",summary.processed_count) ||
+           !read_scan_count(main,"failed_count",summary.failed_count) ||
            summary.processed_count+summary.failed_count!=summary.requested_count){
             error="Invalid .brscan corpus measurement counts";return false;
         }
-        summary.part_count=std::size_t(listed.size());
+        summary.part_count=std::size_t(listed.size());return true;
+    }
+    static bool valid_part_identity(const QJsonObject& stat,const QJsonObject& entry,qsizetype index,QString& error) {
+        const auto name=QStringLiteral("music-scan-part-%1.brscan").arg(index+1,6,10,QLatin1Char('0'));
+        if(stat.value("name").toString()!=name || entry.value("name").toString()!=name ||
+           entry.value("sha256").toString().size()!=64){
+            error="Unexpected scan part identity";return false;
+        }
+        return true;
+    }
+    static bool add_part_counts(const QJsonObject& stat,const QJsonObject& entry,
+                                std::size_t& requested,std::size_t& processed,std::size_t& failed,QString& error) {
+        std::size_t n=0,p=0,f=0;
+        if(!read_scan_count(stat,"requested_count",n)||!read_scan_count(stat,"processed_count",p)||
+           !read_scan_count(stat,"failed_count",f)||n!=p+f ||
+           entry.value("requested_count").toDouble()!=double(n) ||
+           entry.value("processed_count").toDouble()!=double(p) ||
+           entry.value("failed_count").toDouble()!=double(f)){
+            error="Inconsistent scan part metadata";return false;
+        }
+        requested+=n;processed+=p;failed+=f;return true;
+    }
+    bool valid_part_totals(QString& error) const {
         std::size_t requested=0,processed=0,failed=0;
         for(qsizetype i=0;i<listed.size();++i){
             const auto stat=listed[i].toObject(),entry=indexed[i].toObject();
-            const auto name=QStringLiteral("music-scan-part-%1.brscan").arg(i+1,6,10,QLatin1Char('0'));
-            if(stat.value("name").toString()!=name || entry.value("name").toString()!=name ||
-               entry.value("sha256").toString().size()!=64){
-                error="Unexpected scan part identity";return false;
-            }
-            std::size_t n=0,p=0,f=0;
-            if(!whole(stat,"requested_count",n)||!whole(stat,"processed_count",p)||
-               !whole(stat,"failed_count",f)||n!=p+f ||
-               entry.value("requested_count").toDouble()!=double(n) ||
-               entry.value("processed_count").toDouble()!=double(p) ||
-               entry.value("failed_count").toDouble()!=double(f)){
-                error="Inconsistent scan part metadata";return false;
-            }
-            requested+=n;processed+=p;failed+=f;
+            if(!valid_part_identity(stat,entry,i,error))return false;
+            if(!add_part_counts(stat,entry,requested,processed,failed,error))return false;
         }
         if(requested!=summary.requested_count||processed!=summary.processed_count||
            failed!=summary.failed_count){error="Scan collection counters mismatch";return false;}
         return true;
+    }
+
+    bool open(QString& error){
+        if(!open_archive(error))return false;
+        QJsonObject main;
+        if(!read_manifest_documents(main,error))return false;
+        if(!read_summary_counts(main,error))return false;
+        return valid_part_totals(error);
     }
     bool cached_summary(QJsonObject& object,QString& error) {
         if(!cached || !zip.entries().contains("summary.json"))return false;
@@ -197,24 +258,29 @@ struct ScanCollectionReader {
         }
         return true;
     }
-    bool part(qsizetype index,ProfileDocument& output,QString& error){
-        const auto item=indexed[index].toObject();
-        const auto name=item.value("name").toString();
-        const auto size=item.value("size").toDouble(-1);
+    static bool read_part_size(const QJsonObject& item,double& size,QString& error) {
+        size=item.value("size").toDouble(-1);
         if(!std::isfinite(size)||size<0||size>music_archive_limit||std::floor(size)!=size){
             error="Oversized scan collection part";return false;
         }
-        QTemporaryFile tmp(QDir::tempPath()+"/barelief-scan-XXXXXX");
-        if(!tmp.open() || !zip.extract_to("parts/"+name,tmp,music_archive_limit,error))return false;
-        if(tmp.size()!=qint64(size)){error="Scan collection part size mismatch";return false;}
-        tmp.seek(0);
+        return true;
+    }
+    static bool valid_part_digest(QTemporaryFile& tmp,const QJsonObject& item,QString& error) {
         QCryptographicHash digest(QCryptographicHash::Sha256);
         if(!digest.addData(&tmp) ||
            QString::fromLatin1(digest.result().toHex())!=item.value("sha256").toString()){
             error="Scan collection part SHA-256 mismatch";return false;
         }
-        tmp.flush();tmp.close();
-        if(!load_music_scan(tmp.fileName(),output,error))return false;
+        return true;
+    }
+    bool extract_part_payload(const QString& name,const QJsonObject& item,double size,QTemporaryFile& tmp,QString& error) {
+        if(!tmp.open() || !zip.extract_to("parts/"+name,tmp,music_archive_limit,error))return false;
+        if(tmp.size()!=qint64(size)){error="Scan collection part size mismatch";return false;}
+        tmp.seek(0);
+        if(!valid_part_digest(tmp,item,error))return false;
+        tmp.flush();tmp.close();return true;
+    }
+    static bool decoded_part_counts_match(const ProfileDocument& output,const QJsonObject& item,QString& error) {
         const auto counts=output.preserved.value("analysis_run").toObject();
         if(counts.value("processed_count").toInt(-1)!=item.value("processed_count").toInt(-2) ||
            counts.value("failed_count").toInt(-1)!=item.value("failed_count").toInt(-2) ||
@@ -223,89 +289,205 @@ struct ScanCollectionReader {
         }
         return true;
     }
+
+    bool part(qsizetype index,ProfileDocument& output,QString& error){
+        const auto item=indexed[index].toObject();
+        const auto name=item.value("name").toString();
+        double size=0;if(!read_part_size(item,size,error))return false;
+        QTemporaryFile tmp(QDir::tempPath()+"/barelief-scan-XXXXXX");
+        if(!extract_part_payload(name,item,size,tmp,error))return false;
+        if(!load_music_scan(tmp.fileName(),output,error))return false;
+        return decoded_part_counts_match(output,item,error);
+    }
 };
 }
+static bool load_classic_scan(const QString& path,const QString& collection_error,ProfileDocument& document,QString& error) {
+    if(!QFileInfo(path).isFile() || QFileInfo(path).size()>music_archive_limit){
+        error=collection_error;return false;
+    }
+    ProfileReadDiagnostic diagnostic;
+    return load_music_archive(path,MusicArchiveKind::Scan,document,error,diagnostic);
+}
+static void classic_scan_counts(const ProfileDocument& document,std::size_t processed,MusicScanCollectionInfo& summary) {
+    summary.part_count=1;summary.processed_count=processed;
+    const auto run=document.preserved.value("analysis_run").toObject();
+    summary.requested_count=std::size_t(run.value("requested_count").toInt(int(processed)));
+    summary.failed_count=std::size_t(run.value("failed_count").toInt());
+}
+static bool visit_collection_members(ScanCollectionReader& reader,const MusicScanPartVisitor& visitor,QString& error) {
+    for(qsizetype index=0;index<reader.listed.size();++index){
+        ProfileDocument part;
+        if(!reader.part(index,part,error))return false;
+        if(!visitor(std::move(part),std::size_t(index))){
+            error="Scan part consumption cancelled";return false;
+        }
+    }
+    return true;
+}
+
 bool inspect_music_scan(const QString& path,MusicScanCollectionInfo& summary,QString& error) {
     ScanCollectionReader reader(path);
     if(reader.open(error)){summary=reader.summary;return true;}
     // Existing classic .brscan files remain accepted by the same public API.
     const auto collection_error=error;error.clear();
-    if(!QFileInfo(path).isFile() || QFileInfo(path).size()>music_archive_limit){
-        error=collection_error;return false;
-    }
     ProfileDocument document;
-    ProfileReadDiagnostic diagnostic;
-    if(!load_music_archive(path,MusicArchiveKind::Scan,document,error,diagnostic))return false;
-    summary.part_count=1;
-    summary.processed_count=document.profile.compositions.size();
-    const auto run=document.preserved.value("analysis_run").toObject();
-    summary.requested_count=std::size_t(run.value("requested_count").toInt(int(summary.processed_count)));
-    summary.failed_count=std::size_t(run.value("failed_count").toInt());
+    if(!load_classic_scan(path,collection_error,document,error))return false;
+    classic_scan_counts(document,document.profile.compositions.size(),summary);
     return true;
 }
+static bool visit_classic_scan(const QString& path,const MusicScanPartVisitor& visitor,
+                                MusicScanCollectionInfo& summary,QString& error) {
+    const auto collection_error=error;error.clear();
+    ProfileDocument document;
+    if(!load_classic_scan(path,collection_error,document,error))return false;
+    const auto n=document.profile.compositions.size();
+    summary={};
+    classic_scan_counts(document,n,summary);
+    if(!visitor(std::move(document),0)){error="Scan part consumption cancelled";return false;}
+    return true;
+}
+
 bool visit_music_scan_parts(const QString& path,const MusicScanPartVisitor& visitor,
                             MusicScanCollectionInfo& summary,QString& error) {
     if(!visitor){error="Missing scan part consumer";return false;}
     ScanCollectionReader reader(path);
     if(reader.open(error)){
-        summary=reader.summary;
-        for(qsizetype index=0;index<reader.listed.size();++index){
-            ProfileDocument part;
-            if(!reader.part(index,part,error))return false;
-            if(!visitor(std::move(part),std::size_t(index))){
-                error="Scan part consumption cancelled";return false;
-            }
-        }
-        return true;
+        summary=reader.summary;return visit_collection_members(reader,visitor,error);
     }
-    const auto collection_error=error;error.clear();
-    if(!QFileInfo(path).isFile() || QFileInfo(path).size()>music_archive_limit){
-        error=collection_error;return false;
-    }
-    ProfileDocument document;
-    ProfileReadDiagnostic diagnostic;
-    if(!load_music_archive(path,MusicArchiveKind::Scan,document,error,diagnostic))return false;
-    const auto n=document.profile.compositions.size();
-    summary={};
-    summary.part_count=1;summary.processed_count=n;
-    const auto run=document.preserved.value("analysis_run").toObject();
-    summary.requested_count=std::size_t(run.value("requested_count").toInt(int(n)));
-    summary.failed_count=std::size_t(run.value("failed_count").toInt());
-    if(!visitor(std::move(document),0)){error="Scan part consumption cancelled";return false;}
-    return true;
+    return visit_classic_scan(path,visitor,summary,error);
 }
 
-bool save_music_scan(const QString& path,const ProfileDocument& input,QString& error) {
+static bool valid_complete_scan(const ProfileDocument& input,QString& error) {
     ProfileDocument frontend;frontend.profile.compatibility=input.profile.compatibility;frontend.profile.training=input.profile.training;
     if(!valid_profile_storage(measurement_document(frontend),error) || !valid_scan_measurements(input,error))return false;
     if(!complete_measurements(input)){error="Scan requires complete per-track measurements";return false;}
+    return true;
+}
+static bool save_complete_scan_envelope(const QTemporaryDir& staging,const QString& path,
+                                 const QString& part_name,const ProfileDocument& input,
+                                 const MusicScanCollectionInfo& counts,QString& error) {
+    const QJsonObject entry{
+        {"name",part_name},{"requested_count",int(counts.requested_count)},
+        {"processed_count",int(counts.processed_count)},{"failed_count",int(counts.failed_count)}
+    };
+    const QJsonArray parts{entry};
+    const QJsonObject manifest{
+        {"kind","barelief.music_scan_collection"},{"version",1},
+        {"requested_count",int(counts.requested_count)},{"processed_count",int(counts.processed_count)},
+        {"failed_count",int(counts.failed_count)},{"fft_size",int(input.profile.compatibility.fft_size)},
+        {"parts",parts}
+    };
+    return save_music_scan_collection(QDir(staging.path()),path,manifest,parts,error);
+}
+
+bool save_music_scan(const QString& path,const ProfileDocument& input,QString& error) {
+    if(!valid_complete_scan(input,error))return false;
     if(path.endsWith(".json",Qt::CaseInsensitive))return save_scan_json(path,input,error);
+    MusicScanCollectionInfo counts;
+    if(!complete_scan_counts(input,counts,error))return false;
     QTemporaryDir staging(QDir::tempPath()+"/barelief-scan-save-XXXXXX");
     if(!staging.isValid()){error="Cannot prepare temporary scan storage";return false;}
     const auto part_name=QStringLiteral("music-scan-part-000001.brscan");
     if(!save_music_archive(staging.filePath(part_name),input,MusicArchiveKind::Scan,error))
         return false;
-    const auto run=input.preserved.value("analysis_run").toObject();
-    const auto processed=int(input.profile.compositions.size());
-    const auto failed=run.value("failed_count").toInt(0);
-    const auto requested=run.value("requested_count").toInt(processed+failed);
-    if(failed<0 || requested!=processed+failed){
-        error="Invalid complete scan counters";return false;
-    }
-    const QJsonObject entry{
-        {"name",part_name},{"requested_count",requested},
-        {"processed_count",processed},{"failed_count",failed}
-    };
-    const QJsonArray parts{entry};
-    const QJsonObject manifest{
-        {"kind","barelief.music_scan_collection"},{"version",1},
-        {"requested_count",requested},{"processed_count",processed},
-        {"failed_count",failed},{"fft_size",int(input.profile.compatibility.fft_size)},
-        {"parts",parts}
-    };
-    return save_music_scan_collection(QDir(staging.path()),path,manifest,parts,error);
+    return save_complete_scan_envelope(staging,path,part_name,input,counts,error);
 }
 namespace {
+struct StreamedScanSummary {
+    static constexpr double target_fs=48000.;
+    ProfileDocument& output;
+    std::size_t target_fft=0,bins=0;
+    std::vector<long double> peak_sum,temporal_sum,presence_sum;
+    std::vector<std::size_t> contributors;
+    bool initialized=false;
+    std::size_t contributing_tracks=0;
+    explicit StreamedScanSummary(ProfileDocument& target):output(target){}
+    bool initialize(const ProfileDocument& part,QString& error) {
+        const auto n=part.profile.compatibility.fft_size;
+        if(n<512 || n>16384 || (n&(n-1))){error="Unsupported FFT size in scan";return false;}
+        target_fft=n;bins=n/2+1;
+        peak_sum.assign(bins,0);temporal_sum.assign(bins,0);presence_sum.assign(bins,0);
+        contributors.assign(bins,0);
+        output.profile.compatibility=part.profile.compatibility;
+        output.profile.training=part.profile.training;
+        initialized=true;return true;
+    }
+    void accumulate_bin(const dsp_kernels::CompositionStatistics& t,std::size_t a,std::size_t b,double weight,std::size_t k) {
+        const auto interpolate=[&](const std::vector<double>& values){
+            return values[a]*(1-weight)+values[b]*weight;
+        };
+        peak_sum[k]+=interpolate(t.peak_spectrum);
+        temporal_sum[k]+=interpolate(t.mean_spectrum);
+        if(t.frequency_presence.size()==bins)
+            presence_sum[k]+=interpolate(t.frequency_presence);
+        ++contributors[k];
+    }
+    void add_bin(const dsp_kernels::CompositionStatistics& t,std::size_t n,double rate,double max_hz,std::size_t k) {
+        const double hz=target_fs*double(k)/double(target_fft);
+        if(hz>max_hz)return;
+        const auto source_bin=hz*double(n)/rate;
+        if(source_bin>double(n/2))return;
+        const auto a=std::size_t(source_bin),b=std::min(a+1,n/2);
+        const auto weight=source_bin-double(a);
+        accumulate_bin(t,a,b,weight,k);
+    }
+    bool add_track(const dsp_kernels::CompositionStatistics& t,std::size_t n,double fallback_rate,QString& error) {
+        if(t.peak_spectrum.size()!=bins || t.mean_spectrum.size()!=bins){
+            error="Incomplete component spectrum";return false;
+        }
+        const auto rate=t.sample_rate>0?t.sample_rate:fallback_rate;
+        if(!std::isfinite(rate)||rate<=0)return false;
+        const auto max_hz=t.measured_max_hz>0?std::min(t.measured_max_hz,rate/2.):rate/2.;
+        for(std::size_t k=0;k<bins;++k)add_bin(t,n,rate,max_hz,k);
+        ++contributing_tracks;return true;
+    }
+    bool add(const ProfileDocument& part,QString& error) {
+        const auto n=part.profile.compatibility.fft_size;
+        if(!initialized && !initialize(part,error))return false;
+        if(n!=target_fft){error="Mixed FFT sizes cannot form one common profile";return false;}
+        for(const auto& t:part.profile.compositions)
+            if(!add_track(t,n,part.profile.compatibility.sample_rate,error))return false;
+        return true;
+    }
+    void publish_bin(dsp_kernels::FrequencyProfile& p,std::size_t k) const {
+        if(!contributors[k])return;
+        p.mean_spectrum[k]=double(temporal_sum[k]/contributors[k]);
+        p.peak_spectrum[k]=double(peak_sum[k]/contributors[k]);
+        p.frequency_presence[k]=double(presence_sum[k]/contributors[k]);
+    }
+    void publish_spectra() {
+        auto& p=output.profile;
+        p.compatibility.sample_rate=target_fs;
+        p.mean_spectrum.assign(bins,0);
+        p.peak_spectrum.assign(bins,0);
+        p.frequency_presence.assign(bins,0);
+        p.gains.assign(bins,1);
+        for(std::size_t k=0;k<bins;++k)publish_bin(p,k);
+    }
+    void publish_metadata(const QString& path,const MusicScanCollectionInfo& summary) {
+        QJsonArray counts;
+        for(auto n:contributors)counts.append(double(n));
+        output.preserved["scan_collection"]=QJsonObject{
+            {"format","brscan ZIP64 collection"},
+            {"source",path},
+            {"requested_count",double(summary.requested_count)},
+            {"processed_count",double(summary.processed_count)},
+            {"failed_count",double(summary.failed_count)},
+            {"part_count",double(summary.part_count)},
+            {"grid_sample_rate_hz",target_fs},
+            {"interpolation","amplitude-linearly-in-hertz"},
+            {"positive_bin_contributors",counts},
+            {"track_statistics","lazy in one part at a time: visit_music_scan_parts"}
+        };
+    }
+    bool finish(const QString& path,const MusicScanCollectionInfo& summary,QString& error) {
+        if(!initialized || contributing_tracks!=summary.processed_count){
+            error="Streamed scan composition count mismatch";return false;
+        }
+        publish_spectra();publish_metadata(path,summary);return true;
+    }
+};
+
 void add_spectrum_bin(MusicScanSummaryAccumulator& sum,
                       const dsp_kernels::CompositionStatistics& track,
                       double rate,double max_hz,std::size_t k) {
@@ -374,82 +556,12 @@ QJsonObject MusicScanSummaryAccumulator::result()const {
 // remain available through visit_music_scan_parts().
 bool load_music_scan_collection_summary(const QString& path,ProfileDocument& output,
                                         MusicScanCollectionInfo& summary,QString& error) {
-    constexpr double target_fs=48000.;
-    std::size_t target_fft=0,bins=0;
-    std::vector<long double> peak_sum,temporal_sum,presence_sum;
-    std::vector<std::size_t> contributors;
-    bool initialized=false;
-    std::size_t contributing_tracks=0;
-    auto visitor=[&](ProfileDocument&& part,std::size_t)->bool {
-        const auto n=part.profile.compatibility.fft_size;
-        if(!initialized) {
-            if(n<512 || n>16384 || (n&(n-1))){error="Unsupported FFT size in scan";return false;}
-            target_fft=n;bins=n/2+1;
-            peak_sum.assign(bins,0);temporal_sum.assign(bins,0);presence_sum.assign(bins,0);
-            contributors.assign(bins,0);
-            output.profile.compatibility=part.profile.compatibility;
-            output.profile.training=part.profile.training;
-            initialized=true;
-        }
-        if(n!=target_fft){error="Mixed FFT sizes cannot form one common profile";return false;}
-        for(const auto& t:part.profile.compositions){
-            if(t.peak_spectrum.size()!=bins || t.mean_spectrum.size()!=bins){
-                error="Incomplete component spectrum";return false;
-            }
-            const auto rate=t.sample_rate>0?t.sample_rate:part.profile.compatibility.sample_rate;
-            if(!std::isfinite(rate)||rate<=0)return false;
-            const auto max_hz=t.measured_max_hz>0?std::min(t.measured_max_hz,rate/2.):rate/2.;
-            for(std::size_t k=0;k<bins;++k){
-                const double hz=target_fs*double(k)/double(target_fft);
-                if(hz>max_hz)continue;
-                const auto source_bin=hz*double(n)/rate;
-                if(source_bin>double(n/2))continue;
-                const auto a=std::size_t(source_bin),b=std::min(a+1,n/2);
-                const auto weight=source_bin-double(a);
-                const auto interpolate=[&](const std::vector<double>& values){
-                    return values[a]*(1-weight)+values[b]*weight;
-                };
-                peak_sum[k]+=interpolate(t.peak_spectrum);
-                temporal_sum[k]+=interpolate(t.mean_spectrum);
-                if(t.frequency_presence.size()==bins)
-                    presence_sum[k]+=interpolate(t.frequency_presence);
-                ++contributors[k];
-            }
-            ++contributing_tracks;
-        }
-        return true;
+    StreamedScanSummary accumulated(output);
+    const auto visitor=[&](ProfileDocument&& part,std::size_t)->bool {
+        return accumulated.add(part,error);
     };
     if(!visit_music_scan_parts(path,visitor,summary,error))return false;
-    if(!initialized || contributing_tracks!=summary.processed_count){
-        error="Streamed scan composition count mismatch";return false;
-    }
-    auto& p=output.profile;
-    p.compatibility.sample_rate=target_fs;
-    p.mean_spectrum.assign(bins,0);
-    p.peak_spectrum.assign(bins,0);
-    p.frequency_presence.assign(bins,0);
-    p.gains.assign(bins,1);
-    for(std::size_t k=0;k<bins;++k){
-        if(!contributors[k])continue;
-        p.mean_spectrum[k]=double(temporal_sum[k]/contributors[k]);
-        p.peak_spectrum[k]=double(peak_sum[k]/contributors[k]);
-        p.frequency_presence[k]=double(presence_sum[k]/contributors[k]);
-    }
-    QJsonArray counts;
-    for(auto n:contributors)counts.append(double(n));
-    output.preserved["scan_collection"]=QJsonObject{
-        {"format","brscan ZIP64 collection"},
-        {"source",path},
-        {"requested_count",double(summary.requested_count)},
-        {"processed_count",double(summary.processed_count)},
-        {"failed_count",double(summary.failed_count)},
-        {"part_count",double(summary.part_count)},
-        {"grid_sample_rate_hz",target_fs},
-        {"interpolation","amplitude-linearly-in-hertz"},
-        {"positive_bin_contributors",counts},
-        {"track_statistics","lazy in one part at a time: visit_music_scan_parts"}
-    };
-    return true;
+    return accumulated.finish(path,summary,error);
 }
 
 namespace {
@@ -512,28 +624,43 @@ QJsonObject cached_collection_metadata(const QString& path,
         {"track_statistics","lazy in one part at a time: visit_music_scan_parts"}
     };
 }
-bool load_cached_scan_collection(const QString& path,ProfileDocument& output,
-                                 QString& error) {
-    ScanCollectionReader reader(path);
-    if(!reader.open(error) || !reader.cached){
-        if(error.isEmpty())error="Missing cached scan summary";
-        return false;
-    }
-    QJsonObject cache;
-    if(!reader.cached_summary(cache,error) ||
-       !valid_cached_header(cache,reader.summary,error))return false;
-    ProfileDocument first;
+bool read_cached_first_part(ScanCollectionReader& reader,const QJsonObject& cache,ProfileDocument& first,QString& error) {
     if(!reader.part(0,first,error))return false;
     if(first.profile.compatibility.fft_size!=std::size_t(cache.value("fft_size").toInt())){
         error="Cached scan FFT size differs from stored measurements";return false;
     }
-    ProfileDocument candidate;
+    return true;
+}
+bool restore_cached_profile(const QString& path,const ProfileDocument& first,const QJsonObject& cache,
+                            const MusicScanCollectionInfo& summary,ProfileDocument& candidate,QString& error) {
     candidate.profile.compatibility=first.profile.compatibility;
     candidate.profile.training=first.profile.training;
     candidate.profile.compatibility.sample_rate=48000.;
     QJsonArray contributors;
-    if(!restore_cached_arrays(cache,candidate,contributors,reader.summary,error))return false;
-    candidate.preserved["scan_collection"]=cached_collection_metadata(path,reader.summary,contributors);
+    if(!restore_cached_arrays(cache,candidate,contributors,summary,error))return false;
+    candidate.preserved["scan_collection"]=cached_collection_metadata(path,summary,contributors);
+    return true;
+}
+
+bool open_cached_collection(ScanCollectionReader& reader,QString& error) {
+    if(!reader.open(error) || !reader.cached){
+        if(error.isEmpty())error="Missing cached scan summary";
+        return false;
+    }
+    return true;
+}
+
+bool load_cached_scan_collection(const QString& path,ProfileDocument& output,
+                                 QString& error) {
+    ScanCollectionReader reader(path);
+    if(!open_cached_collection(reader,error))return false;
+    QJsonObject cache;
+    if(!reader.cached_summary(cache,error) ||
+       !valid_cached_header(cache,reader.summary,error))return false;
+    ProfileDocument first;
+    if(!read_cached_first_part(reader,cache,first,error))return false;
+    ProfileDocument candidate;
+    if(!restore_cached_profile(path,first,cache,reader.summary,candidate,error))return false;
     output=std::move(candidate);
     return true;
 }
@@ -542,30 +669,35 @@ bool save_music_scan_part(const QString& path,const ProfileDocument& document,QS
     // An inner storage block; never exposed as a complete user-visible scan.
     return save_music_archive(path,document,MusicArchiveKind::Scan,error);
 }
+static bool load_collection_payload(const QString& path,StoredZipReader& probe,ProfileDocument& output,QString& error) {
+    MusicScanCollectionInfo info;
+    if(!inspect_music_scan(path,info,error))return false;
+    if(info.part_count==1){
+        return visit_music_scan_parts(path,[&](ProfileDocument&& part,std::size_t){
+            output=std::move(part);return true;
+        },info,error);
+    }
+    if(probe.entries().contains("summary.json"))
+        return load_cached_scan_collection(path,output,error);
+    return load_music_scan_collection_summary(path,output,info,error);
+}
+static bool load_scan_zip(QFile& file,const QString& path,ProfileDocument& output,QString& error) {
+    StoredZipReader probe(file);
+    if(!probe.open(error,true))return false;
+    if(probe.entries().contains("pack-index.json")){
+        file.close();return load_collection_payload(path,probe,output,error);
+    }
+    file.close();
+    ProfileReadDiagnostic diagnostic;
+    return load_music_archive(path,MusicArchiveKind::Scan,output,error,diagnostic);
+}
+
 bool load_music_scan(const QString& path,ProfileDocument& output,QString& error) {
     QFile file(path);
     if(!file.open(QIODevice::ReadOnly)){error=file.errorString();return false;}
     if(file.peek(4)==QByteArray("PK\x03\x04",4)){
-        // The user-visible .brscan format is unified; the envelope may contain
-        // one old scan or many parts. Never allocate all part measurements.
-        StoredZipReader probe(file);
-        if(!probe.open(error,true))return false;
-        if(probe.entries().contains("pack-index.json")){
-            file.close();
-            MusicScanCollectionInfo info;
-            if(!inspect_music_scan(path,info,error))return false;
-            if(info.part_count==1){
-                return visit_music_scan_parts(path,[&](ProfileDocument&& part,std::size_t){
-                    output=std::move(part);return true;
-                },info,error);
-            }
-            if(probe.entries().contains("summary.json"))
-                return load_cached_scan_collection(path,output,error);
-            return load_music_scan_collection_summary(path,output,info,error);
-        }
-        file.close();
-        ProfileReadDiagnostic diagnostic;
-        return load_music_archive(path,MusicArchiveKind::Scan,output,error,diagnostic);
+        // The user-visible .brscan format is unified; never retain all parts.
+        return load_scan_zip(file,path,output,error);
     }
     if(file.size()>limit){error="Scan exceeds 1 GiB limit";return false;}
     const auto bytes=file.read(limit+1);

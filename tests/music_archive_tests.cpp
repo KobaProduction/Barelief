@@ -23,7 +23,8 @@ QByteArray read_file(const QString& path){QFile f(path);assert(f.open(QIODevice:
 void write_file(const QString& path,QByteArrayView bytes){QSaveFile f(path);assert(f.open(QIODevice::WriteOnly));assert(f.write(bytes.data(),bytes.size())==bytes.size());assert(f.commit());}
 Entries read_zip(const QString& path) {
     QFile file(path);assert(file.open(QIODevice::ReadOnly));StoredZipReader zip(file);QString error;assert(zip.open(error));Entries result;
-    for(const auto& name:zip.entries())assert(zip.read(name,music_archive_limit,result[name],error));
+    const auto entries=zip.entries();
+    for(const auto& name:entries)assert(zip.read(name,music_archive_limit,result[name],error));
     return result;
 }
 void write_zip(const QString& path,const Entries& entries) {

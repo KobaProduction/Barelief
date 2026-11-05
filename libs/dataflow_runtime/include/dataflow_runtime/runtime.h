@@ -3,6 +3,7 @@
 #include <signal_contracts/numeric_frame_gather.h>
 #include <dsp_kernels/kernel_support.h>
 #include <dsp_kernels/prepared_resampler.h>
+#include <dsp_kernels/fourier_backend.h>
 #include <dsp_kernels/frequency_profile.h>
 #include <dataflow_runtime/numeric_operation.h>
 
@@ -35,9 +36,14 @@ struct NumericRuntimeProfile {
     // Optional adapter/composition boundary. The profile, prepared graph and
     // contexts pin this immutable factory; no unowned provider callbacks.
     std::shared_ptr<const NumericOperationFactory> operation_factory;
+    // Explicit opt-in Fourier backend; a node must name this provider's ID.
+    // Empty backend_id retains the built-in transform and needs no provider.
+    std::shared_ptr<const dsp_kernels::FourierBackendFactory> fourier_backend;
     // Null keeps the profile ceiling; a value reserves only this shared zero block.
     // Larger zero buffers are owned and charged during cold preparation.
     std::optional<std::size_t> shared_silence_bytes;
+    // Additional named providers owned by explicit desktop compositions.
+    std::vector<std::shared_ptr<const dsp_kernels::FourierBackendFactory>> additional_fourier_backends;
 };
 struct NumericPortFrameView {
     std::string_view graph_id;

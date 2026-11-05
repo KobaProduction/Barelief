@@ -171,7 +171,7 @@ void assert_default_spectrum(const Fixture& f) {
 }
 void assert_default_delivery(Fixture& f) {
     CHECK(f.metrics.deliveries[1]==80 && f.metrics.deliveries[9]==80);
-    CHECK(f.metrics.rows==25 && f.metrics.view_rows==25 && f.metrics.filled==25 && f.metrics.scalar==25);
+    CHECK(f.metrics.rows==80 && f.metrics.view_rows==80 && f.metrics.filled==80 && f.metrics.scalar==80);
     CHECK(f.metrics.energy[9]>0 && f.metrics.energy[10]>0 && f.metrics.energy[11]>0);
     assert_default_spectrum(f);
     const float expected=float(.025*(4096.-1)/(4.*4096.));
@@ -179,7 +179,7 @@ void assert_default_delivery(Fixture& f) {
         f.metrics.deliveries[9],f.metrics.deliveries[4],f.metrics.rows,(unsigned long long)f.metrics.scalar,
         f.metrics.fft[0],expected,f.metrics.energy[11]);
     const auto first=f.metrics.energy[11];f.feed(80,3);CHECK(f.metrics.energy[11]!=first);
-    CHECK(f.metrics.rows==51 && f.metrics.filled==51 && f.metrics.scalar==51);
+    CHECK(f.metrics.rows==160 && f.metrics.filled==160 && f.metrics.scalar==160);
 }
 void assert_shutdown_and_restart(Fixture& f) {
     CHECK(f.lifecycle.shutdown_transactional()==Status::ok);const auto delivered=f.metrics.deliveries;
@@ -187,11 +187,11 @@ void assert_shutdown_and_restart(Fixture& f) {
     CHECK(f.executor.process_numeric_ports(1,{stamp,NumericView{&f.source,std::as_bytes(std::span(f.samples)),f.planes,{256,1},{},{}}},{},{observe,observe,history,&f.metrics})==Status::would_block);
     CHECK(f.metrics.deliveries==delivered);
     CHECK(f.apply() && f.executor.running());f.feed(4);
-    CHECK(f.metrics.filled==1 && f.metrics.ordinal==1 && f.metrics.scalar==1);
+    CHECK(f.metrics.filled==4 && f.metrics.ordinal==4 && f.metrics.scalar==4);
     const auto* working=f.executor.plan();auto malformed=f.graph;malformed.nodes[3].kind="Unknown";
     CHECK(!f.lifecycle.prepare_transactional(malformed));CHECK(f.executor.plan()==working && f.executor.running());f.feed(4);
-    CHECK(f.metrics.filled==2);
-    std::printf("LIFECYCLE owner shutdown=no delivery; re-admission=running; fresh count=1; rejected prepare retains working\n");
+    CHECK(f.metrics.filled==8);
+    std::printf("LIFECYCLE owner shutdown=no delivery; re-admission=running; fresh count=4; rejected prepare retains working\n");
 }
 void startup_and_lifecycle() {
     Fixture fixture;
@@ -238,7 +238,12 @@ void disconnect_history(Fixture& f) {
 }
 void switches_and_disconnect() {
     Fixture f;if(!f.apply())return;f.feed(24);
-    for(NodeId id:{1,2,3,4,15,6,7})switch_core_node(f,id);
+    for(NodeId id:{1,3,4,15,6})switch_core_node(f,id);
+    for(NodeId id:{2,7}){
+        f.node(id).enabled=false;const auto* working=f.executor.plan();
+        CHECK(!f.lifecycle.prepare_transactional(f.graph) && f.executor.plan()==working);
+        f.node(id).enabled=true;
+    }
     switch_scalar_and_endpoints(f);
     disconnect_history(f);
 }

@@ -15,7 +15,7 @@ bool same_interval(const FrameStamp& a,const FrameStamp& b) noexcept {
         a.graph_revision==b.graph_revision && a.timestamp_ticks==b.timestamp_ticks &&
         a.has_sample_interval==b.has_sample_interval && (!a.has_sample_interval || (a.sample_begin==b.sample_begin && a.sample_count==b.sample_count));
 }
-Status load_plane(OperationKernelState& kernel,const NumericView& source,std::span<float> target,std::size_t stride) noexcept {
+template<class Scalar> Status load_plane(OperationKernelState& kernel,const NumericView& source,std::span<Scalar> target,std::size_t stride) noexcept {
     for(std::size_t row=0;row<source.actual[0];++row)for(std::size_t column=0;column<source.actual[1];++column){
         const auto status=load_element(source,{0,row,column},target[row*stride+column]);
         if(status!=Status::ok){kernel.pending={};return status;}
@@ -56,10 +56,11 @@ bool amplitude_grid(const OperationKernelState& kernel,const NumericView& source
     return matches_frequency_grid(kernel,source.coordinates.axes[axis],source.actual[axis]);
 }
 Status load_pair_plane(OperationKernelState& kernel,std::size_t lane,const NumericView& source,bool polar) noexcept {
+    if(!kernel.precise_input.empty())return load_plane(kernel,source,std::span(kernel.precise_input),source.actual[1]);
     auto& target=lane?kernel.imaginary:kernel.input;
     const auto stride=polar && source.contract->shape.rank==Rank::Matrix?kernel.polar_geometry.bins:source.actual[1];
     if(lane && polar)std::fill(target.begin(),target.end(),0.f);
-    return load_plane(kernel,source,target,stride);
+    return load_plane(kernel,source,std::span(target),stride);
 }
 Status retain_plane(OperationKernelState& kernel,std::size_t lane,const DataFrameView& current,const FrameLimits& limits,bool polar,bool calibrated) noexcept {
     const auto* source=std::get_if<NumericView>(&current.payload);auto& target=lane?kernel.imaginary:kernel.input;
@@ -117,15 +118,39 @@ Status project_polar(OperationKernelState& kernel,const PlanNode&) noexcept {
     }
     return Status::ok;
 }
+bool complex_row(OperationKernelState& kernel,std::span<const float> real,std::span<const float> imaginary,std::span<float> output) noexcept {
+    if(auto* backend=std::get_if<dsp_kernels::PreparedFourierBackend>(&kernel.operation)){
+        for(std::size_t i=0;i<real.size();++i){kernel.fourier_input[2*i]=real[i];kernel.fourier_input[2*i+1]=imaginary[i];}
+        return backend->process(kernel.fourier_input,output);
+    }
+    return std::get<dsp_kernels::FFT>(kernel.operation).process_complex(real,imaginary,output);
+}
+bool real_row(OperationKernelState& kernel,std::span<const float> input,std::span<float> output) noexcept {
+    if(auto* backend=std::get_if<dsp_kernels::PreparedFourierBackend>(&kernel.operation))return backend->process(input,output);
+    return std::get<dsp_kernels::PreparedRfft>(kernel.operation).process(input,output);
+}
+Status precise_rows(OperationKernelState& kernel,std::size_t rows) noexcept {
+    auto& transform=std::get<dsp_kernels::detail::PreparedReferenceFourier>(kernel.operation);
+    const auto n=kernel.fourier_size;
+    for(std::size_t row=0;row<rows;++row){
+        if(!transform.forward(std::span<const double>(kernel.precise_input).subspan(row*n,n),kernel.precise_output))return Status::overflow;
+        for(std::size_t i=0;i<n+2;++i){
+            const auto value=kernel.precise_output[i];if(std::abs(value)>std::numeric_limits<float>::max())return Status::overflow;
+            kernel.output[row*(n+2)+i]=float(value);
+        }
+    }
+    return Status::ok;
+}
 Status transform_rows(OperationKernelState& kernel,const PlanNode& node) noexcept {
     const bool real=node.node.kind==NodeKind::RealFourier;
     const auto n=kernel.fourier_size,stride=real?n+2:2*n;
     const auto rows=std::get<NumericContract>(node.numeric_input).shape.rank==Rank::Matrix?kernel.pair_actual[0][0]:1;
+    if(!kernel.precise_input.empty())return precise_rows(kernel,rows);
     for(std::size_t row=0;row<rows;++row){
         const auto input=std::span<const float>(kernel.input).subspan(row*n,n);
         auto output=std::span<float>(kernel.output).subspan(row*stride,stride);
-        const bool ready=real?std::get<dsp_kernels::PreparedRfft>(kernel.operation).process(input,output):
-            std::get<dsp_kernels::FFT>(kernel.operation).process_complex(input,std::span<const float>(kernel.imaginary).subspan(row*n,n),output);
+        const bool ready=real?real_row(kernel,input,output):
+            complex_row(kernel,input,std::span<const float>(kernel.imaginary).subspan(row*n,n),output);
         if(!ready)return Status::overflow;
     }
     return Status::ok;
@@ -144,7 +169,8 @@ std::size_t fourier_index(const OperationKernelState& kernel,const MutableNumeri
     if(port==2)return index*(n+2);
     const auto row=output.contract->shape.rank==Rank::Matrix?index/output.actual[1]:0;
     const auto bin=output.contract->shape.rank==Rank::Matrix?index%output.actual[1]:index;
-    return row*(real?n+2:2*n)+2*(bin+(real?1:0))+port;
+    const auto skipped=real && !kernel.fourier_include_endpoints?1u:0u;
+    return row*(real?n+2:2*n)+2*(bin+skipped)+port;
 }
 Status write_plane(const OperationKernelState& kernel,MutableNumericView& output,PortId port,std::size_t count,bool concat,bool polar,bool real) noexcept {
     for(std::size_t i=0;i<count;++i){

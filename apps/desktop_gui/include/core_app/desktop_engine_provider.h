@@ -11,8 +11,9 @@
 // diagnostics reference whose lifetime is bounded by the presenter.
 class DesktopEngineProvider final : public pipeline::EngineProvider {
 public:
-    explicit DesktopEngineProvider(pipeline::AudioSourceFactory source_factory = {})
-        : _source_factory(std::move(source_factory)) {}
+    explicit DesktopEngineProvider(pipeline::AudioSourceFactory source_factory = {},
+        pipeline::NumericDesktopHost::LocalEngineFactory local_engine_factory = nullptr)
+        : _source_factory(std::move(source_factory)),_local_engine_factory(local_engine_factory) {}
     void set_serial_endpoint(desktop::SerialEndpoint endpoint){_serial=std::move(endpoint);}
     void set_registry(AggregatorClient* registry) {
         _registry=registry;
@@ -20,13 +21,14 @@ public:
     }
     std::unique_ptr<pipeline::EnginePort> create(const QString &host, quint16 port) override {
         auto endpoint=std::make_unique<pipeline::NumericDesktopHost>(_source_factory,host,port,
-            _serial && host==_serial->port_name?_serial:std::nullopt);
+            _serial && host==_serial->port_name?_serial:std::nullopt,nullptr,_local_engine_factory);
         if(host.isEmpty()){_local_host=endpoint.get();_local_engine=endpoint->local_engine();bind_registry();}
         return endpoint;
     }
     pipeline::NumericEngine *local_engine() const { return _local_engine; }
 private:
     pipeline::AudioSourceFactory _source_factory;
+    pipeline::NumericDesktopHost::LocalEngineFactory _local_engine_factory;
     pipeline::NumericEngine *_local_engine = nullptr;
     std::optional<desktop::SerialEndpoint> _serial;
     QPointer<AggregatorClient> _registry;

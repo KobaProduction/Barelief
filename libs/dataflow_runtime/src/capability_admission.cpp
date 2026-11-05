@@ -390,6 +390,8 @@ class FloatingAdmission {
     const std::size_t columns,result,planes;
     bool window_coefficients() noexcept {
         std::size_t bytes=0;
+        if(input.dtype!=DType::UInt32 || input.shape.rank!=Rank::Scalar)return false;
+        if(output.dtype==DType::Float64)return numeric_add(resources.scratch_bytes,result*sizeof(double));
         return input.dtype==DType::UInt32 && input.shape.rank==Rank::Scalar && output.dtype==DType::Float32 && dsp_kernels::PreparedWindows::storage_bytes(result,bytes) && numeric_add(resources.plan_bytes,sizeof(dsp_kernels::PreparedWindows)) && numeric_add(resources.payload_bytes,bytes);
     }
     bool representation() const noexcept {

@@ -13,7 +13,7 @@ registered by `domain/numeric/common_operations.h`; no library names select DSP.
 
 | Stable kind | Explicit settings / inputs | Outputs |
 | --- | --- | --- |
-| FilterMatrixProjection | Vector or row-major matrix; band-major `weights`, optional `centers_hz`, `compensated`, `square_input` | Projected values; weight matrix; supplied centers, empty when absent |
+| FilterMatrixProjection | Vector or row-major matrix; band-major `weights`, optional `centers_hz`, `compensated`, `square_input`, `accumulation` | Projected values; weight matrix; supplied centers, empty when absent |
 | LogCompression | Vector; `multiply`, `add`, `base` (0 ten, 1 natural, 2 two), `signed_input` | Shared logarithmic compression; zero argument may produce −Inf |
 | VectorNormalize | Vector; `method` (0 none, 1 max, 2 min, 3 L0, 4 Lp), `exponent` | Shared normalized vector |
 | RecursiveFilter | Vector chunks; `numerator`, `denominator`, `form` (0 transposed II, 1 direct I), `subnormal`, `input_zero_threshold` | Filtered chunk; current delay state |
@@ -24,6 +24,13 @@ registered by `domain/numeric/common_operations.h`; no library names select DSP.
 | InterpolatedPeaks | Vector; `threshold`, `endpoints`, explicit coordinate `origin`/`step` | Variable peak positions; original bin heights; per-bin quadratic offsets |
 | SameConvolution | Vector; explicit `kernel`, `crop` (0 largest, 1 input) | Shared zero-padded same convolution |
 | InverseFourier | Full N-bin real and imaginary vectors; `fft_size` | Full real/imaginary inverse using existing `PreparedFourierTransform`, normalized by 1/N |
+
+`FilterMatrixProjection.accumulation=separate` retains the default Float32
+products and selected plain/compensated sum. Explicit `sequential_fma` uses one
+IEEE Float32 fused rounding per product/add and requires `compensated=false`;
+unknown modes and conflicting options are rejected during preparation.
+`square_input` still rounds its square separately and rejects overflow.
+The kernel implements finite fused arithmetic without a platform FMA provider.
 
 There is no second FFT/frontend. Existing `TemporalFrame`, Fourier/RealFourier,
 MatrixFFT, ComplexPolar, AmplitudePhase, SpectrumProjection, Mel, PowerToDb,

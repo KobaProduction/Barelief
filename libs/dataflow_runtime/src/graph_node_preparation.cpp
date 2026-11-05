@@ -4,6 +4,7 @@
 #include "signal_time.h"
 #include "mixer_execution.h"
 #include <dsp_kernels/spectral_weights.h>
+#include <domain/signal/contracts.h>
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -15,6 +16,12 @@ Status prepare_emission_stride(detail::PlanNode& node,const ResolvedProcessingNo
     if(!numeric_parameter(source,key,count) || count<1 || count>UINT32_MAX || std::floor(count)!=count)return Status::invalid_argument;
     node.frame_hop=std::size_t(count);return Status::ok;
 }
+Status prepare_frame_stride(detail::PlanNode& node,const ResolvedProcessingNode& source) {
+    ProcessingParameterView value;
+    if(resolve_processing_parameter(source,"materialize",value)!=Status::ok)return Status::invalid_argument;
+    const auto* materialize=std::get_if<bool>(&value);if(!materialize)return Status::invalid_argument;
+    node.materialize_stride=*materialize;return prepare_emission_stride(node,source,"every_n");
+}
 Status prepare_declared_window(detail::PlanNode& node,const ResolvedProcessingNode& source,std::size_t count,const detail::PlanNode* previous) {
     ProcessingParameterView function,periodic;
     if(resolve_processing_parameter(source,"function",function)!=Status::ok || !std::holds_alternative<std::string_view>(function) ||
@@ -25,6 +32,12 @@ Status prepare_declared_window(detail::PlanNode& node,const ResolvedProcessingNo
         node.windows=previous->windows;
     else node.windows=std::make_shared<const dsp_kernels::PreparedWindows>(count,node.periodic_window);
     return node.windows->prepared()?Status::ok:Status::exhausted;
+}
+Status prepare_double_coefficients(const ConfiguredProcessingNode& node,MutableNumericView output,std::size_t count) {
+    std::vector<double> coefficients(count);
+    const auto status=window_function_coefficients(node,coefficients);if(status!=Status::ok)return status;
+    for(std::size_t i=0;i<count;++i){const auto stored=store_element(output,{0,i,0},coefficients[i]);if(stored!=Status::ok)return stored;}
+    return Status::ok;
 }
 void allocate_pcm_packets(State& state,const NumericContract& input,std::size_t count) {
     const auto columns=std::size_t(input.shape.extents[0].maximum),planes=input.channel_order.size();
@@ -540,6 +553,8 @@ Status NumericPreparation::prepare_transform_pcm_resampler(NodeFrame& frame){
 }
 Status NumericPreparation::prepare_transform_window_function(NodeFrame& frame){
     const auto count=std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum);
+    if(std::get<NumericContract>(frame.n.numeric_outputs[0]).dtype==DType::Float64)
+        return prepare_double_coefficients(frame.cn,mutable_output(frame.n,frame.state,0),count);
     const auto* prior=frame.old==absent?nullptr:&previous->impl_->nodes[frame.old];
     const auto status=prepare_declared_window(frame.n,frame.resolved,count,prior);if(status!=Status::ok)return status;
     return prepare_window_coefficients(frame,count);
@@ -601,7 +616,7 @@ Status NumericPreparation::prepare_signal_transform(NodeFrame& frame){
     switch(frame.n.node.kind){
     case NodeKind::PcmResampler:return prepare_transform_pcm_resampler(frame);
     case NodeKind::Window:return Status::ok;
-    case NodeKind::FrameStride:return prepare_emission_stride(frame.n,frame.resolved,"every_n");
+    case NodeKind::FrameStride:return prepare_frame_stride(frame.n,frame.resolved);
     case NodeKind::FrameBuffer:{
         const auto status=prepare_emission_stride(frame.n,frame.resolved,"hop_samples");if(status!=Status::ok)return status;
         const auto count=std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum);

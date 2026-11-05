@@ -78,20 +78,32 @@ std::size_t PreparedIntervalSequenceDecoder::final_state(std::size_t frames) noe
     probability_=best;return std::isfinite(best)?state:SIZE_MAX;
 }
 bool PreparedIntervalSequenceDecoder::trace(std::size_t frames,std::size_t steps) noexcept {
-    auto state=final_state(frames);if(state==SIZE_MAX)return false;
+    auto state=final_state(frames);
+    if(state==SIZE_MAX)return probability_==unreachable?no_path():fail("nonfinite_terminal");
     positions_[steps-1]=state;
     for(std::size_t i=steps-1;i>0;--i){
         state=backlinks_[(i-1)*maximum_frames_+state];
-        if(state>=frames)return false;
+        if(state>=frames)return fail("inconsistent_backtrace");
         positions_[i-1]=state;
     }
-    count_=steps;return true;
+    count_=steps;outcome_=SequenceDecodeOutcome::Path;error_reason_=nullptr;return true;
+}
+void PreparedIntervalSequenceDecoder::clear_result() noexcept {
+    count_=0;transition_count_=0;probability_=unreachable;
+    outcome_=SequenceDecodeOutcome::Error;error_reason_="not_processed";
+}
+bool PreparedIntervalSequenceDecoder::no_path() noexcept {
+    count_=0;probability_=unreachable;outcome_=SequenceDecodeOutcome::NoPath;error_reason_=nullptr;return false;
+}
+bool PreparedIntervalSequenceDecoder::fail(const char* reason) noexcept {
+    count_=0;probability_=unreachable;outcome_=SequenceDecodeOutcome::Error;error_reason_=reason;return false;
 }
 bool PreparedIntervalSequenceDecoder::process(std::span<const float> input,std::size_t interval) noexcept {
-    count_=0;transition_count_=0;probability_=unreachable;
-    if(!maximum_frames_ || input.size()>maximum_frames_ || interval<minimum_interval_ || interval>maximum_interval_ || interval>input.size())return false;
-    if(!std::all_of(input.begin(),input.end(),[](float x){return std::isfinite(x) && x>=0;}))return false;
-    if(!distribution(interval) || !load(input,interval))return false;
+    clear_result();
+    if(!maximum_frames_ || input.size()>maximum_frames_ || interval<minimum_interval_ || interval>maximum_interval_)return fail("invalid_input");
+    if(!std::all_of(input.begin(),input.end(),[](float x){return std::isfinite(x) && x>=0;}))return fail("invalid_activation");
+    if(interval>input.size())return no_path();
+    if(!distribution(interval) || !load(input,interval))return fail("nonfinite_distribution_or_normalizer");
     const auto steps=input.size()/interval;
     for(std::size_t step=0;step+1<steps;++step)advance(input.size(),step);
     return trace(input.size(),steps);

@@ -63,7 +63,7 @@ static GuiState fixture() {
     state.file_configs.scene_graph=gui_fixture::encoded(configured);
     state.file_configs.pipeline_graph=state.file_configs.scene_graph;
     state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    for(const auto kinds=numeric_editor::model_catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     auto model=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);
     require(model->set_numeric_graph(configured),"canonical model fixture");state.data_flow_graph=model;
     return state;

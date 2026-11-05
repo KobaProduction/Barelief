@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include <core_app/numeric_btrack_reference_graph.h>
+#include <core_app/numeric_default_graph.h>
+#include <domain/graph/node_factory.h>
+#include <domain/graph/preparation_values.h>
+#include <dataflow_runtime/runtime.h>
+#include <rhythm_graph_adapters/profile.h>
+#include <rhythm_graph_adapters/btrack_composition.h>
+#include <rhythm_reference_ports/pcm_predictive_beat_tracker.h>
+#include <sinc_backend.h>
+#include <kiss_backend.h>
+#include <ooura_backend.h>
+#include "numeric_test_builders.h"
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <new>
+
+namespace {
+using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
+namespace r=rhythm_reference_ports;
+std::size_t allocations=0;
+void check(bool value,const char* message){if(!value){std::fprintf(stderr,"BTrack FAIL: %s\n",message);std::abort();}}
+constexpr FrameLimits limits{8,800000,3200000,65536,4096,65536};
+NumericRuntimeProfile profile(bool sinc=true){
+    NumericRuntimeProfile result{{64,128,16,64,1048576,16777216,limits},{{16777216,67108864,33554432,1048576},0,268435456},
+        {800000,8,3200000,3200000,16777216},{true,true,true}};
+    std::shared_ptr<const dsp_kernels::ResamplerBackendFactory> backend;
+    if(sinc)backend={&desktop_resampling::sinc_backend_factory(),[](const auto*){}};
+    result.fourier_backend={&desktop_fourier::kiss_backend_factory(),[](const auto*){}};
+    return rhythm_graph_adapters::with_reference_operations(std::move(result),{},std::move(backend));
+}
+OwnedProcessingContract own(const NumericContract& contract){
+    OwnedProcessingContract result;check(own_processing_contract(contract,limits,16777216,result)==Status::ok,"own contract");return result;
+}
+NumericProcessingGraph graph(std::uint32_t rate=44100){
+    auto result=numeric_btrack_reference_example(rate).graph;
+    std::erase_if(result.nodes,[](const auto& node){const auto kind=node_kind(node.kind);return kind && is_view(*kind);});
+    std::erase_if(result.edges,[&](const auto& edge){return std::none_of(result.nodes.begin(),result.nodes.end(),[&](const auto& n){return n.id==edge.to;});});
+    auto& source=result.nodes[0];const auto input=source.outputs[0].contract;source.kind="NetworkInput";
+    source.parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t(rate)}}}};
+    source.outputs={{0,PortDirection::Output,input}};
+    check(attach_numeric_parameter_ports(source,profile().admission)==Status::ok,"explicit source Fs");return result;
+}
+void preparation_failure(const NumericProcessingGraph& input,const NumericRuntimeProfile& p,Status status){
+    if(status==Status::ok)return;
+    std::vector<std::size_t> workspace(input.nodes.size()*2);ProcessingGraphAdmission admitted;
+    const auto capabilities=PreparedGraph::numeric_capabilities(p);
+    const auto diagnostic=admit_processing_graph(input,p.admission,capabilities,workspace,admitted);
+    std::fprintf(stderr,"BTrack prepare status=%u admission=%u node=%d port=%u reason=%u peak=%zu\n",
+        unsigned(status),unsigned(diagnostic.error),int(diagnostic.node),unsigned(diagnostic.port),unsigned(diagnostic.reason),admitted.peak_bytes);
+    for(const auto& node:input.nodes){
+        ResolvedProcessingNode resolved;const auto result=resolve_processing_node(node,p.admission,resolved);
+        if(!result || !capabilities.query(capabilities.context,resolved,capabilities.profile).supported)
+            std::fprintf(stderr,"BTrack unsupported node=%d kind=%s domain_error=%u\n",int(node.id),node.kind.c_str(),unsigned(result.error));
+    }
+}
+double scalar(const NumericView& value){
+    if(value.contract->dtype==DType::Float64){double result=0;check(load_element(value,{0,0,0},result)==Status::ok,"Double scalar value");return result;}
+    float result=0;check(load_element(value,{0,0,0},result)==Status::ok,"scalar value");return result;
+}
+bool close(float actual,float expected){return std::abs(actual-expected)<=.002f+.0005f*std::abs(expected);}
+void compare(const NumericView& actual,std::span<const float> expected,const char* message){
+    check(actual.actual[0]==expected.size(),"vector extent");
+    for(std::size_t i=0;i<expected.size();++i){float value=0;check(load_element(actual,{0,i,0},value)==Status::ok && close(value,expected[i]),message);}
+}
+struct Trace {
+    std::vector<double> onset;
+    std::vector<float> state,history,src,comb,observations,probabilities,magnitude,phase;
+    std::vector<std::uint64_t> beats;
+    explicit Trace(std::size_t count):onset(count),state(count*3),history(count*512),src(count*512),
+        comb(count*128),observations(count*41),probabilities(count*41),magnitude(count*1024),phase(count*1024),beats(count){}
+    static void copy(const NumericView& value,std::span<float> output){
+        for(std::size_t i=0;i<output.size();++i)check(load_element(value,{0,i,0},output[i])==Status::ok,"copy diagnostic");
+    }
+    void capture(NodeId id,PortId port,const NumericView& value,std::size_t step){
+        if(id==26 && port==0)copy(value,std::span(magnitude).subspan(step*1024,1024));
+        if(id==26 && port==1)copy(value,std::span(phase).subspan(step*1024,1024));
+        if(id==30)onset[step]=scalar(value);
+        if(id==31 && port==1)copy(value,std::span(history).subspan(step*512,512));
+        if(id==32)copy(value,std::span(src).subspan(step*512,512));
+        if(id==33 && port==0)copy(value,std::span(observations).subspan(step*41,41));
+        if(id==33 && port==1)copy(value,std::span(comb).subspan(step*128,128));
+        if(id==34 && port==0)beats[step]=std::uint64_t(scalar(value));
+        if(id==34 && port==1)state[3*step]=scalar(value);
+        if(id==34 && port==3)state[3*step+1]=scalar(value);
+        if(id==34 && port==2)state[3*step+2]=scalar(value);
+        if(id==34 && port==7)copy(value,std::span(probabilities).subspan(step*41,41));
+    }
+};
+struct Observer {
+    r::PreparedPcmPredictiveBeatTracker reference;
+    r::PcmPredictiveBeatObservation expected;
+    Trace trace;
+    std::size_t hops=0,decisions=0,beats=0,markers=0;
+    bool allow_markers=false;
+    explicit Observer(std::size_t count):trace(count){
+        r::PcmPredictiveOnsetConfig config;config.precision=dsp_kernels::NumericalPrecision::DesktopReference;
+        check(reference.prepare(desktop_resampling::sinc_backend_factory(),config,&desktop_fourier::kiss_backend_factory()),"prepare independent source composition");
+    }
+    void hop(const NumericView& value){
+        std::array<float,512> pcm{};Trace::copy(value,pcm);
+        check(reference.process_hop(pcm,expected),"reference hop");++hops;
+    }
+    void decision(PortId port,const NumericView& value){
+        if(port==0){check(scalar(value)==float(expected.prediction.beat_due),"beat decisions preserve source scheduling");++decisions;beats+=expected.prediction.beat_due;}
+        if(port==1)check(close(scalar(value),expected.bpm),"BPM");
+        if(port==2)check(scalar(value)==expected.prediction.period_frames,"integer period");
+        if(port==3)check(close(scalar(value),reference.tracker_stage().latest_cumulative_score()),"cumulative score");
+        if(port==4)compare(value,reference.tracker_stage().cumulative_scores(),"cumulative history");
+        if(port==7)compare(value,reference.tracker_stage().tempo_stage().state_probabilities(),"tempo state advances only on beats");
+        if(port==5 || port==6){std::int64_t result=0;check(load_element(value,{0,0,0},result)==Status::ok &&
+            result==(port==5?expected.prediction.next_beat:expected.prediction.next_prediction),"exact predictor counters");}
+    }
+    void observe(const NumericPortFrameView& event){
+        if(allow_markers && !hops && event.status==Status::unavailable){++markers;return;}
+        check(event.status==Status::ok,"every graph stage available");const auto& value=std::get<NumericView>(event.frame.payload);
+        const auto id=event.identity.node;const auto port=event.identity.port;
+        if(id==3)hop(value);
+        if(id==30)check(scalar(value)==reference.frontend().reference_stage().value(),"exact source Hann/rotation/KISS/Double ODF");
+        if(id==31 && port==1)compare(value,reference.onset_window(),"seeded ODF history");
+        if(id==32 && expected.prediction.beat_due)compare(value,reference.tracker_stage().resampled_onsets(),"same-input sinc at beat");
+        if(id==33 && port==1 && expected.prediction.beat_due)compare(value,reference.tracker_stage().tempo_stage().response(),"comb at beat");
+        if(id==34)decision(port,value);
+        if(id==26 || (id>=30 && id<=34)){check(hops && hops<=trace.onset.size(),"bounded trace");trace.capture(id,port,value,hops-1);}
+    }
+    static void output(void* user,const NumericPortFrameView& event){static_cast<Observer*>(user)->observe(event);}
+};
+std::vector<float> signal(bool silence){
+    std::vector<float> result(512*1024);if(silence)return result;
+    constexpr float tones[]{110,251,503,997,1999,4001,6007,10007};
+    for(std::size_t i=0;i<result.size();++i){
+        const double seconds=double(i)/44100,phase=double(i%22050)/44100;
+        for(unsigned k=0;k<8;++k)result[i]+=float(.06*std::exp(-phase/.006)*
+            std::sin(6.283185307179586*tones[k]*seconds+.17*k+.06*std::sin(seconds*(k+1))));
+    }
+    return result;
+}
+void feed(const NumericProcessingGraph& source,const PreparedGraph& plan,RuntimeContext& state,std::span<const float> pcm,Observer& observer){
+    const auto data=source.nodes[0].outputs[0].contract.view();const auto& contract=std::get<NumericContract>(data);
+    const PlaneLayout plane{0,{sizeof(float),0}};const auto before=allocations;
+    for(std::size_t at=0;at+512<=pcm.size();at+=512){
+        FrameStamp stamp;stamp.sequence=stamp.source_sequence=at/512+1;stamp.producer_epoch=1;stamp.has_sample_interval=true;
+        stamp.sample_begin=std::int64_t(at);stamp.sample_count=512;stamp.timestamp_ticks=std::int64_t(at);
+        const auto frame=numeric_test_builders::frame(stamp,contract,std::as_bytes(pcm.subspan(at,512)),std::span(&plane,1),{512,1});
+        check(plan.process_numeric_ports(1,0,frame,state,{},NumericRuntimeCallbacks{Observer::output,nullptr,nullptr,&observer})==Status::ok,"feed source");
+    }
+    check(allocations==before,"all graph stages and reference processing allocate no C++ heap");
+}
+NumericProcessingGraph variable_graph(){
+    auto result=graph();auto contract=std::get<NumericContract>(result.nodes[0].outputs[0].contract.view());
+    contract.shape.extents[0]={1,8192};result.nodes[0].outputs[0].contract=own(contract);
+    check(bool(configure_processing_input(result.nodes[1],contract,profile().admission)),"variable PCM resampler input");
+    const auto resampled=result.nodes[1].outputs[0].contract.view();
+    check(bool(configure_processing_input(result.nodes[2],resampled,profile().admission)),"variable packets to fixed-hop framer");
+    return result;
+}
+void feed_chunks(const NumericProcessingGraph& source,const PreparedGraph& plan,RuntimeContext& state,
+    std::span<const float> pcm,Observer& observer,std::uint64_t epoch,std::size_t chunk){
+    const auto data=source.nodes[0].outputs[0].contract.view();const auto& contract=std::get<NumericContract>(data);
+    const PlaneLayout plane{0,{sizeof(float),0}};std::array<float,8192> packet{};
+    const auto before=allocations;std::uint64_t sequence=0;
+    for(std::size_t at=0;at<pcm.size();){
+        const auto count=std::min(chunk,pcm.size()-at);FrameStamp stamp;
+        stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=epoch;stamp.has_sample_interval=true;
+        // PCM ingress timestamps identify the first sample, as required by the
+        // existing resampler's anchor/advance_input and resampler runtime tests.
+        stamp.sample_begin=std::int64_t(at);stamp.sample_count=count;stamp.timestamp_ticks=std::int64_t(at);
+        std::copy_n(pcm.begin()+at,count,packet.begin());
+        const auto frame=numeric_test_builders::frame(stamp,contract,std::as_bytes(std::span(packet)),std::span(&plane,1),{count,1});
+        const auto status=plan.process_numeric_ports(1,0,frame,state,{},NumericRuntimeCallbacks{Observer::output,nullptr,nullptr,&observer});
+        if(status!=Status::ok)std::fprintf(stderr,"BTrack chunk status=%u epoch=%llu offset=%zu count=%zu hops=%zu decisions=%zu\n",
+            unsigned(status),(unsigned long long)epoch,at,count,observer.hops,observer.decisions);
+        check(status==Status::ok,"feed partition or new epoch");at+=count;
+    }
+    check(allocations==before,"partition/reset path has no C++ heap allocation");
+}
+void chunks_and_epoch(){
+    const auto input=variable_graph();std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    const auto p=profile();const auto status=PreparedGraph::prepare_numeric(input,p,plan,state);preparation_failure(input,p,status);
+    check(status==Status::ok,"prepare variable packet graph");
+    const auto pcm=signal(false);Observer first{pcm.size()/512},second{pcm.size()/512};
+    // Before the first complete hop, warm-up/reset markers carry no DSP frame.
+    // Once a hop is published every subscribed stage must remain available.
+    first.allow_markers=second.allow_markers=true;
+    feed_chunks(input,*plan,*state,pcm,first,1,97);
+    feed_chunks(input,*plan,*state,pcm,second,2,8192);
+    check(first.hops==1024 && second.hops==1024 && first.decisions==second.decisions,"exact hop count for97/8192 samples");
+    check(first.trace.onset==second.trace.onset && first.trace.state==second.trace.state && first.trace.beats==second.trace.beats,
+        "packet partition and producer reset reproduce fresh canonical state");
+}
+template<class T> void save(const std::string& prefix,const char* suffix,std::span<const T> values){
+    std::ofstream file(prefix+suffix,std::ios::binary);file.write(reinterpret_cast<const char*>(values.data()),std::streamsize(values.size_bytes()));
+    check(bool(file),"write evidence");
+}
+void save_trace(const std::string& prefix,std::span<const float> pcm,const Trace& trace){
+    save<float>(prefix,".pcm.f32",pcm);save<double>(prefix,".odf.f64",trace.onset);save<float>(prefix,".state.f32",trace.state);
+    save<float>(prefix,".norm.f32",trace.magnitude);save<float>(prefix,".phase.f32",trace.phase);
+    save<float>(prefix,".history.f32",trace.history);save<float>(prefix,".resampled.f32",trace.src);save<float>(prefix,".comb.f32",trace.comb);
+    save<float>(prefix,".observations.f32",trace.observations);save<float>(prefix,".delta.f32",trace.probabilities);save<std::uint64_t>(prefix,".beat.u64",trace.beats);
+}
+void live(bool silence,const char* prefix){
+    const auto input=graph();std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    const auto p=profile();const auto status=PreparedGraph::prepare_numeric(input,p,plan,state);preparation_failure(input,p,status);
+    check(status==Status::ok,"prepare modular BTrack graph");
+    const auto pcm=signal(silence);Observer observer{pcm.size()/512};feed(input,*plan,*state,pcm,observer);
+    check(observer.hops==pcm.size()/512 && observer.decisions==observer.hops,"one ODF/decision per fixed hop");
+    if(!silence)check(observer.beats>10,"nonempty synthetic beat evidence");
+    if(prefix)save_trace(prefix,pcm,observer.trace);
+    std::printf("BTrack silence=%d hops=%zu beats=%zu\n",int(silence),observer.hops,observer.beats);
+}
+void absent_provider(){
+    const auto input=graph();std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    check(PreparedGraph::prepare_numeric(input,profile(false),plan,state)!=Status::ok,"missing sinc rejects atomically even at ratio1");
+}
+void fourier_provider_admission(){
+    auto input=graph();auto p=profile();std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    p.fourier_backend.reset();
+    check(PreparedGraph::prepare_numeric(input,p,plan,state)!=Status::ok && !plan && !state,"named FFT provider missing rejects before publication");
+    p.fourier_backend={&desktop_fourier::ooura_backend_factory(),[](const auto*){}};
+    check(PreparedGraph::prepare_numeric(input,p,plan,state)!=Status::ok && !plan && !state,"mismatched FFT provider does not silently fallback");
+    const auto node=std::find_if(input.nodes.begin(),input.nodes.end(),[](const auto& value){return value.id==25;});
+    auto& parameters=std::get<TransformProcessingParameters>(node->parameters).values;
+    const auto field=std::find_if(parameters.begin(),parameters.end(),[](const auto& value){return value.key=="backend_id";});
+    check(field!=parameters.end(),"explicit FFT selection setting");field->value=std::string{};p.fourier_backend.reset();
+    check(PreparedGraph::prepare_numeric(input,p,plan,state)==Status::ok,"empty backend selection preserves built-in Fourier without provider");
+}
+void split_comb(){
+    r::PreparedCombTempoTransition whole,analysis,transition;check(whole.prepare(512) && analysis.prepare(512) && transition.prepare(512),"prepare split comb");
+    std::array<float,512> input{};float a=0,b=0;const auto before=allocations;
+    for(std::size_t step=0;step<40;++step){
+        for(std::size_t i=0;i<input.size();++i)input[i]=i%(37+step%9)==0?float(2+step):.0001f;
+        check(analysis.analyze_observations(input),"analyze independent snapshot");
+        for(float probability:analysis.state_probabilities())check(probability==1,"analysis does not evolve tempo state");
+        if(step%3)continue;
+        check(whole.process(input,a) && transition.advance_observations(analysis.tempo_observations(),b) && a==b,"split advance matches source comb");
+        check(std::equal(whole.state_probabilities().begin(),whole.state_probabilities().end(),transition.state_probabilities().begin()),"identical transition state");
+    }
+    check(allocations==before,"split analysis/transition allocation-free");
+}
+struct HistoryStage {
+    ConfiguredProcessingNode node;
+    NumericContract input_contract;
+    std::array<NumericContract,2> output_contracts;
+    std::array<PlaneLayout,1> plane{{{0,{sizeof(float),0}}}};
+    std::array<std::array<float,512>,2> storage{};
+    std::array<NumericOperationOutput,2> outputs;
+    std::unique_ptr<PreparedNumericOperation> operation;
+    HistoryStage(){
+        static constexpr std::uint32_t channels[]{0};input_contract.channel_order=channels;
+        input_contract.dtype=DType::Float32;input_contract.clock={"btrack-test",{1,44100},44100};
+        const std::array inputs{ProcessingPort{0,PortDirection::Input,own(input_contract)}};
+        check(rhythm_graph_adapters::make_btrack_operation_node(10,"BTrackHistory",inputs,{},limits,65536,node)==Status::ok,"compose source history stage");
+        const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::NumericExtension,node.inputs,node.outputs,&node.parameters,true};
+        const auto p=profile();std::shared_ptr<const NumericOperationDescriptor> descriptor;
+        check(p.operation_factory->describe(resolved,descriptor)==Status::ok && p.operation_factory->prepare(descriptor,p,operation)==Status::ok,"prepare source history stage");
+        for(std::size_t i=0;i<2;++i){
+            output_contracts[i]=std::get<NumericContract>(node.outputs[i].contract.view());
+            outputs[i]={PortId(i),{&output_contracts[i],std::as_writable_bytes(std::span(storage[i])),plane,{i?512u:1u,1}}};
+        }
+    }
+    Status process(PreparedNumericOperation& processor,float value,bool enabled=true){
+        FrameStamp stamp;stamp.sequence=stamp.source_sequence=1;stamp.producer_epoch=1;
+        const NumericView view{&input_contract,std::as_bytes(std::span(&value,1)),plane,{1,1}};
+        const NumericOperationInput input{0,view,stamp,Status::ok,std::span(&value,1)};
+        return processor.process(std::span(&input,1),outputs,{NumericOperationEvent::Continue,false,enabled});
+    }
+};
+void history_lifecycle(){
+    HistoryStage stage;check(stage.process(*stage.operation,3)==Status::ok,"initial history sample");
+    auto clone=stage.operation->clone();check(bool(clone),"cold independent clone");const auto before=allocations;
+    check(stage.process(*stage.operation,5)==Status::ok && stage.process(*clone,7)==Status::ok,"advance distinct branches");
+    check(stage.storage[1][510]==3.0001f && stage.storage[1][511]==7.0001f,"clone owns original historical values");
+    check(stage.process(*clone,std::numeric_limits<float>::quiet_NaN())!=Status::ok,"nonfinite input rejected");
+    check(stage.outputs[0].status==Status::unavailable && stage.outputs[1].status==Status::unavailable,"no stale publication");
+    check(stage.process(*clone,9)==Status::ok && stage.storage[1][510]==7.0001f,"invalid input preserved state");
+    check(stage.process(*clone,4,false)==Status::ok,"disabled typed zeros");
+    check(std::all_of(stage.storage[1].begin(),stage.storage[1].end(),[](float x){return x==0;}),"disabled history output zero");
+    check(stage.process(*clone,8)==Status::ok && stage.storage[1][510]==9.0001f,"disabled processing does not advance history");
+    check(clone->copy_state_from(*stage.operation)==Status::incompatible_contract,"explicit reset on Apply");
+    check(stage.process(*clone,2)==Status::ok && stage.storage[1][510]==0 && stage.storage[1][511]==2.0001f,"reset reseeds source history");
+    check(allocations==before,"history lifecycle uses no hot allocation");
+}
+}
+void* operator new(std::size_t count){++allocations;if(auto* pointer=std::malloc(count?count:1))return pointer;throw std::bad_alloc();}
+void operator delete(void* pointer) noexcept{std::free(pointer);}
+void operator delete(void* pointer,std::size_t) noexcept{std::free(pointer);}
+int main(int argc,char** argv){split_comb();history_lifecycle();absent_provider();fourier_provider_admission();live(false,argc>1?argv[1]:nullptr);live(true,nullptr);chunks_and_epoch();std::puts("BTrack modular pipeline PASS");}

@@ -2,16 +2,39 @@
 #include "example_builder.h"
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 #include <utility>
 
 namespace {
 using namespace domain;
 using signal_contracts::NumericLiteral;
-void append_periodic_spectrum(examples::Builder& b) {
+void add_replay_pcm_fifo(examples::Builder& b) {
+    using namespace rhythm_replay_graph;
+    MixerProcessingParameters mix;mix.weights={{0,1.0}};
+    mix.mode=MixerMode::WeightedSum;mix.consumption=MixerConsumption::ClockedFifo;mix.fifo_milliseconds=100;
+    b.add(pcm_clock,"SampleClock",SampleClockProcessingParameters{pcm_rate,"local"});
+    b.add(pcm_mixer,"Mixer",mix);
+    auto& node=b.node(pcm_mixer);
+    node.inputs={{0,PortDirection::Input,b.output(pcm_source)}};
+    node.outputs={{0,PortDirection::Output,b.output(pcm_source)}};
+    node.clock_node=pcm_clock;b.connect(pcm_source,pcm_mixer);b.configuration(pcm_clock,pcm_mixer);b.derive(pcm_mixer);
+}
+void append_replay_cadence(examples::Builder& b) {
+    add_replay_pcm_fifo(b);
+    const auto route=std::find_if(b.graph.edges.begin(),b.graph.edges.end(),[](const auto& edge){
+        return edge.from==rhythm_replay_graph::pcm_source && edge.to==2 && !edge.output_port && !edge.input_port;
+    });
+    if(route==b.graph.edges.end())throw std::runtime_error("Replay calibrated PCM route missing");
+    b.graph.edges.erase(route);b.connect(rhythm_replay_graph::pcm_mixer,2);b.derive(2);
+}
+void append_periodic_spectrum(examples::Builder& b,bool complete_frames=false) {
     b.chain(1313,"PcmResampler",200,examples::transform({{"mode",std::string{"speex"}},
         {"output_rate",NumericLiteral{std::uint64_t{44100}}}}));
     b.connect(200,1313,1,input_sample_rate_input);
-    b.chain(1314,"Window",1313,examples::transform({{"size",NumericLiteral{std::uint64_t{2048}}}}));
+    if(complete_frames)
+        b.chain(1314,"FrameBuffer",1313,examples::transform({{"size",NumericLiteral{std::uint64_t{2048}}},
+            {"hop_samples",NumericLiteral{std::uint64_t{512}}}}));
+    else b.chain(1314,"Window",1313,examples::transform({{"size",NumericLiteral{std::uint64_t{2048}}}}));
     b.chain(1315,"ArrayLength",1314);
     b.chain(1310,"WindowFunction",1315,examples::transform({{"size",NumericLiteral{std::uint64_t{2048}}},
         {"function",std::string{"hann"}},{"periodic",true}}));
@@ -94,7 +117,7 @@ void append_spectral_descriptors(examples::Builder& b) {
 }
 void append_spectral_onsets(examples::Builder& b) {
     // Complete existing reference fixture, used only by offline trace replay.
-    append_periodic_spectrum(b);append_log_mel(b);append_onset_strength(b,false);
+    append_periodic_spectrum(b,true);append_log_mel(b);append_onset_strength(b,false);
     b.chain(1306,"AudioSurfaceView",1302);
     append_onset_strength(b,true);append_spectral_descriptors(b);
 }
@@ -218,6 +241,7 @@ domain::NumericProcessingGraph numeric_rhythm_graph() {
 }
 domain::NumericProcessingGraph numeric_rhythm_replay_graph() {
     examples::Builder builder;builder.graph=numeric_startup_graph();
+    append_replay_cadence(builder);
     append_tempogram(builder,1200,512);append_tempogram(builder,1210,4096);
     append_tempo_evidence(builder);append_spectral_onsets(builder);return builder.finish();
 }

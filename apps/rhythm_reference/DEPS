@@ -1,0 +1,2 @@
+# Explicit optional GPL/AGPL research composition root.
+include_rules = ['+rhythm_graph_adapters', '+offline/audio_decoder.h']

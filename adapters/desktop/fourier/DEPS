@@ -1,0 +1,6 @@
+include_rules = [
+    '+dsp_kernels', '+signal_contracts',
+    '-domain', '-application', '-dataflow_runtime', '-rhythm_reference_ports',
+    '-rhythm_graph_adapters', '-Qt',
+]
+skip_child_includes = ['vendor']

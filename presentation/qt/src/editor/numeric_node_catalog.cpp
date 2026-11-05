@@ -69,6 +69,8 @@ constexpr std::array operation_groups{
     OperationGroup{"MatrixRow","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayFill","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayMultiply","Numeric operations","Arrays and matrices"},
+    OperationGroup{"ArrayReindex","Numeric operations","Arrays and matrices"},
+    OperationGroup{"TemporalFrameSequence","Signal processing","Resampling and timing"},
     OperationGroup{"ArrayConcat","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayLength","Numeric operations","Arrays and matrices"},
     OperationGroup{"IndexExtract","Numeric operations","Arrays and matrices"},
@@ -165,12 +167,15 @@ int capture_source_kind(const ConfiguredProcessingNode& node) {
         if(value.key=="source")if(const auto* literal=std::get_if<NumericLiteral>(&value.value))return std::visit([](auto v){return int(v);},*literal);
     return 0;
 }
-QStringList catalog() {
+QStringList model_catalog() {
     QStringList result;
-    constexpr std::string_view internal[]{"WLED","Splitter","SpectrumMerge","TestSignal","StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"};
-    for(const auto& descriptor:node_descriptors())if(std::find(std::begin(internal),std::end(internal),descriptor.id)==std::end(internal))result.append(QString::fromUtf8(descriptor.id.data(),int(descriptor.id.size())));
-    // Converter is an explicit operation of the canonical configured-node resolver.
+    for(const auto& descriptor:node_descriptors())result.append(QString::fromUtf8(descriptor.id.data(),int(descriptor.id.size())));
     if(!result.contains("Converter"))result.append("Converter");
+    return result;
+}
+QStringList catalog() {
+    auto result=model_catalog();
+    for(const auto* kind:{"WLED","Splitter","SpectrumMerge","TestSignal","StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"})result.removeAll(kind);
     return result;
 }
 QStringList visible_catalog() {

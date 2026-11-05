@@ -1,4 +1,5 @@
 #include "isolated_gui_platform.h"
+#include "numeric_gui_fixture.h"
 #include "test_assertions.h"
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
@@ -28,8 +29,25 @@
 #include <functional>
 
 #define CHECK(x) do { if(!test_assertions::verify(bool(x),#x,__FILE__,__LINE__))return 1; } while(false)
-static bool wait(const std::function<bool()>& predicate){QElapsedTimer timer;timer.start();while(timer.elapsed()<4000){QCoreApplication::processEvents();if(predicate())return true;QThread::msleep(5);}return predicate();}
+static bool wait(const std::function<bool()>& predicate){QElapsedTimer timer;timer.start();gui_fixture::phase_trace::Scope trace("display.wait",4000);while(timer.elapsed()<4000){trace.events();if(trace.predicate(predicate))return true;QThread::msleep(5);}return trace.predicate(predicate);}
+static void select_display_mode(QComboBox* mode,int index) {
+    gui_fixture::phase_trace::Scope trace("display.mode.setCurrentIndex",index);mode->setCurrentIndex(index);
+}
+static void set_display_custom(QSpinBox* custom,int rate) {
+    gui_fixture::phase_trace::Scope trace("display.custom.setValue",rate);custom->setValue(rate);
+}
+static void emit_display_cadence(SettingsWidget* settings) {
+    gui_fixture::phase_trace::Scope trace("display.cadence_changed");emit settings->cadence_changed();
+}
+static bool display_rate_reached(const desktop::DisplayModeSnapshot& actual,double expected) {
+    const auto rate=actual.refresh_rate;
+    if(gui_fixture::phase_trace::enabled.load(std::memory_order_relaxed)){
+        std::fprintf(stderr,"APP_DISPLAY actual_hz=%.9g expected_hz=%.9g\n",double(rate),expected);std::fflush(stderr);
+    }
+    return rate==expected;
+}
 static int floating_monitor_ownership(MainWindow* window,desktop::DisplayModeSnapshot& actual) {
+    gui_fixture::phase_trace::Scope trace("display.floating_ownership");
         // A visible floating host must stop owning its monitor when its final
         // graph leaves, even when unrelated content keeps that host visible.
         auto* panel=window->findChild<GraphPanel*>();CHECK(panel);
@@ -46,18 +64,19 @@ return 0;
 }
 
 static int system_cadence(CoreApplication& app,SettingsWidget* settings,QComboBox* mode,desktop::DisplayModeSnapshot& actual,const QTemporaryDir& temp,const auto& panels_at) {
+    gui_fixture::phase_trace::Scope trace("display.system_cadence");
         CHECK(mode->findData(-2)>=0);
-        mode->setCurrentIndex(mode->findData(-2));
+        select_display_mode(mode,mode->findData(-2));
         CHECK(app._ctx.file_configs.ui.graph_rendering["gui_fps_mode"]=="screen");
         CHECK(wait([&]{return actual.refresh_rate==60&&panels_at(60);}));
-        actual.refresh_rate=120;emit settings->cadence_changed();
+        actual.refresh_rate=120;emit_display_cadence(settings);
         CHECK(actual.refresh_rate==120&&panels_at(120)&&mode->currentData().toInt()==-2);
         desktop::NumericProjectDocument saved;domain::NumericProcessingGraph saved_graph;QJsonObject saved_settings;
         const auto system_path=temp.filePath("display-system.json");app.save_configuration_as(system_path);
         CHECK(desktop::load_numeric_project(system_path,saved,saved_graph)&&desktop::read_numeric_application_settings(saved,saved_settings));
         CHECK(saved_settings["ui"].toObject()["graph_rendering"].toObject()["gui_fps_mode"]=="screen");
-        actual.refresh_rate=60;emit settings->cadence_changed();
-        mode->setCurrentIndex(mode->findData(0));CHECK(actual.refresh_rate==165&&panels_at(165));
+        actual.refresh_rate=60;emit_display_cadence(settings);
+        select_display_mode(mode,mode->findData(0));CHECK(actual.refresh_rate==165&&panels_at(165));
 return 0;
 }
 
@@ -68,15 +87,16 @@ static int persist_maximum_cadence(CoreApplication& app,const QTemporaryDir& tem
         CHECK(saved_settings["ui"].toObject()["graph_rendering"].toObject()["gui_fps_mode"]=="maximum");return 0;
 }
 static int custom_and_maximum_cadence(CoreApplication& app,SettingsWidget* settings,QComboBox* mode,QSpinBox* custom,desktop::DisplayModeSnapshot& actual,unsigned& missingReads,const QTemporaryDir& temp,const auto& panels_at) {
-        mode->setCurrentIndex(mode->findData(-1));custom->setValue(170);
+    gui_fixture::phase_trace::Scope trace("display.custom_maximum");
+        select_display_mode(mode,mode->findData(-1));set_display_custom(custom,170);
         CHECK(actual.refresh_rate==60&&panels_at(170));
-        mode->setCurrentIndex(mode->findData(0));CHECK(actual.refresh_rate==165&&panels_at(165));
+        select_display_mode(mode,mode->findData(0));CHECK(actual.refresh_rate==165&&panels_at(165));
         app._ctx.file_configs.ui.graph_rendering["gui_fps_mode"]="fixed";
         app._ctx.file_configs.ui.graph_rendering["gui_target_fps"]=170;
-        missingReads=1;emit settings->cadence_changed();
+        missingReads=1;emit_display_cadence(settings);
         CHECK(actual.refresh_rate==165); // First release readback was unavailable.
         CHECK(wait([&]{return actual.refresh_rate==60&&panels_at(170);}));
-        mode->setCurrentIndex(mode->findData(0));CHECK(actual.refresh_rate==165&&panels_at(165));
+        select_display_mode(mode,mode->findData(0));CHECK(actual.refresh_rate==165&&panels_at(165));
         if(const auto result=persist_maximum_cadence(app,temp))return result;
 
 return 0;
@@ -91,12 +111,13 @@ static int persist_requested_cadence(CoreApplication& app,const QTemporaryDir& t
 return 0;
 }
 static int requested_cadence_rollback(CoreApplication& app,QComboBox* mode,desktop::DisplayModeSnapshot& actual,bool& reject60,bool& uncertain165,const QTemporaryDir& temp,const auto& panels_at) {
-        mode->setCurrentIndex(mode->findData(120));CHECK(actual.refresh_rate==120&&panels_at(120));
+    gui_fixture::phase_trace::Scope trace("display.requested_rollback");
+        select_display_mode(mode,mode->findData(120));CHECK(actual.refresh_rate==120&&panels_at(120));
         CHECK(app._ctx.file_configs.ui.graph_rendering["gui_fps_mode"]=="display");
         if(const auto result=persist_requested_cadence(app,temp))return result;
-        reject60=true;mode->setCurrentIndex(mode->findData(60));CHECK(actual.refresh_rate==120&&mode->currentData().toInt()==120);
+        reject60=true;select_display_mode(mode,mode->findData(60));CHECK(actual.refresh_rate==120&&mode->currentData().toInt()==120);
         CHECK(app._ctx.file_configs.ui.graph_rendering["gui_target_fps"]==120);reject60=false;
-        uncertain165=true;mode->setCurrentIndex(mode->findData(165));uncertain165=false;
+        uncertain165=true;select_display_mode(mode,mode->findData(165));uncertain165=false;
         CHECK(app._ctx.file_configs.ui.graph_rendering["gui_target_fps"]==120 && mode->currentData().toInt()==120);
         CHECK(wait([&]{return actual.refresh_rate==120&&panels_at(120);}));
 return 0;
@@ -113,12 +134,13 @@ static int cached_catalog_preferences(MainWindow* window,SettingsWidget* setting
         mesh->setChecked(!mesh->isChecked());mesh->setChecked(!mesh->isChecked());
         emit settings->surface_settings_changed();
         for(int i=0;i<10;++i)CHECK(settings->display_refresh_rate()==165);
-        emit settings->cadence_changed();
+        emit_display_cadence(settings);
         CHECK(enumerations==catalog_before_popup);
         settings->refresh_graph_preferences();CHECK(enumerations==catalog_before_popup);
 return 0;
 }
 static int catalog_invalidation(CoreApplication& app,MainWindow* window,SettingsWidget* settings,QComboBox* mode,desktop::DisplayModeSnapshot& actual,unsigned& enumerations,double& supportedMaximum,const auto& panels_at) {
+    gui_fixture::phase_trace::Scope trace("display.catalog_invalidation");
         if(const auto result=cached_catalog_preferences(window,settings,enumerations))return result;
 #ifdef Q_OS_WIN
         const auto catalogChanged=[&]{MSG message{};message.message=WM_DISPLAYCHANGE;app.nativeEventFilter("windows_generic_MSG",&message,nullptr);};
@@ -133,31 +155,43 @@ return 0;
 }
 
 static int prepare_display_window(CoreApplication& app,MainWindow*& window,SettingsWidget*& settings,QComboBox*& mode,QSpinBox*& custom,desktop::DisplayModeSnapshot& actual) {
+    gui_fixture::phase_trace::Scope trace("display.prepare_window");
         window=nullptr;const auto topLevels=QApplication::topLevelWidgets();for(auto* widget:topLevels)if(auto* found=qobject_cast<MainWindow*>(widget))window=found;
         CHECK(window);settings=window->findChild<SettingsWidget*>();CHECK(settings);
-        window->show();CHECK(wait([&]{return actual.refresh_rate==165;}));
+        trace.mark("window.show BEGIN");window->show();trace.mark("window.show END");CHECK(wait([&]{return display_rate_reached(actual,165);}));
         mode=settings->findChild<QComboBox*>("guiFpsMode");custom=settings->findChild<QSpinBox*>("guiTargetFps");CHECK(mode&&custom);
         CHECK(mode->findData(60)>=0&&mode->findData(120)>=0&&mode->findData(165)>=0);
 return 0;
 }
 static bool panels_at_fps(MainWindow* window,int rate) {
-    const auto panels=window->findChildren<GraphPanel*>();if(panels.empty())return false;for(auto* panel:panels)if(panel->render_fps()!=rate)return false;return true;
+    const auto panels=window->findChildren<GraphPanel*>();if(panels.empty())return false;
+    for(auto* panel:panels){
+        const auto current=panel->render_fps();
+        if(gui_fixture::phase_trace::enabled.load(std::memory_order_relaxed)){
+            std::fprintf(stderr,"APP_PANEL panel=%s actual_fps=%d expected_fps=%d\n",qPrintable(panel->objectName()),current,rate);std::fflush(stderr);
+        }
+        if(current!=rate)return false;
+    }
+    return true;
 }
 static int injected_session(const QString& path,const QTemporaryDir& temp,const desktop::DisplayModeApi& api,desktop::DisplayModeSnapshot& actual,unsigned& enumerations,double& supportedMaximum,bool& reject60,bool& uncertain165,unsigned& missingReads) {
     {
         auto encoded=path.toLocal8Bit();char executable[]="display_mode_application_tests",config[]="--config";
         char* arguments[]{executable,config,encoded.data(),nullptr};int count=3;
+        gui_fixture::phase_trace::Scope lifetime("display.CoreApplication");
         CoreApplication app(count,arguments,test_fixture::synthetic_capture_factory(),api);
+        lifetime.mark("constructed");
+        gui_fixture::phase_trace::BeforeApplicationExit before_exit{lifetime};
         MainWindow* window=nullptr;SettingsWidget* settings=nullptr;QComboBox* mode=nullptr;QSpinBox* custom=nullptr;
         if(const auto result=prepare_display_window(app,window,settings,mode,custom,actual))return result;
         auto panels_at=[&](int rate){return panels_at_fps(window,rate);};
-        CHECK(wait([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending()&&panels_at(165);}));
+        CHECK(wait([&]{return gui_fixture::phase_trace::snapshot(app).graph_revision>0&&!app.presenter().graph_request_pending()&&panels_at(165);}));
         if(const auto result=catalog_invalidation(app,window,settings,mode,actual,enumerations,supportedMaximum,panels_at))return result;
         if(const auto result=requested_cadence_rollback(app,mode,actual,reject60,uncertain165,temp,panels_at))return result;
         if(const auto result=custom_and_maximum_cadence(app,settings,mode,custom,actual,missingReads,temp,panels_at))return result;
         if(const auto result=system_cadence(app,settings,mode,actual,temp,panels_at))return result;
         if(const auto result=floating_monitor_ownership(window,actual))return result;
-        window->close();CHECK(wait([&]{return actual.refresh_rate==60;}));
+        lifetime.mark("window.close BEGIN");window->close();lifetime.mark("window.close END");CHECK(wait([&]{return actual.refresh_rate==60;}));
     }
 return 0;
 }
@@ -209,7 +243,7 @@ static int validate_recovery(CoreApplication& app,const domain::NumericProcessin
         app._ctx.file_configs.ui.autosave_enabled=false;
         auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());CHECK(model);
         model->set_capture_device_provider([](int,QString*){return QJsonArray{QJsonObject{{"id","synthetic-capture"},{"name","Synthetic capture"},{"is_default",true},{"native_sample_rate",48000},{"native_channels",1}}};});
-        CHECK(wait([&]{return app.presenter().client().snapshot().graph_revision>0&&!app.presenter().graph_request_pending();}));
+        CHECK(wait([&]{return gui_fixture::phase_trace::snapshot(app).graph_revision>0&&!app.presenter().graph_request_pending();}));
         CHECK(app.presenter().saved_graph_warning().isEmpty());
         CHECK(model->numeric_graph().nodes.size()==expected_graph.nodes.size());
         if(const auto result=recovered_node_identities(model,expected_graph))return result;
@@ -246,6 +280,7 @@ int main(int argc,char** argv) {
         return recover_project(argv);
     }
     CHECK(test_fixture::isolated_gui_platform());
+    gui_fixture::phase_trace::Session diagnostic_session;
     QTemporaryDir temp;CHECK(temp.isValid());const auto path=temp.filePath("project.json");
     desktop::NumericDraftPresentation presentation;
     presentation.application_settings={{"ui",QJsonObject{{"autosave_enabled",false},{"graph_rendering",QJsonObject{{"gui_fps_mode","maximum"}}}}}};

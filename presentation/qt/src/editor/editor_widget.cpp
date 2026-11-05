@@ -203,7 +203,7 @@ static bool valid_clipboard_document(const QJsonObject& document) {
 }
 static std::shared_ptr<QtNodes::NodeDelegateModelRegistry> clipboard_registry() {
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    const auto kinds=numeric_editor::catalog();
+    const auto kinds=numeric_editor::model_catalog();
     for(const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);});
     return registry;
 }
@@ -968,7 +968,7 @@ static QJsonArray editable_nodes(const QJsonObject& document,bool& unsupported,Q
     const auto document_nodes=document.value("nodes").toArray();
     for(const auto &value:document_nodes) {
         const auto node=value.toObject();
-        if(!numeric_editor::catalog().contains(node.value("internal-data").toObject().value("model-name").toString())) {
+        if(!numeric_editor::model_catalog().contains(node.value("internal-data").toObject().value("model-name").toString())) {
             unsupported=true; continue;
         }
         nodes.append(node); ids.insert(node.value("id").toInt());
@@ -1679,7 +1679,7 @@ private:
         const auto original_nodes=_original.value("nodes").toArray();
         for (const auto value : original_nodes) {
             const auto node = value.toObject();
-            if (!numeric_editor::catalog().contains(node.value("internal-data").toObject().value("model-name").toString()))
+            if (!numeric_editor::model_catalog().contains(node.value("internal-data").toObject().value("model-name").toString()))
                 result.append(node);
         }
         const auto edited_nodes=graph.value("nodes").toArray();

@@ -63,18 +63,8 @@ void retained_quiet_measurements(const QString& path) {
     o.training.min_gain=std::numeric_limits<double>::quiet_NaN();o.training.max_gain=-1;
     assert(scan_music_files({path},o,stop).success);
 }
-void multi_part_archive_scan(const QString& sample_path,const QString& directory) {
-    std::atomic_bool initial_stop=false;
-    const auto seed=scan_music_files({sample_path},options(),initial_stop);
-    assert(seed.success);
-    const auto base=seed.document.profile.compositions.front();
-    QStringList paths;
-    for(int i=0;i<7;++i)paths.append(QStringLiteral("source_%1.mp3").arg(i));
-    std::atomic_bool stop=false;
-    std::vector<std::size_t> progress_calls;
-    int invocations=0;
-    const auto scan=[&](const QStringList& batch,const AnalysisOptions&,const std::atomic_bool&,
-                        const AnalysisServices::Progress& progress)->AnalysisResult {
+AnalysisResult synthetic_scan_batch(const AnalysisResult& seed,const dsp_kernels::CompositionStatistics& base,
+                                     const QStringList& batch,const AnalysisServices::Progress& progress,int& invocations) {
         ++invocations;
         AnalysisResult result;
         result.success=true;result.document=seed.document;
@@ -106,28 +96,9 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
         };
         if(progress)progress(std::size_t(batch.size()),std::size_t(batch.size()));
         return result;
-    };
-    const decltype(AnalysisServices::save_scan) save=[](const QString& path,const ProfileDocument& doc,QString& error) {
-        return save_music_scan(path,doc,error);
-    };
-    const auto output=directory+"/parts";
-    assert(QDir().mkpath(output));
-    // Simulate abandoned data left by a previous hard crash.
-    const auto stale=output+"/.barelief-scan-incomplete-obsolete";
-    assert(QDir().mkpath(stale));
-    QFile orphan(stale+"/orphan.tmp");
-    assert(orphan.open(QIODevice::WriteOnly));
-    orphan.write("garbage");orphan.close();
-
-    auto result=scan_music_in_parts(paths,options(),stop,
-        [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
-        scan,save,output,3);
-    assert(result.success && result.saved_part_count==3 && result.requested_track_count==7);
-    assert(result.errors.empty() && invocations==3 && progress_calls==std::vector<std::size_t>({3,6,7}));
-    assert(!QFileInfo::exists(stale));
-    const auto finalized=result.batch_directory;
-    assert(QFileInfo(finalized).isFile() && finalized.endsWith(".brscan"));
-    MusicScanCollectionInfo info;QString diagnostic;
+}
+void verify_complete_collection_members(const QString& finalized,const QStringList& paths,
+                                        MusicScanCollectionInfo& info,QString& diagnostic) {
     assert(inspect_music_scan(finalized,info,diagnostic));
     assert(info.requested_count==7 && info.processed_count==7 &&
            info.failed_count==0 && info.part_count==3);
@@ -141,7 +112,9 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
         ++verified;return true;
     },info,diagnostic));
     assert(verified==3);
-    ProfileDocument corpus_summary;
+}
+void verify_collection_summary(const QString& finalized,MusicScanCollectionInfo& info,
+                                QString& diagnostic,ProfileDocument& corpus_summary) {
     assert(load_music_scan(finalized,corpus_summary,diagnostic));
     assert(corpus_summary.profile.compositions.empty());
     const auto measured=corpus_summary.preserved.value("scan_collection").toObject();
@@ -159,6 +132,9 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
         assert(std::abs(corpus_summary.profile.mean_spectrum[bin]-
             cached.value("mean_spectrum").toArray()[bin].toDouble())<1e-12);
     }
+}
+void verify_uncached_collection(const QString& finalized,const QString& directory,MusicScanCollectionInfo& info,
+                                QString& diagnostic,const ProfileDocument& corpus_summary) {
     const auto raw_parts=directory+"/legacy-check-parts";
     assert(QDir().mkpath(raw_parts));
     QJsonArray raw_descriptors;
@@ -185,15 +161,9 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
         assert(std::abs(uncached.profile.mean_spectrum[bin]-
                         corpus_summary.profile.mean_spectrum[bin])<1e-12);
     }
-    assert(QDir(output).entryList(QDir::Dirs|QDir::NoDotAndDotDot|QDir::Hidden).empty());
-    // Re-running performs fresh analysis; old output is not used or overwritten.
-    progress_calls.clear();
-    const auto repeated=scan_music_in_parts(paths,options(),stop,
-        [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
-        scan,save,output,3);
-    assert(repeated.success && repeated.saved_part_count==3 && invocations==6);
-    assert(repeated.batch_directory!=finalized && progress_calls==std::vector<std::size_t>({3,6,7}));
-    assert(QFileInfo(finalized).isFile() && QFileInfo(repeated.batch_directory).isFile());
+}
+void verify_failed_and_cancelled_scans(const QStringList& paths,const auto& scan,const auto& save,
+                                      const QString& directory,const std::atomic_bool& stop) {
     // A fatal error mid-run must leave no partial parts or committed collection.
     const auto fail_dir=directory+"/failure";
     assert(QDir().mkpath(fail_dir));
@@ -217,6 +187,85 @@ void multi_part_archive_scan(const QString& sample_path,const QString& directory
         scan,save,cancel_dir,3);
     assert(cancelled.cancelled && !cancelled.success && cancelled.saved_part_count==0);
     assert(QDir(cancel_dir).entryList(QDir::AllEntries|QDir::NoDotAndDotDot|QDir::Hidden).empty());
+}
+
+void canonical_scan_counter_roundtrip(const QString& sample_path,const QString& directory) {
+    std::atomic_bool stop=false;
+    auto seed=scan_music_files({sample_path},options(),stop);assert(seed.success);
+    auto& raw=seed.document;
+    raw.preserved.remove("analysis_run");raw.preserved["counts_extension"]="retained";
+    const auto preserved=raw.preserved;
+    const auto path=directory+"/canonical-counts.brscan";QString error;
+    assert(save_music_scan(path,raw,error));
+    ProfileDocument restored;assert(load_music_scan(path,restored,error));
+    const auto defaults=restored.preserved.value("analysis_run").toObject();
+    assert(defaults.value("requested_count").toInt(-1)==1);
+    assert(defaults.value("processed_count").toInt(-1)==1 && defaults.value("failed_count").toInt(-1)==0);
+    assert(restored.preserved.value("counts_extension").toString()==QStringLiteral("retained"));
+    assert(raw.preserved==preserved);
+    raw.preserved["analysis_run"]=QJsonObject{{"requested_count",2},{"processed_count",1},
+        {"failed_count",1},{"errors",QJsonArray{"missing source"}},{"extension","retained"}};
+    assert(save_music_scan(path,raw,error));
+    assert(load_music_scan(path,restored,error));
+    const auto explicit_run=restored.preserved.value("analysis_run").toObject();
+    assert(explicit_run.value("requested_count").toInt(-1)==2 && explicit_run.value("processed_count").toInt(-1)==1);
+    assert(explicit_run.value("failed_count").toInt(-1)==1 && explicit_run.value("extension").toString()==QStringLiteral("retained"));
+    QFile prior(path);assert(prior.open(QIODevice::ReadOnly));const auto bytes=prior.readAll();prior.close();
+    auto contradictory=raw.preserved.value("analysis_run").toObject();contradictory["requested_count"]=3;
+    raw.preserved["analysis_run"]=contradictory;
+    assert(!save_music_scan(path,raw,error) && !error.isEmpty());
+    QFile unchanged(path);assert(unchanged.open(QIODevice::ReadOnly));assert(unchanged.readAll()==bytes);
+}
+
+void multi_part_archive_scan(const QString& sample_path,const QString& directory) {
+    std::atomic_bool initial_stop=false;
+    const auto seed=scan_music_files({sample_path},options(),initial_stop);
+    assert(seed.success);
+    const auto base=seed.document.profile.compositions.front();
+    QStringList paths;
+    for(int i=0;i<7;++i)paths.append(QStringLiteral("source_%1.mp3").arg(i));
+    std::atomic_bool stop=false;
+    std::vector<std::size_t> progress_calls;
+    int invocations=0;
+    const auto scan=[&](const QStringList& batch,const AnalysisOptions&,const std::atomic_bool&,
+                        const AnalysisServices::Progress& progress)->AnalysisResult {
+        return synthetic_scan_batch(seed,base,batch,progress,invocations);
+    };
+    const decltype(AnalysisServices::save_scan) save=[](const QString& path,const ProfileDocument& doc,QString& error) {
+        return save_music_scan(path,doc,error);
+    };
+    const auto output=directory+"/parts";
+    assert(QDir().mkpath(output));
+    // Simulate abandoned data left by a previous hard crash.
+    const auto stale=output+"/.barelief-scan-incomplete-obsolete";
+    assert(QDir().mkpath(stale));
+    QFile orphan(stale+"/orphan.tmp");
+    assert(orphan.open(QIODevice::WriteOnly));
+    orphan.write("garbage");orphan.close();
+
+    auto result=scan_music_in_parts(paths,options(),stop,
+        [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
+        scan,save,output,3);
+    assert(result.success && result.saved_part_count==3 && result.requested_track_count==7);
+    assert(result.errors.empty() && invocations==3 && progress_calls==std::vector<std::size_t>({3,6,7}));
+    assert(!QFileInfo::exists(stale));
+    const auto finalized=result.batch_directory;
+    assert(QFileInfo(finalized).isFile() && finalized.endsWith(".brscan"));
+    MusicScanCollectionInfo info;QString diagnostic;
+    verify_complete_collection_members(finalized,paths,info,diagnostic);
+    ProfileDocument corpus_summary;
+    verify_collection_summary(finalized,info,diagnostic,corpus_summary);
+    verify_uncached_collection(finalized,directory,info,diagnostic,corpus_summary);
+    assert(QDir(output).entryList(QDir::Dirs|QDir::NoDotAndDotDot|QDir::Hidden).empty());
+    // Re-running performs fresh analysis; old output is not used or overwritten.
+    progress_calls.clear();
+    const auto repeated=scan_music_in_parts(paths,options(),stop,
+        [&](std::size_t n,std::size_t total){assert(total==7);progress_calls.push_back(n);},
+        scan,save,output,3);
+    assert(repeated.success && repeated.saved_part_count==3 && invocations==6);
+    assert(repeated.batch_directory!=finalized && progress_calls==std::vector<std::size_t>({3,6,7}));
+    assert(QFileInfo(finalized).isFile() && QFileInfo(repeated.batch_directory).isFile());
+    verify_failed_and_cancelled_scans(paths,scan,save,directory,stop);
 
 }
 void silence(const QString& path) {
@@ -404,10 +453,7 @@ void optional_real_fma_part_23_smoke(const QString& scratch) {
         <<preserved.value("processed_count").toInt()<<" failed="
         <<preserved.value("failed_count").toInt()<<"\n";
 }
-void optional_real_small_collection_cycle() {
-    const auto corpus=qEnvironmentVariable("BARELIEF_E2E_FMA_DIR");
-    const auto output=qEnvironmentVariable("BARELIEF_E2E_OUTPUT_DIR");
-    if(corpus.isEmpty() || output.isEmpty())return;
+static QStringList real_collection_paths(const QString& corpus,const QString& output) {
     assert(QDir(output).exists());
     QStringList paths;
     for(const auto* file:{"000002.mp3","000003.mp3","000005.mp3","000010.mp3",
@@ -423,6 +469,26 @@ void optional_real_small_collection_cycle() {
     {QFile file(damaged);assert(file.open(QIODevice::WriteOnly));
         assert(file.write("invalid MP3",11)==11);}
     paths.append(damaged);
+    return paths;
+}
+static bool verify_real_collection_part(const ProfileDocument& part,std::size_t index,
+                                        std::size_t& chunks,std::size_t& tracks,std::size_t bins) {
+           assert(index==chunks && part.profile.compositions.size()<=4);
+           for(const auto& t:part.profile.compositions){
+               assert(t.peak_spectrum.size()==bins && t.mean_spectrum.size()==bins);
+               assert(dsp_kernels::valid_rms_bands(t));
+               assert(std::all_of(t.peak_spectrum.begin(),t.peak_spectrum.end(),
+                   [](double value){return std::isfinite(value)&&value>=0;}));
+           }
+           tracks+=part.profile.compositions.size();++chunks;
+           return true;
+}
+
+void optional_real_small_collection_cycle() {
+    const auto corpus=qEnvironmentVariable("BARELIEF_E2E_FMA_DIR");
+    const auto output=qEnvironmentVariable("BARELIEF_E2E_OUTPUT_DIR");
+    if(corpus.isEmpty() || output.isEmpty())return;
+    const auto paths=real_collection_paths(corpus,output);
     auto opt=options();opt.workers=2;opt.compatibility.sample_rate=44100;
     const auto alternate=qEnvironmentVariableIntValue("BARELIEF_E2E_FFT");
     if(alternate)opt.compatibility.fft_size=std::size_t(alternate);
@@ -440,15 +506,7 @@ void optional_real_small_collection_cycle() {
     std::size_t chunks=0,tracks=0;
     assert(visit_music_scan_parts(result.batch_directory,
        [&](ProfileDocument&& part,std::size_t index){
-           assert(index==chunks && part.profile.compositions.size()<=4);
-           for(const auto& t:part.profile.compositions){
-               assert(t.peak_spectrum.size()==bins && t.mean_spectrum.size()==bins);
-               assert(dsp_kernels::valid_rms_bands(t));
-               assert(std::all_of(t.peak_spectrum.begin(),t.peak_spectrum.end(),
-                   [](double value){return std::isfinite(value)&&value>=0;}));
-           }
-           tracks+=part.profile.compositions.size();++chunks;
-           return true;
+           return verify_real_collection_part(part,index,chunks,tracks,bins);
        },info,error));
     assert(chunks==3 && tracks==info.processed_count);
     ProfileDocument restored;
@@ -487,6 +545,6 @@ void optional_unified_native_brscan_check() {
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);QTemporaryDir directory;assert(directory.isValid());large_folder_enumeration(directory.path());
     const auto quiet=signal_file(directory.path(),"quiet.wav",1e-8f),zero=signal_file(directory.path(),"zero.wav",0);
-    retained_quiet_measurements(quiet);multi_part_archive_scan(quiet,directory.path());silence(zero);persistence(quiet,directory.path());malformed(quiet);compressed_formats();native_and_fir(directory.path());native_cadence_uses_track_clock(directory.path());quiet_bands_roundtrip(directory.path());corrupted_audio_does_not_invalidate_scan_archive(directory.path());optional_real_fma_part_23_smoke(directory.path());optional_real_small_collection_cycle();optional_unified_native_brscan_check();rms_boundaries();
+    retained_quiet_measurements(quiet);canonical_scan_counter_roundtrip(quiet,directory.path());multi_part_archive_scan(quiet,directory.path());silence(zero);persistence(quiet,directory.path());malformed(quiet);compressed_formats();native_and_fir(directory.path());native_cadence_uses_track_clock(directory.path());quiet_bands_roundtrip(directory.path());corrupted_audio_does_not_invalidate_scan_archive(directory.path());optional_real_fma_part_23_smoke(directory.path());optional_real_small_collection_cycle();optional_unified_native_brscan_check();rms_boundaries();
     std::cout<<"music_scan_tests PASS\n";
 }

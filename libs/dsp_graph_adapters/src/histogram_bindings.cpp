@@ -137,7 +137,7 @@ domain::ProcessingSupport crf_support(const domain::ResolvedProcessingNode& n,co
     std::size_t a=0,b=0,bytes=0,smoothing=0;CrfBeatSequenceConfig c;IntervalHistogramConfig h;domain::ProcessingSupport s;
     if(!input_geometry(n,0,Rank::Vector,a,b) || !crf_config(n,c) || !histogram_geometry(c.tempo.histogram,h) ||
        !truncated_frame_count(c.tempo.activation_smoothing_seconds,c.tempo.histogram.frame_rate,smoothing) || !PreparedCrfBeatSequence::storage_bytes(a,c,factors(n),bytes))return {};
-    const auto count=std::max(a,smoothing)/h.minimum_interval,trials=c.use_factors?factors(n).size():c.num_intervals,peaks=candidate_count(h,c.tempo.interpolate);
+    const auto count=std::max<std::size_t>(1,std::max(a,smoothing)/h.minimum_interval),trials=c.use_factors?factors(n).size():c.num_intervals,peaks=candidate_count(h,c.tempo.interpolate);
     if(!peaks || !output_geometry(n,0,Rank::Vector,count) || !output_geometry(n,1,Rank::Vector,count,1,DType::UInt64) ||
        !output_geometry(n,2,Rank::Vector,trials,1,DType::UInt64) || !output_geometry(n,3,Rank::Vector,trials) || !output_geometry(n,4,Rank::Matrix,peaks,2))return {};
     descriptor_resources(n,p,sizeof(Crf),bytes,s);return s;

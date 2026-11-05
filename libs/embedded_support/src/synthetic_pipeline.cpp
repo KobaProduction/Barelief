@@ -66,8 +66,7 @@ struct GraphComposition {
     Status window(const NumericContract& pcm,NumericContract& output) {
         output=pcm;output.semantic=Semantic::Window;output.shape.extents[0]={profile.fft_size,profile.fft_size};
         auto status=node("Window",&pcm,&output,domain::TransformProcessingParameters{{
-            {"size",NumericLiteral{std::uint64_t{profile.fft_size}}},
-            {"input_rate",NumericLiteral{std::uint64_t{profile.sample_rate}}}}});
+            {"size",NumericLiteral{std::uint64_t{profile.fft_size}}}}});
         if(status!=Status::ok)return status;
         return node("ArrayMultiply",&output,&output,domain::TransformProcessingParameters{});
     }

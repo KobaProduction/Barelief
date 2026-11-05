@@ -237,7 +237,21 @@ constexpr NodeDescriptor nodes[]{
     {NodeKind::FrameStride,"FrameStride",NodeRole::Processor},
     {NodeKind::FeatureAggregate,"FeatureAggregate",NodeRole::Processor},
     {NodeKind::CompactSpectrogramView,"CompactSpectrogramView",NodeRole::Sink,true},
-    {NodeKind::ClassicSpectrogramView,"ClassicSpectrogramView",NodeRole::Sink,true}
+    {NodeKind::ClassicSpectrogramView,"ClassicSpectrogramView",NodeRole::Sink,true},
+    {NodeKind::ArrayReindex,"ArrayReindex",NodeRole::Processor},
+    {NodeKind::TemporalFrameSequence,"TemporalFrameSequence",NodeRole::Processor},
+    {NodeKind::BTrackOnset,"BTrackOnset",NodeRole::Processor},
+    {NodeKind::BTrackHistory,"BTrackHistory",NodeRole::Processor},
+    {NodeKind::BTrackHistoryResample,"BTrackHistoryResample",NodeRole::Processor},
+    {NodeKind::BTrackCombObservation,"BTrackCombObservation",NodeRole::Processor},
+    {NodeKind::BTrackBeatDecision,"BTrackBeatDecision",NodeRole::Processor},
+    {NodeKind::EssentiaOnsetRows,"EssentiaOnsetRows",NodeRole::Processor},
+    {NodeKind::EssentiaInformationRows,"EssentiaInformationRows",NodeRole::Processor},
+    {NodeKind::EssentiaNoveltyRows,"EssentiaNoveltyRows",NodeRole::Processor},
+    {NodeKind::EssentiaErbRows,"EssentiaErbRows",NodeRole::Processor},
+    {NodeKind::EssentiaAgreement,"EssentiaAgreement",NodeRole::Processor},
+    {NodeKind::EssentiaCandidateInputs,"EssentiaCandidateInputs",NodeRole::Processor},
+    {NodeKind::BTrackWindowProduct,"BTrackWindowProduct",NodeRole::Processor}
 };
 static_assert(std::size(nodes)==node_kind_count);
 bool configured_ports_valid(const NodeDefinition& node) noexcept {

@@ -11,8 +11,10 @@ class NumericEngine;
 // belong to a worker event loop; GUI notifications use bounded owning mailboxes.
 class NumericDesktopHost final:public QObject,public EnginePort {
 public:
+ using LocalEngineFactory=std::unique_ptr<NumericEngine> (*)(AudioSourceFactory);
  explicit NumericDesktopHost(AudioSourceFactory={},QString host={},quint16 port=8213,
-     std::optional<desktop::SerialEndpoint> serial={},QObject* parent=nullptr);
+     std::optional<desktop::SerialEndpoint> serial={},QObject* parent=nullptr,
+     LocalEngineFactory local_engine_factory=nullptr);
  ~NumericDesktopHost() override;
  NumericEngine* local_engine() const;
  // Owner-thread local capability check reads the immutable execution profile

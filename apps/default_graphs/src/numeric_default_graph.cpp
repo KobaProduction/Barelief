@@ -224,9 +224,9 @@ void add_startup_spectrum(examples::Builder& b) {
     b.connect(200,332,1,input_sample_rate_input);
     examples::add_window(b,332,2,3,1000,1001,4096);
     b.chain(4,"RealFourier",1001,examples::transform({{"fft_size",NumericLiteral{std::uint64_t{4096}}}}));
-    b.chain(5,"AmplitudePhase",4,examples::transform({{"fft_size",NumericLiteral{std::uint64_t{4096}}},
+    b.add(5,"AmplitudePhase",examples::transform({{"fft_size",NumericLiteral{std::uint64_t{4096}}},
         {"sample_rate",NumericLiteral{std::uint64_t{32768}}}}));
-    b.connect(4,5,1,1);
+    b.connect(4,5,0,0);b.connect(4,5,1,1);b.derive(5);
     b.connect(3,5,0,window_coefficients_input);
     b.connect(332,5,sample_rate_output,target_sample_rate_input);
     examples::add_frequency_step(b,332,1000,1003);

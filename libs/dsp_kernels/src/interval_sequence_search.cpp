@@ -42,14 +42,25 @@ bool PreparedIntervalSequenceSearch::trial(std::span<const float> input,std::siz
     return true;
 }
 bool PreparedIntervalSequenceSearch::process(std::span<const float> input,std::span<const std::size_t> candidates) noexcept {
-    count_=0;trials_=0;
-    if(!minimum_ || candidates.empty() || candidates.size()>intervals_.size())return false;
-    if(!std::all_of(candidates.begin(),candidates.end(),[this](auto interval){return interval>=minimum_ && interval<=maximum_;}))return false;
+    clear_result();
+    if(!minimum_ || candidates.empty() || candidates.size()>intervals_.size())return fail("invalid_candidates");
+    if(!std::all_of(candidates.begin(),candidates.end(),[this](auto interval){return interval>=minimum_ && interval<=maximum_;}))return fail("invalid_candidates");
+    std::fill(scores_.begin(),scores_.end(),-std::numeric_limits<float>::infinity());
     std::copy(candidates.begin(),candidates.end(),intervals_.begin());trials_=candidates.size();
     std::sort(intervals_.begin(),intervals_.begin()+std::ptrdiff_t(trials_),std::greater<>{});
     float best=-std::numeric_limits<float>::infinity();
-    for(std::size_t i=0;i<trials_;++i)trial(input,i,best);
+    for(std::size_t i=0;i<trials_;++i){
+        if(!trial(input,i,best) && decoder_.outcome()!=SequenceDecodeOutcome::NoPath)
+            return fail(decoder_.error_reason()?decoder_.error_reason():"empty_successful_decoder");
+    }
+    outcome_=count_?SequenceDecodeOutcome::Path:SequenceDecodeOutcome::NoPath;error_reason_=nullptr;
     return count_>0;
+}
+void PreparedIntervalSequenceSearch::clear_result() noexcept {
+    count_=0;trials_=0;outcome_=SequenceDecodeOutcome::Error;error_reason_="not_processed";
+}
+bool PreparedIntervalSequenceSearch::fail(const char* reason) noexcept {
+    count_=0;trials_=0;outcome_=SequenceDecodeOutcome::Error;error_reason_=reason;return false;
 }
 }
 

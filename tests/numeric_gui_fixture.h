@@ -13,6 +13,7 @@
 #include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QThread>
+#include <QtGlobal>
 #include <QJsonDocument>
 #include <QMenu>
 #include <QAction>
@@ -25,9 +26,76 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cstdio>
+#include <exception>
 namespace gui_fixture {
+namespace phase_trace {
+inline std::atomic_bool enabled{false};
+inline bool requested() {
+    static const bool value=qEnvironmentVariable("BARELIEF_APP_GUI_DIAGNOSTICS")==QStringLiteral("1");
+    return value;
+}
+class Session {
+    bool previous_;
+public:
+    explicit Session(bool active=true):previous_(enabled.load(std::memory_order_relaxed)) {
+        enabled.store(previous_||(active&&requested()),std::memory_order_relaxed);
+    }
+    ~Session(){enabled.store(previous_,std::memory_order_relaxed);}
+};
+class Scope {
+    const char* name_;
+    int detail_;
+    bool active_;
+    QElapsedTimer clock_;
+public:
+    explicit Scope(const char* name,int detail=-1):name_(name),detail_(detail),active_(enabled.load(std::memory_order_relaxed)) {
+        if(active_){clock_.start();mark("BEGIN");}
+    }
+    ~Scope(){mark("END uncaught_exceptions",std::uncaught_exceptions());}
+    void mark(const char* event,long long result=-1) const {
+        if(!active_)return;
+        std::fprintf(stderr,"APP_PHASE pid=%lld thread=%p phase=%s detail=%d start_ms=%lld elapsed_ms=%lld event=%s result=%lld\n",
+            static_cast<long long>(QCoreApplication::applicationPid()),reinterpret_cast<void*>(QThread::currentThreadId()),name_,detail_,
+            static_cast<long long>(clock_.msecsSinceReference()),static_cast<long long>(clock_.elapsed()),event,result);
+        std::fflush(stderr);
+    }
+    void events() const {
+        mark("processEvents BEGIN");QCoreApplication::processEvents();mark("processEvents END");
+    }
+    template<typename Predicate> bool predicate(const Predicate& condition) const {
+        mark("predicate BEGIN");const bool result=condition();mark("predicate END",int(result));return result;
+    }
+};
+inline auto snapshot(CoreApplication& app) {
+    Scope trace("client.snapshot");
+    auto result=app.presenter().client().snapshot();
+    if(enabled.load(std::memory_order_relaxed)){
+        std::fprintf(stderr,"APP_STATE pid=%lld revision=%llu pending=%d analyzer=%d capture=%d\n",
+            static_cast<long long>(QCoreApplication::applicationPid()),static_cast<unsigned long long>(result.graph_revision),
+            int(app.presenter().graph_request_pending()),int(result.statuses.value("analyzer").state),int(result.statuses.value("capture").state));
+        std::fflush(stderr);
+    }
+    return result;
+}
+struct BeforeApplicationExit {
+    const Scope& scope;
+    ~BeforeApplicationExit(){scope.mark("application teardown BEGIN");}
+};
+inline void frame(const char* phase,int node,const pipeline::DeliveredNumericFrame& delivery,signal_contracts::Status status,
+                  std::uint64_t expected=0,bool expected_known=false) {
+    if(!enabled.load(std::memory_order_relaxed))return;
+    const bool present=bool(delivery.frame),available=present&&delivery.frame.view().stamp.available;
+    const auto sequence=present?delivery.frame.view().stamp.sequence:0;
+    std::fprintf(stderr,"APP_FRAME pid=%lld phase=%s node=%d port=0 query_status=%d delivery_status=%d present=%d available=%d sequence=%llu epoch=%llu revision=%llu expected_revision=%llu expected_known=%d\n",
+        static_cast<long long>(QCoreApplication::applicationPid()),phase,node,int(status),int(delivery.status),int(present),int(available),
+        static_cast<unsigned long long>(sequence),static_cast<unsigned long long>(delivery.delivery.epoch),
+        static_cast<unsigned long long>(delivery.delivery.graph_revision),static_cast<unsigned long long>(expected),int(expected_known));
+    std::fflush(stderr);
+}
+}
 inline void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
-inline bool wait(const std::function<bool()>& condition,int duration=3000){QElapsedTimer clock;clock.start();while(clock.elapsed()<duration){QCoreApplication::processEvents();if(condition())return true;QThread::msleep(3);}return condition();}
+inline bool wait(const std::function<bool()>& condition,int duration=3000){QElapsedTimer clock;clock.start();phase_trace::Scope trace("gui_fixture.wait",duration);while(clock.elapsed()<duration){trace.events();if(trace.predicate(condition))return true;QThread::msleep(3);}return trace.predicate(condition);}
 inline QJsonObject encoded(const domain::NumericProcessingGraph& graph){QByteArray bytes;check(bool(desktop::encode_numeric_graph(graph,bytes)),"encode canonical graph");return QJsonDocument::fromJson(bytes).object();}
 inline void save(const QString& path,const domain::NumericProcessingGraph& graph,QJsonObject ui={}){
     ui["autosave_enabled"]=false;ui["pipeline_auto_apply"]=false;
@@ -104,28 +172,35 @@ struct App {
         window->show();
     }
     void diagnose_startup(bool restart) {
-        const auto snapshot=presenter().client().snapshot();
+        const auto snapshot=phase_trace::snapshot(*application);
         qWarning()<<"GUI fixture startup diagnostic"<<"restart"<<restart<<"revision"<<snapshot.graph_revision
             <<"pending"<<presenter().graph_request_pending()<<"apply"<<presenter().apply_status()
             <<"saved"<<presenter().saved_graph_warning()<<"file"<<presenter().file_protection_warning()
             <<"status"<<window->statusBar()->currentMessage();
     }
     void await_startup(bool restart) {
-        const bool started=wait([&]{return presenter().client().snapshot().graph_revision>0 && !presenter().graph_request_pending();});
+        phase_trace::Scope trace("gui_fixture.startup",int(restart));
+        const bool started=wait([&]{return phase_trace::snapshot(*application).graph_revision>0 && !presenter().graph_request_pending();});
         if(!started)diagnose_startup(restart);
         check(started,"initial continuous graph");
     }
-    explicit App(domain::NumericProcessingGraph configured=numeric_default_graph(),QJsonObject ui={},QByteArray stored={},bool deliver_audio=false) :graph(std::move(configured)) {
-        configure_test_sources();
-        write_project(ui,stored);
+    void construct_application(bool deliver_audio) {
+        phase_trace::Scope trace("gui_fixture.CoreApplication.construct");
         argv={name,option,path.data(),nullptr};
         application=std::make_unique<CoreApplication>(argc,argv.data(),capture_factory(deliver_audio));
+        trace.mark("constructed");
+    }
+    explicit App(domain::NumericProcessingGraph configured=numeric_default_graph(),QJsonObject ui={},QByteArray stored={},bool deliver_audio=false) :graph(std::move(configured)) {
+        phase_trace::Scope trace("gui_fixture.App.construct");
+        configure_test_sources();
+        write_project(ui,stored);
+        construct_application(deliver_audio);
         configure_discovery();
         show_window();
         await_startup(!stored.isEmpty());
     }
     GuiPresenter& presenter(){return application->presenter();}
-    void apply(){const auto before=presenter().client().snapshot().graph_revision;presenter().apply_pipeline_graph(editor->document());check(wait([&]{return presenter().client().snapshot().graph_revision>before && presenter().applied_numeric_graph().has_value();}),"explicit Apply");}
+    void apply(){phase_trace::Scope trace("gui_fixture.Apply");const auto before=phase_trace::snapshot(*application).graph_revision;trace.mark("request BEGIN");presenter().apply_pipeline_graph(editor->document());trace.mark("request END");check(wait([&]{return phase_trace::snapshot(*application).graph_revision>before && presenter().applied_numeric_graph().has_value();}),"explicit Apply");}
     WorkspaceDock* dock(const QString& name){auto* value=window->workspaceDock(name);check(value,"named dock missing");return value;}
     std::unique_ptr<QMenu> graph_menu(int node) const {
         auto* scene=editor->findChild<QtNodes::DataFlowGraphicsScene*>();
@@ -186,6 +261,7 @@ struct App {
         QCoreApplication::processEvents();
     }
     WorkspaceDock* open(int node,int placement,std::optional<unsigned> port={}){
+        phase_trace::Scope trace("gui_fixture.open",node);
         auto menu=graph_menu(node);
         auto* action=graph_action(*menu,node,placement,port);
         const auto before=current_docks();
@@ -199,7 +275,7 @@ struct App {
         if(port && placement!=1 && action->objectName().startsWith("openGraphPort"))set_created_placement(*created,placement);
         return created;
     }
-    ~App(){application.reset();}
+    ~App(){phase_trace::Scope trace("gui_fixture.application.reset");application.reset();}
 };
 constexpr signal_contracts::FrameLimits frame_limits{8,32768,262144,16384,256,8192};
 struct Arena {

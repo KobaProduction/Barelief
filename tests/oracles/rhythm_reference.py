@@ -17,6 +17,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 import json
 import math
+import struct
 import sys
 from typing import Any, Literal, Optional
 
@@ -24,6 +25,23 @@ Status = Literal["determined", "ambiguous", "unknown"]
 Mode = Literal["fixed-light", "fixed-full", "gated"]
 KIND = {"bass-like", "snare-like", "clap-like", "hat-like", "unknown"}
 MODES = ("fixed-light", "fixed-full", "gated")
+
+
+def f32(value: float) -> float:
+    """Round analytical values to the public Float32 processing contract."""
+    return struct.unpack("=f", struct.pack("=f", value))[0]
+
+
+def sum32(values) -> float:
+    total = 0.0
+    for value in values:
+        total = f32(total + value)
+    return total
+
+
+def round32(value: float, digits: int) -> float:
+    factor = f32(10 ** digits)
+    return f32(round(f32(f32(value) * factor)) / factor)
 
 
 def require(condition: bool, message: str) -> None:
@@ -51,7 +69,7 @@ class AccentCandidate:
     def parse(cls, o: dict[str, Any]) -> "AccentCandidate":
         require(isinstance(o, dict), "event_candidates item must be object")
         t = finite(o["t_obs"], "event.t_obs")
-        s = finite(o["strength"], "event.strength")
+        s = f32(finite(o["strength"], "event.strength"))
         require(0 <= s <= 1, "event.strength outside [0,1]")
         kind = str(o.get("kind", "unknown"))
         require(kind in KIND, "unsupported event kind")
@@ -147,6 +165,14 @@ class MethodConfig:
     relock_primary_period_tolerance: float = 0.025
 
     def __post_init__(self) -> None:
+        # Time coordinates/durations stay Double; analytical thresholds are Float32.
+        for key in ("min_bpm", "max_bpm", "onset_threshold", "score_threshold",
+                    "score_margin", "phase_threshold", "octave_accent_min",
+                    "octave_accent_margin", "accent_phase_tolerance", "accent_min_strength",
+                    "subdivision_min_strength", "change_stability_relative",
+                    "change_separation_relative", "change_min_strong_strength",
+                    "phase_innovation_tolerance_fraction", "relock_primary_period_tolerance"):
+            object.__setattr__(self, key, f32(getattr(self, key)))
         require(self.feature_rate_fps in (30, 45, 60), "frame rate must use R4 profile 30/45/60")
         require(self.history_frames == 512, "R4 ring must be 512 frames")
         require(self.acf_min_frames >= 12 and self.acf_window >= self.acf_min_frames, "invalid ACF windows")
@@ -200,18 +226,18 @@ def acf_scores(values: list[float], fr: int, lo_bpm: float, hi_bpm: float
     lmax = min(L-8, math.floor(60*fr/lo_bpm))
     if L < 12 or lmax < lmin:
         return {}, 0
-    av = sum(values)/L
-    v = [x-av for x in values]
+    av = f32(sum32(values)/f32(L))
+    v = [f32(x-av) for x in values]
     out: dict[float, float] = {}
     ops = 0
     for lag in range(lmin, lmax+1):
         a, b = v[lag:], v[:L-lag]
-        dot = sum(x*y for x,y in zip(a,b))
-        aa,bb = sum(x*x for x in a), sum(x*x for x in b)
+        dot = sum32(f32(x*y) for x,y in zip(a,b))
+        aa,bb = sum32(f32(x*x) for x in a), sum32(f32(x*x) for x in b)
         ops += L-lag
-        if aa > 1e-18 and bb > 1e-18:
-            rho = max(-1., min(1.,dot / math.sqrt(aa*bb)))
-            out[round(60*fr/lag, 3)] = max(0.,rho)
+        if aa > f32(1e-18) and bb > f32(1e-18):
+            rho = max(0., min(1.,f32(dot / f32(math.sqrt(f32(aa*bb))))))
+            out[round32(f32(f32(60*fr)/f32(lag)), 3)] = rho
     return out,ops
 
 
@@ -219,12 +245,14 @@ def phase_fit(times: list[float], period: float) -> tuple[Optional[float], float
     if len(times)<2 or period <= 0:
         return None, 0.0
     t0 = times[0]
-    re=sum(math.cos(2*math.pi*(t-t0)/period) for t in times)
-    im=sum(math.sin(2*math.pi*(t-t0)/period) for t in times)
-    r=math.hypot(re,im)/len(times)
-    if r < 1e-12:
+    tau=f32(2*f32(math.pi))
+    angles=[f32(tau*f32((t-t0)/period)) for t in times]
+    re=sum32(f32(math.cos(angle)) for angle in angles)
+    im=sum32(f32(math.sin(angle)) for angle in angles)
+    r=f32(f32(math.hypot(re,im))/f32(len(times)))
+    if r < f32(1e-12):
         return None, 0.0
-    phase=(t0+math.atan2(im,re)*period/(2*math.pi)) % period
+    phase=(t0+f32(math.atan2(im,re))*period/(2*math.pi)) % period
     return phase, min(1.0,r)
 
 
@@ -235,8 +263,8 @@ def ioi_support(times: list[float], period: float) -> float:
     for a,b in zip(times,times[1:]):
         dt=b-a
         nearest=max(1,round(dt/period))
-        residual.append(max(0.0,1.0 - abs(dt-nearest*period)/(0.18*period)))
-    return sum(residual)/len(residual) if residual else 0.0
+        residual.append(max(0.0,f32(1.0-f32(abs(dt-nearest*period)/(0.18*period)))))
+    return f32(sum32(residual)/f32(len(residual))) if residual else 0.0
 
 
 def candidate_periods(times: list[float], min_bpm: float, max_bpm: float
@@ -328,16 +356,16 @@ def hierarchy_evidence(events: list[AccentCandidate], period: float,
         return result
     tol=cfg.accent_phase_tolerance*period
     occupied=sum(1 for tick in ticks if any(abs(t-tick)<=tol for t in st))
-    coverage=occupied/len(ticks)
+    coverage=f32(occupied/len(ticks))
     off=sum(1 for t in wt
             if abs((t-phase-period/2+period/2)%period-period/2)<=tol)
-    weak_offbeat=off/len(wt)
-    score=min(1.,max(0.,.5*fit+.3*coverage+.2*weak_offbeat))
-    result.update({"available":True,"score":round(score,6),
+    weak_offbeat=f32(f32(off)/f32(len(wt)))
+    score=min(1.,max(0.,f32(f32(f32(.5*fit)+f32(f32(.3)*coverage))+f32(f32(.2)*weak_offbeat))))
+    result.update({"available":True,"score":round32(score,6),
                    "strong_phase_s":round(phase,8),
-                   "strong_fit":round(fit,6),
-                   "strong_coverage":round(coverage,6),
-                   "weak_offbeat":round(weak_offbeat,6),
+                   "strong_fit":round32(fit,6),
+                   "strong_coverage":round32(coverage,6),
+                   "weak_offbeat":round32(weak_offbeat,6),
                    "strong_count":len(st),"subdivision_count":len(wt),
                    "provenance_groups":sorted(sg|wg),"reason":None})
     return result
@@ -725,12 +753,14 @@ class RhythmReference:
     def _feature_flux(self, f: FrameInput) -> tuple[float,list[float],float]:
         if self.features is None:
             return 0.,[0.0]*len(f.features),0.
-        contributions=[max(0,cur-old)/255 for cur,old in zip(f.features,self.features)]
+        current=[f32(cur/255) for cur in f.features]
+        previous=[f32(old/255) for old in self.features]
+        contributions=[max(0.,f32(cur-old)) for cur,old in zip(current,previous)]
         # Relative contrast is a separate acoustic-onset heuristic; the
         # original mean flux remains the same-input ACF time series.
-        onset_contrast=sum(contributions)*255/max(
-            1,sum(f.features),sum(self.features))
-        return sum(contributions)/len(contributions),contributions,onset_contrast
+        positive=sum32(contributions)
+        onset_contrast=f32(positive/max(f32(1/255),sum32(current),sum32(previous)))
+        return f32(positive/f32(len(contributions))),contributions,onset_contrast
 
     def _potential_acf_ops(self) -> int:
         L=min(self.cfg.acf_window,len(self.flux_history))
@@ -774,7 +804,7 @@ class RhythmReference:
                 # Source-derived IOI and ACF belong to the SAME spectral
                 # evidence group; do not count them as independent votes.
                 per_group[group]=max(io,ac) if group=="spectral-onset" else io
-            support=sum(per_group.values())/len(per_group) if per_group else 0.
+            support=f32(sum32(per_group.values())/f32(len(per_group))) if per_group else 0.
             if active:
                 best_phase=sorted(
                     (phase_fit(gt,period)[1],phase_fit(gt,period)[0],group)
@@ -795,11 +825,11 @@ class RhythmReference:
             else:
                 old_bpm,old_t=self.last_determined
                 temporal_penalty=(0. if t_now-old_t>self.cfg.max_age_s else
-                                  min(.1,.1*abs(bpm-old_bpm)/max(1,old_bpm)))
+                                  min(f32(.1),f32(f32(.1)*f32(f32(abs(bpm-old_bpm))/max(1.,old_bpm)))))
             # A candidate with incoherent observed phases loses support, but
             # even coherent phase cannot establish the musical tactus.
-            phase_penalty=0.1*(1-r) if phase is not None else 0.0
-            rank=max(0.,support-temporal_penalty-phase_penalty)
+            phase_penalty=f32(f32(.1)*f32(1-r)) if phase is not None else 0.0
+            rank=max(0.,f32(f32(support-temporal_penalty)-phase_penalty))
             accent=hierarchy_evidence(list(self.typed_events),period,self.cfg,t_now)
             # Distinguish a candidate's most coherent observed phase from a
             # causal candidate for the tactus. High-hat coherence is not an
@@ -818,25 +848,25 @@ class RhythmReference:
             subphase,subfit=phase_fit(w_times,period)
             phase_candidates={
                 "tactus_phase_s":anchor,
-                "tactus_support":round(sf,6) if anchor is not None else None,
+                "tactus_support":round32(sf,6) if anchor is not None else None,
                 "tactus_t_obs":max(s_times,default=None) if anchor is not None else None,
                 "subdivision_phase_s":None if subphase is None else round(subphase,8),
-                "subdivision_support":round(subfit,6) if subphase is not None else None,
+                "subdivision_support":round32(subfit,6) if subphase is not None else None,
                 "subdivision_t_obs":max(w_times,default=None) if subphase is not None else None,
                 "generic_phase_s":None if phase is None else round(phase,8),
                 "generic_provenance_group":phase_group,
                 "anchor_kind":"typed-salient-onset" if anchor is not None else None,
             }
             ranking.append({
-                "bpm":round(bpm,4),"period_s":period,
-                "score":round(rank,6),
+                "bpm":round32(bpm,4),"period_s":period,
+                "score":round32(rank,6),
                 "accent_discriminator":accent,
                 "phase_candidates":phase_candidates,
-                "ioi_support":round(io_best,6),"acf_support":round(ac,6),
-                "group_support":{k:round(v,6) for k,v in sorted(per_group.items())},
+                "ioi_support":round32(io_best,6),"acf_support":round32(ac,6),
+                "group_support":{k:round32(v,6) for k,v in sorted(per_group.items())},
                 "phase_s":None if phase is None else round(phase,8),
-                "phase_support":round(r,6),"phase_provenance_group":phase_group,
-                "phase_penalty":round(phase_penalty,6),
+                "phase_support":round32(r,6),"phase_provenance_group":phase_group,
+                "phase_penalty":round32(phase_penalty,6),
                 "t_obs":support_t_obs,
                 "phase_t_obs":phase_t_obs,
                 "age_s":max(0.,t_now-support_t_obs) if support_t_obs is not None else None,

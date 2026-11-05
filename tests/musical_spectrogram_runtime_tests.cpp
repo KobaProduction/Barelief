@@ -268,7 +268,7 @@ void derive_independent_rows(ConfiguredProcessingNode& broad,ConfiguredProcessin
         const PortId count=row==&broad?1:4;for(PortId p=0;p<count;++p)row->outputs.push_back({p,PortDirection::Output,outputs[p]});check(attach_numeric_parameter_ports(*row,limits)==Status::ok,"attach explicit step to each independent row");}
 }
 ConfiguredProcessingNode independent_history_node(NodeId id,const OwnedProcessingContract& value){
-        auto c=std::get<NumericContract>(value.view());auto output=c;output.history_element=c.semantic;output.semantic=Semantic::History;output.shape={Rank::Matrix,{Axis::Time,Axis::Band},{ExtentBounds{0,8},c.shape.extents[0]}};output.coordinates[1]=c.coordinates[0];output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
+        auto c=std::get<NumericContract>(value.view());auto output=c;output.history_element=c.semantic;output.semantic=Semantic::History;output.shape={Rank::Matrix,{Axis::Time,c.shape.axes[0]},{ExtentBounds{0,8},c.shape.extents[0]}};output.coordinates[1]=c.coordinates[0];output.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{1,1}};
         auto count=c;count.shape={};count.coordinates={};count.dtype=DType::UInt64;count.semantic=Semantic::Scalar;count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;count.representation.alignment=alignof(std::uint64_t);
         ConfiguredProcessingNode h;h.id=id;h.kind="Spectrogram";h.parameters=HistoryProcessingParameters{8};h.inputs={{0,PortDirection::Input,value}};h.outputs={{0,PortDirection::Output,own(output)},{1,PortDirection::Output,own(count)}};return h;
     }

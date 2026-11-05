@@ -1,0 +1,28 @@
+{
+  "repository": "MTG/essentia",
+  "revision": "b9fa6cb674ca43dfb94d28d293aeda441c6745db",
+  "upstream_path": "src/3rdparty/kiss_fft130",
+  "upstream_project": "KISS FFT130, Mark Borgerding",
+  "license": "BSD-3-Clause, retained COPYING and source notices",
+  "raw_files_sha256": {
+    "kiss_fft.c": "f5d910af5294857807174e4eec2b30da3ac37bea8cab4cf0f15dfd4ba933ff31",
+    "kiss_fft.h": "9cb0822143fb16b421ebcfba6f2e967d2363fc20c4dd1287b81cb8b517eea607",
+    "_kiss_fft_guts.h": "6cb852500622172409927f3c1f7e83166aa94a842953a50c5be5af793913fd6c",
+    "tools/kiss_fftr.c": "00e59d0ace7f8f4a994ff52c643e2acfe467c3dcad0074d9e4cedb9410ed6ce5",
+    "tools/kiss_fftr.h": "7e0b08c9e3238e06f63328973ebe0f1c2b620a77e8ef2a7e6ee9ba902e0bfa6e",
+    "COPYING": "ddd1400f963747b305bfa39e21206e58805a1c650451e2ee5ce81ed86bc0b1ab"
+  },
+  "prepared_storage_variant": {
+    "paths": [
+      "kiss_fft.c",
+      "_kiss_fft_guts.h"
+    ],
+    "files_sha256": {
+      "kiss_fft.c": "d9ad4f3e1f0e86845f51b110c0c3549efd7510439a231067404bbc9e940b6e09",
+      "_kiss_fft_guts.h": "03e633608086680f0b209dbf4568f5ee4326776c0dd51aacaee79357934965e2"
+    },
+    "purpose": "Plan-owned scratch sized by maximum radix of existing cold kf_factor; all generic butterfly arithmetic unchanged. Child recursion finishes before parent butterfly scratch use. Admission bounded by N<=min(configured cap,16384), real even N>=2/complex N>=1; out-of-place only. No generic hot allocation, TLS or shared scratch.",
+    "exact_diff": "--- pinned-raw/kiss_fft.c\n+++ prepared-storage/kiss_fft.c\n@@ -208,7 +208,7 @@\n     kiss_fft_cpx t;\n     int Norig = st->nfft;\n \n-    kiss_fft_cpx * scratch = (kiss_fft_cpx*)KISS_FFT_TMP_ALLOC(sizeof(kiss_fft_cpx)*p);\n+    kiss_fft_cpx * scratch = st->generic_scratch;\n \n     for ( u=0; u<m; ++u ) {\n         k=u;\n@@ -231,7 +231,7 @@\n             k += m;\n         }\n     }\n-    KISS_FFT_TMP_FREE(scratch);\n+\n }\n \n static\n@@ -339,8 +339,18 @@\n kiss_fft_cfg kiss_fft_alloc(int nfft,int inverse_fft,void * mem,size_t * lenmem )\n {\n     kiss_fft_cfg st=NULL;\n-    size_t memneeded = sizeof(struct kiss_fft_state)\n-        + sizeof(kiss_fft_cpx)*(nfft-1); /* twiddle factors*/\n+    int factors[2*MAXFACTORS], at=0, maximum_radix=1;\n+    size_t memneeded;\n+    if (nfft <= 0) return NULL;\n+    kf_factor(nfft,factors);\n+    do {\n+        if (factors[at] > maximum_radix) maximum_radix = factors[at];\n+        at += 2;\n+    } while (factors[at-1] > 1);\n+    if ((size_t)(nfft-1) > ((size_t)-1 - sizeof(struct kiss_fft_state))/sizeof(kiss_fft_cpx)) return NULL;\n+    memneeded = sizeof(struct kiss_fft_state) + sizeof(kiss_fft_cpx)*(nfft-1);\n+    if ((size_t)maximum_radix > ((size_t)-1 - memneeded)/sizeof(kiss_fft_cpx)) return NULL;\n+    memneeded += sizeof(kiss_fft_cpx)*(size_t)maximum_radix;\n \n     if ( lenmem==NULL ) {\n         st = ( kiss_fft_cfg)KISS_FFT_MALLOC( memneeded );\n@@ -362,7 +372,8 @@\n             kf_cexp(st->twiddles+i, phase );\n         }\n \n-        kf_factor(nfft,st->factors);\n+        memcpy(st->factors,factors,at*sizeof(int));\n+        st->generic_scratch = st->twiddles + nfft;\n     }\n     return st;\n }\n--- pinned-raw/_kiss_fft_guts.h\n+++ prepared-storage/_kiss_fft_guts.h\n@@ -29,6 +29,7 @@\n     int nfft;\n     int inverse;\n     int factors[2*MAXFACTORS];\n+    kiss_fft_cpx * generic_scratch;\n     kiss_fft_cpx twiddles[1];\n };\n \n"
+  },
+  "public_C_symbols": "private adapter build prefixes all8public KISS functions; independent originals are linked in separate executables"
+}

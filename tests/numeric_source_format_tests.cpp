@@ -58,6 +58,7 @@ void incompatible_route_is_atomic(){
     QByteArray before,after;require(bool(desktop::encode_numeric_graph(graph,before)),"serialize incompatible draft before discovery");
     QString error;require(!desktop::resolve_numeric_source_format(graph,13,44100,1,limits,&error),"incompatible scalar-to-FFT route must refuse reconciliation");
     require(!error.isEmpty(),"incompatible route gives reason");
+    require(error.contains("node 31") && error.contains("port 0"),"route refusal identifies the incompatible target");
     require(desktop::encode_numeric_graph(graph,after) && before==after,"refused native format changed the draft");
 }
 NumericProcessingGraph connected_native_outputs() {

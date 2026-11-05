@@ -157,6 +157,7 @@ constexpr ParameterDescriptor histogram[]{
     {"comb_alpha",C::Processing,V::NumericArray,0,0,0,{}},
     {"activation_smoothing_seconds",C::Processing,V::Number,0,3600,.14,{}},
     {"histogram_smoothing",C::Processing,V::Integer,0,65536,9,{}},
+    {"precision",C::Processing,V::Integer,0,1,0,{}},
     {"interpolate",C::Processing,V::Boolean,0,1,0,{}},
     {"smooth_state_model_activations",C::Processing,V::Boolean,0,1,0,{}},
     {"activation_kernel",C::Processing,V::NumericArray,0,0,0,{}},
@@ -235,9 +236,9 @@ constexpr auto pattern_params=select(model,std::array{"model"sv,"frame_rate"sv})
 constexpr auto model_key=select(model,std::array{"model"sv});
 constexpr auto histogram_base=select(histogram,std::array{"method"sv,"frame_rate"sv,"minimum_bpm"sv,"maximum_bpm"sv,"history_seconds"sv,"alpha"sv,"channels"sv,"transition_lambda"sv,"observation_lambda"sv,"transition_floor"sv,"num_intervals"sv,"fixed_interval"sv});
 constexpr auto histogram_params=join(histogram_base,select(histogram,std::array{"online"sv,"reset_state"sv,"comb_alpha"sv}));
-constexpr auto analysis_params=join(histogram_params,select(histogram,std::array{"activation_smoothing_seconds"sv,"histogram_smoothing"sv,"interpolate"sv,"smooth_state_model_activations"sv,"activation_kernel"sv,"histogram_kernel"sv}));
+constexpr auto analysis_params=join(histogram_params,select(histogram,std::array{"activation_smoothing_seconds"sv,"histogram_smoothing"sv,"interpolate"sv,"smooth_state_model_activations"sv,"activation_kernel"sv,"histogram_kernel"sv,"precision"sv}));
 constexpr auto tracking_params=join(histogram_base,select(histogram,std::array{"activation_smoothing_seconds"sv,"histogram_smoothing"sv,"look_aside"sv,"look_ahead_seconds"sv,"variable_tempo"sv}));
-constexpr auto crf_params=join(histogram_base,select(histogram,std::array{"activation_smoothing_seconds"sv,"histogram_smoothing"sv,"interpolate"sv,"smooth_state_model_activations"sv,"interval_sigma"sv,"use_factors"sv,"num_candidates"sv,"factors"sv}));
+constexpr auto crf_params=join(histogram_base,select(histogram,std::array{"activation_smoothing_seconds"sv,"histogram_smoothing"sv,"interpolate"sv,"smooth_state_model_activations"sv,"interval_sigma"sv,"use_factors"sv,"num_candidates"sv,"factors"sv,"precision"sv}));
 constexpr auto beat_state_params=select(state,std::array{"frame_rate"sv,"minimum_bpm"sv,"maximum_bpm"sv,"transition_lambda"sv,"observation_lambda"sv,"transition_floor"sv,"activation_threshold"sv,"num_intervals"sv,"correct"sv,"fixed_interval"sv,"online"sv,"reset_state"sv});
 constexpr auto downbeat_params=[] {auto p=select(state,std::array{"model"sv,"frame_rate"sv,"observation_lambda"sv,"activation_threshold"sv,"correct"sv});p[3].default_number=.05;return p;}();
 constexpr auto bar_params=select(state,std::array{"model"sv,"observation_weight"sv,"meter_change_probability"sv});

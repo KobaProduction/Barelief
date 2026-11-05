@@ -3,6 +3,13 @@
 #include <core_app/scheme_editor/editor_widget.h>
 #include <core_app/scheme_editor/numeric_editor_model.h>
 #include <core_app/numeric_default_graph.h>
+#ifdef BARELIEF_RHYTHM_REFERENCE_GUI
+#include <core_app/numeric_reference_graphs.h>
+#include <core_app/numeric_btrack_reference_graph.h>
+#include <core_app/numeric_essentia_reference_graph.h>
+#include <core_app/numeric_madmom_reference_graph.h>
+#include <array>
+#endif
 #include <core_app/resampler_comparison_dialog.h>
 #include <core_app/music_analysis_dialog.h>
 #include <core_app/analysis_services.h>
@@ -63,6 +70,19 @@ void CoreApplication::_populate_example_menu(SchemeEditorWidget* editor) {
     for(const auto* id:{"defaultPipeline","generatorLoopbackPreset","useTestSource"})if(auto* old=menu->findChild<QAction*>(id))old->setVisible(false);
     auto* anchor=menu->findChild<QAction*>("loadActivePipeline");
     for(auto example:numeric_example_graphs())_add_example_action(menu,anchor,editor,std::move(example));
+#ifdef BARELIEF_RHYTHM_REFERENCE_GUI
+    if(_remote_host.isEmpty()){
+        auto* reference=new QMenu(ui::text("Rhythm references"),menu);
+        reference->setObjectName("rhythmReferencePresetsMenu");
+        ui::bind(reference,"title","Rhythm references");
+        menu->insertMenu(anchor,reference);
+        std::array presets{
+            numeric_aubio_reference_example(),numeric_btrack_reference_example(),
+            numeric_madmom_reference_example(48000,MadmomReferenceMode::Crf),
+            numeric_essentia_reference_example(EssentiaReferenceMethod::MultiFeature)};
+        for(auto& example:presets)_add_example_action(reference,nullptr,editor,std::move(example));
+    }
+#endif
 }
 void CoreApplication::_add_example_action(QMenu* menu,QAction* anchor,SchemeEditorWidget* editor,NumericExampleGraph example) {
     auto* action=new QAction(ui::text(example.title_key),menu);menu->insertAction(anchor,action);

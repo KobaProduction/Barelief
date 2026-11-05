@@ -201,29 +201,14 @@ static void exercise_coordinate_free_preset(ActionContext& context,QtNodes::Node
     require(context.graph->nodeData(converter,QtNodes::NodeRole::Position).toPointF()==QPointF(300,400),
             "Preset arrange repeats after user move");
 }
-static void verify_stereo_graph(const domain::NumericProcessingGraph& stereo){
-    const auto selector=std::find_if(stereo.nodes.begin(),stereo.nodes.end(),
-        [](const auto& node){return node.kind=="InputSelector";});
-    require(selector!=stereo.nodes.end() && selector->outputs.size()==3 && selector->inputs.size()==9,
-            "Stereo example must expose two mono outputs plus Fs and three groups of mono/Fs inputs");
-    for(domain::PortId input=0;input<9;++input)
-        require(std::count_if(stereo.edges.begin(),stereo.edges.end(),[&](const auto& edge){
-            return edge.to==selector->id && edge.input_port==input;
-        })==1,"Stereo example lost a routed selector input");
-    std::size_t generators=0;
-    for(const auto& node:stereo.nodes)if(node.kind=="SignalGenerator"){
-        ++generators;require(node.outputs.size()==2 &&
-            domain::has_configuration_binding(stereo,node.id,domain::ConfigurationRole::SampleClock),
-            "Stereo example generator lacks mono data/Fs outputs or SampleClock binding");
-    }
-    require(generators==2,"Stereo example requires two independent mono generators");
-}
-static void verify_stereo_example(ActionContext& context,quint64 initialRevision,QSignalSpy& applied){
-    trigger(context.window,"example-stereo-sources");
-    require(wait_until([&]{return context.graph->allNodeIds().size()>=10 &&
+static void verify_basic_example(ActionContext& context,quint64 initialRevision,QSignalSpy& applied){
+    emit context.editor->generator_loopback_graph_requested();
+    require(wait_until([&]{return context.graph->allNodeIds().size()==3 &&
             context.graph->nodeData(2,QtNodes::NodeRole::Position).toPointF()!=QPointF{};}),
             "Actual stereo example action did not arrange graph");
-    verify_stereo_graph(context.graph->numeric_graph());
+    const auto& basic=context.graph->numeric_graph();
+    require(basic.nodes.size()==3 && basic.edges.size()==2 && basic.nodes[0].kind=="SignalGenerator",
+            "Basic example must contain generator, generic window and line view");
     const auto position=context.graph->nodeData(2,QtNodes::NodeRole::Position).toPointF();
     context.editor->hide();context.editor->show();QCoreApplication::processEvents();
     require(context.graph->nodeData(2,QtNodes::NodeRole::Position).toPointF()==position,
@@ -255,7 +240,7 @@ static void run_action_oracles(CoreApplication& app){
     exercise_route_delete(context,nodes);
     exercise_saved_preset(context,nodes);
     exercise_coordinate_free_preset(context,nodes.converter);
-    verify_stereo_example(context,initialRevision,applied);
+    verify_basic_example(context,initialRevision,applied);
 }
 int main(int argc,char** argv){
     if(!test_fixture::isolated_gui_platform())return 2;

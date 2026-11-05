@@ -1,0 +1,110 @@
+#include <dataflow_runtime/runtime.h>
+#include <domain/graph/node_factory.h>
+#include <dsp_kernels/window_math.h>
+#include "numeric_test_builders.h"
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <new>
+#include <numbers>
+namespace {
+using namespace signal_contracts;using namespace domain;using namespace dataflow_runtime;
+constexpr std::size_t count=8;
+constexpr FrameLimits bounds{1,32768,262144,16384,256,32768};
+std::size_t allocations=0;
+void check(bool value,const char* message){if(!value){std::fprintf(stderr,"FAIL precise frontend: %s\n",message);std::exit(1);}}
+NumericRuntimeProfile profile(){
+    NumericRuntimeProfile value{{32,64,8,32,1048576,4*1048576,bounds},{{4*1048576,4*1048576,4*1048576,131072},0,32*1048576},{32768,1,262144,262144,1048576},{true,true,true}};
+    value.music_enabled=true;return value;
+}
+ProcessingPort port(PortDirection direction,PortId id,const NumericContract& value){return numeric_test_builders::port(id,direction,value,bounds,65536,check,"own port");}
+NumericContract samples(){
+    static constexpr std::uint32_t mono=0;NumericContract value;
+    value.channel_order={&mono,1};value.clock={"values",{1,1},0};value.representation.alignment=alignof(float);
+    value.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{count,count},ExtentBounds{}}};return value;
+}
+ConfiguredProcessingNode coefficients(const ConfiguredProcessingNode& size){
+    ConfiguredProcessingNode node;check(bool(make_processing_node("WindowFunction",3,profile().admission,node)),"window factory");
+    node.parameters=TransformProcessingParameters{{{"function",std::string("hann")},{"size",NumericLiteral{std::uint64_t(count)}},{"precision",NumericLiteral{std::uint64_t(1)}}}};
+    node.inputs[0].contract=size.outputs[0].contract;
+    check(bool(derive_processing_node_contracts(node,profile().admission)),"Float64 window derivation");return node;
+}
+NumericProcessingGraph definition(){
+    const auto input=samples();
+    auto source=numeric_test_builders::node(1,"NetworkInput",EndpointProcessingParameters{}, {},{port(PortDirection::Output,0,input)});
+    ConfiguredProcessingNode size;check(bool(make_processing_node("UInt32Constant",4,profile().admission,size,{48000,count,256,32})),"size factory");
+    auto window=coefficients(size);
+    ConfiguredProcessingNode product;product.id=6;product.kind="ArrayMultiply";product.parameters=TransformProcessingParameters{};
+    product.inputs={port(PortDirection::Input,0,input),{1,PortDirection::Input,window.outputs[0].contract}};
+    OwnedProcessingContract output;check(array_product_output_contract(product,output)==Status::ok,"mixed product contract");product.outputs={{0,PortDirection::Output,output}};
+    ConfiguredProcessingNode fft;fft.id=2;fft.kind="RealFourier";fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t(count)}}}};
+    fft.inputs={{0,PortDirection::Input,output}};std::vector<OwnedProcessingContract> spectra;
+    check(fourier_output_contracts(fft,std::get<NumericContract>(output.view()),spectra)==Status::ok,"Double FFT contracts");
+    for(PortId id=0;id<spectra.size();++id)fft.outputs.push_back({id,PortDirection::Output,spectra[id]});
+    return numeric_test_builders::graph("precise-frontend",{1,120},{source,size,window,product,fft},
+        {numeric_test_builders::edge(4,0,3,0),numeric_test_builders::edge(3,0,6,1),numeric_test_builders::edge(1,0,6,0),numeric_test_builders::edge(6,0,2,0)});
+}
+struct Seen {
+    std::array<double,count> window{},product{};std::array<float,4> real{};std::array<float,3> imaginary{};
+    float dc=0;std::size_t fft_ports=0;
+    static void output(void* user,const NumericPortFrameView& event){
+        if(event.direction!=PortDirection::Output || event.status==Status::unavailable)return;
+        if(event.identity.node!=3 && event.identity.node!=6 && event.identity.node!=2)return;
+        auto& seen=*static_cast<Seen*>(user);check(event.status==Status::ok,"available stage status");
+        const auto& value=std::get<NumericView>(event.frame.payload);
+        if(event.identity.node==2){seen.spectrum(event.identity.port,value);return;}
+        check(value.contract->dtype==DType::Float64,"Double coefficient/product publication");
+        auto& destination=event.identity.node==3?seen.window:seen.product;
+        for(std::size_t i=0;i<count;++i)check(load_element(value,{0,i,0},destination[i])==Status::ok,"Double stage value");
+    }
+    void spectrum(PortId port,const NumericView& value){
+        check(value.contract->dtype==DType::Float32,"single Float32 FFT boundary");
+        check(value.actual[0]==(port==0?4u:port==1?3u:1u),"compact real FFT shape");
+        for(std::size_t i=0;i<value.actual[0];++i){
+            float sample=0;check(load_element(value,{0,i,0},sample)==Status::ok,"Float32 spectrum load");
+            if(port==0)real[i]=sample;else if(port==1)imaginary[i]=sample;else dc=sample;
+        }
+        ++fft_ports;
+    }
+};
+void verify(const Seen& seen,float input){
+    const double coefficient=.5+.5*std::cos(2*std::numbers::pi*(1.-3.5)/7.);
+    const double product=double(input)*coefficient;
+    check(seen.fft_ports==3,"one complete FFT publication");
+    check(std::abs(seen.window[1]-coefficient)<1e-16,"source Double Hann coefficient");
+    check(seen.product[1]==product && seen.product[1]!=double(float(product)),"mixed product preserves sub-Float32 precision");
+    check(seen.dc==float(product),"DC rounds at FFT publication");
+    for(std::size_t k=1;k<=4;++k){
+        const double angle=2*std::numbers::pi*double(k)/count;
+        check(std::abs(seen.real[k-1]-float(product*std::cos(angle)))<2e-8f,"Double FFT real impulse oracle");
+        if(k<4)check(std::abs(seen.imaginary[k-1]-float(-product*std::sin(angle)))<2e-8f,"Double FFT imaginary impulse oracle");
+    }
+}
+void processing(){
+    const auto graph=definition();std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    check(PreparedGraph::prepare_numeric(graph,profile(),plan,state)==Status::ok,"prepare explicit mixed precision pipeline");
+    Seen seen;const NumericRuntimeCallbacks callbacks{Seen::output,nullptr,nullptr,&seen};FrameStamp stamp;stamp.sequence=stamp.producer_epoch=1;
+    stamp.has_sample_interval=true;stamp.sample_count=count;
+    std::array<float,count> values{};values[1]=1.00000011920928955078125f;
+    const auto contract=graph.nodes[0].outputs[0].contract.view();const auto& input=std::get<NumericContract>(contract);
+    const PlaneLayout plane{0,{sizeof(float),0}};const auto frame=numeric_test_builders::frame(stamp,input,std::as_bytes(std::span(values)),std::span(&plane,1),{count,1});
+    const auto before=allocations;
+    check(plan->process_clock(4,stamp,*state,{},callbacks)==Status::ok,"publish Double Hann once");
+    check(plan->process_numeric_ports(1,0,frame,*state,{},callbacks)==Status::ok,"process mixed precision frame");
+    check(allocations==before,"no processing allocation");verify(seen,values[1]);
+    auto tight=profile();tight.resources.maximum.scratch_bytes=1;
+    check(PreparedGraph::prepare_numeric(graph,tight,plan,state)!=Status::ok,"reject insufficient Double FFT construction budget");
+}
+void contracts(){
+    auto graph=definition();auto& window=graph.nodes[2];
+    auto& fields=std::get<TransformProcessingParameters>(window.parameters).values;fields.back().value=NumericLiteral{std::uint64_t(2)};
+    check(!derive_processing_node_contracts(window,profile().admission),"reject unknown precision");
+    auto& fft=graph.nodes.back();fft.kind="Fourier";std::vector<OwnedProcessingContract> outputs;
+    check(fourier_output_contracts(fft,std::get<NumericContract>(fft.inputs[0].contract.view()),outputs)==Status::incompatible_contract,"complex Float64 is outside explicit real contract");
+}
+}
+void* operator new(std::size_t bytes){++allocations;if(auto* value=std::malloc(bytes?bytes:1))return value;throw std::bad_alloc();}
+void operator delete(void* value) noexcept{std::free(value);}
+void operator delete(void* value,std::size_t) noexcept{std::free(value);}
+int main(){processing();contracts();std::puts("precise frontend: mixed product, Double real FFT/Float32 boundary, compact ports, admission and no allocations PASS");}

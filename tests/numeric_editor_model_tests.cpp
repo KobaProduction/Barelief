@@ -137,7 +137,7 @@ void coefficient_port_identity(QApplication& app){
         check(domain::array_generator_output_contract(changed,std::get<signal_contracts::NumericContract>(input),bank)==signal_contracts::Status::ok,"resize coefficient bank contract");changed.outputs[0].contract=std::move(bank);
         check(domain::attach_numeric_parameter_ports(changed,numeric_editor::limits())==signal_contracts::Status::ok,"retain the coefficient-only window contract after resize");
         generator.set_numeric_node(changed);
-        check(aboutToDelete==0 && deleted==0 && generator.nPorts(QtNodes::PortType::Out)==1,"contract resize preserves the single coefficient port without QtNodes deletion/shift events");
+        check(aboutToDelete==0 && deleted==0 && generator.nPorts(QtNodes::PortType::Out)==1,"contract resize preserves stable port identities without QtNodes deletion/shift events");
         check(std::get<signal_contracts::NumericContract>(generator.numeric_node()->outputs[0].contract.view()).shape.extents[0].maximum==2048,"coefficient bank exposes updated geometry");
     }
 
@@ -194,11 +194,11 @@ void capture_endpoint_guard(const std::shared_ptr<QtNodes::NodeDelegateModelRegi
 
 void fourier_port_roundtrip(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry){
         NumericEditorGraphModel fourier(registry);
-        const auto complex=fourier.addNode("Fourier"),real=fourier.addNode("RealFourier"),polar=fourier.addNode("ComplexPolar");
+        const auto complex=fourier.addNode("Fourier"),real=fourier.addNode("RealFourier"),polar=fourier.addNode("AmplitudePhase");
         auto* a=fourier.delegateModel<AudioNodeModel>(complex);auto* b=fourier.delegateModel<AudioNodeModel>(real);
         check(a && a->numeric_node() && ordinary_inputs(*a->numeric_node())==2,"Complex Fourier exposes both data planes plus explicit settings ports");
         check(b && b->numeric_node() && ordinary_inputs(*b->numeric_node())==1,"Real Fourier exposes one data plane plus explicit settings ports");
-        check(a->numeric_node()->outputs.size()==4 && b->numeric_node()->outputs.size()==4,"Fourier exposes Re/Im and separate DC scalars");
+        check(a->numeric_node()->outputs.size()==2 && b->numeric_node()->outputs.size()==3,"Complex Fourier retains DC in its full planes; Real FFT exposes a separate real DC scalar");
         for(const auto edge:std::array{QtNodes::ConnectionId{real,0,polar,0},QtNodes::ConnectionId{real,1,polar,1}}){
             check(fourier.connectionPossible(edge),"Fourier Re/Im can feed the polar projection");fourier.addConnection(edge);check(fourier.connectionExists(edge),"Polar connection persists");}
         domain::NumericProcessingGraph graph;QString error;const bool exported=fourier.export_numeric_graph(graph,&error);
@@ -1203,7 +1203,7 @@ void frequency_step_wires(const std::shared_ptr<QtNodes::NodeDelegateModelRegist
             const QtNodes::ConnectionId edge{from,steps.delegateModel<AudioNodeModel>(from)->port_index(QtNodes::PortType::Out,out),to,steps.delegateModel<AudioNodeModel>(to)->port_index(QtNodes::PortType::In,in)};
             check(steps.connectionPossible(edge),"Frequency step has visible connectable ordinary numeric ports");scene.undoStack().push(new QtNodes::ConnectCommand(&scene,edge));check(steps.connectionExists(edge),"Frequency step numeric wire is actually created");
         };
-        connect(source,0,window,0);connect(source,domain::sample_rate_output,window,domain::input_sample_rate_input);
+        connect(source,0,window,0);
         connect(window,0,length,0);connect(length,0,delta,domain::window_size_input);connect(source,domain::sample_rate_output,delta,0);connect(spectrum,0,plot,0);connect(delta,0,plot,domain::frequency_step_input);
         check(!domain::node_kind("SpectrumAxis") && !numeric_editor::catalog().contains("SpectrumAxis"),"Removed frequency-axis block is unavailable");
         check(steps.delegateModel<AudioNodeModel>(plot)->numeric_node()->inputs.size()==2,"FFT graph exposes data and explicit frequency-step inputs");
@@ -1225,9 +1225,9 @@ void port_labels(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& regi
         bool opened=false;
         QObject dialogCallbacks;
         QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());opened=dialog&&dialog->objectName()=="portContractsDialog";check(opened&&dialog->findChild<QComboBox*>("input0Dtype"),"Actual modal contains the contract editor");if(dialog)dialog->accept();});if(contracts)contracts->click();check(opened,"Contract dialog opens modally");
-        QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());auto* edit=dialog?dialog->findChild<QLineEdit*>("portLabel_input65531"):nullptr;check(edit,"Fs label editor uses stable port ID");if(edit)edit->setText("РњРѕСЏ С‡Р°СЃС‚РѕС‚Р°");if(dialog)dialog->accept();});if(names)names->click();
-        const auto port=node->port_index(QtNodes::PortType::In,domain::input_sample_rate_input);
-        check(node->portCaption(QtNodes::PortType::In,port).startsWith("РњРѕСЏ С‡Р°СЃС‚РѕС‚Р°\n"),"Custom text is rendered on the port");
+        QTimer::singleShot(0,&dialogCallbacks,[&]{auto* dialog=qobject_cast<QDialog*>(QApplication::activeModalWidget());auto* edit=dialog?dialog->findChild<QLineEdit*>(QString("portLabel_input%1").arg(domain::window_size_input)):nullptr;check(edit,"Size label editor uses stable port ID");if(edit)edit->setText("Мой размер");if(dialog)dialog->accept();});if(names)names->click();
+        const auto port=node->port_index(QtNodes::PortType::In,domain::window_size_input);
+        check(node->portCaption(QtNodes::PortType::In,port).startsWith("Мой размер\n"),"Custom text is rendered on the port");
         QByteArray a,b;check(desktop::encode_numeric_graph(before,a)&&desktop::encode_numeric_graph(labels.numeric_graph(),b)&&a==b,"Label edit does not change processing graph or contracts");
         scene.undoStack().undo();check(!node->presentation().contains("port_labels"),"Label changes support Undo");scene.undoStack().redo();
         NumericEditorGraphModel restored(registry);restored.load(labels.save());check(restored.delegateModel<AudioNodeModel>(id)->portCaption(QtNodes::PortType::In,port)==node->portCaption(QtNodes::PortType::In,port),"Labels survive project reload");
@@ -1685,7 +1685,7 @@ static int accumulator_connections(const std::shared_ptr<QtNodes::NodeDelegateMo
 }
 static std::shared_ptr<QtNodes::NodeDelegateModelRegistry> editor_test_registry(){
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    for(const auto kinds=numeric_editor::model_catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     return registry;
 }
 int main(int argc,char** argv){

@@ -1,0 +1,37 @@
+{
+  "source_revision": "ad5cf975aed08cc4562dd008cf9f83b12b82ffb8",
+  "source_api": "aubio_specdesc_do",
+  "dtype": "Float32LE",
+  "shape": [
+    3,
+    2,
+    513
+  ],
+  "layout": "frame/magnitude then phase",
+  "signal": "eight changing tones; exact polar rows from pinned aubio Ooura frontend",
+  "source_input_sha256": "aaa79273b3ed306e9b53c123b29c3f5749e42e69feb3c60c45fa2e21ced1e70e",
+  "cases": [
+    {
+      "fixture": "aubio-phase-frame43.f32",
+      "original_frames": [
+        41,
+        42,
+        43
+      ],
+      "sha256": "30dbcf324d34494cae7c6286671d88dfc7f8a6b15f047f93da0886c8506f4b36",
+      "phase": 80.00065612792969,
+      "weighted_phase": 77.97360229492188
+    },
+    {
+      "fixture": "aubio-phase-frame106.f32",
+      "original_frames": [
+        104,
+        105,
+        106
+      ],
+      "sha256": "41aac2ae59b00f80725790a0f7544250a3c2bc24671dfcd43c7a257aaca97972",
+      "phase": 0.3324242830276489,
+      "weighted_phase": 5.616265296936035
+    }
+  ]
+}

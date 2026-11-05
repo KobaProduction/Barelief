@@ -38,6 +38,11 @@ bool common_output(const domain::ResolvedProcessingNode&,domain::PortId,signal_c
     signal_contracts::DType=signal_contracts::DType::Float32) noexcept;
 bool common_values(const NumericOperationInput&,std::span<float>,std::span<const float>&) noexcept;
 PreparedCommon prepare_common_values(const domain::ResolvedProcessingNode&);
+bool temporal_frame_sequence_rows(const domain::ResolvedProcessingNode&,std::size_t,std::size_t&) noexcept;
+PreparedCommon prepare_temporal_frame_sequence(const domain::ResolvedProcessingNode&);
+domain::ProcessingSupport assess_temporal_frame_sequence(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
+PreparedCommon prepare_array_reindex(const domain::ResolvedProcessingNode&);
+domain::ProcessingSupport assess_array_reindex(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
 PreparedCommon prepare_feature_aggregate(const domain::ResolvedProcessingNode&);
 domain::ProcessingSupport assess_feature_aggregate(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
 PreparedCommon prepare_common_filters(const domain::ResolvedProcessingNode&);

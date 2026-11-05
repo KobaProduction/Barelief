@@ -74,7 +74,7 @@ static void gui_cli_cases() {
 }
 int main(int argc,char**argv){QApplication app(argc,argv);try{
  GuiState state;state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
- const auto catalog=numeric_editor::catalog();for(const auto& kind:catalog)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+ const auto catalog=numeric_editor::model_catalog();for(const auto& kind:catalog)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
  auto model=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);state.data_flow_graph=model;require(model->set_numeric_graph(numeric_default_graph()),"editor fixture");
  auto provider=std::make_shared<Provider>();GuiPresenter presenter(state,provider);auto* local=provider->ports[0];
  require(local->previewHz==60,"default preview cadence absent");

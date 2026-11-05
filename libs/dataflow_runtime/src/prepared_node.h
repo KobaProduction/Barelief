@@ -83,6 +83,7 @@ struct PlanNode {
     std::shared_ptr<const dsp_kernels::PreparedWindows> windows;
     std::size_t hop_base=0;
     std::size_t frame_hop=0;
+    bool materialize_stride=false;
     std::uint64_t hop_fraction=0,hop_denominator=1;
     double comparison_threshold=1e-12;
     dsp_kernels::ResamplerMode resampler_mode=dsp_kernels::ResamplerMode::ExistingFir;

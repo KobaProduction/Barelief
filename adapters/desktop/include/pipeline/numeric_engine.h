@@ -7,6 +7,7 @@
 #include <optional>
 #include <map>
 
+namespace dataflow_runtime {struct NumericRuntimeProfile;}
 namespace pipeline {
 // Cold platform adaptation before Apply. Changes a candidate atomically, using
 // actual native endpoint formats and the common downstream contract resolver.
@@ -17,7 +18,8 @@ bool resolve_native_capture_graph(domain::NumericProcessingGraph&,
 // Capture callbacks process synchronously; GUI delivery contains bounded owners.
 class NumericEngine final : public QObject, public EnginePort {
 public:
-    explicit NumericEngine(AudioSourceFactory = {}, QObject* parent=nullptr);
+    using ProfileDecorator=std::function<dataflow_runtime::NumericRuntimeProfile(dataflow_runtime::NumericRuntimeProfile)>;
+    explicit NumericEngine(AudioSourceFactory = {}, QObject* parent=nullptr,ProfileDecorator = {});
     ~NumericEngine() override;
     struct AdapterHandlers {
         std::function<bool(const QJsonObject&,QString*)> validate_graph;

@@ -639,7 +639,7 @@ struct MusicAnalysisDialog::State {
         target->setCurrentIndex(-1);
         for(std::size_t i=0;i<targets.size();++i)if(same_target_route(previous,targets[i])){target->setCurrentIndex(int(i));return;}
     }
-    void append(const QStringList& paths){
+    QStringList unique_path_additions(const QStringList& paths) const {
         QSet<QString> seen;
         seen.reserve(selected_paths.size()+paths.size());
         for(const auto& path:std::as_const(selected_paths))seen.insert(path);
@@ -650,8 +650,10 @@ struct MusicAnalysisDialog::State {
             seen.insert(path);
             additions.append(path);
         }
-        if(additions.empty())return;
-        selected_paths.append(additions);
+        return additions;
+    }
+
+    void append_list_items(const QStringList& additions) {
         {
             // One batch, genuine QListWidget model notifications. The
             // built-in scrollbar can reach every file without pagination.
@@ -660,6 +662,13 @@ struct MusicAnalysisDialog::State {
             files->addItems(additions);
             files->setUpdatesEnabled(true);
         }
+    }
+
+    void append(const QStringList& paths){
+        const auto additions=unique_path_additions(paths);
+        if(additions.empty())return;
+        selected_paths.append(additions);
+        append_list_items(additions);
         update_file_count();
     }
     void clear_files(){
@@ -680,18 +689,28 @@ struct MusicAnalysisDialog::State {
         }
         return fallback;
     }
+    bool valid_scan_paths(const QStringList& paths) {
+        if(paths.empty()){set_status_message("Select audio files first");return false;}
+        if(!services.scan_files&&!services.analyze_files){set_status_message("Analysis service unavailable");return false;}
+        return true;
+    }
+
+    bool prepare_scan_directory(const QStringList& paths,QString& batch_directory) {
+        if(paths.size()>128){
+            if(!services.save_scan){set_status_message("Scan archive service unavailable");return false;}
+            batch_directory=scan_destination(paths);
+            if(batch_directory.isEmpty()){set_status_message("Cannot resolve scan output folder");return false;}
+        }
+        return true;
+    }
+
     void start() {
         if(future.valid() || mode!=Mode::Setup)return;
         stop_preview();
         auto paths=scan_paths();
-        if(paths.empty()){set_status_message("Select audio files first");return;}
-        if(!services.scan_files&&!services.analyze_files){set_status_message("Analysis service unavailable");return;}
+        if(!valid_scan_paths(paths))return;
         QString batch_directory;
-        if(paths.size()>128){
-            if(!services.save_scan){set_status_message("Scan archive service unavailable");return;}
-            batch_directory=scan_destination(paths);
-            if(batch_directory.isEmpty()){set_status_message("Cannot resolve scan output folder");return;}
-        }
+        if(!prepare_scan_directory(paths,batch_directory))return;
         ++curve_revision;curve_pending=false;curve_debounce->stop();
         prepare_scan_progress(paths.size());
         launch_scan(std::move(paths),std::move(batch_directory));
@@ -960,17 +979,21 @@ struct MusicAnalysisDialog::State {
         for(int i=0;i<result_files->count();++i)included.push_back(result_files->item(i)->checkState()==Qt::Checked?1:0);
         corpus=curve_corpus(document.profile,included);invalidate_curve();
     }
-    void build_file_events(){
-        auto& s=*this;auto* dialog=owner;
-    QObject::connect(s.files->model(),&QAbstractItemModel::rowsInserted,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::rowsRemoved,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::modelReset,dialog,[&s]{s.update_file_count();});s.update_file_count();
-    QObject::connect(s.add,&QPushButton::clicked,dialog,[&s,dialog]{s.append(QFileDialog::getOpenFileNames(dialog,ui::text("Select audio files"),{},ui::text("Audio files (*.wav *.flac *.mp3)")));});
-    QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{
+    static void choose_audio_folder(State& s,MusicAnalysisDialog* dialog) {
         auto path=QFileDialog::getExistingDirectory(dialog,ui::text("Select audio folder"));
         if(path.isEmpty())return;
         const auto found=s.services.scan?s.services.scan(path,true):QStringList{};
         if(found.isEmpty())return;
         s.input_folder=path;
         s.append(found);
+    }
+
+    void build_file_events(){
+        auto& s=*this;auto* dialog=owner;
+    QObject::connect(s.files->model(),&QAbstractItemModel::rowsInserted,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::rowsRemoved,dialog,[&s]{s.update_file_count();});QObject::connect(s.files->model(),&QAbstractItemModel::modelReset,dialog,[&s]{s.update_file_count();});s.update_file_count();
+    QObject::connect(s.add,&QPushButton::clicked,dialog,[&s,dialog]{s.append(QFileDialog::getOpenFileNames(dialog,ui::text("Select audio files"),{},ui::text("Audio files (*.wav *.flac *.mp3)")));});
+    QObject::connect(s.folder,&QPushButton::clicked,dialog,[&s,dialog]{
+        choose_audio_folder(s,dialog);
     });QObject::connect(s.clear,&QPushButton::clicked,dialog,[&s]{s.clear_files();});
 
     }

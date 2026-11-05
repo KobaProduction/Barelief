@@ -10,6 +10,8 @@
 #include <dsp_kernels/onset_strength.h>
 #include <dsp_kernels/spectral_descriptors.h>
 #include <dsp_kernels/mel_filter_bank.h>
+#include <dsp_kernels/fourier_backend.h>
+#include <dsp_kernels/detail/prepared_reference_fourier.h>
 #include <dsp_kernels/power_to_db.h>
 namespace dataflow_runtime::detail {
 
@@ -28,15 +30,18 @@ struct OperationKernelState {
     bool db_needs_peak=false;
     double rhythm_sample_rate=0;
     std::variant<std::monostate,dsp_kernels::FFT,dsp_kernels::PreparedRfft,dsp_kernels::PreparedSpectrumProjection,
-        dsp_kernels::BroadbandFeatures,dsp_kernels::NoteSalience,dsp_kernels::MusicalSpectrogram,dsp_kernels::SpectralQuantizer,dsp_kernels::PreparedFrequencyNormalizer,dsp_kernels::PreparedSpectralDescriptor> operation;
+        dsp_kernels::BroadbandFeatures,dsp_kernels::NoteSalience,dsp_kernels::MusicalSpectrogram,dsp_kernels::SpectralQuantizer,dsp_kernels::PreparedFrequencyNormalizer,dsp_kernels::PreparedSpectralDescriptor,dsp_kernels::PreparedFourierBackend,dsp_kernels::detail::PreparedReferenceFourier> operation;
+    std::vector<float> fourier_input;
     std::vector<float> input,output;
     std::vector<float> imaginary;
     std::vector<float> factors;
+    std::vector<double> factors64,precise_input,precise_output;
     std::vector<std::uint8_t> factor_ready,factor_initial_ready;
     std::vector<std::array<std::size_t,2>> factor_actual;
     std::array<std::size_t,2> product_actual{1,1};
     std::size_t frame_input=0;
     std::size_t fourier_size=0;
+    bool fourier_include_endpoints=false;
     std::uint32_t note_first_midi=21;
     bool product_pending=false,add_arrays=false,clamp_floor=false;
     FrameStamp product_stamp{};
@@ -54,7 +59,9 @@ struct OperationKernelState {
     std::vector<std::uint8_t> quantized8;std::vector<std::uint16_t> quantized16;
 };
 signal_contracts::Status prepare_numeric_operation(OperationKernelState&,PlanNode&,const domain::ResolvedProcessingNode&,const NumericRuntimeProfile&);
-signal_contracts::Status prepare_signal_operation(OperationKernelState&,PlanNode&,const domain::ResolvedProcessingNode&);
+bool select_fourier_backend(const domain::ResolvedProcessingNode&,const NumericRuntimeProfile&,
+    const dsp_kernels::FourierBackendFactory*&) noexcept;
+signal_contracts::Status prepare_signal_operation(OperationKernelState&,PlanNode&,const domain::ResolvedProcessingNode&,const NumericRuntimeProfile&);
 signal_contracts::Status prepare_signal_features(OperationKernelState&,PlanNode&,State&,const domain::ResolvedProcessingNode&);
 signal_contracts::Status prepare_music_operation(OperationKernelState&,PlanNode&,State&,const domain::ResolvedProcessingNode&);
 signal_contracts::Status prepare_rhythm(OperationKernelState&,const domain::ResolvedProcessingNode&);

@@ -142,7 +142,7 @@ set(PORTABLE_SDK_SOURCES
     libs/dsp_kernels/src/complex_values.cpp libs/dsp_kernels/src/spectral_descriptors.cpp libs/dsp_kernels/src/log_compression.cpp
     libs/dsp_kernels/src/activation_peaks.cpp libs/dsp_kernels/src/activation_peak_matrix.cpp libs/dsp_kernels/src/curve_interpolation.cpp
     libs/dsp_kernels/src/sample_rotation.cpp
-    libs/dsp_kernels/src/mel_filter_bank.cpp libs/dsp_kernels/src/power_to_db.cpp
+    libs/dsp_kernels/src/mel_filter_bank.cpp libs/dsp_kernels/src/filter_projection.cpp libs/dsp_kernels/src/power_to_db.cpp
     libs/dsp_kernels/src/rhythm/analyzer.cpp libs/dsp_kernels/src/rhythm/math.cpp
     libs/dsp_kernels/src/rhythm/observer.cpp libs/dsp_kernels/src/rhythm/tracking.cpp
     libs/dsp_kernels/src/rhythm/autocorrelation.cpp libs/dsp_kernels/src/rhythm/hierarchy.cpp

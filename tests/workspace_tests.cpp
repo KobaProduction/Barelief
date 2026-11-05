@@ -10,7 +10,7 @@
 #include <DockAreaWidget.h>
 #include <FloatingDockContainer.h>
 #include <cstdio>
-static QString save_preset(gui_fixture::App& app,const QString& name){gui_fixture::check(app.editor->save_preset(name),"actual preset Save");return app.application->_ctx.file_configs.ui.pipeline_presets.last().toObject().value("id").toString();}
+static QString save_preset(gui_fixture::App& app,const QString& name){gui_fixture::phase_trace::Scope trace("workspace.save_preset");std::fprintf(stderr,"WORKSPACE_PRESET name=%s\n",qPrintable(name));std::fflush(stderr);gui_fixture::check(app.editor->save_preset(name),"actual preset Save");return app.application->_ctx.file_configs.ui.pipeline_presets.last().toObject().value("id").toString();}
 static QList<WorkspaceDock*> dynamic_docks(MainWindow* window){QList<WorkspaceDock*> result;for(const auto docks=window->workspaceDocks();auto* dock:docks)if(dock->objectName().startsWith("nodeView_"))result.append(dock);return result;}
 static QRect area_rect(MainWindow* window,WorkspaceDock* dock){auto* area=dock->dockAreaWidget();gui_fixture::check(area,"dock area missing");return {area->mapTo(window,QPoint()),area->size()};}
 static QStringList open_tabs(WorkspaceDock* dock){QStringList names;for(const auto peers=dock->dockAreaWidget()->dockWidgets();auto* peer:peers)if(!peer->isClosed())names.append(peer->objectName());names.sort();return names;}
@@ -97,6 +97,7 @@ static void refresh_live_descriptor(gui_fixture::App& app,WorkspaceDock* dock,Gr
           "presentation refresh changed processing");
 }
 static void workspace_persistence(gui_fixture::App& app,const QString& several,const QJsonObject& severalPresentation,quint64 revision,const QString& firstName,const QString& firstKey) {
+    gui_fixture::phase_trace::Scope trace("workspace.persistence");
 using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
         const auto before=app.editor->document();const auto beforeDocks=app.window->workspaceDocks().size();
         auto malformed=ui.pipeline_presets.last().toObject();malformed["id"]="invalid-presentation";auto invalid=malformed["presentation"].toObject();invalid["version"]=99;malformed["presentation"]=invalid;ui.pipeline_presets.append(malformed);
@@ -122,6 +123,7 @@ using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
 }
 
 static void preset_matrix_restore(gui_fixture::App& app,const QString& zero,const QString& one,const QString& several,const QJsonObject& severalPresentation,const QString& firstName,const QString& externalName,const QString& neighborName,const QString& inactiveName,quint64 revision,const QString& theme,const QString& language) {
+    gui_fixture::phase_trace::Scope trace("workspace.preset_restore");
 using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
         ui.graph_rendering={{"version",1},{"defaults",QJsonObject{{"brightness",1.8}}}};
         app.application->_ctx.data_flow_graph->setNodeData(1,QtNodes::NodeRole::Position,QPointF(777,888));
@@ -147,6 +149,7 @@ using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
 }
 
 static void restore_split_topologies(gui_fixture::App& app,const QString& several,const QJsonObject& severalPresentation,const QString& firstName,const QString& neighborName,const QString& inactiveName,const QString& externalName,const Topology& aTopology,const QString& otherLayout,const QRect& bGeometry) {
+    gui_fixture::phase_trace::Scope trace("workspace.topology_restore");
 using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
         const bool loadedA=app.editor->load_preset(several);
         if(!loadedA){
@@ -177,6 +180,25 @@ using namespace gui_fixture;auto& ui=app.application->_ctx.file_configs.ui;
         auto* model=app.application->_ctx.data_flow_graph.get();model->setNodeData(1,QtNodes::NodeRole::Position,QPointF(42,73));
 return first;
 }
+static void initial_horizontal_layout(gui_fixture::App& app,WorkspaceDock* first,WorkspaceDock* inactive,WorkspaceDock* neighbor,WorkspaceDock* external) {
+    gui_fixture::phase_trace::Scope trace("workspace.layout.A");
+    app.window->tabifyDockWidget(first,inactive);app.window->placeDock(neighbor,first,Qt::RightDockWidgetArea);
+    first->toggleView(true);inactive->toggleView(true);neighbor->toggleView(true);first->raise();
+    app.window->resizeDocks({first,neighbor},{550,300},Qt::Horizontal);
+    external->floatingDockContainer()->resize(430,310);external->floatingDockContainer()->move(80,90);
+    gui_fixture::check(gui_fixture::wait([&]{return first->dockAreaWidget()==inactive->dockAreaWidget() && first->dockAreaWidget()->currentDockWidget()==first && area_rect(app.window,first).right()<area_rect(app.window,neighbor).left();}),"A topology precondition");
+}
+static void initial_vertical_layout(gui_fixture::App& app,WorkspaceDock* first,WorkspaceDock* inactive,WorkspaceDock* neighbor,WorkspaceDock* external) {
+    gui_fixture::phase_trace::Scope trace("workspace.layout.B");
+    app.window->placeDock(neighbor,first,Qt::BottomDockWidgetArea);inactive->raise();
+    external->floatingDockContainer()->resize(360,250);external->floatingDockContainer()->move(160,170);
+    gui_fixture::check(gui_fixture::wait([&]{return first->dockAreaWidget()->currentDockWidget()==inactive && area_rect(app.window,first).bottom()<area_rect(app.window,neighbor).top();}),"distinct B topology precondition");
+}
+static void report_workspace_child(QProcess& process,const char* phase,const char* event) {
+    std::fprintf(stderr,"WORKSPACE_CHILD phase=%s event=%s pid=%lld state=%d error=%d exit_status=%d exit_code=%d\n",phase,event,
+        static_cast<long long>(process.processId()),int(process.state()),int(process.error()),int(process.exitStatus()),process.exitCode());
+    std::fflush(stderr);
+}
 static QByteArray initial_session(){
         using namespace gui_fixture;
         App app;app.apply();auto& ui=app.application->_ctx.file_configs.ui;
@@ -189,18 +211,12 @@ static QByteArray initial_session(){
         const auto one=save_preset(app,"one view");
         auto* external=app.open(10,0,0);auto* neighbor=app.open(11,2,0);auto* inactive=app.open(10,1,0);
         const auto externalName=external->objectName();const auto neighborName=neighbor->objectName();const auto inactiveName=inactive->objectName();
-        app.window->tabifyDockWidget(first,inactive);app.window->placeDock(neighbor,first,Qt::RightDockWidgetArea);
-        first->toggleView(true);inactive->toggleView(true);neighbor->toggleView(true);first->raise();
-        app.window->resizeDocks({first,neighbor},{550,300},Qt::Horizontal);
-        external->floatingDockContainer()->resize(430,310);external->floatingDockContainer()->move(80,90);
-        check(wait([&]{return first->dockAreaWidget()==inactive->dockAreaWidget() && first->dockAreaWidget()->currentDockWidget()==first && area_rect(app.window,first).right()<area_rect(app.window,neighbor).left();}),"A topology precondition");
+        initial_horizontal_layout(app,first,inactive,neighbor,external);
         const auto aTopology=topology(app.window,first,neighbor,external);
         const auto several=save_preset(app,"multiple internal external");
         const auto severalPresentation=ui.pipeline_presets.last().toObject().value("presentation").toObject();
         check(severalPresentation["workspace"].toObject().value("visibility").toObject()[inactiveName].toBool(),"inactive tab saved as closed");
-        app.window->placeDock(neighbor,first,Qt::BottomDockWidgetArea);inactive->raise();
-        external->floatingDockContainer()->resize(360,250);external->floatingDockContainer()->move(160,170);
-        check(wait([&]{return first->dockAreaWidget()->currentDockWidget()==inactive && area_rect(app.window,first).bottom()<area_rect(app.window,neighbor).top();}),"distinct B topology precondition");
+        initial_vertical_layout(app,first,inactive,neighbor,external);
         const auto bGeometry=external->floatingDockContainer()->frameGeometry();check(!close_rect(aTopology.floating,bGeometry),"B floating geometry is not distinct");
         const auto otherLayout=save_preset(app,"vertical split with other active tab");
         restore_split_topologies(app,several,severalPresentation,firstName,neighborName,inactiveName,externalName,aTopology,otherLayout,bGeometry);
@@ -237,10 +253,12 @@ static bool run_closed_workspace_phase(int argc,char** argv){
     if(argc!=3)return false;
     const auto mode=QString::fromLocal8Bit(argv[1]);
     if(mode=="--closed-initial"){
-        const auto stored=closed_view_session();QFile file(QString::fromLocal8Bit(argv[2]));
+        gui_fixture::phase_trace::Scope trace("workspace.--closed-initial");
+        const auto stored=closed_view_session();trace.mark("write handoff BEGIN");QFile file(QString::fromLocal8Bit(argv[2]));
         gui_fixture::check(file.open(QIODevice::WriteOnly) && file.write(stored)==stored.size(),"save closed layout test handoff");return true;
     }
     if(mode=="--closed-restart"){
+        gui_fixture::phase_trace::Scope trace("workspace.--closed-restart");
         QFile file(QString::fromLocal8Bit(argv[2]));gui_fixture::check(file.open(QIODevice::ReadOnly),"read closed test handoff");
         check_closed_view_restart(file.readAll());return true;
     }
@@ -248,26 +266,14 @@ static bool run_closed_workspace_phase(int argc,char** argv){
 }
 static bool run_initial_workspace_phase(int argc,char** argv){
     if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--initial")return false;
-    const auto stored=initial_session();QFile file(QString::fromLocal8Bit(argv[2]));
+    gui_fixture::phase_trace::Scope trace("workspace.--initial");
+    const auto stored=initial_session();trace.mark("write handoff BEGIN");QFile file(QString::fromLocal8Bit(argv[2]));
     gui_fixture::check(file.open(QIODevice::WriteOnly) && file.write(stored)==stored.size(),"write restart handoff");
     return true;
 }
-int main(int argc,char** argv){
-    try {
-        if(run_closed_workspace_phase(argc,argv) || run_initial_workspace_phase(argc,argv))return 0;
-        if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--restart"){
-            QCoreApplication coordinator(argc,argv);QTemporaryDir directory;
-            gui_fixture::check(directory.isValid(),"restart test directory");const auto path=directory.filePath("session.json");
-            for(const auto* phase:{"--initial","--restart","--closed-initial","--closed-restart"}){
-                QProcess process;process.setProcessChannelMode(QProcess::ForwardedChannels);
-                process.start(QCoreApplication::applicationFilePath(),{QString::fromLatin1(phase),path});
-                gui_fixture::check(process.waitForStarted(),"start isolated workspace phase");
-                if(!process.waitForFinished(45000)){process.kill();process.waitForFinished();throw std::runtime_error("workspace phase timeout");}
-                gui_fixture::check(process.exitStatus()==QProcess::NormalExit && process.exitCode()==0,"isolated workspace phase failed");
-            }
-            return 0;
-        }
-        QFile file(QString::fromLocal8Bit(argv[2]));gui_fixture::check(file.open(QIODevice::ReadOnly),"read restart handoff");const auto stored=file.readAll();file.close();
+static int restart_workspace(const QString& path) {
+    gui_fixture::phase_trace::Scope trace("workspace.--restart");
+        QFile file(path);gui_fixture::check(file.open(QIODevice::ReadOnly),"read restart handoff");const auto stored=file.readAll();file.close();
         gui_fixture::App restarted(numeric_default_graph(),{},stored);restarted.apply();
         int external=0;for(const auto docks=dynamic_docks(restarted.window);auto* dock:docks)if(!dock->isClosed()&&dock->isFloating())++external;
         gui_fixture::check(external==1,"process restart lost floating representation");
@@ -277,5 +283,30 @@ int main(int argc,char** argv){
         int open=0;for(const auto docks=restarted.window->workspaceDocks();auto* dock:docks)if(dock!=restarted.dock("dataFlowDock")&&!dock->isClosed())++open;
         gui_fixture::check(open==1,"restart one-view preset inherited external window");
         std::puts("Canonical preset 0/1/multiple views, ADS hosts, manual axes, positions, global isolation, disk reload and process restart PASS");return 0;
+}
+static void execute_workspace_phase(const QString& path,const char* phase) {
+                gui_fixture::phase_trace::Scope trace("workspace.child");
+                QProcess process;process.setProcessChannelMode(QProcess::ForwardedChannels);
+                std::fprintf(stderr,"WORKSPACE_CHILD launch phase=%s path=%s\n",phase,qPrintable(path));std::fflush(stderr);
+                process.start(QCoreApplication::applicationFilePath(),{QString::fromLatin1(phase),path});
+                gui_fixture::check(process.waitForStarted(),"start isolated workspace phase");
+                report_workspace_child(process,phase,"started");trace.mark("waitForFinished BEGIN");
+                if(!process.waitForFinished(45000)){report_workspace_child(process,phase,"timeout");trace.mark("waitForFinished TIMEOUT");process.kill();process.waitForFinished();throw std::runtime_error("workspace phase timeout");}
+                trace.mark("waitForFinished END");report_workspace_child(process,phase,"finished");
+                gui_fixture::check(process.exitStatus()==QProcess::NormalExit && process.exitCode()==0,"isolated workspace phase failed");
+}
+int main(int argc,char** argv){
+    gui_fixture::phase_trace::Session diagnostic_session;
+    try {
+        if(run_closed_workspace_phase(argc,argv) || run_initial_workspace_phase(argc,argv))return 0;
+        if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--restart"){
+            QCoreApplication coordinator(argc,argv);QTemporaryDir directory;
+            gui_fixture::check(directory.isValid(),"restart test directory");const auto path=directory.filePath("session.json");
+            for(const auto* phase:{"--initial","--restart","--closed-initial","--closed-restart"}){
+                execute_workspace_phase(path,phase);
+            }
+            return 0;
+        }
+        return restart_workspace(QString::fromLocal8Bit(argv[2]));
     }catch(const std::exception& error){std::fprintf(stderr,"workspace: %s\n",error.what());return 1;}
 }

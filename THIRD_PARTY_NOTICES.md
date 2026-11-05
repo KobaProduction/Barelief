@@ -49,6 +49,27 @@ Other bundled dependencies and original notices in licenses/:
 The licenses directory is installed beside this notice. Barelief's About dialog
 includes the application license and this dependency index without network access.
 
+Separate source-only research targets: libs/rhythm_reference_ports contains
+GPL-3.0-or-later ports of Aubio and BTrack (COPYING), and AGPL-3.0-or-later ports
+of Essentia (AGPL-COPYING), retaining their original copyright notices.
+The directory is EXCLUDE_FROM_ALL; neither the application nor the SDK links
+or installs these targets implicitly. These sources are not relicensed under MIT.
+
+The optional desktop Fourier provider used by explicit research targets contains
+KISS FFT130 — BSD-3-Clause, Copyright (c) 2003-2010 Mark Borgerding. It is pinned
+to the copy in Essentia at b9fa6cb674ca43dfb94d28d293aeda441c6745db;
+adapters/desktop/fourier/vendor/kiss_fft130/PIN.json records the original hashes
+and the plan-owned scratch storage adaptation. See licenses/kissfft.txt. The
+application and portable SDK do not select or link this provider by default.
+
+The same optional research adapter also contains the Float32 Ooura FFT8g copy
+distributed by Aubio at ad5cf975aed08cc4562dd008cf9f83b12b82ffb8, under Aubio's
+GPL-3.0-or-later distribution terms. Its original arithmetic is preserved;
+adapters/desktop/fourier/vendor/aubio_ooura/PIN.json records the source hashes,
+the include-only compatibility patch, and the private symbol prefixes. The
+adapter owns the source tables and scratch and materializes them before
+processing. See licenses/aubio-ooura.txt and the retained source COPYING.
+
 Release packages require review of their actual dependency manifest before publication.
 
 Developer-only tooling: Tracy Profiler 0.14.1 — BSD-3-Clause, Bartosz Taudul

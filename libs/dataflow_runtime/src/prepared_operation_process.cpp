@@ -13,6 +13,8 @@ struct Process {
     bool discontinuity;
     bool operator()(std::monostate&) const noexcept {return false;}
     bool operator()(dsp_kernels::FFT&) const noexcept {return false;}
+    bool operator()(dsp_kernels::PreparedFourierBackend&) const noexcept {return false;}
+    bool operator()(dsp_kernels::detail::PreparedReferenceFourier&) const noexcept {return false;}
     bool operator()(dsp_kernels::PreparedRfft& operation) const noexcept {return operation.process(state.input,state.output);}
     bool operator()(dsp_kernels::PreparedSpectrumProjection& operation) const noexcept {return operation.process(state.input,state.output);}
     bool operator()(dsp_kernels::PreparedSpectralDescriptor& operation) const noexcept {

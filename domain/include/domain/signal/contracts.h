@@ -44,5 +44,6 @@ bool has_window_gain_output(std::string_view) noexcept;
 double processing_window_gain(const ConfiguredProcessingNode&,std::size_t count,bool power=false) noexcept;
 signal_contracts::Status window_gain_output_contract(const signal_contracts::NumericContract&,OwnedProcessingContract&) noexcept;
 signal_contracts::Status window_function_coefficients(const ConfiguredProcessingNode&,std::span<float>) noexcept;
+signal_contracts::Status window_function_coefficients(const ConfiguredProcessingNode&,std::span<double>) noexcept;
 signal_contracts::Status amplitude_phase_output_contracts(const ConfiguredProcessingNode&,const signal_contracts::NumericContract&,std::array<OwnedProcessingContract,2>&) noexcept;
 }

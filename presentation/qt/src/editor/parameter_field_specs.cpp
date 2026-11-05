@@ -67,6 +67,8 @@ QString parameter_title(const QString& key,const QString& kind) {
     if(const auto* title=contextual_parameter_title(kind,key))return QString::fromUtf8(title);
 static const QMap<QString, const char *> titles{{"start_bpm","Preferred tempo, BPM"},
 {"std_bpm","Tempo preference width, octaves"},
+{"precision","Numerical precision"},
+{"accumulation","Accumulation mode"},
 {"max_tempo","Maximum tempo, BPM"},
 {"limit_max_tempo","Limit maximum tempo"},
 {"aggregation","Tempo aggregation"},
@@ -190,7 +192,7 @@ ParameterChoices representation_parameter_choices(const QString& kind,const QStr
 }
 ParameterChoices generic_parameter_choices(const QString& key) {
     if(key=="peak_weight")return {{"value","squared_value"},{"Input value","Squared input value"}};
-    if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top","hann_periodic"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top","Periodic Hann"}};
+    if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top"}};
     if(key=="radix")return {{"radix2","radix4"},{"Radix 2","Radix 4"}};
     if(key.endsWith("_reduction"))return {{"pass_through","mean","rms","weighted_mean","maximum"},{"Pass through bins","Arithmetic mean","RMS of spectral values","Weighted mean","Maximum"}};
     if(key=="channel_policy")return {{"mean","select"},{"Mean","Selected channel"}};
@@ -202,6 +204,8 @@ ParameterChoices parameter_choices(const QString& kind,const QString& key) {
     if(kind=="RhythmAnalyzer" && key=="feature_rate_fps")return {{"30","45","60"},{"30 fps","45 fps","60 fps"}};
     if(kind=="RhythmAnalyzer" && key=="mode")return {{"gated","fixed-light","fixed-full"},{"Gated refinement","Light only","Full refinement"}};
     static const QMap<QString,ParameterChoices> specs{
+      {"TempoAnalysis/precision",{{"0","1"},{"Portable Float32","Desktop reference"}}},
+      {"CrfBeatSequence/precision",{{"0","1"},{"Portable Float32","Desktop reference"}}},
       {"AutocorrelationTempogram/normalization",{{"0","1","2","3","4"},{"No normalization","Maximum absolute value","Minimum absolute value","Nonzero count","Lp norm"}}},
       {"AutocorrelationTempogram/padding",{{"0","1","2","3","4"},{"Zero padding","Linear ramp","Repeat edge","Reflect","Symmetric"}}},
       {"AutocorrelationTempogram/fft_length",{{"0","1"},{"Power of two","Smooth length (2, 3, 5)"}}},

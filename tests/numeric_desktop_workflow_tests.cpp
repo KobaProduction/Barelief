@@ -1,4 +1,5 @@
 #include "isolated_gui_platform.h"
+#include "numeric_gui_fixture.h"
 #include <core_app/core_application.h>
 #include <core_app/main_window.h>
 #include <core_app/graph_panel.h>
@@ -28,7 +29,7 @@ using namespace pipeline;
 using namespace signal_contracts;
 namespace {
 void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
-bool wait_for(const std::function<bool()>& predicate){QElapsedTimer timer;timer.start();while(!predicate()&&timer.elapsed()<2500){QCoreApplication::processEvents();QThread::msleep(1);}return predicate();}
+bool wait_for(const std::function<bool()>& predicate){QElapsedTimer timer;timer.start();gui_fixture::phase_trace::Scope trace("numeric_desktop.wait",2500);while(!trace.predicate(predicate)&&timer.elapsed()<2500){trace.events();QThread::msleep(1);}return trace.predicate(predicate);}
 struct Probe {AudioSourceKind kind;IAudioSource::AudioHandler audio;IAudioSource::StatusHandler status;QJsonObject settings;int starts=0,stops=0;};
 class Source final:public IAudioSource {
     std::shared_ptr<Probe> probe;
@@ -46,6 +47,7 @@ public:
 QJsonObject encode(const domain::NumericProcessingGraph& graph){QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"canonical graph encode");return QJsonDocument::fromJson(bytes).object();}
 struct ScopeExit {std::function<void()> cleanup;~ScopeExit(){try{cleanup();}catch(...){}}};
 static void vector_preview_cases(const auto& send,const auto& clock,auto* chart,CoreApplication& app,const auto& context,const DeliveryStamp& delivery) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.FIFO.cases");
     send(.1f);send(.2f);send(.3f);
     clock();require(wait_for([&]{return chart->peak_value()==.3f;}),"Preview did not select newest queued vector");
     clock();require(wait_for([&]{return chart->peak_value()==.3f;}),"Idle preview replayed stale queued vector");
@@ -61,11 +63,14 @@ static void vector_preview_cases(const auto& send,const auto& clock,auto* chart,
 }
 
 static void full_history_workflow(CoreApplication& app,const EndpointIdentity& history,auto& historyDisplay,SpectrogramGraph& surface,const auto& feed,const auto& probes) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.full_history");
         // PCM block count is not analysis row count: at 120 analyses/s and
         // 48 kHz each History row spans 400 samples, not one 256-sample block.
         feed(probes[0],1400);
         DeliveredNumericFrame full;std::uint64_t fullOrdinal=0,fullFilled=0;
-        require(app.pipeline().query_numeric(history,full,&fullOrdinal,&fullFilled)==Status::ok && fullFilled==400 && fullOrdinal>400,"History never reaches full fixed capacity");
+        const auto status=app.pipeline().query_numeric(history,full,&fullOrdinal,&fullFilled);
+        gui_fixture::phase_trace::frame("numeric_desktop.full_history",7,full,status);
+        require(status==Status::ok && fullFilled==400 && fullOrdinal>400,"History never reaches full fixed capacity");
         require(historyDisplay.accept_history_snapshot(full,fullOrdinal,fullFilled)==Status::ok && historyDisplay.render(history,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::ok,"full History renderer failed");
         const auto fullView=std::get<NumericView>(full.frame.view().payload);
         require(fullView.contract->coordinates[0].unit==NumericUnit::Seconds && fullView.contract->coordinates[1].unit==NumericUnit::Hertz && fullView.coordinates.axes[0].size()==400*8 && fullView.coordinates.axes[1].size()==50*8,"factory pipeline lost explicit physical History coordinates");
@@ -94,13 +99,14 @@ static void full_history_workflow(CoreApplication& app,const EndpointIdentity& h
 }
 
 static void source_replacement_workflow(CoreApplication& app,SchemeEditorWidget* editor,const auto& apply,const auto& probes) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.source_replacement");
         require(editor->load_preset("alternate-capture"),"alternate physical-source preset load");apply();
         require(wait_for([&]{return probes.size()==2;}),"new preset source absent");require(probes[1]->kind==AudioSourceKind::Microphone,"preset reused prior physical source");
         require(probes[0]->stops==1,"source replacement retained old provider");
         const auto retired=probes[0]->status;retired(false,"retired loopback error");probes[1]->status(false,"current test failure");
-        require(wait_for([&]{return app.presenter().client().snapshot().statuses.value("capture").state==State::Failed;}),"source error not exposed");
-        require(app.presenter().client().snapshot().statuses.value("capture").error.contains("current test failure")&&!app.presenter().client().snapshot().statuses.value("capture").error.contains("retired loopback error"),"retired source error escaped fence");
-        require(app.presenter().client().snapshot().statuses.value("analyzer").state==State::Running,"source failure stopped core");
+        require(wait_for([&]{return gui_fixture::phase_trace::snapshot(app).statuses.value("capture").state==State::Failed;}),"source error not exposed");
+        require(gui_fixture::phase_trace::snapshot(app).statuses.value("capture").error.contains("current test failure")&&!gui_fixture::phase_trace::snapshot(app).statuses.value("capture").error.contains("retired loopback error"),"retired source error escaped fence");
+        require(gui_fixture::phase_trace::snapshot(app).statuses.value("analyzer").state==State::Running,"source failure stopped core");
 }
 
 static void observe_workflow_pcm(const DeliveredNumericFrame& frame,std::uint64_t& sourcePcm,std::uint64_t& pcm) {
@@ -114,6 +120,7 @@ static void observe_workflow_pcm(const DeliveredNumericFrame& frame,std::uint64_
 }
 
 static void feed_workflow_pcm(const std::shared_ptr<Probe>& probe,int blocks,std::uint64_t& sequence) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.feed",blocks);
 for(int block=0;block<blocks;++block){AudioFrame frame;frame.sample_rate=48000;frame.sequence=++sequence;frame.generation=1;frame.timestamp_ns=std::int64_t((sequence-1)*256*1000000000ULL/48000);frame.channel_count=1;frame.frame_count=256;frame.samples.resize(256);frame.sample_position=(frame.sequence?frame.sequence-1:0)*256;
             for(std::size_t i=0;i<256;++i)for(int tone=0;tone<8;++tone){const auto phase=6.283185307179586*double(73+113*tone)*double((sequence-1)*256+i)/48000.;frame.samples[i]+=float(.02*std::sin(phase));}probe->audio(frame);}QCoreApplication::processEvents();}
 
@@ -125,6 +132,7 @@ static void render_cold_workflow(const NumericView& coldView,DeliveredNumericFra
 
 }
 static void runtime_workflow(CoreApplication& app,SchemeEditorWidget* editor,auto& graph,const auto& probes,const auto& apply) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.runtime");
         const EndpointIdentity history{"main",7,domain::PortDirection::Output,0};
         DeliveredNumericFrame cold;std::uint64_t coldOrdinal=99,coldFilled=99;
         require(app.pipeline().query_numeric(history,cold,&coldOrdinal,&coldFilled)==Status::ok,"cold History is not immediately available");
@@ -174,6 +182,7 @@ static void send_preview_vector(CoreApplication& app,const std::shared_ptr<Numer
         emit presenter.numeric_frame_ready(frame);
 }
 void vector_delivery_queue(CoreApplication& app,MainWindow& window,const domain::NumericProcessingGraph& graph){
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.FIFO");
     WorkspaceDock* dock=nullptr;
     const auto widgets=QApplication::allWidgets();
     for(auto* widget:widgets)
@@ -191,7 +200,7 @@ void vector_delivery_queue(CoreApplication& app,MainWindow& window,const domain:
     auto* timer=window.findChild<QTimer*>("numericRenderTimer");require(timer,"FIFO GUI clock");const bool timerWasActive=timer->isActive();timer->stop();
     // Exercise the production presenter -> MainWindow path and its real timer
     // callback. Clock pulses are explicit so event-loop throughput is irrelevant.
-    const auto clock=[&]{require(QMetaObject::invokeMethod(timer,"timeout",Qt::DirectConnection),"FIFO GUI clock pulse");};
+    const auto clock=[&]{gui_fixture::phase_trace::Scope pulse("numeric_desktop.timer.timeout");require(QMetaObject::invokeMethod(timer,"timeout",Qt::DirectConnection),"FIFO GUI clock pulse");};
     const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& n){return n.id==9;});
     require(node!=graph.nodes.end()&&!node->inputs.empty(),"FIFO vector input contract");
     auto context=std::make_shared<NumericDeliveryContext>();context->endpoint={graph.graph_id,9,domain::PortDirection::Input,node->inputs.front().id};context->contract=node->inputs.front().contract;
@@ -205,6 +214,7 @@ void vector_delivery_queue(CoreApplication& app,MainWindow& window,const domain:
     // GUI pulse before returning from this helper.
     auto& presenter=app.presenter();const auto snapshot=presenter.client().snapshot();const DeliveryStamp delivery{snapshot.graph_revision,snapshot.epoch};
     ScopeExit releaseOwners{[&]{
+        gui_fixture::phase_trace::Scope cleanup("numeric_desktop.FIFO.cleanup");
         // Runs before the local pools are destroyed, also on a failed require.
         emit presenter.numeric_frame_ready({context,delivery,{},Status::unavailable});
         QMetaObject::invokeMethod(timer,"timeout",Qt::DirectConnection);
@@ -217,15 +227,16 @@ void vector_delivery_queue(CoreApplication& app,MainWindow& window,const domain:
     vector_preview_cases(send,clock,chart,app,context,delivery);
 }
 }
-int main(int argc,char** argv){
-    if(!test_fixture::isolated_gui_platform())return 2;
-    try {
-        QTemporaryDir temporary;require(temporary.isValid(),"isolated config directory");
-        auto graph=numeric_default_graph();auto document=workflow_document(graph);
-        const auto path=temporary.filePath("workflow.json");require(bool(desktop::save_numeric_project(document,path)),"isolated project save");
-        auto path_bytes=path.toLocal8Bit();char executable[]="numeric_desktop_workflow_tests",option[]="--config";char* arguments[]{executable,option,path_bytes.data(),nullptr};int count=3;
-        std::vector<std::shared_ptr<Probe>> probes;
-        CoreApplication app(count,arguments,[&](AudioSourceKind kind){auto p=std::make_shared<Probe>();p->kind=kind;probes.push_back(p);return std::make_unique<Source>(p);});
+static bool initial_workflow_ready(CoreApplication& app,const std::vector<std::shared_ptr<Probe>>& probes) {
+    const auto count=probes.size();
+    const bool ready=count==1 && gui_fixture::phase_trace::snapshot(app).statuses.value("analyzer").state==State::Running && !app.presenter().graph_request_pending();
+    if(gui_fixture::phase_trace::enabled.load(std::memory_order_relaxed)){
+        std::fprintf(stderr,"APP_PROBES count=%zu ready=%d\n",count,int(ready));std::fflush(stderr);
+    }
+    return ready;
+}
+static int desktop_workflow_instance(CoreApplication& app,std::vector<std::shared_ptr<Probe>>& probes,domain::NumericProcessingGraph& graph) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.instance");
         auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());require(model,"numeric workflow model");
         model->set_capture_device_provider([](int,QString*) {
             return QJsonArray{QJsonObject{{"id","probe-capture"},{"name","Probe capture"},{"is_default",true},
@@ -234,15 +245,30 @@ int main(int argc,char** argv){
         MainWindow* window=nullptr;const auto windows=QApplication::topLevelWidgets();for(auto* widget:windows)if(auto* candidate=qobject_cast<MainWindow*>(widget))window=candidate;
         require(window,"actual application window");auto* editor=window->findChild<SchemeEditorWidget*>();require(editor,"actual editor");
         auto* apply_button=window->findChild<QAbstractButton*>("applyPipeline");require(apply_button,"actual Apply button");
-        require(wait_for([&]{return probes.size()==1 && app.presenter().client().snapshot().statuses.value("analyzer").state==State::Running && !app.presenter().graph_request_pending();}),"initial continuous graph");
+        require(wait_for([&]{return initial_workflow_ready(app,probes);}),"initial continuous graph");
         vector_delivery_queue(app,*window,graph);
-        const auto initial_revision=app.presenter().client().snapshot().graph_revision;
+        const auto initial_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
         require(editor->load_preset("loopback"),"load canonical loopback preset");
-        require(probes.size()==1&&app.presenter().client().snapshot().graph_revision==initial_revision,"preset load changed working graph");
+        require(probes.size()==1&&gui_fixture::phase_trace::snapshot(app).graph_revision==initial_revision,"preset load changed working graph");
         QSignalSpy replies(&app.presenter(),&GuiPresenter::graph_apply_finished);
-        auto apply=[&]{const auto previous=replies.size();apply_button->click();require(wait_for([&]{return replies.size()>previous;})&&replies.last()[1].toBool(),"actual Apply rejected");};
-        apply();require(wait_for([&]{return probes.size()==1&&app.presenter().client().snapshot().statuses.value("capture").state==State::Running;}),"Apply never reached capture");
+        auto apply=[&]{gui_fixture::phase_trace::Scope request("numeric_desktop.Apply");const auto previous=replies.size();request.mark("click BEGIN");apply_button->click();request.mark("click END");require(wait_for([&]{return replies.size()>previous;})&&replies.last()[1].toBool(),"actual Apply rejected");};
+        apply();require(wait_for([&]{return probes.size()==1&&gui_fixture::phase_trace::snapshot(app).statuses.value("capture").state==State::Running;}),"Apply never reached capture");
         require(probes[0]->kind==AudioSourceKind::SystemOutput&&probes[0]->settings["sample_rate"].toInt()==48000,"wrong loopback source or contract rate");
         runtime_workflow(app,editor,graph,probes,apply);return 0;
+}
+int main(int argc,char** argv){
+    gui_fixture::phase_trace::Session diagnostic_session;
+    if(!test_fixture::isolated_gui_platform())return 2;
+    try {
+        QTemporaryDir temporary;require(temporary.isValid(),"isolated config directory");
+        auto graph=numeric_default_graph();auto document=workflow_document(graph);
+        const auto path=temporary.filePath("workflow.json");require(bool(desktop::save_numeric_project(document,path)),"isolated project save");
+        auto path_bytes=path.toLocal8Bit();char executable[]="numeric_desktop_workflow_tests",option[]="--config";char* arguments[]{executable,option,path_bytes.data(),nullptr};int count=3;
+        std::vector<std::shared_ptr<Probe>> probes;
+        gui_fixture::phase_trace::Scope lifetime("numeric_desktop.CoreApplication");
+        CoreApplication app(count,arguments,[&](AudioSourceKind kind){auto p=std::make_shared<Probe>();p->kind=kind;probes.push_back(p);return std::make_unique<Source>(p);});
+        lifetime.mark("constructed");
+        gui_fixture::phase_trace::BeforeApplicationExit before_exit{lifetime};
+        return desktop_workflow_instance(app,probes,graph);
     }catch(const std::exception& error){std::fprintf(stderr,"desktop workflow FAIL: %s\n",error.what());return 1;}
 }

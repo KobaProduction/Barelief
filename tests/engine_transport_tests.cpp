@@ -8,9 +8,9 @@ static void fifo_and_cancellation_regressions() {
     std::vector<std::uint64_t> received;bool recovery_gap=false;
     const auto token=engine.subscribe_numeric_tap({sink(g)},[&](auto frame){if(frame.frame){received.push_back(frame.frame.view().stamp.source_sequence);if(received.back()==130)recovery_gap=frame.frame.view().stamp.discontinuity;}},{});
     for(std::uint64_t sequence=1;sequence<=129;++sequence)feed(engine,1,sequence,sequence);
-    require(wait([&]{return received.size()==128;}),"FIFO lost admitted frame batch");
-    for(std::size_t index=0;index<128;++index)require(received[index]==index+1,"FIFO processing frames reordered/coalesced");
-    feed(engine,1,130,130);require(wait([&]{return received.size()==129;}),"FIFO recovery frame");require(recovery_gap,"real FIFO overflow was silent");engine.unsubscribe_numeric_tap(token);
+    require(wait([&]{return received.size()==64;}),"FIFO lost admitted frame batch");
+    for(std::size_t index=0;index<64;++index)require(received[index]==index+1,"FIFO processing frames reordered/coalesced");
+    feed(engine,1,130,130);require(wait([&]{return received.size()==65;}),"FIFO recovery frame");require(recovery_gap,"real FIFO overflow was silent");engine.unsubscribe_numeric_tap(token);
     unsigned cancelled_calls=0,first_calls=0;std::uint64_t cancelled=0;
     const auto first=engine.subscribe_numeric_tap({sink(g)},[&](auto){++first_calls;engine.unsubscribe_numeric_tap(cancelled);},{});
     cancelled=engine.subscribe_numeric_tap({sink(g)},[&](auto){++cancelled_calls;},{});feed(engine,1,131,131);
@@ -37,7 +37,7 @@ static void queue_endpoint_loss_regression() {
 }
 static void remote_terminal_cancellation() {
     NumericEngine engine;Replies replies(engine);const auto g=graph("terminal");replies.accepted(apply(g));NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0),"terminal server");
-    NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote);unsigned live=0,terminal=0;
+    NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);unsigned live=0,terminal=0;
     require(remote.subscribe_numeric_frames({sink(g),{g.graph_id,0,domain::PortDirection::Output,0}}),"two terminal bindings");
     remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available)++live;else {++terminal;remote.set_numeric_frame_handler({});}});
     std::uint64_t sequence=0;require(wait([&]{feed(engine,1,++sequence,1);return live>=2;}),"two live terminal bindings");remote.disconnect_remote();require(terminal==1,"retired batch invoked cleared observer");
@@ -57,7 +57,7 @@ FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.generatio
 
 static void demanded_sink_burst() {
     auto g=demanded_graph();const auto& source=g.nodes.front();
-    NumericEngine engine;Replies replies(engine);replies.accepted(apply(g));NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0),"demand server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote);
+    NumericEngine engine;Replies replies(engine);replies.accepted(apply(g));NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0),"demand server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);
     unsigned frames=0,local_frames=0;int final_status=-1;bool final_available=false;const auto final_tap=engine.subscribe_numeric_tap({{g.graph_id,300,domain::PortDirection::Input,0}},[&](auto frame){final_status=int(frame.status);final_available=frame.frame&&frame.frame.view().stamp.available;if(final_available)++local_frames;},{});remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available)++frames;});require(remote.subscribe_numeric_frames({{g.graph_id,300,domain::PortDirection::Input,0}}),"final sink demand");
     const auto contract_data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(contract_data);std::array<float,2048> pcm{};pcm.fill(.25f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sequence=0;
     const auto arrived=wait([&]{FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=stamp.generation=1;stamp.stream_id="demand";stamp.timestamp_ticks=std::int64_t(sequence*256);require(engine.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(pcm)),planes,{2048,1}}})==Status::ok,"demand PCM feed");return frames>0;});if(!arrived)std::fprintf(stderr,"Demanded sink frames=%u local=%u status=%d available=%d sends=%llu remote epoch=%llu revision=%llu warning=%s server=%s\n",frames,local_frames,final_status,int(final_available),(unsigned long long)sequence,(unsigned long long)remote.snapshot().epoch,(unsigned long long)remote.snapshot().graph_revision,qPrintable(remote.network_warning()),qPrintable(server.error_string()));engine.unsubscribe_numeric_tap(final_tap);require(arrived,"129-port burst starved demanded final NetworkOutput");
@@ -74,7 +74,7 @@ static void pcm_transport_window_continuity() {
     auto defaults=numeric_default_graph();auto source=defaults.nodes.front();source.id=0;source.kind="NetworkInput";source.parameters=domain::EndpointProcessingParameters{};
     auto send_graph=graph("pcm");send_graph.nodes[0]=source;auto input=source.outputs.front();input.direction=domain::PortDirection::Input;send_graph.nodes[1].inputs={input};
     auto receive_graph=defaults;receive_graph.graph_id="receiver";receive_graph.nodes.front().kind="NetworkInput";receive_graph.nodes.front().parameters=domain::EndpointProcessingParameters{};
-    NumericEngine sender,receiver;Replies sr(sender),rr(receiver);sr.accepted(apply(send_graph));rr.accepted(apply(receive_graph));NumericControlServer server(sender);require(server.listen(QHostAddress::LocalHost,0),"PCM server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote);require(remote.subscribe_numeric_frames({sink(send_graph)}),"PCM sink subscription");
+    NumericEngine sender,receiver;Replies sr(sender),rr(receiver);sr.accepted(apply(send_graph));rr.accepted(apply(receive_graph));NumericControlServer server(sender);require(server.listen(QHostAddress::LocalHost,0),"PCM server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);require(remote.subscribe_numeric_frames({sink(send_graph)}),"PCM sink subscription");
     std::uint64_t received=0;bool gap=false;remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available){++received;if(received>1)gap|=frame.frame.view().stamp.discontinuity;require(receiver.feed_numeric(1,frame.frame.view())==Status::ok,"received PCM processing");}});
     settle(100);const auto data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(data);std::array<float,256> pcm{};pcm.fill(.125f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
     std::uint64_t sequence=0;auto send_pcm=[&]{send_pcm_block(sender,c,pcm,planes,sequence);};
@@ -171,13 +171,20 @@ static void selected_subscription_lifecycle(NumericEngine& engine,const auto& gr
     mutation_refusals(engine,graph,second,b);
 
 }
+static void control_frame_profile_regression() {
+    NumericEngine engine;const auto capabilities=engine.capabilities();require(bool(capabilities.numeric),"desktop numeric capabilities");
+    const auto& runtime=capabilities.numeric->runtime.admission.frame;const auto wire=remote_numeric::control_limits().frame;
+    require(runtime.max_planes<=wire.max_planes && runtime.max_elements<=wire.max_elements && runtime.max_payload_bytes<=wire.max_payload_bytes &&
+        runtime.max_metadata_bytes<=wire.max_metadata_bytes && runtime.max_string_bytes<=wire.max_string_bytes && runtime.max_coordinate_bytes<=wire.max_coordinate_bytes,
+        "CONTROL can describe every frame admitted by the desktop runtime");
+}
 int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
-    fifo_and_cancellation_regressions();ratio_json_regression();queue_endpoint_loss_regression();remote_terminal_cancellation();demanded_sink_burst();pcm_transport_window_continuity();multi_peer_commit_batch();
+    control_frame_profile_regression();fifo_and_cancellation_regressions();ratio_json_regression();queue_endpoint_loss_regression();remote_terminal_cancellation();demanded_sink_burst();pcm_transport_window_continuity();multi_peer_commit_batch();
     bounded_arena_rebind();
     NumericEngine engine;Replies local(engine);const auto graph=transport_fixture::graph("large",10000);local.accepted(apply(graph));
     NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0,true),"actual canonical server");
     NumericRemoteEndpoint first("127.0.0.1",server.port()),second("127.0.0.1",server.port());Replies a(first),b(second);
-    connect(first);connect(second);std::size_t ac=0,bc=0,other_count=0;DeliveredNumericFrame af,bf;
+    connect(first,&server);connect(second,&server);std::size_t ac=0,bc=0,other_count=0;DeliveredNumericFrame af,bf;
     const EndpointIdentity source_endpoint{graph.graph_id,0,domain::PortDirection::Output,0};
     require(first.subscribe_numeric_frames({source_endpoint,sink(graph)})&&second.subscribe_numeric_frames({sink(graph)}),"TCP numeric subscription refused");
     first.set_numeric_frame_handler([&](auto f){if(f.context&&f.frame&&f.frame.view().stamp.available){

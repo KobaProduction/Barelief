@@ -63,6 +63,7 @@ bool retained_axis(const domain::ResolvedProcessingNode& n,domain::PortId port,s
     const auto input=contract(n,domain::PortDirection::Input,0);
     if(!port && input){
         if(n.kind=="LogCompression" || n.kind=="VectorNormalize" || n.kind=="RecursiveFilter")return declared==input->coordinates[axis];
+        if(n.kind=="ArrayReindex" && input->shape.rank==Rank::Matrix && !axis)return declared==input->coordinates[0];
         if(n.kind=="FilterMatrixProjection")return projection_axis(n,*input,axis,declared);
     }
     return !axis?output_axis(n,declared):index_axis(declared);
@@ -90,16 +91,18 @@ bool configured_axes(const domain::ResolvedProcessingNode& node,NumericOperation
     for(std::size_t bin=0;bin<centers.size();++bin)if(numeric_operation_coordinate(out,axis,bin,centers[bin])!=Status::ok)return false;
     return true;
 }
-void disabled_shape(const domain::ConfiguredProcessingNode& node,const NumericOperationInput& input,NumericOperationOutput& out) noexcept {
-    if(out.port)return;
+bool disabled_shape(const domain::ConfiguredProcessingNode& node,const NumericOperationInput& input,NumericOperationOutput& out) noexcept {
+    if(out.port)return true;
     if(node.kind=="LogCompression" || node.kind=="VectorNormalize" || node.kind=="RecursiveFilter")out.value.actual=input.value.actual;
-    if(node.kind=="FilterMatrixProjection" && input.value.contract->shape.rank==Rank::Matrix)out.value.actual[0]=input.value.actual[0];
+    if((node.kind=="FilterMatrixProjection" || node.kind=="ArrayReindex") && input.value.contract->shape.rank==Rank::Matrix)out.value.actual[0]=input.value.actual[0];
+    if(node.kind=="TemporalFrameSequence")return temporal_frame_sequence_rows(definition(node),input.value.actual[0],out.value.actual[0]);
+    return true;
 }
 
 bool fill_disabled_common(const domain::ConfiguredProcessingNode& node,const NumericOperationInput& input,std::span<NumericOperationOutput> output,const FrameLimits& limits) noexcept {
     for(auto& value:output){
         value.value.actual={std::size_t(value.value.contract->shape.extents[0].maximum),std::size_t(value.value.contract->shape.extents[1].maximum)};
-        disabled_shape(node,input,value);
+        if(!disabled_shape(node,input,value))return false;
         if(!bind_axes(value) || fill_silence(value.value,limits)!=Status::ok)return false;
     }
     return true;

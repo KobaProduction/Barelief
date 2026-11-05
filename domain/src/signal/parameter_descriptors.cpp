@@ -14,9 +14,11 @@ constexpr ParameterDescriptor rfft[]{
         {"radix",C::Processing,V::String,0,0,0,"radix2"}};
 constexpr ParameterDescriptor raw_fourier[]{
         {"fft_size",C::Processing,V::Integer,4,4294967295.,4096,{}},
-        {"radix",C::Processing,V::String,0,0,0,"radix2"}};
+        {"radix",C::Processing,V::String,0,0,0,"radix2"},
+        {"backend_id",C::Processing,V::String,0,0,0,{}}};
 constexpr ParameterDescriptor real_fourier[]{
-        {"fft_size",C::Processing,V::Integer,8,4294967295.,4096,{}},raw_fourier[1]};
+        {"fft_size",C::Processing,V::Integer,8,4294967295.,4096,{}},raw_fourier[1],raw_fourier[2],
+        {"include_endpoints",C::Processing,V::Boolean,0,1,0,{}}};
 constexpr ParameterDescriptor comparison[]{
         {"window_samples",C::Processing,V::Integer,1,65536,512,{}},
         {"silence_threshold",C::Processing,V::Number,0,1,1e-12,{}}};
@@ -43,8 +45,9 @@ constexpr ParameterDescriptor window[]{
 constexpr ParameterDescriptor frames[]{
         {"size",C::Processing,V::Integer,1,4294967295.,4096,{}},
         {"hop_samples",C::Processing,V::Integer,1,4294967295.,512,{}}};
-constexpr ParameterDescriptor stride[]{{"every_n",C::Processing,V::Integer,1,4294967295.,1,{}}};
-constexpr ParameterDescriptor function[]{{"function",C::Processing,V::WindowFunction,0,0,0,"hann"},{"size",C::Processing,V::Integer,1,4294967295.,4096,{}},{"periodic",C::Processing,V::Boolean,0,1,0,{}}};
+constexpr ParameterDescriptor stride[]{{"every_n",C::Processing,V::Integer,1,4294967295.,1,{}},
+    {"materialize",C::Processing,V::Boolean,0,1,0,{}}};
+constexpr ParameterDescriptor function[]{{"function",C::Processing,V::WindowFunction,0,0,0,"hann"},{"size",C::Processing,V::Integer,1,4294967295.,4096,{}},{"periodic",C::Processing,V::Boolean,0,1,0,{}},{"precision",C::Processing,V::Integer,0,1,0,{}}};
 constexpr ParameterDescriptor signal[]{
         {"tones",C::Processing,V::Integer,5,10,8,{}},{"sample_rate",C::Processing,V::Integer,8000,192000,48000,{}},
         {"minimum_hz",C::Processing,V::Number,10,96000,73,{}},{"maximum_hz",C::Processing,V::Number,10,96000,13901,{}},

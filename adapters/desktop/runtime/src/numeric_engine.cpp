@@ -97,7 +97,7 @@ bool resolve_native_capture_graph(domain::NumericProcessingGraph& graph,
 
 struct NumericEngine::Impl final : application::NumericGraphPreparationPort,application::GraphRuntimePort,application::ControlClock {
     NumericEngine& owner;
-    const dataflow_runtime::NumericRuntimeProfile profile=desktop_profile();
+    const dataflow_runtime::NumericRuntimeProfile profile;
     ExecutionBoundary execution;
     std::mutex& mutex;
     EngineSnapshot& state;
@@ -146,7 +146,8 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
     std::function<void(EngineReply)> reply_handler;
     QString network_error;
     std::uint64_t snapshot_generation=0,reply_generation=0;
-    Impl(NumericEngine& target,AudioSourceFactory source):owner(target),execution(target,profile),
+    Impl(NumericEngine& target,AudioSourceFactory source,NumericEngine::ProfileDecorator decorate):owner(target),
+        profile(decorate?decorate(desktop_profile()):desktop_profile()),execution(target,profile),
         mutex(execution.mutex),state(execution.state),executor(execution.executor),delivery(execution),ingress(execution,delivery,std::move(source)) {
         ingress.snapshot_changed=[this]{if(snapshot_handler)snapshot_handler(owner.snapshot());};
         initialize_control_service();
@@ -220,7 +221,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
         if(!graph_nodes_supported(graph)||!native_capture_formats_supported(graph))return Status::incompatible_contract;
         remote_numeric::CapabilitySnapshot candidate_capabilities;
         if(candidate_capabilities.assign(graph,caps)!=Status::ok ||
-           !control::numeric::reply_envelope_fits(graph,remote_numeric::control_limits(),candidate_capabilities.value))return Status::exhausted;
+           !control::numeric::reply_envelope_fits(graph,remote_numeric::control_limits(profile.admission.frame),candidate_capabilities.value))return Status::exhausted;
         if(!retained_replies_fit(graph))return Status::exhausted;
         return prepare_platform_graph(graph,limits,out);
     }
@@ -547,7 +548,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
     }
 };
 
-NumericEngine::NumericEngine(AudioSourceFactory source,QObject* parent):QObject(parent),impl_(std::make_unique<Impl>(*this,std::move(source))){}
+NumericEngine::NumericEngine(AudioSourceFactory source,QObject* parent,ProfileDecorator decorate):QObject(parent),impl_(std::make_unique<Impl>(*this,std::move(source),std::move(decorate))){}
 NumericEngine::~NumericEngine()=default;
 void NumericEngine::set_adapter_handlers(std::unique_ptr<QObject> owner,AdapterHandlers handlers) {
     adapter_handlers_={};

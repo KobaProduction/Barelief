@@ -17,7 +17,8 @@ Status prepare_product(OperationKernelState& kernel,PlanNode& node,const Resolve
     if(resolve_processing_parameter(n,"floor_enabled",clamp)!=Status::ok || !std::holds_alternative<bool>(clamp) || !numeric_parameter(n,"floor",kernel.minimum))return Status::invalid_argument;
     kernel.clamp_floor=std::get<bool>(clamp);
     kernel.frame_input=node.product_frame_input;
-    kernel.factors.resize(kernel.input.size()*n.inputs.size());
+    if(std::get<NumericContract>(node.numeric_outputs[0]).dtype==DType::Float64)kernel.factors64.resize(kernel.input.size()*n.inputs.size());
+    else kernel.factors.resize(kernel.input.size()*n.inputs.size());
     kernel.factor_ready.resize(n.inputs.size());kernel.factor_initial_ready.resize(n.inputs.size());
     kernel.factor_actual.resize(n.inputs.size());
     kernel.data_stream.resize(profile.admission.frame.max_string_bytes);

@@ -403,7 +403,7 @@ void missing_profile_routes(const NumericProcessingGraph& initial,NumericEditorG
 }
 
 void dialog_and_persistence(const NumericProcessingGraph& initial){
-    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();const auto catalog=numeric_editor::catalog();for(const auto& kind:catalog)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();const auto catalog=numeric_editor::model_catalog();for(const auto& kind:catalog)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     NumericEditorGraphModel model(registry);QUndoStack undo;model.set_undo_stack(&undo);QString error;
     require(model.set_numeric_graph(initial,&error),"load current standard scheme");const auto original=model.save();
     const auto targets=[&]{return frequency_profile_targets(model.numeric_graph());};const auto initialTargets=targets();
@@ -422,7 +422,7 @@ void dialog_and_persistence(const NumericProcessingGraph& initial){
 }
 void resampler_live_edit_regression(){
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    const auto catalog=numeric_editor::catalog();
+    const auto catalog=numeric_editor::model_catalog();
     for(const auto& kind:catalog)
         registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     NumericEditorGraphModel model(registry);QString error;

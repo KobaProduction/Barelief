@@ -4,6 +4,7 @@
 namespace numeric_editor {
 domain::ProcessingAdmissionLimits limits();
 domain::ConfiguredProcessingNode default_node(const QString &kind);
+QStringList model_catalog();
 QStringList catalog();
 // User-facing entries expose canonical operation frontends.
 QStringList visible_catalog();

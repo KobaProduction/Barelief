@@ -19,7 +19,7 @@ Status selected_driver(const ConfiguredProcessingNode& node,std::size_t& out) {
 }
 bool product_value_valid(const NumericContract& value) {
     const auto axis=value.shape.rank==Rank::Matrix?1u:0u;
-    return value.dtype==DType::Float32 && value.channel_order.size()==1 && value.shape.extents[0].maximum &&
+    return (value.dtype==DType::Float32 || value.dtype==DType::Float64) && value.channel_order.size()==1 && value.shape.extents[0].maximum &&
         value.shape.extents[axis].minimum && value.shape.extents[axis].minimum==value.shape.extents[axis].maximum &&
         value.representation.encoding==StorageEncoding::Native && value.representation.layout==ChannelLayout::Planar &&
         (value.representation.normalization==Normalization::None || value.representation.normalization==Normalization::FloatUnit);
@@ -69,7 +69,10 @@ NumericContract product_value_contract(const ConfiguredProcessingNode& node,std:
 Status own_product_contract(const ConfiguredProcessingNode& node,std::size_t driver,OwnedProcessingContract& result) {
     auto output=node.enabled?product_value_contract(node,driver):std::get<NumericContract>(node.inputs[driver].contract.view());
     output.clock=std::get<NumericContract>(node.inputs[driver].contract.view()).clock;
-    if(node.enabled)output.representation.normalization=Normalization::None;
+    if(node.enabled){
+        output.representation.normalization=Normalization::None;
+        for(const auto& port:node.inputs)if(std::get<NumericContract>(port.contract.view()).dtype==DType::Float64){output.dtype=DType::Float64;output.representation.alignment=alignof(double);}
+    }
     return own_processing_contract(output,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,result);
 }
 }

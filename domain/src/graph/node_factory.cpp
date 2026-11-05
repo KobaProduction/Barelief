@@ -339,6 +339,7 @@ void curve_interpolation_defaults(Factory& f) {
 }
 
 void common_defaults(Factory& f,std::string_view kind) {
+    if(kind=="ArrayReindex")f.field("indices",NumericArray{{0}});
     if(kind=="CombFilterBank"){f.field("delays",NumericArray{{1}});f.field("alpha",NumericArray{{.5f}});}
     if(kind=="RecursiveFilter"){f.field("numerator",NumericArray{{1}});f.field("denominator",NumericArray{{1}});}
     if(kind=="FilterMatrixProjection")f.field("weights",NumericArray{std::vector<float>(512,1.f/512.f)});

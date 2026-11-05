@@ -8,7 +8,7 @@ namespace examples {
 namespace {
 void require(domain::ProcessingDiagnostic result,std::string_view operation={}) {
     if(!result)throw std::runtime_error("Example contract: node="+std::to_string(result.node)+
-        " error="+std::to_string(unsigned(result.error))+" operation="+std::string(operation));
+        " port="+std::to_string(result.port)+" edge="+(result.edge?std::to_string(*result.edge):"none")+" error="+std::to_string(unsigned(result.error))+" operation="+std::string(operation));
 }
 std::vector<domain::ProcessingParameter>* parameter_fields(domain::ProcessingParameters& parameters) {
     if(auto* fields=std::get_if<domain::EndpointProcessingParameters>(&parameters))return &fields->values;

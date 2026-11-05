@@ -13,4 +13,8 @@ std::size_t same_convolution_size(std::size_t input,std::size_t kernel,
     SameConvolutionCrop=SameConvolutionCrop::Largest) noexcept;
 bool convolve_same(std::span<const float> input,std::span<const float> kernel,
     std::span<float> output,SameConvolutionCrop=SameConvolutionCrop::Largest) noexcept;
+// Reference Double evaluation follows NumPy's input-forward dot reduction;
+// the established Float32 reduction remains unchanged.
+bool convolve_same(std::span<const double> input,std::span<const double> kernel,
+    std::span<double> output,SameConvolutionCrop=SameConvolutionCrop::Largest) noexcept;
 }

@@ -53,7 +53,11 @@ struct Replies {
     void accepted(EngineCommand command){const auto result=submit(std::move(command));if(!result.accepted)std::fprintf(stderr,"canonical command rejected: %s\n",qPrintable(result.error));require(result.accepted,"canonical command rejected");}
 };
 inline EngineCommand command(EngineCommand::Kind kind){EngineCommand c;c.kind=kind;return c;}
-inline void connect(NumericRemoteEndpoint& remote){remote.connect_remote();require(wait([&]{return remote.snapshot().epoch!=0;}),"CONTROL2 connection");}
+inline void connect(NumericRemoteEndpoint& remote,const NumericControlServer* server=nullptr){
+ remote.connect_remote();const bool ready=wait([&]{return remote.snapshot().epoch!=0;});
+ if(!ready)std::fprintf(stderr,"CONTROL connection diagnostics: server=%s client=%s warning=%s\n",server?qPrintable(server->error_string()):"not supplied",QJsonDocument(remote.snapshot().diagnostics).toJson(QJsonDocument::Compact).constData(),qPrintable(remote.network_warning()));
+ require(ready,"CONTROL2 connection");
+}
 template<class State> inline FrameStamp feed_stamp(const State& state,std::uint64_t sequence) {
     FrameStamp stamp;stamp.epoch=state.epoch;stamp.graph_revision=state.graph_revision;
     stamp.producer_epoch=state.epoch;stamp.generation=1;stamp.sequence=stamp.source_sequence=sequence;

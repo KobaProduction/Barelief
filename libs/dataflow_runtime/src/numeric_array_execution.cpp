@@ -11,28 +11,40 @@
 namespace dataflow_runtime::detail {
 using namespace domain;using namespace signal_contracts;
 namespace {
-double multiply_factors(const OperationKernelState& kernel,std::size_t sample) noexcept {
-    const auto count=kernel.input.size();double product=1;
-    for(std::size_t factor=0;factor<kernel.factor_ready.size();++factor)product*=kernel.factors[factor*count+sample];
+template<class Values> double product_value(const Values& values,std::size_t count,std::size_t factors,std::size_t sample) noexcept {
+    double product=1;
+    for(std::size_t factor=0;factor<factors;++factor)product*=values[factor*count+sample];
     if(std::isfinite(product) && product!=0)return product;
     double mantissa=1;int exponent=0;
-    for(std::size_t factor=0;factor<kernel.factor_ready.size();++factor){
-        int shift=0;mantissa*=std::frexp(double(kernel.factors[factor*count+sample]),&shift);exponent+=shift;
+    for(std::size_t factor=0;factor<factors;++factor){
+        int shift=0;mantissa*=std::frexp(double(values[factor*count+sample]),&shift);exponent+=shift;
     }
     return std::ldexp(mantissa,exponent);
 }
-double add_factors(const OperationKernelState& kernel,std::size_t sample) noexcept {
+double multiply_factors(const OperationKernelState& kernel,std::size_t sample) noexcept {
+    return kernel.factors64.empty()?product_value(kernel.factors,kernel.input.size(),kernel.factor_ready.size(),sample):
+        product_value(kernel.factors64,kernel.input.size(),kernel.factor_ready.size(),sample);
+}
+template<class Values> double sum_value(const Values& values,const OperationKernelState& kernel,std::size_t sample) noexcept {
     const auto count=kernel.input.size();double value=0;
-    for(std::size_t factor=0;factor<kernel.factor_ready.size();++factor)value+=kernel.factors[factor*count+sample];
+    for(std::size_t factor=0;factor<kernel.factor_ready.size();++factor)value+=values[factor*count+sample];
     if(!kernel.clamp_floor)return value;
-    return kernel.factors[kernel.frame_input*count+sample]<=kernel.minimum?kernel.minimum:std::max(value,kernel.minimum);
+    return values[kernel.frame_input*count+sample]<=kernel.minimum?kernel.minimum:std::max(value,kernel.minimum);
+}
+double add_factors(const OperationKernelState& kernel,std::size_t sample) noexcept {
+    return kernel.factors64.empty()?sum_value(kernel.factors,kernel,sample):sum_value(kernel.factors64,kernel,sample);
+}
+Status store_product_value(MutableNumericView& output,std::size_t sample,double value) noexcept {
+    const ElementIndex index{0,sample/output.actual[1],sample%output.actual[1]};
+    if(!std::isfinite(value))return Status::overflow;
+    if(output.contract->dtype==DType::Float64)return store_element(output,index,value);
+    return std::abs(value)>std::numeric_limits<float>::max()?Status::overflow:store_element(output,index,float(value));
 }
 Status render_product(OperationKernelState& kernel,const PlanNode& node,State& state) noexcept {
     auto output=mutable_output(node,state,0);output.actual=kernel.product_actual;
     for(std::size_t sample=0;sample<output.actual[0]*output.actual[1];++sample){
         const double value=kernel.add_arrays?add_factors(kernel,sample):multiply_factors(kernel,sample);
-        if(!std::isfinite(value) || std::abs(value)>std::numeric_limits<float>::max()){kernel.product_pending=false;return Status::overflow;}
-        const auto status=store_element(output,{0,sample/output.actual[1],sample%output.actual[1]},float(value));if(status!=Status::ok)return status;
+        const auto status=store_product_value(output,sample,value);if(status!=Status::ok){kernel.product_pending=false;return status;}
     }
     return Status::ok;
 }
@@ -51,6 +63,12 @@ Status retain_product_frame(OperationKernelState& kernel,State& state,const Data
     kernel.stream_size=frame.stamp.stream_id.size();kernel.product_stamp=frame.stamp;kernel.product_stamp.stream_id={};kernel.product_pending=true;kernel.product_actual=source.actual;
     return Status::ok;
 }
+Status load_product_value(OperationKernelState& kernel,std::size_t destination,const NumericView& source,std::size_t index) noexcept {
+    if(kernel.factors64.empty())return load_element(source,{0,index/source.actual[1],index%source.actual[1]},kernel.factors[destination]);
+    if(source.contract->dtype==DType::Float64)return load_element(source,{0,index/source.actual[1],index%source.actual[1]},kernel.factors64[destination]);
+    float value=0;const auto status=load_element(source,{0,index/source.actual[1],index%source.actual[1]},value);
+    kernel.factors64[destination]=value;return status;
+}
 Status load_product_lane(OperationKernelState& kernel,std::size_t lane,const NumericView& source) noexcept {
     const auto count=kernel.input.size();
     const bool scalar=source.contract->shape.rank==Rank::Scalar;
@@ -58,7 +76,7 @@ Status load_product_lane(OperationKernelState& kernel,std::size_t lane,const Num
     const auto loaded=source.contract->shape.rank==Rank::Matrix?actual:count;
     for(std::size_t sample=0;sample<loaded;++sample){
         const auto index=scalar?0:sample%actual;
-        const auto status=load_element(source,{0,index/source.actual[1],index%source.actual[1]},kernel.factors[lane*count+sample]);if(status!=Status::ok)return status;
+        const auto status=load_product_value(kernel,lane*count+sample,source,index);if(status!=Status::ok)return status;
     }
     kernel.factor_actual[lane]=source.contract->shape.rank==Rank::Matrix?source.actual:std::array<std::size_t,2>{};
     kernel.factor_ready[lane]=true;return Status::ok;

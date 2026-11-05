@@ -39,6 +39,12 @@ private:
     PreparedRecursiveFilter kernel_;std::vector<float> input_,output_;
 };
 struct ProjectionConfig {std::size_t rows=1,bins=0,bands=0;Rank rank=Rank::Vector;FilterProjectionOptions options;};
+bool projection_options(const domain::ResolvedProcessingNode& n,FilterProjectionOptions& options) noexcept {
+    const auto mode=parameter(n,"accumulation")?text(n,"accumulation"):std::string_view{"separate"};
+    if(mode!="separate" && mode!="sequential_fma")return false;
+    options.accumulation=mode=="sequential_fma"?FilterProjectionAccumulation::SequentialFma:FilterProjectionAccumulation::Separate;
+    return flag(n,"compensated",true,options.compensated) && flag(n,"square_input",false,options.square_input) && valid_filter_projection_options(options);
+}
 bool projection_config(const domain::ResolvedProcessingNode& n,ProjectionConfig& c) noexcept {
     const auto input=contract(n,domain::PortDirection::Input,0);
     if(!input || input->dtype!=DType::Float32 || input->channel_order.size()!=1 || input->representation.encoding!=StorageEncoding::Native || input->representation.valid_bits || input->representation.layout!=ChannelLayout::Planar)return false;
@@ -51,7 +57,7 @@ bool projection_config(const domain::ResolvedProcessingNode& n,ProjectionConfig&
     if(!c.bins || weights.empty() || weights.size()%c.bins)return false;
     c.bands=weights.size()/c.bins;
     if(!centers.empty() && centers.size()!=c.bands)return false;
-    return flag(n,"compensated",true,c.options.compensated) && flag(n,"square_input",false,c.options.square_input) &&
+    return projection_options(n,c.options) &&
         std::all_of(weights.begin(),weights.end(),[](float v){return std::isfinite(v);}) &&
         std::all_of(centers.begin(),centers.end(),[](float v){return std::isfinite(v) && v>=0;});
 }

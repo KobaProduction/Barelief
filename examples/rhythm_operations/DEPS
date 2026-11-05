@@ -1,0 +1,2 @@
+# This opt-in composition root supplies the generic and rhythm graph factories.
+include_rules = ['+rhythm_graph_adapters', '+dsp_graph_adapters']

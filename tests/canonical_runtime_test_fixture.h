@@ -35,19 +35,26 @@ inline void source_geometry(ConfiguredProcessingNode& source_node,std::size_t ra
 }
 template<class Field> inline void transform_geometry_field(Field& field,bool window_node,std::size_t rate,std::size_t window) {
  if(field.key=="size" && window_node)field.value=NumericLiteral{std::uint64_t(window)};
- if(field.key=="input_rate" && window_node)field.value=NumericLiteral{std::uint64_t(rate)};
+ if(field.key=="fft_size" && !window_node)field.value=NumericLiteral{std::uint64_t(window)};
  if(field.key=="sample_rate" && !window_node)field.value=NumericLiteral{std::uint64_t(rate)};
  if(field.key=="bin_hz" && !window_node)field.value=NumericLiteral{double(rate)/double(window)};
 }
 inline void transform_geometry(ConfiguredProcessingNode& configured,std::size_t rate,std::size_t window){
-  if(configured.kind!="Window" && configured.kind!="BarkWeighting" && configured.kind!="Mel")return;
+  if(configured.kind!="Window" && configured.kind!="WindowFunction" && configured.kind!="BarkWeighting" && configured.kind!="Mel")return;
   auto& values=std::get<TransformProcessingParameters>(configured.parameters).values;
-  for(auto& field:values)transform_geometry_field(field,configured.kind=="Window",rate,window);
+  for(auto& field:values)transform_geometry_field(field,configured.kind=="Window" || configured.kind=="WindowFunction",rate,window);
 
+}
+inline NumericContract fixture_port_geometry(const ConfiguredProcessingNode& configured,const ProcessingPort& port,std::size_t rate,std::size_t window,std::size_t block){
+ auto contract=adjusted_geometry(std::get<NumericContract>(port.contract.view()),rate,window,block);
+ const bool window_output=port.direction==PortDirection::Output && (configured.kind=="Window" || configured.kind=="WindowFunction");
+ const bool fixed_array=contract.shape.rank==Rank::Vector && contract.shape.axes[0]==Axis::Declared && contract.shape.extents[0].minimum==contract.shape.extents[0].maximum;
+ if(contract.shape.rank==Rank::Vector && (fixed_array || window_output || configured.kind=="ArrayMultiply" || (configured.kind=="StereoFFT" && port.direction==PortDirection::Input)))contract.shape.extents[0]={window,window};
+ return contract;
 }
 inline void geometry(NumericProcessingGraph& graph,std::size_t rate,std::size_t window,std::size_t block){
  for(auto& configured:graph.nodes)for(auto* ports:{&configured.inputs,&configured.outputs})for(auto& port:*ports){
-  const auto contract=adjusted_geometry(std::get<NumericContract>(port.contract.view()),rate,window,block);
+  const auto contract=fixture_port_geometry(configured,port,rate,window,block);
   check(own_processing_contract(contract,limits,65536,port.contract)==Status::ok,"own adjusted contract");
  }
  for(auto& configured:graph.nodes)transform_geometry(configured,rate,window);

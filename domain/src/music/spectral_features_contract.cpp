@@ -69,19 +69,19 @@ bool declared_size(const SpectralContract& context,std::size_t& out) {
 bool declared_fft(const SpectralContract& context,std::size_t& out) {
     return declared_size(context,out) && !(out&(out-1));
 }
-Status real_fft_output(SpectralContract& context,std::size_t size,std::uint64_t rate) {
+void real_fft_output(SpectralContract& context,std::size_t size,std::uint64_t rate) {
     auto& output=context.output;output.quantity=Quantity::SpectrumComplex;output.unit=NumericUnit::RawAmplitude;
     output.shape={Rank::Matrix,{Axis::Bin,Axis::Component},{ExtentBounds{size/2+1,size/2+1},ExtentBounds{2,2}}};
     output.coordinates={context.frequency(size,rate),AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}}};
-    return Status::ok;
 }
 Status real_fft(SpectralContract& context) {
     std::size_t size=0;if(!declared_fft(context,size))return Status::invalid_argument;
     const auto radix=context.text("radix");if(radix!="radix2" && radix!="radix4")return Status::invalid_argument;
     const auto& input=context.input;
-    if(input.shape.rank!=Rank::Vector || input.shape.axes[0]!=Axis::Sample || !context.fixed() || input.shape.extents[0].maximum!=size)return Status::incompatible_contract;
+    if(input.shape.rank!=Rank::Vector || (input.shape.axes[0]!=Axis::Sample && input.shape.axes[0]!=Axis::Declared) || !context.fixed() || input.shape.extents[0].maximum!=size)return Status::incompatible_contract;
     double rate=0;if(!context.number("sample_rate",rate) || rate<1 || rate>UINT32_MAX || std::floor(rate)!=rate)return Status::invalid_argument;
-    return real_fft_output(context,size,std::uint64_t(rate));
+    real_fft_output(context,size,std::uint64_t(rate));
+    return Status::ok;
 }
 struct Projection {std::string_view id;Quantity quantity;NumericUnit unit;};
 constexpr Projection projections[]{
@@ -105,21 +105,26 @@ bool projection_grid(const SpectralContract& context,std::size_t size) {
     if(input.coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE && !declared_frequency_axis_matches(input.coordinates[0],rate/double(size),std::uint64_t(first)))return false;
     return input.shape.extents[0].maximum<=available-first;
 }
-bool projection_input(const SpectralContract& context,std::size_t size) {
+bool complex_matrix_shape(const SpectralContract& context) {
     const auto& input=context.input;
     return input.shape.rank==Rank::Matrix && input.shape.axes==std::array{Axis::Bin,Axis::Component} &&
-        context.fixed() && context.fixed(1) && input.shape.extents[1].maximum==2 && projection_grid(context,size);
+        context.fixed() && context.fixed(1) && input.shape.extents[1].maximum==2;
+}
+bool projection_input(const SpectralContract& context,std::size_t size) {
+    return complex_matrix_shape(context) && projection_grid(context,size);
 }
 bool projection_policy(const SpectralContract& context) {
     const auto norm=context.text("magnitude_norm"),zero=context.text("zero_phase"),scaling=context.text("scaling_source");
-    if((norm!="hypot" && norm!="squared_norm") || (zero!="zero" && zero!="atan2") || (scaling!="window" && scaling!="coefficients"))return false;
+    if((norm!="hypot" && norm!="squared_norm" && norm!="scaled_ratio_fma") || (zero!="zero" && zero!="atan2") || (scaling!="window" && scaling!="coefficients"))return false;
     double exponent=0;return context.number("magnitude_exponent",exponent) && exponent>=0 && exponent<=std::numeric_limits<float>::max();
 }
-bool magnitude_units(std::string_view representation,bool normalized,double exponent,NumericContract& output) {
-    if(representation!="magnitude" || exponent==1)return true;
-    if(normalized)return false;
-    output.quantity=exponent==2?Quantity::SpectrumPower:Quantity::Unspecified;
-    output.unit=exponent==2?NumericUnit::SquaredAmplitude:NumericUnit::Values;return true;
+bool projection_exponent_units(std::string_view representation,double exponent,bool normalized,NumericContract& output) {
+    if(representation=="magnitude" && exponent!=1){
+        output.quantity=exponent==2?Quantity::SpectrumPower:Quantity::Unspecified;
+        output.unit=exponent==2?NumericUnit::SquaredAmplitude:NumericUnit::Values;
+        return !normalized;
+    }
+    return true;
 }
 bool projection_units(const SpectralContract& context,std::string_view representation,NumericContract& output) {
     const ResolvedProcessingNode view{context.node.id,context.node.kind,NodeRole::Processor,ProcessingOperation::MusicTransform,context.node.inputs,context.node.outputs,&context.node.parameters,context.node.enabled};
@@ -127,7 +132,7 @@ bool projection_units(const SpectralContract& context,std::string_view represent
     if(resolve_processing_parameter(view,"normalize",normalized)!=Status::ok || !std::holds_alternative<bool>(normalized) || !context.number("magnitude_exponent",exponent))return false;
     if(!std::get<bool>(normalized) && representation=="psd"){output.quantity=Quantity::SpectrumPower;output.unit=NumericUnit::SquaredAmplitude;}
     if(!std::get<bool>(normalized) && representation=="peak_amplitude"){output.quantity=Quantity::SpectrumMagnitude;output.unit=NumericUnit::RawAmplitude;}
-    return magnitude_units(representation,std::get<bool>(normalized),exponent,output);
+    return projection_exponent_units(representation,exponent,std::get<bool>(normalized),output);
 }
 Status project_representation(SpectralContract& context) {
     const auto representation=context.text("representation");

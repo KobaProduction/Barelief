@@ -40,22 +40,27 @@ bool read_knot_spacing(const QJsonObject& o,CurveKnotSpacing& spacing) {
     if(field.toString()=="hybrid_hz"){spacing=CurveKnotSpacing::HybridHz;return true;}
     return false;
 }
+bool read_level_reference(const QJsonObject& o,CurveLevelReference& result) {
+    // Older profiles used absolute levels. Missing metadata must not silently
+    // reinterpret their coefficients or the measured arrays after loading.
+    const auto reference=o.value("level_reference");
+    if(reference.isUndefined() || reference.toString()=="absolute_amplitude")
+        result=CurveLevelReference::AbsoluteAmplitude;
+    else if(reference.toString()=="track_spectral_maximum")
+        result=CurveLevelReference::TrackSpectralMaximum;
+    else if(reference.toString()=="corpus_spectral_maximum")
+        result=CurveLevelReference::CorpusSpectralMaximum;
+    else return false;
+    return true;
+}
+
 bool read_options(const QJsonObject& o,FrequencyCurveOptions& options) {
     if(!read_methods(o,options))return false;
     double degree=0,segments=0;
     if(!number(o,"degree",degree) || degree<1 || degree>12 || std::floor(degree)!=degree ||
         !number(o,"segments",segments) || segments<2 || segments>2048 || std::floor(segments)!=segments)return false;
     options.polynomial_degree=unsigned(degree);options.segments=std::size_t(segments);
-    // Older profiles used absolute levels. Missing metadata must not silently
-    // reinterpret their coefficients or the measured arrays after loading.
-    const auto reference=o.value("level_reference");
-    if(reference.isUndefined() || reference.toString()=="absolute_amplitude")
-        options.level_reference=CurveLevelReference::AbsoluteAmplitude;
-    else if(reference.toString()=="track_spectral_maximum")
-        options.level_reference=CurveLevelReference::TrackSpectralMaximum;
-    else if(reference.toString()=="corpus_spectral_maximum")
-        options.level_reference=CurveLevelReference::CorpusSpectralMaximum;
-    else return false;
+    if(!read_level_reference(o,options.level_reference))return false;
     return read_knot_spacing(o,options.knot_spacing) &&
         number(o,"percentile",options.percentile) && number(o,"regularization_db",options.regularization_db) && number(o,"max_gain",options.max_gain);
 }

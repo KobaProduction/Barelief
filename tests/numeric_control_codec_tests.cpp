@@ -941,9 +941,6 @@ domain::NumericProcessingGraph native_owned_graph(const auto& input_contracts,co
         if (i < 2)
             std::get<domain::TransformProcessingParameters>(n.parameters)
                 .values.push_back({"size", Literal{std::uint64_t{512}}});
-        if (i == 0)
-            std::get<domain::TransformProcessingParameters>(n.parameters)
-                .values.push_back({"input_rate", Literal{std::uint64_t{48000}}});
         for (bool input : {true, false}) {
             domain::OwnedProcessingContract contract;
             CHECK(domain::own_processing_contract((input ? input_contracts[i] : output_contracts[i]), limits.frame, 65536, contract) ==

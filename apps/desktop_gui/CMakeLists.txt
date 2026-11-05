@@ -25,6 +25,14 @@ qt_add_resources(desktop_gui_composition barelief_licenses PREFIX "/barelief"
 target_include_directories(desktop_gui_composition PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(desktop_gui_composition PUBLIC core_app_components desktop_gui_configuration desktop_numeric_defaults desktop_numeric_remote desktop_numeric_routing desktop_processor_discovery
     PRIVATE desktop_analysis desktop_resampling)
+option(BARELIEF_RHYTHM_REFERENCE_GUI "Enable the local GPL/AGPL rhythm research profile" OFF)
+if(BARELIEF_RHYTHM_REFERENCE_GUI)
+    target_sources(desktop_gui_composition PRIVATE src/research_gui_engine.cpp
+        ../rhythm_reference/research_profile.cpp)
+    target_include_directories(desktop_gui_composition PRIVATE ../rhythm_reference)
+    target_compile_definitions(desktop_gui_composition PRIVATE BARELIEF_RHYTHM_REFERENCE_GUI=1)
+    target_link_libraries(desktop_gui_composition PRIVATE rhythm_reference_graphs desktop_fourier_backend)
+endif()
 add_executable(core_app main.cpp package_verification_probe.cpp)
 if(BARELIEF_DEV_TELEMETRY)
     target_sources(core_app PRIVATE dev_telemetry_ui.cpp)

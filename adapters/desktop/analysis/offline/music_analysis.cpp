@@ -385,19 +385,29 @@ AnalysisResult scan_music_files(const QStringList& files,const AnalysisOptions& 
     return result;
 }
 
-AnalysisResult scan_music_in_parts(
-    const QStringList& files, const AnalysisOptions& options, const std::atomic_bool& cancel,
-    const AnalysisServices::Progress& progress, const decltype(AnalysisServices::scan_files)& scan,
-    const decltype(AnalysisServices::save_scan)& save, const QString& output_directory,
-    qsizetype tracks_per_part) {
-    AnalysisResult combined;
-    combined.requested_track_count=std::size_t(files.size());
-    if(files.isEmpty() || output_directory.isEmpty() || !scan || !save || tracks_per_part<=0 ||
-       !QDir(output_directory).exists()){
-        combined.errors.append("Invalid folder or scan archive service");
-        return combined;
-    }
-    QDir output(output_directory);
+namespace {
+struct ScanCollectionInput {
+    const QStringList& files;
+    const AnalysisOptions& options;
+    const std::atomic_bool& cancel;
+    const AnalysisServices::Progress& progress;
+    const decltype(AnalysisServices::scan_files)& scan;
+    const decltype(AnalysisServices::save_scan)& save;
+    const QString& output_directory;
+    qsizetype tracks_per_part;
+};
+struct ScanCollectionPaths {QString temporary,final;};
+struct ScanCollectionParts {
+    QJsonArray parts;
+    MusicScanSummaryAccumulator cached_summary;
+    const bool cache_enabled=true;
+    std::size_t failed_tracks=0,recorded_tracks=0;
+};
+bool valid_scan_collection_input(const ScanCollectionInput& input) {
+    return !(input.files.isEmpty() || input.output_directory.isEmpty() || !input.scan || !input.save || input.tracks_per_part<=0 ||
+             !QDir(input.output_directory).exists());
+}
+bool remove_abandoned_scan_data(const QDir& output,AnalysisResult& combined) {
     // A failed process cannot clean up its temporary data. The next start
     // removes only staging directories created by this scanner.
     const auto stale=output.entryInfoList({".barelief-scan-incomplete-*"},
@@ -405,114 +415,140 @@ AnalysisResult scan_music_in_parts(
     for(const auto& entry:stale)
         if(!QDir(entry.absoluteFilePath()).removeRecursively()){
             combined.errors.append(QStringLiteral("Cannot remove abandoned scan data: %1").arg(entry.absoluteFilePath()));
-            return combined;
+            return false;
         }
+    return true;
+}
+bool prepare_scan_collection(const ScanCollectionInput& input,ScanCollectionPaths& paths,AnalysisResult& combined) {
+    if(!valid_scan_collection_input(input)){combined.errors.append("Invalid folder or scan archive service");return false;}
+    QDir output(input.output_directory);
+    if(!remove_abandoned_scan_data(output,combined))return false;
     const auto tag=QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
-    const auto temporary=output.filePath(QStringLiteral(".barelief-scan-incomplete-%1").arg(tag));
-    const auto final=output.filePath(QStringLiteral("music-scan-%1.brscan").arg(tag));
-    if(QFileInfo::exists(temporary) || QFileInfo::exists(final) || !output.mkdir(QFileInfo(temporary).fileName())){
-        combined.errors.append("Cannot prepare a clean scan directory");
-        return combined;
+    paths.temporary=output.filePath(QStringLiteral(".barelief-scan-incomplete-%1").arg(tag));
+    paths.final=output.filePath(QStringLiteral("music-scan-%1.brscan").arg(tag));
+    if(QFileInfo::exists(paths.temporary) || QFileInfo::exists(paths.final) || !output.mkdir(QFileInfo(paths.temporary).fileName())){
+        combined.errors.append("Cannot prepare a clean scan directory");return false;
     }
-    const QDir temporary_dir(temporary);
-    QJsonArray parts;
-    MusicScanSummaryAccumulator cached_summary;
-    const bool cache_enabled=true;
-    std::size_t failed_tracks=0;
-    std::size_t recorded_tracks=0;
-    bool completed=true;
-    const auto total=std::size_t(files.size());
-    for(qsizetype offset=0;offset<files.size();offset+=tracks_per_part){
-        if(cancel.load()){combined.cancelled=true;completed=false;break;}
-        const auto number=qulonglong(offset/tracks_per_part+1);
-        const auto name=QStringLiteral("music-scan-part-%1.brscan").arg(number,6,10,QLatin1Char('0'));
-        const auto destination=temporary_dir.filePath(name);
-        const auto chunk=files.mid(offset,tracks_per_part);
-        auto part=scan(chunk,options,cancel,[&progress,offset,total](std::size_t done,std::size_t){
-            if(progress)progress(std::size_t(offset)+done,total);
-        });
-        if(part.cancelled){combined.cancelled=true;completed=false;break;}
-        if(!part.success){
-            combined.errors.append(QStringLiteral("Batch %1 failed").arg(number));
-            combined.errors.append(part.errors);
-            completed=false;break;
-        }
-        // Previews are a separate UI derivative, not scientific bin statistics.
-        // Keeping thousands in the scan archive can reject otherwise valid
-        // measurements when decoder duration estimates differ from actual PCM.
-        // A selected-track preview can be rebuilt on demand from its source.
-        part.document.previews.clear();
-        part.preview={};
-        QString error;
-        if(cache_enabled && !cached_summary.add(part.document,error)){
-            combined.errors.append("Cannot aggregate scan summary: "+error);
-            completed=false;break;
-        }
-        if(!save(destination,part.document,error)){
-            combined.errors.append(QStringLiteral("Cannot save scan part %1: %2").arg(name,error));
-            completed=false;break;
-        }
-        const auto successful=part.document.profile.compositions.size();
-        recorded_tracks+=successful;
-        failed_tracks+=part.errors.size();
-        parts.append(QJsonObject{{"name",name},{"requested_count",chunk.size()},
+    return true;
+}
+bool persist_scan_part(AnalysisResult& part,const ScanCollectionInput& input,const QString& destination,
+                       const QString& name,ScanCollectionParts& parts,AnalysisResult& combined) {
+    // Previews are a separate UI derivative, not scientific bin statistics.
+    // Keeping thousands in the scan archive can reject otherwise valid
+    // measurements when decoder duration estimates differ from actual PCM.
+    // A selected-track preview can be rebuilt on demand from its source.
+    part.document.previews.clear();part.preview={};
+    QString error;
+    if(parts.cache_enabled && !parts.cached_summary.add(part.document,error)){
+        combined.errors.append("Cannot aggregate scan summary: "+error);return false;
+    }
+    if(!input.save(destination,part.document,error)){
+        combined.errors.append(QStringLiteral("Cannot save scan part %1: %2").arg(name,error));return false;
+    }
+    return true;
+}
+void record_scan_part(AnalysisResult& part,const QStringList& chunk,const QString& name,
+                      ScanCollectionParts& parts,AnalysisResult& combined) {
+    const auto successful=part.document.profile.compositions.size();
+    parts.recorded_tracks+=successful;parts.failed_tracks+=part.errors.size();
+    parts.parts.append(QJsonObject{{"name",name},{"requested_count",chunk.size()},
                                  {"processed_count",int(successful)},
                                  {"failed_count",int(part.errors.size())}});
-        combined.audio_seconds+=part.audio_seconds;
-        combined.wall_seconds+=part.wall_seconds;
-        combined.errors.append(part.errors);
-        combined.document=std::move(part.document);
-        combined.preview=std::move(part.preview);
-        ++combined.saved_part_count;
+    combined.audio_seconds+=part.audio_seconds;combined.wall_seconds+=part.wall_seconds;
+    combined.errors.append(part.errors);combined.document=std::move(part.document);
+    combined.preview=std::move(part.preview);++combined.saved_part_count;
+}
+AnalysisResult invoke_scan_part(const ScanCollectionInput& input,const QStringList& chunk,
+                                qsizetype offset,std::size_t total) {
+    return input.scan(chunk,input.options,input.cancel,[&progress=input.progress,offset,total](std::size_t done,std::size_t){
+        if(progress)progress(std::size_t(offset)+done,total);
+    });
+}
+
+bool scan_collection_part(const ScanCollectionInput& input,const QDir& temporary_dir,qsizetype offset,
+                          std::size_t total,ScanCollectionParts& parts,AnalysisResult& combined) {
+    const auto number=qulonglong(offset/input.tracks_per_part+1);
+    const auto name=QStringLiteral("music-scan-part-%1.brscan").arg(number,6,10,QLatin1Char('0'));
+    const auto destination=temporary_dir.filePath(name);
+    const auto chunk=input.files.mid(offset,input.tracks_per_part);
+    auto part=invoke_scan_part(input,chunk,offset,total);
+    if(part.cancelled){combined.cancelled=true;return false;}
+    if(!part.success){
+        combined.errors.append(QStringLiteral("Batch %1 failed").arg(number));combined.errors.append(part.errors);return false;
     }
-    if(completed && !cancel.load()){
-        QJsonObject manifest{
-            {"kind","barelief.music_scan_collection"},{"version",1},
-            {"requested_count",int(files.size())},{"processed_count",int(recorded_tracks)},
-            {"failed_count",int(failed_tracks)},{"parts",parts},
-            {"fft_size",int(options.compatibility.fft_size)},
-            {"note","Complete scan collection; inner parts preserve original measurements"}
-        };
-        QSaveFile metadata(temporary_dir.filePath("manifest.json"));
-        const auto encoded=QJsonDocument(manifest).toJson(QJsonDocument::Indented);
-        if(!metadata.open(QIODevice::WriteOnly) ||
-           metadata.write(encoded)!=encoded.size() || !metadata.commit()){
-            combined.errors.append("Cannot finalize scan collection manifest");
-            completed=false;
-        }else{
-            QString error;
-            const auto cache=cache_enabled?cached_summary.result():QJsonObject{};
-            if(!save_music_scan_collection(temporary_dir,final,manifest,parts,error,cache)){
-                combined.errors.append(QStringLiteral("Cannot commit complete .brscan: %1").arg(error));
-                completed=false;
-            }else{
-                MusicScanCollectionInfo info;
-                if(!inspect_music_scan(final,info,error) ||
-                   info.requested_count!=std::size_t(files.size()) ||
-                   info.processed_count!=recorded_tracks ||
-                   info.failed_count!=failed_tracks ||
-                   info.part_count!=std::size_t(parts.size())){
-                    combined.errors.append("Written .brscan failed collection verification: "+error);
-                    QFile::remove(final);
-                    completed=false;
-                }
-            }
-        }
-    }else completed=false;
-    if(!completed){
-        QDir(temporary).removeRecursively();
-        combined.success=false;
-        combined.document={};
-        combined.preview={};
-        combined.saved_part_count=0;
-        combined.batch_directory.clear();
-        return combined;
+    if(!persist_scan_part(part,input,destination,name,parts,combined))return false;
+    record_scan_part(part,chunk,name,parts,combined);return true;
+}
+bool scan_collection_parts(const ScanCollectionInput& input,const QDir& temporary_dir,
+                           ScanCollectionParts& parts,AnalysisResult& combined) {
+    const auto total=std::size_t(input.files.size());
+    for(qsizetype offset=0;offset<input.files.size();offset+=input.tracks_per_part){
+        if(input.cancel.load()){combined.cancelled=true;return false;}
+        if(!scan_collection_part(input,temporary_dir,offset,total,parts,combined))return false;
     }
-    if(!QDir(temporary).removeRecursively()){
-        combined.errors.append("Completed .brscan is valid, but staging directory cleanup failed: "+temporary);
+    return true;
+}
+QJsonObject scan_collection_manifest(const ScanCollectionInput& input,const ScanCollectionParts& parts) {
+    return {{"kind","barelief.music_scan_collection"},{"version",1},
+            {"requested_count",int(input.files.size())},{"processed_count",int(parts.recorded_tracks)},
+            {"failed_count",int(parts.failed_tracks)},{"parts",parts.parts},
+            {"fft_size",int(input.options.compatibility.fft_size)},
+            {"note","Complete scan collection; inner parts preserve original measurements"}};
+}
+bool verify_written_scan(const ScanCollectionInput& input,const ScanCollectionParts& parts,
+                         const QString& final,AnalysisResult& combined,QString& error) {
+    MusicScanCollectionInfo info;
+    if(!inspect_music_scan(final,info,error) || info.requested_count!=std::size_t(input.files.size()) ||
+       info.processed_count!=parts.recorded_tracks || info.failed_count!=parts.failed_tracks ||
+       info.part_count!=std::size_t(parts.parts.size())){
+        combined.errors.append("Written .brscan failed collection verification: "+error);QFile::remove(final);return false;
     }
-    combined.success=true;
-    combined.batch_directory=final;
-    return combined;
+    return true;
+}
+bool commit_scan_collection(const ScanCollectionInput& input,const ScanCollectionPaths& paths,const QDir& temporary_dir,
+                            const ScanCollectionParts& parts,AnalysisResult& combined) {
+    const auto manifest=scan_collection_manifest(input,parts);
+    QSaveFile metadata(temporary_dir.filePath("manifest.json"));
+    const auto encoded=QJsonDocument(manifest).toJson(QJsonDocument::Indented);
+    if(!metadata.open(QIODevice::WriteOnly) || metadata.write(encoded)!=encoded.size() || !metadata.commit()){
+        combined.errors.append("Cannot finalize scan collection manifest");return false;
+    }
+    QString error;const auto cache=parts.cache_enabled?parts.cached_summary.result():QJsonObject{};
+    if(!save_music_scan_collection(temporary_dir,paths.final,manifest,parts.parts,error,cache)){
+        combined.errors.append(QStringLiteral("Cannot commit complete .brscan: %1").arg(error));return false;
+    }
+    return verify_written_scan(input,parts,paths.final,combined,error);
+}
+bool complete_scan_collection(const ScanCollectionInput& input,const ScanCollectionPaths& paths,const QDir& temporary_dir,
+                              ScanCollectionParts& parts,AnalysisResult& combined) {
+    if(!scan_collection_parts(input,temporary_dir,parts,combined))return false;
+    if(input.cancel.load())return false;
+    return commit_scan_collection(input,paths,temporary_dir,parts,combined);
+}
+void discard_scan_collection(const ScanCollectionPaths& paths,AnalysisResult& combined) {
+    QDir(paths.temporary).removeRecursively();combined.success=false;combined.document={};combined.preview={};
+    combined.saved_part_count=0;combined.batch_directory.clear();
+}
+void finish_scan_collection(const ScanCollectionPaths& paths,AnalysisResult& combined) {
+    if(!QDir(paths.temporary).removeRecursively())
+        combined.errors.append("Completed .brscan is valid, but staging directory cleanup failed: "+paths.temporary);
+    combined.success=true;combined.batch_directory=paths.final;
+}
+}
+
+AnalysisResult scan_music_in_parts(
+    const QStringList& files, const AnalysisOptions& options, const std::atomic_bool& cancel,
+    const AnalysisServices::Progress& progress, const decltype(AnalysisServices::scan_files)& scan,
+    const decltype(AnalysisServices::save_scan)& save, const QString& output_directory,
+    qsizetype tracks_per_part) {
+    AnalysisResult combined;combined.requested_track_count=std::size_t(files.size());
+    const ScanCollectionInput input{files,options,cancel,progress,scan,save,output_directory,tracks_per_part};
+    ScanCollectionPaths paths;
+    if(!prepare_scan_collection(input,paths,combined))return combined;
+    const QDir temporary_dir(paths.temporary);ScanCollectionParts parts;
+    if(!complete_scan_collection(input,paths,temporary_dir,parts,combined)){
+        discard_scan_collection(paths,combined);return combined;
+    }
+    finish_scan_collection(paths,combined);return combined;
 }
 }

@@ -5,7 +5,7 @@ add_library(dsp_graph_adapters STATIC
     src/histogram_bindings.cpp src/state_bindings.cpp
     src/model_bindings.cpp src/spectral_sequence_settings.cpp src/spectral_sequence_bindings.cpp src/spectral_composition.cpp
     src/common_operations.cpp src/common_support.cpp src/common_values.cpp
-    src/common_filters.cpp src/common_sequences.cpp src/feature_aggregate.cpp src/profile.cpp)
+    src/common_filters.cpp src/common_sequences.cpp src/feature_aggregate.cpp src/array_reindex.cpp src/temporal_frame_sequence.cpp src/profile.cpp)
 target_include_directories(dsp_graph_adapters PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_features(dsp_graph_adapters PUBLIC cxx_std_20)

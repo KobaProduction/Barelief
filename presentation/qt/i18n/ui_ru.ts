@@ -2515,6 +2515,10 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Frequency profiles (*.json)</source><translation>Частотные профили (*.json)</translation></message>
 <message><source>Could not read frequency profile</source><translation>Не удалось прочитать частотный профиль</translation></message>
 <message><source>Storage precision</source><translation>Точность хранения</translation></message>
+<message><source>Numerical precision</source><translation>Точность вычислений</translation></message>
+<message><source>Accumulation mode</source><translation>Режим суммирования</translation></message>
+<message><source>Portable Float32</source><translation>Переносимый Float32</translation></message>
+<message><source>Desktop reference</source><translation>Эталонная точность</translation></message>
 <message><source>SpeexDSP quality</source><translation>Качество SpeexDSP</translation></message>
 <message><source>Band boundaries, Hz</source><translation>Границы полос, Гц</translation></message>
 <message><source>Manual frequency gain</source><translation>Ручной частотный коэффициент</translation></message>
@@ -2680,6 +2684,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Array operation</source><translation>Операция над массивами</translation></message>
 <message><source>Explicit coefficients: %1</source><translation>Задано коэффициентов: %1</translation></message>
 <message><source>Tools</source><translation>Инструменты</translation></message>
+<message><source>Rhythm references</source><translation>Эталонные алгоритмы ритма</translation></message>
 <message><source>Multiply</source><translation>Умножение</translation></message>
 <message><source>Add</source><translation>Сложение</translation></message>
 <message><source>Elementwise addition</source><translation>Поэлементное сложение</translation></message>
@@ -2898,5 +2903,97 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Noise</source><translation>Шум</translation></message>
 <message><source>Rustle</source><translation>Шелест</translation></message>
 <message><source>Air</source><translation>Воздух</translation></message>
+</context>
+<context>
+<name>Ui</name>
+<message><source>ArrayReindex</source><translation>Выборка и перестановка массива</translation></message>
+<message><source>TemporalFrameSequence</source><translation>Матрица кадров сигнала</translation></message>
+<message><source>Aubio: default onset and tempo</source><translation>Aubio: атаки и темп по умолчанию</translation></message>
+<message><source>Aubio PCM window</source><translation>Aubio: окно PCM</translation></message>
+<message><source>Aubio raw magnitude</source><translation>Aubio: исходный модуль</translation></message>
+<message><source>Aubio phase</source><translation>Aubio: фаза</translation></message>
+<message><source>Aubio compressed magnitude</source><translation>Aubio: сжатый модуль</translation></message>
+<message><source>Aubio HFC history</source><translation>Aubio: история HFC</translation></message>
+<message><source>Aubio thresholded flux history</source><translation>Aubio: история порогового потока</translation></message>
+<message><source>Aubio onset sample</source><translation>Aubio: отсчёт атаки</translation></message>
+<message><source>Aubio onset detected</source><translation>Aubio: обнаружена атака</translation></message>
+<message><source>Aubio tempo, BPM</source><translation>Aubio: темп, BPM</translation></message>
+<message><source>Aubio beat sample</source><translation>Aubio: отсчёт доли</translation></message>
+<message><source>Aubio source tactus</source><translation>Aubio: исходный tactus</translation></message>
+<message><source>Aubio autocorrelation</source><translation>Aubio: автокорреляция</translation></message>
+<message><source>Aubio tracker history</source><translation>Aubio: история трекера</translation></message>
+<message><source>Aubio tatum poll</source><translation>Aubio: опрос tatum</translation></message>
+<message><source>Aubio tatum sample</source><translation>Aubio: отсчёт tatum</translation></message>
+</context>
+<context>
+<name>Ui</name>
+<message><source>Rhythm: BTrack reference pipeline</source><translation>Ритм: эталонный пайплайн BTrack</translation></message>
+<message><source>BTrack PCM frame</source><translation>BTrack: кадр PCM</translation></message>
+<message><source>BTrack raw magnitude</source><translation>BTrack: исходный модуль</translation></message>
+<message><source>BTrack seeded ODF history</source><translation>BTrack: начальная история ODF</translation></message>
+<message><source>BTrack sinc ODF history</source><translation>BTrack: sinc-история ODF</translation></message>
+<message><source>BTrack balanced ACF</source><translation>BTrack: сбалансированная ACF</translation></message>
+<message><source>BTrack comb response</source><translation>BTrack: гребёнчатый отклик</translation></message>
+<message><source>BTrack tempo observations</source><translation>BTrack: наблюдения темпа</translation></message>
+<message><source>BTrack tempo state</source><translation>BTrack: состояние темпа</translation></message>
+<message><source>BTrack cumulative scores</source><translation>BTrack: накопленные оценки</translation></message>
+<message><source>BTrack beat decisions</source><translation>BTrack: решения о долях</translation></message>
+<message><source>BTrack onset</source><translation>BTrack: атака</translation></message>
+<message><source>Rhythm: madmom SuperFlux / fixed beats</source><translation>Ритм: madmom SuperFlux / фиксированные доли</translation></message>
+<message><source>Rhythm: madmom SuperFlux / local beats</source><translation>Ритм: madmom SuperFlux / локальные доли</translation></message>
+<message><source>Rhythm: madmom SuperFlux / CRF beats</source><translation>Ритм: madmom SuperFlux / доли CRF</translation></message>
+<message><source>madmom: complete PCM frame</source><translation>madmom: полный кадр PCM</translation></message>
+<message><source>madmom: raw spectral magnitude</source><translation>madmom: исходный модуль спектра</translation></message>
+<message><source>madmom: logarithmic frequency bands</source><translation>madmom: логарифмические частотные полосы</translation></message>
+<message><source>madmom: log10(1 + magnitude)</source><translation>madmom: log10(1 + модуль)</translation></message>
+<message><source>madmom: SuperFlux snapshot</source><translation>madmom: снимок SuperFlux</translation></message>
+<message><source>madmom: beat seconds within snapshot</source><translation>madmom: секунды долей в снимке</translation></message>
+<message><source>madmom: smoothed interval histogram</source><translation>madmom: сглаженная гистограмма интервалов</translation></message>
+<message><source>madmom: BPM and candidate strength</source><translation>madmom: BPM и сила кандидата</translation></message>
+<message><source>madmom: onset frame indices within snapshot</source><translation>madmom: индексы кадров атак в снимке</translation></message>
+<message><source>madmom: histogram frame intervals</source><translation>madmom: интервалы кадров гистограммы</translation></message>
+<message><source>Essentia: RhythmExtractor2013 MultiFeature</source><translation>Essentia: RhythmExtractor2013 MultiFeature</translation></message>
+<message><source>Essentia: RhythmExtractor2013 Degara</source><translation>Essentia: RhythmExtractor2013 Degara</translation></message>
+<message><source>Essentia complete 8 s session</source><translation>Essentia: полная сессия 8 с</translation></message>
+<message><source>Essentia normalized symmetric Hann</source><translation>Essentia: нормированное симметричное окно Hann</translation></message>
+<message><source>Essentia PCM session tail</source><translation>Essentia: хвост PCM сессии</translation></message>
+<message><source>Essentia last raw magnitude</source><translation>Essentia: последний исходный модуль</translation></message>
+<message><source>Essentia complex ODF</source><translation>Essentia: комплексная ODF</translation></message>
+<message><source>Essentia complex candidate seconds</source><translation>Essentia: секунды комплексного кандидата</translation></message>
+<message><source>Essentia period seconds</source><translation>Essentia: период в секундах</translation></message>
+<message><source>Essentia beat intervals seconds</source><translation>Essentia: интервалы долей в секундах</translation></message>
+<message><source>Essentia BPM observations</source><translation>Essentia: наблюдения BPM</translation></message>
+<message><source>Essentia BPM and confidence</source><translation>Essentia: BPM и достоверность</translation></message>
+<message><source>Essentia RMS ODF</source><translation>Essentia: RMS ODF</translation></message>
+<message><source>Essentia Mel flux ODF</source><translation>Essentia: ODF потока Mel</translation></message>
+<message><source>Essentia beat emphasis ODF</source><translation>Essentia: ODF акцента долей</translation></message>
+<message><source>Essentia information gain ODF</source><translation>Essentia: ODF прироста информации</translation></message>
+<message><source>Essentia selected beat seconds</source><translation>Essentia: секунды выбранных долей</translation></message>
+<message><source>Essentia agreement scores</source><translation>Essentia: оценки согласия</translation></message>
+<message><source>Essentia pairwise agreement</source><translation>Essentia: попарное согласие</translation></message>
+<message><source>Essentia ERB distance rows</source><translation>Essentia: строки расстояний ERB</translation></message>
+<message><source>Essentia RMS candidate seconds</source><translation>Essentia: секунды RMS-кандидата</translation></message>
+<message><source>Essentia Mel candidate seconds</source><translation>Essentia: секунды Mel-кандидата</translation></message>
+<message><source>Essentia emphasis candidate seconds</source><translation>Essentia: секунды кандидата акцента</translation></message>
+<message><source>Essentia information candidate seconds</source><translation>Essentia: секунды информационного кандидата</translation></message>
+<message><source>BTrackOnset</source><translation>BTrack: обнаружение атаки</translation></message>
+<message><source>BTrackWindowProduct</source><translation>BTrack: эталонное оконное взвешивание</translation></message>
+<message><source>cartesian_input</source><translation>Входы действительной и мнимой частей</translation></message>
+<message><source>window_shape</source><translation>Форма окна</translation></message>
+<message><source>backend_id</source><translation>Идентификатор вычислительного backend</translation></message>
+<message><source>include_endpoints</source><translation>DC и Найквист в обеих плоскостях</translation></message>
+<message><source>BTrackHistory</source><translation>BTrack: история ODF</translation></message>
+<message><source>BTrackHistoryResample</source><translation>BTrack: ресэмплинг истории</translation></message>
+<message><source>BTrackCombObservation</source><translation>BTrack: гребёнчатые наблюдения</translation></message>
+<message><source>BTrackBeatDecision</source><translation>BTrack: решение о долях</translation></message>
+<message><source>EssentiaOnsetRows</source><translation>Essentia: строки атак</translation></message>
+<message><source>EssentiaInformationRows</source><translation>Essentia: строки прироста информации</translation></message>
+<message><source>EssentiaNoveltyRows</source><translation>Essentia: строки новизны</translation></message>
+<message><source>EssentiaErbRows</source><translation>Essentia: строки ERB</translation></message>
+<message><source>EssentiaAgreement</source><translation>Essentia: согласие кандидатов</translation></message>
+<message><source>materialize</source><translation>Создавать снимок</translation></message>
+<message><source>EssentiaCandidateInputs</source><translation>Essentia: порядок входов кандидатов</translation></message>
+<message><source>indices</source><translation>Индексы выборки</translation></message>
+<message><source>poll_tatum</source><translation>Опрос tatum после кадра</translation></message>
 </context>
 </TS>

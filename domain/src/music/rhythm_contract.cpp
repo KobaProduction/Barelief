@@ -13,9 +13,9 @@ bool number(const ConfiguredProcessingNode& node,std::string_view key,double& re
     result=std::visit([](auto v){return double(v);},*literal);return std::isfinite(result);
 }
 bool geometry(const NumericContract& input,double bins) noexcept {
-    const bool linear=input.unit==NumericUnit::Values || input.unit==NumericUnit::RawAmplitude || input.unit==NumericUnit::NormalizedAmplitude;
+    const bool linear=input.unit==NumericUnit::Values || input.unit==NumericUnit::RawAmplitude || input.unit==NumericUnit::NormalizedAmplitude || input.unit==NumericUnit::SquaredAmplitude;
     return input.dtype==DType::Float32 && linear && input.shape.rank==Rank::Matrix
-        && input.shape.axes[0]==Axis::Time && input.shape.axes[1]==Axis::Band
+        && input.shape.axes[0]==Axis::Time && (input.shape.axes[1]==Axis::Band || input.shape.axes[1]==Axis::Declared)
         && input.shape.extents[0].maximum==512 && input.shape.extents[1]==ExtentBounds{std::uint64_t(bins),std::uint64_t(bins)}
         && input.channel_order.size()==1 && input.representation.encoding==StorageEncoding::Native
         && input.representation.layout==ChannelLayout::Planar && input.representation.normalization==Normalization::None

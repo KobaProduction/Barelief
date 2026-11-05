@@ -173,7 +173,7 @@ bool MelFilterBank::prepare_matrix(std::size_t bins,std::size_t bands,std::span<
                                    std::span<const double> centers,FilterProjectionOptions options,
                                    std::span<const FilterBandSupport> supports) {
     MelFilterBankConfig config;config.bands=bands;std::size_t bytes=0;
-    if(!storage_bytes(bins,config,bytes) || weights.size()!=bands*bins ||
+    if(!valid_filter_projection_options(options) || !storage_bytes(bins,config,bytes) || weights.size()!=bands*bins ||
        (!supports.empty() && supports.size()!=bands) || (!centers.empty() && centers.size()!=bands))return false;
     if(!valid_explicit_weights(weights,supports,bins) ||
        !std::all_of(centers.begin(),centers.end(),[](double hz){return std::isfinite(hz) && hz>=0;}))return false;

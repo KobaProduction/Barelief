@@ -18,6 +18,40 @@ std::shared_ptr<const FrequencyMeasurements> stored_measurements(const Frequency
     saved->mean_amplitude=curve.mean_amplitude;saved->contributors=curve.contributors;
     saved->edge_hz=curve.edge_hz;return saved;
 }
+
+bool valid_summary_source(const FrequencyProfile& source,std::span<const double> contributors,std::size_t n) {
+    return !(!source.compositions.empty() || source.curve ||
+        source.compatibility.fft_size<512 || source.compatibility.fft_size>16384 ||
+        (source.compatibility.fft_size&(source.compatibility.fft_size-1)) ||
+        source.peak_spectrum.size()!=n || source.mean_spectrum.size()!=n ||
+        contributors.size()!=n || !source.compatibility.sample_rate ||
+        source.compatibility.projection.representation!=SpectrumProjection::PeakAmplitude ||
+        !source.compatibility.projection.compensate);
+}
+bool append_summary_measurements(const FrequencyProfile& source,std::span<const double> contributors,
+                                 std::size_t n,FrequencyMeasurements& values,double& maximum) {
+    for(std::size_t k=0;k<n;++k){
+        const auto count=contributors[k],peak=source.peak_spectrum[k],mean=source.mean_spectrum[k];
+        if(!std::isfinite(count) || count<0 || std::floor(count)!=count ||
+           count>10000000 || !std::isfinite(peak) || peak<0 ||
+           !std::isfinite(mean) || mean<0 || (!count && (peak>0 || mean>0)))return false;
+        values.hz.push_back(k*source.compatibility.sample_rate/double(source.compatibility.fft_size));
+        values.contributors.push_back(count);
+        values.maxima.push_back(peak);
+        values.mean_amplitude.push_back(mean);
+        if(k>0 && count>0)maximum=std::max(maximum,peak);
+    }
+    return true;
+}
+std::shared_ptr<FrequencyMeasurements> summary_measurements(const FrequencyProfile& source,std::span<const double> contributors,std::size_t n) {
+    auto values=std::make_shared<FrequencyMeasurements>();
+    double maximum=0;
+    if(!append_summary_measurements(source,contributors,n,*values,maximum) || maximum<=0)return {};
+    for(auto& value:values->maxima)value/=maximum;
+    for(auto& value:values->mean_amplitude)value/=maximum;
+    values->edge_hz=source.compatibility.sample_rate/double(source.compatibility.fft_size);
+    return values;
+}
 }
 const FrequencyProfile& CurveAnalysis::selected()const {
     return piecewise;
@@ -37,32 +71,11 @@ std::shared_ptr<const CurveCorpus> curve_corpus(const FrequencyProfile& source,s
 std::shared_ptr<const CurveCorpus> curve_corpus_summary(
     const FrequencyProfile& source,std::span<const double> contributors) {
     const auto n=source.compatibility.fft_size/2+1;
-    if(!source.compositions.empty() || source.curve ||
-       source.compatibility.fft_size<512 || source.compatibility.fft_size>16384 ||
-       (source.compatibility.fft_size&(source.compatibility.fft_size-1)) ||
-       source.peak_spectrum.size()!=n || source.mean_spectrum.size()!=n ||
-       contributors.size()!=n || !source.compatibility.sample_rate ||
-       source.compatibility.projection.representation!=SpectrumProjection::PeakAmplitude ||
-       !source.compatibility.projection.compensate)return {};
+    if(!valid_summary_source(source,contributors,n))return {};
     auto corpus=std::make_shared<CurveCorpus>();
     corpus->calibration=source.compatibility;
-    auto values=std::make_shared<FrequencyMeasurements>();
-    double maximum=0;
-    for(std::size_t k=0;k<n;++k){
-        const auto count=contributors[k],peak=source.peak_spectrum[k],mean=source.mean_spectrum[k];
-        if(!std::isfinite(count) || count<0 || std::floor(count)!=count ||
-           count>10000000 || !std::isfinite(peak) || peak<0 ||
-           !std::isfinite(mean) || mean<0 || (!count && (peak>0 || mean>0)))return {};
-        values->hz.push_back(k*source.compatibility.sample_rate/double(source.compatibility.fft_size));
-        values->contributors.push_back(count);
-        values->maxima.push_back(peak);
-        values->mean_amplitude.push_back(mean);
-        if(k>0 && count>0)maximum=std::max(maximum,peak);
-    }
-    if(maximum<=0)return {};
-    for(auto& value:values->maxima)value/=maximum;
-    for(auto& value:values->mean_amplitude)value/=maximum;
-    values->edge_hz=source.compatibility.sample_rate/double(source.compatibility.fft_size);
+    auto values=summary_measurements(source,contributors,n);
+    if(!values)return {};
     corpus->saved_measurements=std::move(values);
     corpus->saved_options=FrequencyCurveOptions{};
     return corpus;

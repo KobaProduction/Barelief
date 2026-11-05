@@ -1,0 +1,120 @@
+# Port exporters for independently executed, pinned original-library comparisons.
+# The original runtimes and their fixture runners remain explicit invocations.
+add_executable(python_originals_export EXCLUDE_FROM_ALL
+    rhythm_originals/python_export_main.cpp
+    rhythm_originals/python_export_io.cpp
+    rhythm_originals/python_export_spectrum.cpp
+    rhythm_originals/python_export_librosa.cpp
+    rhythm_originals/python_export_madmom.cpp
+    rhythm_originals/python_export_models.cpp
+    rhythm_originals/python_export_filters.cpp
+    rhythm_originals/python_export_compositions.cpp
+    rhythm_originals/python_export_pcm_compositions.cpp
+    rhythm_originals/python_export_patterns.cpp
+    rhythm_originals/python_export_remaining.cpp
+    rhythm_originals/python_export_remaining_models.cpp
+    rhythm_originals/python_export_remaining_tempo.cpp
+    rhythm_originals/python_export_remaining_pcm.cpp
+    rhythm_originals/python_export_benchmark.cpp)
+target_link_libraries(python_originals_export PRIVATE dsp_kernels)
+set_target_properties(python_originals_export PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+
+add_executable(rhythm_native_originals_export EXCLUDE_FROM_ALL
+    rhythm_originals/native_export_main.cpp
+    rhythm_originals/native_export_features.cpp
+    rhythm_originals/native_export_aubio.cpp
+    rhythm_originals/native_export_btrack.cpp
+    rhythm_originals/native_export_essentia.cpp)
+target_link_libraries(rhythm_native_originals_export PRIVATE
+    rhythm_reference_ports rhythm_probabilistic_reference desktop_resampling desktop_fourier_backend)
+set_target_properties(rhythm_native_originals_export PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+
+add_executable(histogram_onset_source_tests histogram_onset_source_tests.cpp)
+target_link_libraries(histogram_onset_source_tests PRIVATE rhythm_reference_ports)
+set_target_properties(histogram_onset_source_tests PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+add_test(NAME histogram_onset_source_tests COMMAND histogram_onset_source_tests)
+set_tests_properties(histogram_onset_source_tests PROPERTIES LABELS "numeric;kernel;source" TIMEOUT 15)
+
+add_executable(rhythm_context_source_regression rhythm_originals/context_tracker_source_regression.cpp)
+target_link_libraries(rhythm_context_source_regression PRIVATE rhythm_reference_ports)
+set_target_properties(rhythm_context_source_regression PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+add_test(NAME rhythm_context_source_regression COMMAND rhythm_context_source_regression)
+set_tests_properties(rhythm_context_source_regression PROPERTIES LABELS "numeric;kernel;source" TIMEOUT 15)
+
+add_executable(rhythm_beat_agreement_source_regression rhythm_originals/beat_agreement_source_regression.cpp)
+target_link_libraries(rhythm_beat_agreement_source_regression PRIVATE rhythm_probabilistic_reference)
+set_target_properties(rhythm_beat_agreement_source_regression PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+add_test(NAME rhythm_beat_agreement_source_regression COMMAND rhythm_beat_agreement_source_regression)
+set_tests_properties(rhythm_beat_agreement_source_regression PROPERTIES LABELS "numeric;kernel;source" TIMEOUT 15)
+
+add_executable(rhythm_essentia_tempo_export EXCLUDE_FROM_ALL
+    rhythm_originals/essentia_tempo_main.cpp
+    rhythm_originals/essentia_tempo_period.cpp
+    rhythm_originals/essentia_tempo_pcm.cpp
+    rhythm_originals/essentia_tempo_percival.cpp
+    rhythm_originals/essentia_tempo_novelty.cpp)
+target_link_libraries(rhythm_essentia_tempo_export PRIVATE rhythm_probabilistic_reference desktop_fourier_backend)
+set_target_properties(rhythm_essentia_tempo_export PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+
+add_executable(rhythm_essentia_family_export EXCLUDE_FROM_ALL
+    rhythm_originals/essentia_family_main.cpp
+    rhythm_originals/essentia_family_intervals.cpp
+    rhythm_originals/essentia_family_matrix.cpp
+    rhythm_originals/essentia_family_pcm.cpp
+    rhythm_originals/essentia_family_summary.cpp
+    rhythm_originals/essentia_family_diagnostics.cpp)
+target_link_libraries(rhythm_essentia_family_export PRIVATE rhythm_probabilistic_reference desktop_fourier_backend)
+set_target_properties(rhythm_essentia_family_export PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+
+add_executable(spectral_source_arithmetic_tests rhythm_originals/spectral_source_arithmetic_tests.cpp)
+target_link_libraries(spectral_source_arithmetic_tests PRIVATE rhythm_probabilistic_reference rhythm_reference_ports)
+set_target_properties(spectral_source_arithmetic_tests PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+add_test(NAME spectral_source_arithmetic_tests COMMAND spectral_source_arithmetic_tests)
+set_tests_properties(spectral_source_arithmetic_tests PROPERTIES LABELS "numeric;kernel;source" TIMEOUT 15)
+
+add_executable(ooura_provider_tests rhythm_originals/ooura_provider_tests.cpp)
+target_link_libraries(ooura_provider_tests PRIVATE desktop_fourier_backend rhythm_reference_ports)
+set_target_properties(ooura_provider_tests PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(ooura_provider_tests PRIVATE "-Wl,--wrap=malloc")
+endif()
+add_test(NAME ooura_provider_tests COMMAND ooura_provider_tests)
+set_tests_properties(ooura_provider_tests PROPERTIES LABELS "numeric;kernel;source" TIMEOUT 30)
+
+add_executable(predictive_source_precision_tests rhythm_originals/predictive_source_precision_tests.cpp)
+target_link_libraries(predictive_source_precision_tests PRIVATE rhythm_reference_ports desktop_fourier_backend desktop_resampling)
+set_target_properties(predictive_source_precision_tests PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(predictive_source_precision_tests PRIVATE "-Wl,--wrap=malloc")
+endif()
+add_test(NAME predictive_source_precision_tests COMMAND predictive_source_precision_tests)
+set_tests_properties(predictive_source_precision_tests PROPERTIES LABELS "numeric;kernel;source" TIMEOUT 30)
+
+add_executable(numeric_operation_lifecycle_tests numeric_operation_lifecycle_tests.cpp)
+target_link_libraries(numeric_operation_lifecycle_tests PRIVATE rhythm_graph_adapters dataflow_runtime)
+set_target_properties(numeric_operation_lifecycle_tests PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+add_test(NAME numeric_operation_lifecycle_tests COMMAND numeric_operation_lifecycle_tests)
+set_tests_properties(numeric_operation_lifecycle_tests PROPERTIES LABELS "numeric;runtime;lifecycle" TIMEOUT 15)
+
+add_executable(kiss_provider_tests rhythm_originals/kiss_provider_tests.cpp)
+target_link_libraries(kiss_provider_tests PRIVATE desktop_fourier_backend rhythm_probabilistic_reference)
+set_target_properties(kiss_provider_tests PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_options(kiss_provider_tests PRIVATE -Wl,--wrap=malloc)
+endif()
+add_test(NAME kiss_provider_tests COMMAND kiss_provider_tests)
+set_tests_properties(kiss_provider_tests PROPERTIES LABELS "numeric;kernel;fourier-provider" TIMEOUT 60)
+
+add_executable(native_lifecycle_export EXCLUDE_FROM_ALL
+    rhythm_originals/native_lifecycle_main.cpp
+    rhythm_originals/native_lifecycle_port_aubio.cpp
+    rhythm_originals/native_lifecycle_port_btrack.cpp)
+target_link_libraries(native_lifecycle_export PRIVATE rhythm_reference_ports desktop_resampling desktop_fourier_backend)
+set_target_properties(native_lifecycle_export PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+
+add_executable(btrack_reference_benchmark EXCLUDE_FROM_ALL
+    rhythm_originals/btrack_reference_benchmark.cpp
+    rhythm_originals/python_export_benchmark.cpp)
+target_link_libraries(btrack_reference_benchmark PRIVATE
+    rhythm_reference_ports desktop_fourier_backend desktop_resampling)
+set_target_properties(btrack_reference_benchmark PROPERTIES AUTOMOC OFF CXX_STANDARD 20)

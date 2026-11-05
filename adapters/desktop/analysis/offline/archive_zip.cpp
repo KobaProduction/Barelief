@@ -29,6 +29,33 @@ bool safe_name(const QString& name) {
     const auto parts=name.split('/');
     return std::ranges::none_of(parts,[](const QString& p){return p.isEmpty() || p=="." || p=="..";});
 }
+struct ExtractedOutput {
+    QIODevice& device;
+    bool failed=false;
+};
+size_t write_extracted_part(void* opaque,mz_uint64 offset,const void* bytes,size_t length) {
+    auto& out=*static_cast<ExtractedOutput*>(opaque);
+    if(out.failed || offset>mz_uint64(std::numeric_limits<qint64>::max()) ||
+       length>size_t(std::numeric_limits<qint64>::max()) ||
+       !out.device.seek(qint64(offset)) ||
+       out.device.write(static_cast<const char*>(bytes),qint64(length))!=qint64(length)){
+        out.failed=true;return 0;
+    }
+    return length;
+}
+
+bool extract_member_to_device(mz_zip_archive& zip,mz_uint index,QIODevice& destination,mz_uint64 size,QString& error) {
+    ExtractedOutput output{destination};
+    if(!mz_zip_reader_extract_to_callback(&zip,index,write_extracted_part,&output,0) ||
+       output.failed || destination.size()!=qint64(size)){
+        error=output.failed?QStringLiteral("Cannot write extracted scan part"):
+                            QStringLiteral("Cannot extract scan part: %1").arg(
+                                QString::fromLatin1(mz_zip_get_error_string(mz_zip_get_last_error(&zip))));
+        return false;
+    }
+    return true;
+}
+
 bool zip_error(mz_zip_archive& zip,QString& error) {
     error=QStringLiteral("Invalid music archive: %1").arg(QString::fromLatin1(mz_zip_get_error_string(mz_zip_get_last_error(&zip))));return false;
 }
@@ -77,28 +104,7 @@ bool StoredZipReader::extract_to(const QString& name,QIODevice& destination,qint
         error="Oversized scan collection member: "+name;return false;
     }
     if(!destination.isWritable()){error="Destination is not open for writing";return false;}
-    struct Output {
-        QIODevice& device;
-        bool failed=false;
-    } output{destination};
-    const auto callback=[](void* opaque,mz_uint64 offset,const void* bytes,size_t length)->size_t {
-        auto& out=*static_cast<Output*>(opaque);
-        if(out.failed || offset>mz_uint64(std::numeric_limits<qint64>::max()) ||
-           length>size_t(std::numeric_limits<qint64>::max()) ||
-           !out.device.seek(qint64(offset)) ||
-           out.device.write(static_cast<const char*>(bytes),qint64(length))!=qint64(length)){
-            out.failed=true;return 0;
-        }
-        return length;
-    };
-    if(!mz_zip_reader_extract_to_callback(&impl_->zip,at.value(),callback,&output,0) ||
-       output.failed || destination.size()!=qint64(stat.m_uncomp_size)){
-        error=output.failed?QStringLiteral("Cannot write extracted scan part"):
-                            QStringLiteral("Cannot extract scan part: %1").arg(
-                                QString::fromLatin1(mz_zip_get_error_string(mz_zip_get_last_error(&impl_->zip))));
-        return false;
-    }
-    return true;
+    return extract_member_to_device(impl_->zip,at.value(),destination,stat.m_uncomp_size,error);
 }
 bool StoredZipReader::read(const QString& name,qint64 maximum,QByteArray& output,QString& error) {
     const auto at=impl_->index.constFind(name);

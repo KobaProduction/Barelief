@@ -27,6 +27,16 @@ Status generator_count(const ConfiguredProcessingNode& node,double& count) {
     count=std::visit([](auto v){return double(v);},std::get<NumericLiteral>(field));
     return std::isfinite(count) && count>=1 && count<=UINT32_MAX && std::trunc(count)==count?Status::ok:Status::invalid_argument;
 }
+Status generator_precision(const ConfiguredProcessingNode& node,NumericContract& result) {
+    if(node.kind!="WindowFunction")return Status::ok;
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,node.inputs,node.outputs,&node.parameters,node.enabled};
+    ProcessingParameterView field;
+    if(resolve_processing_parameter(resolved,"precision",field)!=Status::ok || !std::holds_alternative<NumericLiteral>(field))return Status::invalid_argument;
+    const auto precision=std::visit([](auto value){return double(value);},std::get<NumericLiteral>(field));
+    if(precision!=0 && precision!=1)return Status::invalid_argument;
+    result.dtype=precision?DType::Float64:DType::Float32;
+    result.representation.alignment=precision?alignof(double):alignof(float);return Status::ok;
+}
 }
 Status array_generator_values(const ConfiguredProcessingNode& node,std::span<float> destination,std::size_t& count) noexcept {
     const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::ArrayFill,node.inputs,node.outputs,&node.parameters,node.enabled};
@@ -42,7 +52,8 @@ Status array_generator_output_contract(const ConfiguredProcessingNode& node,cons
     double count=0;
     if(generator_count(node,count)!=Status::ok)return Status::invalid_argument;
     if(node.kind=="ArrayFill"){std::size_t supplied=0;if(array_generator_values(node,{},supplied)!=Status::ok || (supplied && supplied!=std::size_t(count)))return Status::invalid_argument;}
-    const auto result=generated_array_contract(input,std::uint64_t(count));
+    auto result=generated_array_contract(input,std::uint64_t(count));
+    if(generator_precision(node,result)!=Status::ok)return Status::invalid_argument;
     return own_processing_contract(result,FrameLimits{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,out);
 }
 

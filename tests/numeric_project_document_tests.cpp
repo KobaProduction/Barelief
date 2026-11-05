@@ -2107,6 +2107,11 @@ static bool second_node_raw(const NumericProjectDocument& source,std::string& ra
     CHECK(source.source.view(nodes,array));CHECK(source.source.view(array.first_child,first));
     CHECK(source.source.view(first.next_sibling,second));raw=std::string(second.raw);return true;
 }
+static bool missing_selective_node_rolls_back(const NumericProjectDocument& source,ConfiguredProcessingNode changed,NumericProjectDocument& staged) {
+    const auto before=std::string(staged.source.bytes());changed.id=999;
+    CHECK(!stage_numeric_nodes(source,std::span(&changed,1),staged));CHECK(staged.source.bytes()==before);
+    return true;
+}
 static bool selective_node_settings() {
     auto graph=sample();auto other=graph.nodes.front();other.id=8;graph.nodes.push_back(other);
     NumericProjectDocument source;CHECK(create_numeric_project(graph,{},source));
@@ -2122,9 +2127,7 @@ static bool selective_node_settings() {
     CHECK(staged.source.bytes().find("\"future\":1e9999")!=std::string_view::npos);
     CHECK(staged.source.bytes().find(untouched)!=std::string_view::npos);
     CHECK(source.source.bytes()==original);
-    const auto before=std::string(staged.source.bytes());changed.id=999;
-    CHECK(!stage_numeric_nodes(source,std::span(&changed,1),staged));CHECK(staged.source.bytes()==before);
-    return true;
+    return missing_selective_node_rolls_back(source,changed,staged);
 }
 static bool spectral_quantity_roundtrip() {
     for(const auto quantity:{Quantity::SpectrumRmsAmplitude,Quantity::SpectrumBinPower,Quantity::SpectrumWindowScaledMagnitude,

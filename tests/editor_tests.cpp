@@ -52,7 +52,7 @@ static void run_editor_check(const char* name,void (*check)(),QStringList& failu
 }
 static std::shared_ptr<QtNodes::NodeDelegateModelRegistry> inventory_registry(){
     auto registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);});
+    for(const auto kinds=numeric_editor::model_catalog();const auto& kind:kinds)registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);});
     return registry;
 }
 struct CatalogueSpec {const char* kind;unsigned inputs,outputs;const char* control;NodeParameterModel::Editor editor;};
@@ -121,7 +121,7 @@ static void matrix_center_controls(const domain::ConfiguredProcessingNode& dto,N
     QStringList methods;for(const auto& option:method->options)methods.append(option.label);
     require(methods==QStringList{"Subtract mean","Center between minimum and maximum","Manual offset"} && std::get<int>(method->read())==0 && dto.enabled && method->primary,"Row centering exposes its explicit methods and defaults to enabled mean subtraction");
     require(offset->editor==NodeParameterModel::Editor::Literal && offset->label=="Manual offset","Manual centering offset lacks its numeric editor or user-facing label");
-    require(!offset->literal_type && std::holds_alternative<double>(std::get<signal_contracts::NumericLiteral>(offset->read())),"Centering offset must default to Float64 while allowing explicit numeric representation");
+    require(offset->literal_type==3 && std::holds_alternative<double>(std::get<signal_contracts::NumericLiteral>(offset->read())),"Centering offset preserves Float64 without a redundant type selector");
     require(offset->available && !offset->available(),"Manual centering offset is disabled for automatic methods");
     matrix_center_offset_availability(parameters);
 }
@@ -201,6 +201,7 @@ static void catalogue_acceptance_checks(){
     const auto specs=established_catalogue_specs();
     const auto actual=numeric_editor::catalog();
     for(const auto* retired:{"StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"})require(!actual.contains(retired),"Internal reference blocks remain in the editor catalogue");
+    for(const auto* kind:{"MatrixFFT","ComplexPolar","RFFT"})require(numeric_editor::model_catalog().contains(kind),"Hidden operations remain registered for graph loading");
     for(const auto& spec:specs)require(actual.contains(spec.kind),qPrintable(QString("Missing established catalogue operation: ")+spec.kind));
     for(const auto& kind:actual){AudioNodeModel node(kind);require(node.numeric_node() && node.parameter_model(),"Catalogue operation has no numeric UI contract");}
     for(const auto& spec:specs)catalogue_operation(spec);
@@ -956,7 +957,7 @@ public:
     void rename(){
         graph.setNodeData(3,QtNodes::NodeRole::Position,QPointF(420,230));auto* model=graph.delegateModel<AudioNodeModel>(3);
         require(model->set_parameter_on_block("numericNan",true),"Preset visibility edit failed");
-        emit editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(3);auto* button=editor.findChild<QPushButton*>("pipelineRenameNode");require(button,"Ordinary processor inspector lacks rename control");
+        Q_EMIT editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(3);auto* button=editor.findChild<QPushButton*>("pipelineRenameNode");require(button,"Ordinary processor inspector lacks rename control");
         inspector_order(button);clipboard();rename_command(*model,*button);
     }
     void rename_command(AudioNodeModel& model,QPushButton& button){
@@ -1042,7 +1043,7 @@ public:
         for(int i=0;i<100 && applied.isEmpty();++i)QTest::qWait(10);
         require(!applied.isEmpty() && applied.last()[1].toBool(),"Diagnostic graph Apply failed");
         model=graph.delegateModel<AudioNodeModel>(12);card.reset(model->preview_widget());exact=card->findChild<QLabel*>("previewExactValue");require(exact,"Registered diagnostic preview value absent");
-        emit editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(12);
+        Q_EMIT editor.findChild<QtNodes::DataFlowGraphicsScene*>()->nodeSelected(12);
     }
     void publish(){
         for(int i=0;i<200 && presenter.client().snapshot().statuses.value("analyzer").state!=pipeline::State::Running;++i)QTest::qWait(10);
@@ -1106,7 +1107,7 @@ static void editor_layout_checks(SchemeEditorWidget& editor,NumericEditorGraphMo
 static std::shared_ptr<NumericEditorGraphModel> widget_graph(GuiState& state){
     state.file_configs.ui.autosave_enabled=false;state.file_configs.ui.pipeline_auto_apply=false;
     state.delegate_model_registry=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
-    for(const auto kinds=numeric_editor::catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
+    for(const auto kinds=numeric_editor::model_catalog();const auto& kind:kinds)state.delegate_model_registry->registerModel([kind]{return std::make_unique<AudioNodeModel>(kind);},numeric_editor::category(kind));
     auto graph=std::make_shared<NumericEditorGraphModel>(state.delegate_model_registry);state.data_flow_graph=graph;
     domain::NumericProcessingGraph empty;empty.graph_id="main";require(graph->set_numeric_graph(empty),"Empty canonical fixture rejected");state.file_configs.scene_graph=graph->save();return graph;
 }

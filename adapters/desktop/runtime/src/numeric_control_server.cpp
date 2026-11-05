@@ -64,8 +64,8 @@ struct NumericControlServer::Impl {
         Peer(Impl& s):server(s),capabilities(s.capabilities),revision(s.state.graph_revision),stop(s.stop_generation) {}
         ~Peer(){if(reply_check)server.engine.unregister_control_reply_check(reply_check);}
         void initialize(application::ProcessingControlService& service,bool writable) {
-            reply_check=server.engine.register_control_reply_check([pinned=capabilities](const domain::NumericProcessingGraph& graph){
-                return bool(control::numeric::reply_envelope_fits(graph,control_limits(),pinned->value));
+            reply_check=server.engine.register_control_reply_check([pinned=capabilities,limits=control_limits(server.profile.numeric->runtime.admission.frame)](const domain::NumericProcessingGraph& graph){
+                return bool(control::numeric::reply_envelope_fits(graph,limits,pinned->value));
             });
             if(!reply_check){failed=true;return;}
             this->writable=writable;
@@ -79,7 +79,7 @@ struct NumericControlServer::Impl {
             auto config=desktop_session_config();config.endpoint_authorized=true;config.allow_mutations=writable;
             config.device_identity="numeric-desktop";config.client_identity=server.next_client++;
             config.application_capabilities=&server.profile;config.advertised_capabilities=&capabilities->value;
-            config.codec_limits=control_limits();config.runtime_preflights_reply_envelope=true;
+            config.codec_limits=control_limits(server.profile.numeric->runtime.admission.frame);config.runtime_preflights_reply_envelope=true;
             return config;
         }
         void fence() {

@@ -11,6 +11,27 @@
 namespace dataflow_runtime::detail {
 using namespace domain;using namespace signal_contracts;
 namespace {
+bool matching_backend(const std::shared_ptr<const dsp_kernels::FourierBackendFactory>& factory,std::string_view requested) noexcept {
+    if(!factory)return false;
+    const auto* id=factory->id();return id && requested==id;
+}
+}
+bool select_fourier_backend(const ResolvedProcessingNode& node,const NumericRuntimeProfile& profile,
+    const dsp_kernels::FourierBackendFactory*& output) noexcept {
+    output=nullptr;ProcessingParameterView value;
+    if(resolve_processing_parameter(node,"backend_id",value)!=Status::ok)return false;
+    const auto* id=std::get_if<std::string_view>(&value);if(!id)return false;
+    if(id->empty())return true;
+    if(matching_backend(profile.fourier_backend,*id)){
+        output=profile.fourier_backend.get();return true;
+    }
+    for(const auto& factory:profile.additional_fourier_backends){
+        if(!matching_backend(factory,*id))continue;
+        output=factory.get();return true;
+    }
+    return false;
+}
+namespace {
 dsp_kernels::SpectrumProjection projection_kind(std::string_view text) {
     auto result=dsp_kernels::SpectrumProjection::Magnitude;(void)dsp_kernels::parse_spectrum_projection(text,result);return result;
 }
@@ -22,8 +43,9 @@ bool flag(const ResolvedProcessingNode& node,std::string_view key,bool& result) 
 }
 bool raw_options(const ResolvedProcessingNode& node,dsp_kernels::SpectrumProjectionOptions& result) {
     const auto norm=operation_text(node,"magnitude_norm"),zero=operation_text(node,"zero_phase");
-    if((norm!="hypot" && norm!="squared_norm") || (zero!="zero" && zero!="atan2"))return false;
-    result.magnitude_norm=norm=="hypot"?dsp_kernels::ComplexMagnitudeNorm::Hypot:dsp_kernels::ComplexMagnitudeNorm::SquaredNorm;
+    if((norm!="hypot" && norm!="squared_norm" && norm!="scaled_ratio_fma") || (zero!="zero" && zero!="atan2"))return false;
+    result.magnitude_norm=norm=="hypot"?dsp_kernels::ComplexMagnitudeNorm::Hypot:
+        norm=="squared_norm"?dsp_kernels::ComplexMagnitudeNorm::SquaredNorm:dsp_kernels::ComplexMagnitudeNorm::ScaledRatioFma;
     result.zero_phase=zero=="zero"?dsp_kernels::ZeroMagnitudePhase::Zero:dsp_kernels::ZeroMagnitudePhase::Atan2;
     return flag(node,"real_endpoints",result.real_endpoints);
 }
@@ -53,19 +75,43 @@ void prepare_pair_coordinates(OperationKernelState& kernel,const NumericContract
     for(auto& lane:kernel.pair_coordinates)for(std::size_t axis=0;axis<2;++axis)
         if(input.coordinates[axis].mode==CoordinateMode::ExplicitFloat64LE)lane[axis].resize(std::size_t(input.shape.extents[axis].maximum)*sizeof(double));
 }
-Status prepare_paired(OperationKernelState& kernel,PlanNode& node,const ResolvedProcessingNode& n) {
+Status prepare_named_fourier(OperationKernelState& kernel,const dsp_kernels::FourierBackendFactory& backend,
+    dsp_kernels::FourierBackendTransform transform) {
+    if(transform==dsp_kernels::FourierBackendTransform::ComplexForward)kernel.fourier_input.resize(2*kernel.fourier_size);
+    auto& operation=kernel.operation.emplace<dsp_kernels::PreparedFourierBackend>();
+    return operation.prepare({kernel.fourier_size,transform},backend)?Status::ok:Status::unavailable;
+}
+Status prepare_fourier(OperationKernelState& kernel,const ResolvedProcessingNode& node,const NumericRuntimeProfile& profile) {
+    const dsp_kernels::FourierBackendFactory* backend=nullptr;
+    if(!select_fourier_backend(node,profile,backend))return Status::unavailable;
+    if(backend)return prepare_named_fourier(kernel,*backend,dsp_kernels::FourierBackendTransform::ComplexForward);
+    kernel.operation.emplace<dsp_kernels::FFT>();
+    return std::get<dsp_kernels::FFT>(kernel.operation).prepare(kernel.fourier_size,operation_text(node,"radix")=="radix4")?Status::ok:Status::unavailable;
+}
+Status prepare_precise_fourier(OperationKernelState& kernel,const ResolvedProcessingNode& node) {
+    if(!operation_text(node,"backend_id").empty())return Status::unavailable;
+    kernel.precise_input.resize(kernel.input.size());kernel.precise_output.resize(kernel.fourier_size+2);
+    auto& transform=kernel.operation.emplace<dsp_kernels::detail::PreparedReferenceFourier>();
+    return transform.prepare(kernel.fourier_size)?Status::ok:Status::unavailable;
+}
+Status prepare_real_fourier(OperationKernelState& kernel,const ResolvedProcessingNode& node,const NumericRuntimeProfile& profile) {
+    if(!flag(node,"include_endpoints",kernel.fourier_include_endpoints))return Status::invalid_argument;
+    if(std::get<NumericContract>(node.inputs.front().contract.view()).dtype==DType::Float64)return prepare_precise_fourier(kernel,node);
+    const dsp_kernels::FourierBackendFactory* backend=nullptr;
+    if(!select_fourier_backend(node,profile,backend))return Status::unavailable;
+    if(backend)return prepare_named_fourier(kernel,*backend,dsp_kernels::FourierBackendTransform::RealForward);
+    kernel.operation.emplace<dsp_kernels::PreparedRfft>();
+    return std::get<dsp_kernels::PreparedRfft>(kernel.operation).prepare(kernel.fourier_size,operation_text(node,"radix")=="radix4")?Status::ok:Status::unavailable;
+}
+Status prepare_paired(OperationKernelState& kernel,PlanNode& node,const ResolvedProcessingNode& n,const NumericRuntimeProfile& profile) {
     const auto samples=kernel.input.size();kernel.imaginary.resize(samples);
     const auto input=std::get<NumericContract>(node.numeric_input);
     kernel.fourier_size=std::size_t(input.shape.extents[input.shape.rank==Rank::Matrix?1:0].maximum);
     kernel.output.resize(n.kind=="RealFourier"?samples+2*(samples/kernel.fourier_size):samples*2);
     prepare_pair_coordinates(kernel,input);
     if(n.kind=="ComplexPolar" || n.kind=="AmplitudePhase")return prepare_polar(kernel,node,n);
-    if(n.kind=="Fourier"){
-        kernel.operation.emplace<dsp_kernels::FFT>();
-        return std::get<dsp_kernels::FFT>(kernel.operation).prepare(kernel.fourier_size,operation_text(n,"radix")=="radix4")?Status::ok:Status::unavailable;
-    }
-    kernel.operation.emplace<dsp_kernels::PreparedRfft>();
-    return std::get<dsp_kernels::PreparedRfft>(kernel.operation).prepare(kernel.fourier_size,operation_text(n,"radix")=="radix4")?Status::ok:Status::unavailable;
+    if(n.kind=="Fourier")return prepare_fourier(kernel,n,profile);
+    return prepare_real_fourier(kernel,n,profile);
 }
 Status prepare_rfft(OperationKernelState& kernel,const ResolvedProcessingNode& n) {
     kernel.operation.emplace<dsp_kernels::PreparedRfft>();
@@ -114,8 +160,8 @@ Status prepare_normalizer(OperationKernelState& kernel,const ResolvedProcessingN
     return normalizer.prepare_manual(kernel.input.size(),float(gain))?Status::ok:Status::invalid_argument;
 }
 }
-Status prepare_signal_operation(OperationKernelState& kernel,PlanNode& node,const ResolvedProcessingNode& n) {
-    if(paired_processing(n.operation))return prepare_paired(kernel,node,n);
+Status prepare_signal_operation(OperationKernelState& kernel,PlanNode& node,const ResolvedProcessingNode& n,const NumericRuntimeProfile& profile) {
+    if(paired_processing(n.operation))return prepare_paired(kernel,node,n,profile);
     if(n.kind=="RFFT")return prepare_rfft(kernel,n);
     if(n.kind=="SpectrumProjection")return prepare_projection(kernel,node,n);
     if(n.kind=="FrequencyNormalizer")return prepare_normalizer(kernel,n);

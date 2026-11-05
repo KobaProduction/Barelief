@@ -16,4 +16,26 @@ Status window_function_coefficients(const ConfiguredProcessingNode& node,std::sp
         output[index]=dsp_kernels::window_coefficient(index,output.size(),window,std::get<bool>(periodic));
     return Status::ok;
 }
+namespace {
+Status fill_double_window(std::span<double> output,dsp_kernels::WindowFunction window,bool periodic) noexcept {
+    if(window==dsp_kernels::WindowFunction::Hann && output.size()>1){
+        constexpr std::array coefficients{.5,.5};const double period=double(output.size())-(periodic?0:1);
+        return dsp_kernels::cosine_sum_window(output,coefficients,period,false,-period/2.)?Status::ok:Status::invalid_argument;
+    }
+    for(std::size_t i=0;i<output.size();++i)output[i]=dsp_kernels::window_coefficient_value<double>(i,output.size(),window,periodic);
+    return Status::ok;
+}
+}
+Status window_function_coefficients(const ConfiguredProcessingNode& node,std::span<double> output) noexcept {
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,node.inputs,node.outputs,&node.parameters,node.enabled};
+    ProcessingParameterView size,function,periodic;
+    if(resolve_processing_parameter(resolved,"size",size)!=Status::ok || !std::holds_alternative<NumericLiteral>(size) ||
+       resolve_processing_parameter(resolved,"function",function)!=Status::ok || !std::holds_alternative<std::string_view>(function) ||
+       resolve_processing_parameter(resolved,"periodic",periodic)!=Status::ok || !std::holds_alternative<bool>(periodic))return Status::invalid_argument;
+    const auto count=std::visit([](auto value){return double(value);},std::get<NumericLiteral>(size));
+    if(output.empty() || double(output.size())!=count)return Status::invalid_argument;
+    auto window=dsp_kernels::WindowFunction::Rectangular;
+    if(node.enabled && !dsp_kernels::parse_window_function(std::get<std::string_view>(function),window))return Status::invalid_argument;
+    return fill_double_window(output,window,std::get<bool>(periodic));
+}
 }

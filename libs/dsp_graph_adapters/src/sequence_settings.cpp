@@ -66,6 +66,9 @@ bool read_histogram_settings(const domain::ResolvedProcessingNode& n,TempoHistog
     c.method=TempoHistogramEstimator(method);return true;
 }
 bool read_analysis_settings(const domain::ResolvedProcessingNode& n,TempoAnalysisSequenceConfig& c) noexcept {
+    std::size_t precision=0;
+    if(!integer(n,"precision",0,precision) || precision>1)return false;
+    c.precision=NumericalPrecision(precision);
     return read_histogram_settings(n,c.histogram) && number(n,"activation_smoothing_seconds",.14f,c.activation_smoothing_seconds) &&
         integer(n,"histogram_smoothing",9,c.histogram_smoothing) && flag(n,"interpolate",false,c.interpolate) &&
         flag(n,"smooth_state_model_activations",false,c.smooth_state_model_activations);

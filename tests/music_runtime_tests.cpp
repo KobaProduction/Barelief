@@ -119,12 +119,12 @@ void packet_queue(){
     std::printf("PCM packet queue PASS: capacity_samples16 capacity_packets4 owned_heap_bytes%zu, fragment timestamps/overflow/gap/no allocations\n",queue.workspace_bytes());
 }
 void retained_feature_geometry(Running& whole){
-    for(std::int64_t at=32768;at<8*32768;at+=1024)whole.feed(at,1024);
+    for(std::int64_t at=32768;at<16*32768;at+=1024)whole.feed(at,1024);
     check(whole.filled(9)==400 && whole.filled(12)==400,"typed History capacity400 retains bounded rows");
     DataFrameView broad,notes;check(whole.plan->history(9,0,*whole.context,broad)==Status::ok && whole.plan->history(12,0,*whole.context,notes)==Status::ok,"compact snapshots");
     const auto& b=std::get<NumericView>(broad.payload);const auto& n=std::get<NumericView>(notes.payload);check(b.contract->dtype==DType::UInt8 && n.contract->dtype==DType::UInt8 && b.actual[1]==16 && n.actual[1]==48,"compact feature geometry");
     check(400*(b.actual[1]+n.actual[1])==25600,"feature payload25600 bytes");
-    const auto before=whole.filled(9);const auto prior_boundaries=whole.observation.discontinuities;whole.feed(8*32768+97,1024);check(whole.observation.discontinuities==prior_boundaries+1,"unhinted source gap resets only first window");check(whole.filled(9)==before,"compatible History preserved at capacity");
+    const auto before=whole.filled(9);const auto prior_boundaries=whole.observation.discontinuities;whole.feed(16*32768+97,1024);check(whole.observation.discontinuities==prior_boundaries+1,"unhinted source gap resets only first window");check(whole.filled(9)==before,"compatible History preserved at capacity");
 }
 void changed_feature_partition(Running& whole){
     auto changed=whole.graph;std::get<TransformProcessingParameters>(changed.nodes[6].parameters).values.push_back(ProcessingParameter{"boundaries_hz",NumericArray{{0,70,120,250,400,600,900,1300,1800,2500,3500,4800,6500,8500,11000,14000,16384}}});
@@ -146,15 +146,16 @@ void partition_and_cadence(){
     for(std::int64_t at=0;at<32768;at+=1024)whole.feed(at,1024);
     constexpr std::array<std::size_t,5> chunks{1,31,547,1009,17};std::size_t part=0;
     for(std::int64_t at=0;at<32768;){const auto count=std::min(chunks[part++%chunks.size()],std::size_t(32768-at));fragmented.feed(at,count);at+=count;}
-    check(whole.observation.count==60 && fragmented.observation.count==60,"32768/60 fractional hop emits 60 windows");
-    for(std::size_t i=0;i<60;++i){check(whole.observation.ticks[i]==std::int64_t((i+1)*32768/60)-1,"fractional hop exact timestamp");check(whole.observation.ticks[i]==fragmented.observation.ticks[i] && whole.observation.hashes[i]==fragmented.observation.hashes[i],"fragmentation preserves spectrum/timestamps");}
-    check(whole.filled(9)==60 && whole.filled(12)==60,"two feature History clocks agree");
+    check(whole.observation.count==32 && fragmented.observation.count>32,"Window emits one spectrum per input packet");
+    check(whole.observation.hashes[whole.observation.count-1]==fragmented.observation.hashes[fragmented.observation.count-1],"final retained spectrum is independent of packet partitioning");
+    check(whole.filled(9)==32 && whole.filled(12)==32,"feature histories share packet cadence");
     Running integral(64,16);for(std::int64_t at=0;at<32768;at+=1024)integral.feed(at,1024);
-    check(integral.observation.count==64,"32768/64 integral hop emits64");for(std::size_t i=0;i<64;++i)check(integral.observation.ticks[i]==std::int64_t((i+1)*512)-1,"integral hop512 exact");
+    check(integral.observation.count==32,"analysis rate does not change primitive accumulator cadence");
+    for(std::size_t i=0;i<32;++i)check(integral.observation.ticks[i]==std::int64_t(i*1024),"packet timestamp is retained");
     retained_feature_geometry(whole);
     changed_feature_partition(whole);
     refused_feature_profiles(whole);
-    std::printf("music runtime PASS: fractional60/integral64, fragmentation, discontinuity, UInt8/16 History, payload25600, no hot allocations; plan buffers=%zu scratch=%zu\n",whole.plan->memory_requirements().buffer_bytes,whole.plan->memory_requirements().scratch_bytes);
+    std::printf("music runtime PASS: packet cadence independent of analysis rate, fragmentation, discontinuity, UInt8/16 History, payload25600, no hot allocations; plan buffers=%zu scratch=%zu\n",whole.plan->memory_requirements().buffer_bytes,whole.plan->memory_requirements().scratch_bytes);
 }
 struct SalienceObservation {
     std::vector<float> values;
@@ -333,14 +334,16 @@ void complex_frequency_binding(){
 void flux_boundaries(){
     Running burst(64,8,true),fragments(64,8,true);burst.feed(0,1024,true);fragments.feed(0,512,true);fragments.feed(512,512);
     burst.feed(10000,1024,true);fragments.feed(10000,512,true);fragments.feed(10512,512);
-    check(burst.observation.flux_count==4 && fragments.observation.flux_count==4,"two hops per boundary packet");
-    for(std::size_t i=0;i<4;++i){check(burst.observation.flux_hashes[i]==fragments.observation.flux_hashes[i],"flux independent of discontinuous packet partitioning");
-        check(burst.observation.flux_boundaries[i]==(i%2==0) && fragments.observation.flux_boundaries[i]==(i%2==0),"only first hop carries packet boundary");}
-    check(!burst.observation.flux_nonzero[0] && burst.observation.flux_nonzero[1] && !burst.observation.flux_nonzero[2] && burst.observation.flux_nonzero[3],"boundary resets once and following flux remains meaningful");
+    check(burst.observation.flux_count==2 && fragments.observation.flux_count==4,"flux follows incoming frames rather than an implicit hop");
+    for(std::size_t i=0;i<2;++i)check(burst.observation.flux_boundaries[i] && !burst.observation.flux_nonzero[i],"a boundary resets the first incoming frame");
+    for(std::size_t i=0;i<4;++i){
+        check(fragments.observation.flux_boundaries[i]==(i%2==0),"only the boundary fragment carries discontinuity");
+        check(fragments.observation.flux_nonzero[i]==(i%2==1),"the next fragment resumes spectral difference analysis");
+    }
     auto disabled=burst.graph;disabled.nodes[6].enabled=false;burst.replace(disabled);burst.feed(11024,1024);
-    check(!burst.observation.flux_nonzero[4] && !burst.observation.flux_nonzero[5],"disabled temporal feature outputs typed zero");
+    check(!burst.observation.flux_nonzero[2],"disabled temporal feature outputs typed zero");
     disabled.nodes[6].enabled=true;burst.replace(disabled);burst.feed(12048,512);
-    check(!burst.observation.flux_nonzero[6],"reenabled flux does not compare stale pre-disable spectrum");
+    check(!burst.observation.flux_nonzero[3],"reenabled flux does not compare stale pre-disable spectrum");
     std::puts("music provenance/flux regressions PASS: no-window, identity converter, grouped-route refusal, one boundary per packet, disabled-state reset");
 }
 }

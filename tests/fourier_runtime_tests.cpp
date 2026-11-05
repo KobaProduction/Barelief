@@ -1,6 +1,7 @@
 #include <dataflow_runtime/runtime.h>
 #include <domain/graph/node_factory.h>
 #include <domain/graph/preparation_values.h>
+#include <dsp_kernels/detail/fused_square_plus_one.h>
 #include "numeric_test_builders.h"
 #include "owned_history_fixture.h"
 #include <array>
@@ -9,6 +10,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <bit>
+#include <string_view>
 namespace {
 using namespace signal_contracts;using namespace domain;using namespace dataflow_runtime;
 constexpr std::size_t maximum=4096;
@@ -138,6 +141,24 @@ NumericProcessingGraph matrix_graph(bool real){
     fft.outputs.clear();for(PortId id=0;id<outputs.size();++id)fft.outputs.push_back({id,PortDirection::Output,outputs[id]});
     result.edges={numeric_test_builders::edge(1,0,2,0)};if(!real)result.edges.push_back(numeric_test_builders::edge(1,0,2,1));return result;
 }
+void endpoint_contracts(bool matrix) {
+    auto definition=matrix?matrix_graph(true):graph(true,8);auto& fft=definition.nodes[1];
+    const auto input=std::get<NumericContract>(fft.inputs[0].contract.view());const auto original_dc=fft.outputs[2].contract;
+    auto& fields=std::get<TransformProcessingParameters>(fft.parameters).values;fields.push_back({"include_endpoints",true});
+    std::vector<OwnedProcessingContract> outputs;
+    check(fourier_output_contracts(fft,input,outputs)==Status::ok && outputs.size()==3,"derive full positive real planes");
+    const auto axis=matrix?1u:0u;
+    for(std::size_t port=0;port<2;++port){
+        const auto value=std::get<NumericContract>(outputs[port].view());
+        check(value.shape.extents[axis]==ExtentBounds{5,5},"both real planes include DC and Nyquist");
+        check(value.coordinates[axis]==AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}},"full positive planes use bins0 throughN/2");
+        if(matrix)check(value.shape.extents[0]==input.shape.extents[0] && value.coordinates[0]==input.coordinates[0],"matrix row bounds and coordinates preserved");
+    }
+    check(same_physical_contract(original_dc.view(),outputs[2].view()),"separate DC contract unchanged");
+    fields.back().value=NumericLiteral{std::uint64_t{1}};
+    check(fourier_output_contracts(fft,input,outputs)==Status::invalid_argument,"endpoint flag requires declared boolean");
+    check(std::get<NumericContract>(outputs[0].view()).shape.extents[axis]==ExtentBounds{5,5},"invalid settings preserve previously derived contracts");
+}
 struct MatrixObservation {
     bool real=false;std::size_t calls=0;unsigned missing=2;
     static void output(void* user,const NumericPortFrameView& event){
@@ -188,8 +209,58 @@ void concatenate_dc(){
     const auto frame=numeric_test_builders::frame({},input,std::as_bytes(std::span(samples)),std::span(&plane,1),{8,1});JoinedObservation seen;const auto before=allocations;
     check(plan->process_numeric_ports(1,0,frame,*state,{},NumericRuntimeCallbacks{JoinedObservation::output,nullptr,nullptr,&seen})==Status::ok && seen.calls==1 && before==allocations,"separate DC is reusable by N/2+1 consumers without allocation");
 }
+NumericProcessingGraph norm_graph(const char* norm){
+    auto definition=graph(false,8);auto& polar=definition.nodes[1];polar.kind="ComplexPolar";
+    polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{8}}},{"first_bin",NumericLiteral{std::uint64_t{0}}},{"positive_half",false},{"real_endpoints",false}}};
+    if(norm)std::get<TransformProcessingParameters>(polar.parameters).values.push_back({"magnitude_norm",std::string(norm)});
+    std::array<OwnedProcessingContract,2> output;
+    check(complex_polar_output_contracts(polar,std::get<NumericContract>(polar.inputs[0].contract.view()),output)==Status::ok,"explicit magnitude norm contract");
+    polar.outputs={{0,PortDirection::Output,output[0]},{1,PortDirection::Output,output[1]}};return definition;
+}
+struct NormObserved {
+    float magnitude=0;std::size_t calls=0;
+    static void output(void* user,const NumericPortFrameView& event){
+        if(event.identity.node!=2 || event.direction!=PortDirection::Output || event.identity.port)return;
+        auto& self=*static_cast<NormObserved*>(user);check(event.status==Status::ok,"norm output status");
+        check(load_element(std::get<NumericView>(event.frame.payload),{0,0,0},self.magnitude)==Status::ok,"norm output value");++self.calls;
+    }
+};
+void norm_case(const char* norm,std::uint32_t expected,std::uint32_t re=0xbdc93b0fu,std::uint32_t im=0x3d8ae443u){
+    const auto definition=norm_graph(norm);std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    check(PreparedGraph::prepare_numeric(definition,profile(),plan,state)==Status::ok,"prepare explicit magnitude norm");
+    // Actual same-operand NumPy complex64 witness from PCM bee194... / v56.
+    std::array<float,8> real{},imaginary{};real[0]=std::bit_cast<float>(re);imaginary[0]=std::bit_cast<float>(im);
+    const auto data=definition.nodes[0].outputs[0].contract.view();const auto& input=std::get<NumericContract>(data);
+    const PlaneLayout plane{0,{sizeof(float),0}};FrameStamp stamp;stamp.sequence=stamp.producer_epoch=1;stamp.has_sample_interval=true;stamp.sample_count=8;
+    const auto first=numeric_test_builders::frame(stamp,input,std::as_bytes(std::span(real)),std::span(&plane,1),{8,1});
+    const auto second=numeric_test_builders::frame(stamp,input,std::as_bytes(std::span(imaginary)),std::span(&plane,1),{8,1});
+    NormObserved seen;const NumericRuntimeCallbacks callbacks{NormObserved::output,nullptr,nullptr,&seen};const auto before=allocations;
+    check(plan->process_numeric_ports(1,0,first,*state,{},callbacks)==Status::ok,"retain real norm operand");
+    check(plan->process_numeric_ports(1,1,second,*state,{},callbacks)==Status::ok,"publish selected magnitude norm");
+    check(allocations==before && seen.calls==1,"norm binding makes one publication without allocations");
+    check(std::bit_cast<std::uint32_t>(seen.magnitude)==expected,"selected norm matches native witness bits");
+}
+void bounded_fma_edges(){
+    // Exact IEEE boundary results, plus the independently recorded CRT/native
+    // failing ratio from v63. The test contains no replay of the implementation.
+    constexpr std::array<std::array<std::uint32_t,2>,8> cases{{
+        {0x00000000u,0x3f800000u},{0x00000001u,0x3f800000u},
+        {0x3f800000u,0x40000000u},{0x3f7fffffu,0x3fffffffu},
+        {0x397fffffu,0x3f800000u},{0x39800000u,0x3f800000u},
+        {0x39800001u,0x3f800001u},{0x3e0451b7u,0x3f822323u}}};
+    for(const auto& item:cases)check(std::bit_cast<std::uint32_t>(dsp_kernels::detail::fused_square_plus_one(std::bit_cast<float>(item[0])))==item[1],"bounded fused square/one native and IEEE boundary bits");
+}
+void scaled_ratio_binding(){
+    bounded_fma_edges();norm_case("scaled_ratio_fma",0x3df48253u);norm_case(nullptr,0x3df48252u);
+    norm_case("scaled_ratio_fma",0x3eb02834u,0xbd349987u,0x3eaeb45cu);
+    norm_case("scaled_ratio_fma",0x40076f21u,0xbf4305eeu,0xbffcb51du);
+    norm_case("scaled_ratio_fma",0x3f8e87aau,0xbf7cf98cu,0x3f03636bu);
+}
 }
 void* operator new(std::size_t bytes){++allocations;if(void* pointer=std::malloc(bytes?bytes:1))return pointer;throw std::bad_alloc();}
 void operator delete(void* pointer) noexcept{std::free(pointer);}
 void operator delete(void* pointer,std::size_t) noexcept{std::free(pointer);}
-int main(){complex_case();real_case("radix2");real_case("radix4");pairing_boundaries();algorithm_geometry();matrix_case(true);matrix_case(false);matrix_case(false,0);matrix_case(false,1);concatenate_dc();std::puts("raw FFT: separate Re/Im, full C2C, compact RFFT/DC/Nyquist, radix2/4, Fs0, owning pairs, shared matrix/ring processing and DC concatenation PASS");}
+int main(int argc,char** argv){
+    if(argc==2 && std::string_view(argv[1])=="--scaled-ratio-only"){scaled_ratio_binding();std::puts("explicit ScaledRatioFma and unchanged default Hypot native witness/noalloc PASS");return 0;}
+    complex_case();real_case("radix2");real_case("radix4");pairing_boundaries();algorithm_geometry();endpoint_contracts(false);endpoint_contracts(true);matrix_case(true);matrix_case(false);matrix_case(false,0);matrix_case(false,1);concatenate_dc();scaled_ratio_binding();std::puts("raw FFT: separate Re/Im, full C2C, compact RFFT/DC/Nyquist, radix2/4, Fs0, owning pairs, shared matrix/ring processing and DC concatenation PASS");
+}

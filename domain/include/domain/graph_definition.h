@@ -29,14 +29,14 @@ enum class NodeKind {
     OnsetStrengthSequence, OnsetDetection, OnsetBacktrack, PcmOnsetEnvelope, TempoEstimate, TempoRatios, MetricalTempogram, EnvelopeTempo, EnvelopeTempoRatios, PcmTempo, PcmTempogram, PcmTempoRatios, DynamicBeatPath, EnvelopeBeatPath, PcmBeatPath, LocalPulse, EnvelopeLocalPulse, PcmLocalPulse, TempoHistogram, TempoAnalysis, BeatTrackingSequence, CrfBeatSequence, BeatStateSequence, DownbeatStateSequence, BarStateSequence, GaussianMixtureScore, PatternStateSequence, PatternFeatures, PcmPatternSequence, BeatFeatureSynchronization, ModelPredictionSelection, TempoProbabilityHistogram, PolarNovelty, HistogramOnset, SpectralWhitening, OnsetMagnitude, SpectralRmsFlux, OnsetDescriptor, SpectralOnset, TriangularSpectralBands, AdaptivePeakPicker, OnsetDecision, PcmSilence, BufferedMaximum, CausalAverage, BufferedBandFlux, ContrastPeakPicker, ContrastPeakAccumulator, HopSpectrum, PcmOnsetSequence, PcmContextTempo, ContextBeatTracker, ContextBeatSequence, PulseTempo, PulseOnset, PulseCorrelation, PulseTrainScoring, LagTempoConsensus, BandNovelty, FixedTempoCandidates, FourierTempoCandidates, WeightedTempoHistogram, FrameTempoPath, PhaseTempoPulse, FourierTempoHistogram, NoveltyTempoHistogram,
     InformationGain, GlobalOnset, BandBeatEmphasis, ErbFilterBank, MovingThreshold, PeriodPath, RenewalBeatDecoder, PeriodBeatTracker, BeatAgreement, MultiFeatureBeatTracker, PcmBeat, BandTempoFeatures, CombPeriodPhase, FeaturePeriodTracker, PeriodPhaseTicks, HarmonicComb, PeriodicPhaseResponse, FrameSilencePolicy, LagObservationPool, TickSequenceRefinement, LagTempoVote, LegacyRhythm, LoopLengthFit, LoopPcmTempo, BeatSegmentEnergy, SpectralBandRatios, FrequencyBandEnergy, BeatLoudnessSequence, BeatBandSalience, CorrelationMeter, BandRhythmTransform, ActivityFluctuation,
     PcmPredictiveOnset, CombTempoTransition, BeatPrediction, PredictiveBeatTracker, PcmPredictiveBeatTracker, NormalizedFeatureFusion, AdaptiveOnsetSelection, OnsetEvents, OnsetRate, BeatIntervalSummary, PcmRhythmSummary, ActivationPeakSequence, SpectralDifferenceSequence, PcmSpectralDifference, TrajectoryOnset,
-    SpectralNovelty, PcmSpectralNovelty, ActivationPeakMatrix, FrameBuffer, FrameStride, FeatureAggregate, CompactSpectrogramView, ClassicSpectrogramView
+    SpectralNovelty, PcmSpectralNovelty, ActivationPeakMatrix, FrameBuffer, FrameStride, FeatureAggregate, CompactSpectrogramView, ClassicSpectrogramView, ArrayReindex, TemporalFrameSequence, BTrackOnset, BTrackHistory, BTrackHistoryResample, BTrackCombObservation, BTrackBeatDecision, EssentiaOnsetRows, EssentiaInformationRows, EssentiaNoveltyRows, EssentiaErbRows, EssentiaAgreement, EssentiaCandidateInputs, BTrackWindowProduct
 };
 enum class NodeRole { Source, Processor, Sink, Unknown };
 NodeRole node_role(NodeKind) noexcept;
 bool is_view(NodeKind) noexcept;
 bool is_scalar_view(NodeKind) noexcept;
 // Registered kinds; retired enum slots are not reused.
-constexpr std::size_t node_kind_count=231;
+constexpr std::size_t node_kind_count=245;
 std::string_view kind_id(NodeKind kind) noexcept;
 std::optional<NodeKind> node_kind(std::string_view canonical_id) noexcept;
 enum class AudioSource { SystemOutput = 0, Microphone = 1 };

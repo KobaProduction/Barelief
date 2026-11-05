@@ -1,0 +1,2 @@
+# App composition owns its API; no portable layer depends on it.
+include_rules = ['+rhythm_replay']

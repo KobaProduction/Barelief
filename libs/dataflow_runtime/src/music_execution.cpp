@@ -94,7 +94,8 @@ bool resampler_config(const ResolvedProcessingNode& node,dsp_kernels::ResamplerC
 }
 namespace {
 std::optional<bool> numeric_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,const NumericRuntimeProfile& profile,std::size_t input) {
-    if(n.operation==ProcessingOperation::ArrayProduct)return numeric_add(resources.payload_bytes,profile.admission.frame.max_string_bytes+n.inputs.size()*(input*sizeof(float)+2*sizeof(std::uint8_t)+sizeof(std::array<std::size_t,2>)));
+    const auto scalar_bytes=std::get<NumericContract>(n.outputs.front().contract.view()).dtype==DType::Float64?sizeof(double):sizeof(float);
+    if(n.operation==ProcessingOperation::ArrayProduct)return numeric_add(resources.payload_bytes,profile.admission.frame.max_string_bytes+n.inputs.size()*(input*scalar_bytes+2*sizeof(std::uint8_t)+sizeof(std::array<std::size_t,2>)));
     if(n.operation!=ProcessingOperation::ArrayConcat)return {};
     const auto right=n.inputs[1].contract.view();
     return numeric_add(resources.payload_bytes,std::size_t(std::get<NumericContract>(right).shape.extents[0].maximum)*sizeof(float));
@@ -120,11 +121,40 @@ bool paired_operation_resources(const ResolvedProcessingNode& n,ProcessingResour
     return numeric_add(resources.payload_bytes,(4*input+2)*sizeof(float)) && numeric_add(resources.payload_bytes,coordinates) && numeric_add(resources.scratch_bytes,(4*input+4)*sizeof(float));
 }
 
-std::optional<bool> signal_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result) {
+bool account_fourier_backend(ProcessingResources& resources,const dsp_kernels::FourierBackendResources& required,
+    std::size_t count,bool real) {
+    std::size_t staging=0;
+    if(!real && !numeric_mul(count,2*sizeof(float),staging))return false;
+    return numeric_add(resources.scratch_bytes,staging) && numeric_add(resources.scratch_bytes,required.cold_peak_bytes) &&
+        numeric_add(resources.payload_bytes,required.shared_bytes) && numeric_add(resources.stack_bytes,required.hot_stack_bytes);
+}
+bool fourier_backend_resources(const ResolvedProcessingNode& node,ProcessingResources& resources,const NumericRuntimeProfile& profile) {
+    if(node.kind!="Fourier" && node.kind!="RealFourier")return true;
+    const dsp_kernels::FourierBackendFactory* backend=nullptr;
+    if(!select_fourier_backend(node,profile,backend))return false;
+    if(!backend)return true;
+    const auto input=std::get<NumericContract>(node.inputs.front().contract.view());
+    const auto count=std::size_t(input.shape.extents[input.shape.rank==Rank::Matrix?1:0].maximum);
+    const bool real=node.kind=="RealFourier";
+    dsp_kernels::FourierBackendResources required;
+    const auto transform=real?dsp_kernels::FourierBackendTransform::RealForward:dsp_kernels::FourierBackendTransform::ComplexForward;
+    if(!dsp_kernels::PreparedFourierBackend::query({count,transform},*backend,required))return false;
+    return account_fourier_backend(resources,required,count,real);
+}
+bool precise_fourier_resources(const ResolvedProcessingNode& node,ProcessingResources& resources,std::size_t input) {
+    const auto contract=std::get<NumericContract>(node.inputs.front().contract.view());
+    if(contract.dtype!=DType::Float64)return true;
+    const auto count=std::size_t(contract.shape.extents[contract.shape.rank==Rank::Matrix?1:0].maximum);
+    std::size_t bytes=0;
+    return node.kind=="RealFourier" && operation_text(node,"backend_id").empty() &&
+        dsp_kernels::detail::PreparedReferenceFourier::storage_bytes(count,bytes) &&
+        numeric_add(resources.scratch_bytes,bytes) && numeric_add(resources.payload_bytes,(input+count+2)*sizeof(double));
+}
+std::optional<bool> signal_operation_resources(const ResolvedProcessingNode& n,ProcessingResources& resources,std::size_t input,std::size_t output,const NumericContract& result,const NumericRuntimeProfile& profile) {
     if(spectral_descriptor_kind(n.kind)){
         std::size_t bytes=0;return dsp_kernels::PreparedSpectralDescriptor::storage_bytes(input/2,bytes) && numeric_add(resources.scratch_bytes,bytes);
     }
-    if(paired_processing(n.operation))return paired_operation_resources(n,resources,input);
+    if(paired_processing(n.operation))return paired_operation_resources(n,resources,input) && fourier_backend_resources(n,resources,profile) && precise_fourier_resources(n,resources,input);
     if(n.kind=="RFFT")return numeric_add(resources.scratch_bytes,(3*input+4)*sizeof(float));
     if(n.kind=="SpectrumProjection")return projection_operation_resources(n,resources,output);
     return feature_operation_resources(n,resources,input,output,result);
@@ -153,7 +183,7 @@ bool operation_support(const ResolvedProcessingNode& node,ProcessingResources& r
     if(!transform_geometry_supported(node,input))return false;
     if(!numeric_add(resources.plan_bytes,sizeof(OperationKernelState)) || !numeric_add(resources.payload_bytes,(in+out)*sizeof(float)))return false;
     if(const auto numeric=numeric_operation_resources(node,resources,profile,in))return *numeric;
-    if(const auto signal=signal_operation_resources(node,resources,in,out,output))return *signal;
+    if(const auto signal=signal_operation_resources(node,resources,in,out,output,profile))return *signal;
     return music_operation_resources(node,resources,in,out,input);
 }
 void prepare_operation_buffers(OperationKernelState& kernel,const PlanNode& node) {
@@ -189,7 +219,7 @@ Status prepare_music(PlanNode& node,State& state,const ResolvedProcessingNode& n
     prepare_operation_buffers(kernel,node);
     const auto numeric=prepare_numeric_operation(kernel,node,n,profile);
     if(numeric!=Status::unavailable)return numeric;
-    const auto signal=prepare_signal_operation(kernel,node,n);
+    const auto signal=prepare_signal_operation(kernel,node,n,profile);
     if(signal!=Status::unavailable)return signal;
     const auto feature=prepare_signal_features(kernel,node,state,n);
     if(feature!=Status::unavailable)return feature;

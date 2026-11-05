@@ -32,12 +32,33 @@ bool divide_bit(WideUnsigned& remainder,WideUnsigned numerator,WideUnsigned deno
 }
 // Exact floor of two products, without compiler-specific 128-bit integers.
 // The division is bounded to 128 steps and performs no allocation.
-bool divide_products(std::uint64_t a,std::uint64_t b,std::uint64_t c,std::uint64_t d,std::uint64_t& out,std::uint64_t* fraction) noexcept {
+bool export_remainder(WideUnsigned remainder,std::uint64_t* fraction,bool* fractional) noexcept {
+    if(fractional)*fractional=remainder.high || remainder.low;
+    if(!fraction)return true;
+    if(remainder.high)return false;
+    *fraction=remainder.low;return true;
+}
+bool divide_products(std::uint64_t a,std::uint64_t b,std::uint64_t c,std::uint64_t d,std::uint64_t& out,std::uint64_t* fraction,bool* fractional) noexcept {
     const auto numerator=multiply_wide(a,b),denominator=multiply_wide(c,d);
     if(!denominator.high && !denominator.low)return false;
     WideUnsigned remainder;out=0;
     for(int bit=127;bit>=0;--bit)if(!divide_bit(remainder,numerator,denominator,bit,out))return false;
-    if(fraction){if(remainder.high)return false;*fraction=remainder.low;}return true;
+    return export_remainder(remainder,fraction,fractional);
+}
+bool signed_ticks(std::uint64_t value,bool negative,std::int64_t& ticks) noexcept {
+    if(value>std::uint64_t(INT64_MAX)){
+        if(!negative || value!=std::uint64_t(INT64_MAX)+1)return false;
+        ticks=INT64_MIN;
+    }else ticks=negative?-std::int64_t(value):std::int64_t(value);
+    return true;
+}
+bool sample_offset_ticks(std::int64_t samples,const ClockContract& clock,std::int64_t& ticks) noexcept {
+    if(!clock.sample_rate || clock.tick_seconds.numerator<=0 || !clock.tick_seconds.denominator)return false;
+    const auto magnitude=samples<0?std::uint64_t(-(samples+1))+1:std::uint64_t(samples);
+    std::uint64_t value=0;bool fractional=false;
+    if(!divide_products(magnitude,clock.tick_seconds.denominator,clock.sample_rate,std::uint64_t(clock.tick_seconds.numerator),value,nullptr,&fractional))return false;
+    if(samples<0 && fractional){if(value==UINT64_MAX)return false;++value;}
+    return signed_ticks(value,samples<0,ticks);
 }
 bool convert_rate_ticks(std::int64_t ticks,std::uint32_t input,std::uint32_t output,std::int64_t& converted) noexcept {
     const auto magnitude=ticks<0 ? std::uint64_t(-(ticks+1))+1 : std::uint64_t(ticks);

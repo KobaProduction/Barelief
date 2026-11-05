@@ -118,7 +118,9 @@ void DeliveryHub::record_transport_drop(ContextIterator found) {
 void DeliveryHub::update_tap_budget() {
     std::size_t demanded=0;
     for(const auto& [endpoint,context]:contexts)if(tap_selected(endpoint))++demanded;
-    tap_queue_depth=std::max(std::size_t{1},std::size_t{128}/std::max(std::size_t{1},demanded));
+    // Keep half the bounded pool available for consumer-held frames and cached
+    // outputs, including newly selected endpoints while the old FIFO drains.
+    tap_queue_depth=std::max(std::size_t{1},(DeliveryArena::slot_count/2)/std::max(std::size_t{1},demanded));
 }
 std::size_t DeliveryHub::queued_tap_frames(const EndpointIdentity& endpoint) {
     std::size_t matching=0;
@@ -136,17 +138,18 @@ void DeliveryHub::commit_tap_frame(ContextIterator found,LatestIterator cached,c
     if(pending_gap!=delivery_gaps.end())pending_gap->second=status!=Status::ok;
     if(status!=Status::ok)retained={found->second,{borrowed.delivery.graph_revision,borrowed.delivery.epoch},{},status};
     if(cached!=latest_matrices.end())cached->second=retained;
+    // Explicit latest-value queries must stay current even when observation
+    // delivery is backpressured. Only enqueueing consumes the FIFO quota.
+    if(frames.size()==128 || queued_tap_frames(found->first)>=tap_queue_depth){record_transport_drop(found);return;}
     if(!frames.push(std::move(retained)))record_transport_drop(found);
 }
 void DeliveryHub::queue_tap_frame(ContextIterator found,LatestIterator cached,const dataflow_runtime::NumericPortFrameView& borrowed) {
     auto pending_gap=delivery_gaps.find(found->first);
-    // Reserve bounded FIFO space for other demanded endpoints. Already admitted
-    // events retain their order; loss is marked on the next admitted event.
-    if(frames.size()==128 || queued_tap_frames(found->first)>=tap_queue_depth){record_transport_drop(found);return;}
     auto delivered_frame=borrowed.frame;
     delivered_frame.stamp.discontinuity|=(pending_gap!=delivery_gaps.end()&&pending_gap->second);
     DeliveredNumericFrame retained;
     const auto status=retain_delivery(found,borrowed,delivered_frame,*arena,retained);
+    if(status==Status::exhausted){record_transport_drop(found);return;}
     commit_tap_frame(found,cached,borrowed,std::move(retained),status);
 }
 NumericHistoryEvent DeliveryHub::history_event(dataflow_runtime::NumericHistoryEventKind event) {

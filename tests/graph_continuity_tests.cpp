@@ -20,6 +20,13 @@ void operator delete(void* value,std::size_t)noexcept{std::free(value);}void ope
 namespace {
 #define CHECK(x) test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures)
 constexpr FrameLimits frame_limits{8,32768,262144,16384,256,8192};
+void print_port_contract(const ProcessingPort& port) {
+ const auto value=port.contract.view();const auto* c=std::get_if<NumericContract>(&value);if(!c)return;
+ std::printf("port %u dtype %d rank %d size %llu..%llu norm %d align %zu clock %.*s %lld/%llu Fs%u\n",unsigned(port.id),int(c->dtype),int(c->shape.rank),
+  (unsigned long long)c->shape.extents[0].minimum,(unsigned long long)c->shape.extents[0].maximum,int(c->representation.normalization),c->representation.alignment,
+  int(c->clock.domain.size()),c->clock.domain.data(),(long long)c->clock.tick_seconds.numerator,(unsigned long long)c->clock.tick_seconds.denominator,c->clock.sample_rate);
+}
+
 NumericRuntimeProfile profile(){return {{32,64,8,16,256,65536,frame_limits},{{1048576,2*1048576,1048576,65536},0,8388608},{32768,8,262144,262144,262144},{true,true,true}};}
 struct Snapshot {std::size_t rows=0,bands=0,capacity=0;std::uint64_t ordinal=0;std::vector<std::uint64_t> bits;};
 void appended_preserves(const Snapshot& before,const Snapshot& after){
@@ -45,7 +52,7 @@ struct Fixture {
  NumericContract source;std::array<float,256> samples{};std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
  Fixture(){graph.execution_interval={1,60};source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
  ConfiguredProcessingNode& node(NodeId id){auto it=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});CHECK(it!=graph.nodes.end());return *it;}
- bool apply(){auto prepared=lifecycle.prepare_transactional(graph);if(!prepared)std::printf("prepare status=%d error=%u node=%lld port=%u\n",int(prepared.status),unsigned(prepared.numeric_validation.error),static_cast<long long>(prepared.numeric_validation.node),unsigned(prepared.numeric_validation.port));CHECK(bool(prepared));if(!prepared)return false;auto applied=lifecycle.apply_transactional();CHECK(bool(applied));return bool(applied);}
+ bool apply(){auto prepared=lifecycle.prepare_transactional(graph);if(!prepared)std::printf("prepare status=%d error=%u node=%lld port=%u\n",int(prepared.status),unsigned(prepared.numeric_validation.error),static_cast<long long>(prepared.numeric_validation.node),unsigned(prepared.numeric_validation.port));CHECK(bool(prepared));if(!prepared){for(const auto& port:node(2).inputs)print_port_contract(port);for(const auto& port:node(2).outputs)print_port_contract(port);return false;}auto applied=lifecycle.apply_transactional();CHECK(bool(applied));return bool(applied);}
  void check_padding(const NumericView& numeric,const Snapshot& result) {
   for(std::size_t row=0;row<result.capacity-result.rows;++row)
    for(std::size_t band=0;band<result.bands;++band){std::uint64_t zero=1;CHECK(load_bits(numeric,{0,row,band},numeric.contract->dtype,zero)==Status::ok&&zero==0);}
@@ -117,7 +124,7 @@ void remove_gate(Fixture& f){
 }
 void resize_fft_contract(ProcessingPort& port){
  auto value=std::get<NumericContract>(port.contract.view());
- if(value.semantic==Semantic::Window || value.semantic==Semantic::Windowed)value.shape.extents[0]={2048,2048};
+ if(value.semantic==Semantic::Window || value.semantic==Semantic::Windowed || (value.shape.rank==Rank::Vector && value.shape.extents[0].maximum==4096))value.shape.extents[0]={2048,2048};
  else if(value.semantic==Semantic::SpectrumMagnitude){value.shape.extents[0]={1024,1024};value.coordinates[0].step={48000,2048};}
  else return;
  CHECK(own_processing_contract(value,frame_limits,65536,port.contract)==Status::ok);
@@ -126,8 +133,10 @@ void fft_geometry_edit(Fixture& f){
  // The window geometry changes, but the final Mel50/History contract and clock do not.
  for(auto& n:f.graph.nodes)for(auto* ports:{&n.inputs,&n.outputs})for(auto& port:*ports)resize_fft_contract(port);
  std::get<TransformProcessingParameters>(f.node(2).parameters).values[0].value=NumericLiteral{std::uint64_t{2048}};
- for(const NodeId id:{15,6})for(auto& field:std::get<TransformProcessingParameters>(f.node(id).parameters).values)
+ for(const NodeId id:{2,3,15,6})for(auto& field:std::get<TransformProcessingParameters>(f.node(id).parameters).values){
+  if(field.key=="size" || field.key=="fft_size")field.value=NumericLiteral{std::uint64_t{2048}};
   if(field.key=="bin_hz")field.value=NumericLiteral{48000./2048.};
+ }
  f.edit_preserves("FFT window4096 to2048 compatible Mel50");
 }
 Snapshot disconnect_history(Fixture& f){
@@ -147,7 +156,7 @@ void reordered_full_ring(Fixture& f){
 }
 void lifecycle_boundaries(Fixture& f){
  auto bad=f.graph;bad.edges.push_back({6,15,0,0});const auto* working=f.executor.plan();CHECK(!f.lifecycle.prepare_transactional(bad));CHECK(f.executor.plan()==working);f.feed(4);
- CHECK(f.lifecycle.shutdown_transactional()==Status::ok);CHECK(!f.executor.running());CHECK(f.apply()&&f.executor.running());f.feed(4);CHECK(f.filled==1&&f.ordinal==1);
+ CHECK(f.lifecycle.shutdown_transactional()==Status::ok);CHECK(!f.executor.running());CHECK(f.apply()&&f.executor.running());f.feed(4);CHECK(f.filled==4&&f.ordinal==4);
 }
 void compatible_edits(){
  Fixture f;if(!f.apply())return;f.feed(32);CHECK(f.filled>=10);

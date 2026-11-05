@@ -35,12 +35,18 @@ static NumericProcessingGraph dual_window_graph(){auto graph=single_window_graph
 static void independent_windows(){auto g=dual_window_graph();
  GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"apply dual windows");Feed feed(g);Spectra result;
  for(int i=0;i<32;++i)feed.process(e,256,{spectrum,nullptr,nullptr,&result});
- for(std::size_t i=0;i<2;++i)check(result.count[i]==60&&result.end[i]==8192&&result.peak[i]==(i==0?128:32),"independent mono window schedule/timestamp");
+ for(std::size_t i=0;i<2;++i)check(result.count[i]==32&&result.end[i]==7936&&result.peak[i]==(i==0?128:32),"independent mono window schedule/timestamp");
  std::puts("independent windows2048/512 mono peaks128/32 PASS");}
 struct RetainedHistory {std::size_t filled=0,bands=0;std::uint64_t sequence=0;bool discontinuity=false;std::vector<std::uint64_t> bits;};
 static RetainedHistory retained_history(const GraphExecutor& e,NodeId id=7){DataFrameView frame;std::uint64_t filled=0;check(e.plan()->history(id,0,*e.context(),frame,&filled)==Status::ok,"retain History observation");const auto& view=std::get<NumericView>(frame.payload);RetainedHistory result;result.sequence=frame.stamp.sequence;result.discontinuity=frame.stamp.discontinuity;result.filled=std::size_t(filled);result.bands=view.actual[1];result.bits.resize(result.filled*result.bands);
  for(std::size_t r=0;r<result.filled;++r)for(std::size_t b=0;b<result.bands;++b)check(load_bits(view,{0,view.actual[0]-result.filled+r,b},view.contract->dtype,result.bits[r*result.bands+b])==Status::ok,"retain History exact bits");return result;}
-static void appended_history(const RetainedHistory& before,const GraphExecutor& e,NodeId id=7){const auto after=retained_history(e,id);check(after.filled==before.filled+1&&after.bands==before.bands,"compatible source boundary appends one History row");check(std::equal(before.bits.begin(),before.bits.end(),after.bits.begin()),"compatible source boundary preserves all old History bits");if(!after.discontinuity || after.sequence!=before.sequence+1)std::fprintf(stderr,"History boundary before=%llu after=%llu discontinuity=%d\n",(unsigned long long)before.sequence,(unsigned long long)after.sequence,int(after.discontinuity));check(after.discontinuity&&after.sequence==before.sequence+1,"compatible source boundary marks discontinuity without restarting History sequence");}
+static void appended_history(const RetainedHistory& before,const GraphExecutor& e,NodeId id=7,std::size_t appended=1){
+ const auto after=retained_history(e,id);
+ check(after.filled==before.filled+appended&&after.bands==before.bands,"compatible source boundary appends one row per input packet");
+ check(std::equal(before.bits.begin(),before.bits.end(),after.bits.begin()),"compatible source boundary preserves all old History bits");
+ check(after.sequence==before.sequence+appended,"source boundary preserves History sequence");
+ if(appended==1)check(after.discontinuity,"first row marks source discontinuity");
+}
 static void pending_apply_reads_latest(GraphExecutor& e,Feed& feed,const NumericProcessingGraph& graph,application::PreparedExecution& pending){
  auto changed=graph;node(changed,9).enabled=false;prepare(e,changed,pending);
  for(int i=0;i<8;++i)feed.process(e,256);
@@ -51,7 +57,7 @@ static void shutdown_fences_pending(GraphExecutor& e,Feed& feed,const NumericPro
  check(e.apply(std::move(pending))==Status::invalid_argument&&!e.running(),"shutdown fences pending Apply");
  check(restart(e,graph)==Status::ok,"re-admit after shutdown");
  for(int i=0;i<4;++i)feed.process(e,256);
- check(rows(e)==1,"shutdown resurrected old History");
+ check(rows(e)==4,"shutdown resurrected old History");
 }
 static void foreign_apply_and_epoch(GraphExecutor& e,Feed& feed,const NumericProcessingGraph& graph,application::PreparedExecution& pending){
  prepare(e,graph,pending);GraphExecutor foreign(profile());
@@ -60,7 +66,7 @@ static void foreign_apply_and_epoch(GraphExecutor& e,Feed& feed,const NumericPro
  for(int i=0;i<8;++i)feed.process(e,256);
  check(rows(e)>1,"restart accumulation");const auto before_epoch=retained_history(e);++feed.epoch;
  for(int i=0;i<4;++i)feed.process(e,256);
- appended_history(before_epoch,e);
+ appended_history(before_epoch,e,7,4);
 }
 static void latest_state_at_apply(){auto g=oracle_graph();GraphExecutor e(profile());application::PreparedExecution pending;
  prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"initial apply");Feed feed(g);
@@ -108,17 +114,17 @@ struct SelectiveResetFixture {
   check(rows(executor,27)==rows(executor,7),"two branches counts");}
  void restart_source(){const auto original=rows(executor,7);const auto before=retained_history(executor,27);
   ++right.epoch;for(int i=0;i<4;++i)process_right();
-  appended_history(before,executor,27);check(rows(executor,7)==original,"source restart reset independent branch");}
+  appended_history(before,executor,27,4);check(rows(executor,7)==original,"source restart reset independent branch");}
  void rebind_clock(){for(auto& edge:graph.edges)if(edge.to==7)edge.from=26;
   const auto untouched=rows(executor,27);prepare(executor,graph,pending);
   check(executor.apply(std::move(pending))==Status::ok&&rows(executor,27)==untouched,"clock edit reset independent History");
   for(int i=0;i<4;++i)process_right();
-  check(rows(executor,7)==1&&rows(executor,27)==untouched+1,"source identity change failed selective reset");}
+  check(rows(executor,7)==4&&rows(executor,27)==untouched+4,"source identity change failed selective reset");}
  void preserve_capacity(){resize_history_contract(graph);const auto independent=rows(executor,27),retained=rows(executor,7);
   const auto bits=newest_history_bits(executor);prepare(executor,graph,pending);
   check(executor.apply(std::move(pending))==Status::ok&&rows(executor,27)==independent&&rows(executor,7)==retained,"capacity Apply changed retained occupancy or independent branch");
   check_newest_history_bits(executor,bits);for(int i=0;i<4;++i)process_right();
-  check(rows(executor,7)==retained+1&&rows(executor,27)==independent+1,"capacity edit reset accumulation");}
+  check(rows(executor,7)==retained+4&&rows(executor,27)==independent+4,"capacity edit reset accumulation");}
 };
 static void selective_reset(){SelectiveResetFixture fixture;
  fixture.start();fixture.restart_source();fixture.rebind_clock();fixture.preserve_capacity();
@@ -254,7 +260,7 @@ static void restart_dsp_cycle(GraphExecutor& executor,const NumericProcessingGra
  auto blocked=feed.frame(256);check(executor.process_numeric_ports(1,blocked,{})==Status::would_block,"shutdown DSP accepts input");
  check(restart(executor,graph)==Status::ok&&restart(executor,graph)==Status::ok,"DSP repeated re-admission");
  for(int i=0;i<4;++i)feed.process(executor,256);
- check(rows(executor)==1,"DSP restart retained old History/cadence");check_restarted_mel(executor);}
+ check(rows(executor)==4,"DSP restart retained old History/cadence");check_restarted_mel(executor);}
 static void repeated_dsp_restart(){auto graph=oracle_graph();GraphExecutor executor(profile());
  application::PreparedExecution pending;prepare(executor,graph,pending);
  check(executor.apply(std::move(pending))==Status::ok,"DSP restart Apply");Feed feed(graph);
@@ -335,7 +341,7 @@ struct InputSelectorFixture {
  }
  void apply(const char* reason){prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,reason);}
  void select(std::uint64_t input){std::get<TransformProcessingParameters>(node(g,14).parameters).values={{"selected_input",NumericLiteral{input}}};apply("selector compatible Apply");}
- void capture_history(){DataFrameView old;check(e.plan()->history(7,0,*e.context(),old)==Status::ok,"selector old History");
+ void capture_history(){bits.clear();DataFrameView old;check(e.plan()->history(7,0,*e.context(),old)==Status::ok,"selector old History");
   const auto& view=std::get<NumericView>(old.payload);
   for(std::size_t row=0;row<retained;++row)for(std::size_t band=0;band<50;++band){std::uint64_t value=0;
    check(load_bits(view,{0,view.actual[0]-retained+row,band},DType::Float32,value)==Status::ok,"selector History bits");bits.push_back(value);}
@@ -344,30 +350,31 @@ struct InputSelectorFixture {
   retained=rows(e);check(retained>0&&o.available==32,"selector default input0");capture_history();}
  void unused_port_edits(){node(g,14).inputs.push_back({2,PortDirection::Input,pcm});apply("unused selector input growth Apply");
   const auto sequence=o.last.sequence;send(1,generator);
-  check(o.last.sequence==sequence+1&&!o.last.discontinuity&&rows(e)==retained,"unused input growth reset active selector clock or History");
+  check(o.last.sequence==sequence+1&&!o.last.discontinuity&&rows(e)==retained+1,"unused input growth reset active selector clock or History");
+  retained=rows(e);capture_history();
   node(g,14).inputs.pop_back();apply("unused selector input shrink Apply");
   const auto chosen=o.available;send(13,capture,false);++capture.epoch;send(13,capture,true,true);
   check(o.available==chosen&&o.unavailable==0&&rows(e)==retained,"inactive source poisoned selected History");}
  void preserved_history(){DataFrameView frame;check(e.plan()->history(7,0,*e.context(),frame)==Status::ok,"selector retained History query");
   const auto& view=std::get<NumericView>(frame.payload);
   for(std::size_t row=0;row<retained;++row)for(std::size_t band=0;band<50;++band){std::uint64_t value=0;
-   check(load_bits(view,{0,view.actual[0]-(retained+1)+row,band},DType::Float32,value)==Status::ok&&value==bits[row*50+band],"selector mutated retained History bits");}
+   check(load_bits(view,{0,view.actual[0]-(retained+4)+row,band},DType::Float32,value)==Status::ok&&value==bits[row*50+band],"selector mutated retained History bits");}
  }
  void switch_active(){select(1);check(rows(e)==retained,"selector Apply cleared History");
   o.inspect_fresh_window=true;o.expect_history_discontinuity=true;
   const auto first=send(13,capture);
   check(o.last.discontinuity&&o.last.producer_epoch==first.producer_epoch&&o.last.source_sequence==first.source_sequence&&o.last.timestamp_ticks==first.timestamp_ticks,"selector switch metadata");
   for(int i=0;i<3;++i)send(13,capture);
-  check(!o.inspect_fresh_window&&!o.expect_history_discontinuity&&rows(e)==retained+1,"selector switch fresh DSP row");preserved_history();
+  check(!o.inspect_fresh_window&&!o.expect_history_discontinuity&&rows(e)==retained+4,"selector switch fresh DSP row");preserved_history();
  }
  void recover_selected(){
   const auto active=o.available;for(int i=0;i<4;++i)send(1,generator);
   check(o.available==active,"inactive generator reached selector output");
   send(13,capture,false);DataFrameView unavailable;std::uint64_t filled=0;
-  check(o.unavailable==1&&e.plan()->history(7,0,*e.context(),unavailable,&filled)==Status::unavailable&&filled==retained+1,"selected unavailable lost retained History");
+  check(o.unavailable==1&&e.plan()->history(7,0,*e.context(),unavailable,&filled)==Status::unavailable&&filled==retained+4,"selected unavailable lost retained History");
   o.inspect_fresh_window=true;o.expect_history_discontinuity=true;
   for(int i=0;i<4;++i)send(13,capture);
-  check(!o.inspect_fresh_window&&!o.expect_history_discontinuity&&rows(e)==retained+2,"selector recovery DSP");
+  check(!o.inspect_fresh_window&&!o.expect_history_discontinuity&&rows(e)==retained+8,"selector recovery DSP");
  }
  void disable_and_resume(){select(0);const auto resumed=send(1,generator);
   check(o.last.discontinuity&&o.last.producer_epoch==generator.epoch&&o.last.sequence==resumed.sequence,"selector generator did not advance independently");
@@ -406,7 +413,7 @@ struct InputSelectorFixture {
   check(status==Status::ok||status==Status::unavailable,"disconnected selector History retention");
   const auto prior=std::size_t(filled);
   for(int i=0;i<3;++i){send(1,generator);send(16,unrelated);send(13,capture);}
-  check(o.available==active+4&&rows(e)==prior+1,"disconnected selector double cadence on alternating sources");
+  check(o.available==active+4&&rows(e)==prior+3,"disconnected selector double cadence on alternating sources");
  }
  void cold_disconnected_clock(Feed& unrelated){GraphExecutor cold(profile());prepare(cold,g,pending);
   check(cold.apply(std::move(pending))==Status::ok,"cold disconnected selector Apply");
@@ -415,7 +422,7 @@ struct InputSelectorFixture {
    check(cold.process_numeric_ports(id,frame,{}, {selector_output,nullptr,nullptr,&observed})==Status::ok&&allocations==before,"cold selector clock/noalloc");};
   for(int i=0;i<4;++i){cold_send(13,capture);cold_send(16,unrelated);
    check(observed.available==std::size_t(i),"cold selector ticked on second/unrelated source");cold_send(1,generator);}
-  check(observed.available==4&&observed.last.producer_epoch==generator.epoch&&rows(cold)==1,"cold selector stable compatible clock/cadence");
+  check(observed.available==4&&observed.last.producer_epoch==generator.epoch&&rows(cold)==4,"cold selector stable compatible clock/cadence");
  }
  void unknown_clock(){auto contract=std::get<NumericContract>(pcm.view());contract.clock={"",{1,1},0};
   OwnedProcessingContract unknown;check(own_processing_contract(contract,limits,65536,unknown)==Status::ok,"selector unknown clock contract");

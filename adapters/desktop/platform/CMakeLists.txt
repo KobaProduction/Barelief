@@ -21,6 +21,7 @@ add_library(desktop_analysis STATIC
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/curve_analysis.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/curve_coefficients.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/scan_json.cpp
+    ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/rhythm_pattern_data.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/audio_decoder.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/resampler_comparison.cpp
     ${CMAKE_SOURCE_DIR}/adapters/desktop/analysis/offline/music_analysis.cpp)
