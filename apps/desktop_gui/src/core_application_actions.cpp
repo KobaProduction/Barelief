@@ -5,10 +5,6 @@
 #include <core_app/numeric_default_graph.h>
 #ifdef BARELIEF_RHYTHM_REFERENCE_GUI
 #include <core_app/numeric_reference_graphs.h>
-#include <core_app/numeric_btrack_reference_graph.h>
-#include <core_app/numeric_essentia_reference_graph.h>
-#include <core_app/numeric_madmom_reference_graph.h>
-#include <array>
 #endif
 #include <core_app/resampler_comparison_dialog.h>
 #include <core_app/music_analysis_dialog.h>
@@ -76,11 +72,8 @@ void CoreApplication::_populate_example_menu(SchemeEditorWidget* editor) {
         reference->setObjectName("rhythmReferencePresetsMenu");
         ui::bind(reference,"title","Rhythm references");
         menu->insertMenu(anchor,reference);
-        std::array presets{
-            numeric_aubio_reference_example(),numeric_btrack_reference_example(),
-            numeric_madmom_reference_example(48000,MadmomReferenceMode::Crf),
-            numeric_essentia_reference_example(EssentiaReferenceMethod::MultiFeature)};
-        for(auto& example:presets)_add_example_action(reference,nullptr,editor,std::move(example));
+        for(auto example:numeric_library_reference_presets())
+            _add_example_action(reference,nullptr,editor,std::move(example));
     }
 #endif
 }

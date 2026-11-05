@@ -102,11 +102,15 @@ int main(int argc,char** argv) {
     try {
         if(parser.isSet("whole-input"))return run_whole_input(whole_input_arguments(parser));
         if(parser.isSet("input") || parser.isSet("output") || parser.isSet("packet-samples") || parser.isSet("frontend-diagnostic"))return 2;
-        const auto examples=numeric_library_reference_examples();
-        if(parser.isSet("export"))return export_reference_graphs(parser.value("export"),examples)?0:2;
         if(parser.isSet("project"))return run_project(app,parser);
+        const auto presets=numeric_library_reference_presets();
+        if(parser.isSet("export"))return export_reference_graphs(parser.value("export"),presets)?0:2;
         const auto selected=parser.value("preset").toStdString();
-        const auto found=std::find_if(examples.begin(),examples.end(),[&](const auto& example){return selected==example.id;});
-        return found==examples.end()?2:run(app,parser,*found);
+        const auto matches=[&](const auto& example){return selected==example.id;};
+        const auto preset=std::find_if(presets.begin(),presets.end(),matches);
+        if(preset!=presets.end())return run(app,parser,*preset);
+        const auto variants=numeric_library_reference_examples();
+        const auto variant=std::find_if(variants.begin(),variants.end(),matches);
+        return variant==variants.end()?2:run(app,parser,*variant);
     }catch(const std::exception& error){qCritical()<<error.what();return 2;}
 }

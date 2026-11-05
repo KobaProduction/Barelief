@@ -6,9 +6,12 @@
 #include <pipeline/numeric_engine.h>
 #include <QAction>
 #include <QMenu>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest/QSignalSpy>
+#include <algorithm>
 #include <array>
+#include <span>
 #include <atomic>
 #include <cstdio>
 #include <stdexcept>
@@ -18,13 +21,45 @@ void require(bool condition,const char* message) {
     if(!condition)throw std::runtime_error(message);
 }
 
-struct ReferencePreset {const char* id;int output_node;unsigned short output_port;};
+struct ReferenceOutput {int node;unsigned short port;};
+struct ReferencePreset {const char* id;std::span<const ReferenceOutput> outputs;};
+constexpr std::array aubio_outputs{ReferenceOutput{33,4}};
+constexpr std::array btrack_outputs{ReferenceOutput{34,1}};
+constexpr std::array madmom_outputs{ReferenceOutput{4,0},ReferenceOutput{80,0},ReferenceOutput{81,0}};
+constexpr std::array essentia_outputs{ReferenceOutput{50,1},ReferenceOutput{60,0}};
 constexpr std::array presets{
-    ReferencePreset{"aubio-reference",33,4},
-    ReferencePreset{"reference-btrack",34,1},
-    ReferencePreset{"madmom-superflux-crf",4,0},
-    ReferencePreset{"essentia-reference-multifeature",61,0}
+    ReferencePreset{"aubio-reference",aubio_outputs},
+    ReferencePreset{"reference-btrack",btrack_outputs},
+    ReferencePreset{"madmom-superflux-reference",madmom_outputs},
+    ReferencePreset{"essentia-reference",essentia_outputs}
 };
+
+bool connected(const domain::NumericProcessingGraph& graph,domain::NodeId from,domain::PortId port,
+    domain::NodeId to) {
+    return std::any_of(graph.edges.begin(),graph.edges.end(),[=](const auto& edge){
+        return edge.from==from && edge.output_port==port && edge.to==to && edge.input_port==0;
+    });
+}
+
+std::size_t node_count(const domain::NumericProcessingGraph& graph,std::string_view kind) {
+    return std::count_if(graph.nodes.begin(),graph.nodes.end(),[=](const auto& node){return node.kind==kind;});
+}
+
+void verify_shared_frontend(const domain::NumericProcessingGraph& graph,std::string_view id) {
+    require(node_count(graph,"AudioSource")==1,"Preset must have one shared source");
+    if(id=="madmom-superflux-reference"){
+        require(node_count(graph,"FeatureAggregate")==1 && node_count(graph,"NumberAccumulator")==1,
+            "madmom must use a single SuperFlux history");
+        for(const auto& output:madmom_outputs)
+            require(connected(graph,31,0,output.node),"All madmom branches must read the same ODF snapshot");
+    }
+    if(id=="essentia-reference"){
+        require(node_count(graph,"FrameBuffer")==1 && node_count(graph,"PeriodBeatTracker")==5,
+            "Essentia must share the PCM session and first candidate");
+        require(connected(graph,50,1,60) && connected(graph,50,1,103) && connected(graph,60,0,114),
+            "Degara and MultiFeature must share the first candidate and expose both outputs");
+    }
+}
 
 bool available_output(const pipeline::DeliveredNumericFrame& output) {
     if(output.status!=signal_contracts::Status::ok || !output.frame)return false;
@@ -33,14 +68,27 @@ bool available_output(const pipeline::DeliveredNumericFrame& output) {
     return frame.stamp.available && numeric && numeric->actual[0] && numeric->actual[1];
 }
 
-bool wait_for_output(pipeline::NumericEngine& engine,pipeline::EndpointIdentity endpoint) {
-    auto ready=std::make_shared<std::atomic_bool>(false);
-    const auto token=engine.subscribe_numeric_tap({std::move(endpoint)},[ready](const auto& output){
-        if(available_output(output))ready->store(true);
+void record_output(const pipeline::DeliveredNumericFrame& frame,std::span<const pipeline::EndpointIdentity> endpoints,
+    std::atomic_uint& seen) {
+    if(!frame.context || !available_output(frame))return;
+    const auto found=std::find(endpoints.begin(),endpoints.end(),frame.context->endpoint);
+    if(found!=endpoints.end())seen.fetch_or(1u<<std::size_t(found-endpoints.begin()));
+}
+
+bool wait_for_outputs(pipeline::NumericEngine& engine,const std::string& graph,
+    std::span<const ReferenceOutput> outputs) {
+    std::vector<pipeline::EndpointIdentity> endpoints;
+    for(const auto& output:outputs)
+        endpoints.push_back({graph,output.node,pipeline::PortDirection::Output,output.port});
+    auto seen=std::make_shared<std::atomic_uint>(0);
+    const auto token=engine.subscribe_numeric_tap(endpoints,[seen,endpoints](const auto& frame){
+        record_output(frame,endpoints,*seen);
     },{});
     require(token!=0,"Output subscription rejected");
-    const bool published=editor_ui_test_fixture::wait_until([&]{return ready->load();},16000);
+    const auto complete=(1u<<outputs.size())-1;
+    const bool published=editor_ui_test_fixture::wait_until([&]{return seen->load()==complete;},16000);
     engine.unsubscribe_numeric_tap(token);
+    if(!published)std::fprintf(stderr,"Observed output mask %u, expected %u\n",seen->load(),complete);
     return published;
 }
 
@@ -53,11 +101,13 @@ void verify_preset(CoreApplication& app,MainWindow& window,const ReferencePreset
     require(editor_ui_test_fixture::wait_until([&]{return !applied.isEmpty();},12000),"Research preset Apply did not finish");
     require(applied.last()[1].toBool(),"Research preset Apply rejected");
     auto& host=dynamic_cast<pipeline::NumericDesktopHost&>(app.presenter().client());
-    const auto graph=host.snapshot().graph.value("graph_id").toString();
-    const pipeline::EndpointIdentity endpoint{graph.toStdString(),preset.output_node,
-        pipeline::PortDirection::Output,preset.output_port};
-    require(host.local_engine() && wait_for_output(*host.local_engine(),endpoint),
-        "Applied research preset did not publish its result");
+    domain::NumericProcessingGraph graph;
+    const auto bytes=QJsonDocument(host.snapshot().graph).toJson(QJsonDocument::Compact);
+    require(bool(desktop::decode_numeric_graph(bytes,graph)),"Applied graph could not be decoded");
+    verify_shared_frontend(graph,preset.id);
+    require(host.local_engine() && wait_for_outputs(*host.local_engine(),graph.graph_id,preset.outputs),
+        "Applied reference preset did not publish every branch output");
+    std::fprintf(stderr,"GUI preset %s published %zu outputs\n",preset.id,preset.outputs.size());
 }
 
 void run_presets(CoreApplication& app) {

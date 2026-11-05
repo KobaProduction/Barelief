@@ -9,6 +9,9 @@ enum class MadmomReferenceMode { Fixed, Local, Crf };
 NumericExampleGraph numeric_madmom_reference_example(
     std::uint32_t source_rate=48000, MadmomReferenceMode mode=MadmomReferenceMode::Fixed);
 
+// One rolling SuperFlux snapshot drives the Fixed, Local and CRF decoders.
+NumericExampleGraph numeric_madmom_combined_reference_example(std::uint32_t source_rate=48000);
+
 // Finite, zero-origin native 48000-Hz research session. Source 1 supplies PCM;
 // collect scalar ODF output 3 and submit its entire fixed-F vector to source 31
 // exactly once after PCM completion, outside callbacks, on the same plan.

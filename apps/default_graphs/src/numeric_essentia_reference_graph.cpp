@@ -113,16 +113,17 @@ void candidates(examples::Builder& b,bool multi) {
                 {"upsampling",NumericLiteral{std::uint64_t(i<3?2:1)}},
                 {"minimum_bpm",NumericLiteral{40.f}},{"maximum_bpm",NumericLiteral{208.f}}}),{{multi?47:40,PortId(multi?i:0)}});
 }
+void degara_summary(examples::Builder& b,NodeId id) {
+    b.add(59,"Number",EndpointProcessingParameters{{{"value",NumericLiteral{0.f}}}});
+    stage(b,id,"BeatIntervalSummary",rhythm_graph_adapters::make_sequence_source_node,{},{{50,1},{59}});
+}
 void summary(examples::Builder& b,bool multi) {
     using namespace rhythm_graph_adapters;
     if(multi){
         stage(b,60,"EssentiaAgreement",make_essentia_operation_node,
             examples::transform({{"minimum_time",NumericLiteral{5.f}}}),{{50,1},{51,1},{52,1},{53,1},{54,1}});
         stage(b,61,"BeatIntervalSummary",make_sequence_source_node,{},{{60},{60,1}});
-    }else{
-        b.add(59,"Number",EndpointProcessingParameters{{{"value",NumericLiteral{0.f}}}});
-        stage(b,61,"BeatIntervalSummary",make_sequence_source_node,{},{{50,1},{59}});
-    }
+    }else degara_summary(b,61);
 }
 void view(examples::Builder& b,NodeId id,NodeId from,PortId port=0,bool matrix=false) {
     b.chain(id,matrix?"MatrixImageView":"VectorLineView",from,{},port);
@@ -150,6 +151,14 @@ void processing(examples::Builder& b,bool multi,bool finite=false) {
 void compose(examples::Builder& b,bool multi) {
     source(b);processing(b,multi);
 }
+examples::Builder live_graph(const char* id,bool multi) {
+    examples::Builder b({44100,2048,512,512});
+    // Explicit optional research batch geometry; main/SDK budgets are unchanged.
+    b.limits.frame.max_elements=2097152;b.limits.frame.max_payload_bytes=8388608;
+    b.graph.graph_id=id;
+    compose(b,multi);
+    return b;
+}
 void finite_limits(examples::Builder& b,EssentiaFiniteOptions options) {
     if(!options.input_samples || options.input_samples>options.maximum_native_pcm_samples ||
        options.input_sample_rate!=44100 || options.maximum_native_pcm_samples>std::size_t(std::numeric_limits<int>::max()))
@@ -176,18 +185,35 @@ void describe(NumericExampleGraph& g) {
     for(std::size_t i=0;i<g.graph.nodes.size();++i)
         g.positions.push_back({g.graph.nodes[i].id,double(i%7)*480,double(i/7)*440});
 }
+void describe_combined(NumericExampleGraph& g) {
+    describe(g);
+    for(auto& name:g.node_names){
+        if(name.node==103)name.label="Essentia: Degara beats";
+        if(name.node==114)name.label="Essentia: MultiFeature beats";
+        if(name.node==107)name.label="Essentia: MultiFeature BPM and confidence";
+    }
+    g.node_names.push_back({108,"Essentia: Degara BPM and confidence"});
+    g.scalar_names.push_back({108,{"Tempo, BPM","Confidence"}});
+}
 }
 NumericExampleGraph numeric_essentia_reference_example(EssentiaReferenceMethod method) {
     if(method!=EssentiaReferenceMethod::Degara && method!=EssentiaReferenceMethod::MultiFeature)
         throw std::invalid_argument("Essentia reference method");
     const bool multi=method==EssentiaReferenceMethod::MultiFeature;
-    examples::Builder b({44100,2048,512,512});
-    // Explicit optional research batch geometry; main/SDK budgets are unchanged.
-    b.limits.frame.max_elements=2097152;b.limits.frame.max_payload_bytes=8388608;
-    const char* id=multi?"essentia-reference-multifeature":"essentia-reference-degara";b.graph.graph_id=id;
-    compose(b,multi);
+    const char* id=multi?"essentia-reference-multifeature":"essentia-reference-degara";
+    auto b=live_graph(id,multi);
     NumericExampleGraph result{id,multi?"Essentia: RhythmExtractor2013 MultiFeature":"Essentia: RhythmExtractor2013 Degara",b.finish()};
     describe(result);return result;
+}
+NumericExampleGraph numeric_essentia_combined_reference_example() {
+    constexpr auto id="essentia-reference";
+    auto b=live_graph(id,true);
+    degara_summary(b,62);
+    b.chain(108,"ScalarMetricsView",62);
+    b.connect(62,108,1,1);
+    NumericExampleGraph result{id,"Essentia: Degara and MultiFeature",b.finish()};
+    describe_combined(result);
+    return result;
 }
 NumericExampleGraph numeric_essentia_finite_reference_example(EssentiaFiniteOptions options,EssentiaReferenceMethod method) {
     if(method!=EssentiaReferenceMethod::Degara && method!=EssentiaReferenceMethod::MultiFeature)

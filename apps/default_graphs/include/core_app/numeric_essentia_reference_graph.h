@@ -8,6 +8,9 @@ enum class EssentiaReferenceMethod {Degara,MultiFeature};
 // relative to each session. Native PCM conversion is an explicit graph stage.
 NumericExampleGraph numeric_essentia_reference_example(
     EssentiaReferenceMethod method=EssentiaReferenceMethod::MultiFeature);
+// One live session with Degara ticks at 50:1 and MultiFeature ticks at 60:0.
+// The complex candidate is shared. Summaries are at 62 and 61, respectively.
+NumericExampleGraph numeric_essentia_combined_reference_example();
 
 struct EssentiaFiniteOptions {
     std::size_t input_samples;

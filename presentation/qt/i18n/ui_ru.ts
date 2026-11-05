@@ -2685,6 +2685,15 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Explicit coefficients: %1</source><translation>Задано коэффициентов: %1</translation></message>
 <message><source>Tools</source><translation>Инструменты</translation></message>
 <message><source>Rhythm references</source><translation>Эталонные алгоритмы ритма</translation></message>
+<message><source>madmom: Fixed, Local and CRF</source><translation>madmom: Fixed, Local и CRF</translation></message>
+<message><source>madmom: Fixed beats</source><translation>madmom: доли Fixed</translation></message>
+<message><source>madmom: Local beats</source><translation>madmom: доли Local</translation></message>
+<message><source>madmom: CRF beats</source><translation>madmom: доли CRF</translation></message>
+<message><source>Essentia: Degara and MultiFeature</source><translation>Essentia: Degara и MultiFeature</translation></message>
+<message><source>Essentia: Degara beats</source><translation>Essentia: доли Degara</translation></message>
+<message><source>Essentia: MultiFeature beats</source><translation>Essentia: доли MultiFeature</translation></message>
+<message><source>Essentia: Degara BPM and confidence</source><translation>Essentia: темп и уверенность Degara</translation></message>
+<message><source>Essentia: MultiFeature BPM and confidence</source><translation>Essentia: темп и уверенность MultiFeature</translation></message>
 <message><source>Multiply</source><translation>Умножение</translation></message>
 <message><source>Add</source><translation>Сложение</translation></message>
 <message><source>Elementwise addition</source><translation>Поэлементное сложение</translation></message>

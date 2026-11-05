@@ -150,27 +150,27 @@ void tempo(examples::Builder& b,MadmomReferenceMode mode) {
     output(b,35,0,bins,DType::Float32,2);
     output(b,35,1,bins);output(b,35,2,bins);output(b,35,3,bins);b.connect(31,35);
 }
-void tracking_node(examples::Builder& b,MadmomReferenceMode mode) {
+void tracking_node(examples::Builder& b,NodeId id,MadmomReferenceMode mode) {
     auto parameters=tempo_parameters(mode);
     if(mode==MadmomReferenceMode::Crf){
         parameters.values.push_back({"interpolate",false});
         parameters.values.push_back({"interval_sigma",NumericLiteral{.18f}});
         parameters.values.push_back({"num_candidates",NumericLiteral{std::uint64_t{5}}});
-        b.add(4,"CrfBeatSequence",parameters);
+        b.add(id,"CrfBeatSequence",parameters);
     }else{
         parameters.values.push_back({"variable_tempo",mode==MadmomReferenceMode::Local});
         parameters.values.push_back({"look_aside",NumericLiteral{.2f}});
         parameters.values.push_back({"look_ahead_seconds",NumericLiteral{10.f}});
-        b.add(4,"BeatTrackingSequence",parameters);
+        b.add(id,"BeatTrackingSequence",parameters);
     }
 }
-void tracking(examples::Builder& b,MadmomReferenceMode mode,std::size_t maximum_frames=frames) {
-    tracking_node(b,mode);b.node(4).inputs.clear();b.node(4).outputs.clear();
+void tracking(examples::Builder& b,NodeId id,MadmomReferenceMode mode,std::size_t maximum_frames=frames) {
+    tracking_node(b,id,mode);b.node(id).inputs.clear();b.node(id).outputs.clear();
     const auto events=mode==MadmomReferenceMode::Crf?std::max<std::size_t>(1,maximum_frames/50):maximum_frames+1;
-    output(b,4,0,events);output(b,4,1,events,DType::UInt64);
-    if(mode==MadmomReferenceMode::Crf){output(b,4,2,5,DType::UInt64);output(b,4,3,5);output(b,4,4,histogram_bins(mode),DType::Float32,2);}
-    else output(b,4,2,histogram_bins(mode));
-    b.connect(31,4);
+    output(b,id,0,events);output(b,id,1,events,DType::UInt64);
+    if(mode==MadmomReferenceMode::Crf){output(b,id,2,5,DType::UInt64);output(b,id,3,5);output(b,id,4,histogram_bins(mode),DType::Float32,2);}
+    else output(b,id,2,histogram_bins(mode));
+    b.connect(31,id);
 }
 void peaks(examples::Builder& b) {
     b.chain(32,"Spectrogram",3,HistoryProcessingParameters{frames,true});
@@ -199,6 +199,12 @@ const char* title(MadmomReferenceMode mode) {
     if(mode==MadmomReferenceMode::Fixed)return "Rhythm: madmom SuperFlux / fixed beats";
     return mode==MadmomReferenceMode::Local?"Rhythm: madmom SuperFlux / local beats":"Rhythm: madmom SuperFlux / CRF beats";
 }
+void position_filter_groups(NumericExampleGraph& graph) {
+    for(const auto& node:graph.graph.nodes){
+        if(node.id>=60 && node.id<68)graph.positions.push_back({node.id,2800.,700.+double(node.id-60)*350.});
+        if(node.id>=71 && node.id<78)graph.positions.push_back({node.id,3300.+double(node.id-71)*300.,700.});
+    }
+}
 void describe(NumericExampleGraph& graph) {
     graph.node_names={{40,"madmom: complete PCM frame"},{44,"madmom: raw spectral magnitude"},
         {45,"madmom: logarithmic frequency bands"},{46,"madmom: log10(1 + magnitude)"},
@@ -213,10 +219,15 @@ void describe(NumericExampleGraph& graph) {
         {40,850,-450},{44,2450,-450},{45,2950,-450},{46,3450,-450},{10,4850,-450},
         {11,6750,0},{47,6200,-500},{48,5750,-500},{49,6250,650},
         {50,5750,-1000},{13,6200,-1000},{51,6700,-500}};
-    for(const auto& node:graph.graph.nodes){
-        if(node.id>=60 && node.id<68)graph.positions.push_back({node.id,2800.,700.+double(node.id-60)*350.});
-        if(node.id>=71 && node.id<78)graph.positions.push_back({node.id,3300.+double(node.id-71)*300.,700.});
-    }
+    position_filter_groups(graph);
+}
+void describe_combined(NumericExampleGraph& graph) {
+    graph.node_names={{11,"madmom: CRF beats"},{82,"madmom: Fixed beats"},{83,"madmom: Local beats"}};
+    graph.positions={{1,0,0},{5,400,0},{20,800,0},{21,800,500},{22,1200,500},{23,1600,0},
+        {24,2000,0},{25,2400,0},{26,2900,0},{29,3400,0},{30,3900,0},{3,4350,0},
+        {27,4800,0},{31,5300,0},{4,6250,0},{80,6250,500},{81,6250,1000},
+        {11,6750,0},{82,6750,500},{83,6750,1000}};
+    position_filter_groups(graph);
 }
 const char* whole_identity(MadmomReferenceMode mode) {
     if(mode==MadmomReferenceMode::Fixed)return "madmom-whole-superflux-fixed";
@@ -256,14 +267,32 @@ NumericExampleGraph numeric_madmom_reference_example(std::uint32_t source_rate,M
     if(mode!=MadmomReferenceMode::Fixed && mode!=MadmomReferenceMode::Local && mode!=MadmomReferenceMode::Crf)
         throw std::invalid_argument("madmom reference mode");
     examples::Builder b({source_rate,fft_size,512,400});b.graph.graph_id=identity(mode);
-    source(b,source_rate);spectrum(b);novelty(b);tempo(b,mode);tracking(b,mode);peaks(b);views(b);
+    source(b,source_rate);spectrum(b);novelty(b);tempo(b,mode);tracking(b,4,mode);peaks(b);views(b);
     NumericExampleGraph graph{identity(mode),title(mode),b.finish()};describe(graph);return graph;
+}
+NumericExampleGraph numeric_madmom_combined_reference_example(std::uint32_t source_rate) {
+    if(source_rate<8000 || source_rate>96000)throw std::invalid_argument("madmom native source Fs");
+    constexpr auto id="madmom-superflux-reference";
+    examples::Builder b({source_rate,fft_size,512,400});
+    b.graph.graph_id=id;
+    source(b,source_rate);
+    spectrum(b);
+    novelty(b);
+    tracking(b,4,MadmomReferenceMode::Crf);
+    tracking(b,80,MadmomReferenceMode::Fixed);
+    tracking(b,81,MadmomReferenceMode::Local);
+    b.chain(11,"VectorPointView",4);
+    b.chain(82,"VectorPointView",80);
+    b.chain(83,"VectorPointView",81);
+    NumericExampleGraph graph{id,"madmom: Fixed, Local and CRF",b.finish()};
+    describe_combined(graph);
+    return graph;
 }
 NumericExampleGraph numeric_madmom_whole_reference_example(std::size_t pcm_samples,MadmomReferenceMode mode,std::uint32_t source_rate) {
     const auto count=whole_frames(pcm_samples,source_rate,mode);
     const bool reference=mode==MadmomReferenceMode::Crf;
     examples::Builder b({source_rate,fft_size,512,400});b.graph.graph_id=whole_identity(mode);
     source(b,source_rate,true,reference);spectrum(b,reference);streaming_novelty(b,reference);whole_odf_source(b,count);
-    tempo(b,mode);tracking(b,mode,count);whole_views(b);
+    tempo(b,mode);tracking(b,4,mode,count);whole_views(b);
     return {whole_identity(mode),title(mode),b.finish()};
 }
