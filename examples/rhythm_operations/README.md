@@ -1,18 +1,19 @@
 # Library reference graphs
 
-These seven explicit research recipes use the ordinary PreparedGraph executor.
-Framing, windowing, FFT, onset evidence, temporal context and beat decisions are
-connected stages, with intermediate ports available for inspection.
+The five library presets use the ordinary PreparedGraph executor. Framing,
+windowing, FFT, onset evidence, temporal context and beat decisions are connected
+stages, with intermediate ports available for inspection.
 
 | Preset ID | Recipe |
 | --- | --- |
+| `reference-beat` | [librosa onset, tempo and beat tracking](projects/reference-beat.json) |
 | `aubio-reference` | [Aubio HFC onset and context tempo](aubio/README.md) |
 | `reference-btrack` | [BTrack source window, KISS FFT and predictive beats](btrack/README.md) |
-| `madmom-superflux-fixed` | [madmom SuperFlux and fixed tempo beats](madmom/README.md) |
-| `madmom-superflux-local` | [madmom SuperFlux and local tempo beats](madmom/README.md) |
-| `madmom-superflux-crf` | [madmom SuperFlux and CRF beats](madmom/README.md) |
-| `essentia-reference-degara` | [Essentia Degara](essentia/README.md) |
-| `essentia-reference-multifeature` | [Essentia MultiFeature](essentia/README.md) |
+| `madmom-superflux-reference` | [One SuperFlux frontend with Fixed, Local and CRF outputs](madmom/README.md) |
+| `essentia-reference` | [Shared Degara and MultiFeature graph](essentia/README.md) |
+
+The individual madmom and Essentia project files remain available for
+source comparisons. The exporter produces the five library presets above.
 
 Build the optional research composition from the repository root:
 
@@ -49,8 +50,8 @@ capture and executor when the duration expires.
 
 The research executable explicitly links GPL/AGPL source adapters and larger
 session-buffer limits. It is excluded from ALL and the portable SDK. These
-library-specific stages require this research runtime when applying an exported
-project; the ordinary application's default runtime does not supply them.
+library-specific research stages require the optional runtime. The librosa
+preset uses operations available in the standard desktop runtime.
 
 The runner chooses its installed FFT provider from explicit `backend_id` values
 on Fourier/RealFourier nodes. Empty IDs keep builtin execution without a provider;

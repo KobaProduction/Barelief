@@ -23,11 +23,13 @@ void require(bool condition,const char* message) {
 
 struct ReferenceOutput {int node;unsigned short port;};
 struct ReferencePreset {const char* id;std::span<const ReferenceOutput> outputs;};
+constexpr std::array librosa_outputs{ReferenceOutput{35,0},ReferenceOutput{4,0}};
 constexpr std::array aubio_outputs{ReferenceOutput{33,4}};
 constexpr std::array btrack_outputs{ReferenceOutput{34,1}};
 constexpr std::array madmom_outputs{ReferenceOutput{4,0},ReferenceOutput{80,0},ReferenceOutput{81,0}};
 constexpr std::array essentia_outputs{ReferenceOutput{50,1},ReferenceOutput{60,0}};
 constexpr std::array presets{
+    ReferencePreset{"reference-beat",librosa_outputs},
     ReferencePreset{"aubio-reference",aubio_outputs},
     ReferencePreset{"reference-btrack",btrack_outputs},
     ReferencePreset{"madmom-superflux-reference",madmom_outputs},
@@ -94,7 +96,8 @@ bool wait_for_outputs(pipeline::NumericEngine& engine,const std::string& graph,
 
 void verify_preset(CoreApplication& app,MainWindow& window,const ReferencePreset& preset) {
     std::fprintf(stderr,"GUI preset %s\n",preset.id);
-    auto* action=window.findChild<QAction*>(QStringLiteral("example-")+QString::fromLatin1(preset.id));
+    auto* menu=window.findChild<QMenu*>("rhythmReferencePresetsMenu");
+    auto* action=menu->findChild<QAction*>(QStringLiteral("example-")+QString::fromLatin1(preset.id));
     require(action && action->isEnabled(),"Research preset QAction missing");
     QSignalSpy applied(&app.presenter(),&GuiPresenter::graph_apply_finished);
     action->trigger();
@@ -113,7 +116,7 @@ void verify_preset(CoreApplication& app,MainWindow& window,const ReferencePreset
 void run_presets(CoreApplication& app) {
     auto* window=editor_ui_test_fixture::main_window(require);
     const auto* menu=window->findChild<QMenu*>("rhythmReferencePresetsMenu");
-    require(menu && menu->actions().size()==qsizetype(presets.size()),"Expected exactly four reference presets");
+    require(menu && menu->actions().size()==qsizetype(presets.size()),"Expected exactly five reference presets");
     require(editor_ui_test_fixture::wait_until([&]{return app.presenter().client().snapshot().graph_revision>0 &&
         !app.presenter().graph_request_pending();},10000),"Startup graph unavailable");
     for(const auto& preset:presets)verify_preset(app,*window,preset);

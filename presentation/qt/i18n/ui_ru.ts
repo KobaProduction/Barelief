@@ -360,7 +360,7 @@
     <message><source>Frame update cadence</source><translation>Шаг выдачи кадров</translation></message>
     <message><source>Emit every N input frames</source><translation>Выдавать каждый N-й входной кадр</translation></message>
     <message><source>Per-band differences</source><translation>Разности по полосам</translation></message>
-    <message><source>Rhythm analysis: librosa</source><translation>Анализ ритма: librosa</translation></message>
+    <message><source>librosa: beat tracking</source><translation>librosa: поиск долей</translation></message>
     <message><source>PCM block assembly</source><translation>Формирование блоков PCM</translation></message>
     <message><source>Signal window</source><translation>Накопитель сигнала</translation></message>
     <message><source>Window length</source><translation>Длина окна</translation></message>

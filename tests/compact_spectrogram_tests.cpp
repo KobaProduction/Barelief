@@ -20,6 +20,7 @@
 #include <core_app/scheme_editor/node_parameter_model.h>
 #include <QApplication>
 #include <QAction>
+#include <QMenu>
 #include <QJsonArray>
 #include <QDir>
 #include <QFontDatabase>
@@ -119,9 +120,10 @@ int startup_project(int argc,char** argv) {
     CoreApplication app(argc,argv,[](auto kind){return std::make_unique<test_fixture::SyntheticCapture>(kind,false);});
     const auto windows=QApplication::topLevelWidgets();
     for(auto* window:windows)if(auto* status=window->findChild<QLabel*>("configurationSaveStatus")){
-        const auto actions=window->findChildren<QAction*>();
-        const auto presets=std::count_if(actions.begin(),actions.end(),[](const auto* action){return action->objectName().startsWith("example-");});
-        if(presets!=2 || !window->findChild<QAction*>("example-reference-beat") || !window->findChild<QAction*>("example-compact-spectrogram"))return 1;
+        const auto* menu=window->findChild<QMenu*>("pipelinePresetsMenu");
+        const auto* references=menu?menu->findChild<QMenu*>("rhythmReferencePresetsMenu"):nullptr;
+        if(!references || !references->findChild<QAction*>("example-reference-beat") ||
+           !menu->findChild<QAction*>("example-compact-spectrogram",Qt::FindDirectChildrenOnly))return 1;
         std::fprintf(stderr,"GUI_PRESETS=reference-beat,compact-spectrogram\n");
         std::fprintf(stderr,"GUI_STARTUP_STATE=%d %s\n",status->property("saveState").toInt(),qPrintable(status->toolTip()));
         return status->property("saveState").toInt()==2?0:1; // ConfigurationSaveState::Saved.

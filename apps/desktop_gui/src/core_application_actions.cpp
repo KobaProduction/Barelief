@@ -65,17 +65,19 @@ void CoreApplication::_populate_example_menu(SchemeEditorWidget* editor) {
     auto* menu=_main_window->findChild<QMenu*>("pipelinePresetsMenu");if(!menu)return;
     for(const auto* id:{"defaultPipeline","generatorLoopbackPreset","useTestSource"})if(auto* old=menu->findChild<QAction*>(id))old->setVisible(false);
     auto* anchor=menu->findChild<QAction*>("loadActivePipeline");
-    for(auto example:numeric_example_graphs())_add_example_action(menu,anchor,editor,std::move(example));
+    _add_example_action(menu,anchor,editor,numeric_compact_spectrogram_example());
+    auto* reference=new QMenu(ui::text("Rhythm references"),menu);
+    reference->setObjectName("rhythmReferencePresetsMenu");
+    ui::bind(reference,"title","Rhythm references");
+    menu->insertMenu(anchor,reference);
 #ifdef BARELIEF_RHYTHM_REFERENCE_GUI
     if(_remote_host.isEmpty()){
-        auto* reference=new QMenu(ui::text("Rhythm references"),menu);
-        reference->setObjectName("rhythmReferencePresetsMenu");
-        ui::bind(reference,"title","Rhythm references");
-        menu->insertMenu(anchor,reference);
         for(auto example:numeric_library_reference_presets())
             _add_example_action(reference,nullptr,editor,std::move(example));
+        return;
     }
 #endif
+    _add_example_action(reference,nullptr,editor,numeric_reference_beat_example());
 }
 void CoreApplication::_add_example_action(QMenu* menu,QAction* anchor,SchemeEditorWidget* editor,NumericExampleGraph example) {
     auto* action=new QAction(ui::text(example.title_key),menu);menu->insertAction(anchor,action);

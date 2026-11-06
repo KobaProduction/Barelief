@@ -2592,8 +2592,9 @@ static int basic_menu_reset(CoreApplication& app,NumericEditorGraphModel* model,
     const auto* menu=window->findChild<QMenu*>("pipelinePresetsMenu");CHECK(menu);
     const auto actions=menu->actions();
     for(auto* action:actions)if(action->objectName().startsWith("example-"))++entries;
-    CHECK(entries==2 && !window->findChild<QAction*>("example-basic-signal"));
-    CHECK(window->findChild<QAction*>("example-reference-beat") && window->findChild<QAction*>("example-compact-spectrogram"));
+    CHECK(entries==1 && !window->findChild<QAction*>("example-basic-signal"));
+    const auto* references=menu->findChild<QMenu*>("rhythmReferencePresetsMenu");CHECK(references);
+    CHECK(references->findChild<QAction*>("example-reference-beat") && menu->findChild<QAction*>("example-compact-spectrogram"));
     auto* editor=window->findChild<SchemeEditorWidget*>();CHECK(editor);
     const auto revision=app.presenter().client().snapshot().graph_revision;emit editor->generator_loopback_graph_requested();
     CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>revision&&!app.presenter().graph_request_pending();},5000));
