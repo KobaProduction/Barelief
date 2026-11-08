@@ -26,7 +26,7 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/domain/include/" "${CMAKE_SOURCE_DIR}/app
 configure_package_config_file("${CMAKE_CURRENT_LIST_DIR}/PortableDSPConfig.cmake.in"
     "${CMAKE_BINARY_DIR}/PortableDSPConfig.cmake" INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/PortableDSP")
 write_basic_package_version_file("${CMAKE_BINARY_DIR}/PortableDSPConfigVersion.cmake"
-    VERSION 1.0.0 COMPATIBILITY SameMajorVersion)
+    VERSION "${PROJECT_VERSION}" COMPATIBILITY SameMajorVersion)
 install(EXPORT portable_sdk_targets NAMESPACE PortableDSP::
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/PortableDSP")
 install(FILES "${CMAKE_BINARY_DIR}/PortableDSPConfig.cmake" "${CMAKE_BINARY_DIR}/PortableDSPConfigVersion.cmake"

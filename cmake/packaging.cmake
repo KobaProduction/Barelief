@@ -9,7 +9,10 @@ set(CPACK_PACKAGE_INSTALL_DIRECTORY "Koba Production/Barelief")
 # Keep upgrade discovery stable when the Windows install path uses backslashes.
 set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "Koba Production/Barelief")
 set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
-set(CPACK_PACKAGE_FILE_NAME "Barelief-${PROJECT_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_FILE_NAME "Barelief-${PROJECT_VERSION}${BARELIEF_PACKAGE_SUFFIX}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_POST_BUILD_SCRIPTS "${PROJECT_SOURCE_DIR}/cmake/PackageIdentity.cmake")
+set(CPACK_BARELIEF_IDENTITY_FILE "${CMAKE_BINARY_DIR}/build-identity.json")
+install(FILES "${CMAKE_BINARY_DIR}/build-identity.json" DESTINATION bin)
 set(CPACK_PACKAGE_EXECUTABLES "Barelief" "Barelief")
 set(CPACK_VERBATIM_VARIABLES YES)
 # Desktop distributions are installed as one application, not SDK components.

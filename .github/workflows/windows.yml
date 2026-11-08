@@ -1,7 +1,7 @@
 name: Desktop and portable builds
 on:
   push:
-    branches: ['**']
+    branches-ignore: [release]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -32,6 +32,11 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
       - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125
         with:
           version: '6.10.2'
@@ -71,6 +76,7 @@ jobs:
           path: |
             packages/*.zip
             packages/*.exe
+            packages/*.identity.json
           if-no-files-found: error
 
   portable:
@@ -81,6 +87,11 @@ jobs:
         fft_size: [512, 1024, 2048, 4096]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
       - name: Configure without Qt
         run: cmake -S . -B build -DBUILD_DSP_ONLY=ON -DPORTABLE_DSP_MAX_FFT_SIZE=${{ matrix.fft_size }} -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
       - name: Build
@@ -100,6 +111,8 @@ jobs:
         gui: ['ON', 'OFF']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -179,8 +192,10 @@ jobs:
         if: ${{ inputs.release_validation && matrix.gui == 'ON' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: barelief-linux-ubuntu-24.04
-          path: packages/*.deb
+          name: barelief-linux-release
+          path: |
+            packages/*.deb
+            packages/*.identity.json
           if-no-files-found: error
       - name: Report Linux CI failure
         if: failure()

@@ -1,5 +1,12 @@
 cmake-*-*
 /CMakeUserPresets.json
+/build/
+/dist/
+/packages/
+/linux-configure.log
+/linux-build.log
+/linux-package.log
+/linux-test.log
 
 # Independent local build trees used for architecture validation.
 /build-editor/

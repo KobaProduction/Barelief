@@ -66,9 +66,11 @@ Serena помогает с навигацией/рефакторингом и н
 Через pre-commit запускаются clang-tidy, Clazy и Chromium checkdeps.
 На стадии `pre-push` также запускается `ctest-quick`: preset `local-push`
 выбирает основные `quick`-тесты и исключает `integration|audit|native|long`.
-Полный набор обязателен в `Release validation` по тегу `v*` или при ручном
+Полный набор обязателен в `Release validation` при продвижении в `release` или при ручном
 запуске этого workflow; его отбор и порядок упаковки защищены регрессиями
 `tests/run_ctest_tests.py` в проверке `quality-tools`.
+Та же проверка запускает регрессии Git-версий и допуска релизных пакетов:
+`tests/git_version_tests.py` и `tests/prepare_release_tests.py`.
 Python и QML не проверяются линтерами. Python используется только для запуска
 инструментов. Правила include-зависимостей находятся в стандартных файлах DEPS.
 

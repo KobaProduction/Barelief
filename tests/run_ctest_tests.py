@@ -64,18 +64,25 @@ class CTestGateTests(unittest.TestCase):
         for name in ("release-validation", "release-all", "parallel-tests"):
             self.assertNotIn("filter", presets[name])
 
-    def test_release_tags_and_manual_validation_require_full_gate(self):
+    def test_release_promotion_and_manual_validation_require_full_gate(self):
         workflow = yaml.load((ROOT / ".github/workflows/release-validation.yml").read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(workflow["on"]["push"]["tags"], ["v*"])
+        self.assertEqual(workflow["on"]["push"]["branches"], ["release"])
         self.assertIn("workflow_dispatch", workflow["on"])
         job = workflow["jobs"]["validate-and-package"]
         self.assertEqual(job["needs"], "version")
         self.assertEqual(job["uses"], "./.github/workflows/windows.yml")
         self.assertEqual(job["with"]["release_validation"], "true")
+        publish = workflow["jobs"]["publish"]
+        self.assertEqual(set(publish["needs"]), {"version", "validate-and-package"})
+        self.assertEqual(publish["permissions"]["contents"], "write")
+        self.assertIn("inputs.publish", publish["if"])
+        self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["publish"]["default"], "false")
+        self.assertEqual(workflow["concurrency"]["cancel-in-progress"], "false")
 
     def test_packaging_follows_full_tests_and_is_release_only(self):
         workflow = yaml.load((ROOT / ".github/workflows/windows.yml").read_text(), Loader=yaml.BaseLoader)
         self.assertNotIn("tags", workflow["on"]["push"])
+        self.assertIn("release", workflow["on"]["push"]["branches-ignore"])
         self.assertIn("workflow_call", workflow["on"])
         windows = workflow["jobs"]["build"]["steps"]
         full = next(i for i, step in enumerate(windows) if step.get("name") == "Full release validation")

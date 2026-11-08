@@ -61,12 +61,16 @@ Release; hook использует CTest из этой сборки и отве�
 build-каталог или пустой набор тестов. clang-tidy, Clazy и checkdeps сохраняются.
 
 Обычные branch/PR CI-прогоны используют тот же быстрый отбор. Workflow
-`Release validation` запускается по тегу `v*` или вручную и вызывает общий
-Windows/Linux/portable workflow с `release_validation=true`. Тег должен
-совпадать с `v` + `VERSION.txt`. Release-конфигурация Windows и обе конфигурации
+`Release validation` запускается при продвижении проверенного коммита в ветку
+`release` или вручную и вызывает общий Windows/Linux/portable workflow с
+`release_validation=true`. Версия вычисляется из истории Git, без ручного файла
+и счётчика сборок. Release-конфигурация Windows и обе конфигурации
 Linux выполняют все зарегистрированные тесты, включая длительные интеграционные;
 portable-профили также проходят полный набор. Установщики и release-архивы
 собираются и загружаются в artifacts только после успешных тестов своего job.
+После всех jobs отдельная стадия сверяет identities пакетов с исходным SHA и
+публикует GitHub Release с тегом вычисленной версии. При ручном запуске публикация
+включается явно параметром `publish`. Правила — в [релизном процессе](releases.md).
 Отдельные `release-integration` и `release-long` остаются доступны вручную.
 
 Для полного Debug/SDK прогона используйте `debug-all`/`sdk-all`.
@@ -206,8 +210,11 @@ runtime/Apply; при bounded duration отсутствие успешного A
 ## Имя продукта, лицензии и пакеты
 
 Пользовательское приложение — Barelief, исполняемый файл — `Barelief.exe`;
-CMake target остаётся `core_app`. `VERSION.txt` задаёт версию приложения,
-Windows VERSIONINFO и CPack. Разработчик и издатель — Koba Production,
+CMake target остаётся `core_app`. Общий `cmake/GitVersion.cmake` задаёт версию
+приложения, SDK, Windows VERSIONINFO и CPack из Git. `build-identity.json`
+содержит точный SHA и признак изменённых исходников; он устанавливается рядом
+с приложением и прикладывается отдельным sidecar к каждому пакету.
+Разработчик и издатель — Koba Production,
 репозиторий — `KobaProduction/Barelief`.
 Имя рабочего каталога существующего checkout не определяет название продукта.
 Публикация релиза выполняется отдельно.

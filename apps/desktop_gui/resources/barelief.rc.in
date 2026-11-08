@@ -20,6 +20,7 @@ BEGIN
    VALUE "OriginalFilename", "Barelief.exe\0"
    VALUE "ProductName", "Barelief\0"
    VALUE "ProductVersion", "@PROJECT_VERSION@\0"
+   VALUE "Comments", "Build: @BARELIEF_BUILD_ID@\0"
   END
  END
  BLOCK "VarFileInfo"
