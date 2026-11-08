@@ -706,11 +706,20 @@ static int temporal_silence(auto& path,auto& next,auto& temporal_rate,auto& runt
         const auto original_generator=*generator->numeric_node();
         const auto pause_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
         CHECK(model->edit_node(original_generator.id,temporal_silent_generator(*generator)));
-        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>pause_revision&&query(17,matrix_frame);},6000));
+        // Matrix queries and the row tap publish independently. Establish both
+        // frames at the applied revision before monitoring their continuity.
+        CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>pause_revision&&query(17,matrix_frame)&&query(19,selected_frame);},6000));
         CHECK(app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok);
         const auto pause_ordinal=ordinal;bool pause_unavailable=false;
         CHECK(wait_until([&]{
-            pause_unavailable|=!query(17,matrix_frame)||!query(19,selected_frame);
+            const bool matrix_ready=query(17,matrix_frame),row_ready=query(19,selected_frame);
+            if(!matrix_ready || !row_ready) {
+                pause_unavailable=true;
+                shipped_probe::report_numeric_frame("silence matrix17",matrix_frame);
+                shipped_probe::report_numeric_frame("silence row19",selected_frame);
+                shipped_probe::report_engine_snapshot("silence continuity",app.pipeline().snapshot());
+                return true;
+            }
             return app.pipeline().query_numeric({"main",7,domain::PortDirection::Output,0},history,&ordinal,&filled)==signal_contracts::Status::ok&&ordinal>=pause_ordinal+420;
         },7000));
         CHECK(!pause_unavailable&&query(17,matrix_frame));

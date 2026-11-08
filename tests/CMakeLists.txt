@@ -218,6 +218,9 @@ if(BUILD_GUI)
         set_tests_properties(${test} PROPERTIES LABELS "numeric;ui;integration" TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     endforeach()
+    add_test(NAME numeric_desktop_history_workflow COMMAND numeric_desktop_workflow_tests --history)
+    set_tests_properties(numeric_desktop_history_workflow PROPERTIES LABELS "numeric;ui;integration;history" TIMEOUT 20
+        ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     foreach(test IN ITEMS gui_views_tests workspace_tests graph_settings_tests render_tests graph_panel_axes_tests qml_graph_tests)
         add_desktop_check(${test} desktop_gui_composition)
         target_link_libraries(${test} PRIVATE Qt6::Test)
@@ -390,4 +393,14 @@ if(BUILD_GUI)
     set_tests_properties(fourier_port_visibility_tests
         PROPERTIES LABELS "quick;ui;node;component" TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
+    # Multiple full Qt/QML workspaces consumed each other's rendering/startup
+    # budgets even with isolated project files. Serialize GUI processes while
+    # preserving parallel portable/core checks and every existing deadline.
+    get_property(gui_resource_tests DIRECTORY PROPERTY TESTS)
+    foreach(gui_resource_test IN LISTS gui_resource_tests)
+        get_test_property(${gui_resource_test} ENVIRONMENT gui_resource_environment)
+        if(gui_resource_environment MATCHES "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM}")
+            set_property(TEST ${gui_resource_test} APPEND PROPERTY RESOURCE_LOCK barelief_qt_gui)
+        endif()
+    endforeach()
 endif()

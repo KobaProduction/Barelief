@@ -62,13 +62,22 @@ static void vector_preview_cases(const auto& send,const auto& clock,auto* chart,
     clock();require(wait_for([&]{return chart->value_count()==0;}),"FIFO old delivery escaped its service fence");
 }
 
+static Status fill_workflow_history(CoreApplication& app,const EndpointIdentity& history,const auto& feed,const auto& probes,DeliveredNumericFrame& full,std::uint64_t& ordinal,std::uint64_t& filled) {
+    Status status=Status::unavailable;int blocks=0;
+    while(blocks<1400 && !(status==Status::ok && filled==400 && ordinal>400)) {
+        full={};feed(probes[0],100);blocks+=100;
+        status=app.pipeline().query_numeric(history,full,&ordinal,&filled);
+    }
+    std::printf("History fill: PCM blocks=%d ordinal=%llu filled=%llu status=%d\n",blocks,
+        (unsigned long long)ordinal,(unsigned long long)filled,int(status));
+    return status;
+}
 static void full_history_workflow(CoreApplication& app,const EndpointIdentity& history,auto& historyDisplay,SpectrogramGraph& surface,const auto& feed,const auto& probes) {
     gui_fixture::phase_trace::Scope trace("numeric_desktop.full_history");
         // PCM block count is not analysis row count: at 120 analyses/s and
         // 48 kHz each History row spans 400 samples, not one 256-sample block.
-        feed(probes[0],1400);
         DeliveredNumericFrame full;std::uint64_t fullOrdinal=0,fullFilled=0;
-        const auto status=app.pipeline().query_numeric(history,full,&fullOrdinal,&fullFilled);
+        const auto status=fill_workflow_history(app,history,feed,probes,full,fullOrdinal,fullFilled);
         gui_fixture::phase_trace::frame("numeric_desktop.full_history",7,full,status);
         require(status==Status::ok && fullFilled==400 && fullOrdinal>400,"History never reaches full fixed capacity");
         require(historyDisplay.accept_history_snapshot(full,fullOrdinal,fullFilled)==Status::ok && historyDisplay.render(history,0,render_fixture::Target{nullptr,&surface,nullptr,true})==Status::ok,"full History renderer failed");
@@ -131,15 +140,27 @@ static void render_cold_workflow(const NumericView& coldView,DeliveredNumericFra
         require(surface.projected_history_frames()==400 && surface.projected_axis_metadata().ages.size()==400 && surface.projected_axis_metadata().age(399)==399,"cold plot does not expose full fixed extent");cold={};
 
 }
-static void runtime_workflow(CoreApplication& app,SchemeEditorWidget* editor,auto& graph,const auto& probes,const auto& apply) {
-    gui_fixture::phase_trace::Scope trace("numeric_desktop.runtime");
-        const EndpointIdentity history{"main",7,domain::PortDirection::Output,0};
+static void prepare_cold_history(CoreApplication& app,const EndpointIdentity& history,presentation::NumericViewAdapter& historyDisplay,SpectrogramGraph& surface) {
         DeliveredNumericFrame cold;std::uint64_t coldOrdinal=99,coldFilled=99;
         require(app.pipeline().query_numeric(history,cold,&coldOrdinal,&coldFilled)==Status::ok,"cold History is not immediately available");
         const auto coldView=std::get<NumericView>(cold.frame.view().payload);
         require(coldView.actual[0]==400 && coldView.actual[1]==50 && coldOrdinal==0 && coldFilled==0,"cold History must expose 400 prepared rows without advancing");
-        presentation::NumericViewAdapter historyDisplay({1,{400,50,1048576,{true,32768}},{true,32768}});SpectrogramGraph surface;
         render_cold_workflow(coldView,cold,history,historyDisplay,surface);
+}
+static void history_workflow(CoreApplication& app,const auto& probes) {
+    const EndpointIdentity history{"main",7,domain::PortDirection::Output,0};
+    presentation::NumericViewAdapter historyDisplay({1,{400,50,1048576,{true,32768}},{true,32768}});SpectrogramGraph surface;
+    prepare_cold_history(app,history,historyDisplay,surface);
+    std::uint64_t sequence=0;
+    const auto feed=[&](const std::shared_ptr<Probe>& probe,int blocks){feed_workflow_pcm(probe,blocks,sequence);};
+    full_history_workflow(app,history,historyDisplay,surface,feed,probes);
+    std::puts("full/rolling History, physical coordinates and renderer axis selectors PASS");
+}
+static void runtime_workflow(CoreApplication& app,SchemeEditorWidget* editor,auto& graph,const auto& probes,const auto& apply) {
+    gui_fixture::phase_trace::Scope trace("numeric_desktop.runtime");
+        const EndpointIdentity history{"main",7,domain::PortDirection::Output,0};
+        presentation::NumericViewAdapter historyDisplay({1,{400,50,1048576,{true,32768}},{true,32768}});SpectrogramGraph surface;
+        prepare_cold_history(app,history,historyDisplay,surface);
         std::uint64_t sequence=0,pcm=0,sourcePcm=0;
         // The preset can change dock visibility. Subscribe explicitly to both the
         // physical source and routed sink so delivery evidence is independent of it.
@@ -156,7 +177,6 @@ static void runtime_workflow(CoreApplication& app,SchemeEditorWidget* editor,aut
         require(probes.size()==1&&probes[0]->stops==0,"compatible edit recreated capture resource");feed(probes[0],32);
         DeliveredNumericFrame after;std::uint64_t next=0,nextFilled=0;require(app.pipeline().query_numeric(history,after,&next,&nextFilled)==Status::ok&&next>ordinal,"compatible Apply reset or stalled History");
         const auto retained=std::get<NumericView>(after.frame.view().payload);for(std::size_t band=0;band<50;++band){float value=0;require(load_element(retained,{0,retained.actual[0]-nextFilled,band},value)==Status::ok&&value==first[band],"compatible Apply overwrote earlier rows");}after={};
-        full_history_workflow(app,history,historyDisplay,surface,feed,probes);
         source_replacement_workflow(app,editor,apply,probes);
         std::printf("actual preset/Apply/Run/Stop workflow PCM=%llu History=%llu->%llu capture resources retained; source replacement/error fences PASS\n",(unsigned long long)pcm,(unsigned long long)ordinal,(unsigned long long)next);}
 
@@ -235,7 +255,7 @@ static bool initial_workflow_ready(CoreApplication& app,const std::vector<std::s
     }
     return ready;
 }
-static int desktop_workflow_instance(CoreApplication& app,std::vector<std::shared_ptr<Probe>>& probes,domain::NumericProcessingGraph& graph) {
+static int desktop_workflow_instance(CoreApplication& app,std::vector<std::shared_ptr<Probe>>& probes,domain::NumericProcessingGraph& graph,bool historyOnly) {
     gui_fixture::phase_trace::Scope trace("numeric_desktop.instance");
         auto* model=dynamic_cast<NumericEditorGraphModel*>(app._ctx.data_flow_graph.get());require(model,"numeric workflow model");
         model->set_capture_device_provider([](int,QString*) {
@@ -246,7 +266,8 @@ static int desktop_workflow_instance(CoreApplication& app,std::vector<std::share
         require(window,"actual application window");auto* editor=window->findChild<SchemeEditorWidget*>();require(editor,"actual editor");
         auto* apply_button=window->findChild<QAbstractButton*>("applyPipeline");require(apply_button,"actual Apply button");
         require(wait_for([&]{return initial_workflow_ready(app,probes);}),"initial continuous graph");
-        vector_delivery_queue(app,*window,graph);
+        if(historyOnly)window->hide();
+        else vector_delivery_queue(app,*window,graph);
         const auto initial_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
         require(editor->load_preset("loopback"),"load canonical loopback preset");
         require(probes.size()==1&&gui_fixture::phase_trace::snapshot(app).graph_revision==initial_revision,"preset load changed working graph");
@@ -254,11 +275,15 @@ static int desktop_workflow_instance(CoreApplication& app,std::vector<std::share
         auto apply=[&]{gui_fixture::phase_trace::Scope request("numeric_desktop.Apply");const auto previous=replies.size();request.mark("click BEGIN");apply_button->click();request.mark("click END");require(wait_for([&]{return replies.size()>previous;})&&replies.last()[1].toBool(),"actual Apply rejected");};
         apply();require(wait_for([&]{return probes.size()==1&&gui_fixture::phase_trace::snapshot(app).statuses.value("capture").state==State::Running;}),"Apply never reached capture");
         require(probes[0]->kind==AudioSourceKind::SystemOutput&&probes[0]->settings["sample_rate"].toInt()==48000,"wrong loopback source or contract rate");
-        runtime_workflow(app,editor,graph,probes,apply);return 0;
+        if(historyOnly)history_workflow(app,probes);
+        else runtime_workflow(app,editor,graph,probes,apply);
+        return 0;
 }
 int main(int argc,char** argv){
     gui_fixture::phase_trace::Session diagnostic_session;
     if(!test_fixture::isolated_gui_platform())return 2;
+    const bool historyOnly=argc==2 && QString::fromLocal8Bit(argv[1])==QStringLiteral("--history");
+    if(argc!=1 && !historyOnly)return 2;
     try {
         QTemporaryDir temporary;require(temporary.isValid(),"isolated config directory");
         auto graph=numeric_default_graph();auto document=workflow_document(graph);
@@ -269,6 +294,6 @@ int main(int argc,char** argv){
         CoreApplication app(count,arguments,[&](AudioSourceKind kind){auto p=std::make_shared<Probe>();p->kind=kind;probes.push_back(p);return std::make_unique<Source>(p);});
         lifetime.mark("constructed");
         gui_fixture::phase_trace::BeforeApplicationExit before_exit{lifetime};
-        return desktop_workflow_instance(app,probes,graph);
+        return desktop_workflow_instance(app,probes,graph,historyOnly);
     }catch(const std::exception& error){std::fprintf(stderr,"desktop workflow FAIL: %s\n",error.what());return 1;}
 }
