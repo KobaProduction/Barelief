@@ -4,6 +4,7 @@
 #include <dsp_kernels/log_frequency_filter_bank.h>
 #include <dsp_kernels/frequency_bins.h>
 #include <dsp_kernels/discrete_triangle.h>
+#include <dsp_kernels/axis_math.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,25 +24,9 @@ bool ordered(std::span<const float> grid) noexcept {
         if(!std::isfinite(grid[i]) || (i && grid[i]<=grid[i-1]))return false;
     return true;
 }
-// Float32 normalizer order from NumPy v1.26.4 core/src/umath/loops_utils.h.src,
-// FLOAT_pairwise_sum. NumPy Developers, BSD-3-Clause: packaging/licenses/numpy.txt.
-float reference_sum_tail(std::span<const float> values,std::size_t first,float sum) noexcept {
-    for(std::size_t i=first;i<values.size();++i)sum+=values[i];
-    return sum;
-}
-float reference_sum_block(std::span<const float> values) noexcept {
-    std::array<float,8> lanes{};std::copy_n(values.begin(),lanes.size(),lanes.begin());
-    const auto end=values.size()-values.size()%lanes.size();
-    for(std::size_t i=lanes.size();i<end;i+=lanes.size())
-        for(std::size_t lane=0;lane<lanes.size();++lane)lanes[lane]+=values[i+lane];
-    const float sum=((lanes[0]+lanes[1])+(lanes[2]+lanes[3]))+((lanes[4]+lanes[5])+(lanes[6]+lanes[7]));
-    return reference_sum_tail(values,end,sum);
-}
+// Preserve the existing Float32 normalizer through the shared pairwise kernel.
 float reference_pairwise_sum(std::span<const float> values) noexcept {
-    if(values.size()<8)return reference_sum_tail(values,0,-0.f);
-    if(values.size()<=128)return reference_sum_block(values);
-    auto split=values.size()/2;split-=split%8;
-    return reference_pairwise_sum(values.first(split))+reference_pairwise_sum(values.subspan(split));
+    return detail::pairwise_sum(values);
 }
 void reference_ramp(std::span<float> output,double start,double stop) noexcept {
     if(output.empty())return;
@@ -74,27 +59,47 @@ bool LogFrequencyFilterBank::prepare(std::span<const float> grid,LogFrequencyFil
 std::size_t LogFrequencyFilterBank::nearest(std::span<const float> grid,double hz) noexcept {
     return nearest_frequency_bin(grid,hz);
 }
-bool LogFrequencyFilterBank::band_count(FrequencyGridView grid,const LogFrequencyFilterConfig& c,std::size_t& out) noexcept {
-    if(!grid.size || !grid.at || !valid(c))return false;
-    const double low=std::floor(std::log2(double(c.fmin)/c.reference)*c.bands_per_octave);
-    const double high=std::ceil(std::log2(double(c.fmax)/c.reference)*c.bands_per_octave);
-    if(!std::isfinite(low) || !std::isfinite(high) || high-low>double(SIZE_MAX/sizeof(float)) || (low<high && (low+1<=low || high-1>=high)))return false;
+namespace {
+bool log_frequency_bounds(const LogFrequencyFilterConfig& c,double& low,double& high) noexcept {
+    low=std::floor(std::log2(double(c.fmin)/c.reference)*c.bands_per_octave);
+    high=std::ceil(std::log2(double(c.fmax)/c.reference)*c.bands_per_octave);
+    if(!std::isfinite(low) || !std::isfinite(high) || high-low>double(SIZE_MAX/sizeof(float)))return false;
+    if(low<high && (low+1<=low || high-1>=high))return false;
+    return true;
+}
+struct LogCornerCount {
     std::size_t count=0,previous=SIZE_MAX;
+    bool append(std::size_t bin,bool unique) noexcept {
+        if(bin==SIZE_MAX)return false;
+        if(!unique || previous!=bin){++count;previous=bin;}
+        return true;
+    }
+};
+bool count_log_corners(FrequencyGridView grid,const LogFrequencyFilterConfig& c,
+                       double low,double high,std::size_t& count) noexcept {
+    LogCornerCount result;
     for(double i=low;i<high;++i){
         const auto hz=double(c.reference)*std::exp2(i/double(c.bands_per_octave));
         if(hz<c.fmin || hz>c.fmax)continue;
-        const auto bin=nearest_frequency_bin(grid,hz);
-        if(bin==SIZE_MAX)return false;
-        if(!c.unique_filters || previous!=bin){++count;previous=bin;}
+        if(!result.append(nearest_frequency_bin(grid,hz),c.unique_filters))return false;
     }
-    if(count<3)return false;
-    out=count-2;return true;
+    count=result.count;
+    return true;
+}
+}
+
+bool LogFrequencyFilterBank::band_count(FrequencyGridView grid,const LogFrequencyFilterConfig& c,std::size_t& out) noexcept {
+    if(!grid.size || !grid.at || !valid(c))return false;
+    double low=0,high=0;
+    if(!log_frequency_bounds(c,low,high))return false;
+    std::size_t count=0;
+    if(!count_log_corners(grid,c,low,high,count) || count<3)return false;
+    out=count-2;
+    return true;
 }
 bool LogFrequencyFilterBank::corners(std::span<const float> grid,const LogFrequencyFilterConfig& c) {
-    const double low=std::floor(std::log2(double(c.fmin)/c.reference)*c.bands_per_octave);
-    const double high=std::ceil(std::log2(double(c.fmax)/c.reference)*c.bands_per_octave);
-    if(!std::isfinite(low) || !std::isfinite(high) || high-low>double(SIZE_MAX/sizeof(float)))return false;
-    if(low<high && (low+1<=low || high-1>=high))return false;
+    double low=0,high=0;
+    if(!log_frequency_bounds(c,low,high))return false;
     for(double i=low;i<high;++i){
         const double hz=double(c.reference)*std::exp2(i/double(c.bands_per_octave));
         if(hz<c.fmin || hz>c.fmax)continue;

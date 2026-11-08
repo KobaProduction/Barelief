@@ -41,18 +41,4 @@ inline void finite_admission() {
     finite_bounds_rejected({0,finite_capacity});finite_bounds_rejected({finite_samples,finite_samples-1});
     finite_bounds_rejected({finite_samples,finite_capacity,48000});
 }
-inline void compare_finite(const Observation& seen,const rhythm_reference_ports::PreparedPcmRhythmSummary& oracle,bool multi) {
-    for(std::size_t i=0;i<(multi?5u:1u);++i){
-        compare(seen.curves[i],oracle.tracker().onset_curve(i),2e-4f,"whole-input ODF",i);
-        compare(seen.candidates[i],oracle.tracker().candidate_times(i),1e-6f,"whole-input candidate",i);
-    }
-    if(multi){
-        compare(seen.ticks,oracle.tracker().ticks(),1e-6f,"whole-input selection");
-        compare(seen.scores,oracle.tracker().method_scores(),1e-6f,"whole-input agreement scores");
-    }
-    compare(seen.intervals,oracle.summary().intervals(),1e-6f,"whole-input intervals");
-    compare(seen.estimates,oracle.summary().estimates(),1e-5f,"whole-input BPM observations");
-    compare_scalar(seen.bpm,oracle.summary().bpm(),1e-3f,"whole-input BPM");
-    compare_scalar(seen.confidence,oracle.summary().confidence(),1e-4f,"whole-input confidence");
-}
 }

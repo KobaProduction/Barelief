@@ -5,6 +5,7 @@
 #include <dsp_kernels/tempogram.h>
 #include <dsp_kernels/sample_rotation.h>
 #include <dsp_kernels/prepared_storage.h>
+#include <dsp_kernels/sequence_statistics.h>
 #include <dsp_kernels/detail/float_publication.h>
 #include <algorithm>
 #include <cmath>
@@ -43,11 +44,11 @@ template<typename Scalar> bool normalization_scale(std::span<const Scalar> value
     if(mode==VectorNormalization::Lp && (!std::isfinite(exponent) || exponent<=0))return false;
     scale=norm<Scalar>(values,mode,exponent);return std::isfinite(scale);
 }
-template<typename Scalar> bool normalize_values(std::span<Scalar> values,VectorNormalization mode,Scalar exponent) noexcept {
+template<typename Scalar> bool normalize_values(std::span<Scalar> values,VectorNormalization mode,Scalar exponent,Scalar minimum_scale=std::numeric_limits<Scalar>::min()) noexcept {
     if(!std::all_of(values.begin(),values.end(),[](Scalar x){return std::isfinite(x);}) || mode<VectorNormalization::None || mode>VectorNormalization::Lp)return false;
     if(mode==VectorNormalization::None || values.empty())return true;
     Scalar scale=0;if(!normalization_scale<Scalar>(values,mode,exponent,scale))return false;
-    if(scale>=std::numeric_limits<Scalar>::min())for(auto& value:values)value/=scale;
+    if(scale>0 && scale>=minimum_scale)for(auto& value:values)value/=scale;
     return true;
 }
 float interpolate_acf(std::span<const float> acf,float bpm,float rate) noexcept {
@@ -60,8 +61,25 @@ float interpolate_acf(std::span<const float> acf,float bpm,float rate) noexcept 
     return acf[low]+t*(acf[high]-acf[low]);
 }
 }
-bool normalize_vector(std::span<float> values,VectorNormalization mode,float exponent) noexcept {
-    return normalize_values<float>(values,mode,exponent);
+namespace {
+bool statistical_normalization_scale(std::span<const float> values,VectorNormalization mode,float& scale) noexcept {
+    if(mode==VectorNormalization::Sum)return sum_float32(values,scale);
+    if(!variance_float32(values,scale))return false;
+    scale=std::sqrt(scale);return true;
+}
+bool normalize_statistics(std::span<float> values,VectorNormalization mode) noexcept {
+    if(values.empty())return true;
+    float scale=0;
+    if(!statistical_normalization_scale(values,mode,scale))return false;
+    if(scale!=0)for(auto& value:values)value/=scale;
+    return finite(values);
+}
+}
+
+bool normalize_vector(std::span<float> values,VectorNormalization mode,float exponent,float minimum_scale) noexcept {
+    if(!std::isfinite(minimum_scale) || minimum_scale<0)return false;
+    if(mode==VectorNormalization::Sum || mode==VectorNormalization::StandardDeviation)return normalize_statistics(values,mode);
+    return normalize_values<float>(values,mode,exponent,minimum_scale);
 }
 bool PreparedFourierTempogram::prepare_transform(std::size_t size,const FourierBackendFactory* factory) {
     if(window_.config().precision==NumericalPrecision::DesktopReference)return !factory && prepare_reference(size);

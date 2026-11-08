@@ -5,7 +5,6 @@
 // This program is free software under GPL version3 or any later version.
 // No warranty; see ../COPYING. This source is separate from the MIT DSP target.
 #include <rhythm_reference_ports/context_beat_tracker.h>
-#include <dsp_kernels/correlation.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -36,6 +35,13 @@ bool valid(const ContextBeatTrackerConfig& c) noexcept {
         std::isfinite(c.min_period_frames) && c.min_period_frames>0;
 }
 }
+bool context_detection_weights(ContextBeatTrackerConfig config,std::span<float> output) noexcept {
+    if(!valid(config) || output.size()!=config.window)return false;
+    const float preferred=60.f*config.frame_rate/config.preferred_bpm;
+    for(std::size_t i=0;i<output.size();++i)
+        output[i]=std::exp(std::log(2.f)/preferred*(float(i+1)-float(config.window+2)));
+    return true;
+}
 bool PreparedContextBeatTracker::prepare(ContextBeatTrackerConfig config) {
     PreparedContextBeatTracker next;std::size_t bytes=0;
     if(!storage_bytes(config,bytes) || !next.configure(config) || next.workspace_bytes()>bytes)return false;
@@ -47,12 +53,12 @@ bool PreparedContextBeatTracker::storage_bytes(ContextBeatTrackerConfig config,s
     if(!std::isfinite(preferred) || preferred<=0 || preferred>=float(UINT32_MAX))return false;
     std::size_t bytes=0;const auto lag=config.window/4;
     using namespace dsp_kernels::prepared_storage;
-    if(!add_array(bytes,config.window,4*sizeof(float)) || !add_array(bytes,lag,6*sizeof(float)) ||
+    if(!add_array(bytes,config.window,3*sizeof(float)) || !add_array(bytes,lag,6*sizeof(float)) ||
        !add_array(bytes,1,sizeof(float)))return false;
     output=bytes;return true;
 }
 std::size_t PreparedContextBeatTracker::workspace_bytes() const noexcept {
-    return (rayleigh_.capacity()+context_weights_.capacity()+detection_weights_.capacity()+phase_weights_.capacity()+
+    return (rayleigh_.capacity()+context_weights_.capacity()+phase_weights_.capacity()+
         reversed_.capacity()+acf_.capacity()+comb_.capacity()+phase_response_.capacity()+offsets_.capacity())*sizeof(float);
 }
 bool PreparedContextBeatTracker::configure(ContextBeatTrackerConfig c) {
@@ -61,15 +67,15 @@ bool PreparedContextBeatTracker::configure(ContextBeatTrackerConfig c) {
     if(!std::isfinite(preferred) || preferred<=0 || preferred>=float(UINT32_MAX))return false;
     config_=c;ray_period_=float(std::uint32_t(preferred));
     const auto lag=c.window/4;
+    allocate_buffers(c.window,lag);weights();reset();return true;
+}
+void PreparedContextBeatTracker::allocate_buffers(std::size_t window,std::size_t lag) {
     rayleigh_.resize(lag);context_weights_.resize(lag);phase_weights_.resize(2*lag);
-    detection_weights_.resize(c.window);reversed_.resize(c.window);acf_.resize(c.window);
-    comb_.resize(lag);phase_response_.resize(c.window);offsets_.resize(lag+1);
-    weights();reset();return true;
+    reversed_.resize(window);acf_.resize(window);
+    comb_.resize(lag);phase_response_.resize(window);offsets_.resize(lag+1);
 }
 void PreparedContextBeatTracker::weights() noexcept {
     const float preferred=60.f*config_.frame_rate/config_.preferred_bpm;
-    for(std::size_t i=0;i<detection_weights_.size();++i)
-        detection_weights_[i]=std::exp(std::log(2.f)/preferred*(float(i+1)-float(config_.window+2)));
     for(std::size_t i=0;i<rayleigh_.size();++i){
         const float x=float(i+1);
         rayleigh_[i]=x/(preferred*preferred)*std::exp(-x*x/(2.f*preferred*preferred));
@@ -131,25 +137,30 @@ void PreparedContextBeatTracker::phase_weights(bool fresh) noexcept {
 void PreparedContextBeatTracker::update_context() noexcept {
     if(context_!=0){comb(time_signature_,false,context_weights_);context_=peak(comb_);}
     const bool fresh=context_change();
-    if(fresh){
-        context_=general_;time_signature_=meter(context_);period_=context_;
-        for(std::size_t i=0;i<context_weights_.size();++i){
-            const float distance=float(i+1)-context_;
-            context_weights_[i]=std::exp(-.5f*distance*distance/(config_.context_variance*config_.context_variance));
-        }
-    }else period_=time_signature_?context_:general_;
+    if(fresh)establish_context();
+    else period_=time_signature_?context_:general_;
     phase_weights(fresh);
     while(period_>0 && period_<config_.min_period_frames)period_*=2.f;
 }
-float PreparedContextBeatTracker::phase() noexcept {
-    std::fill(phase_response_.begin(),phase_response_.end(),0.f);
-    const auto repeats=std::size_t(std::floor(float(config_.window)/period_));
-    const auto phases=std::min(std::size_t(std::ceil(period_)),phase_response_.size());
+void PreparedContextBeatTracker::establish_context() noexcept {
+    context_=general_;time_signature_=meter(context_);period_=context_;
+    for(std::size_t i=0;i<context_weights_.size();++i){
+        const float distance=float(i+1)-context_;
+        context_weights_[i]=std::exp(-.5f*distance*distance/(config_.context_variance*config_.context_variance));
+    }
+}
+void PreparedContextBeatTracker::accumulate_phase_response(std::size_t repeats,std::size_t phases) noexcept {
     for(std::size_t at=0;at<phases;++at)
         for(std::size_t k=0;k<repeats;++k){
             const auto index=at+std::size_t(std::round(period_*float(k)));
             if(index<reversed_.size())phase_response_[at]+=reversed_[index];
         }
+}
+float PreparedContextBeatTracker::phase() noexcept {
+    std::fill(phase_response_.begin(),phase_response_.end(),0.f);
+    const auto repeats=std::size_t(std::floor(float(config_.window)/period_));
+    const auto phases=std::min(std::size_t(std::ceil(period_)),phase_response_.size());
+    accumulate_phase_response(repeats,phases);
     for(std::size_t at=0;at<phase_weights_.size();++at)phase_response_[at]*=phase_weights_[at];
     const auto maximum=source_maximum(phase_response_);
     return (maximum+1==phase_response_.size()?float(step())-last_beat_:peak(phase_response_))+1.f;
@@ -170,17 +181,26 @@ float PreparedContextBeatTracker::confidence() const noexcept {
     for(float value:comb_)sum+=value;
     if(sum==0 || !std::isfinite(sum))return 0;
     const auto at=std::size_t(context_-.5f)+1;
+    return confidence_at(at,sum);
+}
+float PreparedContextBeatTracker::confidence_at(std::size_t at,float sum) const noexcept {
     if(at>=comb_.size())return 0;
     if(float(at)==context_)return comb_[at]/sum;
     if(!at || at+1>=comb_.size())return 0;
     const float magnitude=comb_[at]-.25f*(comb_[at-1]-comb_[at+1])*(context_-float(at));
     return magnitude/sum;
 }
-bool PreparedContextBeatTracker::process(std::span<const float> input,std::span<float> output,std::size_t& count) noexcept {
-    if(!step() || input.size()!=config_.window || output.size()<maximum_beats())return false;
-    if(!std::all_of(input.begin(),input.end(),[](float x){return std::isfinite(x);}))return false;
-    for(std::size_t i=0;i<input.size();++i)reversed_[input.size()-1-i]=input[i]*detection_weights_[i];
-    if(!dsp_kernels::linear_autocorrelation(input,acf_,dsp_kernels::CorrelationNormalization::Unbiased))return false;
+bool PreparedContextBeatTracker::load_frame_inputs(std::span<const float> reversed,std::span<const float> acf,
+    std::span<float> output) noexcept {
+    if(!step() || reversed.size()!=config_.window || acf.size()!=config_.window || output.size()<maximum_beats())return false;
+    const auto finite=[](float x){return std::isfinite(x);};
+    if(!std::all_of(reversed.begin(),reversed.end(),finite) || !std::all_of(acf.begin(),acf.end(),finite))return false;
+    std::copy(reversed.begin(),reversed.end(),reversed_.begin());std::copy(acf.begin(),acf.end(),acf_.begin());
+    return true;
+}
+bool PreparedContextBeatTracker::process(std::span<const float> reversed,std::span<const float> acf,
+    std::span<float> output,std::size_t& count) noexcept {
+    if(!load_frame_inputs(reversed,acf,output))return false;
     comb(time_signature_?time_signature_:4u,true,rayleigh_);
     const auto maximum=source_maximum(comb_);
     general_=maximum && maximum+1<comb_.size()?peak(comb_):ray_period_;update_context();

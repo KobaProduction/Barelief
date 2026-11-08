@@ -181,3 +181,5 @@ endforeach()
 # Wall-clock cadence measurements must have the CTest runner to themselves.
 set_property(TEST portable_dsp_cadence_tests APPEND PROPERTY LABELS performance)
 set_tests_properties(portable_dsp_cadence_tests PROPERTIES RUN_SERIAL TRUE)
+# Axis and scalar extraction share the built-in portable executor.
+add_foundation_test(index_extraction_tests dataflow_runtime)

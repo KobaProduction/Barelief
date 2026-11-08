@@ -861,7 +861,29 @@ static int fixed_view_mode_oracles() {
     return 0;
 }
 
+static int capability_renderer_oracles() {
+    GraphPanel panel("rendererBudget",new LineChartView,{},nullptr,nullptr,
+        presentation::plot_capabilities(presentation::PlotDescriptor{{"line"},{},false}));
+    if(!panel.findChildren<NumericImageView*>().isEmpty())return failure(130,__LINE__);
+    if(panel.all_render_targets().image || panel.all_render_targets().pie)return failure(131,__LINE__);
+    panel.set_axis_precision(5);
+    panel.set_plot_capabilities(presentation::plot_capabilities(presentation::PlotDescriptor{{"line","image2d","pie"},{},false}));
+    panel.set_display_mode("image2d");
+    auto* image=panel.image_view();
+    if(!image || image->axis_precision()!=5 || !panel.all_render_targets().image)return failure(132,__LINE__);
+    panel.set_display_mode("pie");
+    auto* pie=panel.pie_view();
+    if(!pie || !panel.all_render_targets().pie)return failure(133,__LINE__);
+    panel.set_plot_capabilities(presentation::plot_capabilities(presentation::PlotDescriptor{{"line"},{},false}));
+    if(!panel.active_chart())return failure(134,__LINE__);
+    panel.set_plot_capabilities(presentation::plot_capabilities(presentation::PlotDescriptor{{"image2d","pie"},{},false}));
+    if(panel.image_view()!=image)return failure(135,__LINE__);
+    panel.set_display_mode("pie");
+    if(panel.pie_view()!=pie || panel.findChildren<NumericImageView*>().size()!=1)return failure(136,__LINE__);
+    return 0;
+}
 static int independent_plot_oracles(QApplication& app) {
+    if(const auto result=capability_renderer_oracles())return result;
     const presentation::PlotDescriptor audio{{"line","points"},{"Graphs","Audio","Signals"},true};
     const auto saved=presentation::plot_descriptor_preferences(audio);
     const auto restored=presentation::plot_descriptor_from_preferences(saved,{});

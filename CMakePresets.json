@@ -123,6 +123,11 @@
       "configurePreset": "release"
     },
     {
+      "name": "local-push",
+      "displayName": "Local push: quick tests",
+      "inherits": "release"
+    },
+    {
       "name": "debug",
       "inherits": "quick-tests",
       "configurePreset": "debug"
@@ -232,6 +237,11 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "release-validation",
+      "displayName": "Release validation: all tests",
+      "inherits": "release-all"
     },
     {
       "name": "debug-all",

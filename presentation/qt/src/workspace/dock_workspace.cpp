@@ -5,6 +5,7 @@
 #include "core_app/settings_widget.h"
 #include "core_app/scheme_editor/editor_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
+#include "core_app/scheme_editor/presentation_labels.h"
 #include "core_app/scheme_editor/numeric_editor_model.h"
 #include <desktop/numeric_project_document.h>
 #include <domain/graph_definition.h>
@@ -12,6 +13,7 @@
 #include <utility>
 #include <DockAreaWidget.h>
 #include "barelief/ui_text.h"
+#include <barelief/numeric_metrics_view.h>
 #include "barelief/charts/line.h"
 #include <QApplication>
 #include <QCloseEvent>
@@ -839,6 +841,18 @@ void MainWindow::bind_scalar_input_actions(GraphPanel *panel,AudioNodeModel *mod
     auto connections=scalar_input_command_connections(panel,model);
     bind_scalar_input_lifecycle(panel,model,connections);
 }
+namespace {
+void refresh_metric_labels(GraphPanel* panel,const AudioNodeModel& model,const QJsonObject& metadata) {
+    auto* metrics=panel->metrics_view();const auto* numeric=model.numeric_node();
+    if(!metrics || !numeric)return;
+    QList<NumericMetricsView::Input> inputs;
+    for(const auto& input:numeric->inputs){
+        const auto preferences=metadata.value(QString::number(input.id)).toObject();
+        if(preferences.value("enabled").toBool(true))inputs.push_back({input.id,numeric_editor::presentation_label(preferences)});
+    }
+    metrics->set_inputs(inputs);
+}
+}
 void MainWindow::refresh_scalar_input_binding(WorkspaceDock *dock,AudioNodeModel *model) {
     auto* panel=qobject_cast<GraphPanel*>(dock->widget());
     if(!panel)return;
@@ -846,10 +860,11 @@ void MainWindow::refresh_scalar_input_binding(WorkspaceDock *dock,AudioNodeModel
     const auto metadata=model->presentation().value("scalar_inputs").toObject();
     if(const auto* numeric=model->numeric_node())for(const auto& input:numeric->inputs) {
         const auto preferences=metadata.value(QString::number(input.id)).toObject();
-        inputs.append(QVariantMap{{"port",int(input.id)},{"name",preferences.value("display_name").toString()},
+        inputs.append(QVariantMap{{"port",int(input.id)},{"name",numeric_editor::presentation_label(preferences)},
             {"enabled",preferences.value("enabled").toBool(true)},{"removeEnabled",numeric->inputs.size()>1}});
     }
     panel->set_scalar_inputs(inputs,inputs.size()<qsizetype(numeric_editor::limits().max_ports_per_node));
+    refresh_metric_labels(panel,*model,metadata);
     if(panel->property("scalarInputsModel").value<QObject*>()!=model)bind_scalar_input_actions(panel,model);
 }
 void MainWindow::initialize_graph_caption(AudioNodeModel* model,const QString& title) {
@@ -881,13 +896,13 @@ QString MainWindow::graph_title(WorkspaceDock *dock,const QString& key,AudioNode
         const auto kind=domain::node_kind(model->name().toStdString());
         if(kind && domain::is_scalar_view(*kind))refresh_scalar_input_binding(dock,model);
         bind_graph_caption(dock,model,title);
-        title=model->presentation().value("display_name").toString().trimmed();
-        save_graph_display_name(key,title);
+        title=numeric_editor::presentation_label(model->presentation());
+        save_graph_display_name(key,model->presentation().value("display_name").toString().trimmed());
     }
     if(title.isEmpty()) {
         const auto kind=dock->property("graphKind").toString();
         title=kind.isEmpty()?ui::text(dock->property("graphTitleSource").toString().toUtf8().constData()):
-            AudioNodeModel(kind).caption()+" #"+QString::number(dock->property("graphNode").toInt());
+            AudioNodeModel::default_caption(kind)+" #"+QString::number(dock->property("graphNode").toInt());
     }
     return title;
 }

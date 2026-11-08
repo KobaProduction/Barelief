@@ -1,4 +1,5 @@
 #include <domain/numeric/contracts.h>
+#include <domain/graph/window_parameters.h>
 #include <algorithm>
 #include <cmath>
 namespace domain {
@@ -30,6 +31,7 @@ Status generator_count(const ConfiguredProcessingNode& node,double& count) {
 Status generator_precision(const ConfiguredProcessingNode& node,NumericContract& result) {
     if(node.kind!="WindowFunction")return Status::ok;
     const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,node.inputs,node.outputs,&node.parameters,node.enabled};
+    window_generation::WindowFunctionParameters parameters;if(!window_function_parameters(resolved,parameters))return Status::invalid_argument;
     ProcessingParameterView field;
     if(resolve_processing_parameter(resolved,"precision",field)!=Status::ok || !std::holds_alternative<NumericLiteral>(field))return Status::invalid_argument;
     const auto precision=std::visit([](auto value){return double(value);},std::get<NumericLiteral>(field));

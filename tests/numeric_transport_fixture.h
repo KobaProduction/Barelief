@@ -84,8 +84,11 @@ inline std::uint64_t value(const DeliveredNumericFrame& frame,std::size_t index=
 struct FrameProbe {
     struct Shared {std::mutex mutex;DeliveredNumericFrame frame;std::size_t count=0;};
     NumericEngine& engine;std::shared_ptr<Shared> shared=std::make_shared<Shared>();std::uint64_t token=0;
-    FrameProbe(NumericEngine& e,EndpointIdentity endpoint):engine(e){
-        token=engine.subscribe_numeric_tap({std::move(endpoint)},[state=shared](DeliveredNumericFrame frame){std::lock_guard lock(state->mutex);state->frame=std::move(frame);++state->count;},{});
+    FrameProbe(NumericEngine& e,EndpointIdentity endpoint,bool (*accept)(const DeliveredNumericFrame&)=nullptr):engine(e){
+        token=engine.subscribe_numeric_tap({std::move(endpoint)},[state=shared,accept](DeliveredNumericFrame frame){
+            if(accept && !accept(frame))return;
+            std::lock_guard lock(state->mutex);state->frame=std::move(frame);++state->count;
+        },{});
         require(token!=0,"owning numeric probe subscription");
     }
     ~FrameProbe(){engine.unsubscribe_numeric_tap(token);}

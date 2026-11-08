@@ -5,48 +5,44 @@
 namespace rhythm_graph_adapters::detail {
 using namespace signal_contracts;
 namespace {
-bool scalar_input(const NumericContract& contract,DType dtype) noexcept {
-    return contract.dtype==dtype && contract.shape.rank==Rank::Scalar && contract.channel_order.size()==1 &&
+bool scalar_input(const NumericBufferContract& contract,DType dtype) noexcept {
+    return contract.dtype==dtype && contract.shape.rank==Rank::Scalar && contract.plane_count==1 &&
         contract.representation.normalization==Normalization::None;
 }
-bool source_input(const NumericContract& input,const PcmStagePlan& plan,domain::PortId port) noexcept {
-    if(plan.kind==PcmStageKind::Sequence)return scalar_input(input,port==0?DType::Float32:DType::UInt8);
-    return port==0 && input.dtype==DType::Float32 && input.shape.rank==Rank::Vector && input.channel_order.size()==1 &&
-        input.representation.encoding==StorageEncoding::Native && input.shape.extents[0]==ExtentBounds{plan.input_rows,plan.input_rows} &&
-        (plan.kind==PcmStageKind::Tracker || !input.clock.sample_rate || input.clock.sample_rate==plan.sample_rate);
+bool source_input(const NumericBufferContract& input,const PcmStagePlan& plan,domain::PortId port) noexcept {
+    if(plan.kind==PcmStageKind::Sequence && port==context_sequence_ports::silence)return scalar_input(input,DType::UInt8);
+    return input.dtype==DType::Float32 && input.shape.rank==Rank::Vector && input.plane_count==1 &&
+        input.representation.encoding==StorageEncoding::Native && input.shape.extents[0]==ExtentBounds{plan.input_rows,plan.input_rows};
 }
-bool spectrum_control(const NumericContract& input,const PcmStagePlan& plan,domain::PortId port) noexcept {
-    if(port==17)return scalar_input(input,DType::UInt32);
-    return port==18 && input.dtype==DType::Float32 && input.shape.rank==Rank::Vector && input.channel_order.size()==1 &&
-        input.representation.encoding==StorageEncoding::Native && input.shape.extents[0]==ExtentBounds{plan.onset.spectrum.window_samples,plan.onset.spectrum.window_samples};
+bool warm_scalar(const NumericBufferContract& input,domain::PortId port) noexcept {
+    if(port==context_sequence_ports::delay_control)return scalar_input(input,DType::Int32);
+    if(port==context_sequence_ports::signature_control)return scalar_input(input,DType::UInt32);
+    return port==context_sequence_ports::poll_control && scalar_input(input,DType::UInt8);
 }
-bool warm_input(const NumericContract& input,const PcmStagePlan& plan,domain::PortId port) noexcept {
-    const bool onset=plan.kind==PcmStageKind::Onset,sequence=plan.kind==PcmStageKind::Sequence;
-    if(plan.kind==PcmStageKind::Spectrum)return spectrum_control(input,plan,port);
-    if(plan.kind==PcmStageKind::Tracker)return false;
-    if((port==10 || port==11) && !sequence)return scalar_input(input,DType::Float32);
-    if(port==12)return onset && scalar_input(input,DType::Float32);
-    if(port==13)return onset && scalar_input(input,DType::UInt8);
-    if(port==14)return scalar_input(input,onset?DType::UInt64:DType::Int32);
-    if(port==15)return scalar_input(input,onset?DType::UInt64:DType::UInt32);
-    return port==16 && scalar_input(input,DType::UInt8);
+bool warm_input(const NumericBufferContract& input,const PcmStagePlan& plan,domain::PortId port) noexcept {
+    return plan.kind==PcmStageKind::Sequence && warm_scalar(input,port);
 }
-bool supported_port(const domain::ResolvedProcessingNode& node,const PcmStagePlan& plan,domain::PortId id) noexcept {
-    NumericContract input;if(!numeric_port(node,true,id,input))return false;
+bool supported_port(const dataflow_runtime::NumericOperationNodeView& node,const PcmStagePlan& plan,domain::PortId id) noexcept {
+    NumericBufferContract input;if(!numeric_port(node,true,id,input))return false;
     if(id==pcm_control_port)return scalar_input(input,DType::UInt8);
-    if(id==0 || (id==1 && plan.kind==PcmStageKind::Sequence))return source_input(input,plan,id);
+    if(id<(plan.kind==PcmStageKind::Sequence?4:2))return source_input(input,plan,id);
     return warm_input(input,plan,id);
 }
-}
-bool pcm_stage_inputs(const domain::ResolvedProcessingNode& node,const PcmStagePlan& plan) noexcept {
-    if(node.inputs.size()>10)return false;
-    NumericContract source;if(!numeric_port(node,true,0,source))return false;
+bool supported_ports(const dataflow_runtime::NumericOperationNodeView& node,const PcmStagePlan& plan) noexcept {
     for(std::size_t i=0;i<node.inputs.size();++i){
         const auto id=node.inputs[i].id;
-        for(std::size_t j=0;j<i;++j)if(node.inputs[j].id==id)return false;
+        if(!operation_port_unique(node.inputs,i))return false;
         if(!supported_port(node,plan,id))return false;
     }
-    if(plan.kind!=PcmStageKind::Sequence)return true;
-    NumericContract silent;return numeric_port(node,true,1,silent) && equal_frame_clock(source.clock,silent.clock);
+    return true;
+}
+
+}
+bool pcm_stage_inputs(const dataflow_runtime::NumericOperationNodeView& node,const PcmStagePlan& plan) noexcept {
+    if(node.inputs.size()>10)return false;
+    if(!supported_ports(node,plan))return false;
+    const domain::PortId required=plan.kind==PcmStageKind::Sequence?4:2;
+    for(domain::PortId port=0;port<required;++port){NumericBufferContract source;if(!numeric_port(node,true,port,source))return false;}
+    return true;
 }
 }

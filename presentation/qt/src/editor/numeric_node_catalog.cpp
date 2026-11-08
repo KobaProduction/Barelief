@@ -69,7 +69,6 @@ constexpr std::array operation_groups{
     OperationGroup{"MatrixRow","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayFill","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayMultiply","Numeric operations","Arrays and matrices"},
-    OperationGroup{"ArrayReindex","Numeric operations","Arrays and matrices"},
     OperationGroup{"TemporalFrameSequence","Signal processing","Resampling and timing"},
     OperationGroup{"ArrayConcat","Numeric operations","Arrays and matrices"},
     OperationGroup{"ArrayLength","Numeric operations","Arrays and matrices"},
@@ -152,7 +151,7 @@ void populate_catalog(QTreeWidget* tree) {
     for(const auto& kind:available) {
         const auto path=is_graph_view(kind)?presentation::plot_category_path(plot_descriptor_for_kind(kind)):catalog_path(kind);
         auto* item=new QTreeWidgetItem(catalog_parent(tree,groups,path));
-        item->setText(0,AudioNodeModel(kind).caption());item->setData(0,Qt::UserRole,kind);
+        item->setText(0,AudioNodeModel::default_caption(kind));item->setData(0,Qt::UserRole,kind);
     }
     tree->expandAll();
 }
@@ -175,7 +174,7 @@ QStringList model_catalog() {
 }
 QStringList catalog() {
     auto result=model_catalog();
-    for(const auto* kind:{"WLED","Splitter","SpectrumMerge","TestSignal","StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"})result.removeAll(kind);
+    for(const auto* kind:{"WLED","Splitter","SpectrumMerge","TestSignal","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain"})result.removeAll(kind);
     return result;
 }
 QStringList visible_catalog() {

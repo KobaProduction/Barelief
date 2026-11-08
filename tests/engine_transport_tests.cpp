@@ -55,12 +55,24 @@ return g;
 static void send_pcm_block(NumericEngine& sender,const NumericContract& c,const auto& pcm,const auto& planes,std::uint64_t& sequence) {
 FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.generation=stamp.producer_epoch=1;stamp.timestamp_ticks=std::int64_t((sequence-1)*256);stamp.stream_id="pcm";require(sender.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(pcm)),planes,{256,1}}})==Status::ok,"sender PCM burst");}
 
+static void send_demanded_frame(NumericEngine& engine,const NumericContract& contract,std::span<const float> values,
+    std::span<const PlaneLayout> planes,std::uint64_t& sequence) {
+    FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=stamp.generation=1;
+    stamp.stream_id="demand";stamp.timestamp_ticks=std::int64_t(sequence*256);
+    require(engine.feed_numeric(0,{stamp,NumericView{&contract,std::as_bytes(values),planes,{values.size(),1}}})==Status::ok,"demand PCM feed");
+}
 static void demanded_sink_burst() {
     auto g=demanded_graph();const auto& source=g.nodes.front();
-    NumericEngine engine;Replies replies(engine);replies.accepted(apply(g));NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0),"demand server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);
-    unsigned frames=0,local_frames=0;int final_status=-1;bool final_available=false;const auto final_tap=engine.subscribe_numeric_tap({{g.graph_id,300,domain::PortDirection::Input,0}},[&](auto frame){final_status=int(frame.status);final_available=frame.frame&&frame.frame.view().stamp.available;if(final_available)++local_frames;},{});remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available)++frames;});require(remote.subscribe_numeric_frames({{g.graph_id,300,domain::PortDirection::Input,0}}),"final sink demand");
-    const auto contract_data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(contract_data);std::array<float,2048> pcm{};pcm.fill(.25f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sequence=0;
-    const auto arrived=wait([&]{FrameStamp stamp;stamp.sequence=stamp.source_sequence=++sequence;stamp.producer_epoch=stamp.generation=1;stamp.stream_id="demand";stamp.timestamp_ticks=std::int64_t(sequence*256);require(engine.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(pcm)),planes,{2048,1}}})==Status::ok,"demand PCM feed");return frames>0;});if(!arrived)std::fprintf(stderr,"Demanded sink frames=%u local=%u status=%d available=%d sends=%llu remote epoch=%llu revision=%llu warning=%s server=%s\n",frames,local_frames,final_status,int(final_available),(unsigned long long)sequence,(unsigned long long)remote.snapshot().epoch,(unsigned long long)remote.snapshot().graph_revision,qPrintable(remote.network_warning()),qPrintable(server.error_string()));engine.unsubscribe_numeric_tap(final_tap);require(arrived,"129-port burst starved demanded final NetworkOutput");
+    const auto contract_data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(contract_data);
+    std::array<float,2048> pcm{};pcm.fill(.25f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sequence=0;
+    NumericEngine engine;Replies replies(engine);replies.accepted(apply(g));
+    // Establish the external source during setup. Otherwise the missing-source
+    // timer catches up zero frames through 127 gains inside the handshake wait.
+    send_demanded_frame(engine,c,pcm,planes,sequence);
+    const auto setup_sequence=sequence;
+    NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0),"demand server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);
+    unsigned frames=0,local_frames=0;int final_status=-1;bool final_available=false;const auto final_tap=engine.subscribe_numeric_tap({{g.graph_id,300,domain::PortDirection::Input,0}},[&](auto frame){final_status=int(frame.status);final_available=frame.frame&&frame.frame.view().stamp.available;if(final_available)++local_frames;},{});remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available&&frame.frame.view().stamp.source_sequence>setup_sequence)++frames;});require(remote.subscribe_numeric_frames({{g.graph_id,300,domain::PortDirection::Input,0}}),"final sink demand");
+    const auto arrived=wait([&]{send_demanded_frame(engine,c,pcm,planes,sequence);return frames>0;});if(!arrived)std::fprintf(stderr,"Demanded sink frames=%u local=%u status=%d available=%d sends=%llu remote epoch=%llu revision=%llu warning=%s server=%s\n",frames,local_frames,final_status,int(final_available),(unsigned long long)sequence,(unsigned long long)remote.snapshot().epoch,(unsigned long long)remote.snapshot().graph_revision,qPrintable(remote.network_warning()),qPrintable(server.error_string()));engine.unsubscribe_numeric_tap(final_tap);require(arrived,"129-port burst starved demanded final NetworkOutput");
     remote.disconnect_remote();
 }
 static void verify_pcm_burst(NumericEngine& receiver,const domain::NumericProcessingGraph& receive_graph,NumericRemoteEndpoint& remote,std::uint64_t& received,bool& gap,std::uint64_t& sequence,const auto& send_pcm) {
@@ -179,7 +191,14 @@ static void control_frame_profile_regression() {
         "CONTROL can describe every frame admitted by the desktop runtime");
 }
 int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
-    control_frame_profile_regression();fifo_and_cancellation_regressions();ratio_json_regression();queue_endpoint_loss_regression();remote_terminal_cancellation();demanded_sink_burst();pcm_transport_window_continuity();multi_peer_commit_batch();
+    control_frame_profile_regression();
+    fifo_and_cancellation_regressions();
+    ratio_json_regression();
+    queue_endpoint_loss_regression();
+    remote_terminal_cancellation();
+    demanded_sink_burst();
+    pcm_transport_window_continuity();
+    multi_peer_commit_batch();
     bounded_arena_rebind();
     NumericEngine engine;Replies local(engine);const auto graph=transport_fixture::graph("large",10000);local.accepted(apply(graph));
     NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0,true),"actual canonical server");

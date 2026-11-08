@@ -2,7 +2,9 @@
 #include "parameter_field_specs.h"
 #include "numeric_graph_draft.h"
 #include <project_storage/numeric_array_codec.h>
+#include <domain/numeric/matrix_center.h>
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 using namespace domain;using namespace signal_contracts;
 namespace {
@@ -77,13 +79,20 @@ bool matrix_offset_available(const ConfiguredProcessingNode& node) {
     ProcessingParameterView field;
     if(resolve_processing_parameter(resolved,"method",field)!=Status::ok)return false;
     const auto* number=std::get_if<NumericLiteral>(&field);
-    return number && std::visit([](auto value){return value==2;},*number);
+    return number && std::visit([](auto value){return matrix_center_method(double(value))==MatrixCenterMethod::ManualOffset;},*number);
+}
+bool extraction_field_visible(std::string_view key,bool axis) {
+    if(key=="mode")return true;
+    constexpr std::array scalar{std::string_view{"channel_index"},std::string_view{"index"},std::string_view{"column"}};
+    const bool element=std::find(scalar.begin(),scalar.end(),key)!=scalar.end();
+    return axis?!element:element;
 }
 }
 bool NodeParameterModel::specializedParameterVisible(const ParameterDescriptor& descriptor) const {
+    if(_node.kind=="IndexExtract")return extraction_field_visible(descriptor.key,parameterNumber(NodeKind::IndexExtract,"mode")==1);
     if(_node.kind=="Mel" && parameterNumber(NodeKind::Mel,"fft_size")>0)
         return descriptor.key!="bin_hz" && descriptor.key!="frequencies_hz";
-    const bool temporal=_node.kind=="TempoEstimate" || _node.kind=="DynamicBeatPath" || _node.kind=="AutocorrelationTempogram";
+    const bool temporal=_node.kind=="TempoEstimate" || _node.kind=="DynamicBeatPath";
     if(temporal && parameterNumber(*node_kind(_node.kind),"sample_rate")>0)
         return descriptor.key!="frame_rate" && descriptor.key!="input_rate";
     return !streamed_onset_field(_node,descriptor.key);
@@ -110,7 +119,7 @@ void NodeParameterModel::appendParameterField(const ParameterDescriptor& descrip
         appendInvalidParameter(title,key);
         return;
     }
-    const auto spec=numeric_editor::parameter_choices(QString::fromStdString(_node.kind),key);
+    const auto spec=numeric_editor::parameter_choices(_node,key);
     if(!spec.values.empty())appendParameterChoice(descriptor,title,spec.values,spec.labels);
     else appendParameterValue(descriptor,title);
     configureParameterAvailability(descriptor);
@@ -133,7 +142,7 @@ void NodeParameterModel::appendParameterChoice(const ParameterDescriptor& descri
     const auto key=QString::fromUtf8(descriptor.key.data(),int(descriptor.key.size()));
     auto f=makeField(title,key,Editor::Choice);
     for(int i=0;i<values.size();++i)f.options.push_back({labels.value(i,values[i]),i,true});
-    f.read=[this,descriptor,values]()->Value{return std::max(0,int(values.indexOf(parameter_choice_text(parameterValue(descriptor)))));};
+    f.read=[this,descriptor,values]()->Value{return int(values.indexOf(parameter_choice_text(parameterValue(descriptor))));};
     f.write=[this,descriptor,values](const Value& value){return writeParameterChoice(descriptor,values,std::get<int>(value));};
     _fields.push_back(std::move(f));
 }

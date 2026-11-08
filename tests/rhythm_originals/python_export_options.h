@@ -1,7 +1,6 @@
 #pragma once
 #include "python_export_next.h"
 #include <dsp_kernels/feature_reduction.h>
-#include <dsp_kernels/onset_strength_sequence.h>
 #include <algorithm>
 
 namespace originals {
@@ -28,18 +27,5 @@ public:
     }
     dsp_kernels::FloatMatrixReductionPort port() noexcept {return {this,reduce};}
     std::size_t workspace_bytes() const noexcept {return kernel_.workspace_bytes();}
-};
-class OnsetSumReduction {
-    std::vector<float> scratch_;
-    static bool reduce(void* context,std::span<const float> values,float& output) noexcept {
-        auto& scratch=static_cast<OnsetSumReduction*>(context)->scratch_;
-        if(values.size()>scratch.size())return false;
-        std::copy(values.begin(),values.end(),scratch.begin());
-        return dsp_kernels::reduce_feature_values(std::span(scratch).first(values.size()),dsp_kernels::FeatureReduction::Sum,output);
-    }
-public:
-    explicit OnsetSumReduction(std::size_t features):scratch_(features){}
-    dsp_kernels::OnsetAggregationPort port() noexcept {return {this,reduce};}
-    std::size_t workspace_bytes() const noexcept {return scratch_.capacity()*sizeof(float);}
 };
 }

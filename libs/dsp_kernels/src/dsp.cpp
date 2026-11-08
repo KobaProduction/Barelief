@@ -61,23 +61,6 @@ bool output_planes_overlap(std::span<float> magnitude,std::span<float> phase) no
     const std::less<const float*> before;
     return before(magnitude.data(),phase.data()+phase.size()) && before(phase.data(),magnitude.data()+magnitude.size());
 }
-signal_contracts::Status load_fft_plane(const signal_contracts::NumericView& input,
-    std::span<float> scratch,std::size_t plane,std::size_t n) noexcept {
-    for(std::size_t i=0;i<n;++i){
-        const auto status=signal_contracts::load_element(input,{plane,i,0},scratch[2*i]);
-        if(status!=signal_contracts::Status::ok)return status;
-        scratch[2*i+1]=0;
-    }
-    return signal_contracts::Status::ok;
-}
-signal_contracts::Status store_magnitude_plane(signal_contracts::MutableNumericView& output,
-    std::span<const float> scratch,std::size_t plane,std::size_t bins) noexcept {
-    for(std::size_t i=0;i<bins;++i){
-        const auto status=signal_contracts::store_element(output,{plane,i,0},scratch[2*i]);
-        if(status!=signal_contracts::Status::ok)return status;
-    }
-    return signal_contracts::Status::ok;
-}
 void apply_stereo_window(std::span<float> left,std::span<float> right,
     std::span<const float> window) noexcept {
     for(std::size_t i=0;i<left.size();++i){left[i]*=window[i];right[i]*=window[i];}
@@ -250,21 +233,6 @@ static bool publish_polar_spectrum(std::span<float> scratch,std::size_t n,int sc
     for(std::size_t bin=0;bin<phase.size();++bin)phase[bin]=scratch[2*bin+1];
     return true;
 }
-static void scale_fft_plane(std::span<float> scratch,std::size_t samples,int scale) noexcept {
-    if(!scale)return;
-    const float factor=std::scalbn(1.f,-scale);
-    for(std::size_t i=0;i<samples;++i)scratch[2*i]*=factor;
-}
-static signal_contracts::Status prepare_fft_plane_input(const signal_contracts::NumericView& input,
-    std::span<float> scratch,std::size_t plane,std::size_t samples,int& scale) noexcept {
-    using signal_contracts::Status;
-    const auto loaded=load_fft_plane(input,scratch,plane,samples);
-    if(loaded!=Status::ok)return loaded;
-    scale=fft_scale(scratch,samples);
-    if(scale==INT_MIN)return Status::invalid_argument;
-    scale_fft_plane(scratch,samples,scale);
-    return Status::ok;
-}
 bool MagnitudeSpectrum::process(std::span<const float> input, std::span<float> output) {
     return process(input,output,{});
 }
@@ -279,20 +247,6 @@ bool MagnitudeSpectrum::process(std::span<const float> input, std::span<float> o
         return false;
     // Stage results in the consumed real scratch lane before publishing.
     return publish_polar_spectrum({scratch_.data(),scratch_.size()},n,scale,output,phase);
-}
-signal_contracts::Status MagnitudeSpectrum::process_plane(const signal_contracts::NumericView& input,
-    signal_contracts::MutableNumericView& output, std::size_t plane) {
-    using namespace signal_contracts;
-    const auto n = scratch_.size() / 2;
-    if (!n || input.actual[0] != n || output.actual[0] != n / 2 ||
-        plane >= input.planes.size() || plane >= output.planes.size()) return Status::invalid_argument;
-    int scale=0;
-    const auto prepared=prepare_fft_plane_input(input,{scratch_.data(),scratch_.size()},plane,n,scale);
-    if(prepared!=Status::ok)return prepared;
-    if (!detail::transform(scratch_.data(), n, radix4_)) return Status::unavailable;
-    const double restore = scale ? std::scalbn(1., scale) : 1.;
-    if(!stage_magnitude_bins({scratch_.data(),scratch_.size()},n,n/2,restore))return Status::overflow;
-    return store_magnitude_plane(output,{scratch_.data(),scratch_.size()},plane,n/2);
 }
 std::optional<WindowScaling> window_scaling(std::span<const float> coefficients) noexcept {
     if (coefficients.empty()) return std::nullopt;
@@ -706,6 +660,11 @@ bool PreparedSpectrumScaling::project(float real,float imaginary,bool paired,flo
             amplitude_scale_,power_scale_,psd_scale_,bin_power_scale_):
         projected_spectrum_value(options_,real,imaginary,endpoint,1.f,1.f,1.f,1.f);
     if(!std::isfinite(value) || std::abs(value)>std::numeric_limits<float>::max())return false;
+    output=float(value);return true;
+}
+bool PreparedSpectrumScaling::dc_offset(float real,float& output) const noexcept {
+    const double value=double(real)*amplitude_scale_;
+    if(!ready_ || !std::isfinite(value) || std::abs(value)>std::numeric_limits<float>::max())return false;
     output=float(value);return true;
 }
 bool PreparedSpectrumProjection::prepare(std::size_t n,double rate,WindowScaling window,SpectrumProjectionOptions options) {

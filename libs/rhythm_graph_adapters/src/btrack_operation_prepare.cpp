@@ -1,16 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "btrack_operations.h"
 #include "parameter_values.h"
-#include <rhythm_reference_ports/onset_recipes.h>
 #include <algorithm>
 
 namespace rhythm_graph_adapters::detail {
 using namespace rhythm_reference_ports;
-bool BTrackWindowProduct::prepare() {
-    coefficients.resize(1024);values.resize(1024);
-    return rhythm_reference_ports::detail::PreparedPredictiveReferenceFrontend::window_coefficients(coefficients,PredictiveWindowShape::Hann);
-}
-void BTrackWindowProduct::reset() noexcept {std::fill(values.begin(),values.end(),0);}
 bool BTrackDecision::prepare() {return tempo.prepare(512) && prediction.prepare(512,43,5,.9f);}
 void BTrackDecision::reset() noexcept {tempo.reset();prediction.reset(43);result={};}
 bool BTrackDecision::process(float onset,std::span<const float> observations) noexcept {
@@ -22,29 +16,25 @@ bool BTrackDecision::process(float onset,std::span<const float> observations) no
     }
     result=next;return true;
 }
-bool BTrackOperation::prepare_onset() {
-    if(plan_.cartesian_input)return kernel_.emplace<BTrackSourceOnset>().prepare();
-    PredictiveOnsetParameters p;if(!predictive_onset_parameters(PredictiveOnsetMethod::PositiveComplexDifference,1024,p))return false;
-    p.spectral.mirror_spectrum=false;return kernel_.emplace<dsp_kernels::PreparedSpectralDescriptor>().prepare(1024,p.spectral);
-}
+bool BTrackOperation::prepare_onset() {return kernel_.emplace<BTrackSourceOnset>().prepare();}
 bool BTrackOperation::prepare_history() {
     if(!kernel_.emplace<ScalarHistory>().prepare(512))return false;
     reset();return true;
 }
 bool BTrackOperation::prepare_kernel() {
-    if(plan_.kind==BTrackKind::WindowProduct)return kernel_.emplace<BTrackWindowProduct>().prepare();
+    if(plan_.kind==BTrackKind::Threshold || plan_.kind==BTrackKind::Comb)return true;
     if(plan_.kind==BTrackKind::Onset)return prepare_onset();
     if(plan_.kind==BTrackKind::History)return prepare_history();
-    if(plan_.kind==BTrackKind::Comb)return kernel_.emplace<PreparedCombTempoTransition>().prepare(512);
+    if(plan_.kind==BTrackKind::Response)return kernel_.emplace<PreparedBTrackCombResponse>().prepare();
     if(plan_.kind==BTrackKind::Decision)return kernel_.emplace<BTrackDecision>().prepare();
     resampler_=std::make_unique<dsp_kernels::PreparedResampler>();return resampler_->prepare_window(btrack_sinc_config(),provider_.get());
 }
-bool BTrackOperation::prepare(const domain::ConfiguredProcessingNode& node,std::shared_ptr<const dsp_kernels::ResamplerBackendFactory> provider) {
+bool BTrackOperation::prepare(const dataflow_runtime::NumericOperationNode& node,std::shared_ptr<const dsp_kernels::ResamplerBackendFactory> provider) {
     if(!btrack_plan(definition_view(node),plan_))return false;
     if(plan_.kind==BTrackKind::Resample)provider_=std::move(provider);
     return btrack_storage(plan_,provider_.get()) && prepare_kernel() && workspace_bytes()<=plan_.bytes;
 }
-std::unique_ptr<AdapterOperation> prepare_btrack_operation(const domain::ConfiguredProcessingNode& node,
+std::unique_ptr<AdapterOperation> prepare_btrack_operation(const dataflow_runtime::NumericOperationNode& node,
     std::shared_ptr<const dsp_kernels::ResamplerBackendFactory> provider) {
     auto result=std::make_unique<BTrackOperation>();if(!result->prepare(node,std::move(provider)))return {};return result;
 }

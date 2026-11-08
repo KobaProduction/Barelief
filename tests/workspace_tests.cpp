@@ -300,9 +300,12 @@ int main(int argc,char** argv){
     try {
         if(run_closed_workspace_phase(argc,argv) || run_initial_workspace_phase(argc,argv))return 0;
         if(argc!=3 || QString::fromLocal8Bit(argv[1])!="--restart"){
+            const auto selection=argc==2?QString::fromLocal8Bit(argv[1]):QString{};
             QCoreApplication coordinator(argc,argv);QTemporaryDir directory;
             gui_fixture::check(directory.isValid(),"restart test directory");const auto path=directory.filePath("session.json");
             for(const auto* phase:{"--initial","--restart","--closed-initial","--closed-restart"}){
+                const bool closed=QString::fromLatin1(phase).startsWith("--closed");
+                if((selection=="--presets" && closed) || (selection=="--closed-layout" && !closed))continue;
                 execute_workspace_phase(path,phase);
             }
             return 0;

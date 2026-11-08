@@ -42,12 +42,26 @@ void receive(void* user,const nd::Message& message) {
         if(!channel && !element){if(c.frames>1)c.changed|=value!=c.previous;c.previous=value;}
     }
 }
+void describe_preparation(const es::Profile& profile,Status prepared) {
+    auto device=es::device_profile(profile);domain::NumericProcessingGraph graph,evaluated,executable;
+    const auto composed=es::default_processing_graph(profile,"sdk-helper",graph);
+    std::printf("SDK preparation N=%u result=%u compose=%u\n",profile.fft_size,unsigned(prepared),unsigned(composed));
+    if(composed!=Status::ok)return;
+    const auto bound=domain::resolve_numeric_parameter_bindings(graph,device.runtime.admission,evaluated,executable,-1,&device.runtime.preparation_values);
+    std::printf("SDK bindings error=%u node=%d port=%u\n",unsigned(bound.error),bound.node,unsigned(bound.port));
+    if(!bound)return;
+    std::array<std::size_t,2*bdsp_protocol::numeric_control::device_limits().nodes> workspace{};
+    domain::ProcessingGraphAdmission accepted;
+    const auto admitted=domain::admit_processing_graph(executable,device.runtime.admission,es::numeric_capabilities(device),workspace,accepted);
+    std::printf("SDK admission error=%u node=%d port=%u\n",unsigned(admitted.error),admitted.node,unsigned(admitted.port));
+}
 void run(bool spectral,std::uint32_t fft) {
     es::Profile profile;profile.spectral=spectral;profile.fft_size=fft;
     // Helper implementation oracle; the whole ordinary320KiB composition is separate.
     profile.memory_bytes=2*1024*1024;
     es::SyntheticPipeline pipeline;
     const auto prepared=pipeline.prepare(profile,"sdk-helper");
+    if(prepared!=Status::ok)describe_preparation(profile,prepared);
     CHECK(prepared==Status::ok);if(prepared!=Status::ok)return;
     CHECK(es::admit(profile,10,pipeline.memory_requirements()).status==Status::ok);
     CHECK(pipeline.output_binding().stream=="sdk-helper");

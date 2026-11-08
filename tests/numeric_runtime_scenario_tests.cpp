@@ -3,6 +3,7 @@
 #include <application/processing_control.h>
 #include <dsp_kernels/numeric_convert.h>
 #include "numeric_test_builders.h"
+#include "numeric_fourier_fixture.h"
 #include <array>
 #include <algorithm>
 #include <bit>
@@ -166,8 +167,8 @@ struct DspContracts {NumericContract pcm,win,windowed,spectrum,mono,mel,hist,cou
 DspContracts dsp_contracts(){NumericContract pcm;pcm.dtype=DType::Float32;pcm.semantic=Semantic::PCM;pcm.quantity=Quantity::Amplitude;pcm.unit=NumericUnit::NormalizedAmplitude;
  pcm.shape.rank=Rank::Vector;pcm.shape.axes={Axis::Sample,Axis::None};pcm.shape.extents={ExtentBounds{1,4096},ExtentBounds{1,1}};pcm.channel_order=channels;
  pcm.clock={"audio.test",{1,48000},48000};auto win=pcm;win.semantic=Semantic::Window;win.shape.extents[0]={512,512};auto windowed=win;windowed.semantic=Semantic::Windowed;
- auto spectrum=win;spectrum.semantic=Semantic::SpectrumMagnitude;spectrum.quantity=Quantity::SpectrumMagnitude;spectrum.unit=NumericUnit::RawAmplitude;spectrum.shape.axes[0]=Axis::Bin;spectrum.shape.extents[0]={256,256};
- spectrum.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{48000,512}};auto mono=spectrum;mono.channel_order=std::span(channels).first(1);
+ auto spectrum=win;spectrum.semantic=Semantic::Numeric;spectrum.quantity=Quantity::SpectrumPeakAmplitude;spectrum.unit=NumericUnit::RawAmplitude;spectrum.shape.axes[0]=Axis::Bin;spectrum.shape.extents[0]={256,256};
+ spectrum.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{48000,512},{48000,512}};auto mono=spectrum;mono.channel_order=std::span(channels).first(1);
  auto mel=mono;mel.semantic=Semantic::MelEnergy;mel.quantity=Quantity::MelEnergy;mel.shape.axes[0]=Axis::Band;mel.shape.extents[0]={8,8};mel.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{1,1}};
  auto hist=mel;hist.semantic=Semantic::History;hist.history_element=Semantic::MelEnergy;hist.shape.rank=Rank::Matrix;hist.shape.axes={Axis::Time,Axis::Band};hist.shape.extents={ExtentBounds{0,3},mel.shape.extents[0]};hist.coordinates={AxisCoordinates{},mel.coordinates[0]};
  NumericContract count;count.dtype=DType::UInt64;count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;count.channel_order=mono.channel_order;count.clock=pcm.clock;
@@ -179,7 +180,7 @@ ConfiguredProcessingNode dsp_transform(NodeId id,const char* kind,const NumericC
    if(std::string_view(kind)=="BarkWeighting" || std::string_view(kind)=="Mel")parameters.values={
      {"sample_rate",NumericLiteral{std::uint64_t(from.clock.sample_rate)}},
      {"bin_hz",NumericLiteral{double(from.clock.sample_rate)/512.}},
-     {"first_bin",NumericLiteral{std::uint64_t{0}}}};
+     {"first_bin",NumericLiteral{std::uint64_t{1}}}};
    n.parameters=std::move(parameters);return n;
  }
 NumericProcessingGraph dsp_graph(){
@@ -188,13 +189,19 @@ NumericProcessingGraph dsp_graph(){
  auto window=dsp_transform(2,"Window",pcm,win);std::get<TransformProcessingParameters>(window.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{512}}});g.nodes.push_back(std::move(window));
  ConfiguredProcessingNode length;length.id=20;length.kind="ArrayLength";length.parameters=TransformProcessingParameters{};length.inputs={port(0,PortDirection::Input,win)};OwnedProcessingContract size;CHECK(numeric_metadata_output_contract(win,false,size)==Status::ok);length.outputs={{0,PortDirection::Output,size}};
  auto function=dsp_transform(3,"WindowFunction",win,windowed);function.inputs={{0,PortDirection::Input,size}};std::get<TransformProcessingParameters>(function.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{512}}});OwnedProcessingContract coefficients;CHECK(array_generator_output_contract(function,std::get<NumericContract>(size.view()),coefficients)==Status::ok);function.outputs={{0,PortDirection::Output,coefficients}};g.nodes.push_back(function);auto product=dsp_transform(21,"ArrayMultiply",win,win);product.inputs.push_back({1,PortDirection::Input,coefficients});
- windowed=win;g.nodes.push_back(dsp_transform(4,"StereoFFT",windowed,spectrum));g.nodes.push_back(dsp_transform(5,"BarkWeighting",spectrum,spectrum));
+ windowed=win;
+ const auto check=[](bool okay,const char*){CHECK(okay);};
+ auto fourier=numeric_test_builders::real_fourier(22,windowed,512,profile().admission,check);
+ auto amplitude=numeric_test_builders::amplitude_phase(4,fourier,512,48000,NumericArray{},check);
+ amplitude.inputs.push_back({window_coefficients_input,PortDirection::Input,coefficients});
+ g.nodes.push_back(std::move(amplitude));g.nodes.push_back(dsp_transform(5,"BarkWeighting",spectrum,spectrum));
  g.nodes.push_back(dsp_transform(6,"SpectrumGain",spectrum,mono));g.nodes.push_back(dsp_transform(7,"SpectrumGain",mono,mono));
  auto bands=dsp_transform(8,"Mel",mono,mel);std::get<TransformProcessingParameters>(bands.parameters).values.push_back({"bands",NumericLiteral{std::uint64_t{8}}});g.nodes.push_back(std::move(bands));
  auto acc=node(9,"Spectrogram",&mel,&hist);acc.parameters=HistoryProcessingParameters{3};acc.outputs.push_back(port(1,PortDirection::Output,count));g.nodes.push_back(std::move(acc));
  g.nodes.push_back(node(10,"SpectrogramView",&hist,nullptr));g.nodes.push_back(node(11,"NetworkOutput",&count,nullptr));
  for(NodeId id=1;id<10;++id)g.edges.push_back({id,id+1,0,0});
- g.edges.push_back({9,11,1,0});std::erase_if(g.edges,[](const auto& e){return e.to==3 || e.from==3;});g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
+ g.edges.push_back({9,11,1,0});std::erase_if(g.edges,[](const auto& e){return e.to==3 || e.from==3;});g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,22},{22,4,0,0},{22,4,1,1},{3,4,0,window_coefficients_input}});
+ g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));g.nodes.push_back(std::move(fourier));return g;
 }
 struct DspCapture{std::size_t windows=0,rows=0;std::uint64_t count=0,ordinal=0;std::int64_t timestamp=0;float first=0;bool changed=false;};
 void dsp_output(void* p,const NumericPortFrameView& f){auto& c=*static_cast<DspCapture*>(p);CHECK(f.status==Status::ok);
@@ -632,7 +639,10 @@ void retarget_dsp_parameters(NumericProcessingGraph& g){
 void retarget_dsp_rate(NumericProcessingGraph& g,const NumericContract& resampled){
  for(std::size_t i=1;i<g.nodes.size();++i)for(auto* ports:{&g.nodes[i].inputs,&g.nodes[i].outputs})for(auto& port:*ports){
    auto c=std::get<NumericContract>(port.contract.view());c.clock=resampled.clock;
-   if(c.coordinates[0].mode==CoordinateMode::Regular && c.coordinates[0].unit==NumericUnit::Hertz)c.coordinates[0].step={16000,512};
+   if(c.coordinates[0].mode==CoordinateMode::Regular && c.coordinates[0].unit==NumericUnit::Hertz){
+    c.coordinates[0].step={16000,512};
+    if(c.coordinates[0].origin.numerator)c.coordinates[0].origin=c.coordinates[0].step;
+   }
    if(g.nodes[i].id==2 && port.direction==PortDirection::Input)c=resampled;
    port.contract=own(c);
  }

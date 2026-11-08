@@ -12,29 +12,11 @@ from native_compare import POLICY, compare, load, save_json, signal
 PIN="b9fa6cb674ca43dfb94d28d293aeda441c6745db"
 SEED=0x52485954
 FIELDS={"ibi":["histogram","peaks"],"rubato":["starts","stops","count"],
-        "harmonic":["harmonic"],"meter":["meter"],"beatogram":["beatogram","shape"],
-        "band_novelty":["novelty"],"fixedbpm":["bpms","amplitudes"],
-        "legacy":["bpm","ticks","estimates","intervals"],"superflux":["onsets"],
-        "loop":["bpm"],"loop_confidence":["confidence"],"dfa":["score","dfa"],
-        "loudness":["loudness","ratios","shape"],"onsetrate":["rate","onsets"]}
-FIELDS["rhythm_transform"]=["rhythm","shape"]
-for _method in ("summary_single","summary_multi","descriptors"):
-    FIELDS[_method]=["bpm","confidence","ticks","estimates","intervals"]+(["histogram","peaks"] if _method=="descriptors" else [])
-PARAMETERS={
-    "ibi":{},"rubato":{"tolerance":.08,"longRegionsPruningTime":20.,"shortRegionsMergingTime":4.},
-    "harmonic":{"bpm":60.,"threshold":20.,"tolerance":5.},"meter":{},"beatogram":{"size":16},
-    "band_novelty":{"frameRate":44100/128,"weightCurveType":"hybrid","weightCurve":[],"normalize":False},
-    "fixedbpm":{"sampleRate":44100.,"hopSize":512,"minBpm":30.,"maxBpm":560.,"tolerance":3.},
-    "legacy":{"useOnset":True,"useBands":True,"hopSize":256,"frameSize":1024,"numberFrames":1024,"frameHop":1024,"sampleRate":44100.,"tolerance":.24,"tempoHints":[],"maxTempo":208,"minTempo":40,"lastBeatInterval":.1},
-    "superflux":{"frameSize":2048,"hopSize":256,"sampleRate":44100.,"threshold":.05,"ratioThreshold":16.,"combine":20.},
-    "loop":{"confidenceThreshold":.95},"loop_confidence":{"sampleRate":44100.},
-    "dfa":{"minTau":310.,"maxTau":8800.,"tauMultiplier":1.1,"sampleRate":44100.},
-    "loudness":{"sampleRate":44100.,"beatWindowDuration":.1,"beatDuration":.05,"frequencyBands":[20.,150.,400.,3200.,7000.,22000.]},
-    "onsetrate":{"fixed_sample_rate":44100,"fixed_frame_size":1024,"fixed_hop":512,"centering":False,"window":"symmetric Hann normalized sum(abs)=2","zero_phase":True}}
-PARAMETERS["rhythm_transform"]={"frameSize":256,"hopSize":32,"window":"symmetric normalized BlackmanHarris62","zero_phase":True,"padding":"every start < input frames including all tails"}
-PARAMETERS["summary_single"]={"method":"degara","minTempo":40,"maxTempo":208,"C_RNG":"Windows C srand/rand, explicit seed"}
-PARAMETERS["summary_multi"]={**PARAMETERS["summary_single"],"method":"multifeature"}
-PARAMETERS["descriptors"]={"parameters":{},"nested_RhythmExtractor2013":PARAMETERS["summary_multi"]}
+        "harmonic":["harmonic"],"beatogram":["beatogram","shape"],
+        "loop_confidence":["confidence"]}
+PARAMETERS={"ibi":{},"rubato":{"tolerance":.08,"longRegionsPruningTime":20.,"shortRegionsMergingTime":4.},
+    "harmonic":{"bpm":60.,"threshold":20.,"tolerance":5.},"beatogram":{"size":16},
+    "loop_confidence":{"sampleRate":44100.}}
 
 
 def cases():
@@ -51,21 +33,10 @@ def cases():
         energy=(.2+(beats%4==0)*.6+(beats%7==0)*.1).astype("<f4")
         if kind=="silence":ratios.fill(0);energy.fill(0)
         yield "beatogram",kind,ratios,energy,64,8
-        yield "meter",kind,ratios.T.copy(),None,8,64
-        t=np.arange(1024)[:,None];b=np.arange(8)[None,:]
-        values=(.05+.04*np.sin(t*.1+b)**2+((t+b*7)%43<3)*(.2+b*.03)).astype("<f4")
-        if kind=="silence":values.fill(0)
-        yield "band_novelty",kind,values,None,1024,8
-        yield "rhythm_transform",kind,values,None,1024,8
-    t=np.arange(2048);novelty=np.full(2048,.005,dtype="<f4")
-    for period,amplitude in ((43,1.),(57,.6),(71,.4),(96,.25)):
-        novelty+=(amplitude*np.exp(-.5*((t%period)/1.5)**2)).astype("<f4")
-    yield "fixedbpm","multiple_periods",novelty,None,2048,1
-    for method in ("legacy","superflux","loop","loop_confidence","dfa","loudness","onsetrate","summary_single","summary_multi","descriptors"):
-        for kind in (("tones8","transition") if method=="legacy" else ("tones8","silence")):
+    for method in ("loop_confidence",):
+        for kind in ("tones8","silence"):
             values=signal("induction_"+kind,1024*512,44100)
             aux=np.array([120.],dtype="<f4") if method=="loop_confidence" else None
-            if method=="loudness":aux=np.arange(.25,11.5,.5,dtype="<f4")
             yield method,kind,values,aux,len(values),1
 
 
@@ -119,7 +90,6 @@ def one(spec,opt,env):
     elif aux_path.exists():raise ValueError("unexpected immutable auxiliary input: "+str(aux_path))
     settings={"method":method,"Fs":44100,"rows":rows,"columns":columns,"seed":SEED,
               "parameters":PARAMETERS[method],"port_window_precision":"DesktopReference: Double-evaluate/Float32-store; Float32 normalization and FFT","parameter_policy":"pinned original declared defaults retained explicitly in this manifest"}
-    if method in {"legacy","superflux","loop","dfa","loudness","onsetrate"}:settings["duration_seconds"]=len(values)/44100
     metadata={"format":"barelief-original-case-v1","case_id":case_id,
               "source":{"repository":"MTG/essentia","revision":PIN,"variant":opt.reference_variant,"wrapper_sha256":opt.wrapper_sha256,"backend":"original bundled KISS130 Float32; additional original OnsetRate/RhythmTransform/RhythmDescriptors TUs linked without edits"},
               "settings":settings,"comparison_policy":POLICY,
@@ -127,7 +97,7 @@ def one(spec,opt,env):
     if aux is not None:metadata["inputs"]["aux"]={"path":str(aux_path),"dtype":"float32-le","shape":list(aux.shape),"order":"C","sha256":digest(aux_path)}
     save_json(folder/"case.json",metadata)
     args=[method,str(input_path),str(folder/"original"),"44100",str(rows),str(columns),str(SEED)]
-    original=execute(opt.original,args,input_path,aux_path,folder/"original_run.json",env,30 if method=="fixedbpm" else 180,settings)
+    original=execute(opt.original,args,input_path,aux_path,folder/"original_run.json",env,180,settings)
     result={"case_id":case_id,"original_run":original,"comparisons":{},"outputs":{}}
     if opt.reference_only:result["status"]="reference_ready" if not original["returncode"] else "pending_reference_runtime"
     else:

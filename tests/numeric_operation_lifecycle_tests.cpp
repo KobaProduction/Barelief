@@ -1,7 +1,6 @@
 #include "numeric_operation_lifecycle_fixture.h"
 #include <dsp_kernels/recursive_filter.h>
 #include <rhythm_reference_ports/contrast_peak_picker.h>
-#include <rhythm_reference_ports/onset_magnitude.h>
 #include <rhythm_reference_ports/polar_novelty.h>
 
 namespace {
@@ -26,30 +25,6 @@ void explicit_eof_and_reset() {
     require(run.capture.calls==calls+1 && !run.capture.last.available && run.capture.last.discontinuity,"reset marker invalidates runtime output");
     require(reference.consume(short_chunk),"consume source after explicit reset");run.push(1,std::span<const float>(short_chunk));
     run.capture.matches(reference.onsets());
-}
-void warm_controls_and_disabled_state() {
-    Operation operation(spectral_node("OnsetMagnitude",4,true));rhythm_reference_ports::PreparedOnsetMagnitude reference;
-    const rhythm_reference_ports::OnsetMagnitudeConfig config{{.01f,.5f,.01f},true,0};
-    require(reference.prepare(4,config),"prepare magnitude state oracle");
-    std::array<float,4> first{1,2,3,4},second{2,1,5,1},disabled{100,200,300,400},last{.5f,1,2,3};
-    std::uint8_t whitening=1;float compression=0;
-    auto inputs=std::array{operation.input(0,std::span<const float>(first)),operation.input(1,std::span<const std::uint8_t>(&whitening,1)),operation.input(2,std::span<const float>(&compression,1))};
-    auto expected=first;require(reference.process(expected),"first magnitude source step");
-    require(operation.processor->process(inputs,operation.outputs(),{})==Status::ok,"initial explicit controls");operation.matches(0,expected);
-    compression=2;inputs[0]=operation.input(0,std::span<const float>(second));
-    require(reference.set_compression(compression),"warm source compression");expected=second;require(reference.process(expected),"second magnitude source step");
-    require(operation.processor->process(inputs,operation.outputs(),{})==Status::ok,"warm explicit compression");operation.matches(0,expected);
-    whitening=0;compression=9;inputs[0]=operation.input(0,std::span<const float>(disabled));
-    require(operation.processor->process(inputs,operation.outputs(),{NumericOperationEvent::Continue,false,false})==Status::ok,"disabled operation accepts explicit zero projection");
-    const std::array<float,4> zeros{};operation.matches(0,zeros);operation.matches(1,zeros);
-    inputs[0]=operation.input(0,std::span<const float>(last));inputs[1].status=inputs[2].status=Status::unavailable;
-    expected=last;require(reference.process(expected),"source skips disabled frame and controls");
-    require(operation.processor->process(inputs,operation.outputs(),{})==Status::ok,"missing held controls retain prior settings");operation.matches(0,expected);operation.matches(1,reference.whitening_peaks());
-    compression=-1;inputs[1].status=inputs[2].status=Status::ok;
-    require(operation.processor->process(inputs,operation.outputs(),{})==Status::invalid_argument,"invalid control rejects before partial warm mutation");
-    require(operation.output_storage[0].status==Status::unavailable && operation.output_storage[1].status==Status::unavailable,"invalid call exposes no stale output");
-    inputs[1].status=inputs[2].status=Status::unavailable;expected=last;require(reference.process(expected),"source advances once after rejected controls");
-    require(operation.processor->process(inputs,operation.outputs(),{})==Status::ok,"rejected control preserves state and prior settings");operation.matches(0,expected);operation.matches(1,reference.whitening_peaks());
 }
 void apply_copies_latest_compatible_state() {
     Running run(spectral_node("SpectralRmsFlux"));rhythm_reference_ports::PreparedSpectralRmsFlux reference;
@@ -85,11 +60,11 @@ void clone_owns_independent_filter_state() {
     cloned->reset();clone_reference.reset();require(clone_reference.process(right,expected),"reset source clone");
     require(cloned->process(std::span(&input,1),operation.outputs(),{})==Status::ok,"reset operation clone");operation.matches(0,expected);
     auto invalid=recursive_node();invalid.inputs[0].contract=contract(DType::UInt8,4);auto p=profile();
-    require(!p.operation_factory->assess(resolved(invalid),p).supported,"recursive filter rejects incompatible primitive contract");
+    require(!p.operation_factory->assess(numeric_operation_node_view(resolved(invalid)),numeric_operation_profile(p)).supported,"recursive filter rejects incompatible primitive contract");
 }
 }
 int main() {
-    explicit_eof_and_reset();warm_controls_and_disabled_state();
+    explicit_eof_and_reset();
     apply_copies_latest_compatible_state();clone_owns_independent_filter_state();
-    std::puts("numeric operation lifecycle: 4 scenarios PASS");
+    std::puts("numeric operation lifecycle: 3 scenarios PASS");
 }

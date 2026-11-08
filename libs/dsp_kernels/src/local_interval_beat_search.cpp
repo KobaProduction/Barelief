@@ -14,12 +14,15 @@ bool PreparedLocalIntervalBeatSearch::prepare(std::size_t frames,std::size_t ahe
     std::size_t bound=0;if(!storage_bytes(frames,ahead,low,high,side,bound))return false;
     if(!frames || !ahead || !low || low>high || frames>std::size_t(PTRDIFF_MAX)/8 || ahead>std::size_t(PTRDIFF_MAX)/8 || high>2*ahead)return false;
     PreparedLocalIntervalBeatSearch next;
-    TemporalWindowConfig config;config.length=2*ahead;config.hop=1;config.center=true;config.function=WindowFunction::Rectangular;
-    if(!next.window_.prepare(config) || !next.search_.prepare(2*ahead,high,side))return false;
-    next.maximum_frames_=frames;next.look_ahead_=ahead;next.minimum_interval_=low;next.maximum_interval_=high;
-    next.context_.resize(2*ahead);next.positions_.resize(frames+1);next.intervals_.resize(frames+1);
+    if(!next.configure(frames,ahead,low,high,side))return false;
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
+}
+bool PreparedLocalIntervalBeatSearch::configure(std::size_t frames,std::size_t ahead,std::size_t low,std::size_t high,float side) {
+    TemporalWindowConfig config;config.length=2*ahead;config.hop=1;config.center=true;config.function=WindowFunction::Rectangular;
+    if(!window_.prepare(config) || !search_.prepare(2*ahead,high,side))return false;
+    maximum_frames_=frames;look_ahead_=ahead;minimum_interval_=low;maximum_interval_=high;
+    context_.resize(2*ahead);positions_.resize(frames+1);intervals_.resize(frames+1);return true;
 }
 bool PreparedLocalIntervalBeatSearch::nearest(std::size_t prediction,std::size_t& result) const noexcept {
     const auto threshold=count_?positions_[count_-1]+minimum_interval_:0;
@@ -37,7 +40,10 @@ bool PreparedLocalIntervalBeatSearch::next(std::span<const float> input,std::siz
     if(!window_.read(input,prediction,context_))return false;
     std::size_t interval=0;
     if(!estimator.estimate(estimator.context,context_,interval) || interval<minimum_interval_ || interval>maximum_interval_)return false;
-    if(!search_.process(context_,interval))return false;
+    return advance(prediction,interval,next_prediction);
+}
+bool PreparedLocalIntervalBeatSearch::advance(std::size_t prediction,std::size_t interval,std::size_t& next_prediction) noexcept {
+    if(interval<minimum_interval_ || interval>maximum_interval_ || !search_.process(context_,interval))return false;
     std::size_t beat=0;if(!nearest(prediction,beat))return false;
     if(count_>=positions_.size())return false;
     positions_[count_]=beat;intervals_[count_]=interval;++count_;next_prediction=beat+interval;return true;
@@ -50,6 +56,17 @@ bool PreparedLocalIntervalBeatSearch::process(std::span<const float> input,Inter
     while(prediction<input.size())if(!next(input,prediction,estimator,prediction)){count_=0;return false;}
     return true;
 }
+bool PreparedLocalIntervalBeatSearch::process(std::span<const float> input,std::span<const std::size_t> intervals) noexcept {
+    count_=0;
+    if(!maximum_frames_ || input.size()>maximum_frames_ || intervals.size()!=input.size() ||
+       !std::all_of(input.begin(),input.end(),[](float x){return std::isfinite(x) && x>=0;}))return false;
+    std::size_t prediction=0;
+    while(prediction<input.size()){
+        if(!window_.read(input,prediction,context_) || !advance(prediction,intervals[prediction],prediction)){count_=0;return false;}
+    }
+    return true;
+}
+
 }
 
 

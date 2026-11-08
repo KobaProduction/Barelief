@@ -56,7 +56,7 @@ NumericDocumentResult stage_numeric_draft(const NumericProjectDocument&, const d
 NumericDocumentResult stage_numeric_nodes(const NumericProjectDocument&,std::span<const domain::ConfiguredProcessingNode>,NumericProjectDocument&);
 struct NumericDraftPresentation {
     QJsonObject positions; // Decimal node-ID keys -> {x,y}; known UI projection only.
-    QJsonObject node_presentations; // Decimal node-ID keys -> registered presentation deltas: inline_parameters, display_name, scalar_inputs (full port-ID map).
+    QJsonObject node_presentations; // Node-ID keys -> registered UI deltas; display_name overrides the translatable display_name_key.
     QJsonObject node_adapters; // Decimal node-ID keys -> FULL registered adapter snapshot; {} clears known fields.
     QJsonObject editor_view; // version1, scale, center_x, center_y.
     QJsonObject application_settings; // Explicit settings deltas; ui.pipeline_presets reconciles stable IDs against raw source.

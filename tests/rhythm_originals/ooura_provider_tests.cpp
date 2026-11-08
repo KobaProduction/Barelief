@@ -1,8 +1,6 @@
 #include <ooura_backend.h>
 #include "ooura_source_fft_golden.h"
 #include <dsp_kernels/dsp.h>
-#include <rhythm_reference_ports/pcm_onset_sequence.h>
-#include <rhythm_reference_ports/pcm_context_tempo.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -84,32 +82,6 @@ void genuine_source_bits() {
     Owner operation;require(operation.prepare({64,Transform::RealForward},factory()) && operation.process(input,output),"genuine source FFT row");
     for(std::size_t i=0;i<output.size();++i)require(std::bit_cast<std::uint32_t>(output[i])==ooura_source_fft::expected[i],"actual genuine Ooura FFT bits");
 }
-void hop_default_and_source() {
-    namespace r=rhythm_reference_ports;r::PreparedHopSpectrum baseline,explicit_default,source;
-    const r::HopSpectrumConfig config{64,32};std::size_t bytes=0;
-    std::array<float,32> input{};input[0]=1;
-    std::array<float,33> a{},b{},p{},q{};
-    require(baseline.prepare(config) && explicit_default.prepare(config,{},nullptr),"default hop preparations");
-    require(baseline.process_hop(input,a,p) && explicit_default.process_hop(input,b,q) && a==b && p==q,"nullptr default arithmetic unchanged");
-    require(decltype(source)::storage_bytes(config,{},bytes,&factory()) && source.prepare(config,{},&factory()) && source.workspace_bytes()<=bytes,"source hop resource forwarding");
-    allocations=0;watching=true;const bool ok=source.process_hop(input,b,q);watching=false;
-    require(ok && !allocations,"prepared source HopSpectrum no hot allocation");
-    auto copy=source;source.restart();copy.restart();
-    require(source.process_hop(input,a,p) && copy.process_hop(input,b,q) && a==b && p==q,"source hop restart/clone equivalence");
-}
-void onset_and_tempo_forwarding() {
-    namespace r=rhythm_reference_ports;r::PreparedPcmOnsetSequence onset;r::PreparedPcmContextTempo tempo;
-    r::PcmOnsetSequenceConfig oc;oc.spectrum={64,32};r::PcmContextTempoConfig tc;tc.spectrum=oc.spectrum;
-    std::size_t bytes=0;std::array<float,32> input{};input[0]=.75f;r::PcmOnsetObservation o,cloned;r::PcmContextTempoObservation t;
-    require(decltype(onset)::storage_bytes(oc,bytes,&factory()) && onset.prepare(oc,&factory()) && onset.workspace_bytes()<=bytes,"onset cold provider forwarding/bound");
-    require(decltype(tempo)::storage_bytes(tc,bytes,&factory()) && tempo.prepare(tc,&factory()) && tempo.workspace_bytes()<=bytes,"tempo cold provider forwarding/bound");
-    allocations=0;watching=true;const bool ok=onset.process_hop(input,o) && tempo.process_hop(input,t);watching=false;
-    require(ok && !allocations,"nested source onset/tempo no hot allocation");
-    auto copy=onset;input[0]=-.25f;
-    require(onset.process_hop(input,o) && copy.process_hop(input,cloned) && o.descriptor==cloned.descriptor &&
-        o.peak.thresholded==cloned.peak.thresholded && o.onset.peak_position==cloned.onset.peak_position &&
-        onset.last_onset_sample()==copy.last_onset_sample(),"nested clone preserves independent prepared history");
-}
 void tracking_self_check();
 }
 extern "C" void* __real_malloc(std::size_t);
@@ -129,6 +101,6 @@ void tracking_self_check() {
 }
 }
 int main() {
-    tracking_self_check();admission_and_atomic();plans_and_clones();clone_factory_lifetime();genuine_source_bits();hop_default_and_source();onset_and_tempo_forwarding();
-    std::puts("Ooura prepared source provider: real/atomic/cold/nohotheap/clone/default/forwarding PASS");
+    tracking_self_check();admission_and_atomic();plans_and_clones();clone_factory_lifetime();genuine_source_bits();
+    std::puts("Ooura prepared source provider: real/atomic/cold/nohotheap/clone PASS");
 }

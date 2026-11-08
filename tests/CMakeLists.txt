@@ -203,7 +203,7 @@ if(BUILD_GUI)
         ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1")
     if(BARELIEF_RHYTHM_REFERENCE_GUI)
         add_desktop_check(rhythm_reference_gui_tests desktop_gui_composition)
-        target_link_libraries(rhythm_reference_gui_tests PRIVATE Qt6::Test)
+        target_link_libraries(rhythm_reference_gui_tests PRIVATE Qt6::Test rhythm_graph_adapters)
         set_tests_properties(rhythm_reference_gui_tests PROPERTIES
             LABELS "numeric;ui;integration;reference" TIMEOUT 180 RUN_SERIAL TRUE
             ENVIRONMENT "QT_QPA_PLATFORM=${BARELIEF_TEST_QPA_PLATFORM};QT_QPA_PLATFORM_PLUGIN_PATH=${qt_test_platform_path};QT_FORCE_STDERR_LOGGING=1;QT_QUICK_BACKEND=software")

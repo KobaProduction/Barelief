@@ -1,6 +1,7 @@
 #pragma once
 #include <signal_contracts/data_frame.h>
 #include <signal_contracts/numeric_policy.h>
+#include <dsp_kernels/kernel_limits.h>
 #include <array>
 #include <limits>
 
@@ -14,12 +15,9 @@ struct NumericResult {
     std::size_t error_plane=std::numeric_limits<std::size_t>::max(), error_element=std::numeric_limits<std::size_t>::max();
     std::uint32_t loss_flags=0;
 };
-struct KernelLimits { std::size_t max_elements, max_planes, max_input_bytes, max_output_bytes, max_scratch_bytes; };
-struct KernelRequirements { std::size_t scratch_bytes=0, scratch_alignment=1, plan_bytes=0, stack_bytes=0; };
 // Conservative reference stack reservation. Compiler/target integration must
 // verify its call chain (including libc and contract adapters); not an ESP ABI measurement.
 inline constexpr std::size_t numeric_reference_stack_bytes=8192;
-struct KernelCapabilities { bool converter, reduction, float64_arithmetic; };
 enum class KernelKind { Converter, Reduction, WindowCoefficients, FFT, Bark, Mel, StereoProcessor };
 struct KernelSupport { KernelKind kernel; signal_contracts::DType dtype; signal_contracts::ValueDomain input_values;
     std::size_t maximum_fft_samples; bool optimized; };

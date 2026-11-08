@@ -1,5 +1,9 @@
 # Optional AGPL composition. Main application and SDK do not link/install it.
 add_library(rhythm_graph_adapters STATIC
+    src/metadata_policy.cpp
+    src/metadata_feature_policy.cpp
+    src/metadata_batch_policy.cpp
+    src/metadata_pcm_policy.cpp
     src/adapter_operation.cpp
     src/btrack_composition.cpp
     src/btrack_operation_plan.cpp
@@ -33,7 +37,6 @@ add_library(rhythm_graph_adapters STATIC
     src/contrast_operation_process.cpp
     src/descriptor_composition.cpp
     src/descriptor_operation_assessment.cpp
-    src/descriptor_operation_bands.cpp
     src/descriptor_operation_inputs.cpp
     src/descriptor_operation_plan.cpp
     src/descriptor_operation_prepare.cpp
@@ -77,15 +80,7 @@ add_library(rhythm_graph_adapters STATIC
     src/pcm_stage_process.cpp
     src/pcm_stage_recipe_outputs.cpp
     src/pcm_stage_settings.cpp
-    src/pcm_stage_spectrum_outputs.cpp
     src/period_tracking_operations.cpp
-    src/predictive_composition.cpp
-    src/predictive_operation_contracts.cpp
-    src/predictive_operation_outputs.cpp
-    src/predictive_operation_plan.cpp
-    src/predictive_operation_prepare.cpp
-    src/predictive_operation_controls.cpp
-    src/predictive_operation_process.cpp
     src/profile.cpp
     src/pulse_batch_operations.cpp
     src/sequence_source_assessment.cpp

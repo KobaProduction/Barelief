@@ -59,10 +59,11 @@ NumericProcessingGraph graph(std::string id="saved") {
         {numeric_test_builders::edge(1,0,2,0)});
 }
 void check_fft_graph(const NumericProcessingGraph& g,std::uint32_t fft) {
-    CHECK(g.nodes.size()==9);
-    if(g.nodes.size()!=9)return;
+    CHECK(g.nodes.size()==10);
+    if(g.nodes.size()!=10)return;
     CHECK(g.nodes[2].kind=="ArrayMultiply" && g.nodes[2].inputs.size()==2);
     CHECK(g.nodes[7].kind=="ArrayLength" && g.nodes[8].kind=="WindowFunction");
+    CHECK(g.nodes[3].kind=="AmplitudePhase" && g.nodes[9].kind=="RealFourier");
     const auto scalar=std::get<NumericContract>(g.nodes[8].inputs[0].contract.view());
     CHECK(scalar.dtype==DType::UInt32 && scalar.shape.rank==Rank::Scalar);
     const auto values=std::get<NumericContract>(g.nodes[8].outputs[0].contract.view());
@@ -303,7 +304,8 @@ NumericProcessingGraph spectral_wire_graph(const es::Profile& profile) {
     auto sink=spectral.nodes[6];sink.id=5;sink.inputs[0].contract=owned;
     spectral.nodes.erase(spectral.nodes.begin()+4,spectral.nodes.begin()+7);
     spectral.nodes.push_back(std::move(converter));spectral.nodes.push_back(std::move(sink));
-    spectral.edges={{0,1,0,0},{1,2,0,0},{2,3,0,0},{3,4,0,0},{4,5,0,0},{1,7,0,0},{7,8,0,0},{8,2,0,1}};
+    spectral.edges={{0,1,0,0},{1,2,0,0},{2,9,0,0},{9,3,0,0},{9,3,1,1},{3,4,0,0},{4,5,0,0},
+        {1,7,0,0},{7,8,0,0},{8,2,0,1},{8,3,0,domain::window_coefficients_input}};
     return spectral;
 }
 void spectral_bandwidth(es::Profile& profile) {

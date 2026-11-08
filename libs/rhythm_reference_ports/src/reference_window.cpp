@@ -49,20 +49,6 @@ bool analysis_window(std::span<float> output,AnalysisWindowShape shape) noexcept
     if(shape==AnalysisWindowShape::PeriodicHann)return source_hanningz(output);
     return shape<=AnalysisWindowShape::BlackmanHarris?cosine_analysis_window(output,shape):taper_analysis_window(output,shape);
 }
-bool predictive_window(std::span<float> output,PredictiveWindowShape shape) noexcept {
-    if(output.size()<2 || output.size()>std::size_t(INT32_MAX) || unsigned(shape)>unsigned(PredictiveWindowShape::ShiftedTaper))return false;
-    if(shape==PredictiveWindowShape::ShiftedTaper)return shifted_cosine_taper(output);
-    constexpr std::array<std::array<float,3>,4> weights{{
-        {1,0,0},{.5f,-.5f,0},{.54f,-.46f,0},{.42f,-.5f,.08f}}};
-    return dsp_kernels::cosine_sum_window(output,weights[unsigned(shape)],float(output.size()-1));
-}
-bool shifted_cosine_taper(std::span<float> output) noexcept {
-    if(output.size()<2 || output.size()>std::size_t(PTRDIFF_MAX))return false;
-    const float n=float(output.size()-1),plateau=.25f*n;
-    for(std::size_t i=0;i<output.size();++i){
-        const float position=float(std::ptrdiff_t(i)-std::ptrdiff_t(output.size()/2)+1);
-        output[i]=std::abs(position)<=plateau?1.f:.5f*(1.f+std::cos(std::numbers::pi_v<float>*(4.f*position/n-1.f)));
-    }
-    return true;
-}
+
+
 }

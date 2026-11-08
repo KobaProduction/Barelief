@@ -11,7 +11,7 @@ namespace rhythm_graph_adapters::detail {
 enum class IntervalOperationKind {Histogram,Harmonics,Sections,Fluctuation};
 class IntervalOperation final:public AdapterOperation {
 public:
-    bool prepare(const domain::ConfiguredProcessingNode&);
+    bool prepare(const dataflow_runtime::NumericOperationNode&);
     std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override;
     signal_contracts::Status copy_state_from(const dataflow_runtime::PreparedNumericOperation&) noexcept override;
     // These kernels compute independent complete batches, with no analytical
@@ -22,18 +22,20 @@ public:
     std::size_t workspace_bytes() const noexcept override;
     std::size_t object_bytes() const noexcept override {return sizeof(*this);}
 private:
-    bool prepare_harmonics(const domain::ConfiguredProcessingNode&);
-    bool prepare_sections(const domain::ConfiguredProcessingNode&);
-    bool prepare_fluctuation(const domain::ConfiguredProcessingNode&);
-    bool output_geometry(const domain::ConfiguredProcessingNode&) const noexcept;
+    signal_contracts::Status process_enabled(std::span<const dataflow_runtime::NumericOperationInput>,
+        std::span<dataflow_runtime::NumericOperationOutput>,dataflow_runtime::NumericOperationControl) noexcept;
+    bool prepare_harmonics(const dataflow_runtime::NumericOperationNode&);
+    bool prepare_sections(const dataflow_runtime::NumericOperationNode&);
+    bool prepare_fluctuation(const dataflow_runtime::NumericOperationNode&);
+    bool output_geometry(const dataflow_runtime::NumericOperationNode&) const noexcept;
     bool calculate(std::span<const float>) noexcept;
     signal_contracts::Status validate_call(std::span<const dataflow_runtime::NumericOperationInput>,
         std::span<dataflow_runtime::NumericOperationOutput>,const dataflow_runtime::NumericOperationInput*&) const noexcept;
-    signal_contracts::Status publish(std::span<dataflow_runtime::NumericOperationOutput>,const signal_contracts::FrameStamp&) noexcept;
-    signal_contracts::Status publish_histogram(std::span<dataflow_runtime::NumericOperationOutput>,const signal_contracts::FrameStamp&) noexcept;
-    signal_contracts::Status publish_fluctuation(std::span<dataflow_runtime::NumericOperationOutput>,const signal_contracts::FrameStamp&) noexcept;
+    signal_contracts::Status publish(std::span<dataflow_runtime::NumericOperationOutput>,const dataflow_runtime::NumericOperationOrigin&) noexcept;
+    signal_contracts::Status publish_histogram(std::span<dataflow_runtime::NumericOperationOutput>,const dataflow_runtime::NumericOperationOrigin&) noexcept;
+    signal_contracts::Status publish_fluctuation(std::span<dataflow_runtime::NumericOperationOutput>,const dataflow_runtime::NumericOperationOrigin&) noexcept;
     std::array<std::size_t,2> disabled_shape(domain::PortId) const noexcept;
-    signal_contracts::Status publish_disabled(std::span<dataflow_runtime::NumericOperationOutput>,const signal_contracts::FrameStamp&) noexcept;
+    signal_contracts::Status publish_disabled(std::span<dataflow_runtime::NumericOperationOutput>,const dataflow_runtime::NumericOperationOrigin&) noexcept;
     IntervalOperationKind kind_=IntervalOperationKind::Histogram;
     std::size_t maximum_=0;
     rhythm_reference_ports::BeatIntervalHistogram histogram_;

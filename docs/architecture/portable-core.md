@@ -166,8 +166,22 @@ Prepare строит расписание, проверяет фактическ
 несколько потребителей. Источник с несколькими аппаратными каналами публикует
 отдельные mono-выходы; переключатели выбирают маршрут, Mixer явно смешивает
 независимые mono-входы. Для разных Fs используется отдельный `PcmResampler`.
-Стабильный kind ID `StereoFFT` сохранён в формате, но текущая операция FFT
-принимает один поток; название не задаёт обязательную пару каналов.
+Вещественное преобразование выполняет `RealFourier`; отдельный `AmplitudePhase`
+получает Re/Im, явные N/Fs и коэффициенты окна. Настольные и embedded-схемы
+используют эту цепочку и положительные частоты с `first_bin=1` в Bark/Mel.
+
+`PcmOnsetEnvelope` удалён из реестра узлов и DSP graph adapter. Его прежний
+числовой слот 114 не переиспользуется. Загрузка такого узла из документа и
+создание через node factory отклоняются; скрытие имени в каталоге редактора
+не является запретом исполнения. Эталон Librosa собирает окно, Fourier,
+извлечение мощности, Mel, dB и силу атак отдельными узлами.
+Неиспользуемые Librosa PCM/envelope/PLP recipes удалены вместе с адаптерами,
+экспортёрами и соответствующими наборами проверок. Числовые ID удалённых узлов
+не переиспользуются. Составные анализаторы собираются явными графами из общих
+операций; скрытые FFT, окна и преобразования внутри ритмического узла запрещены.
+Недостающая повторно используемая математика добавляется в общий модуль, а не
+в библиотечный frontend. Роли портов описываются семантическими именами и
+типизированными селекторами; отображаемые RU/EN имена не определяют маршрутизацию.
 
 Тип допуска соединения определяется dtype, формой и физическим контрактом.
 Подписи PCM, Spectrum и Mel описывают смысл, но сами не разрешают вычисление.
@@ -263,6 +277,10 @@ Fs задаёт сетку отсчётов. `execution_interval` задаёт �
 Дополнение нулями, если нужно, выполняется до преобразования. `AmplitudePhase`
 получает отдельные Re/Im и коэффициенты окна следующим этапом.
 `MatrixCenter` использует Float32 scaled-mean accumulation и Float32 midpoint.
+При подготовке графа значения настройки 0, 1 и 2 переводятся в
+`MatrixCenterMethod`. Подготовленный узел выбирает реализацию один раз на
+строку. Цикл по отсчётам использует специализированный расчёт среднего
+или середины диапазона.
 `MatrixRow` выделяет выбранную строку в vector.
 Одна ветка показывает всю карту, другая — спектр выбранной полосы. Тишина,
 нулевые кадры и переходные временные метки не прерывают вычисление FFT.
@@ -280,18 +298,17 @@ Fs задаёт сетку отсчётов. `execution_interval` задаёт �
 
 `Fourier` принимает отдельные вещественную и мнимую плоскости, а `RealFourier`
 имеет только вещественный вход. Комплексный путь сохраняет полный незеркальный
-спектр: Re[N] и Im[N], с DC внутри обоих массивов. Real-путь выдаёт отдельный
-DC, Re[N/2] для k=1…N/2 и Im[N/2−1] для k=1…N/2−1: мнимые DC/Nyquist
-тождественно нулевые и не занимают порты/элементы. На матрицах сохраняется ось
-строк, а DC становится вектором по строкам. FFT не имеет параметра/входа Fs,
-строит ось индексов бинов и сохраняет время доставки. Radix2 принимает 2^m;
+спектр Re[N] и Im[N]. Real-путь публикует Re[N/2+1] и Im[N/2+1] от DC
+до Найквиста включительно. Матрицы сохраняют ось строк. FFT строит ось
+индексов бинов и сохраняет время доставки. Radix2 принимает 2^m;
 комплексный radix4 — 4^m, real radix4 использует также смешанный backend.
 Минимальный N равен 4 у C2C и 8 у Real FFT; верхний предел задаётся профилем.
 `AmplitudePhase` вычисляет модуль/фазу через общие `complex_values` и
 `PreparedSpectrumScaling`; доступны Hypot/SquaredNorm/ScaledRatioFma, Zero/Atan2 и явная
-обработка реальной оси. Выход амплитуды повторяет Re, выход фазы — Im:
-для компактного Real FFT фаза не содержит Nyquist. N, first_bin и sidedness
-заданы явно; Fs нужен PSD и явной разметке, не модулю или фазе.
+обработка реальной оси. Входы Re/Im имеют полную одинаковую геометрию.
+Амплитуда и фаза исключают DC и включают Найквист для вещественного спектра.
+Выход DC содержит Re[0] или Re[0]/sum(w) и выдаёт одно значение на строку
+матрицы. N и sidedness заданы явно. Fs нужен для PSD и частотной разметки.
 `magnitude_norm=scaled_ratio_fma` явно выбирает существующий общий Float32
 scaled-ratio/FMA kernel с порядком операций NumPy complex64 absolute.
 Whole-CRF включает этот режим по сравнению одинаковых Re/Im с оригиналом;
@@ -302,8 +319,23 @@ Whole-CRF включает этот режим по сравнению один�
 правильный RNE результат без зависимости от реализации `fmaf` платформы.
 Это локальная операция ScaledRatioFma; общий FMA и режим округления не меняются.
 `WindowFunction` генерирует w[n] по числовому N; `precision=0` сохраняет Float32,
-а явный `precision=1` готовит Float64. Double Hann использует общую
-центрированную cosine-series формулу. Применение окна
+а явный `precision=1` готовит Float64. По умолчанию `evaluation=0` сохраняет
+прежнюю арифметику, включая центрированную cosine-series формулу Double Hann.
+Явный `evaluation=1` вычисляет окно непосредственно по нормированной позиции
+`i / (N - 1)` (либо `i / N` при `periodic=true`), с заданным Double `pi`.
+Для Hann порядок операций — `.5 * (1 - cos(2 * pi * position))`;
+Float32 округляет полученный Double коэффициент один раз. `pi` по умолчанию
+равен `std::numbers::pi`, должен быть конечным и лежать в `(0, DBL_MAX/2]`;
+он участвует только в прямом вычислении. Неизвестный режим или неверный `pi`
+отвергаются при выводе контракта и до записи коэффициентов. Коэффициенты обоих
+типов готовятся до обработки; processing path только публикует массив.
+Явный `evaluation=2` выбирает симметрический косинусный ряд. Float32 вычисляет
+коэффициенты и косинус в Float32 с отражением позиции, Float64 использует
+центрированную Double-формулу. Hann/Hamming/Blackman/Blackman–Harris/FlatTop
+задаются общими коэффициентами ряда; Bartlett и Rectangular сохраняют свою
+форму. В частности, source Hamming для smoothing выбирается этим режимом,
+а не изменением Default. `pi` используется только режимом Direct.
+Применение окна
 выполняется общим `ArrayMultiply`. Выход генератора один: массив коэффициентов.
 Он же подключается к `AmplitudePhase` одним входом подготовки 65523. Domain
 оценивает объявленный конечный массив до запуска; ядро считает C=sum(w) и
@@ -363,7 +395,7 @@ Legacy `magnitude` у `NoteSalience` допускается с ним тольк
 
 Внутренний адаптер эталонных offline fixtures `SpectrumProjection` принимает
 `[bin][Re,Im]` с явными N/Fs/first_bin/sidedness; он переиспользует то же ядро
-масштабирования. `StereoFFT`, `RFFT`, `MatrixFFT`, `MatrixWindowFunction`,
+масштабирования. `RFFT`, `MatrixFFT`, `MatrixWindowFunction`,
 `ComplexPolar`, `SpectrumAmplitude`, `SpectrumProjection`, `WindowGain` исключены
 из обоих каталогов редактора. Их старые fixture-адаптеры не создают альтернативного
 пути в новой схеме: используются `WindowFunction`, `ArrayMultiply`, `Fourier`/
@@ -376,11 +408,13 @@ Raw выбранная норма и `magnitude_exponent` отделены от 
 `Converter` сохраняет проход; преобразование в другой тип сохраняет выбранные
 выходные dtype, представление и политику масштабирования.
 
-Переносимые `TemporalFrame`, `SpectralAutocorrelation`, `FourierTempogram`,
-`AutocorrelationTempogram`, `TempogramSequence` являются отдельными операциями
-того же executor. Их параметры и формы выводит neutral domain-контракт;
-выходы включают исходные/нормированные кривые, комплексные компоненты,
-окна и отдельные BPM-значения. Fs/N/hop/window задаются явно.
+Составные temporal-узлы с внутренними окнами и преобразованиями удалены.
+Librosa собирает явную цепочку коэффициентов окна, умножения, `DirectCorrelation`
+и `VectorNormalize`. Два входа корреляции подключены к одному оконному снимку,
+число задержек поступает отдельной связью от `ArrayLength`, а `TempoEstimate`
+получает нормированный профиль и отдельные Fs/hop. Отсутствие FFT здесь —
+свойство выбранного общего алгоритма прямой корреляции; другой тракт должен
+подключать Fourier, мощность и inverse Fourier отдельными узлами.
 
 Опциональный `NumericOperationFactory` подключается владельцем профиля через
 `shared_ptr`; переносимое ядро не зависит от конкретных source-адаптеров.
@@ -393,6 +427,28 @@ ValueDomain объявлен для каждого входа/выхода; expl
 Cold clone независим, несовместимый warm state transfer приводит к reset.
 Native Float32 fast path предоставляется только как proof-backed typed span;
 перечитывание байтов как `float*` запрещено.
+
+Численная граница расширений использует `NumericBufferContract/View`: только dtype,
+rank/extents, представление памяти, число плоскостей и фактическую геометрию.
+`NumericOperationNodeView` передаёт явные настройки и ограниченные порты;
+`NumericOperationProfile` содержит лимиты и capabilities без runtime callbacks,
+preparation providers или доступа к схеме. Полные контракты преобразуются только
+на composition boundary через `numeric_operation_binding.h`; обратного преобразования
+в интерфейсе расширения нет. Fs/N/hop, коэффициенты и управляющие величины задаются
+параметрами или отдельными входами и не извлекаются из чужого кадра.
+
+Clock, quantity/unit, coordinate declarations и временные метки остаются private
+в runtime. Фабрика объявляет ограничения в `NumericOperationPolicy`, исполнитель
+проверяет их при подготовке и доставке до вызова численного обработчика.
+Выходные координаты либо записываются через ограниченный write-only writer,
+либо доставляются по явно объявленному coordinate route/правилу сетки.
+Writer привязан к конкретному выходу и текущему вызову; после вызова или удаления
+контекста он недействителен. Происхождение результата передаётся opaque `Origin`
+без getter метаданных. Его можно удерживать для buffered EOF, но публикация требует
+происхождения своего экземпляра операции; пустое и чужое отвергаются.
+Runtime атомарно проверяет все выходы, принадлежность памяти, координаты и значения
+до публикации. Вызовы обработчика не получают `NumericView`, `FrameStamp` или
+полный контракт. Это ограничение API, а не изоляция произвольного небезопасного C++.
 
 Нейтральный optional target `dsp_graph_adapters` связывает общие ядра и
 классические последовательности с этим же executor. `FilterMatrixProjection`,
@@ -439,35 +495,9 @@ payload за пределами вызова.
 FIR-профили, точная начальная фаза, модель задержки и bounded EOF drain описаны
 в [справочнике ресэмплинга](../reference/resampling.md).
 
-`PreparedEnvelopeBeatTracking` соединяет existing envelope-tempo estimator
-с общим DP `PreparedBeatTracker`; явно переданный scalar/per-frame BPM
-обходит оценку tempo/prior. Результат содержит собственную BPM-выдачу и
-выбранные dense/sparse event coordinates. Source batch-any guard общий
-для всех каналов: тихий канал рядом с активным не получает отдельный
-ранний BPM0. `PreparedPcmBeatTracking` использует median-onset default
-и подготовленный scalar batch tensor; borrowed BPM/prior views очищаются
-при выходе, а полная спектрограмма не удерживается.
-
-`PreparedEnvelopeLocalPulse` передаёт complex Fourier rows в существующий
-`PreparedLocalPulse`: source peak/prior selection, phase normalization,
-IFFT/overlap-add и положительная/max нормировка. `PreparedPcmLocalPulse`
-подключает тот же median PCM-onset frontend. Поддержаны статические prior
-векторы и отдельные prior rows для каждой Fourier-frame, включая batch
-через явные channel inputs. Эти offline pulse/beat estimates сами не
-означают подтверждённые realtime-события. Все новые storage готовятся cold.
-
-`PreparedTempoRatioSequence` использует общий estimator при отсутствии BPM,
-либо явно переданный scalar/per-frame BPM. Частоты могут быть фиксированными
-или читаться отдельным matrix port для каждого кадра; интерполятор меняет
-сетку внутри подготовленной capacity. Ratio исключает бесконечные частоты,
-сохраняет source factors/fill и сворачивает временную ось через
-`PreparedFeatureReduction`. Нативная агрегация хранит вычисленные ratio-признаки,
-не копию исходной спектрограммы/темпограммы.
-
-`PreparedMetricalTempogramSequence` сохраняет исходный порядок частот,
-вычисляет products `[factor][source-bin]` и сворачивает частотную ось внутри
-кадра. Поэтому временная и частотная агрегации — разные явные операции.
-Undefined source NaN/Inf сохраняются как числа, не превращаются в beat evidence.
+Неиспользуемые графовые композиции ratio/metrical tempogram удалены.
+Общие estimator, interpolation и feature reduction остаются самостоятельными
+переносимыми операциями; новые композиции должны связывать их явными рёбрами.
 
 Для source-рецептов явный `NumericalPrecision::DesktopReference` сохраняет
 Double-окно, оконное умножение и real FFT до исходной границы Complex64;
@@ -493,68 +523,6 @@ Desktop real FFT использует подготовленный PocketFFT с 
 общие операции размещения поддерживают нечётные и чётные размеры.
 Hybrid поддерживает linear interpolation.
 Остальные существующие режимы доступны через PortableFloat32.
-
-Source-рецепты могут явно подключать `FourierBackendFactory` на холодной
-подготовке. `PreparedFourierBackend` владеет планом; копирование вызывает
-независимый `clone`, фабрика не сохраняется. Контракт содержит real/complex
-forward/inverse: forward без нормировки, inverse с одним множителем `1/N`.
-Real-вход требует чётного N; half-spectrum содержит N+2 interleaved значений,
-для inverse мнимые компоненты DC/Nyquist равны нулю. Входы конечны, выходные
-буферы не пересекаются с входами; ошибочный вызов не публикует часть результата.
-Query отдельно учитывает owned/cold peak/shared/stack; планы и scratch готовятся
-до обработки. Нулевой выбор провайдера сохраняет существующий FFT backend.
-Опциональный `adapters/desktop/fourier` подключает pinned KISS с приватными
-символами; target не включается автоматически в приложение или SDK.
-Провайдер не меняет окно, частоту дискретизации и геометрию ради доступного FFT.
-KISS-план допускает real-преобразования положительной чётной длины и complex
-положительной длины в пределах настроенного лимита. Холодная факторизация
-определяет максимальный radix; plan-owned scratch учитывается в запросе памяти
-и заново привязывается при clone. Generic butterfly использует этот scratch,
-сохраняя исходную арифметику без горячего malloc, padding и скрытого fallback.
-Нестепенные размеры, включая real2206 с простым под-планом1103, не требуют
-изменения исходной геометрии рецепта.
-Отдельный `desktop_fourier::ooura_backend_factory()` предоставляет pinned
-aubio Float32 RDFT через ту же границу: real forward/inverse для степеней двойки,
-собственные заранее материализованные таблицы и scratch. Упаковка и нормировка
-inverse адаптированы к общему контракту; комплексные запросы отклоняются явно.
-Выбор Ooura требует явной настройки source-рецепта, default FFT не меняется.
-В SDK с отключёнными C++ exceptions профиль `DesktopReference` с PocketFFT/Double
-недоступен: его storage/
-prepare явно возвращают отказ, а прежний Float32 backend сохраняется.
-Поддержаны фиксированные/динамические частоты, native/custom reducers и
-синхронные batch ports. `PreparedEnvelopeTempoRatios` соединяет ACF с ratio,
-а `PreparedPcmTempoRatios` переиспользует общий PCM-onset envelope.
-Обе композиции принимают явные batch channel inputs: отдельные PCM/envelope,
-supplied BPM, log-prior, frequency reader и reducer. Каналы обрабатываются
-независимо; общий `FloatMatrixBatchChannel` передаёт результат синхронно,
-а scalar onset workspace используется повторно без batch history clone.
-
-`PreparedActivationPeakMatrix` принимает явную матрицу `[time][channel]`
-через общий row reader и вызывает существующий `PreparedActivationPeaks`
-по отдельным каналам. Общая `convolve_same` различает Largest crop
-(прежняя1D длина max(input,kernel)) и Input crop (2D same, длина time axis).
-Матрица, в том числе одноканальная, использует Input crop. Результат —
-собственные пары frame/channel в порядке времени, затем канала. Читатель
-должен быть стабильным для повторных поканальных проходов; сохраняются
-только row/column/mask scratch и массив выходных координат, без копии
-входной матрицы. Вычисления остаются Float32, индексы — целыми.
-
-`PreparedTempogramSequence` соединяет общие ACF/Fourier/interpolation kernels
-в отдельные temporal recipes с явной BPM-сеткой и row/batch sinks.
-ACF использует linear-ramp padding и нормировку, Fourier сохраняет комплексные
-коэффициенты с constant padding, hybrid интерполирует конечные ACF-координаты
-и обрезает две временные последовательности до общей длины.
-`PreparedEnvelopeTempo` строит исходное ACF-окно из явных Fs/hop/ac_size
-и вызывает общий tempo estimator; внешняя tempogram передаётся непосредственно
-в `PreparedTempoEstimator`, без повторного вычисления PCM.
-Опциональный `FloatMatrixReductionPort` явно задаёт внешнюю агрегацию по времени.
-
-`PreparedPcmOnsetEnvelope` переиспользует scalar PCM-onset composition
-и хранит только необходимую временным алгоритмам огибающую.
-`PreparedPcmTempogram` и `PreparedPcmTempo` подключают её к temporal recipes;
-каждый batch-канал вычисляется независимо, borrowed rows передаются синхронно.
-Численная обработка остаётся Float32, Double используется только для cold
-перевода длительности окна в точные sample/frame coordinates.
 
 Диагностический `RhythmFeatures` выдаёт Float32 полосы без квантования;
 `input_representation` явно связывает комплексный RFFT4096 либо положительные
@@ -582,66 +550,28 @@ Domain contract, cold preparation/resource query и исполнение исп�
 один явный aggregation mode. Features пишутся напрямую в подготовленный
 output frame без дополнительного scalar staging; вычисление остаётся Float32.
 
-`PreparedOnsetStrengthSequence` компонует спектральные разности, явно заданные
-группы признаков, общую агрегацию и независимый detrend после группировки.
-Ветка без агрегации сохраняет все признаки. `PreparedPcmOnsetStrength`
-использует общий `PreparedSpectralFrameRecipe`: complete STFT-кадры, Nyquist,
-центрированное короткое окно, явную степень спектра и физическую Mel-сетку.
-`PreparedPowerToDb::measure_reference` сохраняет только масштабы измеренной
-матрицы; `process_row` применяет их к заново вычисленной строке.
-Полная спектрограмма в этой композиции не копируется.
+Librosa использует явный граф: окно коэффициентов → умножение PCM →
+RealFourier → извлечение мощности → Mel → dB → OnsetStrength.
+Темпограмма для оценки темпа также разложена: окно Hann → умножение истории →
+DirectCorrelation с двумя явными входами → VectorNormalize → TempoEstimate.
+Число лагов передаётся отдельной связью ArrayLength. DirectCorrelation здесь
+использует прямое суммирование Float32; побитовая идентичность прежнему FFT
+не подразумевается. Неиспользуемые grouped-onset/detection/ratio композиции
+удалены; проверки используемого PreparedOnsetStrength сохранены.
 
-`PreparedOnsetDetectionSequence` связывает существующие picker/backtracker
-и точные координаты событий. Разреженное backtracking сохраняет повторения;
-плотный multichannel-вызов нормализует каналы отдельно. До публикации результатов
-проверяются все каналы: NaN/Inf или переполнение диапазона нормировки в одном
-канале дают нулевые маски для всего batch, как в исходном onset_detect.
-Проверка активности также общая: при активном batch нулевой канал проходит
-обычный peak picking, в том числе при delta0. Полностью нулевой batch подавляется;
-несовместимый dense+backtrack отклоняется до вызова любого channel sink.
-`PreparedPcmOnsetEvents` соединяет PCM-ветвь с этим детектором и хранит
-только скалярную onset-огибающую для offline peak picking. Заимствованные
-результаты передаются синхронно; повторный вызов использует тот же workspace.
-Эти программные композиции не регистрируют новые узлы или UI автоматически.
+В BTrack-пресете общий Double Hann, оконное произведение, Float32 Converter,
+перестановка отсчётов и KISS Fourier образуют явный frontend. `BTrackOnset`
+сохраняет Double positive-complex ODF по отдельным Re/Im. Общие AbsoluteValue,
+сложение с Double epsilon и Converter предшествуют seeded `BTrackHistory`;
+whole-window sinc выделен отдельным узлом и не скрыт в накопителе.
 
-В изолированном GPL target `rhythm_reference_ports` доступны программные
-`PreparedPcmPredictiveOnset` и `PreparedPcmPredictiveBeatTracker`: исходные
-десять BTrack ODF, перекрывающиеся PCM-кадры, окна, predictor и tempo transition.
-Энергетические методы читают сырую историю без FFT; спектральные используют
-общие FFT, явное восстановление полного спектра и `PreparedSpectralDescriptor`.
-При тёплой смене метода амплитудная, фазовая и энергетическая истории обновляются
-по правилам выбранной операции. `update_hop_and_frame` готовит новое ODF-окно
-и resampler, сохраняя tempo priors/fix/BPM и prediction timers.
-Whole-window sinc provider передаётся явно через существующий backend port;
-callback ссылается на владеющий resampler со стабильным адресом.
-В `PortableFloat32` tempo transition использует общий `PreparedSpectralAutocorrelation` с явными
-complex FFT, длиной1024, модулем комплексного IDFT и unbiased-нормировкой.
-Обычные ACF-рецепты сохраняют выбор RFFT и действительную часть по умолчанию.
-Эти API сами не подключают GPL target к приложению или SDK.
-
-У `PcmPredictiveOnsetConfig::precision` прежний `PortableFloat32` остаётся
-значением по умолчанию. Явный `DesktopReference` поддерживает десять source ODF,
-пять окон и тёплую смену метода с переданной Float32 complex FFT-фабрикой.
-Source-порядок сохраняет Double окно, произведение и историю ODF,
-преобразование во Float32 перед FFT и Double polar/ODF после FFT.
-Публичные значения остаются Float32. Истории обновляются условно по правилам
-выбранного source-метода; смена метода не означает общий сброс всех историй.
-Это не меняет обычные десять Float32 ODF.
-
-В whole-рецепте выбранная точность также передаётся в
-`ResamplingWindowConfig::precision` при подготовке, копировании и смене hop.
-Для sinc явный `DesktopReference` сохраняет Float32 таблицу коэффициентов,
-их разность, вход и выход, но вычисляет дробную интерполяцию, произведения,
-последовательные суммы левой/правой частей и масштаб в Double с одной
-финальной записью во Float32. Новых буферов для Double здесь нет;
-query учитывает фактический размер конфигурации и backend.
-
-Reference comb связывает существующие Float32 complex FFT-планы длины1024
-с исходными Double threshold, comb и tempo transition/state. После inverse
-сохраняются исходный масштаб и Float32 squared-sum/sqrt, затем Double
-деления на lag и1024. Контракт общего нормированного inverse не меняется.
-Публичный I/O остаётся Float32; обычный `PortableFloat32` и `EndpointLinear`
-сохраняют прежнюю арифметику. `EndpointLinear` не принимает reference-профиль.
+ACF также представлена рёбрами: source threshold → padding → Fourier1024 →
+Re²+Im² → normalized InverseFourier → complex magnitude → первые512 lag →
+деление на явные512…1. Отдельные source comb response, threshold128 и41 tempo
+observations не выполняют FFT и не меняют tempo state. `BTrackBeatDecision`
+сочетает prediction с переходом вероятностей только на beat_due; его tempo state
+не выделяет Fourier-план. Старые PCM predictive wrappers и их graph adapters
+удалены, без compatibility routes. Общие численные/оконные/SRC kernels сохранены.
 
 В этих source-рецептах точность коэффициентов окна задаётся явно:
 `SpectralWindowConfig::precision` и `window_precision` составных конфигураций
@@ -682,26 +612,23 @@ Scalar и per-feature detrend `PreparedOnsetStrength` используют то�
 подготовленными независимыми состояниями. Resource query включает коэффициенты,
 input/output histories, scratch и объекты фильтров.
 
-`PreparedIntervalHistogram` и `PreparedTempoHistogramSequence` принимают
-многоканальную comb-огибающую `[time][channel]` и scalar/per-delay alpha на
-холодной подготовке. Существующий `PreparedCombFilterBank` копирует alpha и
-хранит состояния каналов; histogram сохраняет все tied maxima по tau отдельно
-в каждом канале. Выход — `[channel][interval]`, доступен отдельный channel view.
-ACF/DBN остаются одноканальными. Scalar tempo analysis принимает per-delay alpha,
-а многоканальные bins не выдаёт за одну BPM-кривую.
+В Madmom общий frontend и история ODF обслуживают три выхода одного графа.
+Fixed/Local/CRF связывают SameConvolution, CombFilterBank, AxisMaximum,
+AxisSum, ArrayGather, NumericMap и OrderedPeaks явными рёбрами.
+AxisMaximum публикует все tied maxima; AxisSum задаёт обычное или накопительное
+суммирование. ArrayGather принимает одноплоскостной вектор UInt64 индексов.
+Выключенные map/reduction/comb выдают типизированные нули фактической
+геометрии входа с учётом выбранной оси, без расширения до capacity. Fixed/Local используют Float32, CRF сохраняет Double до явного
+преобразования перед декодером. Alpha остаётся Float32 согласно Cython
+аргументу исходного backward comb. BeatTrackingSequence и CrfBeatSequence
+получают готовые интервалы отдельным обязательным входом и не оценивают темп
+внутри. Удалённые TempoHistogram/TempoAnalysis не имеют compatibility route.
 
-`TempoAnalysisSequenceConfig::precision` по умолчанию сохраняет
-`PortableFloat32`. Явный `DesktopReference` поддерживает offline mono Comb без
-интерполяции: общие convolution/Hamming/comb/peak kernels удерживают Double
-сглаживание, состояния, накопление и строгие сравнения до извлечения кандидатов.
-Alpha остаётся Float32, как аргумент Cython comb-фильтра madmom, и расширяется
-в Double при вычислении. Опубликованные гистограммы и кандидаты остаются
-Float32; не представимый результат отклоняется. CRF сохраняет Double-кандидаты
-до деления и усечения пробных интервалов, отдельно сглаживает активацию с
-исходным усечением длины окна, затем передаёт Float32 существующему decoder.
-Расширение factors в этом режиме не поддерживается. Неподдерживаемые сочетания
-отвергаются при подготовке без fallback. Буферы готовятся заранее и входят
-в проверяемый ресурсный запрос; clone/reset сохраняют выбранную политику.
+В Essentia интерполяция, FIR и перенос его состояния, проекция полос,
+log/normalization, ACF, гребёнка и квантильная маска выражены общими узлами.
+PeriodPath выполняет только поиск пути периодов; RenewalBeatDecoder получает
+кривую новизны, периоды и границы участков отдельными входами. Пять кандидатов
+используются одним combined-графом; Degara и MultiFeature имеют разные выходы.
 
 На MinGW x86 этот профиль требует доступных CPU и ОС AVX/FMA: холодная
 подготовка отклоняется до выделения памяти, если их нет. Локальная аппаратная
@@ -711,12 +638,6 @@ conforming toolchains используют `std::fma`. Double-свёртка с 
 результата. Reference-арифметика предполагает IEEE binary64, nearest/even и
 gradual underflow, не изменяя FENV. Общие флаги сборки и доступность остальных
 reference FFT/ACF не меняются.
-
-`PreparedBandNovelty` инвалидирует опубликованные band rows перед каждым вызовом.
-`PreparedFixedTempoCandidates` аналогично скрывает candidates/ACF/smoothed views
-и сбрасывает диагностику при отказе; failed-вызов имеет явный статус Failed.
-Успешные NoPeaks/NoTatum/ThresholdExhausted сохраняют свои текущие диагностики.
-Это валидность выдачи, а не безусловный сброс continuity других online блоков.
 
 Переносимое ядро содержит порты внешнего resampler backend и загрузчика
 частотных профилей. Desktop composition подключает SpeexDSP и JSON loader;

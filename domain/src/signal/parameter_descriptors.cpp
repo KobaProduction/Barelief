@@ -1,5 +1,6 @@
 #include "../graph/parameter_sets.h"
 #include <limits>
+#include <numbers>
 namespace domain::detail {
 namespace {
 constexpr ParameterDescriptor fs[]{{"value",C::Processing,V::Integer,8000,192000,48000,{}}};
@@ -17,8 +18,7 @@ constexpr ParameterDescriptor raw_fourier[]{
         {"radix",C::Processing,V::String,0,0,0,"radix2"},
         {"backend_id",C::Processing,V::String,0,0,0,{}}};
 constexpr ParameterDescriptor real_fourier[]{
-        {"fft_size",C::Processing,V::Integer,8,4294967295.,4096,{}},raw_fourier[1],raw_fourier[2],
-        {"include_endpoints",C::Processing,V::Boolean,0,1,0,{}}};
+        {"fft_size",C::Processing,V::Integer,8,4294967295.,4096,{}},raw_fourier[1],raw_fourier[2]};
 constexpr ParameterDescriptor comparison[]{
         {"window_samples",C::Processing,V::Integer,1,65536,512,{}},
         {"silence_threshold",C::Processing,V::Number,0,1,1e-12,{}}};
@@ -47,7 +47,9 @@ constexpr ParameterDescriptor frames[]{
         {"hop_samples",C::Processing,V::Integer,1,4294967295.,512,{}}};
 constexpr ParameterDescriptor stride[]{{"every_n",C::Processing,V::Integer,1,4294967295.,1,{}},
     {"materialize",C::Processing,V::Boolean,0,1,0,{}}};
-constexpr ParameterDescriptor function[]{{"function",C::Processing,V::WindowFunction,0,0,0,"hann"},{"size",C::Processing,V::Integer,1,4294967295.,4096,{}},{"periodic",C::Processing,V::Boolean,0,1,0,{}},{"precision",C::Processing,V::Integer,0,1,0,{}}};
+constexpr ParameterDescriptor function[]{{"function",C::Processing,V::WindowFunction,0,0,0,"hann"},{"size",C::Processing,V::Integer,1,4294967295.,4096,{}},{"periodic",C::Processing,V::Boolean,0,1,0,{}},{"precision",C::Processing,V::Integer,0,1,0,{}},
+    {"evaluation",C::Processing,V::Integer,0,double(signal_contracts::WindowEvaluation::SymmetricCosineSeries),0,{}},
+    {"pi",C::Processing,V::Number,std::numeric_limits<double>::denorm_min(),std::numeric_limits<double>::max()/2,std::numbers::pi,{}}};
 constexpr ParameterDescriptor signal[]{
         {"tones",C::Processing,V::Integer,5,10,8,{}},{"sample_rate",C::Processing,V::Integer,8000,192000,48000,{}},
         {"minimum_hz",C::Processing,V::Number,10,96000,73,{}},{"maximum_hz",C::Processing,V::Number,10,96000,13901,{}},
@@ -59,7 +61,6 @@ constexpr ParameterDescriptor amplitude[]{
         {"coherent_gain",C::Processing,V::Number,1e-15,1e15,1,{}}};
 constexpr ParameterDescriptor amplitude_phase[]{
         {"fft_size",C::Processing,V::Integer,1,4294967295.0,4096,{}},
-        {"first_bin",C::Processing,V::Integer,0,4294967295.,1,{}},
         {"magnitude_norm",C::Processing,V::String,0,0,0,"hypot"},
         {"zero_phase",C::Processing,V::String,0,0,0,"zero"},
         {"real_endpoints",C::Processing,V::Boolean,0,1,0,{}},

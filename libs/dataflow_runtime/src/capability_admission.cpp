@@ -1,6 +1,7 @@
 #include "preparation_support.h"
 #include "music_execution.h"
 #include <domain/music/contracts.h>
+#include <domain/signal/contracts.h>
 #include "signal_time.h"
 #include <wled_protocol/wled_packet.h>
 #include <cmath>
@@ -49,6 +50,14 @@ class ResourceAdmission {
         return numeric_mul(std::max(std::size_t{1},n.inputs.size()),sizeof(ContentContribution),inputs) &&
             numeric_add(output,inputs) && numeric_mul(n.outputs.size(),output,bytes) && numeric_add(out.resources.plan_bytes,bytes);
     }
+    bool extraction_storage() noexcept {
+        if(n.operation!=ProcessingOperation::Extract)return true;
+        ExtractionMode mode;if(!extraction_mode(n,mode))return false;
+        if(mode==ExtractionMode::Element)return true;
+        ProcessingParameterView field;if(resolve_processing_parameter(n,"indices",field)!=Status::ok)return false;
+        const auto* indices=std::get_if<std::span<const float>>(&field);std::size_t bytes=0;
+        return indices && numeric_mul(indices->size(),sizeof(float),bytes) && numeric_add(out.resources.plan_bytes,bytes);
+    }
     bool endpoints() noexcept {
         out.resources.plan_bytes=sizeof(PlanNode)+sizeof(State)+2*sizeof(std::size_t);
         if(!content_storage())return false;
@@ -56,7 +65,7 @@ class ResourceAdmission {
         const auto kind=node_kind(n.kind);
         const bool scalar=(kind && is_scalar_view(*kind)) || multi_switch;
         if((scalar || n.operation==ProcessingOperation::Mixer || n.operation==ProcessingOperation::ChannelComparison || n.operation==ProcessingOperation::Extract) && !numeric_add(out.resources.plan_bytes,sizeof(PlanNode::EndpointPlan)))return false;
-        return !scalar || numeric_add(out.resources.plan_bytes,n.inputs.size()*sizeof(PlanNode::ScalarInput));
+        return extraction_storage() && (!scalar || numeric_add(out.resources.plan_bytes,n.inputs.size()*sizeof(PlanNode::ScalarInput)));
     }
     bool music() noexcept {
         if(n.operation==ProcessingOperation::NumericExtension){
@@ -373,15 +382,6 @@ bool numeric_parameter(const ResolvedProcessingNode& n,std::string_view key,doub
     // Registered DSP sizes/gain are bounded small fields, never payload integers.
     out=std::visit([](auto x){return static_cast<double>(x);},*literal);return std::isfinite(out);
 }
-bool frequency_axis(const AxisCoordinates& axis,std::uint32_t rate,std::size_t samples,bool nonzero=false) noexcept {
-    if(axis.mode==CoordinateMode::ExplicitFloat64LE)return axis.unit==NumericUnit::Hertz;
-    if(axis.mode!=CoordinateMode::Regular || axis.unit!=NumericUnit::Hertz || (axis.origin.numerator && (!nonzero || !axis.origin.denominator || double(axis.origin.numerator)/axis.origin.denominator!=double(axis.step.numerator)/axis.step.denominator)) ||
-       axis.step.numerator<=0 || !axis.step.denominator || !samples)return false;
-    auto numerator=std::uint64_t(axis.step.numerator),denominator=axis.step.denominator;
-    const auto divisor=std::gcd(numerator,denominator);numerator/=divisor;denominator/=divisor;
-    const auto expected=std::gcd(std::uint64_t(rate),std::uint64_t(samples));
-    return numerator==std::uint64_t(rate)/expected && denominator==std::uint64_t(samples)/expected;
-}
 namespace {
 class FloatingAdmission {
     const ResolvedProcessingNode& n;
@@ -391,7 +391,9 @@ class FloatingAdmission {
     bool window_coefficients() noexcept {
         std::size_t bytes=0;
         if(input.dtype!=DType::UInt32 || input.shape.rank!=Rank::Scalar)return false;
+        window_generation::WindowFunctionParameters parameters;if(!window_function_parameters(n,parameters))return false;
         if(output.dtype==DType::Float64)return numeric_add(resources.scratch_bytes,result*sizeof(double));
+        if(output.dtype==DType::Float32 && parameters.evaluation!=WindowEvaluation::Default)return numeric_add(resources.scratch_bytes,result*sizeof(float));
         return input.dtype==DType::UInt32 && input.shape.rank==Rank::Scalar && output.dtype==DType::Float32 && dsp_kernels::PreparedWindows::storage_bytes(result,bytes) && numeric_add(resources.plan_bytes,sizeof(dsp_kernels::PreparedWindows)) && numeric_add(resources.payload_bytes,bytes);
     }
     bool representation() const noexcept {
@@ -431,14 +433,6 @@ class FloatingAdmission {
         return columns==result && planes && dsp_kernels::PreparedWindows::storage_bytes(columns,bank_bytes) &&
             numeric_add(resources.plan_bytes,sizeof(dsp_kernels::PreparedWindows)) && numeric_add(resources.payload_bytes,bank_bytes);
     }
-    bool StereoFFT() noexcept {
-
-        if(!planes || columns!=result*2 || columns<512 || columns>dsp_kernels::max_fft_samples || (columns&(columns-1)))return false;
-        if(output.coordinates[0].mode!=CoordinateMode::None && !frequency_axis(output.coordinates[0],input.clock.sample_rate,columns))return false;
-        auto memory=dsp_kernels::estimate_memory(columns,0);if(!memory)return false;
-        if(!numeric_add(resources.scratch_bytes,memory->fft_scratch_bytes+memory->shared_radix2_tables_bytes))return false;
-        return true;
-    }
     bool BarkWeighting() noexcept {
         if(!input.clock.sample_rate || columns!=result || !planes)return false;
         if(input.coordinates[0].mode!=CoordinateMode::None &&
@@ -460,7 +454,6 @@ class FloatingAdmission {
         switch(kind){
         case NodeKind::PcmResampler:return PcmResampler();
         case NodeKind::WindowFunction:return WindowFunction();
-        case NodeKind::StereoFFT:return StereoFFT();
         default:return false;
         }
     }

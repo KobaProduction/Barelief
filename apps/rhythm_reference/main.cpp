@@ -95,22 +95,28 @@ int run_project(QCoreApplication& app,const QCommandLineParser& parser) {
     return run(app,parser,example);
 }
 }
+namespace {
+int run_builtin(QCoreApplication& app,const QCommandLineParser& parser) {
+    const auto presets=numeric_library_reference_presets();
+    if(parser.isSet("export"))return export_reference_graphs(parser.value("export"),presets)?0:2;
+    const auto selected=parser.value("preset").toStdString();
+    const auto matches=[&](const auto& example){return selected==example.id;};
+    const auto preset=std::find_if(presets.begin(),presets.end(),matches);
+    if(preset!=presets.end())return run(app,parser,*preset);
+    const auto variants=numeric_library_reference_examples();
+    const auto variant=std::find_if(variants.begin(),variants.end(),matches);
+    return variant==variants.end()?2:run(app,parser,*variant);
+}
+}
+
 int main(int argc,char** argv) {
     qputenv("QT_FORCE_STDERR_LOGGING","1");
     QCoreApplication app(argc,argv);app.setApplicationName("rhythm_reference_runner");
     QCommandLineParser parser;options(parser);parser.process(app);
     try {
         if(parser.isSet("whole-input"))return run_whole_input(whole_input_arguments(parser));
-        if(parser.isSet("input") || parser.isSet("output") || parser.isSet("packet-samples") || parser.isSet("frontend-diagnostic"))return 2;
+        if(parser.isSet("input") || parser.isSet("output") || parser.isSet("packet-samples"))return 2;
         if(parser.isSet("project"))return run_project(app,parser);
-        const auto presets=numeric_library_reference_presets();
-        if(parser.isSet("export"))return export_reference_graphs(parser.value("export"),presets)?0:2;
-        const auto selected=parser.value("preset").toStdString();
-        const auto matches=[&](const auto& example){return selected==example.id;};
-        const auto preset=std::find_if(presets.begin(),presets.end(),matches);
-        if(preset!=presets.end())return run(app,parser,*preset);
-        const auto variants=numeric_library_reference_examples();
-        const auto variant=std::find_if(variants.begin(),variants.end(),matches);
-        return variant==variants.end()?2:run(app,parser,*variant);
+        return run_builtin(app,parser);
     }catch(const std::exception& error){qCritical()<<error.what();return 2;}
 }

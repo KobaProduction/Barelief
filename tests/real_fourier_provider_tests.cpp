@@ -38,12 +38,12 @@ ConfiguredProcessingNode source_node(bool matrix) {
     result.parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{44100}}}}};
     result.outputs={{0,PortDirection::Output,std::move(owned)}};return result;
 }
-NumericProcessingGraph graph(bool matrix,bool endpoints,std::string_view id,bool enabled=true) {
+NumericProcessingGraph graph(bool matrix,std::string_view id,bool enabled=true) {
     NumericProcessingGraph g;g.graph_id="real-forward-provider";g.nodes.push_back(source_node(matrix));
     ConfiguredProcessingNode op;check(bool(make_processing_node("RealFourier",2,profile().admission,op)),"make RealFourier");
     op.enabled=enabled;op.inputs={{0,PortDirection::Input,g.nodes[0].outputs[0].contract}};
     op.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{n}}},
-        {"backend_id",std::string(id)},{"include_endpoints",endpoints}}};
+        {"backend_id",std::string(id)}}};
     check(bool(derive_processing_node_contracts(op,profile().admission)),"derive selected geometry");
     g.nodes.push_back(std::move(op));g.edges={{1,2,0,0}};return g;
 }
@@ -71,26 +71,25 @@ public:
 };
 struct Seen {
     std::span<const float> expected;
-    bool matrix=false,endpoints=false;
+    bool matrix=false;
     std::size_t rows=1,total=0;
-    std::array<std::size_t,3> calls{};
-    std::size_t width(PortId port) const {return port==2?1:n/2+std::size_t(endpoints)-std::size_t(port==1 && !endpoints);}
+    std::array<std::size_t,2> calls{};
     void value(const NumericView& v,PortId port,std::size_t row,std::size_t column) const {
-        const auto target=port==2?ElementIndex{0,row,0}:matrix?ElementIndex{0,row,column}:ElementIndex{0,column,0};
+        const auto target=matrix?ElementIndex{0,row,column}:ElementIndex{0,column,0};
         float actual=0;check(load_element(v,target,actual)==Status::ok,"read typed output");
-        const auto index=row*(n+2)+(port==2?0:2*(column+std::size_t(!endpoints))+port);
+        const auto index=row*(n+2)+2*column+port;
         check(std::bit_cast<std::uint32_t>(actual)==std::bit_cast<std::uint32_t>(expected[index]),"raw split bits including signed endpoint zeros");
     }
     void output(const NumericPortFrameView& event) {
         if(event.identity.node!=2)return;
         if(event.status==Status::unavailable && !total)return;
         check(event.status==Status::ok && event.frame.stamp.available,"successful real FFT frame");
-        const auto port=event.identity.port;check(port<3 && !calls[port],"exactly one publication per port");
-        const auto& v=std::get<NumericView>(event.frame.payload);const auto columns=width(port);
-        const std::array<std::size_t,2> actual=matrix && port<2?std::array{rows,columns}:std::array{port==2?rows:columns,std::size_t{1}};
+        const auto port=event.identity.port;check(port<2 && !calls[port],"exactly one publication per port");
+        const auto& v=std::get<NumericView>(event.frame.payload);const auto columns=n/2+1;
+        const std::array<std::size_t,2> actual=matrix?std::array{rows,columns}:std::array{columns,std::size_t{1}};
         check(v.actual==actual,"default/full endpoints and populated matrix rows");
-        if(port<2){const auto& axis=v.contract->coordinates[matrix?1:0];
-            check(axis.mode==CoordinateMode::Regular && axis.origin==Ratio{endpoints?0:1,1} && axis.step==Ratio{1,1},"explicit bin origin and spacing");}
+        const auto& axis=v.contract->coordinates[matrix?1:0];
+        check(axis.mode==CoordinateMode::Regular && axis.origin==Ratio{0,1} && axis.step==Ratio{1,1},"explicit bin origin and spacing");
         for(std::size_t row=0;row<rows;++row)for(std::size_t column=0;column<columns;++column)value(v,port,row,column);
         ++calls[port];++total;
     }
@@ -112,11 +111,11 @@ void feed(const PreparedGraph& plan,RuntimeContext& state,const NumericContract&
     const DataFrameView frame{stamp,NumericView{&contract,std::as_bytes(input),std::span(&plane,1),
         {seen.matrix?seen.rows:n,seen.matrix?n:1}}};
     check(plan.process_numeric_ports(1,0,frame,state,{}, {Seen::callback,nullptr,nullptr,&seen})==Status::ok,"real transform processing");
-    check(seen.total==3,"complete three real FFT outputs");
+    check(seen.total==2,"complete two real FFT outputs");
 }
-void run_case(bool matrix,bool endpoints,std::shared_ptr<const dsp_kernels::FourierBackendFactory> factory,bool enabled=true) {
+void run_case(bool matrix,std::shared_ptr<const dsp_kernels::FourierBackendFactory> factory,bool enabled=true) {
     const auto id=factory?factory->id():"";const bool fake=std::string_view(id)=="test-real-endpoint-bits";
-    const auto g=graph(matrix,endpoints,id,enabled);auto p=profile();p.fourier_backend=factory;
+    const auto g=graph(matrix,id,enabled);auto p=profile();p.fourier_backend=factory;
     std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
     check(PreparedGraph::prepare_numeric(g,p,plan,state)==Status::ok,"prepare real provider graph");
     const auto clones_before=backend_clones;RuntimeContext cloned(*state);
@@ -128,14 +127,14 @@ void run_case(bool matrix,bool endpoints,std::shared_ptr<const dsp_kernels::Four
     const bool named=bool(factory);factory.reset();p.fourier_backend.reset();
     check(!named || !lifetime.expired(),"prepared graph pins selected factory lifetime");
     const auto contract=std::get<NumericContract>(g.nodes[0].outputs[0].contract.view());
-    Seen first{expected,matrix,endpoints,rows},second{expected,matrix,endpoints,rows};
+    Seen first{expected,matrix,rows},second{expected,matrix,rows};
     const auto before=allocations,calls_before=backend_calls;
     feed(*plan,*state,contract,input,first);feed(*plan,cloned,contract,input,second);
     check(allocations==before,"provider/builtin/split/context paths have no hot C++ allocations");
     check(!fake || backend_calls-calls_before==(enabled?2*rows:0),"real provider called exactly once per enabled row");
 }
 void missing_and_mismatch() {
-    const auto g=graph(false,true,"kiss_fft130_float32");auto p=profile();
+    const auto g=graph(false,"kiss_fft130_float32");auto p=profile();
     std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
     check(PreparedGraph::prepare_numeric(g,p,plan,state)!=Status::ok && !plan && !state,"missing named real provider atomically rejected");
     p.fourier_backend={&desktop_fourier::ooura_backend_factory(),[](const auto*){}};
@@ -147,11 +146,11 @@ void operator delete(void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}
 int main() {
     missing_and_mismatch();
-    for(const bool matrix:{false,true})for(const bool endpoints:{false,true}){
-        run_case(matrix,endpoints,{});
-        run_case(matrix,endpoints,{&desktop_fourier::kiss_backend_factory(),[](const auto*){}});
-        run_case(matrix,endpoints,std::make_shared<EndpointFactory>());
+    for(const bool matrix:{false,true}){
+        run_case(matrix,{});
+        run_case(matrix,{&desktop_fourier::kiss_backend_factory(),[](const auto*){}});
+        run_case(matrix,std::make_shared<EndpointFactory>());
     }
-    run_case(true,true,std::make_shared<EndpointFactory>(),false);
+    run_case(true,std::make_shared<EndpointFactory>(),false);
     std::puts("RealFourier provider/default/endpoints/clone/noalloc PASS");
 }

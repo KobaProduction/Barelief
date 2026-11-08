@@ -4,8 +4,8 @@
 
 namespace rhythm_graph_adapters {
 // Independent complete-batch stages, never a second executor or PCM frontend.
-// EssentiaOnsetRows: magnitude0/phase1 [frame,1025], method1/4/5
-// (complex/MelFlux/RMS); curve0, Float64 sample times1, intermediate rows2
+// EssentiaOnsetRows: magnitude0/phase1 [frame,1025], method1/5 (complex/RMS);
+// method4 consumes explicit log-power rows [frame,40]. Curve0, sample times1, intermediate rows2
 // when applicable. Explicit frame_rate=44100/1024 (not transport metadata).
 // EssentiaInformationRows: magnitude0 [frame,1025] -> curve0, Float64 times1;
 // bins2..232, explicit frame_rate=44100/512. Times are output ODF-grid seconds;

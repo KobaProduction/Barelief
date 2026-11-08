@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include <rhythm_graph_adapters/composition.h>
+#include "composition_support.h"
 #include "spectral_operation_plan.h"
 #include "operation_io.h"
 #include "parameter_values.h"
@@ -19,14 +20,10 @@ std::size_t frame_outputs(const detail::SpectralOperationPlan& plan,std::array<F
 }
 Status append_frame_output(domain::ConfiguredProcessingNode& node,domain::PortId id,FrameOutputGeometry shape,
     const ClockContract& clock,const FrameLimits& limits,std::size_t metadata) {
-    const std::array<std::uint32_t,1> channels{0};NumericContract contract;
-    contract.dtype=DType::Float32;contract.channel_order=channels;contract.unit=NumericUnit::Values;
-    contract.semantic=Semantic::Numeric;contract.shape.rank=shape.rank;contract.shape.extents[0]={shape.rows,shape.rows};
+    auto contract=detail::composition_contract(DType::Float32,Semantic::Numeric);contract.shape.rank=shape.rank;contract.shape.extents[0]={shape.rows,shape.rows};
     if(shape.rank==Rank::Vector)contract.shape.axes[0]=Axis::Declared;
-    if(!detail::index_output_contract(contract))return Status::incompatible_contract;
-    contract.clock=clock;domain::OwnedProcessingContract owned;
-    const auto status=domain::own_processing_contract(contract,limits,metadata,owned);if(status!=Status::ok)return status;
-    node.outputs.push_back({id,domain::PortDirection::Output,std::move(owned)});return Status::ok;
+    if(!detail::composition_index_output(contract))return Status::incompatible_contract;
+    contract.clock=clock;return detail::composition_append_output(node,id,contract,limits,metadata);
 }
 Status build_frame_outputs(domain::ConfiguredProcessingNode& node,const detail::SpectralOperationPlan& plan,
     const ClockContract& clock,const FrameLimits& limits,std::size_t metadata) {
@@ -41,10 +38,10 @@ signal_contracts::Status make_spectral_operation_node(domain::NodeId id,std::str
     std::span<const domain::ProcessingPort> inputs,domain::TransformProcessingParameters parameters,
     const signal_contracts::FrameLimits& limits,std::size_t metadata,domain::ConfiguredProcessingNode& output) {
     if(!detail::spectral_operation_kind(kind))return Status::unavailable;
-    domain::ConfiguredProcessingNode candidate;candidate.id=id;candidate.kind=kind;candidate.parameters=std::move(parameters);
+    auto candidate=detail::composition_node(id,kind,std::move(parameters));
     candidate.inputs.assign(inputs.begin(),inputs.end());detail::SpectralOperationPlan plan;
-    const auto view=detail::definition_view(candidate);NumericContract magnitude;
-    if(!detail::plan_spectral_operation(view,plan) || !detail::spectral_port(view,true,0,magnitude))return Status::invalid_argument;
+    const auto view=detail::composition_view(candidate);NumericContract magnitude;
+    if(!detail::plan_spectral_operation(view,plan) || !detail::composition_numeric_port(candidate,true,0,magnitude))return Status::invalid_argument;
     const auto status=build_frame_outputs(candidate,plan,magnitude.clock,limits,metadata);if(status!=Status::ok)return status;
     output=std::move(candidate);return Status::ok;
 }

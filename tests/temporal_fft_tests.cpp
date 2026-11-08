@@ -62,28 +62,49 @@ struct Observation {
     std::array<float,bands*257> matrix{},imaginary{};std::array<float,257> row{};std::array<double,257> hz{};
     std::size_t bins=0,available=0,unavailable=0;bool last_available=false,row_available=false;
     Status last_status=Status::ok,row_status=Status::ok;bool typed_unavailable=false;
-    static void output(void* user,const NumericPortFrameView& frame){auto& o=*static_cast<Observation*>(user);
-        if(frame.identity.node==3 && frame.identity.port==1 && frame.frame.stamp.available){
-            const auto& value=std::get<NumericView>(frame.frame.payload);
-            for(std::size_t band=0;band<value.actual[0];++band)for(std::size_t bin=0;bin<value.actual[1];++bin)
-                require(load_element(value,{0,band,bin},o.imaginary[band*257+bin])==Status::ok,"read raw imaginary modulation bin");
+    void observe_imaginary(const NumericView& value) {
+        for(std::size_t band=0;band<value.actual[0];++band)for(std::size_t bin=0;bin<value.actual[1];++bin)
+            require(load_element(value,{0,band,bin},imaginary[band*257+bin])==Status::ok,"read raw imaginary modulation bin");
+    }
+    void observe_row(const NumericPortFrameView& frame) {
+        row_available=frame.frame.stamp.available;row_status=frame.status;if(!row_available)return;
+        const auto& value=std::get<NumericView>(frame.frame.payload);
+        for(std::size_t i=0;i<value.actual[0];++i)require(load_element(value,{0,i,0},row[i])==Status::ok,"read selected row");
+    }
+    void observe_explicit_frequency(const NumericView& value) {
+        require(value.coordinates.axes[1].size()==bins*8,"explicit Hz payload");
+        for(std::size_t i=0;i<bins;++i){
+            std::uint64_t bits=0;
+            for(std::size_t b=0;b<8;++b)bits|=std::uint64_t(std::to_integer<unsigned char>(value.coordinates.axes[1][i*8+b]))<<(8*b);
+            std::memcpy(&hz[i],&bits,8);
         }
+    }
+    void observe_frequency(const NumericView& value) {
+        const auto& axis=value.contract->coordinates[1];
+        if(axis.mode==CoordinateMode::Regular)for(std::size_t i=0;i<bins;++i)
+            hz[i]=double(axis.origin.numerator)/double(axis.origin.denominator)+double(i)*double(axis.step.numerator)/double(axis.step.denominator);
+        if(axis.mode==CoordinateMode::ExplicitFloat64LE)observe_explicit_frequency(value);
+    }
+    void observe_matrix(const NumericPortFrameView& frame) {
+        last_available=frame.frame.stamp.available;last_status=frame.status;
+        if(!last_available){++unavailable;
+            const auto* value=std::get_if<NumericView>(&frame.frame.payload);
+            typed_unavailable=value && value->contract && value->contract->shape.rank==Rank::Matrix && value->storage.empty();return;
+        }
+        ++available;const auto& value=std::get<NumericView>(frame.frame.payload);bins=value.actual[1];
+        require(value.actual[0]==bands && !value.ring.capacity && value.contract->semantic!=Semantic::History,"ordinary [band][bin] matrix");
+        require(bins<=257,"bounded test observation including Nyquist");
+        for(std::size_t band=0;band<bands;++band)for(std::size_t bin=0;bin<bins;++bin)
+            require(load_element(value,{0,band,bin},matrix[band*257+bin])==Status::ok && std::isfinite(matrix[band*257+bin]),"read finite modulation bin");
+        observe_frequency(value);
+    }
+    static void output(void* user,const NumericPortFrameView& frame) {
+        auto& o=*static_cast<Observation*>(user);
+        if(frame.identity.node==3 && frame.identity.port==1 && frame.frame.stamp.available)o.observe_imaginary(std::get<NumericView>(frame.frame.payload));
         if(frame.identity.port!=0)return;
         if(frame.identity.node!=3 && frame.identity.node!=4)return;
-        if(frame.identity.node==4){o.row_available=frame.frame.stamp.available;o.row_status=frame.status;if(!o.row_available)return;
-            const auto& value=std::get<NumericView>(frame.frame.payload);for(std::size_t i=0;i<value.actual[0];++i)require(load_element(value,{0,i,0},o.row[i])==Status::ok,"read selected row");return;}
-        o.last_available=frame.frame.stamp.available;o.last_status=frame.status;if(!o.last_available){++o.unavailable;
-            const auto* value=std::get_if<NumericView>(&frame.frame.payload);o.typed_unavailable=value && value->contract && value->contract->shape.rank==Rank::Matrix && value->storage.empty();return;}++o.available;
-        const auto& value=std::get<NumericView>(frame.frame.payload);o.bins=value.actual[1];
-        require(value.actual[0]==bands && !value.ring.capacity && value.contract->semantic!=Semantic::History,"ordinary [band][bin] matrix");
-        require(o.bins<=257,"bounded test observation including Nyquist");
-        for(std::size_t band=0;band<bands;++band)for(std::size_t bin=0;bin<o.bins;++bin)
-            require(load_element(value,{0,band,bin},o.matrix[band*257+bin])==Status::ok && std::isfinite(o.matrix[band*257+bin]),"read finite modulation bin");
-        const auto& axis=value.contract->coordinates[1];
-        if(axis.mode==CoordinateMode::Regular)for(std::size_t i=0;i<o.bins;++i)
-            o.hz[i]=double(axis.origin.numerator)/double(axis.origin.denominator)+double(i)*double(axis.step.numerator)/double(axis.step.denominator);
-        if(value.contract->coordinates[1].mode==CoordinateMode::ExplicitFloat64LE){require(value.coordinates.axes[1].size()==o.bins*8,"explicit Hz payload");
-            for(std::size_t i=0;i<o.bins;++i){std::uint64_t bits=0;for(std::size_t b=0;b<8;++b)bits|=std::uint64_t(std::to_integer<unsigned char>(value.coordinates.axes[1][i*8+b]))<<(8*b);std::memcpy(&o.hz[i],&bits,8);}}
+        if(frame.identity.node==4){o.observe_row(frame);return;}
+        o.observe_matrix(frame);
     }
     NumericRuntimeCallbacks callbacks(){return {output,nullptr,nullptr,this};}
 };
@@ -164,9 +185,14 @@ void prepared_window_tests(){
         }
         const auto direct=bank.coefficients(function);require(direct.size()==maximum,"all full windows are preloaded");
     }
-    const std::array<std::array<double,5>,3> oracle{{{{0,.5,1,.5,0}},{{.00006,.21747,1,.21747,.00006}},{{-.000421051,-.05473684,1.000000003,-.05473684,-.000421051}}}};
-    for(unsigned index=0;index<3;++index){const auto function=dsp_kernels::WindowFunction(index+4);double cg=0,pg=0;
-        for(unsigned i=0;i<5;++i){near(dsp_kernels::window_coefficient(i,5,function),oracle[index][i],"new window coefficient agrees with independent five-point oracle",2e-7);cg+=oracle[index][i];pg+=oracle[index][i]*oracle[index][i];}
+    using dsp_kernels::WindowFunction;
+    struct WindowOracle {WindowFunction function;std::array<double,5> coefficients;};
+    constexpr WindowOracle oracle[]{
+        {WindowFunction::Bartlett,{0,.5,1,.5,0}},
+        {WindowFunction::BlackmanHarris,{.00006,.21747,1,.21747,.00006}},
+        {WindowFunction::FlatTop,{-.000421051,-.05473684,1.000000003,-.05473684,-.000421051}}};
+    for(const auto& [function,coefficients]:oracle){double cg=0,pg=0;
+        for(unsigned i=0;i<coefficients.size();++i){near(dsp_kernels::window_coefficient(i,5,function),coefficients[i],"new window coefficient agrees with independent five-point oracle",2e-7);cg+=coefficients[i];pg+=coefficients[i]*coefficients[i];}
         near(dsp_kernels::window_coherent_gain(5,function),cg/5,"new coherent gain uses exact applied window",1e-7);
         near(dsp_kernels::window_power_gain(5,function),pg/5,"new power gain uses exact applied window",1e-7);
     }

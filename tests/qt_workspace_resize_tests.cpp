@@ -69,6 +69,31 @@ static GuiState fixture() {
     return state;
 }
 
+static void selection_widget_geometry(const char* role,const QWidget* widget) {
+    if(!widget){qWarning()<<"Selection geometry"<<role<<"missing";return;}
+    qWarning()<<"Selection geometry"<<role<<widget->metaObject()->className()<<widget->objectName()
+        <<"actual"<<widget->size()<<"minimum"<<widget->minimumSize()
+        <<"minimumHint"<<widget->minimumSizeHint()<<"hint"<<widget->sizeHint()<<"policy"<<widget->sizePolicy();
+}
+
+static void selection_width_diagnostics(QtNodes::NodeId id,SchemeEditorWidget& editor,
+                                        QSplitter* splitter,const QList<int>& previous) {
+    qWarning()<<"Node selection width diagnostic"<<id<<"before"<<previous<<"after"<<splitter->sizes();
+    selection_widget_geometry("editor",&editor);
+    selection_widget_geometry("splitter",splitter);
+    selection_widget_geometry("toolbar",editor.findChild<QWidget*>("dataFlowToolbar"));
+    const auto* inspector=editor.findChild<QScrollArea*>("pipelineInspector");
+    selection_widget_geometry("inspector",inspector);
+    if(!inspector)return;
+    const auto* contents=inspector->widget();
+    selection_widget_geometry("scroll contents",contents);
+    selection_widget_geometry("scroll viewport",inspector->viewport());
+    if(!contents)return;
+    for(const auto children=contents->findChildren<QWidget*>();const auto* child:children)
+        if(child->isVisibleTo(contents) && child->minimumSizeHint().width()>inspector->viewport()->width())
+            selection_widget_geometry("visible child wider than viewport",child);
+}
+
 static void inspector_selection(GuiPresenter &presenter) {
     SchemeEditorWidget editor(presenter);
     editor.resize(1100, 600); editor.show(); settle();
@@ -83,6 +108,7 @@ static void inspector_selection(GuiPresenter &presenter) {
     const auto scale = view->getScale();
     for (auto id : {QtNodes::NodeId(1), QtNodes::NodeId(10), QtNodes::NodeId(1)}) {
         scene->clearSelection(); scene->nodeGraphicsObject(id)->setSelected(true); emit scene->nodeSelected(id); settle();
+        if(splitter->sizes()!=widths)selection_width_diagnostics(id,editor,splitter,widths);
         require(splitter->sizes() == widths, "Node selection changed workspace widths");
         require(QLineF(center, view->mapToScene(view->viewport()->rect().center())).length() < 2 / scale,
                 "Node selection moved editor camera");

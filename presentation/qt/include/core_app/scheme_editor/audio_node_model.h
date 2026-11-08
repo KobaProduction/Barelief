@@ -18,6 +18,7 @@ public:
     explicit AudioNodeModel(QString kind);
     QString name() const override { return _kind; }
     QString caption() const override;
+    static QString default_caption(const QString& kind);
     QString operation_summary() const;
     QString stream_name(unsigned) const;
     unsigned grouped_channels(QtNodes::PortType) const;
@@ -138,6 +139,7 @@ private:
     bool remove_configured_input(domain::PortId);
     void append_stream_menu(QMenu*);
     void append_input_menu(QMenu*);
+    void append_filter_state_menu(QMenu*);
     std::vector<unsigned> stream_ids() const;
     std::vector<unsigned> selector_stream_ids() const;
     void edit_stream_name(unsigned,const QString&);
@@ -164,11 +166,15 @@ private:
     QString field_summary(const QString&,bool) const;
     QString routing_summary() const;
     QString processing_summary() const;
+    QString parameter_operation_summary() const;
     QString specialized_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     void refresh_embedded_geometry();
     bool publish_history_snapshot_preview(const pipeline::DeliveredNumericFrame&,const signal_contracts::NumericContract&,
         DiagnosticPreview,std::uint64_t,std::uint64_t);
+    QString scalar_metric_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     QString descriptive_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
+    QString named_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
+    QString source_operation_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     QString fallback_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     QString music_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;
     QString numeric_port_caption(QtNodes::PortType,QtNodes::PortIndex) const;

@@ -4,11 +4,12 @@
 #include <new>
 namespace domain {
 namespace {
-constexpr std::string_view kinds[]{"BTrackWindowProduct","BTrackOnset","BTrackHistory","BTrackHistoryResample","BTrackCombObservation","BTrackBeatDecision","EssentiaOnsetRows","EssentiaInformationRows","EssentiaNoveltyRows","EssentiaErbRows","EssentiaAgreement","EssentiaCandidateInputs","PolarNovelty","HistogramOnset","SpectralWhitening","OnsetMagnitude","SpectralRmsFlux","OnsetDescriptor","SpectralOnset","TriangularSpectralBands","AdaptivePeakPicker","OnsetDecision","PcmSilence","BufferedMaximum","CausalAverage","BufferedBandFlux","ContrastPeakPicker","ContrastPeakAccumulator","HopSpectrum","PcmOnsetSequence","PcmContextTempo","ContextBeatTracker","ContextBeatSequence","PulseTempo","PulseOnset","PulseCorrelation","PulseTrainScoring","LagTempoConsensus","BandNovelty","FixedTempoCandidates","FourierTempoCandidates","WeightedTempoHistogram","FrameTempoPath","PhaseTempoPulse","FourierTempoHistogram","NoveltyTempoHistogram","InformationGain","GlobalOnset","BandBeatEmphasis","ErbFilterBank","MovingThreshold","PeriodPath","RenewalBeatDecoder","PeriodBeatTracker","BeatAgreement","MultiFeatureBeatTracker","PcmBeat","BandTempoFeatures","CombPeriodPhase","FeaturePeriodTracker","PeriodPhaseTicks","HarmonicComb","PeriodicPhaseResponse","FrameSilencePolicy","LagObservationPool","TickSequenceRefinement","LagTempoVote","LegacyRhythm","LoopLengthFit","LoopPcmTempo","BeatSegmentEnergy","SpectralBandRatios","FrequencyBandEnergy","BeatLoudnessSequence","BeatBandSalience","CorrelationMeter","BandRhythmTransform","ActivityFluctuation","PcmPredictiveOnset","CombTempoTransition","BeatPrediction","PredictiveBeatTracker","PcmPredictiveBeatTracker","NormalizedFeatureFusion","AdaptiveOnsetSelection","OnsetEvents","OnsetRate","BeatIntervalSummary","PcmRhythmSummary","ActivationPeakSequence","SpectralDifferenceSequence","PcmSpectralDifference","TrajectoryOnset"};
+constexpr std::string_view kinds[]{"BTrackOnset","BTrackHistory","BTrackHistoryResample","BTrackCombObservation","BTrackBeatDecision","EssentiaOnsetRows","EssentiaInformationRows","EssentiaNoveltyRows","EssentiaErbRows","EssentiaAgreement","EssentiaCandidateInputs","PolarNovelty","HistogramOnset","SpectralWhitening","SpectralRmsFlux","OnsetDescriptor","SpectralOnset","AdaptivePeakPicker","OnsetDecision","PcmSilence","BufferedMaximum","CausalAverage","BufferedBandFlux","ContrastPeakPicker","ContrastPeakAccumulator","ContextBeatTracker","ContextBeatSequence","PulseTrainScoring","LagTempoConsensus","FourierTempoCandidates","WeightedTempoHistogram","FrameTempoPath","InformationGain","ErbFilterBank","PeriodPath","RenewalBeatDecoder","BeatAgreement","BandTempoFeatures","PeriodPhaseTicks","HarmonicComb","PeriodicPhaseResponse","FrameSilencePolicy","LagObservationPool","TickSequenceRefinement","LagTempoVote","LoopLengthFit","SpectralBandRatios","FrequencyBandEnergy","BeatBandSalience","NormalizedFeatureFusion","AdaptiveOnsetSelection","OnsetEvents","BeatIntervalSummary","ActivationPeakSequence","SpectralDifferenceSequence","BTrackAdaptiveThreshold","BTrackCombResponse"};
 using C=ParameterClassification;using V=ParameterValueKind;
 // Neutral primitive-value schemas. Source factories validate each operation's
 // complete ranges, combinations, optional ports and mathematical geometry.
 constexpr ParameterDescriptor fields[]{
+    {"size",C::Processing,V::Integer,1,65536,512,{}},
     {"cartesian_input",C::Processing,V::Boolean,0,1,0,{}},
     {"window_shape",C::Processing,V::String,0,0,0,"hann"},
     {"poll_tatum",C::Processing,V::Boolean,0,1,0,{}},
@@ -107,8 +108,6 @@ constexpr ParameterDescriptor fields[]{
     {"context_variance",C::Processing,V::Number,-3.4e38,3.4e38,0,{}},
     {"delay_samples",C::Processing,V::Integer,-9223372036854775808.,18446744073709551615.,0,{}},
     {"edges_hz",C::Processing,V::NumericArray,0,0,0,{}},
-    {"feedback",C::Processing,V::NumericArray,0,0,0,{}},
-    {"feedforward",C::Processing,V::NumericArray,0,0,0,{}},
     {"floor",C::Processing,V::Number,-3.4e38,3.4e38,0,{}},
     {"frame_period_s",C::Processing,V::Number,-3.4e38,3.4e38,0,{}},
     {"frame_rate",C::Processing,V::Number,-3.4e38,3.4e38,0,{}},

@@ -384,6 +384,10 @@ struct NumericRoutingAdapter::Impl {
     }
     void query_peer(const std::shared_ptr<Peer>& peer,std::uint64_t now) {
         if(running() && peer_current(*peer) && peer->query_again && !peer->query && now-peer->last_query>=50) {
+            // Capabilities and periodic State already deliver the full graph.
+            // Only History needs the explicit cold snapshot and row queries.
+            if(std::none_of(peer->endpoints.begin(),peer->endpoints.end(),
+                [&](const auto& endpoint){return history_endpoint(peer,endpoint);}))return;
             peer->query=true;
             peer->query_again=false;
             peer->last_query=now;

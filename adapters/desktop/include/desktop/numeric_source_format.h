@@ -6,10 +6,16 @@ namespace desktop {
 enum class NumericSourceFormatError {
     None, UnsupportedBounds, MissingSource, InvalidContract, ConnectedOutputUnavailable, IncompatibleRoute, AdmissionLimit
 };
+struct NumericSourceRouteFailure {
+    domain::ProcessingError error{};
+    domain::NodeId node=-1;
+    domain::PortId port=0;
+};
 struct NumericSourceFormatDiagnostic {
     NumericSourceFormatError error=NumericSourceFormatError::None;
     domain::NodeId node=-1;
     std::optional<domain::PortId> port;
+    std::optional<NumericSourceRouteFailure> route;
 };
 std::uint32_t numeric_source_output_count(const domain::ConfiguredProcessingNode&,std::uint32_t native_outputs) noexcept;
 // Device discovery declares only the native source. Domain derives dependent

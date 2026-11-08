@@ -56,11 +56,19 @@ public:
     SourceFormatFailure(QString* text,NumericSourceFormatDiagnostic* detail,NodeId id)
         :message(text),diagnostic(detail),node(id) {
         if(message)message->clear();
-        if(diagnostic)*diagnostic={NumericSourceFormatError::None,node,{}};
+        if(diagnostic)*diagnostic={NumericSourceFormatError::None,node,{},{}};
     }
     bool reject(NumericSourceFormatError reason,const char* text,std::optional<PortId> port={}) const {
         if(message)*message=QString::fromUtf8(text);
-        if(diagnostic)*diagnostic={reason,node,port};
+        if(diagnostic)*diagnostic={reason,node,port,{}};
+        return false;
+    }
+    bool reject_route(const ProcessingDiagnostic& failure) const {
+        if(message)*message=QString("Native source format requires an explicit compatible route: node %1, port %2, error %3, parameter %4")
+            .arg(failure.node).arg(failure.port).arg(unsigned(failure.error))
+            .arg(QString::fromUtf8(failure.parameter.data(),qsizetype(failure.parameter.size())));
+        if(diagnostic)*diagnostic={NumericSourceFormatError::IncompatibleRoute,node,{},
+            NumericSourceRouteFailure{failure.error,failure.node,failure.port}};
         return false;
     }
 };
@@ -92,11 +100,7 @@ class SourceFormatResolution {
     bool evaluate(NumericProcessingGraph& out) {
         NumericProcessingGraph evaluated,executable;
         const auto result=resolve_numeric_parameter_bindings(candidate,limits,evaluated,executable,id);
-        if(!result){
-            const auto detail=QString("Native source format requires an explicit compatible route: node %1, port %2, error %3, parameter %4")
-                .arg(result.node).arg(result.port).arg(unsigned(result.error)).arg(QString::fromUtf8(result.parameter.data(),qsizetype(result.parameter.size())));
-            return failure.reject(NumericSourceFormatError::IncompatibleRoute,detail.toUtf8().constData());
-        }
+        if(!result)return failure.reject_route(result);
         out=std::move(evaluated);
         return true;
     }

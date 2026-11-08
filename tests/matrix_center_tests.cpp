@@ -1,4 +1,5 @@
 #include <dataflow_runtime/runtime.h>
+#include <domain/numeric/matrix_center.h>
 #include "numeric_test_builders.h"
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <new>
 
 using namespace domain;
+using enum MatrixCenterMethod;
 using namespace signal_contracts;
 using namespace dataflow_runtime;
 namespace {
@@ -25,8 +27,8 @@ NumericContract matrix_contract(){NumericContract input;input.dtype=DType::Float
     input.shape={Rank::Matrix,{Axis::Band,Axis::Time},{ExtentBounds{0,3},ExtentBounds{0,8}}};
     input.clock={"center-test",{1,48000},48000};input.coordinates[0]={CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}};
     input.coordinates[1]={CoordinateMode::Regular,NumericUnit::Seconds,{0,1},{1,120}};return input;}
-TransformProcessingParameters parameters(unsigned method,double offset=0){return {{{"method",NumericLiteral{std::uint64_t(method)}},{"offset",NumericLiteral{offset}}}};}
-NumericProcessingGraph center_graph(const NumericContract& input,unsigned method=0,double offset=0,bool enabled=true,bool fft=false){
+TransformProcessingParameters parameters(MatrixCenterMethod method,double offset=0){return {{{"method",NumericLiteral{std::uint64_t(method)}},{"offset",NumericLiteral{offset}}}};}
+NumericProcessingGraph center_graph(const NumericContract& input,MatrixCenterMethod method=Mean,double offset=0,bool enabled=true,bool fft=false){
     auto source=numeric_test_builders::node(1,"NetworkInput",EndpointProcessingParameters{},
         {},{port(PortDirection::Output,input)});
     OwnedProcessingContract centered;
@@ -86,32 +88,32 @@ Status push(Running& running,const NumericContract& input,std::span<const float>
     require(allocations==before,"MatrixCenter processing never allocates");return status;
 }
 void near(float value,long double expected){const auto rounded=float(expected);require(std::abs(double(value)-double(rounded))<=1e-6*std::max(1.,std::abs(double(rounded))),"independent per-row centering oracle");}
-void oracle(const Probe& probe,std::span<const float> data,std::size_t stride,unsigned method,double offset=0,bool bypass=false){
+void oracle(const Probe& probe,std::span<const float> data,std::size_t stride,MatrixCenterMethod method,double offset=0,bool bypass=false){
     require(probe.available && probe.status==Status::ok,"finite input is available immediately");
     for(std::size_t row=0;row<probe.actual[0];++row){const auto samples=data.subspan(row*stride,probe.actual[1]);long double reference=offset;
         if(bypass)reference=0;
         else if(samples.empty())reference=0;
-        else if(method==0){reference=0;for(float value:samples)reference+=value;reference/=samples.size();}
-        else if(method==1){const auto extrema=std::minmax_element(samples.begin(),samples.end());reference=(static_cast<long double>(*extrema.first)+static_cast<long double>(*extrema.second))/2;}
+        else if(method==Mean){reference=0;for(float value:samples)reference+=value;reference/=samples.size();}
+        else if(method==Midrange){const auto extrema=std::minmax_element(samples.begin(),samples.end());reference=(static_cast<long double>(*extrema.first)+static_cast<long double>(*extrema.second))/2;}
         for(std::size_t column=0;column<samples.size();++column)near(probe.values[row*probe.actual[1]+column],static_cast<long double>(samples[column])-reference);
     }
 }
 void methods_and_bypass(){
     const auto input=matrix_contract();std::array<float,24> data{1,2,3,10,0,0,0,0,-5,-2,6,9,0,0,0,0,100,100,100,104};
-    for(unsigned method=0;method<3;++method){auto graph=center_graph(input,method,2.25);Running running(graph);Probe probe;
+    for(const auto method:{Mean,Midrange,ManualOffset}){auto graph=center_graph(input,method,2.25);Running running(graph);Probe probe;
         require(push(running,input,data,{3,4},0,probe)==Status::ok,"all centering methods process");oracle(probe,data,8,method,2.25);
-        if(method==0)require(probe.values[0]==-3,"mean uses each asymmetric row independently");
-        if(method==1)require(probe.values[0]==-4.5f,"midrange differs from mean on asymmetric data");}
-    auto bypassed=center_graph(input,2,10,false);Running bypass(bypassed);Probe probe;
-    require(push(bypass,input,data,{3,4},0,probe)==Status::ok,"compatible disabled center forwards");oracle(probe,data,8,2,10,true);
+        if(method==Mean)require(probe.values[0]==-3,"mean uses each asymmetric row independently");
+        if(method==Midrange)require(probe.values[0]==-4.5f,"midrange differs from mean on asymmetric data");}
+    auto bypassed=center_graph(input,ManualOffset,10,false);Running bypass(bypassed);Probe probe;
+    require(push(bypass,input,data,{3,4},0,probe)==Status::ok,"compatible disabled center forwards");oracle(probe,data,8,ManualOffset,10,true);
     auto unit=input;unit.representation.normalization=Normalization::FloatUnit;std::fill(data.begin(),data.end(),.75f);
-    Running zeros(center_graph(unit,0,0,false));require(push(zeros,unit,data,{3,4},0,probe)==Status::ok && probe.available,"incompatible disabled center publishes typed zeros");
+    Running zeros(center_graph(unit,Mean,0,false));require(push(zeros,unit,data,{3,4},0,probe)==Status::ok && probe.available,"incompatible disabled center publishes typed zeros");
     for(std::size_t index=0;index<12;++index)require(probe.values[index]==0,"FloatUnit-to-None disabled center follows generic typed-zero policy");
 }
 void variable_geometry_and_coordinates(){
     auto input=matrix_contract();input.coordinates[0]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Hertz,{0,1},{0,1}};
     input.coordinates[1]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds,{0,1},{0,1}};
-    for(unsigned method:{0u,1u,2u}){Running running(center_graph(input,method,.125));Probe probe;std::array<float,24> data{};
+    for(const auto method:{Mean,Midrange,ManualOffset}){Running running(center_graph(input,method,.125));Probe probe;std::array<float,24> data{};
         for(std::size_t length=0;length<=8;++length)for(std::size_t rows=0;rows<=3;++rows){
             for(std::size_t index=0;index<data.size();++index)data[index]=float(std::sin(double(index)+.3)*7);
             std::array<double,3> frequencies{10,100,1000};std::array<double,8> times{0,.1,.2,.3,.4,.5,.6,.7};
@@ -123,7 +125,7 @@ void variable_geometry_and_coordinates(){
     }
 }
 void constants_before_window_fft(){
-    const auto input=matrix_contract();Running running(center_graph(input,0,0,true,true));Probe probe;std::array<float,24> data{};
+    const auto input=matrix_contract();Running running(center_graph(input,Mean,0,true,true));Probe probe;std::array<float,24> data{};
     for(std::size_t row=0;row<3;++row)std::fill_n(data.begin()+row*8,8,row==0?7.f:row==1?-3.f:std::numeric_limits<float>::max());
     require(push(running,input,data,{3,8},0,probe)==Status::ok && probe.available && probe.fft_available,"constant signals reach center/window/FFT without warmup");
     for(std::size_t index=0;index<24;++index)require(probe.values[index]==0,"constant row centers to exact zero before window");
@@ -132,17 +134,19 @@ void constants_before_window_fft(){
 }
 void finite_and_overflow(){
     const auto input=matrix_contract();const auto maximum=std::numeric_limits<float>::max();std::array<float,24> data{};Probe probe;
-    for(unsigned method:{0u,1u}){Running running(center_graph(input,method));data[0]=-maximum;data[1]=maximum;
+    for(const auto method:{Mean,Midrange}){Running running(center_graph(input,method));data[0]=-maximum;data[1]=maximum;
         require(push(running,input,data,{1,2},0,probe)==Status::ok,"balanced Float32 extremes do not overflow reference");oracle(probe,data,8,method);
         data[0]=data[1]=maximum;require(push(running,input,data,{1,2},1,probe)==Status::ok && probe.values[0]==0 && probe.values[1]==0,"extreme constant reference uses double arithmetic");
         data[0]=std::numeric_limits<float>::quiet_NaN();require(push(running,input,data,{1,2},2,probe)==Status::invalid_argument && !probe.available,"nonfinite input rejected without stale publication");}
-    Running manual(center_graph(input,2,maximum));data[0]=-maximum;
+    Running manual(center_graph(input,ManualOffset,maximum));data[0]=-maximum;
     require(push(manual,input,data,{1,1},0,probe)==Status::overflow && !probe.available,"manual subtraction overflow rejected");
     Running mean(center_graph(input));data[0]=-maximum;data[1]=data[2]=maximum;
     require(push(mean,input,data,{1,3},0,probe)==Status::overflow && !probe.available,"centered result beyond Float32 range rejected");
-    for(auto invalid:center_graph(input,2,std::numeric_limits<double>::infinity()).nodes)if(invalid.kind=="MatrixCenter"){
+    for(auto invalid:center_graph(input,ManualOffset,std::numeric_limits<double>::infinity()).nodes)if(invalid.kind=="MatrixCenter"){
         ResolvedProcessingNode resolved;require(!resolve_processing_node(invalid,profile().admission,resolved),"manual offset must be finite and bounded");}
-    auto invalid=center_graph(input,3);ResolvedProcessingNode resolved;require(!resolve_processing_node(invalid.nodes[1],profile().admission,resolved),"unknown method rejected");
+    auto invalid=center_graph(input);
+    std::get<TransformProcessingParameters>(invalid.nodes[1].parameters).values.front().value=NumericLiteral{std::uint64_t{3}};
+    ResolvedProcessingNode resolved;require(!resolve_processing_node(invalid.nodes[1],profile().admission,resolved),"unknown method rejected");
 }
 NumericProcessingGraph history_graph(){
     auto vector=matrix_contract();vector.shape={Rank::Vector,{Axis::Band,Axis::None},{ExtentBounds{4,4},ExtentBounds{1,1}}};vector.coordinates[1]={};
@@ -154,7 +158,7 @@ NumericProcessingGraph history_graph(){
     retained.inputs={port(PortDirection::Input,vector)};retained.outputs={port(PortDirection::Output,history)};
     auto count=vector;count.dtype=DType::UInt64;count.semantic=Semantic::Scalar;count.shape={};count.coordinates={};count.quantity=Quantity::FilledFrameCount;count.unit=NumericUnit::Frames;
     retained.outputs.push_back(port(PortDirection::Output,count,1));
-    ConfiguredProcessingNode center;center.id=3;center.kind="MatrixCenter";center.parameters=parameters(0);center.inputs={port(PortDirection::Input,history)};
+    ConfiguredProcessingNode center;center.id=3;center.kind="MatrixCenter";center.parameters=parameters(Mean);center.inputs={port(PortDirection::Input,history)};
     OwnedProcessingContract centered;require(matrix_center_output_contract(history,centered)==Status::ok,"derive retained matrix center");center.outputs={{0,PortDirection::Output,centered}};
     return numeric_test_builders::graph("center-history",{1,120},{source,retained,center},
         {numeric_test_builders::edge(1,0,2,0),numeric_test_builders::edge(2,0,3,0)});
@@ -189,7 +193,7 @@ void history_ring_and_compatible_changes(){
     verify_centered_ring(probe);
     DataFrameView snapshot;std::uint64_t filled=0,ordinal=0;
     require(running.plan->history(2,0,*running.context,snapshot,&filled,&ordinal)==Status::ok && filled==3 && ordinal==5,"History full before center edit");
-    graph.nodes[2].parameters=parameters(1);running.replace(graph);
+    graph.nodes[2].parameters=parameters(Midrange);running.replace(graph);
     require(running.plan->history(2,0,*running.context,snapshot,&filled,&ordinal)==Status::ok && filled==3 && ordinal==5,"center method edit preserves compatible History");event(5);
     const std::array<float,4> midpoint{-4.5f,-3.5f,2.5f,4.5f};for(std::size_t index=0;index<12;++index)require(probe.values[index]==midpoint[index%4],"midrange applied after compatible change");
     graph.nodes[2].enabled=false;running.replace(graph);event(6);
@@ -236,7 +240,7 @@ void contract_tests(){
     auto defaults=center_graph(matrix_contract());defaults.nodes[1].parameters=TransformProcessingParameters{};ResolvedProcessingNode node;
     require(bool(resolve_processing_node(defaults.nodes[1],profile().admission,node)),"registered center defaults resolve");
     ProcessingParameterView method,offset;require(resolve_processing_parameter(node,"method",method)==Status::ok && resolve_processing_parameter(node,"offset",offset)==Status::ok,"registered center parameter keys");
-    require(std::visit([](auto value){return value==0;},std::get<NumericLiteral>(method)) && std::visit([](auto value){return value==0;},std::get<NumericLiteral>(offset)),"mean and zero offset are defaults");
+    require(std::visit([](auto value){return matrix_center_method(double(value))==Mean;},std::get<NumericLiteral>(method)) && std::visit([](auto value){return value==0;},std::get<NumericLiteral>(offset)),"mean and zero offset are defaults");
 }
 } // namespace
 void* operator new(std::size_t bytes){++allocations;auto* data=std::malloc(bytes?bytes:1);if(!data)std::abort();return data;}

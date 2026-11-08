@@ -86,31 +86,96 @@ class GuiInteractionTrace : public QObject {
             score+=item->type()==QtNodes::NodeGraphicsObject::Type?8:item->type()==QtNodes::ConnectionGraphicsObject::Type?1:0;
         return score;
     }
-    void centerDensePipeline() {
+    void preparePipelineView() {
         if(auto* editor=editor_.data()) {
             view_=editor->findChild<QGraphicsView*>();
-            // The workspace reparents the editor toolbar into its dock chrome.
             if(auto* zoom=window_->findChild<QDoubleSpinBox*>("pipelineZoom"))zoom->setValue(25);
         }
-        if(!view_ || !view_->scene())return;
-        const auto items=view_->scene()->items();const auto size=view_->mapToScene(view_->viewport()->rect()).boundingRect().size();
+    }
+    QPointF densePipelineCenter() const {
+        const auto items=view_->scene()->items();
+        const auto size=view_->mapToScene(view_->viewport()->rect()).boundingRect().size();
         QPointF center=view_->mapToScene(view_->viewport()->rect().center());int best=-1;
         for(auto* candidate:items)if(candidate->type()==QtNodes::NodeGraphicsObject::Type) {
             const auto point=candidate->sceneBoundingRect().center();const QRectF area(point-QPointF(size.width()/2,size.height()/2),size);
             const int score=densityScore(items,area);
             if(score>best){best=score;center=point;}
         }
-        // Use the real pan handler so its retained camera center agrees with
-        // the viewport. Raw centerOn() leaves the editor's camera state stale.
+        return center;
+    }
+    void panPipelineTo(const QPointF& center) {
         const QPointF start=view_->viewport()->rect().center();
         const auto target=start-(center-view_->mapToScene(start.toPoint()))*view_->transform().m11();
         mouse(QEvent::MouseButtonPress,start,Qt::MiddleButton,Qt::MiddleButton);
         mouse(QEvent::MouseMove,target,Qt::NoButton,Qt::MiddleButton);
         mouse(QEvent::MouseButtonRelease,target,Qt::MiddleButton,Qt::NoButton);
     }
+    void cancelFlightInputs() {
+        for(const auto surfaces=flight_surfaces_;auto surface:surfaces)if(surface)surface->quick_cancel_input();
+    }
+    void resetFlightCameras() {
+        release(Qt::MiddleButton);cancelFlightInputs();
+        for(int i=0;i<flight_surfaces_.size();++i)if(flight_surfaces_[i])flight_surfaces_[i]->set_camera_state(camera_bases_[i]);
+        camera_offset_=0;
+    }
+    void startFlightPan() {
+        pipeline_origin_=view_->viewport()->rect().center();pointer_=pipeline_origin_;
+        mouse(QEvent::MouseButtonPress,pointer_,Qt::MiddleButton,Qt::MiddleButton);held_=true;
+    }
+    QJsonArray sceneReports(int phase,double seconds) const {
+        QJsonArray scenes;
+        for(const auto& state:scene_frames_)if(state->host && state->frames[phase].load()) {
+            const auto frames=state->frames[phase].load();auto* view=qobject_cast<QQuickView*>(state->host->quickWindow());
+            scenes.append(QJsonObject{{"node",sceneNode(state->host)},{"source",view?view->source().toString():QString{}},
+                {"completed",double(frames)},{"fps",seconds>0?frames/seconds:0}});
+        }
+        return scenes;
+    }
+    void findVisibleSurface() {
+        for(const auto panels=window_->findChildren<GraphPanel*>();auto* panel:panels)
+            if(panel->isVisible() && panel->active_spectrogram()){surface_=panel->active_spectrogram();break;}
+    }
+    void initializePipelineView(SchemeEditorWidget* editor) {
+        view_=editor?editor->findChild<QGraphicsView*>():window_->findChild<QGraphicsView*>();
+        if(flight_)centerDensePipeline();chooseNode();
+        if(flight_ && view_)view_->viewport()->installEventFilter(this);
+    }
+    void initializeFlightSurfaces() {
+        for(const auto panels=window_->findChildren<GraphPanel*>();auto* panel:panels)
+            if(panel->isVisible() && panel->active_spectrogram()){
+                auto* surface=panel->active_spectrogram();surface->reset_camera();
+                surface->quick_wheel(0,-600*cameraDistance(surface->camera_state())*.4,false);
+                flight_surfaces_.append(surface);camera_bases_.append(surface->camera_state());
+            }
+    }
+    void finishTraceInput() {
+        timer_.stop();release(flight_ || tick_%224<64?Qt::MiddleButton:Qt::LeftButton);releaseSurface();
+        if(view_)view_->viewport()->removeEventFilter(this);
+        cancelFlightInputs();
+        for(const auto& state:scene_frames_)QObject::disconnect(state->connection);
+    }
+    QJsonArray cameraReports() const {
+        QJsonArray cameras;
+        for(int i=0;i<flight_surfaces_.size();++i)if(flight_surfaces_[i])
+            cameras.append(QJsonObject{{"baseline",camera_bases_[i]},{"final",flight_surfaces_[i]->camera_state()}});
+        return cameras;
+    }
+    QJsonObject traceReport(const QJsonArray& cameras) const {
+        return QJsonObject{{"pipeline_found",bool(view_)},{"node_found",node_!=nullptr},
+            {"samples",samples_},{"phases",flight_?flightReports():QJsonArray{}},{"viewports",viewport_samples_},
+            {"camera_motion","forward_backward"},{"camera_distance_fraction",QJsonArray{0.8,1.0}},{"cameras",cameras},
+            {"pipeline_zoom_percent",QJsonArray{20,25}}};
+    }
+
+    void centerDensePipeline() {
+        preparePipelineView();
+        if(!view_ || !view_->scene())return;
+        // Use the real pan handler so its retained camera center agrees with the viewport.
+        panPipelineTo(densePipelineCenter());
+    }
     void observeViewport(const char* phaseName) {
         int nodes=0,wires=0;
-        if(view_ && view_->scene())for(auto* item:view_->scene()->items(view_->mapToScene(view_->viewport()->rect()))) {
+        if(view_ && view_->scene())for(const auto items=view_->scene()->items(view_->mapToScene(view_->viewport()->rect()));auto* item:items) {
             if(!item->isVisible())continue;
             nodes+=item->type()==QtNodes::NodeGraphicsObject::Type;
             wires+=item->type()==QtNodes::ConnectionGraphicsObject::Type;
@@ -123,7 +188,7 @@ class GuiInteractionTrace : public QObject {
             {"foreground_owned",foreground},{"width",view_?view_->viewport()->width():0},{"height",view_?view_->viewport()->height():0},{"scale",view_?view_->transform().m11():0}});
     }
     void observeScenes() {
-        for(auto* host:window_->findChildren<ui::quick::SceneHost*>()) {
+        for(const auto hosts=window_->findChildren<ui::quick::SceneHost*>();auto* host:hosts) {
             auto state=std::make_shared<SceneFrames>();state->host=host;const auto started=clock_;const auto duration=flight_duration_;
             state->connection=QObject::connect(host->quickWindow(),&QQuickWindow::afterRendering,&timer_,[state,started,duration]{
                 state->frames[flightPhase(started.elapsed(),duration)].fetch_add(1,std::memory_order_relaxed);
@@ -132,19 +197,13 @@ class GuiInteractionTrace : public QObject {
         }
     }
     void changeFlightPhase(int next) {
-        release(Qt::MiddleButton);
-        for(auto surface:flight_surfaces_)if(surface)surface->quick_cancel_input();
-        for(int i=0;i<flight_surfaces_.size();++i)if(flight_surfaces_[i])flight_surfaces_[i]->set_camera_state(camera_bases_[i]);
-        camera_offset_=0;
+        resetFlightCameras();
         flight_phase_=next;
         mark(flight_names_[next]);
         // Each phase starts on the dense graph, including after a dock resize.
         centerDensePipeline();
         observeViewport(flight_names_[next]);
-        if(next==3 || next==5) {
-            pipeline_origin_=view_->viewport()->rect().center();pointer_=pipeline_origin_;
-            mouse(QEvent::MouseButtonPress,pointer_,Qt::MiddleButton,Qt::MiddleButton);held_=true;
-        }
+        if(next==3 || next==5)startFlightPan();
         std::fprintf(stderr,"TRACE_FLIGHT_PHASE %s\n",flight_names_[next]);std::fflush(stderr);
     }
     void flyCamera(double seconds) {
@@ -176,13 +235,7 @@ class GuiInteractionTrace : public QObject {
         for(int i=0;i<7;++i) {
             const auto end=i==6?elapsed:std::min(elapsed,phase_edges_[i+1]*flight_duration_/100000);
             const double seconds=std::max<qint64>(0,end-phase_edges_[i]*flight_duration_/100000)/1000.;
-            QJsonArray scenes;
-            for(const auto& state:scene_frames_)if(state->host && state->frames[i].load()) {
-                const auto frames=state->frames[i].load();auto* view=qobject_cast<QQuickView*>(state->host->quickWindow());
-                scenes.append(QJsonObject{{"node",sceneNode(state->host)},{"source",view?view->source().toString():QString{}},
-                    {"completed",double(frames)},{"fps",seconds>0?frames/seconds:0}});
-            }
-            result.append(QJsonObject{{"phase",flight_names_[i]},{"seconds",seconds},{"scenes",scenes}});
+            result.append(QJsonObject{{"phase",flight_names_[i]},{"seconds",seconds},{"scenes",sceneReports(i,seconds)}});
         }
         return result;
     }
@@ -224,7 +277,7 @@ class GuiInteractionTrace : public QObject {
         if(tick==159)release(Qt::LeftButton);
     }
     bool chartPan(int tick) {
-        for(auto* chart:window_->findChildren<QuickPlotWidget*>()) {
+        for(const auto charts=window_->findChildren<QuickPlotWidget*>();auto* chart:charts) {
             if(!chart->isVisible())continue;
             auto* model=chart->presentation_model();const auto kind=model->state().value("kind").toString();
             if(kind!="vector" && kind!="image")continue;
@@ -234,8 +287,7 @@ class GuiInteractionTrace : public QObject {
         return surfacePan(tick);
     }
     bool surfacePan(int tick) {
-        if(!surface_)for(auto* panel:window_->findChildren<GraphPanel*>())
-            if(panel->isVisible() && panel->active_spectrogram()){surface_=panel->active_spectrogram();break;}
+        if(!surface_)findVisibleSurface();
         if(!surface_)return false;
         if(tick==160)surface_->quick_pointer(0,200,200,Qt::RightButton,Qt::RightButton,Qt::NoModifier);
         surface_->quick_pointer(1,200+(tick%16)*2,200,Qt::NoButton,Qt::RightButton,Qt::NoModifier);
@@ -259,7 +311,7 @@ class GuiInteractionTrace : public QObject {
     }
     void chooseNode() {
         if(!view_ || !view_->scene())return;
-        for(auto* item:view_->scene()->items()) {
+        for(const auto items=view_->scene()->items();auto* item:items) {
             if(item->type()!=QtNodes::NodeGraphicsObject::Type)continue;
             const auto point=view_->mapFromScene(item->sceneBoundingRect().topLeft()+QPointF(30,15));
             if(view_->viewport()->rect().contains(point)){node_=item;return;}
@@ -284,37 +336,21 @@ public:
         return viewport_samples_.size()==7;
     }
     explicit GuiInteractionTrace(QWidget* window,int duration=100000,SchemeEditorWidget* editor=nullptr):window_(window),editor_(editor),flight_duration_(std::max(1,duration)) {
-        view_=editor?editor->findChild<QGraphicsView*>():window->findChild<QGraphicsView*>();if(flight_)centerDensePipeline();chooseNode();
-        if(flight_ && view_)view_->viewport()->installEventFilter(this);
+        initializePipelineView(editor);
         timer_.setTimerType(Qt::PreciseTimer);timer_.setInterval(16);
         QObject::connect(&timer_,&QTimer::timeout,&timer_,[this]{step();});
-        if(flight_) {
-            for(auto* panel:window_->findChildren<GraphPanel*>())
-                if(panel->isVisible() && panel->active_spectrogram()){
-                    auto* surface=panel->active_spectrogram();surface->reset_camera();
-                    surface->quick_wheel(0,-600*cameraDistance(surface->camera_state())*.4,false);
-                    flight_surfaces_.append(surface);camera_bases_.append(surface->camera_state());
-                }
-        }
+        if(flight_)initializeFlightSurfaces();
         clock_.start();
         if(flight_)observeScenes();
         timer_.start();
     }
     ~GuiInteractionTrace(){timer_.stop();for(const auto& state:scene_frames_)QObject::disconnect(state->connection);}
     bool stop(const QString& output) {
-        timer_.stop();release(flight_ || tick_%224<64?Qt::MiddleButton:Qt::LeftButton);releaseSurface();
-        if(view_)view_->viewport()->removeEventFilter(this);
-        for(auto surface:flight_surfaces_)if(surface)surface->quick_cancel_input();
-        for(const auto& state:scene_frames_)QObject::disconnect(state->connection);
-        QJsonArray cameras;
-        for(int i=0;i<flight_surfaces_.size();++i)if(flight_surfaces_[i])
-            cameras.append(QJsonObject{{"baseline",camera_bases_[i]},{"final",flight_surfaces_[i]->camera_state()}});
+        finishTraceInput();
+        const auto cameras=cameraReports();
         QSaveFile file(output);
         if(!file.open(QIODevice::WriteOnly))return false;
-        file.write(QJsonDocument(QJsonObject{{"pipeline_found",bool(view_)},{"node_found",node_!=nullptr},
-            {"samples",samples_},{"phases",flight_?flightReports():QJsonArray{}},{"viewports",viewport_samples_},
-            {"camera_motion","forward_backward"},{"camera_distance_fraction",QJsonArray{0.8,1.0}},{"cameras",cameras},
-            {"pipeline_zoom_percent",QJsonArray{20,25}}}).toJson());
+        file.write(QJsonDocument(traceReport(cameras)).toJson());
         return file.commit();
     }
 };

@@ -16,13 +16,21 @@ inline constexpr FrameLimits limits{8,32768,262144,16384,256,8192};
 inline NumericProcessingGraph oracle_graph(){auto g=numeric_test_graph();g.execution_interval={1,60};return g;}
 // Two branches plus six auxiliary constants fit40nodes. Converter support
 // adds its8192-byte reference stack reservation to the65536-byte graph budget.
-inline NumericRuntimeProfile profile(){return {{40,64,8,16,256,65536,limits},{{1048576,4*1048576,1048576,73728},0,8388608},{32768,8,262144,262144,262144},{true,true,true}};}
+// Owned graph DTOs include explicit window arrays and share the plan budget.
+inline NumericRuntimeProfile profile(){
+ constexpr std::size_t plan_budget=1048576;
+ return {{40,64,8,16,256,plan_budget,limits},{{plan_budget,4*plan_budget,plan_budget,73728},0,8*plan_budget},{32768,8,262144,262144,262144},{true,true,true}};
+}
 inline ConfiguredProcessingNode& node(NumericProcessingGraph& g,NodeId id){auto it=std::find_if(g.nodes.begin(),g.nodes.end(),[&](const auto& n){return n.id==id;});check(it!=g.nodes.end(),"missing node");return *it;}
 inline NumericContract adjusted_geometry(NumericContract contract,std::size_t rate,std::size_t window,std::size_t block){
  contract.clock={"local",{1,std::uint64_t(rate)},std::uint32_t(rate)};
  if(contract.semantic==Semantic::PCM)contract.shape.extents[0]={0,block};
  if(contract.semantic==Semantic::Window || contract.semantic==Semantic::Windowed)contract.shape.extents[0]={window,window};
- if(contract.semantic==Semantic::SpectrumMagnitude){contract.shape.extents[0]={window/2,window/2};contract.coordinates[0].step={std::int64_t(rate),std::uint64_t(window)};}
+ if(contract.shape.rank==Rank::Vector && contract.shape.axes[0]==Axis::Bin){
+  const bool complex_plane=contract.quantity==Quantity::SpectrumReal || contract.quantity==Quantity::SpectrumImaginary;
+  const auto count=window/2+unsigned(complex_plane);contract.shape.extents[0]={count,count};
+  if(!complex_plane){contract.coordinates[0].step={std::int64_t(rate),std::uint64_t(window)};contract.coordinates[0].origin=contract.coordinates[0].step;}
+ }
  return contract;
 }
 inline void source_geometry(ConfiguredProcessingNode& source_node,std::size_t rate){
@@ -40,7 +48,8 @@ template<class Field> inline void transform_geometry_field(Field& field,bool win
  if(field.key=="bin_hz" && !window_node)field.value=NumericLiteral{double(rate)/double(window)};
 }
 inline void transform_geometry(ConfiguredProcessingNode& configured,std::size_t rate,std::size_t window){
-  if(configured.kind!="Window" && configured.kind!="WindowFunction" && configured.kind!="BarkWeighting" && configured.kind!="Mel")return;
+  if(configured.kind!="Window" && configured.kind!="WindowFunction" && configured.kind!="RealFourier" &&
+     configured.kind!="AmplitudePhase" && configured.kind!="BarkWeighting" && configured.kind!="Mel")return;
   auto& values=std::get<TransformProcessingParameters>(configured.parameters).values;
   for(auto& field:values)transform_geometry_field(field,configured.kind=="Window" || configured.kind=="WindowFunction",rate,window);
 
@@ -49,16 +58,27 @@ inline NumericContract fixture_port_geometry(const ConfiguredProcessingNode& con
  auto contract=adjusted_geometry(std::get<NumericContract>(port.contract.view()),rate,window,block);
  const bool window_output=port.direction==PortDirection::Output && (configured.kind=="Window" || configured.kind=="WindowFunction");
  const bool fixed_array=contract.shape.rank==Rank::Vector && contract.shape.axes[0]==Axis::Declared && contract.shape.extents[0].minimum==contract.shape.extents[0].maximum;
- if(contract.shape.rank==Rank::Vector && (fixed_array || window_output || configured.kind=="ArrayMultiply" || (configured.kind=="StereoFFT" && port.direction==PortDirection::Input)))contract.shape.extents[0]={window,window};
+ if(contract.shape.rank==Rank::Vector && (fixed_array || window_output || configured.kind=="ArrayMultiply" || ((configured.kind=="RealFourier" || configured.kind=="Fourier") && port.direction==PortDirection::Input)))contract.shape.extents[0]={window,window};
  return contract;
 }
-inline void geometry(NumericProcessingGraph& graph,std::size_t rate,std::size_t window,std::size_t block){
- for(auto& configured:graph.nodes)for(auto* ports:{&configured.inputs,&configured.outputs})for(auto& port:*ports){
+inline void fixture_node_geometry(ConfiguredProcessingNode& configured,std::size_t rate,std::size_t window,std::size_t block){
+ for(auto* ports:{&configured.inputs,&configured.outputs})for(auto& port:*ports){
   const auto contract=fixture_port_geometry(configured,port,rate,window,block);
   check(own_processing_contract(contract,limits,65536,port.contract)==Status::ok,"own adjusted contract");
  }
+}
+inline void bind_fixture_geometry(NumericProcessingGraph& graph,std::size_t rate,std::size_t window){
+ NumericProcessingGraph evaluated,executable;
+ const auto binding=resolve_numeric_parameter_bindings(graph,profile().admission,evaluated,executable);
+ if(!binding)std::fprintf(stderr,"fixture geometry Fs=%zu N=%zu error=%u node=%d port=%u\n",rate,window,unsigned(binding.error),binding.node,unsigned(binding.port));
+ check(bool(binding),"derive explicit fixture geometry");
+ graph=std::move(evaluated);
+}
+inline void geometry(NumericProcessingGraph& graph,std::size_t rate,std::size_t window,std::size_t block){
+ for(auto& configured:graph.nodes)fixture_node_geometry(configured,rate,window,block);
  for(auto& configured:graph.nodes)transform_geometry(configured,rate,window);
  source_geometry(node(graph,1),rate);
+ bind_fixture_geometry(graph,rate,window);
 }
 struct Feed {
  NumericContract contract;std::array<float,317> samples{};std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sent=0,sequence=0,epoch=17;
@@ -100,6 +120,10 @@ inline void prepare(GraphExecutor& executor,const NumericProcessingGraph& graph,
  const auto runtime_profile=profile();const auto status=executor.prepare_numeric(graph,{runtime_profile.admission,runtime_profile.resources},output);
  if(status!=Status::ok){
   std::fprintf(stderr,"prepare status=%d nodes=%zu edges=%zu\n",int(status),graph.nodes.size(),graph.edges.size());
+  std::size_t owned=0;const auto footprint=processing_graph_owned_bytes(graph,runtime_profile.admission,owned);
+  std::fprintf(stderr,"graph ownership status=%u bytes=%zu limit=%zu\n",unsigned(footprint),owned,runtime_profile.admission.max_owned_metadata_bytes);
+  NumericProcessingGraph evaluated,executable;const auto binding=resolve_numeric_parameter_bindings(graph,runtime_profile.admission,evaluated,executable);
+  std::fprintf(stderr,"bindings error=%u node=%d port=%u\n",unsigned(binding.error),binding.node,unsigned(binding.port));
   for(const auto& configured:graph.nodes)print_invalid_node(configured,runtime_profile.admission);
  }
  check(status==Status::ok&&bool(output),"prepare");

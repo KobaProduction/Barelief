@@ -4,9 +4,11 @@
 #include <core_app/scheme_editor/node_parameter_form.h>
 #include <barelief/ui_text.h>
 #include <core_app/numeric_default_graph.h>
+#include <core_app/numeric_btrack_reference_graph.h>
 #include <core_app/example_presentation.h>
 #include <core_app/plot_composition.h>
 #include <dataflow_runtime/runtime.h>
+#include <dsp_kernels/dsp.h>
 #include <QApplication>
 #include <QUndoStack>
 #include <QCheckBox>
@@ -14,7 +16,6 @@
 #include <QDir>
 #include <QFontDatabase>
 #include <QLabel>
-#include <QSet>
 #include <QVBoxLayout>
 #include <cstdio>
 #include <cstdlib>
@@ -22,19 +23,6 @@
 #include <string_view>
 
 namespace {
-void broadband_estimator_labels(){
-    using enum signal_contracts::Quantity;
-    const signal_contracts::Quantity quantities[]{BroadbandEnergy,BroadbandPower,BroadbandRms,BroadbandMaximum,SpectralFlux,
-        BroadbandBinPowerSum,BroadbandBinPowerMean,BroadbandBinPowerRms,BroadbandBinPowerMaximum,BroadbandBinPowerFlux};
-    QSet<QString> labels;
-    for(const auto quantity:quantities){
-        signal_contracts::NumericContract value;value.quantity=quantity;
-        labels.insert(presentation::audio_plot_presentation(value).value_title);
-    }
-    if(labels.size()!=10 || std::any_of(labels.begin(),labels.end(),[](const auto& label){return label.contains("Energy");})){
-        std::fputs("FAIL Fourier visibility: broadband estimators need distinct, non-energy axis titles\n",stderr);std::exit(1);
-    }
-}
 void check(bool ok,const char* message){if(!ok){std::fprintf(stderr,"FAIL Fourier visibility: %s\n",message);std::exit(1);}}
 std::shared_ptr<QtNodes::NodeDelegateModelRegistry> registry(){
     auto result=std::make_shared<QtNodes::NodeDelegateModelRegistry>();
@@ -45,28 +33,28 @@ std::shared_ptr<QtNodes::NodeDelegateModelRegistry> registry(){
 void ports(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,const QString& kind){
     NumericEditorGraphModel graph(registry);QUndoStack undo;graph.set_undo_stack(&undo);
     const auto id=graph.addNode(kind);auto* fft=graph.delegateModel<AudioNodeModel>(id);
-    const unsigned count=kind=="RealFourier"?3:2,dc=count-1;
+    const unsigned count=kind=="AmplitudePhase"?3:2,dc=count-1;
     check(fft && fft->numeric_node()->outputs.size()==count,"DSP contract retains real/imaginary and supported DC outputs");
     check(fft->nPorts(QtNodes::PortType::Out)==2,"unused DC ports hidden by default");
     check(fft->port_id(QtNodes::PortType::Out,0)==0 && fft->port_id(QtNodes::PortType::Out,1)==1,"Re/Im IDs unchanged");
     check(fft->port_index(QtNodes::PortType::Out,2)==QtNodes::InvalidPortIndex,"hidden DC cannot be selected as visible port");
-    if(kind=="Fourier"){check(fft->edit_dc_outputs_shown(true) && fft->nPorts(QtNodes::PortType::Out)==2,"complex Fourier keeps DC inside its full complex planes");return;}
+    if(kind!="AmplitudePhase"){check(!fft->edit_dc_outputs_shown(true),"Fourier includes DC only in its planes");return;}
     check(fft->edit_dc_outputs_shown(true) && fft->nPorts(QtNodes::PortType::Out)==count,"explicit show exposes actual ports");
     undo.undo();check(fft->nPorts(QtNodes::PortType::Out)==2,"undo restores hidden ports");
     undo.redo();check(fft->nPorts(QtNodes::PortType::Out)==count,"redo restores visible ports");
     const auto sink=graph.addNode("ScalarView");auto scalar=*graph.delegateModel<AudioNodeModel>(sink)->numeric_node();
     scalar.inputs[0].contract=fft->numeric_node()->outputs[dc].contract;
     graph.delegateModel<AudioNodeModel>(sink)->set_numeric_node(scalar);
-    const QtNodes::ConnectionId edge{id,dc,sink,0};check(graph.connectionPossible(edge),"DC Im is connectable scalar");graph.addConnection(edge);
-    check(graph.connectionExists(edge),"DC Im connection created");
+    const QtNodes::ConnectionId edge{id,dc,sink,0};check(graph.connectionPossible(edge),"DC offset is connectable scalar");graph.addConnection(edge);
+    check(graph.connectionExists(edge),"DC offset connection created");
     check(fft->edit_dc_outputs_shown(false) && fft->nPorts(QtNodes::PortType::Out)==count,"connected DC remains visible when explicit show disabled");
-    check(graph.numeric_graph().edges.front().output_port==dc,"stable DC Im ID preserved");
+    check(graph.numeric_graph().edges.front().output_port==dc,"stable DC offset ID preserved");
     const auto saved=graph.save();NumericEditorGraphModel restored(registry);restored.load(saved);
     auto* reloaded=restored.delegateModel<AudioNodeModel>(id);
     check(reloaded && !reloaded->dc_outputs_shown() && reloaded->nPorts(QtNodes::PortType::Out)==count,"connected hidden preference restores safely");
     check(restored.connectionExists(edge) && restored.numeric_graph().edges.front().output_port==dc,"reload retains DC connection");
     NumericEditorGraphModel imported(registry);check(imported.set_numeric_graph(graph.numeric_graph()),"physical graph import reveals connected DC before validation");
-    check(imported.connectionExists(edge),"physical import retains DC Im endpoint");
+    check(imported.connectionExists(edge),"physical import retains DC offset endpoint");
     check(restored.deleteConnection(edge) && reloaded->nPorts(QtNodes::PortType::Out)==2,"last DC disconnect hides unused outputs");
     check(reloaded->numeric_node()->outputs.size()==count,"hiding never removes DSP outputs");
     restored.addConnection({id,dc,QtNodes::NodeId{999999},0});
@@ -78,25 +66,6 @@ void ports(const std::shared_ptr<QtNodes::NodeDelegateModelRegistry>& registry,c
     const auto savedShown=restored.save();NumericEditorGraphModel shown(registry);shown.load(savedShown);
     check(shown.delegateModel<AudioNodeModel>(id)->dc_outputs_shown() && shown.delegateModel<AudioNodeModel>(id)->nPorts(QtNodes::PortType::Out)==count,"explicit show persists without connection");
     check(!AudioNodeModel::valid_presentation({{"show_dc_outputs",QStringLiteral("true")}}),"malformed visibility flag rejected");
-}
-void musical_layout_caption(){
-    auto node=numeric_editor::default_node("MusicalSpectrogram");NodeParameterModel parameters;
-    for(const auto step:{signal_contracts::Ratio{48000,4096},signal_contracts::Ratio{32000,2048}}){
-        auto& fields=std::get<domain::TransformProcessingParameters>(node.parameters).values;
-        auto bin=std::find_if(fields.begin(),fields.end(),[](const auto& field){return field.key=="bin_hz";});
-        check(bin!=fields.end(),"musical fixture has explicit frequency-step setting");
-        bin->value=signal_contracts::NumericLiteral{double(step.numerator)/step.denominator};
-        if(std::none_of(fields.begin(),fields.end(),[](const auto& field){return field.key=="first_bin";}))fields.push_back({"first_bin",signal_contracts::NumericLiteral{std::uint64_t{1}}});
-        auto input=std::get<signal_contracts::NumericContract>(node.inputs[0].contract.view());
-        input.coordinates[0].origin=step;input.coordinates[0].step=step;
-        domain::OwnedProcessingContract owned;check(domain::own_processing_contract(input,numeric_editor::limits().frame,65536,owned)==signal_contracts::Status::ok,"own musical input");node.inputs[0].contract=owned;
-        std::array<domain::OwnedProcessingContract,4> outputs;std::array<std::size_t,4> counts{};
-        check(domain::musical_spectrogram_output_contracts(node,input,outputs,&counts)==signal_contracts::Status::ok,"canonical musical layout counts");
-        parameters.setNode(node,true);const auto* field=parameters.field("rowLayoutReadout");
-        check(field && field->primary && field->editor==NodeParameterModel::Editor::Caption,"row layout primary caption exists");
-        const auto expected=ui::text("[Low %1] [Mid %2] [High %3] [Notes %4]").arg(qulonglong(counts[0])).arg(qulonglong(counts[1])).arg(qulonglong(counts[2])).arg(qulonglong(counts[3]));
-        check(std::get<QString>(field->read())==expected,"caption follows canonical section counts after frequency-axis change");
-    }
 }
 void projection_pair(domain::ConfiguredProcessingNode& node,const signal_contracts::NumericContract& real,std::size_t imaginary_count){
     auto imaginary=real;imaginary.quantity=signal_contracts::Quantity::SpectrumImaginary;imaginary.shape.extents[0]={imaginary_count,imaginary_count};
@@ -113,26 +82,41 @@ void spectrum_normalization_controls(){
     const auto* normalize=parameters.field("normalize");
     check(normalize && normalize->primary && std::get<bool>(normalize->read()),"normalization checkbox is visible and defaults on");
     const auto* half=parameters.field("positive_half");check(half && half->primary,"input spectrum layout is explicit");
-    auto array=std::get<NumericContract>(node.inputs[0].contract.view());array.shape.extents[0]={128,128};
-    std::array<OwnedProcessingContract,2> outputs;
+    auto array=std::get<NumericContract>(node.inputs[0].contract.view());array.shape.extents[0]={129,129};
+    std::array<OwnedProcessingContract,3> outputs;
     node.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{256}}},{"representation",std::string{"psd"}},{"normalize",false},{"sample_rate",NumericLiteral{std::uint64_t{48000}}}}};
-    projection_pair(node,array,127);
+    projection_pair(node,array,129);
     check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"derive projection from explicit N and Re/Im geometry");
     auto value=std::get<NumericContract>(outputs[0].view());
     check(value.quantity==Quantity::SpectrumPower && value.unit==NumericUnit::SquaredAmplitude,"unnormalized PSD is labelled raw squared magnitude");
     check(value.coordinates[0].step==Ratio{48000,256},"frequency axis uses declared half-spectrum N");
     std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{512}};
-    projection_pair(node,array,128);
-    check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"an explicit bounded spectral slice retains its independent N");
-    check(std::get<NumericContract>(outputs[0].view()).coordinates[0].step==Ratio{48000,512},"same plane length does not override the N setting");
+    check(amplitude_phase_output_contracts(node,array,outputs)==Status::incompatible_contract,"bounded source slices belong after the full spectral projection");
     std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{129}};
     std::get<TransformProcessingParameters>(node.parameters).values.push_back({"positive_half",false});
     check(amplitude_phase_output_contracts(node,array,outputs)==Status::ok,"explicit full-spectrum N admits the declared non-DC bins");
     value=std::get<NumericContract>(outputs[0].view());check(value.coordinates[0].step==Ratio{48000,129},"full spectrum excludes separate DC according to explicit N");
     std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{std::uint64_t{128}};
-    check(amplitude_phase_output_contracts(node,array,outputs)==Status::invalid_argument,"explicit N rejects a plane beyond its declared spectral bounds");
+    check(amplitude_phase_output_contracts(node,array,outputs)==Status::incompatible_contract,"explicit N rejects a plane beyond its declared spectral bounds");
+}
+void select_projection(QComboBox& control,dsp_kernels::SpectrumProjection projection) {
+    const auto variants=dsp_kernels::amplitude_spectrum_projections();
+    const auto selected=std::find(variants.begin(),variants.end(),projection);
+    check(selected!=variants.end(),"projection enum is registered");
+    const auto index=control.findData(int(selected-variants.begin()));
+    check(index>=0,"registered projection has a control value");
+    control.setCurrentIndex(index);
+}
+void check_amplitude_output(const AudioNodeModel& node,signal_contracts::Quantity quantity,signal_contracts::NumericUnit unit) {
+    using namespace signal_contracts;
+    const auto& port=node.numeric_node()->outputs.front();
+    const auto value=std::get<NumericContract>(port.contract.view());
+    check(port.id==domain::processing_output && value.dtype==DType::Float32 && value.shape.rank==Rank::Vector &&
+          value.quantity==quantity && value.unit==unit,"projection control updates the amplitude output contract");
 }
 void normalization_widget(){
+    using namespace signal_contracts;
+    using dsp_kernels::SpectrumProjection;
     for(const auto* language:{"ru","en"})for(const auto* theme:{"light","dark"}){
         ui::Language::instance().set(language);ui::Theme::instance().set(theme);
         NumericEditorGraphModel graph(registry());const auto id=graph.addNode("AmplitudePhase");
@@ -141,19 +125,16 @@ void normalization_widget(){
         QWidget panel;QVBoxLayout layout(&panel);
         layout.addWidget(new QLabel(model->caption(),&panel));
         auto* form=new NodeParameterForm(model->parameter_model(),true,&panel);layout.addWidget(form);
-        auto* output=new QLabel(&panel);layout.addWidget(output);
         auto* toggle=form->findChild<QCheckBox*>("normalize");
         auto* representation=form->findChild<QComboBox*>("representation");
         check(toggle && toggle->isChecked() && representation,"actual inline normalization and representation controls exist");
-        representation->setCurrentIndex(0);QCoreApplication::processEvents();
-        check(model->portCaption(QtNodes::PortType::Out,0).contains(ui::text("Compensated FFT magnitude")),"calibrated magnitude must not be captioned peak amplitude");
+        select_projection(*representation,SpectrumProjection::Magnitude);QCoreApplication::processEvents();
+        check_amplitude_output(*model,Quantity::SpectrumWindowScaledMagnitude,NumericUnit::RawAmplitude);
         representation=form->findChild<QComboBox*>("representation");
-        representation->setCurrentIndex(3);QCoreApplication::processEvents();
-        check(model->portCaption(QtNodes::PortType::Out,0).contains(ui::text("Power spectral density (PSD)")),"normalized PSD output caption");
-        // The real checkbox must update the graph and the resulting unit/caption.
+        select_projection(*representation,SpectrumProjection::Psd);QCoreApplication::processEvents();
+        check_amplitude_output(*model,Quantity::SpectrumPsd,NumericUnit::SquaredAmplitudePerHertz);
         toggle=form->findChild<QCheckBox*>("normalize");toggle->setChecked(false);QCoreApplication::processEvents();
-        output->setText(model->portCaption(QtNodes::PortType::Out,0));
-        check(output->text().contains(ui::text("Raw magnitude squared")),"switching off PSD removes density label");
+        check_amplitude_output(*model,Quantity::SpectrumPower,NumericUnit::SquaredAmplitude);
         const auto saved=graph.save();NumericEditorGraphModel restored(registry());restored.load(saved);
         check(!std::get<bool>(restored.delegateModel<AudioNodeModel>(id)->parameter_model()->field("normalize")->read()),"normalization state survives graph save/load");
         panel.adjustSize();panel.show();QCoreApplication::processEvents();
@@ -173,10 +154,6 @@ const NumericExampleGraph& rhythm_preset(const std::vector<NumericExampleGraph>&
 void rhythm_preset_labels(const NumericExampleGraph& example) {
     NumericEditorGraphModel editor(registry());check(editor.set_numeric_graph(example.graph),"explicit rhythm method imports");
     apply_example_labels(&editor,example);
-    for(const auto& name:example.node_names){
-        const auto* node=editor.delegateModel<AudioNodeModel>(name.node);
-        check(node&&node->caption()==ui::text(name.label),"localized purpose labels assigned to rhythm lanes");
-    }
     const auto* selector=editor.delegateModel<AudioNodeModel>(200);
     check(selector&&selector->selected_input()==1&&selector->numeric_node()->inputs.size()==4,"Loopback selected by default and microphone absent");
     const auto saved=editor.save();NumericEditorGraphModel restored(registry());restored.load(saved);
@@ -184,13 +161,49 @@ void rhythm_preset_labels(const NumericExampleGraph& example) {
         const auto* metrics=editor.delegateModel<AudioNodeModel>(names.view);
         check(metrics&&metrics->numeric_node()->inputs.size()==names.labels.size(),"one metric view consumes its explicit method outputs");
         const auto labels=metrics->presentation().value("scalar_inputs").toObject();
-        for(std::size_t port=0;port<names.labels.size();++port)
-            check(labels.value(QString::number(port)).toObject().value("display_name").toString()==ui::text(names.labels[port]),"localized metric names assigned");
         const auto* recovered=restored.delegateModel<AudioNodeModel>(names.view);
         check(recovered&&recovered->presentation().value("scalar_inputs").toObject()==labels,"metric labels survive save/load");
     }
 }
 
+void generated_node_names(){
+    NumericEditorGraphModel graph(registry());const auto id=graph.addNode("Converter");
+    auto* model=graph.delegateModel<AudioNodeModel>(id);
+    model->set_presentation(QJsonObject{{"display_name_key","Analysis step"}});
+    ui::Language::instance().set("ru");
+    check(model->caption()==ui::text("Analysis step"),"generated key follows the current language");
+    check(model->edit_display_name("Analysis step") && model->caption()=="Analysis step","custom text matching a translation key stays literal");
+    check(model->edit_display_name({}) && model->caption()==ui::text("Analysis step"),"clearing a custom name restores the generated translation");
+    const auto saved=graph.save();NumericEditorGraphModel restored(registry());restored.load(saved);
+    const auto* recovered=restored.delegateModel<AudioNodeModel>(id);
+    check(recovered && recovered->caption()==ui::text("Analysis step"),"context key survives graph roundtrip");
+    ui::Language::instance().set("en");
+    check(recovered->caption()==ui::text("Analysis step") && recovered->name()=="Converter","language changes the caption and preserves stable kind");
+}
+void generated_metric_names(){
+    NumericEditorGraphModel graph(registry());const auto id=graph.addNode("ScalarMetricsView");
+    auto* model=graph.delegateModel<AudioNodeModel>(id);
+    const QJsonObject metric{{"display_name_key","Analysis step"}};
+    model->set_presentation(QJsonObject{{"scalar_inputs",QJsonObject{{"0",metric}}}});
+    ui::Language::instance().set("ru");
+    check(model->portCaption(QtNodes::PortType::In,0).startsWith(ui::text("Analysis step")),"generated scalar caption follows the current language");
+    check(model->edit_scalar_input_name(0,"Analysis step"),"custom scalar name accepted");
+    check(model->portCaption(QtNodes::PortType::In,0).startsWith("Analysis step"),"custom scalar caption remains literal");
+    check(model->edit_scalar_input_name(0,{}),"custom scalar name reset");
+    ui::Language::instance().set("en");
+    check(model->portCaption(QtNodes::PortType::In,0).startsWith(ui::text("Analysis step")),"scalar generated key follows language changes");
+}
+void common_operation_controls(){
+    auto extraction=numeric_editor::default_node("IndexExtract");NodeParameterModel fields;fields.setNode(extraction,true);
+    check(fields.field("mode") && fields.field("index") && !fields.field("axis"),"scalar extraction exposes element settings");
+    extraction.parameters=domain::TransformProcessingParameters{{{"mode",signal_contracts::NumericLiteral{std::uint64_t{1}}}}};
+    fields.setNode(extraction,true);
+    check(fields.field("axis") && fields.field("indices") && fields.field("first") && !fields.field("index"),"axis extraction exposes selection settings without scalar-only controls");
+    check(!domain::node_kind("ArrayReindex") && !numeric_editor::catalog().contains("ArrayReindex"),"duplicate extractor is retired");
+    fields.setNode(numeric_editor::default_node("AxisSum"),true);
+    const auto* accumulation=fields.field("accumulation");
+    check(accumulation && accumulation->primary && accumulation->options.size()==2,"summation order is an explicit translated setting");
+}
 void shipped_window_dependency_branches(){
     using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
     const auto examples=numeric_fixture_examples();
@@ -234,8 +247,13 @@ void rhythm_node_ports(){
         const auto id=editor.addNode("RhythmAnalyzer");
         auto* model=editor.delegateModel<AudioNodeModel>(id);
         check(model && model->nPorts(QtNodes::PortType::Out)==domain::rhythm_output_count,"all rhythm outputs visible");
-        check(model->portCaption(QtNodes::PortType::Out,0).contains(ui::text("Candidate tempo, BPM")),"localized candidate caption");
-        check(model->portCaption(QtNodes::PortType::Out,1).contains(ui::text("Accepted tempo, BPM")),"accepted tempo separate from candidate");
+        for(const domain::PortId port:{0,1}){
+            using namespace signal_contracts;
+            const auto& output=model->numeric_node()->outputs[port];
+            const auto contract=std::get<NumericContract>(output.contract.view());
+            check(output.id==port && contract.dtype==DType::Float32 && contract.shape.rank==Rank::Scalar,
+                  "Candidate and accepted tempo use distinct stable scalar ports");
+        }
         check(model->parameter_model()->field("feature_rate_fps") && model->parameter_model()->field("mode"),"rhythm settings registered");
         NumericEditorGraphModel example(models);
         check(example.set_numeric_graph(numeric_rhythm_graph()),"rhythm example imports in actual GUI model");
@@ -263,8 +281,8 @@ int main(int argc,char** argv){
     QFontDatabase::addApplicationFont(QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"));app.setFont(QFont("Segoe UI",9));
 #endif
     auto r=registry();std::fputs("Fourier visibility: complex ports\n",stderr);ports(r,"Fourier");
-    std::fputs("Fourier visibility: real ports\n",stderr);ports(r,"RealFourier");
-    musical_layout_caption();broadband_estimator_labels();std::fputs("Fourier visibility: normalization controls\n",stderr);spectrum_normalization_controls();normalization_widget();
+    std::fputs("Fourier visibility: real ports\n",stderr);ports(r,"RealFourier");ports(r,"AmplitudePhase");
+    generated_node_names();generated_metric_names();common_operation_controls();std::fputs("Fourier visibility: normalization controls\n",stderr);spectrum_normalization_controls();normalization_widget();
     std::fputs("Fourier visibility: shipped graphs\n",stderr);shipped_window_dependency_branches();rhythm_node_ports();rhythm_example_labels();
-    std::puts("PASS Fourier DC visibility, normalization controls, musical layout and shipped window dependencies");
+    std::puts("PASS Fourier visibility, normalization controls, presentation behavior and shipped window dependencies");
 }

@@ -1,4 +1,5 @@
 #include <dataflow_runtime/runtime.h>
+#include "numeric_fourier_fixture.h"
 #include <dsp_kernels/pcm_resampler.h>
 #include <numeric>
 #include <algorithm>
@@ -208,11 +209,15 @@ void resampler_latency(bool spectral){
  ConfiguredProcessingNode resampler;resampler.id=20;resampler.kind="PcmResampler";resampler.parameters=TransformProcessingParameters{{{"input_rate",NumericLiteral{std::uint64_t(48000)}},{"output_rate",NumericLiteral{std::uint64_t(24000)}}}};resampler.inputs={port(PortDirection::Input,0,input)};resampler.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(resampler);g.edges[0].from=20;
  if(!spectral){node(g,2).outputs[0]=port(PortDirection::Output,0,pcm);node(g,3).inputs={port(PortDirection::Input,9,pcm),port(PortDirection::Input,5,pcm)};node(g,3).outputs={port(PortDirection::Output,0,pcm)};}
  else {
-  auto window=pcm;window.shape.extents[0]={512,512};auto bins=vector_contract(256,true,24000);bins.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{24000,512}};
+  auto window=pcm;window.shape.extents[0]={512,512};
   ConfiguredProcessingNode w;w.id=21;w.kind="Window";w.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t(512)}}}};w.inputs={port(PortDirection::Input,0,pcm)};w.outputs={port(PortDirection::Output,0,window)};
-  ConfiguredProcessingNode fft;fft.id=22;fft.kind="StereoFFT";fft.parameters=TransformProcessingParameters{};fft.inputs={port(PortDirection::Input,0,window)};fft.outputs={port(PortDirection::Output,0,bins)};
+  auto fft=numeric_test_builders::real_fourier(23,window,512,profile().admission,require);
+  auto amplitude=numeric_test_builders::amplitude_phase(22,fft,512,24000,NumericArray{std::vector<float>(512,1.f)},require);
+  const auto bins=std::get<NumericContract>(amplitude.outputs[0].contract.view());
   node(g,2).outputs={port(PortDirection::Output,0,bins)};node(g,3).inputs={port(PortDirection::Input,9,bins),port(PortDirection::Input,5,bins)};node(g,3).outputs={port(PortDirection::Output,0,bins)};
-  g.nodes.push_back(w);g.nodes.push_back(fft);g.edges[0].from=22;g.edges.push_back({20,21,0,0});g.edges.push_back({21,22,0,0});
+  g.nodes.push_back(w);g.nodes.push_back(std::move(amplitude));g.nodes.push_back(std::move(fft));
+  g.edges[0].from=22;g.edges.push_back({20,21,0,0});g.edges.push_back({21,23,0,0});
+  g.edges.push_back({23,22,0,0});g.edges.push_back({23,22,1,1});
  }
  g.edges.push_back({1,20,0,0});Running r(g);Observation o;std::array<float,256> values{};values.fill(.25f);
  for(std::uint64_t i=0;i<8;++i){feed(r,g,1,values,i+1);clock(r,tick(std::int64_t(i*128),128,i+1),o);}

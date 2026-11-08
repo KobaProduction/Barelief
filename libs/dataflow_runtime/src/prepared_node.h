@@ -1,5 +1,7 @@
 #pragma once
 #include <dataflow_runtime/runtime.h>
+#include <domain/numeric/matrix_center.h>
+#include <domain/numeric/array_extraction.h>
 #include <dsp_kernels/dsp.h>
 #include <dsp_kernels/prepared_resampler.h>
 #include <dsp_kernels/numeric_convert.h>
@@ -34,10 +36,13 @@ struct ContentLineage {
 };
 struct PlanNode {
     struct ScalarInput {DataContract contract;std::size_t parent=absent,clock=absent;PortId port=0,parent_port=0;bool clock_known=false;};
-    struct EndpointPlan {std::vector<ScalarInput> inputs;std::array<std::size_t,3> indices{};std::vector<double> weights;double weight_scale=0;};
+    struct EndpointPlan {
+        std::vector<ScalarInput> inputs;std::array<std::size_t,3> indices{};std::vector<double> weights;double weight_scale=0;
+        AxisExtraction extraction;std::vector<float> extraction_indices;std::uint64_t extraction_constant=0;bool axis_extraction=false;
+    };
     std::unique_ptr<EndpointPlan> endpoint_plan;
     std::size_t parent = absent, clock = absent;
-    std::size_t product_frame_input=0;
+    std::size_t product_frame_input=0,product_trigger_input=0;
     struct {NodeId id=-1;NodeKind kind=NodeKind::NetworkInput;bool enabled=true;} node;
     std::uint16_t parent_port=0,selected_input=0;
     // Internal flags only; this object is never a serialized wire layout.
@@ -68,7 +73,7 @@ struct PlanNode {
     std::shared_ptr<const GatherOwner> gather;
     std::shared_ptr<const GatherOwner> input_gather;
     std::size_t matrix_row=0;
-    unsigned center_method=0;
+    MatrixCenterMethod center_method=MatrixCenterMethod::Mean;
     float center_offset=0;
     float gain=1;
     float wled_peak_hz=0,wled_magnitude=0;

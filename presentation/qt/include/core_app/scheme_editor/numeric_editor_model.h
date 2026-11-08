@@ -83,6 +83,7 @@ private:
     void restore_configuration_connections(const domain::NumericProcessingGraph&,const domain::NumericProcessingGraph&);
     bool resolve_adapter_graph(QtNodes::NodeId,const QJsonObject&,domain::NumericProcessingGraph&);
     bool load_draft_node(const domain::ConfiguredProcessingNode&,const QJsonObject&,QString*);
+    bool load_draft_candidate(const domain::NumericProcessingGraph&,const QJsonObject&,QString*);
     bool load_draft_edges(const domain::NumericProcessingGraph&,QString*);
     bool load_draft_bindings(const domain::NumericProcessingGraph&,QString*);
     void install_draft_graph(const domain::NumericProcessingGraph&,const NumericEditorGraphModel&);

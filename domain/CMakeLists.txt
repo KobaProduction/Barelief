@@ -1,11 +1,13 @@
 add_library(domain_model STATIC src/graph_definition.cpp
+    src/graph/window_parameters.cpp
     src/graph/processing_parameters.cpp src/graph/parameter_registry.cpp src/numeric/contract_snapshot.cpp
     src/numeric/parameter_descriptors.cpp src/signal/parameter_descriptors.cpp
     src/music/parameter_descriptors.cpp src/graph/routing_parameter_descriptors.cpp
     src/graph/adapter_parameter_descriptors.cpp src/graph/view_parameter_descriptors.cpp)
 add_library(domain_numeric STATIC src/numeric/array_generator_contract.cpp
     src/numeric/array_concat_contract.cpp src/numeric/array_product_contract.cpp
-    src/numeric/matrix_contracts.cpp src/numeric/temporal_operation_contracts.cpp
+    src/numeric/array_extraction.cpp
+    src/numeric/matrix_contracts.cpp
     src/numeric/interval_operation_contracts.cpp src/numeric/common_operation_contracts.cpp
     src/numeric/sequence_operation_contracts.cpp src/numeric/spectral_sequence_parameters.cpp src/numeric/reference_operation_contracts.cpp)
 add_library(domain_signal STATIC src/signal/fourier_contracts.cpp

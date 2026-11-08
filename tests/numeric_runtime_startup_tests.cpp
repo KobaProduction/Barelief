@@ -56,7 +56,7 @@ void observe_bins(Metrics& metrics,const NumericView& view,std::size_t id) {
     if(id!=4 && id!=15)return;
     for(std::size_t i=0;i<bins.size();++i){
         float value=0;
-        CHECK(load_element(view,{0,bins[i]+metrics.bin_shift,0},value)==Status::ok);
+        CHECK(load_element(view,{0,bins[i]+metrics.bin_shift-1,0},value)==Status::ok);
         (id==4?metrics.fft:metrics.mono)[i]=value;
     }
 }
@@ -70,6 +70,7 @@ void observe_numeric(Metrics& metrics,const NumericView& view,std::size_t id) {
     observe_bins(metrics,view,id);
 }
 void observe(void* user,const NumericPortFrameView& frame) {
+    if(frame.identity.node==4 && frame.identity.port!=processing_output)return;
     auto& metrics=*static_cast<Metrics*>(user);
     CHECK(frame.status==Status::ok && frame.frame.stamp.available);
     if(frame.status!=Status::ok)return;
@@ -161,7 +162,7 @@ struct Fixture {
     }
 };
 void assert_default_spectrum(const Fixture& f) {
-    const float expected=float(.025*(4096.-1)/(4.*4096.));
+    const float expected=.025f;
     const float channel_gain=1.f;
     for(std::size_t i=0;i<bins.size();++i){
         CHECK(std::abs(f.metrics.fft[i]-expected)<.000002);
@@ -174,7 +175,7 @@ void assert_default_delivery(Fixture& f) {
     CHECK(f.metrics.rows==80 && f.metrics.view_rows==80 && f.metrics.filled==80 && f.metrics.scalar==80);
     CHECK(f.metrics.energy[9]>0 && f.metrics.energy[10]>0 && f.metrics.energy[11]>0);
     assert_default_spectrum(f);
-    const float expected=float(.025*(4096.-1)/(4.*4096.));
+    const float expected=.025f;
     std::printf("STARTUP PCM=%zu windows=%zu history=%zu count=%llu fft_bin17=%.9g expected=%.9g mel_energy=%.9g\n",
         f.metrics.deliveries[9],f.metrics.deliveries[4],f.metrics.rows,(unsigned long long)f.metrics.scalar,
         f.metrics.fft[0],expected,f.metrics.energy[11]);
@@ -204,7 +205,7 @@ void assert_disabled_window(const Fixture& f) {
     // Shape-preserving WindowFunction bypasses DSP but retains amplitude.
     CHECK(f.metrics.energy[2]>0 && f.metrics.energy[3]==4096 && f.metrics.energy[1001]==f.metrics.energy[2]);
     CHECK(f.metrics.energy[6]>0 && f.metrics.energy[11]>0);
-    for(const auto magnitude:f.metrics.fft)CHECK(std::abs(magnitude-.025f/2)<.000002);
+    for(const auto magnitude:f.metrics.fft)CHECK(std::abs(magnitude-.025f)<.000002);
 }
 void switch_core_node(Fixture& f,NodeId id) {
     f.node(id).enabled=false;

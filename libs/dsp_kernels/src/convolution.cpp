@@ -108,20 +108,35 @@ template<typename Scalar> bool render_convolution(std::span<const Scalar> input,
     }
     return true;
 }
+template<typename Scalar> bool valid_convolution_geometry(std::span<const Scalar> input,std::span<const Scalar> kernel,
+                                                         std::span<Scalar> output,SameConvolutionCrop crop) noexcept {
+    return !(unsigned(crop)>unsigned(SameConvolutionCrop::Input) || input.size()>std::size_t(PTRDIFF_MAX)/sizeof(Scalar) ||
+       kernel.size()>std::size_t(PTRDIFF_MAX)/sizeof(Scalar) || output.size()!=same_convolution_size(input.size(),kernel.size(),crop));
+}
+template<typename Scalar>
+bool select_convolution_fma(std::size_t input_size,std::size_t kernel_size,
+                            detail::ReferenceConvolutionFma& fused) noexcept {
+    if constexpr(std::is_same_v<Scalar,double>){
+        fused=detail::select_reference_convolution_fma();
+        if(std::min(input_size,kernel_size)>=16 && !fused)return false;
+    }
+    return true;
+}
+
 template<typename Scalar> bool convolve(std::span<const Scalar> input,std::span<const Scalar> kernel,
                                        std::span<Scalar> output,SameConvolutionCrop crop) noexcept {
-    if(unsigned(crop)>unsigned(SameConvolutionCrop::Input) || input.size()>std::size_t(PTRDIFF_MAX)/sizeof(Scalar) ||
-       kernel.size()>std::size_t(PTRDIFF_MAX)/sizeof(Scalar) || output.size()!=same_convolution_size(input.size(),kernel.size(),crop))return false;
+    if(!valid_convolution_geometry(input,kernel,output,crop))return false;
     if(!finite(input) || !finite(kernel) || overlap(input,output) || overlap(kernel,output))return false;
     if(input.empty())return true;
     if(kernel.empty()){std::copy(input.begin(),input.end(),output.begin());return true;}
     detail::ReferenceConvolutionFma fused=nullptr;
-    if constexpr(std::is_same_v<Scalar,double>){
-        fused=detail::select_reference_convolution_fma();
-        if(std::min(input.size(),kernel.size())>=16 && !fused)return false;
-    }
+    if(!select_convolution_fma<Scalar>(input.size(),kernel.size(),fused))return false;
     return render_convolution(input,kernel,output,crop,fused);
 }
+}
+bool reference_same_convolution_available(std::size_t input,std::size_t kernel) noexcept {
+    return input<=std::size_t(PTRDIFF_MAX)/sizeof(double) && kernel<=std::size_t(PTRDIFF_MAX)/sizeof(double) &&
+        (std::min(input,kernel)<16 || detail::select_reference_convolution_fma());
 }
 std::size_t same_convolution_size(std::size_t input,std::size_t kernel,SameConvolutionCrop crop) noexcept {
     if(unsigned(crop)>unsigned(SameConvolutionCrop::Input))return 0;

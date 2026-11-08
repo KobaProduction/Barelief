@@ -1,4 +1,5 @@
 #include "editor_ui_test_fixture.h"
+#include <rhythm_graph_adapters/essentia_ports.h>
 #include "isolated_gui_platform.h"
 #include "synthetic_capture.h"
 #include <core_app/core_application.h>
@@ -6,6 +7,7 @@
 #include <pipeline/numeric_engine.h>
 #include <QAction>
 #include <QMenu>
+#include <QStatusBar>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QtTest/QSignalSpy>
@@ -27,7 +29,7 @@ constexpr std::array librosa_outputs{ReferenceOutput{35,0},ReferenceOutput{4,0}}
 constexpr std::array aubio_outputs{ReferenceOutput{33,4}};
 constexpr std::array btrack_outputs{ReferenceOutput{34,1}};
 constexpr std::array madmom_outputs{ReferenceOutput{4,0},ReferenceOutput{80,0},ReferenceOutput{81,0}};
-constexpr std::array essentia_outputs{ReferenceOutput{50,1},ReferenceOutput{60,0}};
+constexpr std::array essentia_outputs{ReferenceOutput{50,domain::PortId(rhythm_graph_adapters::RenewalOutput::Times)},ReferenceOutput{60,0}};
 constexpr std::array presets{
     ReferencePreset{"reference-beat",librosa_outputs},
     ReferencePreset{"aubio-reference",aubio_outputs},
@@ -43,22 +45,31 @@ bool connected(const domain::NumericProcessingGraph& graph,domain::NodeId from,d
     });
 }
 
-std::size_t node_count(const domain::NumericProcessingGraph& graph,std::string_view kind) {
-    return std::count_if(graph.nodes.begin(),graph.nodes.end(),[=](const auto& node){return node.kind==kind;});
+std::size_t node_count(const domain::NumericProcessingGraph& graph,domain::NodeKind kind) {
+    return std::count_if(graph.nodes.begin(),graph.nodes.end(),[=](const auto& node){return domain::node_kind(node.kind)==kind;});
 }
 
+bool reaches(const domain::NumericProcessingGraph& graph,domain::NodeId from,domain::NodeId target) {
+    std::vector<domain::NodeId> reached{from};
+    for(std::size_t i=0;i<reached.size();++i){
+        if(reached[i]==target)return true;
+        for(const auto& edge:graph.edges)
+            if(edge.from==reached[i] && std::find(reached.begin(),reached.end(),edge.to)==reached.end())reached.push_back(edge.to);
+    }
+    return false;
+}
 void verify_shared_frontend(const domain::NumericProcessingGraph& graph,std::string_view id) {
-    require(node_count(graph,"AudioSource")==1,"Preset must have one shared source");
+    require(node_count(graph,domain::NodeKind::AudioSource)==1,"Preset must have one shared source");
     if(id=="madmom-superflux-reference"){
-        require(node_count(graph,"FeatureAggregate")==1 && node_count(graph,"NumberAccumulator")==1,
+        require(node_count(graph,domain::NodeKind::FeatureAggregate)==1 && node_count(graph,domain::NodeKind::NumberAccumulator)==1,
             "madmom must use a single SuperFlux history");
         for(const auto& output:madmom_outputs)
-            require(connected(graph,31,0,output.node),"All madmom branches must read the same ODF snapshot");
+            require(reaches(graph,31,output.node),"All madmom branches must consume the shared ODF snapshot");
     }
     if(id=="essentia-reference"){
-        require(node_count(graph,"FrameBuffer")==1 && node_count(graph,"PeriodBeatTracker")==5,
+        require(node_count(graph,domain::NodeKind::FrameBuffer)==1 && node_count(graph,domain::NodeKind::RenewalBeatDecoder)==5 && node_count(graph,domain::NodeKind::PeriodPath)==5,
             "Essentia must share the PCM session and first candidate");
-        require(connected(graph,50,1,60) && connected(graph,50,1,103) && connected(graph,60,0,114),
+        require(connected(graph,50,domain::PortId(rhythm_graph_adapters::RenewalOutput::Times),60) && connected(graph,50,domain::PortId(rhythm_graph_adapters::RenewalOutput::Times),103) && connected(graph,60,0,114),
             "Degara and MultiFeature must share the first candidate and expose both outputs");
     }
 }
@@ -95,13 +106,21 @@ bool wait_for_outputs(pipeline::NumericEngine& engine,const std::string& graph,
 }
 
 void verify_preset(CoreApplication& app,MainWindow& window,const ReferencePreset& preset) {
-    std::fprintf(stderr,"GUI preset %s\n",preset.id);
+    QElapsedTimer elapsed;elapsed.start();
+    std::fprintf(stderr,"GUI preset %s pending_before=%d\n",preset.id,int(app.presenter().graph_request_pending()));
     auto* menu=window.findChild<QMenu*>("rhythmReferencePresetsMenu");
     auto* action=menu->findChild<QAction*>(QStringLiteral("example-")+QString::fromLatin1(preset.id));
     require(action && action->isEnabled(),"Research preset QAction missing");
     QSignalSpy applied(&app.presenter(),&GuiPresenter::graph_apply_finished);
     action->trigger();
-    require(editor_ui_test_fixture::wait_until([&]{return !applied.isEmpty();},12000),"Research preset Apply did not finish");
+    const auto rejection=window.statusBar()->currentMessage();
+    std::fprintf(stderr,"GUI preset %s trigger_ms=%lld pending_after=%d replies=%lld\n",preset.id,
+        static_cast<long long>(elapsed.elapsed()),int(app.presenter().graph_request_pending()),static_cast<long long>(applied.size()));
+    const bool finished=editor_ui_test_fixture::wait_until([&]{return !applied.isEmpty();},12000);
+    std::fprintf(stderr,"GUI preset %s wait_end_ms=%lld pending=%d replies=%lld\n",preset.id,
+        static_cast<long long>(elapsed.elapsed()),int(app.presenter().graph_request_pending()),static_cast<long long>(applied.size()));
+    if(!finished)std::fprintf(stderr,"GUI preset rejection: %s\n",qPrintable(rejection));
+    require(finished,"Research preset Apply did not finish");
     require(applied.last()[1].toBool(),"Research preset Apply rejected");
     auto& host=dynamic_cast<pipeline::NumericDesktopHost&>(app.presenter().client());
     domain::NumericProcessingGraph graph;

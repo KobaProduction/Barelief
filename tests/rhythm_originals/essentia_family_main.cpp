@@ -17,10 +17,9 @@ essentia_family_export::Case arguments(char** argv) {
 }
 namespace {
 void export_case(const essentia_family_export::Case& c,const std::string& method) {
-    if(method=="essentia_polar" || method=="pulse_train" || method=="band_emphasis" || method=="global_pcm")return essentia_family_export::diagnostics(c,method);
+    if(method=="pulse_train")return essentia_family_export::diagnostics(c,method);
     if(method=="ibi" || method=="rubato" || method=="harmonic")return essentia_family_export::intervals(c,method);
-    if(method=="summary_single" || method=="summary_multi" || method=="descriptors")return essentia_family_export::summary(c,method);
-    if(method=="meter" || method=="beatogram" || method=="band_novelty" || method=="fixedbpm" || method=="rhythm_transform")return essentia_family_export::matrix(c,method);
+    if(method=="beatogram")return essentia_family_export::matrix(c,method);
     essentia_family_export::pcm(c,method);
 }
 }

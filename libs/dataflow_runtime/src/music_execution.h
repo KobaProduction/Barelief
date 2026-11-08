@@ -22,7 +22,7 @@ private:
     friend bool music_support(const domain::ResolvedProcessingNode&,domain::ProcessingResources&,const NumericRuntimeProfile&) noexcept;
     friend signal_contracts::Status prepare_music(PlanNode&,State&,const domain::ResolvedProcessingNode&,const NumericRuntimeProfile&);
     friend signal_contracts::Status execute_music(const PlanNode&,State&,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
-    friend signal_contracts::Status accept_fourier(const PlanNode&,State&,std::size_t,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
+    friend signal_contracts::Status accept_paired_operation(const PlanNode&,State&,std::size_t,const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
 };
 bool spectral_frontend_resources(const domain::ResolvedProcessingNode&,domain::ProcessingResources&) noexcept;
 bool music_support(const domain::ResolvedProcessingNode&,domain::ProcessingResources&,const NumericRuntimeProfile&) noexcept;
@@ -31,6 +31,6 @@ signal_contracts::Status execute_music(const PlanNode&,State&,const signal_contr
 bool resampler_config(const domain::ResolvedProcessingNode&,dsp_kernels::ResamplerConfig&) noexcept;
 // Copies each borrowed plane into bounded owning storage. Emits only matching
 // signal intervals; would_block means one of the connected planes is pending.
-signal_contracts::Status accept_fourier(const PlanNode&,State&,std::size_t,
+signal_contracts::Status accept_paired_operation(const PlanNode&,State&,std::size_t,
     const signal_contracts::DataFrameView&,const signal_contracts::FrameLimits&) noexcept;
 }

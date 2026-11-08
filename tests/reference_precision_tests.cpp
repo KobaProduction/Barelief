@@ -1,12 +1,10 @@
 #include <dsp_kernels/detail/prepared_reference_fourier.h>
 #include <dsp_kernels/convolution.h>
-#include <dsp_kernels/tempo_analysis_sequence.h>
 #include <dsp_kernels/filter_projection.h>
 #include <dsp_kernels/log_frequency_filter_bank.h>
 #include <dsp_kernels/mel_filter_bank.h>
 #include <string_view>
 #include <dsp_kernels/spectral_frame_recipe.h>
-#include <dsp_kernels/tempogram_sequence.h>
 #include <dsp_kernels/sample_rotation.h>
 #include <array>
 #include <cmath>
@@ -49,17 +47,6 @@ void reference_recipe_lifecycle() {
     check(allocations==before,"reference recipe hot C++ allocation");
     input[0]=std::numeric_limits<float>::quiet_NaN();
     check(!plan.process_frame(input,0,output) && plan.values().complex.empty(),"failed reference frame invalidates stage publication");
-}
-void hybrid_storage_and_publication() {
-    dsp_kernels::TempogramSequenceConfig c;c.method=dsp_kernels::TempogramMethod::Hybrid;
-    c.frame_rate=100;c.autocorrelation.window.length=96;c.autocorrelation.window.precision=dsp_kernels::NumericalPrecision::DesktopReference;
-    dsp_kernels::PreparedTempogramSequence plan;std::size_t bound=0;
-    check(plan.prepare(c) && decltype(plan)::storage_bytes(c,{},bound) && plan.workspace_bytes()<=bound,"checked hybrid Double storage");
-    std::array<float,173> input{};std::array<float,49> output{};
-    const auto data=signal<173>();for(std::size_t i=0;i<input.size();++i)input[i]=float(std::abs(data[i]));
-    const auto before=allocations;check(plan.process_frame(input,42,output),"reference hybrid evaluation");
-    check(allocations==before && plan.view().values.size()==output.size(),"reference hybrid prepared processing/publication");
-    check(!plan.process_frame(input,1000,output) && plan.view().values.empty(),"reference hybrid failure clears views");
 }
 void acf_publication_range() {
     auto c=dsp_kernels::real_linear_autocorrelation_config();c.precision=dsp_kernels::NumericalPrecision::DesktopReference;
@@ -261,10 +248,7 @@ bool reference_convolution_admission(){
     std::array<double,16> input{},kernel{},output{};output.fill(17);
     const auto before=allocations;const bool available=dsp_kernels::convolve_same(input,kernel,output);
     check(std::all_of(output.begin(),output.end(),[available](double value){return value==(available?0.:17.);}),"unavailable fused convolution rejects before output writes");
-    dsp_kernels::TempoAnalysisSequenceConfig config;config.precision=dsp_kernels::NumericalPrecision::DesktopReference;
-    config.histogram.method=dsp_kernels::TempoHistogramEstimator::Comb;std::size_t bytes=17;
-    check(dsp_kernels::PreparedTempoAnalysisSequence::storage_bytes(128,config,{},{},{},bytes)==available,"reference tempo cold admission agrees with fused convolution availability");
-    check(available || bytes==17,"unavailable reference admission preserves storage output");
+    check(dsp_kernels::reference_same_convolution_available(16,16)==available,"pure convolution admission matches processing capability");
     check(allocations==before,"reference fused capability admission allocates no storage");
     return available;
 }
@@ -1616,7 +1600,7 @@ void operator delete[](void* value,std::size_t) noexcept {std::free(value);}
 int main(int argc,char** argv) {
     if(argc==2 && std::string_view(argv[1])=="--reference-filter-only"){reference_filter_projection_controls();return 0;}
     if(argc==2 && std::string_view(argv[1])=="--reference-convolution-only"){reference_convolution_controls();return 0;}
-    odd_transform_and_clone();reference_recipe_lifecycle();hybrid_storage_and_publication();
+    odd_transform_and_clone();reference_recipe_lifecycle();
     acf_publication_range();window_publication_range();fourier_publication_range();
     source_magnitude_projection();source_magnitude_recipe();
     scalar_embedding_layout();reference_embedding_geometry();reference_convolution_controls();reference_filter_projection_controls();

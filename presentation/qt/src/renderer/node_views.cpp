@@ -4,6 +4,7 @@
 #include <core_app/plot_composition.h>
 #include "core_app/settings_widget.h"
 #include "core_app/scheme_editor/audio_node_model.h"
+#include "core_app/scheme_editor/presentation_labels.h"
 #include "barelief/surface_settings.h"
 #include "barelief/ui_text.h"
 #include "barelief/charts/line.h"
@@ -122,7 +123,7 @@ QJsonObject MainWindow::prepare_node_view_preferences(const QString& key,const Q
 WorkspaceDock *MainWindow::prepare_node_view_dock(const QString& key,const QString& kind,
                                                     int node,int instance,bool existing) {
     auto *dock = existing ? _node_views[key].dock :
-        new WorkspaceDock(AudioNodeModel(kind).caption() + " #" + QString::number(node), this);
+        new WorkspaceDock(AudioNodeModel::default_caption(kind) + " #" + QString::number(node), this);
     dock->setProperty("graphKind", kind);
     dock->setProperty("graphViewKey", key);
     dock->setObjectName("nodeView_" + key);
@@ -518,7 +519,7 @@ void MainWindow::configure_scalar_metric_view(GraphPanel *panel,const QString& k
     for (const auto& port : node.inputs) {
         const auto configured = options.value(QString::number(port.id)).toObject();
         if (!configured.value("enabled").toBool(true)) continue;
-        const auto name = configured.value("display_name").toString().trimmed();
+        const auto name = numeric_editor::presentation_label(configured);
         inputs.push_back({port.id,name});
         NumericBinding binding{{graph.graph_id,node.id,domain::PortDirection::Input,port.id},
             0,_application.device_id()};

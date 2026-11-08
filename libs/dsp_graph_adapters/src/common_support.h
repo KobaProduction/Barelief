@@ -31,23 +31,27 @@ public:
     std::size_t object_bytes() const noexcept override {return sizeof(Derived);}
 };
 using PreparedCommon=std::unique_ptr<CommonOperation>;
-bool common_resources(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&,
+bool common_resources(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&,
     std::size_t object,std::size_t workspace,domain::ProcessingSupport&) noexcept;
-bool common_vector(const domain::ResolvedProcessingNode&,domain::PortId,std::size_t&) noexcept;
-bool common_output(const domain::ResolvedProcessingNode&,domain::PortId,signal_contracts::Rank,std::size_t,std::size_t=1,
+bool common_vector(const dataflow_runtime::NumericOperationNodeView&,domain::PortId,std::size_t&) noexcept;
+bool common_output(const dataflow_runtime::NumericOperationNodeView&,domain::PortId,signal_contracts::Rank,std::size_t,std::size_t=1,
     signal_contracts::DType=signal_contracts::DType::Float32) noexcept;
 bool common_values(const NumericOperationInput&,std::span<float>,std::span<const float>&) noexcept;
-PreparedCommon prepare_common_values(const domain::ResolvedProcessingNode&);
-bool temporal_frame_sequence_rows(const domain::ResolvedProcessingNode&,std::size_t,std::size_t&) noexcept;
-PreparedCommon prepare_temporal_frame_sequence(const domain::ResolvedProcessingNode&);
-domain::ProcessingSupport assess_temporal_frame_sequence(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
-PreparedCommon prepare_array_reindex(const domain::ResolvedProcessingNode&);
-domain::ProcessingSupport assess_array_reindex(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
-PreparedCommon prepare_feature_aggregate(const domain::ResolvedProcessingNode&);
-domain::ProcessingSupport assess_feature_aggregate(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
-PreparedCommon prepare_common_filters(const domain::ResolvedProcessingNode&);
-PreparedCommon prepare_common_sequences(const domain::ResolvedProcessingNode&);
-domain::ProcessingSupport assess_common_values(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
-domain::ProcessingSupport assess_common_filters(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
-domain::ProcessingSupport assess_common_sequences(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
+PreparedCommon prepare_absolute_value(const dataflow_runtime::NumericOperationNodeView&);
+domain::ProcessingSupport assess_absolute_value(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+PreparedCommon prepare_common_values(const dataflow_runtime::NumericOperationNodeView&);
+bool temporal_frame_sequence_rows(const dataflow_runtime::NumericOperationNodeView&,std::size_t,std::size_t&) noexcept;
+PreparedCommon prepare_temporal_frame_sequence(const dataflow_runtime::NumericOperationNodeView&);
+domain::ProcessingSupport assess_temporal_frame_sequence(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+bool linear_expansion_actual(const dataflow_runtime::NumericOperationNodeView&,std::size_t,std::size_t&) noexcept;
+PreparedCommon prepare_feature_aggregate(const dataflow_runtime::NumericOperationNodeView&);
+domain::ProcessingSupport assess_feature_aggregate(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+PreparedCommon prepare_common_filters(const dataflow_runtime::NumericOperationNodeView&);
+PreparedCommon prepare_common_sequences(const dataflow_runtime::NumericOperationNodeView&);
+domain::ProcessingSupport assess_common_values(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+domain::ProcessingSupport assess_common_filters(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+domain::ProcessingSupport assess_common_sequences(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+PreparedCommon prepare_common_axis(const dataflow_runtime::NumericOperationNodeView&);
+domain::ProcessingSupport assess_common_axis(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
+
 }

@@ -1,5 +1,6 @@
 #include "canonical_runtime_test_fixture.h"
 #include "canonical_core_regressions.h"
+#include "numeric_fourier_fixture.h"
 #include <bit>
 #include <domain/signal/contracts.h>
 #ifdef BARELIEF_TEST_DESKTOP_SPEEX
@@ -19,24 +20,29 @@ static std::size_t spectrum_peak(const NumericView& view){std::size_t peak=0;flo
  return peak;
 }
 static void spectrum(void* user,const NumericPortFrameView& f){
- if(f.status!=Status::ok || (f.identity.node!=4&&f.identity.node!=24))return;
+ if(f.status!=Status::ok || f.identity.port!=0 || (f.identity.node!=4&&f.identity.node!=24))return;
  auto& result=*static_cast<Spectra*>(user);const auto& view=std::get<NumericView>(f.frame.payload);
  check(view.planes.size()==1,"mono FFT output");const auto slot=f.identity.node==4?0:1;
  result.peak[slot]=spectrum_peak(view);++result.count[slot];result.end[slot]=f.frame.stamp.timestamp_ticks;
 }
 static NumericProcessingGraph single_window_graph(std::size_t size){
- auto graph=oracle_graph();std::erase_if(graph.nodes,[](const auto& n){return n.id>4 || n.id==3;});
- graph.configuration_bindings.clear();graph.edges={{1,2,0,0},{2,4,0,0}};geometry(graph,8192,size,256);return graph;
+ auto graph=oracle_graph();std::erase_if(graph.nodes,[](const auto& n){return n.id>2;});
+ graph.configuration_bindings.clear();graph.edges={{1,2,0,0}};geometry(graph,8192,size,256);
+ const auto window=std::get<NumericContract>(node(graph,2).outputs[0].contract.view());
+ auto fourier=numeric_test_builders::real_fourier(3,window,size,profile().admission,check);
+ auto amplitude=numeric_test_builders::amplitude_phase(4,fourier,size,8192,NumericArray{std::vector<float>(size,1.f)},check);
+ graph.nodes.push_back(std::move(fourier));graph.nodes.push_back(std::move(amplitude));
+ graph.edges.insert(graph.edges.end(),{{2,3,0,0},{3,4,0,0},{3,4,1,1}});return graph;
 }
 static NumericProcessingGraph dual_window_graph(){auto graph=single_window_graph(2048),short_graph=single_window_graph(512);
  for(auto n:short_graph.nodes)if(n.id!=1){n.id+=20;graph.nodes.push_back(std::move(n));}
- graph.edges.push_back({1,22,0,0});graph.edges.push_back({22,24,0,0});return graph;
+ graph.edges.insert(graph.edges.end(),{{1,22,0,0},{22,23,0,0},{23,24,0,0},{23,24,1,1}});return graph;
 }
 static void independent_windows(){auto g=dual_window_graph();
  GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"apply dual windows");Feed feed(g);Spectra result;
  for(int i=0;i<32;++i)feed.process(e,256,{spectrum,nullptr,nullptr,&result});
- for(std::size_t i=0;i<2;++i)check(result.count[i]==32&&result.end[i]==7936&&result.peak[i]==(i==0?128:32),"independent mono window schedule/timestamp");
- std::puts("independent windows2048/512 mono peaks128/32 PASS");}
+ for(std::size_t i=0;i<2;++i)check(result.count[i]==32&&result.end[i]==7936&&result.peak[i]==(i==0?127:31),"independent mono window schedule/timestamp");
+ std::puts("independent windows2048/512 mono peaks at bins128/32 (non-DC indices127/31) PASS");}
 struct RetainedHistory {std::size_t filled=0,bands=0;std::uint64_t sequence=0;bool discontinuity=false;std::vector<std::uint64_t> bits;};
 static RetainedHistory retained_history(const GraphExecutor& e,NodeId id=7){DataFrameView frame;std::uint64_t filled=0;check(e.plan()->history(id,0,*e.context(),frame,&filled)==Status::ok,"retain History observation");const auto& view=std::get<NumericView>(frame.payload);RetainedHistory result;result.sequence=frame.stamp.sequence;result.discontinuity=frame.stamp.discontinuity;result.filled=std::size_t(filled);result.bands=view.actual[1];result.bits.resize(result.filled*result.bands);
  for(std::size_t r=0;r<result.filled;++r)for(std::size_t b=0;b<result.bands;++b)check(load_bits(view,{0,view.actual[0]-result.filled+r,b},view.contract->dtype,result.bits[r*result.bands+b])==Status::ok,"retain History exact bits");return result;}

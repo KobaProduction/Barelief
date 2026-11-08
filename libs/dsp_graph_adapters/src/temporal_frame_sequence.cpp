@@ -4,7 +4,7 @@
 namespace dsp_graph_adapters::detail {
 namespace {
 using namespace signal_contracts;using namespace dsp_kernels;
-bool framing(const domain::ResolvedProcessingNode& node,TemporalWindowConfig& config) noexcept {
+bool framing(const dataflow_runtime::NumericOperationNodeView& node,TemporalWindowConfig& config) noexcept {
     std::size_t tail=1;bool center=false;
     if(!integer(node,"window_length",2048,config.length) || !integer(node,"hop",512,config.hop) ||
        !integer(node,"tail",1,tail) || tail>1 || !flag(node,"center",false,center) || center)return false;
@@ -13,7 +13,7 @@ bool framing(const domain::ResolvedProcessingNode& node,TemporalWindowConfig& co
 }
 class FrameSequence final:public CommonKernel<FrameSequence> {
 public:
-    bool prepare(const domain::ResolvedProcessingNode& node) {
+    bool prepare(const dataflow_runtime::NumericOperationNodeView& node) {
         TemporalWindowConfig config;std::size_t count=0;
         if(!common_vector(node,0,count) || !framing(node,config) || !window_.prepare(config))return false;
         input_.resize(count);row_.resize(config.length);return true;
@@ -34,14 +34,14 @@ private:
     PreparedTemporalWindow window_;std::vector<float> input_,row_;
 };
 }
-bool temporal_frame_sequence_rows(const domain::ResolvedProcessingNode& node,std::size_t samples,std::size_t& rows) noexcept {
+bool temporal_frame_sequence_rows(const dataflow_runtime::NumericOperationNodeView& node,std::size_t samples,std::size_t& rows) noexcept {
     dsp_kernels::TemporalWindowConfig config;
     return framing(node,config) && dsp_kernels::PreparedTemporalWindow::frame_count(config,samples,rows);
 }
-PreparedCommon prepare_temporal_frame_sequence(const domain::ResolvedProcessingNode& node) {
+PreparedCommon prepare_temporal_frame_sequence(const dataflow_runtime::NumericOperationNodeView& node) {
     auto next=std::make_unique<FrameSequence>();return next->prepare(node)?std::move(next):nullptr;
 }
-domain::ProcessingSupport assess_temporal_frame_sequence(const domain::ResolvedProcessingNode& node,const dataflow_runtime::NumericRuntimeProfile& profile) noexcept {
+domain::ProcessingSupport assess_temporal_frame_sequence(const dataflow_runtime::NumericOperationNodeView& node,const dataflow_runtime::NumericOperationProfile& profile) noexcept {
     TemporalWindowConfig config;std::size_t count=0,frames=0,bytes=0;domain::ProcessingSupport result;
     if(!common_vector(node,0,count) || !framing(node,config) || !PreparedTemporalWindow::frame_count(config,count,frames) ||
        !common_output(node,0,Rank::Matrix,frames,config.length) || !PreparedTemporalWindow::storage_bytes(config,{},bytes) ||

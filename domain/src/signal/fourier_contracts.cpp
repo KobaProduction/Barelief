@@ -66,47 +66,29 @@ Status fourier_parameters(const ConfiguredProcessingNode& node,double& n) {
        (node.kind=="Fourier" && method=="radix4" && (std::size_t(n)&0x55555555)==0))return Status::invalid_argument;
     return Status::ok;
 }
-Status fourier_endpoints(const ConfiguredProcessingNode& node,bool& include) {
-    include=false;if(node.kind!="RealFourier")return Status::ok;
-    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Fourier,
-        node.inputs,node.outputs,&node.parameters,node.enabled};
-    ProcessingParameterView value;
-    if(resolve_processing_parameter(resolved,"include_endpoints",value)!=Status::ok)return Status::invalid_argument;
-    const auto* flag=std::get_if<bool>(&value);if(!flag)return Status::invalid_argument;
-    include=*flag;return Status::ok;
-}
-NumericContract fourier_bin_contract(const ConfiguredProcessingNode& node,const NumericContract& input,double n,bool include) {
+NumericContract fourier_bin_contract(const ConfiguredProcessingNode& node,const NumericContract& input,double n) {
     auto value=input;value.semantic=Semantic::Numeric;value.history_element=Semantic::Numeric;
     if(input.dtype==DType::Float64){value.dtype=DType::Float32;value.representation.alignment=alignof(float);}
     value.quantity=Quantity::SpectrumReal;value.unit=NumericUnit::RawAmplitude;
     value.representation.normalization=Normalization::None;value.coordinates={};
     const auto axis=input.shape.rank==Rank::Matrix?1u:0u;
     if(axis)value.coordinates[0]=input.coordinates[0];
-    value.coordinates[axis]={CoordinateMode::Regular,NumericUnit::Values,{node.kind=="Fourier" || include?0:1,1},{1,1}};
+    value.coordinates[axis]={CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}};
     value.shape.axes[axis]=Axis::Bin;
-    const auto count=node.kind=="Fourier"?std::uint64_t(n):std::uint64_t(n)/2+std::uint64_t(include);
+    const auto count=node.kind=="Fourier"?std::uint64_t(n):std::uint64_t(n)/2+1;
     value.shape.extents[axis]={count,count};
     return value;
 }
-NumericContract fourier_port_contract(const NumericContract& value,bool real,bool include,std::size_t port) {
-    auto result=value;result.quantity=port==1?Quantity::SpectrumImaginary:Quantity::SpectrumReal;
-    const auto axis=value.shape.rank==Rank::Matrix?1u:0u;
-    if(real && !include && port==1){--result.shape.extents[axis].minimum;--result.shape.extents[axis].maximum;}
-    if(port==2){
-        if(axis){result.shape.rank=Rank::Vector;result.shape.axes[1]=Axis::None;result.shape.extents[1]={};result.coordinates[1]={};}
-        else{result.shape={};result.coordinates={};}
-    }
-    return result;
-}
-Status materialize_fourier_contracts(const NumericContract& value,bool real,bool include,std::vector<OwnedProcessingContract>& out) {
+Status materialize_fourier_contracts(NumericContract value,std::vector<OwnedProcessingContract>& out) {
 #if defined(__cpp_exceptions)
     try {
 #endif
-    std::vector<OwnedProcessingContract> candidate;candidate.reserve(real?3:2);
+    std::vector<OwnedProcessingContract> candidate;candidate.reserve(2);
     constexpr FrameLimits bounds{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX};
-    for(std::size_t port=0;port<(real?3u:2u);++port){
+    for(std::size_t port=0;port<2;++port){
+        value.quantity=port==0?Quantity::SpectrumReal:Quantity::SpectrumImaginary;
         OwnedProcessingContract contract;
-        const auto status=own_processing_contract(fourier_port_contract(value,real,include,port),bounds,SIZE_MAX,contract);if(status!=Status::ok)return status;
+        const auto status=own_processing_contract(value,bounds,SIZE_MAX,contract);if(status!=Status::ok)return status;
         candidate.push_back(std::move(contract));
     }
     out=std::move(candidate);return Status::ok;
@@ -125,10 +107,10 @@ bool fourier_input_valid(const NumericContract& input,double n,bool real) {
 Status fourier_output_contracts(const ConfiguredProcessingNode& node,const NumericContract& input,
     std::vector<OwnedProcessingContract>& out) noexcept {
     if(node.kind!="Fourier" && node.kind!="RealFourier")return Status::invalid_argument;
-    double n=0;bool include=false;
-    if(fourier_parameters(node,n)!=Status::ok || fourier_endpoints(node,include)!=Status::ok)return Status::invalid_argument;
+    double n=0;
+    if(fourier_parameters(node,n)!=Status::ok)return Status::invalid_argument;
     if(!fourier_input_valid(input,n,node.kind=="RealFourier"))return Status::incompatible_contract;
-    return materialize_fourier_contracts(fourier_bin_contract(node,input,n,include),node.kind=="RealFourier",include,out);
+    return materialize_fourier_contracts(fourier_bin_contract(node,input,n),out);
 }
 
 }

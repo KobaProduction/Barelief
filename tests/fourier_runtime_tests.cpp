@@ -2,6 +2,7 @@
 #include <domain/graph/node_factory.h>
 #include <domain/graph/preparation_values.h>
 #include <dsp_kernels/detail/fused_square_plus_one.h>
+#include <dsp_kernels/dsp.h>
 #include "numeric_test_builders.h"
 #include "owned_history_fixture.h"
 #include <array>
@@ -37,7 +38,6 @@ struct Observed {
     std::array<std::array<float,maximum>,3> values{};
     std::array<std::size_t,3> counts{},calls{};
     std::array<FrameStamp,3> stamps{};
-    bool real=false;
     static void output(void* user,const NumericPortFrameView& event){
         if(event.identity.node!=2 || event.direction!=PortDirection::Output)return;
         auto& self=*static_cast<Observed*>(user);const auto p=event.identity.port;check(p<3,"canonical output ID");
@@ -45,11 +45,8 @@ struct Observed {
         if(event.status!=Status::ok){self.counts[p]=0;return;}
         const auto& value=std::get<NumericView>(event.frame.payload);self.counts[p]=value.actual[0];
         check(value.contract->clock.sample_rate==0,"raw FFT needs no sampling frequency");
-        if(p==2)check(value.contract->shape.rank==Rank::Scalar,"real DC is scalar");
-        else {
-            const auto axis=value.contract->coordinates[0];
-            check(axis.mode==CoordinateMode::Regular && axis.unit==NumericUnit::Values && axis.origin==Ratio{self.real?1:0,1} && axis.step==Ratio{1,1},"raw FFT uses bin indices");
-        }
+        const auto axis=value.contract->coordinates[0];
+        check(axis.mode==CoordinateMode::Regular && axis.unit==NumericUnit::Values && axis.origin==Ratio{0,1} && axis.step==Ratio{1,1},"raw FFT uses bin indices");
         for(std::size_t i=0;i<value.actual[0];++i)check(load_element(value,{0,i,0},self.values[p][i])==Status::ok,"read Fourier output");
     }
 };
@@ -61,7 +58,6 @@ struct Running {
     std::array<std::uint64_t,2> sequence{};
     Running(bool real,std::size_t size,const char* radix="radix2",bool imaginary_connected=true)
         :definition(graph(real,size,radix,imaginary_connected)){
-        seen.real=real;
         const auto status=PreparedGraph::prepare_numeric(definition,profile(),plan,state);
         if(status!=Status::ok){
             NumericProcessingGraph evaluated,executable;
@@ -100,13 +96,13 @@ void real_case(const char* radix){
     constexpr std::size_t size=4096;Running run(true,size,radix);std::array<float,size> samples{};
     for(std::size_t i=0;i<size;++i)samples[i]=float(.25+.5*(i%2?-1:1)+.125*std::sin(6.283185307179586*3*i/size));
     run.feed(0,samples);
-    check(run.seen.counts[0]==2048 && run.seen.counts[1]==2047 && run.seen.counts[2]==1,"RFFT4096 is DC + Re2048 + Im2047");
-    check(std::abs(run.seen.values[0][2047]-.5*size)<.002,"Nyquist is the final real value");
-    check(std::abs(run.seen.values[1][2]+.0625*size)<.002,"interior imaginary sign and index");
-    check(std::abs(run.seen.values[2][0]-.25*size)<.002,"separate real DC");
+    check(run.seen.counts[0]==2049 && run.seen.counts[1]==2049 && !run.seen.calls[2],"RFFT4096 has two 2049-bin planes");
+    check(std::abs(run.seen.values[0][2048]-.5*size)<.002,"Nyquist is the final real value");
+    check(std::abs(run.seen.values[1][3]+.0625*size)<.002,"interior imaginary sign and index");
+    check(std::abs(run.seen.values[0][0]-.25*size)<.002,"real DC at bin zero");
     Running complex(false,size,"radix2",false);complex.feed(0,samples);
-    for(std::size_t i=0;i<2048;++i)check(std::abs(complex.seen.values[0][i+1]-run.seen.values[0][i])<.002,"full and compact real spectra agree");
-    for(std::size_t i=0;i<2047;++i)check(std::abs(complex.seen.values[1][i+1]-run.seen.values[1][i])<.002,"imaginary interior agrees");
+    for(std::size_t i=0;i<2049;++i)check(std::abs(complex.seen.values[0][i]-run.seen.values[0][i])<.002,"complex and real FFT positive bins agree");
+    for(std::size_t i=0;i<2049;++i)check(std::abs(complex.seen.values[1][i]-run.seen.values[1][i])<.002,"imaginary interior agrees");
 }
 void pairing_boundaries(){
     std::array<float,8> re{},im{};re.fill(1);
@@ -128,7 +124,38 @@ void algorithm_geometry(){
     Running complex(false,16,"radix4");std::array<float,16> re{},im{};re.fill(1);complex.feed(0,re);complex.feed(1,im);
     check(complex.seen.values[0][0]==16 && complex.seen.counts[0]==16,"complex radix4 retains N values and DC");
     Running real(true,8,"radix4");std::array<float,8> small{};small.fill(1);real.feed(0,small);
-    check(real.seen.values[2][0]==8 && real.seen.counts[0]==4 && real.seen.counts[1]==3,"real radix4 minimum geometry");
+    check(real.seen.values[0][0]==8 && real.seen.counts[0]==5 && real.seen.counts[1]==5,"real radix4 minimum geometry");
+}
+void explicit_transform_parameters(){
+    for(const bool real:{false,true})for(const std::uint64_t size:{0u,16u}){
+        auto definition=graph(real,8);
+        std::get<TransformProcessingParameters>(definition.nodes[1].parameters).values[0].value=NumericLiteral{size};
+        std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+        check(PreparedGraph::prepare_numeric(definition,profile(),plan,state)!=Status::ok,"payload length cannot repair invalid or mismatched declared FFT size");
+    }
+}
+void explicit_amplitude_frequency(){
+    const auto definition=graph(true,8);
+    auto source=std::get<NumericContract>(definition.nodes[1].outputs[0].contract.view());
+    source.clock={"audio",{1,48000},48000};
+    source.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{6000,1}};
+    ConfiguredProcessingNode node;node.id=2;node.kind="AmplitudePhase";
+    node.inputs={port(PortDirection::Input,0,source)};
+    source.quantity=Quantity::SpectrumImaginary;node.inputs.push_back(port(PortDirection::Input,1,source));
+    auto& fields=node.parameters.emplace<TransformProcessingParameters>().values;
+    fields={{"fft_size",NumericLiteral{std::uint64_t{8}}},{"sample_rate",NumericLiteral{std::uint64_t{0}}},
+        {"representation",std::string(dsp_kernels::spectrum_projection_name(dsp_kernels::SpectrumProjection::Psd))}};
+    const auto input=std::get<NumericContract>(node.inputs[0].contract.view());
+    std::array<OwnedProcessingContract,3> output;
+    check(amplitude_phase_output_contracts(node,input,output)==Status::invalid_argument,"PSD cannot obtain missing Fs from transport clock or frequency coordinates");
+    fields[2].value=std::string(dsp_kernels::spectrum_projection_name(dsp_kernels::SpectrumProjection::Magnitude));
+    check(amplitude_phase_output_contracts(node,input,output)==Status::ok,"magnitude works without Fs");
+    const auto index=std::get<NumericContract>(output[0].view()).coordinates[0];
+    check(index.unit==NumericUnit::Values && index.origin==Ratio{1,1} && index.step==Ratio{1,1},"missing explicit Fs yields bin indices, not inherited Hz");
+    fields[1].value=NumericLiteral{std::uint64_t{48000}};
+    check(amplitude_phase_output_contracts(node,input,output)==Status::ok,"explicit Fs supplies the frequency axis");
+    const auto frequency=std::get<NumericContract>(output[0].view()).coordinates[0];
+    check(frequency.unit==NumericUnit::Hertz && frequency.origin==Ratio{48000,8} && frequency.step==Ratio{48000,8},"frequency axis is calculated from explicit Fs and N");
 }
 NumericProcessingGraph matrix_graph(bool real){
     auto result=graph(real,8);const auto original=result.nodes[0].outputs[0].contract;
@@ -143,10 +170,9 @@ NumericProcessingGraph matrix_graph(bool real){
 }
 void endpoint_contracts(bool matrix) {
     auto definition=matrix?matrix_graph(true):graph(true,8);auto& fft=definition.nodes[1];
-    const auto input=std::get<NumericContract>(fft.inputs[0].contract.view());const auto original_dc=fft.outputs[2].contract;
-    auto& fields=std::get<TransformProcessingParameters>(fft.parameters).values;fields.push_back({"include_endpoints",true});
+    const auto input=std::get<NumericContract>(fft.inputs[0].contract.view());
     std::vector<OwnedProcessingContract> outputs;
-    check(fourier_output_contracts(fft,input,outputs)==Status::ok && outputs.size()==3,"derive full positive real planes");
+    check(fourier_output_contracts(fft,input,outputs)==Status::ok && outputs.size()==2,"derive full positive real planes");
     const auto axis=matrix?1u:0u;
     for(std::size_t port=0;port<2;++port){
         const auto value=std::get<NumericContract>(outputs[port].view());
@@ -154,20 +180,17 @@ void endpoint_contracts(bool matrix) {
         check(value.coordinates[axis]==AxisCoordinates{CoordinateMode::Regular,NumericUnit::Values,{0,1},{1,1}},"full positive planes use bins0 throughN/2");
         if(matrix)check(value.shape.extents[0]==input.shape.extents[0] && value.coordinates[0]==input.coordinates[0],"matrix row bounds and coordinates preserved");
     }
-    check(same_physical_contract(original_dc.view(),outputs[2].view()),"separate DC contract unchanged");
-    fields.back().value=NumericLiteral{std::uint64_t{1}};
-    check(fourier_output_contracts(fft,input,outputs)==Status::invalid_argument,"endpoint flag requires declared boolean");
-    check(std::get<NumericContract>(outputs[0].view()).shape.extents[axis]==ExtentBounds{5,5},"invalid settings preserve previously derived contracts");
+
 }
 struct MatrixObservation {
     bool real=false;std::size_t calls=0;unsigned missing=2;
     static void output(void* user,const NumericPortFrameView& event){
         if(event.identity.node!=2)return;auto& self=*static_cast<MatrixObservation*>(user);
         check(event.status==Status::ok,"matrix Fourier output");const auto& value=std::get<NumericView>(event.frame.payload);const auto port=event.identity.port;
-        check(value.actual[0]==2 && value.actual[1]==(self.real?(port==2?1:port==1?3:4):8),"row FFT actual shapes");
+        check(value.actual[0]==2 && value.actual[1]==(self.real?5:8),"row FFT actual shapes");
         const double times[]{-1,0};check(value.coordinates.axes[0].size()==sizeof(times) && std::equal(value.coordinates.axes[0].begin(),value.coordinates.axes[0].end(),std::as_bytes(std::span(times)).begin()),"row coordinates remain explicit and ordered");
         for(std::size_t row=0;row<2;++row){float number=0;check(load_element(value,{0,row,0},number)==Status::ok,"matrix coefficient");
-            const auto expected=self.real?(port==2?float((row+1)*8):0.f):port==self.missing?0.f:float((row+1)*8);check(std::abs(number-expected)<1e-5,"each row has independent DC");}
+            const auto expected=(self.real?port==1:port==self.missing)?0.f:float((row+1)*8);check(std::abs(number-expected)<1e-5,"each row has independent DC");}
         ++self.calls;
     }
 };
@@ -188,22 +211,29 @@ void matrix_case(bool real,unsigned missing=2){
     const auto status=plan->process_numeric_owned_ports(1,owned,*state,{},NumericRuntimeCallbacks{MatrixObservation::output,nullptr,nullptr,&seen},2,arena);
     if(status!=Status::ok)std::fprintf(stderr,"matrix real=%d status=%d\n",int(real),int(status));
     check(status==Status::ok,"FFT reads logical ring rows");
-    check(before==allocations && seen.calls==(real?3:2),"matrix uses one prepared FFT without audio-path allocations");
+    check(before==allocations && seen.calls==2,"matrix uses one prepared FFT without audio-path allocations");
 }
 struct JoinedObservation {
     std::size_t calls=0;
     static void output(void* user,const NumericPortFrameView& event){
         if(event.identity.node!=3)return;auto& self=*static_cast<JoinedObservation*>(user);check(event.status==Status::ok,"DC prepend status");
-        const auto& value=std::get<NumericView>(event.frame.payload);check(value.actual[0]==5,"DC + Re[N/2] restores N/2+1 coefficients");
+        const auto& value=std::get<NumericView>(event.frame.payload);check(value.actual[0]==5,"DC + amplitude restores N/2+1 values");
         for(std::size_t i=0;i<5;++i){float number=0;check(load_element(value,{0,i,0},number)==Status::ok && number==(i?0.f:8.f),"DC is prepended without scaling or reordered bins");}
         ++self.calls;
     }
 };
 void concatenate_dc(){
     auto definition=graph(true,8);ConfiguredProcessingNode join;join.id=3;join.kind="ArrayConcat";join.parameters=TransformProcessingParameters{};
-    join.inputs={{0,PortDirection::Input,definition.nodes[1].outputs[2].contract},{1,PortDirection::Input,definition.nodes[1].outputs[0].contract}};
+    ConfiguredProcessingNode polar;
+    check(bool(make_processing_node("AmplitudePhase",4,profile().admission,polar,{48000,8,8,8})),"make amplitude/phase");
+    std::get<TransformProcessingParameters>(polar.parameters).values.push_back({"normalize",false});
+    for(PortId port=0;port<2;++port)polar.inputs[port].contract=definition.nodes[1].outputs[port].contract;
+    check(bool(derive_processing_node_contracts(polar,profile().admission)),"derive amplitude/phase and DC");
+    join.inputs={{0,PortDirection::Input,polar.outputs[2].contract},{1,PortDirection::Input,polar.outputs[0].contract}};
+    definition.nodes.push_back(std::move(polar));
+    definition.edges.insert(definition.edges.end(),{{2,4,0,0},{2,4,1,1}});
     OwnedProcessingContract output;check(array_concat_output_contract(join,output)==Status::ok,"scalar DC joins a vector through the existing primitive");join.outputs={{0,PortDirection::Output,output}};
-    definition.nodes.push_back(std::move(join));definition.edges.push_back(numeric_test_builders::edge(2,2,3,0));definition.edges.push_back(numeric_test_builders::edge(2,0,3,1));
+    definition.nodes.push_back(std::move(join));definition.edges.push_back(numeric_test_builders::edge(4,2,3,0));definition.edges.push_back(numeric_test_builders::edge(4,0,3,1));
     std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;check(PreparedGraph::prepare_numeric(definition,profile(),plan,state)==Status::ok,"prepare DC concatenation");
     std::array<float,8> samples;samples.fill(1.f);const auto data=definition.nodes[0].outputs[0].contract.view();const auto& input=std::get<NumericContract>(data);const PlaneLayout plane{0,{sizeof(float),0}};
     const auto frame=numeric_test_builders::frame({},input,std::as_bytes(std::span(samples)),std::span(&plane,1),{8,1});JoinedObservation seen;const auto before=allocations;
@@ -262,5 +292,5 @@ void operator delete(void* pointer) noexcept{std::free(pointer);}
 void operator delete(void* pointer,std::size_t) noexcept{std::free(pointer);}
 int main(int argc,char** argv){
     if(argc==2 && std::string_view(argv[1])=="--scaled-ratio-only"){scaled_ratio_binding();std::puts("explicit ScaledRatioFma and unchanged default Hypot native witness/noalloc PASS");return 0;}
-    complex_case();real_case("radix2");real_case("radix4");pairing_boundaries();algorithm_geometry();endpoint_contracts(false);endpoint_contracts(true);matrix_case(true);matrix_case(false);matrix_case(false,0);matrix_case(false,1);concatenate_dc();scaled_ratio_binding();std::puts("raw FFT: separate Re/Im, full C2C, compact RFFT/DC/Nyquist, radix2/4, Fs0, owning pairs, shared matrix/ring processing and DC concatenation PASS");
+    complex_case();real_case("radix2");real_case("radix4");pairing_boundaries();algorithm_geometry();explicit_transform_parameters();explicit_amplitude_frequency();endpoint_contracts(false);endpoint_contracts(true);matrix_case(true);matrix_case(false);matrix_case(false,0);matrix_case(false,1);concatenate_dc();scaled_ratio_binding();std::puts("raw FFT: separate Re/Im, full C2C, full positive RFFT bins, radix2/4, Fs0, explicit parameters, owning pairs, shared matrix/ring processing and DC concatenation PASS");
 }

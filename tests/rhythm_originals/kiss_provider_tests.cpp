@@ -1,7 +1,6 @@
 #include <kiss_backend.h>
 #include "kiss_generic_source_golden.h"
 #include <dsp_kernels/tempogram.h>
-#include <rhythm_reference_ports/global_onset_recipe.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -125,10 +124,7 @@ void default_and_compositions() {
         correlation.prepare(143,d::CorrelationNormalization::Unbiased,&factory()) && correlation.workspace_bytes()<=bound,"variable ACF provider bound");
     require(correlation.process(one,lag) && lag[0]==4 && correlation.active_fft_size()==2,"variable ACF tiny admitted N2");
     auto copied=correlation;require(copied.process(one,lag) && lag[0]==4,"variable ACF independent clone");
-    rhythm_reference_ports::PreparedGlobalOnsetRecipe global;rhythm_reference_ports::GlobalOnsetRecipeConfig config;
-    config.frame_size=64;config.hop=32;config.method=rhythm_reference_ports::GlobalOnsetMethod::BeatEmphasis;
-    require(decltype(global)::storage_bytes(input.size(),config,bound,&factory()) && global.prepare(input.size(),config,&factory()) &&
-        global.workspace_bytes()<=bound && global.process(input),"source global nested FFT/ACF forwarding");
+
 }
 }
 extern "C" void* __real_malloc(std::size_t);

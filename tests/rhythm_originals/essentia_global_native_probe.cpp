@@ -17,7 +17,6 @@
 #include "network.h"
 #include "vectorinput.h"
 #include "vectoroutput.h"
-#include "algorithms/rhythm/onsetdetectionglobal.h"
 
 namespace {
 namespace e=essentia;
@@ -79,6 +78,11 @@ void provision_output(e::streaming::Algorithm& detector,std::size_t count) {
     if(output.bufferInfo().size<int(count))throw std::runtime_error("PROBE_SETUP_ERROR: public buffer override not applied");
     std::printf("PROVISION phase=before_network capacity=%d contiguous=%d\n",output.bufferInfo().size,output.bufferInfo().maxContiguousElements);
 }
+int publish_stream(const std::string& prefix,std::size_t count,const Values& output) {
+    save(prefix+".f32",output);
+    std::printf("BURST phase=complete expected=%zu actual=%zu\n",count,output.size());
+    return output.size()==count?0:1;
+}
 int stream(std::size_t expected,const std::string& prefix,bool provision=false) {
     if(expected<327679 || expected>327681)throw std::runtime_error("PROBE_SETUP_ERROR: unsupported boundary count");
     const auto pcm=tones(expected+15);const auto count=reference_frames(pcm,expected,prefix);Values output;
@@ -90,9 +94,7 @@ int stream(std::size_t expected,const std::string& prefix,bool provision=false) 
     input.output("data") >> detector->input("signal");detector->output("onsetDetections") >> sink.input("data");
     e::scheduler::Network network(&input,false);
     std::printf("BURST phase=begin odf_count=%zu pinned_capacity=327680 collector=VectorOutput\n",count);std::fflush(stdout);
-    network.run();save(prefix+".f32",output);
-    std::printf("BURST phase=complete expected=%zu actual=%zu\n",count,output.size());
-    return output.size()==count?0:1;
+    network.run();return publish_stream(prefix,count,output);
 }
 int dispatch(int argc,char** argv) {
     if(argc<3 || argc>4)throw std::runtime_error("PROBE_SETUP_ERROR: mode prefix [token_count] required");

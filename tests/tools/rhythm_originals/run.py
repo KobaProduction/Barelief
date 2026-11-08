@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--filter", default="")
     parser.add_argument("--exclude-filter", default="")
-    parser.add_argument("--packet", choices=("base", "compositions", "precision-holdouts", "librosa-full", "madmom-full", "remaining", "wrappers", "options", "lifecycle", "representatives"), default="base")
+    parser.add_argument("--packet", choices=("base", "compositions", "librosa-full", "madmom-full", "remaining", "wrappers", "options", "representatives"), default="base")
     parser.add_argument("--precision", choices=("portable-f32", "desktop-reference"), default="portable-f32")
     parser.add_argument("--reference-cache", type=Path)
     parser.add_argument("--cache-integrity", type=Path)
@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--only-failed", type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    compact_paths = args.packet in ("lifecycle", "representatives") or os.environ.get("BARELIEF_DSP_BENCHMARK") == "1"
+    compact_paths = args.packet == "representatives" or os.environ.get("BARELIEF_DSP_BENCHMARK") == "1"
     environment = {"binary": str(args.binary.resolve()),
                    "binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
                    "fixture_directory_policy": "case-id sha256 prefix16 with full-hash/exact-ID guard" if compact_paths else "full case ID",
@@ -56,15 +56,10 @@ def main():
     if args.packet == "representatives":
         import representative_cases
         cases = list(representative_cases.cases(original, args.library, args.precision))
-    elif args.packet == "lifecycle":
-        assert args.library == "madmom"
-        import long_history_cases
-        cases = list(long_history_cases.cases(original))
     elif args.packet == "options":
         if args.library == "librosa":
-            import options_onset_cases
             import options_tempo_cases
-            cases = [*options_onset_cases.cases(original), *options_tempo_cases.cases(original)]
+            cases = list(options_tempo_cases.cases(original))
         else:
             import options_gmm_cases
             cases = list(options_gmm_cases.cases(original))
@@ -89,16 +84,11 @@ def main():
     elif args.packet == "librosa-full":
         assert args.library == "librosa"
         import librosa_cases
-        import composition_cases
-        cases = [*librosa_cases.cases(original), *composition_cases.cases(original)]
-    elif args.packet == "precision-holdouts":
-        assert args.library == "librosa", "precision holdouts use pinned librosa"
-        import precision_cases
-        cases = list(precision_cases.cases(original))
+        cases = list(librosa_cases.cases(original))
     elif args.packet == "compositions":
         if args.library == "librosa":
-            import composition_cases
-            cases = list(composition_cases.cases(original))
+            import options_tempo_cases
+            cases = list(options_tempo_cases.cases(original))
         else:
             import pattern_cases
             cases = list(pattern_cases.cases(original))
@@ -125,12 +115,7 @@ def main():
             continue
         base_name = case.name
         if args.precision == "desktop-reference":
-            configured = (case.family == "spectrum" or
-                          (case.family == "librosa" and case.method in ("tempogram", "pcm_strength")) or
-                          (case.family == "composition" and case.method in
-                           ("envelope_tempo", "envelope_ratios", "envelope_beats", "pcm_tempo",
-                            "pcm_tempogram", "pcm_ratios", "pcm_beats", "pcm_pulse")) or
-                          (case.family == "remaining" and case.method == "pcm_novelty"))
+            configured = case.family == "spectrum"
             if configured:
                 case.arguments = [*case.arguments, 1]
             case.settings = {**case.settings, "precision": "DesktopReference" if configured else "SourceFloat32",

@@ -43,37 +43,28 @@ void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
 static void check(bool ok, const char *message) {
     if (!ok) { std::cerr << message << '\n'; std::exit(1); }
 }
-static void check_extreme_fft(std::span<const float> plain,std::span<const float> typed,float maximum,int mode){
+static void check_extreme_fft(std::span<const float> plain,float maximum,int mode){
     constexpr std::size_t n=16;
         for(std::size_t k=0;k<n/2;++k){const double expected=mode==0?double(maximum)/n:mode==1&&k==0?maximum:0.;
-            check(std::isfinite(plain[k])&&std::isfinite(typed[k]),"successful FFT nonfinite output");
+            check(std::isfinite(plain[k]),"successful FFT nonfinite output");
             const double bound=double(maximum)*2e-6;
-            check(std::abs(double(plain[k])-expected)<=bound&&std::abs(double(typed[k])-expected)<=bound,"independent high-range DFT oracle");
-            check(plain[k]==typed[k],"plain/typed FFT parity");}
+            check(std::abs(double(plain[k])-expected)<=bound,"independent high-range DFT oracle");}
 }
 static void finite_fft_oracles() {
-    using namespace signal_contracts;
     constexpr std::size_t n=16;
-    std::array<std::uint32_t,1> ids{0};
-    std::array<float,n> input{};std::array<float,n/2> plain{},typed{};
-    NumericContract a;a.dtype=DType::Float32;a.semantic=Semantic::Windowed;a.channel_order=ids;
-    a.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{n,n},ExtentBounds{}}};
-    auto b=a;b.semantic=Semantic::SpectrumMagnitude;b.shape.axes[0]=Axis::Bin;b.shape.extents[0]={n/2,n/2};
-    PlaneLayout layout{0,{sizeof(float),0}};
-    NumericView in{&a,std::as_bytes(std::span(input)),std::span(&layout,1),{n,1},{},{}};
-    MutableNumericView out{&b,std::as_writable_bytes(std::span(typed)),std::span(&layout,1),{n/2,1},{},{}};
+    std::array<float,n> input{};std::array<float,n/2> plain{};
     dsp_core::MagnitudeSpectrum fft;check(fft.prepare(n),"extreme FFT prepare");
     for(int mode=0;mode<3;++mode){input.fill(0);const float maximum=std::numeric_limits<float>::max();
         if(mode==0)input[0]=maximum;else for(std::size_t i=0;i<n;++i)input[i]=mode==1?maximum:(i%2?-maximum:maximum);
-        check(fft.process(input,plain)&&fft.process_plane(in,out,0)==Status::ok,"finite high-range FFT rejected");
+        check(fft.process(input,plain),"finite high-range FFT rejected");
         // Closed-form DFT: impulse gives |x|/N in every bin; constant gives DC;
         // alternating signal lies entirely at the excluded Nyquist bin.
-        check_extreme_fft(plain,typed,maximum,mode);
+        check_extreme_fft(plain,maximum,mode);
     }
     for(float bad:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}){
-        input.fill(0);input[7]=bad;plain.fill(19);typed.fill(23);
-        check(!fft.process(input,plain)&&fft.process_plane(in,out,0)==Status::invalid_argument,"nonfinite FFT success");
-        check(std::all_of(plain.begin(),plain.end(),[](float x){return x==19;})&&std::all_of(typed.begin(),typed.end(),[](float x){return x==23;}),"FFT failure publishes partial output");}
+        input.fill(0);input[7]=bad;plain.fill(19);
+        check(!fft.process(input,plain),"nonfinite FFT success");
+        check(std::all_of(plain.begin(),plain.end(),[](float x){return x==19;}),"FFT failure publishes partial output");}
 }
 static void mel_magnitude_oracle(){
     constexpr std::size_t bins=256,bands=7;std::array<float,bins> input{};std::array<float,bands> actual{};

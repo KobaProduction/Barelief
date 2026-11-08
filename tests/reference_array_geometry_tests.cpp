@@ -20,6 +20,13 @@ NumericRuntimeProfile profile() {
 OwnedProcessingContract own(const NumericContract& input) {
     OwnedProcessingContract result;check(own_processing_contract(input,profile().admission.frame,16777216,result)==Status::ok,"own");return result;
 }
+void retired_pcm_onset_factory_refused() {
+    const auto factory=dsp_graph_adapters::make_dsp_operation_factory();
+    NumericOperationNodeView node;node.id=2;node.kind="PcmOnsetEnvelope";
+    std::shared_ptr<const NumericOperationDescriptor> descriptor;
+    check(factory->describe(node,descriptor)==Status::unavailable && !descriptor,"retired PCM onset has no operation descriptor");
+    check(!factory->assess(node,NumericOperationProfile{}).supported,"retired PCM onset cannot be prepared");
+}
 NumericContract input_contract(bool matrix) {
     static const std::uint32_t mono=0;NumericContract result;result.channel_order={&mono,1};result.dtype=DType::Float32;
     result.clock={"local",{1,44100},44100};result.shape.rank=matrix?Rank::Matrix:Rank::Vector;
@@ -61,7 +68,7 @@ void execute(const NumericProcessingGraph& graph,const NumericContract& input,st
 }
 void matrix_disabled() {
     auto input=input_contract(true);input.unit=NumericUnit::Radians;input.quantity=Quantity::SpectrumPhase;
-    const auto g=graph(input,"ArrayReindex",TransformProcessingParameters{{{"indices",NumericArray{{1,0}}}}},false);
+    const auto g=graph(input,"IndexExtract",TransformProcessingParameters{{{"mode",NumericLiteral{std::uint64_t{1}}},{"indices",NumericArray{{1,0}}}}},false);
     const auto output=std::get<NumericContract>(g.nodes[1].outputs[0].contract.view());
     check(output.unit==input.unit && output.quantity==input.quantity,"permutation retains value units");
     const std::array<float,32> values{1,2,3,4,5,6,7,8};Seen seen{2,2,0,true};execute(g,input,values,{2,4},seen);
@@ -74,7 +81,7 @@ void framing_disabled() {
 }
 NumericProcessingGraph fft_graph(bool separate_producer) {
     auto input=input_contract(false);input.shape.extents[0]={4,4};
-    auto result=graph(input,"ArrayReindex",TransformProcessingParameters{{{"indices",NumericArray{{0,1,2,3}}}}},true);
+    auto result=graph(input,"IndexExtract",TransformProcessingParameters{{{"mode",NumericLiteral{std::uint64_t{1}}},{"indices",NumericArray{{0,1,2,3}}}}},true);
     result.nodes[1].kind="ArrayMultiply";result.nodes[1].parameters=TransformProcessingParameters{};
     auto& multiply=result.nodes[1];multiply.inputs.push_back({1,PortDirection::Input,own(input)});
     check(bool(derive_processing_node_contracts(multiply,profile().admission)),"derive product");
@@ -204,6 +211,7 @@ int main(int argc,char** argv){
         window_packet_timestamps(4096,170000);window_timestamp_overflow();
         std::puts("reference frame timestamps PASS");return 0;
     }
+    retired_pcm_onset_factory_refused();
     matrix_disabled();framing_disabled();product_clock_provenance();sparse_history_snapshot();
     window_packet_timestamps(3,170000);window_packet_timestamps(97,-170000,2);window_timestamp_overflow();
     std::puts("reference disabled geometry PASS");

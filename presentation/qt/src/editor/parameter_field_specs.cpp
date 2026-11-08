@@ -1,8 +1,62 @@
 #include "parameter_field_specs.h"
 #include <core_app/spectrum_projection_ui.h>
 #include <core_app/resampler_presentation.h>
+#include <domain/numeric/matrix_center.h>
 #include <QMap>
 namespace numeric_editor {
+domain::ArrayMathOperation array_operation(const domain::ConfiguredProcessingNode* node) {
+    if(!node)return domain::ArrayMathOperation::Multiply;
+    const auto* parameters=std::get_if<domain::TransformProcessingParameters>(&node->parameters);
+    if(parameters)for(const auto& field:parameters->values)if(field.key=="operation"){
+        if(const auto* value=std::get_if<std::string>(&field.value))
+            if(const auto parsed=domain::array_math_operation(*value))return *parsed;
+    }
+    return domain::ArrayMathOperation::Multiply;
+}
+namespace {
+const char* arithmetic_input_title(domain::ArrayMathOperation operation,bool left) noexcept {
+    switch(operation){
+    case domain::ArrayMathOperation::Multiply:return left?"Multiplicand":"Multiplier";
+    case domain::ArrayMathOperation::Add:return left?"Base value":"Added value";
+    case domain::ArrayMathOperation::Subtract:return left?"Minuend":"Subtrahend";
+    case domain::ArrayMathOperation::Divide:return left?"Numerator":"Denominator";
+    }
+    return "Values";
+}
+const char* arithmetic_output_title(domain::ArrayMathOperation operation) noexcept {
+    switch(operation){
+    case domain::ArrayMathOperation::Multiply:return "Product";
+    case domain::ArrayMathOperation::Add:return "Sum";
+    case domain::ArrayMathOperation::Subtract:return "Difference";
+    case domain::ArrayMathOperation::Divide:return "Quotient";
+    }
+    return "Values";
+}
+}
+const char* arithmetic_port_title(domain::ArrayMathOperation operation,bool input,bool left) noexcept {
+    return input?arithmetic_input_title(operation,left):arithmetic_output_title(operation);
+}
+namespace {
+ParameterChoices array_input_choices(const domain::ConfiguredProcessingNode& node,bool automatic) {
+    ParameterChoices result;
+    if(automatic){
+        result.values.push_back(QString::number(int(domain::ArrayTrigger::Automatic)));
+        result.labels.push_back("Automatic");
+    }
+    for(const auto& port:domain::data_inputs(node)){
+        result.values.push_back(QString::number(port.id));
+        result.labels.push_back(arithmetic_port_title(array_operation(&node),true,
+            port.id==domain::PortId(domain::BinaryInput::Left)));
+    }
+    return result;
+}
+}
+ParameterChoices parameter_choices(const domain::ConfiguredProcessingNode& node,const QString& key) {
+    if(node.kind=="ArrayMultiply" && (key=="frame_input" || key=="trigger_input"))
+        return array_input_choices(node,key=="trigger_input");
+    return parameter_choices(QString::fromStdString(node.kind),key);
+}
+
 bool parameter_is_primary(const QString& kind,const QString& key) {
     static const QMap<QString,QStringList> fields{
         {"AudioSource",{"source"}},{"WindowFunction",{"function","periodic"}},{"InputSelector",{"numericSelected","selected_input"}},
@@ -17,13 +71,14 @@ bool parameter_is_primary(const QString& kind,const QString& key) {
         {"PowerToDb",{"reference_mode","reference"}},
         {"PcmResampler",{"mode","output_rate"}},{"Window",{"size"}},
         {"FrameBuffer",{"size","hop_samples"}},
+        {"IndexExtract",{"mode","axis","index","column","first","length"}},
+        {"AxisSum",{"axis","cumulative","accumulation"}},
         {"FrameStride",{"every_n"}},{"FeatureAggregate",{"method"}},
         {"RFFT",{"fft_size"}},{"Fourier",{"fft_size"}},{"RealFourier",{"fft_size"}},
         {"BarkWeighting",{"sample_rate","bin_hz","first_bin"}},
         {"Mel",{"bands","sample_rate","fft_size","bin_hz","first_bin","scale","fmin_hz","fmax_hz","norm"}},
         {"TempoEstimate",{"sample_rate","hop_samples","start_bpm","max_tempo"}},
         {"DynamicBeatPath",{"sample_rate","hop_samples","tightness","trim"}},
-        {"AutocorrelationTempogram",{"window_length","sample_rate","hop_samples","normalization","center"}},
         {"SpectrumProjection",{"representation","normalize"}},{"AmplitudePhase",{"representation","normalize","positive_half"}},
         {"ArrayFill",{"value"}},{"ArrayMultiply",{"factorCount","operation"}},
         {"Converter",{"output0Dtype","numericScaling"}},
@@ -46,8 +101,42 @@ QString numeric_array_text(const domain::NumericArray& array) {
 namespace {
 const char* contextual_parameter_title(const QString& kind,const QString& key) {
     static const QMap<QString,const char*> titles{
-        {"AutocorrelationTempogram/center","Center analysis window"},
-        {"AutocorrelationTempogram/fft_size","Correlation FFT size (0: automatic)"},
+        {"WindowFunction/evaluation","Window evaluation"},
+        {"WindowFunction/pi","Pi for direct window evaluation"},
+        {"Window/size","Window size, values"},
+        {"FrameBuffer/size","Frame size, samples"},
+        {"FrameBuffer/hop_samples","Frame step, samples"},
+        {"ArrayConcat/axis","Concatenation axis"},
+        {"IndexExtract/mode","Selection mode"},
+        {"IndexExtract/axis","Selected dimension"},
+        {"IndexExtract/index","Element or row index"},
+        {"IndexExtract/column","Column index"},
+        {"IndexExtract/indices","Selection indices (empty uses range)"},
+        {"IndexExtract/first","First selected index"},
+        {"IndexExtract/length","Selected length (0: remaining)"},
+        {"IndexExtract/output_length","Output length"},
+        {"IndexExtract/pad_before","Leading padding"},
+        {"IndexExtract/pad_after","Trailing padding"},
+        {"IndexExtract/constant","Padding value"},
+        {"AxisSum/accumulation","Summation order"},
+        {"ArrayMultiply/trigger_input","Update trigger"},
+        {"ArrayMultiply/frame_input","Shape and time source"},
+        {"ArrayMultiply/zero_division","Division by zero"},
+        {"DirectCorrelation/lags","Correlation lag count"},
+        {"DirectCorrelation/first_lag","First correlation lag"},
+        {"DirectCorrelation/normalization","Correlation normalization"},
+        {"VectorNormalize/method","Normalization method"},
+        {"VectorNormalize/minimum_scale","Minimum normalization scale"},
+        {"VectorNormalize/axis","Normalization dimension"},
+        {"RecursiveFilter/state_policy","Filter state handling"},
+        {"RecursiveFilter/numerator","Feedforward coefficients"},
+        {"RecursiveFilter/denominator","Feedback coefficients"},
+        {"RecursiveFilter/input_zero_threshold","Input zero threshold"},
+        {"RecursiveFilter/axis","Filtering dimension"},
+        {"Clamp/minimum","Lower bound"},
+        {"Clamp/maximum","Upper bound"},
+        {"LinearExpansion/factor","Interpolation factor"},
+        {"QuantileMask/fraction","Quantile fraction"},
         {"PowerToDb/reference","Reference power"}};
     return titles.value(kind+"/"+key,nullptr);
 }
@@ -59,7 +148,9 @@ QString parameter_help(const QString& kind,const QString& key) {
         {"TempoEstimate/start_bpm","Center of the tempo preference. The detected tempo may differ."},
         {"TempoEstimate/std_bpm","Width of the tempo preference in octaves."},
         {"Window/size","Number of retained elements. New values replace the oldest values."},
-        {"PowerToDb/reference","Reference power used by 10 log10(P/reference)."}};
+        {"PowerToDb/reference","Reference power used by 10 log10(P/reference)."},
+        {"ArrayMultiply/frame_input","Input that defines the output size, coordinates and time."},
+        {"ArrayMultiply/trigger_input","Input whose update publishes a result. Automatic follows the main data input."}};
     return QString::fromUtf8(help.value(kind+"/"+key,""));
 }
 
@@ -190,6 +281,23 @@ ParameterChoices representation_parameter_choices(const QString& kind,const QStr
     if(key=="representation")return spectrum_representation_choices(kind);
     return {};
 }
+ParameterChoices array_parameter_choices(const QString& kind,const QString& key) {
+    static const QMap<QString,ParameterChoices> specs{
+        {"NumericMap/operation",{{"0","1"},{"Scale values","Scaled reciprocal"}}},
+        {"NumericMap/output_dtype",{{"0","1","2"},{"Float32","Float64","UInt64"}}},
+        {"CombFilterBank/direction",{{"0","1"},{"Forward comb","Backward comb"}}},
+        {"SameConvolution/crop",{{"0","1"},{"Centered on larger operand","Centered on input"}}},
+        {"VectorNormalize/method",{{"0","1","2","3","4","5","6"},{"None","Maximum norm","Minimum norm","Nonzero count","Lp norm","Sum norm","Standard deviation scale"}}},
+        {"RecursiveFilter/state_policy",{{"0","1","2"},{"Continue filter state","Reset for each input","Reset for each row"}}},
+        {"RecursiveFilter/form",{{"0","1"},{"Transposed direct form II","Direct form I"}}},
+        {"RecursiveFilter/subnormal",{{"0","1","2"},{"Preserve subnormal state","Flush subnormal state","Flush after first sample"}}},
+        {"DirectCorrelation/normalization",{{"0","1","2","3"},{"Raw correlation","Unbiased correlation","Biased correlation","Overlap-energy correlation"}}},
+        {"LogCompression/base",{{"0","1","2"},{"Base 10","Natural logarithm","Base 2"}}}
+    };
+    if(key=="axis" && (kind=="VectorNormalize" || kind=="RecursiveFilter" || kind=="IndexExtract" || kind=="AxisMaximum" || kind=="AxisSum" || kind=="SameConvolution"))
+        return {{"0","1","2"},{"Rows (each column)","Columns (each row)","Last dimension"}};
+    return specs.value(kind+"/"+key);
+}
 ParameterChoices generic_parameter_choices(const QString& key) {
     if(key=="peak_weight")return {{"value","squared_value"},{"Input value","Squared input value"}};
     if(key=="function" || key=="window_function")return {{"hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top"},{"Hann","Hamming","Blackman","Rectangular","Bartlett","Blackman-Harris","Flat top"}};
@@ -200,27 +308,30 @@ ParameterChoices generic_parameter_choices(const QString& key) {
 }
 }
 ParameterChoices parameter_choices(const QString& kind,const QString& key) {
-    if((kind=="RhythmAnalyzer" || kind=="RhythmFeatures") && key=="feature_bins")return {{"64","96"},{"64 bands","96 bands"}};
-    if(kind=="RhythmAnalyzer" && key=="feature_rate_fps")return {{"30","45","60"},{"30 fps","45 fps","60 fps"}};
-    if(kind=="RhythmAnalyzer" && key=="mode")return {{"gated","fixed-light","fixed-full"},{"Gated refinement","Light only","Full refinement"}};
+    const auto array=array_parameter_choices(kind,key);if(!array.values.empty())return array;
     static const QMap<QString,ParameterChoices> specs{
-      {"TempoAnalysis/precision",{{"0","1"},{"Portable Float32","Desktop reference"}}},
+      {"IndexExtract/mode",{{"0","1"},{"One element","Select along axis"}}},
+      {"AxisSum/accumulation",{{"0","1"},{"Sequential accumulation","Pairwise accumulation"}}},
+      {"IndexExtract/padding",{{"0","1"},{"Constant padding","Repeat edge value"}}},
+      {"ArrayMultiply/zero_division",{{"reject"},{"Reject division by zero"}}},
+      {"ArrayConcat/axis",{{"0","1"},{"First dimension (rows)","Second dimension (columns)"}}},
+      {"WindowFunction/evaluation",{{"0","1","2"},{"Default evaluation","Direct evaluation","Symmetric cosine series"}}},
+      {"RhythmAnalyzer/feature_bins",{{"64","96"},{"64 bands","96 bands"}}},
+      {"RhythmFeatures/feature_bins",{{"64","96"},{"64 bands","96 bands"}}},
+      {"RhythmAnalyzer/feature_rate_fps",{{"30","45","60"},{"30 fps","45 fps","60 fps"}}},
+      {"RhythmAnalyzer/mode",{{"gated","fixed-light","fixed-full"},{"Gated refinement","Light only","Full refinement"}}},
       {"CrfBeatSequence/precision",{{"0","1"},{"Portable Float32","Desktop reference"}}},
-      {"AutocorrelationTempogram/normalization",{{"0","1","2","3","4"},{"No normalization","Maximum absolute value","Minimum absolute value","Nonzero count","Lp norm"}}},
-      {"AutocorrelationTempogram/padding",{{"0","1","2","3","4"},{"Zero padding","Linear ramp","Repeat edge","Reflect","Symmetric"}}},
-      {"AutocorrelationTempogram/fft_length",{{"0","1"},{"Power of two","Smooth length (2, 3, 5)"}}},
-      {"AutocorrelationTempogram/transform",{{"0","1","2"},{"Automatic","Complex FFT","Real FFT"}}},
-      {"AutocorrelationTempogram/inverse_output",{{"0","1"},{"Real part","Complex magnitude"}}},
-      {"AutocorrelationTempogram/correlation_normalization",{{"0","1","2"},{"Raw correlation","Divide by overlap length","Divide by full length"}}},
-      {"AutocorrelationTempogram/tail",{{"0","1","2","3"},{"Complete windows only","Cover signal end","Center covers signal end","Window origin inside input"}}},
       {"TempoEstimate/aggregation",{{"0","1","2"},{"Per-frame tempo","Mean","Median"}}},
       {"FrequencyNormalizer/mode",{{"off","manual","profile"},{"Off","Manual","Loaded profile"}}},
-      {"ArrayMultiply/operation",{{"multiply","add"},{"Multiply","Add"}}},
+      {"ArrayMultiply/operation",{{"multiply","add","subtract","divide"},{"Multiply","Add","Subtract","Divide"}}},
       {"BroadbandFeatures/statistic",{{"sum_energy","mean_power","rms","maximum","flux"},{"Sum of spectral power values","Mean of spectral power values","Root sum of spectral power values","Maximum spectral power value","Positive spectral power flux"}}},
       {"AudioSource/source",{{"0","1"},{"System audio (loopback)","Microphone"}}},
-      {"MatrixCenter/method",{{"0","1","2"},{"Subtract mean","Center between minimum and maximum","Manual offset"}}},
+      {"MatrixCenter/method",{{QString::number(int(domain::MatrixCenterMethod::Mean)),
+                               QString::number(int(domain::MatrixCenterMethod::Midrange)),
+                               QString::number(int(domain::MatrixCenterMethod::ManualOffset))},
+                              {"Subtract mean","Center between minimum and maximum","Manual offset"}}},
       {"OnsetStrength/aggregate",{{"mean","median","sum","none"},{"Mean","Median","Sum","Per-band differences"}}},
-      {"FeatureAggregate/method",{{"1","2","3"},{"Mean","Median","Sum"}}},
+      {"FeatureAggregate/method",{{"1","2","3","4"},{"Mean","Median","Sum","Maximum"}}},
       {"Mel/scale",{{"htk","slaney"},{"HTK","Slaney"}}},
       {"Mel/norm",{{"slaney","none","l0","lp","maximum","minimum"},{"Slaney area","None","L0 count","Lp norm","Maximum norm","Minimum norm"}}},
       {"PowerToDb/reference_mode",{{"value","maximum"},{"Explicit reference","Matrix maximum"}}},

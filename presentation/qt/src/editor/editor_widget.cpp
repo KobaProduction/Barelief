@@ -30,6 +30,7 @@
 #include "core_app/scheme_editor/audio_node_model.h"
 #include "core_app/scheme_editor/numeric_editor_model.h"
 #include "core_app/scheme_editor/editor_geometry.h"
+#include "core_app/scheme_editor/editor_canvas_geometry.h"
 #include <QScopedValueRollback>
 #include "core_app/scheme_editor/editor_connection_painter.h"
 #include <QToolTip>
@@ -319,7 +320,7 @@ public:
         return nullptr;
     }
     void add_fourier_dc_action(QMenu* menu,AudioNodeModel* model) {
-        if(!model || (model->name()!="Fourier" && model->name()!="RealFourier"))return;
+        if(!model || (model->name()!="AmplitudePhase"))return;
         menu->addSeparator();auto* dc=menu->addAction(ui::text("Show DC outputs"));dc->setObjectName("showFourierDCOutputs");
         dc->setCheckable(true);dc->setChecked(model->dc_outputs_shown());
         connect(dc,&QAction::triggered,model,[model](bool shown){model->edit_dc_outputs_shown(shown);});
@@ -385,6 +386,16 @@ public:
         painter->drawPolyline(QPolygonF{{3,12},{6,8},{9,10},{13,4}});
     }
 };
+
+constexpr double fine_grid_contrast = 0.06;
+constexpr double coarse_grid_contrast = 0.10;
+
+QColor grid_color(const QColor& background, const QColor& foreground, double amount) {
+    return QColor::fromRgbF(
+        background.redF() * (1 - amount) + foreground.redF() * amount,
+        background.greenF() * (1 - amount) + foreground.greenF() * amount,
+        background.blueF() * (1 - amount) + foreground.blueF() * amount);
+}
 
 class ProfiledGraphicsView final : public GraphicsView {
   public:
@@ -468,38 +479,59 @@ class ProfiledGraphicsView final : public GraphicsView {
         if (!_restoring && isVisible()) _center=mapToScene(viewport()->rect().center());
     }
     QPointF camera_center() const { return _center; }
-    QRectF camera_bounds(double scale,QPointF center,bool restore) {
-        // QGraphicsScene maintains these bounds as items move. Panning must
-        // not rescan every node, connection and embedded control per pointer event.
-        auto bounds=nodeScene()->sceneRect();
-        if(bounds.isEmpty())bounds=QRectF(-100,-100,200,200);
-        const auto half=QSizeF(viewport()->size())/(2*scale);
-        // Preserve the reachable viewport anchor while panning.
-        if(restore)_camera_anchor=center;
-        bounds=bounds.united(QRectF(_camera_anchor-QPointF(half.width(),half.height()),half*2));
-        const auto size=QSizeF(std::max(bounds.width(),2*half.width()),std::max(bounds.height(),2*half.height()));
-        bounds=QRectF(bounds.center()-QPointF(size.width()/2,size.height()/2),size);
-        const double margin=160/scale;
-        bounds.adjust(-margin,-margin,margin,margin);
-        return bounds;
+    void bind_canvas_bounds(DataFlowGraphModel& model) {
+        connect(&model,&DataFlowGraphModel::nodePositionUpdated,this,[this] {invalidate_bounds();});
+        connect(&model,&DataFlowGraphModel::nodeUpdated,this,[this] {invalidate_bounds();});
+        connect(&model,&DataFlowGraphModel::nodeDeleted,this,[this] {invalidate_bounds();});
+        connect(&model,&DataFlowGraphModel::nodeCreated,this,[this] {invalidate_bounds();});
+        connect(nodeScene(),&DataFlowGraphicsScene::modified,this,[this] {invalidate_bounds();});
+        invalidate_bounds();
     }
-    QPointF constrained_camera_center(double scale,QPointF center,bool restore) {
-        const auto bounds=camera_bounds(scale,center,restore);
-        const auto half=QSizeF(viewport()->size())/(2*scale);
+    void watch_node_geometry(QtNodes::NodeId id) {
+        auto& graph=static_cast<DataFlowGraphModel&>(nodeScene()->graphModel());
+        auto* model=graph.delegateModel<QtNodes::NodeDelegateModel>(id);
+        if(model)connect(model,&QtNodes::NodeDelegateModel::embeddedWidgetSizeUpdated,
+                         this,[this] {invalidate_bounds();});
+        invalidate_bounds();
+    }
+    void invalidate_bounds() {
+        _bounds_dirty=true;
+        if(_bounds_refresh_pending)return;
+        _bounds_refresh_pending=true;
+        QTimer::singleShot(0,this,[this] {
+            _bounds_refresh_pending=false;
+            camera(getScale(),_center);
+        });
+    }
+    QRectF content_bounds() {
+        if(!_bounds_dirty)return _content_bounds;
+        _content_bounds={};
+        for(auto id:nodeScene()->graphModel().allNodeIds())
+            if(auto* item=nodeScene()->nodeGraphicsObject(id))
+                _content_bounds=_content_bounds.united(item->sceneBoundingRect());
+        _bounds_dirty=false;
+        return _content_bounds;
+    }
+    double constrained_scale(double scale) {
+        const auto minimum=presentation::editor_canvas::minimum_scale(content_bounds(),viewport()->size());
+        return std::clamp(scale,minimum,3.0);
+    }
+    QPointF constrained_camera_center(double scale,QPointF center) {
+        const auto bounds=presentation::editor_canvas::navigation_bounds(content_bounds(),viewport()->size(),scale);
         // Qt recalculates content size and scroll bars even for equal bounds.
         // Ordinary panning changes the center, not these retained scene bounds.
         if(sceneRect()!=bounds)setSceneRect(bounds);
-        center.setX(std::clamp(center.x(),bounds.left()+half.width(),bounds.right()-half.width()));
-        center.setY(std::clamp(center.y(),bounds.top()+half.height(),bounds.bottom()-half.height()));
-        return center;
+        return presentation::editor_canvas::constrain_center(bounds,viewport()->size(),scale,center);
     }
-    void camera(double scale, QPointF center, bool restore = true) {
+    void camera(double scale, QPointF center) {
         core::perf::Scope profile(core::perf::Stage::EditorNavigation);
         _restoring = true;
+        scale=constrained_scale(scale);
+        setScaleRange(presentation::editor_canvas::minimum_scale(content_bounds(),viewport()->size()),3.0);
         // setupScale skips equal scales; reset also removes old zoom translations.
         const bool scaleChangedNow=std::abs(scale-getScale())>1e-9;
         if(scaleChangedNow) { QTransform transform; transform.scale(scale,scale); setTransform(transform); }
-        center=constrained_camera_center(scale,center,restore);
+        center=constrained_camera_center(scale,center);
         centerOn(center); _center = center;
         _restoring = false;
         if(scaleChangedNow) emit scaleChanged(getScale());
@@ -514,7 +546,7 @@ class ProfiledGraphicsView final : public GraphicsView {
             pan_pixels(-gesture->delta());gesture->accept();return true;
         }
         if(gesture->gestureType()!=Qt::ZoomNativeGesture)return false;
-        const double next=std::clamp(getScale()*(1+gesture->value()),0.2,3.0);
+        const double next=constrained_scale(getScale()*(1+gesture->value()));
         const auto anchor=mapToScene(gesture->position().toPoint());
         const auto offset=(gesture->position()-QPointF(viewport()->rect().center()))/next;
         camera(next,anchor-offset);
@@ -681,7 +713,7 @@ class ProfiledGraphicsView final : public GraphicsView {
     bool continue_middle_pan(QMouseEvent* event) {
         if(!_middle_panning)return false;
         if(!(event->buttons() & Qt::MiddleButton)){
-            finish_middle_pan();GraphicsView::mouseMoveEvent(event);return true;
+            finish_middle_pan();QGraphicsView::mouseMoveEvent(event);return true;
         }
         const auto point=event->position().toPoint();
         pan_pixels(_middle_last-point);_middle_last=point;
@@ -694,15 +726,12 @@ class ProfiledGraphicsView final : public GraphicsView {
         if(_reorder_node!=QtNodes::InvalidNodeId){event->accept();return;}
         _last_pointer=event->position().toPoint(); _pointer_seen=true;
         if(continue_middle_pan(event))return;
-        GraphicsView::mouseMoveEvent(event);
+        // Qt's hand drag respects the content scroll range. QtNodes additionally
+        // translates sceneRect on an empty left drag, bypassing those bounds.
+        QGraphicsView::mouseMoveEvent(event);
     }
     void leaveEvent(QEvent* event) override {QToolTip::hideText();_hover_wire=nullptr;GraphicsView::leaveEvent(event);}
-    void draw_grid(QPainter* painter,const QRectF& rect,const QColor& background,
-                   const QColor& foreground,double spacing,double amount) {
-        const auto color=QColor::fromRgbF(
-            background.redF()*(1-amount)+foreground.redF()*amount,
-            background.greenF()*(1-amount)+foreground.greenF()*amount,
-            background.blueF()*(1-amount)+foreground.blueF()*amount);
+    void draw_grid(QPainter* painter,const QRectF& rect,const QColor& color,double spacing) {
         painter->setPen(QPen(color,0));
         for(double x=std::floor(rect.left()/spacing)*spacing;x<=rect.right();x+=spacing)
             painter->drawLine(QLineF(x,rect.top(),x,rect.bottom()));
@@ -721,8 +750,8 @@ class ProfiledGraphicsView final : public GraphicsView {
         painter->setRenderHint(QPainter::Antialiasing, false);
         double step = 60;
         while (step * getScale() < 32) step *= 2;
-        draw_grid(painter,rect,background,foreground,step,0.06);
-        draw_grid(painter,rect,background,foreground,step*5,0.10);
+        draw_grid(painter,rect,grid_color(background,foreground,fine_grid_contrast),step);
+        draw_grid(painter,rect,grid_color(background,foreground,coarse_grid_contrast),step*5);
         painter->restore();
     }
     void showEvent(QShowEvent *event) override {
@@ -834,7 +863,7 @@ class ProfiledGraphicsView final : public GraphicsView {
     }
     void zoom_from_wheel(QWheelEvent* event,double delta) {
         const QPointF anchor=mapToScene(event->position().toPoint());
-        const double next=std::clamp(getScale()*std::exp(std::clamp(delta,-10.0,10.0)*0.10),0.2,3.0);
+        const double next=constrained_scale(getScale()*std::exp(std::clamp(delta,-10.0,10.0)*0.10));
         const auto offset = QPointF(event->position().toPoint()-viewport()->rect().center())/next;
         camera(next,anchor-offset);
         event->accept(); if (on_interaction) on_interaction();
@@ -845,7 +874,8 @@ class ProfiledGraphicsView final : public GraphicsView {
     }
   private:
     QPointF _center;
-    QPointF _camera_anchor;
+    QRectF _content_bounds;
+    bool _bounds_dirty=true, _bounds_refresh_pending=false;
     bool _restoring = false;
     bool _middle_panning = false;
     QPoint _middle_last;
@@ -894,7 +924,7 @@ class ProfiledGraphicsView final : public GraphicsView {
         return false;
     }
     void pan_pixels(QPointF delta) {
-        camera(getScale(),_center+delta/getScale(),false);
+        camera(getScale(),_center+delta/getScale());
         if(on_interaction) on_interaction();
     }
     void finish_middle_pan() {
@@ -908,15 +938,10 @@ static void setStyle__() {
     const auto palette=QApplication::palette();
     const auto background=palette.color(QPalette::Window);
     const auto foreground=palette.color(QPalette::WindowText);
-    auto grid_color=[&](double amount) {
-        return QColor::fromRgbF(background.redF()*(1-amount)+foreground.redF()*amount,
-                                background.greenF()*(1-amount)+foreground.greenF()*amount,
-                                background.blueF()*(1-amount)+foreground.blueF()*amount);
-    };
     auto view=QtNodes::StyleCollection::flowViewStyle();
     view.BackgroundColor=background;
-    view.FineGridColor=grid_color(0.06);
-    view.CoarseGridColor=grid_color(0.10);
+    view.FineGridColor=grid_color(background,foreground,fine_grid_contrast);
+    view.CoarseGridColor=grid_color(background,foreground,coarse_grid_contrast);
     QtNodes::StyleCollection::setGraphicsViewStyle(view);
     auto json=QtNodes::StyleCollection::connectionStyle().toJson();
     auto connection=json["ConnectionStyle"].toObject();
@@ -1164,17 +1189,24 @@ void SchemeEditorWidget::setup_processing_rate(QHBoxLayout* bar) {
     connect(&ui::Language::instance(),&ui::Language::changed,this,&SchemeEditorWidget::refresh_processing_telemetry);
     refresh_processing_telemetry();
 }
+static void set_zoom_display(QDoubleSpinBox* zoom,double scale) {
+    const QSignalBlocker blocker(zoom);
+    const double percent=scale*100;
+    zoom->setDecimals(std::clamp(1-int(std::floor(std::log10(percent))),0,12));
+    zoom->setValue(percent);
+}
 void SchemeEditorWidget::setup_zoom_control(QHBoxLayout* bar) {
     auto *zoom=new QDoubleSpinBox(this); zoom->setObjectName("pipelineZoom");
     zoom->setMaximumWidth(72); zoom->setFixedHeight(24);
-    zoom->setDecimals(0); zoom->setRange(20,300); zoom->setSuffix(" %"); zoom->setSingleStep(10); zoom->setValue(100);
+    zoom->setDecimals(0); zoom->setRange(0,300); zoom->setSuffix(" %"); zoom->setSingleStep(10); zoom->setValue(100);
     bar->addWidget(ui::make<QLabel>("Zoom",this)); bar->addWidget(zoom);
-    connect(zoom,&QDoubleSpinBox::valueChanged,this,[this](double percent) {
+    connect(zoom,&QDoubleSpinBox::valueChanged,this,[this,zoom](double percent) {
         const auto center=_view->mapToScene(_view->viewport()->rect().center());
         static_cast<ProfiledGraphicsView *>(_view)->camera(percent/100,center);
+        set_zoom_display(zoom,_view->getScale());
     });
     connect(_view,&GraphicsView::scaleChanged,zoom,[zoom](double value) {
-        const QSignalBlocker blocker(zoom); zoom->setValue(value*100);
+        set_zoom_display(zoom,value);
     });
 }
 QPushButton* SchemeEditorWidget::setup_center_control(QHBoxLayout* bar) {
@@ -1422,10 +1454,9 @@ void SchemeEditorWidget::configure_view() {
     static_cast<ProfiledGraphicsView *>(_view)->configure_graph_shortcuts();
     _view->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     _view->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    _view->setScaleRange(0.2,3.0);
     _view->setTransformationAnchor(QGraphicsView::NoAnchor);
     _view->setResizeAnchor(QGraphicsView::NoAnchor);
-    _view->setSceneRect(-10000000,-10000000,20000000,20000000);
+    static_cast<ProfiledGraphicsView *>(_view)->bind_canvas_bounds(*_application.state().data_flow_graph);
     _view->setViewportUpdateMode(QGraphicsView::MinimalViewportUpdate);
     // This background is a flat fill and a sparse grid. QtNodes' full-size
     // background pixmap costs more to scroll/copy than to draw, especially at DPR 2.
@@ -1564,7 +1595,7 @@ void SchemeEditorWidget::apply_saved_camera(const QJsonObject& saved) {
         const auto scale=saved.value("scale").toDouble(1);
         const auto x=saved.value("center_x").toDouble(),y=saved.value("center_y").toDouble();
         if(std::isfinite(scale) && std::isfinite(x) && std::isfinite(y))
-            static_cast<ProfiledGraphicsView *>(_view)->camera(std::clamp(scale,0.2,3.0),{x,y});
+            static_cast<ProfiledGraphicsView *>(_view)->camera(scale,{x,y});
         else static_cast<ProfiledGraphicsView *>(_view)->camera(1,node_bounds().center());
     } else fit_nodes();
 }
@@ -1893,9 +1924,9 @@ bool SchemeEditorWidget::prepare_draft_import(NumericEditorGraphModel* numeric,
                                                const domain::NumericProcessingGraph& graph,
                                                const QJsonObject& node_adapters,
                                                domain::NumericProcessingGraph& prepared,QString* error) {
-    if(!numeric->prepare_numeric_import(graph,node_adapters,prepared,error))return false;
-    NumericEditorGraphModel candidate(numeric->dataModelRegistry());candidate.set_admission_limits(numeric->admission_limits());
-    return candidate.set_numeric_graph(prepared,error,node_adapters);
+    // set_numeric_graph validates its complete candidate before replacing the
+    // active model; do not construct a second GUI graph just for preflight.
+    return numeric->prepare_numeric_import(graph,node_adapters,prepared,error);
 }
 bool SchemeEditorWidget::commit_draft_import(NumericEditorGraphModel* numeric,
                                               const domain::NumericProcessingGraph& prepared,
@@ -1910,11 +1941,19 @@ bool SchemeEditorWidget::commit_draft_import(NumericEditorGraphModel* numeric,
     _scene->onModelReset();_scene->undoStack().clear();
     return true;
 }
+namespace {
+void enable_draft_controls(QGraphicsView& view,QObject& owner) {
+    view.setInteractive(true);
+    if(auto* library=owner.findChild<QTreeWidget*>("pipelineNodeLibrary"))library->setEnabled(true);
+}
+}
+
 void SchemeEditorWidget::finish_draft_import(NumericEditorGraphModel* numeric) {
     _document_template=numeric->save();_unrendered_connections={};_unsupported_document=false;
-    _view->setInteractive(true);if(auto* library=findChild<QTreeWidget*>("pipelineNodeLibrary"))library->setEnabled(true);
+    enable_draft_controls(*_view,*this);
     const auto nodes=numeric->allNodeIds();
     for(auto id:nodes)wire_source_model(id);
+    static_cast<ProfiledGraphicsView *>(_view)->invalidate_bounds();
     _last_processing_document=processing_document(numeric->save());
     _last_adapter_metadata=graph_adapter_metadata();
     _loading=_draft_notification_pending=false;_application.state().editor_draft_modified=false;set_status({});
@@ -2304,6 +2343,7 @@ void SchemeEditorWidget::rebuild_document_graph() {
     // nodeCreated is blocked during replacement; bind all new delegates now.
     for (const auto id : graph.allNodeIds()) wire_source_model(id);
     for (const auto id : graph.allNodeIds()) update_graph_view_indicator(id);
+    static_cast<ProfiledGraphicsView *>(_view)->invalidate_bounds();
 }
 
 void SchemeEditorWidget::restore_document_view(const QJsonObject& view) {
@@ -2316,7 +2356,7 @@ void SchemeEditorWidget::restore_document_view(const QJsonObject& view) {
     const double scale = view.value("scale").toDouble(1);
     const double x = view.value("center_x").toDouble(), y = view.value("center_y").toDouble();
     if (std::isfinite(scale) && std::isfinite(x) && std::isfinite(y))
-        static_cast<ProfiledGraphicsView*>(_view)->camera(std::clamp(scale, 0.2, 3.0), {x, y});
+        static_cast<ProfiledGraphicsView*>(_view)->camera(scale, {x, y});
 }
 
 void SchemeEditorWidget::finish_document_load(bool active, bool switch_device) {
@@ -2434,6 +2474,7 @@ void SchemeEditorWidget::wire_source_model(QtNodes::NodeId id) {
     if(auto *node=_application.state().data_flow_graph->delegateModel<AudioNodeModel>(id)){
         if(node->property("editorSaveEventsBound").toBool())return;
         node->setProperty("editorSaveEventsBound",true);
+        static_cast<ProfiledGraphicsView *>(_view)->watch_node_geometry(id);
         connect(node,&AudioNodeModel::parameter_values_changed,this,&SchemeEditorWidget::changed);
         connect(node,&AudioNodeModel::parameter_structure_changed,this,&SchemeEditorWidget::changed);
         connect(node,&AudioNodeModel::adapter_changed,this,&SchemeEditorWidget::changed);
@@ -2530,126 +2571,47 @@ void SchemeEditorWidget::flush_presentation() {
 }
 void SchemeEditorWidget::arrange_nodes() {
     layout_nodes(true);
+    fit_nodes();
 }
 namespace {
 class EditorGraphLayout {
 public:
     EditorGraphLayout(DataFlowGraphModel& graph, DataFlowGraphicsScene& scene) : _graph(graph), _scene(scene) {}
-    std::map<QtNodes::NodeId, QPointF> positions() {
-        // Known startup graph: arrange the audio frontend, measured gain,
-        // 48+48 spectral composition and rhythm monitoring as separate lanes.
-        // This affects only a freshly opened example, never a saved user layout.
-        if (arrange_curated_graph())return std::move(_positions);
-        build_edges();
-        assign_layers();
-        std::map<int, std::vector<QtNodes::NodeId>> columns;
-        for (const auto& [id, column] : _layer) columns[column].push_back(id);
-        double x = 0;
-        for (auto& [column, ids] : columns) x += place_column(ids, x) + 40;
-        return std::move(_positions);
+    presentation::editor_canvas::Positions positions(QSizeF viewport) {
+        for(auto id:_graph.allNodeIds())if(auto* item=_scene.nodeGraphicsObject(id))
+            _nodes.push_back({id,item->boundingRect()});
+        const auto connections=_graph.save().value("connections").toArray();
+        for(const auto value:connections)add_edge(value.toObject());
+        return presentation::editor_canvas::arrange(_nodes,_edges,viewport);
     }
 private:
-    bool arrange_curated_graph() {
-        if (!_graph.nodeExists(1304) || !_graph.nodeExists(1102) ||
-            !_graph.nodeExists(1007) || !_graph.nodeExists(1005))return false;
-        const std::vector<std::vector<QtNodes::NodeId>> columns{
-            {1,13,16},{200},{332,1313},{2,9,1000,1003,1314,1315},{3,1001,1310,1311},
-            {4,1312},{5,1004,1300,1320,1330,1340,1350},{1005,15,1110,10,1301,1321,1331,1341,1351},{6,1006,1302,1322,1332,1342,1352},
-            {1008,1010,1007,11,12,1303},{7,1304,1360},
-            {8,1009,1011,1102,1305,1306,1361},{1103,1105,1200,1210},
-            {1106,1201,1211},{1202,1212},{1203,1207,1213,1217},
-            {1204,1208,1214,1218},{1250,1260},{1205,1209,1215,1219},{1206,1216,1220}};
-        double x=0;
-        for(const auto& ids:columns)x+=place_curated_column(ids,x)+92;
-        return true;
-    }
-    double place_curated_column(const std::vector<QtNodes::NodeId>& ids,double x) {
-        double y=0,width=0;
-        for(const auto id:ids)if(auto* item=_scene.nodeGraphicsObject(id)){
-            y=std::max(y,curated_lane_origin(id));
-            const auto bounds=item->boundingRect();
-            _positions[id]=QPointF(x-bounds.left(),y-bounds.top());
-            width=std::max(width,bounds.width());
-            y+=bounds.height()+84;
-        }
-        return width;
-    }
-    static double tempogram_lane_origin(QtNodes::NodeId id) {
-        if(id==1250)return 4000;
-        if(id==1260)return 5800;
-        if(id>=1200 && id<=1209)return 4000;
-        if(id>=1210 && id<=1219)return 5800;
-        return id==1220?7600:0;
-    }
-
-    static double curated_lane_origin(QtNodes::NodeId id) {
-        if(id>=1320 && id<=1352)return 9000+1200*((id-1320)/10);
-        if(id>=1300 && id<=1315)return 2200;
-        if(id>=1360 && id<=1361)return 3400;
-        return tempogram_lane_origin(id);
-    }
-    void build_edges() {
-        for (const auto id : _graph.allNodeIds()) { _incoming[id] = 0; _layer[id] = 0; }
-        const auto connections = _graph.save().value("connections").toArray();
-        for (const auto value : connections) add_edge(value.toObject());
-    }
     void add_edge(const QJsonObject& edge) {
         const auto from = QtNodes::NodeId(edge.value("outNodeId").toInt());
         const auto to = QtNodes::NodeId(edge.value("inNodeId").toInt());
         const auto* source = _graph.delegateModel<AudioNodeModel>(from);
         if (source && source->configuration_role(QtNodes::PortType::Out, edge.value("outPortIndex").toInt())) return;
-        if (!_incoming.contains(from) || !_incoming.contains(to)) return;
-        ++_incoming[to];
-        _next[from].push_back(to);
-    }
-    void assign_layers() {
-        std::queue<QtNodes::NodeId> queue;
-        for (const auto& [id, count] : _incoming) if (!count) queue.push(id);
-        while (!queue.empty()) {
-            const auto id = queue.front();
-            queue.pop();
-            for (const auto to : _next[id]) {
-                _layer[to] = std::max(_layer[to], _layer[id] + 1);
-                if (--_incoming[to] == 0) queue.push(to);
-            }
-        }
-    }
-    int rank(QtNodes::NodeId id) const {
-        const auto* model = _graph.delegateModel<AudioNodeModel>(id);
-        const auto category = model ? numeric_editor::category(model->name()) : QString();
-        return category == "Sources" ? 0 : category == "Processors" ? 1 : 2;
-    }
-    double place_column(std::vector<QtNodes::NodeId>& ids, double x) {
-        std::stable_sort(ids.begin(), ids.end(), [this](auto a, auto b) { return rank(a) < rank(b); });
-        double y = 0, width = 0;
-        for (const auto id : ids) if (auto* item = _scene.nodeGraphicsObject(id)) {
-            const auto bounds = item->boundingRect();
-            _positions[id] = QPointF(x - bounds.left(), y - bounds.top());
-            width = std::max(width, bounds.width());
-            y += bounds.height() + 40;
-        }
-        return width;
+        _edges.push_back({from,to});
     }
     DataFlowGraphModel& _graph;
     DataFlowGraphicsScene& _scene;
-    std::map<QtNodes::NodeId, int> _incoming, _layer;
-    std::map<QtNodes::NodeId, std::vector<QtNodes::NodeId>> _next;
-    std::map<QtNodes::NodeId, QPointF> _positions;
+    std::vector<presentation::editor_canvas::Node> _nodes;
+    std::vector<presentation::editor_canvas::Edge> _edges;
 };
 }
 
 void SchemeEditorWidget::layout_nodes(bool undoable) {
     auto& graph = *_application.state().data_flow_graph;
-    auto positions = EditorGraphLayout(graph, *_scene).positions();
+    auto positions = EditorGraphLayout(graph, *_scene).positions(_view->viewport()->size());
     if (positions.empty()) return;
     if (undoable) _scene->undoStack().push(new ArrangeCommand(graph, std::move(positions)));
     else for (const auto& [id, position] : positions) graph.setNodeData(id, QtNodes::NodeRole::Position, position);
+    static_cast<ProfiledGraphicsView *>(_view)->invalidate_bounds();
 }
 void SchemeEditorWidget::fit_nodes() {
     const auto nodes=node_bounds(); if(nodes.isEmpty()) return;
-    const auto bounds=nodes.adjusted(-40,-40,40,40);
-    const double scale=std::clamp(std::min(_view->viewport()->width()/bounds.width(),_view->viewport()->height()/bounds.height()),0.2,3.0);
-    static_cast<ProfiledGraphicsView *>(_view)->camera(scale,bounds.center());
+    auto* view=static_cast<ProfiledGraphicsView *>(_view);
+    view->invalidate_bounds();
+    view->camera(presentation::editor_canvas::fit_scale(nodes,_view->viewport()->size()),nodes.center());
     if (!_loading) _save_timer.start();
 }
 QRectF SchemeEditorWidget::node_bounds() const {

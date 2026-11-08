@@ -96,7 +96,7 @@ struct WledInputState {
 struct State {
     std::optional<PreparedNumericExtension> extension;
     // A node owns only its prepared numerical operation; contexts copy independently.
-    std::variant<std::monostate,dsp_kernels::MagnitudeSpectrum,dsp_kernels::PreparedRfft,ResamplerKernel,OscillatorKernel,PreparedOperationKernel> kernel;
+    std::variant<std::monostate,dsp_kernels::PreparedRfft,ResamplerKernel,OscillatorKernel,PreparedOperationKernel> kernel;
     std::vector<float> left, values, coefficients, pcm;
     std::vector<std::int16_t> left_pcm16,values_pcm16,pcm16;
     std::size_t window_extent=0;

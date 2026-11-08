@@ -142,10 +142,19 @@ def defined_scores(results):
                        else -np.inf for path, score in results], dtype=np.float64)
 
 
+def source_processor(original):
+    tempo = original.tempo.TempoEstimationProcessor(
+        method="comb", min_bpm=20, max_bpm=240, act_smooth=.09,
+        hist_smooth=7, fps=200, online=False, hist_buffer=10,
+        alpha=.79, interpolate=False)
+    return original.beats.CRFBeatDetectionProcessor(
+        fps=200, tempo_estimator=tempo, interval_sigma=.18,
+        num_intervals=5, use_factors=False, num_threads=1)
+
+
 def processor(original, module, module_root, report=None):
     import numpy as np
-    import madmom_pipeline_oracle as oracle
-    value = oracle.tracker(original, 2, oracle.tempo_processor(original, 2))
+    value = source_processor(original)
     trials = [] if report is None else report
 
     def trial_call(trial):

@@ -22,33 +22,6 @@ def capture_return(function, values, **kwargs):
         sys.setprofile(previous)
 
 
-def crf_cases(original):
-    values = envelope(384)
-    for factors, count, sigma in itertools.product((False, True), (1, 3), (.1, .18)):
-        if factors and count != 3:
-            continue
-
-        def reference(x, factors=factors, count=count, sigma=sigma):
-            tempo = original.tempo.TempoEstimationProcessor(method="comb", min_bpm=60, max_bpm=240,
-                                                           fps=50, act_smooth=.04, hist_smooth=3,
-                                                           hist_buffer=2, alpha=.79, interpolate=False)
-            processor = original.beats.CRFBeatDetectionProcessor(interval_sigma=sigma, use_factors=factors,
-                                                               num_intervals=count, fps=50,
-                                                               tempo_estimator=tempo, num_threads=1)
-            times, observed = capture_return(processor.process, x)
-            return {"times": times, "positions": observed["best_seq"],
-                    "intervals": np.asarray(observed["possible_intervals"], np.uint64),
-                    "scores": observed["normalized_seq_probabilities"], "tempo_candidates": observed["tempi"]}
-
-        yield Case(f"python.madmom.wrapper.crf.factors{int(factors)}.top{count}.sigma{sigma}",
-                   "remaining", "crf_wrapper", values, [int(factors), count, sigma], reference,
-                   dict(fps=50, min_bpm=60, max_bpm=240, method="comb", alpha=.79,
-                        activation_smoothing_seconds=.04, histogram_smoothing=3, history_seconds=2,
-                        interval_sigma=sigma, use_factors=factors, num_intervals=count,
-                        factors=[.5, .67, 1, 1.5, 2], supplied_activations=True, neural_network=False,
-                        observed_outputs="unchanged original wrapper return locals; trial ordering/ranking included"))
-
-
 def state_outputs(processor, values, suffix, online, reset=True):
     function = processor.process_online if online else processor.process_offline
     times, observed = capture_return(function, values, **({"reset": reset} if online else {}))
@@ -98,5 +71,4 @@ def state_cases(original):
 
 
 def cases(original):
-    yield from crf_cases(original)
     yield from state_cases(original)

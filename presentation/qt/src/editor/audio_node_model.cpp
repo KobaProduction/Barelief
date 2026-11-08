@@ -1,6 +1,7 @@
 #include "barelief/ui_text.h"
 #include "core/performance.h"
 #include "core_app/scheme_editor/audio_node_model.h"
+#include "core_app/scheme_editor/presentation_labels.h"
 #include "core_app/scheme_editor/node_preview_card.h"
 #include "core_app/scheme_editor/embedded_widget_layout.h"
 #include "core_app/scheme_editor/numeric_editor_model.h"
@@ -8,9 +9,13 @@
 #include "core_app/scheme_editor/node_parameter_form.h"
 #include "core_app/scheme_editor/typed_parameter_helper.h"
 #include "oscillator_bank_widget.h"
+#include "parameter_field_specs.h"
 #include "core_app/wheel_input.h"
 #include <desktop/numeric_project_document.h>
 #include <domain/graph/node_factory.h>
+#include <domain/numeric/array_math.h>
+#include <domain/numeric/array_processing_ports.h>
+#include <domain/numeric/correlation_ports.h>
 #include <pipeline/numeric_projection.h>
 #include <QSpinBox>
 #include <QPushButton>
@@ -62,7 +67,7 @@ AudioNodeModel::AudioNodeModel(QString kind) : _kind(std::move(kind)) {
     _numeric = numeric_editor::default_node(_kind);
     _parameters=new NodeParameterModel(this);
     bind_parameter_model();
-    connect(&ui::Language::instance(), &ui::Language::changed, this, [this] { emit parameter_values_changed();update_previews();emit requestNodeUpdate(); });
+    connect(&ui::Language::instance(), &ui::Language::changed, this, [this] { update_previews();emit requestNodeUpdate(); });
 }
 void AudioNodeModel::bind_parameter_model() {
     _parameters->setEditHandlers([this](const auto& n){return edit_numeric(n);},[this](const auto& a){return edit_adapter(a);},[this](const auto& key,bool shown){return set_parameter_on_block(key,shown);});
@@ -126,10 +131,10 @@ unsigned int AudioNodeModel::nPorts(QtNodes::PortType type) const {
 }
 unsigned AudioNodeModel::visible_numeric_ports(QtNodes::PortType side,const domain::ConfiguredProcessingNode& node) const {
     const auto count=unsigned((side==QtNodes::PortType::In?node.inputs:node.outputs).size());
-    return side==QtNodes::PortType::Out && (node.kind=="Fourier" || node.kind=="RealFourier") && !dc_outputs_shown() && !_dc_connections_visible?std::min(count,2u):count;
+    return side==QtNodes::PortType::Out && node.kind=="AmplitudePhase" && !dc_outputs_shown() && !_dc_connections_visible?std::min(count,2u):count;
 }
 void AudioNodeModel::update_dc_visibility(bool shown,bool connected) {
-    if(!_numeric || (_kind!="Fourier" && _kind!="RealFourier"))return;
+    if(!_numeric || (_kind!="AmplitudePhase"))return;
     const auto before=nPorts(QtNodes::PortType::Out);
     const auto after=!shown && !connected?std::min(unsigned(_numeric->outputs.size()),2u):
         unsigned(_numeric->outputs.size())+unsigned(execution_sync_port(*_numeric,QtNodes::PortType::Out));
@@ -148,7 +153,7 @@ void AudioNodeModel::set_dc_connections_visible(bool connected) {
     if(_dc_connections_visible!=connected)update_dc_visibility(dc_outputs_shown(),connected);
 }
 bool AudioNodeModel::edit_dc_outputs_shown(bool shown) {
-    if((_kind!="Fourier" && _kind!="RealFourier") || shown==dc_outputs_shown())return false;
+    if((_kind!="AmplitudePhase") || shown==dc_outputs_shown())return false;
     auto presentation=_presentation;presentation["show_dc_outputs"]=shown;
     if(_presentation_edit)return _presentation_edit(presentation);
     set_presentation(presentation);return true;
@@ -168,24 +173,241 @@ QtNodes::NodeDataType AudioNodeModel::dataType(QtNodes::PortType type, QtNodes::
 }
 namespace {
 const char* analysis_port_title(const QString& kind,QtNodes::PortType type,domain::PortId id) {
-    struct Label {const char* kind;bool input;domain::PortId port;const char* title;};
+    struct Label {domain::NodeKind kind;bool input;domain::PortId port;const char* title;};
     constexpr Label labels[]={
-        {"AutocorrelationTempogram",true,0,"Onset strength history"},
-        {"AutocorrelationTempogram",false,0,"Normalized autocorrelation"},
-        {"AutocorrelationTempogram",false,1,"Raw autocorrelation"},
-        {"AutocorrelationTempogram",false,2,"Windowed onset history"},
-        {"AutocorrelationTempogram",false,3,"Tempo scale, BPM"},
-        {"TempoEstimate",true,0,"Autocorrelation profile"},{"TempoEstimate",true,1,"Tempo prior"},
-        {"TempoEstimate",false,0,"Estimated tempo, BPM"},
-        {"DynamicBeatPath",true,0,"Onset strength history"},{"DynamicBeatPath",true,1,"Tempo, BPM"},
-        {"DynamicBeatPath",false,0,"Beat positions (0/1)"},{"DynamicBeatPath",false,1,"Local beat score"},
-        {"DynamicBeatPath",false,2,"Accumulated path score"},{"DynamicBeatPath",false,3,"Previous beat index"},
-        {"PowerToDb",true,0,"Linear power"},{"PowerToDb",false,0,"Log power, dB"},
-        {"Window",true,0,"New values"},{"Window",false,0,"Accumulated values"},
-        {"Mel",true,0,"Power spectrum"},{"Mel",false,0,"Mel band power"},
-        {"FeatureAggregate",true,0,"Feature values"},{"FeatureAggregate",false,0,"Aggregated feature"},
-        {"FrameStride",true,0,"Input frames"},{"FrameStride",false,0,"Selected frames"}};
-    for(const auto& label:labels)if(kind==QLatin1String(label.kind) && label.input==(type==QtNodes::PortType::In) && label.port==id)return label.title;
+        {domain::NodeKind::ContextBeatSequence,true,14,"Beat delay, samples"},
+        {domain::NodeKind::ContextBeatSequence,true,15,"Time signature"},
+        {domain::NodeKind::ContextBeatSequence,true,16,"Poll tatum events"},
+        {domain::NodeKind::PeriodPath,true,0,"Period observations"},
+        {domain::NodeKind::PeriodPath,false,0,"Period path, frames"},
+        {domain::NodeKind::PeriodPath,false,1,"Period segment ends"},
+        {domain::NodeKind::PeriodPath,false,2,"Noisy period observations"},
+        {domain::NodeKind::PeriodPath,false,3,"Period state path"},
+        {domain::NodeKind::RenewalBeatDecoder,true,0,"Onset curve"},
+        {domain::NodeKind::RenewalBeatDecoder,true,1,"Period path, frames"},
+        {domain::NodeKind::RenewalBeatDecoder,true,2,"Period segment ends"},
+        {domain::NodeKind::RenewalBeatDecoder,false,0,"Beat mask"},
+        {domain::NodeKind::RenewalBeatDecoder,false,1,"Renewal state path"},
+        {domain::NodeKind::RenewalBeatDecoder,false,2,"Beat times, s"},
+        {domain::NodeKind::HarmonicComb,true,0,"Correlation by lag"},
+        {domain::NodeKind::HarmonicComb,true,1,"Comb weights"},
+        {domain::NodeKind::HarmonicComb,false,0,"Harmonic comb response"},
+        {domain::NodeKind::SpectralNovelty,true,0,"Feature rows"},
+        {domain::NodeKind::SpectralNovelty,true,1,"Phase rows"},
+        {domain::NodeKind::SpectralNovelty,false,0,"Spectral novelty values"},
+        {domain::NodeKind::SpectralNovelty,false,1,"Spectral differences"},
+        {domain::NodeKind::SpectralNovelty,false,2,"Phase selection mask"},
+        {domain::NodeKind::SpectralNovelty,false,3,"Alignment correlations"},
+        {domain::NodeKind::SpectralNovelty,false,4,"Alignment offset"},
+        {domain::NodeKind::Number,false,0,"Constant value"},
+        {domain::NodeKind::UInt32Constant,false,0,"Integer value"},
+        {domain::NodeKind::InverseFourier,true,0,"Real Fourier coefficients"},
+        {domain::NodeKind::InverseFourier,true,1,"Imaginary Fourier coefficients"},
+        {domain::NodeKind::InverseFourier,false,0,"Real signal"},
+        {domain::NodeKind::InverseFourier,false,1,"Imaginary signal"},
+        {domain::NodeKind::AbsoluteValue,true,0,"Signed values"},
+        {domain::NodeKind::AbsoluteValue,false,0,"Absolute values"},
+        {domain::NodeKind::Clamp,true,0,"Values to clamp"},
+        {domain::NodeKind::Clamp,false,0,"Clamped values"},
+        {domain::NodeKind::LinearExpansion,true,0,"Interpolation source values"},
+        {domain::NodeKind::LinearExpansion,false,0,"Expanded values"},
+        {domain::NodeKind::QuantileMask,true,0,"Quantile source values"},
+        {domain::NodeKind::QuantileMask,false,0,"Upper-tail mask"},
+        {domain::NodeKind::AxisMaximum,true,0,"Values to compare"},
+        {domain::NodeKind::AxisMaximum,false,0,"Maximum indices"},
+        {domain::NodeKind::AxisMaximum,false,1,"Maximum values"},
+        {domain::NodeKind::AxisMaximum,false,2,"Tied maximum values"},
+        {domain::NodeKind::AxisSum,true,0,"Values to sum"},
+        {domain::NodeKind::AxisSum,false,0,"Summed values"},
+        {domain::NodeKind::ArrayGather,true,0,"Coordinate table"},
+        {domain::NodeKind::ArrayGather,true,1,"Selection indices"},
+        {domain::NodeKind::ArrayGather,false,0,"Selected values"},
+        {domain::NodeKind::NumericMap,true,0,"Values to transform"},
+        {domain::NodeKind::NumericMap,false,0,"Transformed values"},
+        {domain::NodeKind::OrderedPeaks,true,0,"Peak search values"},
+        {domain::NodeKind::OrderedPeaks,false,0,"Ordered peak indices"},
+        {domain::NodeKind::OrderedPeaks,false,1,"Ordered peak heights"},
+        {domain::NodeKind::SameConvolution,true,0,"Values to convolve"},
+        {domain::NodeKind::SameConvolution,true,1,"Convolution kernel"},
+        {domain::NodeKind::SameConvolution,false,0,"Convolved values"},
+        {domain::NodeKind::CombFilterBank,true,0,"Values to filter"},
+        {domain::NodeKind::CombFilterBank,false,0,"Comb filter responses"},
+        {domain::NodeKind::CombFilterBank,false,1,"Comb delays"},
+        {domain::NodeKind::BTrackAdaptiveThreshold,true,0,"Onset values"},
+        {domain::NodeKind::BTrackAdaptiveThreshold,false,0,"Thresholded onset values"},
+        {domain::NodeKind::BTrackCombResponse,true,0,"Balanced autocorrelation"},
+        {domain::NodeKind::BTrackCombResponse,false,0,"Comb response"},
+        {domain::NodeKind::Spectrogram,true,0,"History values"},
+        {domain::NodeKind::Spectrogram,false,0,"History"},
+        {domain::NodeKind::Spectrogram,false,1,"Filled frames"},
+        {domain::NodeKind::NumberAccumulator,true,0,"History value"},
+        {domain::NodeKind::NumberAccumulator,false,0,"Value history"},
+        {domain::NodeKind::NumberAccumulator,false,1,"Filled frames"},
+        {domain::NodeKind::BeatTrackingSequence,true,1,"Prediction intervals, frames"},
+        {domain::NodeKind::CrfBeatSequence,true,1,"Trial intervals, frames"},
+        {domain::NodeKind::ContextBeatSequence,true,2,"Reversed weighted onset history"},
+        {domain::NodeKind::ContextBeatSequence,true,3,"Unbiased autocorrelation"},
+        {domain::NodeKind::ContextBeatTracker,true,0,"Reversed weighted onset history"},
+        {domain::NodeKind::ContextBeatTracker,true,1,"Unbiased autocorrelation"},
+        {domain::NodeKind::FilterMatrixProjection,false,1,"Projection weights"},
+        {domain::NodeKind::FilterMatrixProjection,false,2,"Band centers, Hz"},
+        {domain::NodeKind::TempoEstimate,true,0,"Autocorrelation profile"},{domain::NodeKind::TempoEstimate,true,1,"Tempo prior"},
+        {domain::NodeKind::TempoEstimate,false,0,"Estimated tempo, BPM"},
+        {domain::NodeKind::DynamicBeatPath,true,0,"Onset strength history"},{domain::NodeKind::DynamicBeatPath,true,1,"Tempo, BPM"},
+        {domain::NodeKind::DynamicBeatPath,false,0,"Beat positions (0/1)"},{domain::NodeKind::DynamicBeatPath,false,1,"Local beat score"},
+        {domain::NodeKind::DynamicBeatPath,false,2,"Accumulated path score"},{domain::NodeKind::DynamicBeatPath,false,3,"Previous beat index"},
+
+        {domain::NodeKind::BeatTrackingSequence,true,0,"Onset activations"},
+        {domain::NodeKind::BeatTrackingSequence,false,0,"Beat times, s"},
+        {domain::NodeKind::BeatTrackingSequence,false,1,"Beat frame indices"},
+
+        {domain::NodeKind::CrfBeatSequence,true,0,"Onset activations"},
+        {domain::NodeKind::CrfBeatSequence,false,0,"Beat times, s"},
+        {domain::NodeKind::CrfBeatSequence,false,1,"Beat frame indices"},
+        {domain::NodeKind::CrfBeatSequence,false,2,"Trial intervals, frames"},
+        {domain::NodeKind::CrfBeatSequence,false,3,"Normalized trial scores"},
+
+        {domain::NodeKind::BTrackOnset,false,0,"Onset strength (ODF)"},
+        {domain::NodeKind::BTrackHistory,true,0,"Onset strength (ODF)"},
+        {domain::NodeKind::BTrackHistory,false,0,"Adjusted onset strength"},
+        {domain::NodeKind::BTrackHistory,false,1,"Onset history"},
+        {domain::NodeKind::BTrackHistoryResample,true,0,"Onset history"},
+        {domain::NodeKind::BTrackHistoryResample,false,0,"Resampled onset history"},
+        {domain::NodeKind::BTrackCombObservation,true,0,"Thresholded comb response"},
+        {domain::NodeKind::BTrackCombObservation,false,0,"Tempo evidence"},
+
+
+        {domain::NodeKind::BTrackBeatDecision,true,0,"Adjusted onset strength"},
+        {domain::NodeKind::BTrackBeatDecision,true,1,"Tempo evidence"},
+        {domain::NodeKind::BTrackBeatDecision,false,0,"Beat flag (0/1)"},
+        {domain::NodeKind::BTrackBeatDecision,false,1,"Tempo, BPM"},
+        {domain::NodeKind::BTrackBeatDecision,false,2,"Beat period, hops"},
+        {domain::NodeKind::BTrackBeatDecision,false,3,"Cumulative score"},
+        {domain::NodeKind::BTrackBeatDecision,false,4,"Cumulative score history"},
+        {domain::NodeKind::BTrackBeatDecision,false,5,"Next beat, hops"},
+        {domain::NodeKind::BTrackBeatDecision,false,6,"Next prediction, hops"},
+        {domain::NodeKind::BTrackBeatDecision,false,7,"Tempo state weights"},
+
+        {domain::NodeKind::OnsetDescriptor,true,0,"Spectrum magnitude"},
+        {domain::NodeKind::OnsetDescriptor,true,1,"Phase, radians"},
+        {domain::NodeKind::OnsetDescriptor,false,0,"Onset descriptor value"},
+        {domain::NodeKind::AdaptivePeakPicker,true,0,"Smoothed onset history"},
+        {domain::NodeKind::AdaptivePeakPicker,false,0,"Interpolated peak position, hops"},
+        {domain::NodeKind::AdaptivePeakPicker,false,1,"Peak found (0/1)"},
+        {domain::NodeKind::AdaptivePeakPicker,false,2,"Thresholded onset descriptor"},
+        {domain::NodeKind::AdaptivePeakPicker,false,3,"Filtered mean"},
+        {domain::NodeKind::AdaptivePeakPicker,false,4,"Threshold statistic"},
+        {domain::NodeKind::PcmSilence,true,0,"PCM hop"},
+        {domain::NodeKind::PcmSilence,false,0,"Silence flag (0/1)"},
+        {domain::NodeKind::OnsetDecision,true,0,"Peak position, hops"},
+        {domain::NodeKind::OnsetDecision,true,1,"Silence flag (0/1)"},
+        {domain::NodeKind::OnsetDecision,false,0,"Accepted onset position, hops"},
+        {domain::NodeKind::OnsetDecision,false,1,"Last onset sample"},
+        {domain::NodeKind::OnsetDecision,false,2,"Onset detected (0/1)"},
+        {domain::NodeKind::ContextBeatSequence,true,0,"Previous onset history"},
+        {domain::NodeKind::ContextBeatSequence,true,1,"Silence flag (0/1)"},
+        {domain::NodeKind::ContextBeatSequence,false,0,"Beat scheduled (0/1)"},
+        {domain::NodeKind::ContextBeatSequence,false,1,"Silence flag (0/1)"},
+        {domain::NodeKind::ContextBeatSequence,false,2,"Beat offset within hop"},
+        {domain::NodeKind::ContextBeatSequence,false,3,"Beat period, samples"},
+        {domain::NodeKind::ContextBeatSequence,false,4,"Tempo, BPM"},
+        {domain::NodeKind::ContextBeatSequence,false,5,"Tempo confidence"},
+        {domain::NodeKind::ContextBeatSequence,false,6,"Last beat sample"},
+        {domain::NodeKind::ContextBeatSequence,false,7,"Last tatum sample"},
+        {domain::NodeKind::ContextBeatSequence,false,8,"Tatum event code (0/1/2)"},
+        {domain::NodeKind::ContextBeatSequence,false,9,"Tracker onset history"},
+        {domain::NodeKind::ContextBeatSequence,false,10,"Onset autocorrelation"},
+        {domain::NodeKind::ContextBeatSequence,false,11,"Comb response"},
+        {domain::NodeKind::ContextBeatSequence,false,12,"Phase response"},
+        {domain::NodeKind::ContextBeatSequence,false,13,"Scheduled offsets, frames"},
+        {domain::NodeKind::AudioSource,false,0,"PCM samples"},
+        {domain::NodeKind::PcmResampler,true,0,"Input PCM samples"},
+        {domain::NodeKind::PcmResampler,false,0,"Resampled PCM samples"},
+        {domain::NodeKind::FrameBuffer,true,0,"Input samples"},
+        {domain::NodeKind::FrameBuffer,false,0,"Sample frame"},
+        {domain::NodeKind::ArrayLength,true,0,"Input array"},
+        {domain::NodeKind::ArrayLength,false,0,"Element count"},
+        {domain::NodeKind::ArrayFill,true,0,"Array size, N"},
+        {domain::NodeKind::ArrayFill,false,0,"Generated values"},
+        {domain::NodeKind::IndexExtract,true,0,"Input values"},
+        {domain::NodeKind::IndexExtract,false,0,"Selected values"},
+        {domain::NodeKind::TemporalFrameSequence,true,0,"Input samples"},
+        {domain::NodeKind::TemporalFrameSequence,false,0,"Sample frames"},
+        {domain::NodeKind::FilterMatrixProjection,true,0,"Input spectra"},
+        {domain::NodeKind::FilterMatrixProjection,false,0,"Filtered bands"},
+        {domain::NodeKind::LogCompression,true,0,"Input values"},
+        {domain::NodeKind::LogCompression,false,0,"Compressed values"},
+        {domain::NodeKind::EssentiaOnsetRows,true,0,"Spectrum magnitude"},
+        {domain::NodeKind::EssentiaOnsetRows,true,1,"Phase, radians"},
+        {domain::NodeKind::EssentiaOnsetRows,false,0,"Onset descriptor values"},
+        {domain::NodeKind::EssentiaOnsetRows,false,1,"Frame times, s"},
+        {domain::NodeKind::EssentiaOnsetRows,false,2,"Intermediate spectral values"},
+        {domain::NodeKind::EssentiaInformationRows,true,0,"Spectrum magnitude"},
+        {domain::NodeKind::EssentiaInformationRows,false,0,"Information gain"},
+        {domain::NodeKind::EssentiaInformationRows,false,1,"Frame times, s"},
+        {domain::NodeKind::EssentiaNoveltyRows,true,0,"Spectrum magnitude"},
+        {domain::NodeKind::EssentiaNoveltyRows,true,1,"Phase, radians"},
+        {domain::NodeKind::EssentiaNoveltyRows,false,0,"Spectral novelty by bin"},
+        {domain::NodeKind::EssentiaErbRows,true,0,"Spectral values"},
+        {domain::NodeKind::EssentiaErbRows,false,0,"ERB band values"},
+        {domain::NodeKind::EssentiaErbRows,false,1,"ERB band centers, Hz"},
+        {domain::NodeKind::EssentiaErbRows,false,2,"ERB filter weights"},
+
+        {domain::NodeKind::BeatIntervalSummary,true,0,"Beat times, s"},
+        {domain::NodeKind::BeatIntervalSummary,true,1,"Confidence"},
+        {domain::NodeKind::BeatIntervalSummary,false,0,"Tempo, BPM"},
+        {domain::NodeKind::BeatIntervalSummary,false,1,"Confidence"},
+        {domain::NodeKind::BeatIntervalSummary,false,2,"Beat intervals, s"},
+        {domain::NodeKind::BeatIntervalSummary,false,3,"Tempo estimates, BPM"},
+        {domain::NodeKind::BeatIntervalSummary,false,4,"Tempo histogram"},
+        {domain::NodeKind::BeatIntervalSummary,false,5,"Tempo histogram peaks"},
+        {domain::NodeKind::BeatIntervalSummary,false,6,"Interval count"},
+        {domain::NodeKind::EssentiaAgreement,true,0,"Complex beat times, s"},
+        {domain::NodeKind::EssentiaAgreement,true,1,"RMS beat times, s"},
+        {domain::NodeKind::EssentiaAgreement,true,2,"Mel flux beat times, s"},
+        {domain::NodeKind::EssentiaAgreement,true,3,"Beat emphasis beat times, s"},
+        {domain::NodeKind::EssentiaAgreement,true,4,"Information gain beat times, s"},
+        {domain::NodeKind::EssentiaAgreement,false,0,"Selected beat times, s"},
+        {domain::NodeKind::EssentiaAgreement,false,1,"Confidence"},
+        {domain::NodeKind::EssentiaAgreement,false,2,"Selected method index"},
+        {domain::NodeKind::EssentiaAgreement,false,3,"Method scores"},
+        {domain::NodeKind::EssentiaAgreement,false,4,"Pairwise information gain"},
+        {domain::NodeKind::EssentiaCandidateInputs,true,0,"Complex onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,true,1,"RMS onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,true,2,"Mel flux onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,true,3,"Beat emphasis onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,true,4,"Information gain onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,false,0,"Complex onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,false,1,"RMS onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,false,2,"Mel flux onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,false,3,"Beat emphasis onset curve"},
+        {domain::NodeKind::EssentiaCandidateInputs,false,4,"Information gain onset curve"},
+        {domain::NodeKind::WindowFunction,true,0,"Coefficient count"},
+        {domain::NodeKind::WindowFunction,false,0,"Window coefficients"},
+        {domain::NodeKind::RecursiveFilter,true,domain::PortId(domain::RecursiveFilterInput::Values),"Values to filter"},
+        {domain::NodeKind::RecursiveFilter,true,domain::PortId(domain::RecursiveFilterInput::InitialState),"Initial filter state"},
+        {domain::NodeKind::RecursiveFilter,false,domain::PortId(domain::RecursiveFilterOutput::Values),"Filtered values"},
+        {domain::NodeKind::RecursiveFilter,false,domain::PortId(domain::RecursiveFilterOutput::FinalState),"Final filter state"},
+        {domain::NodeKind::DirectCorrelation,true,domain::PortId(domain::CorrelationInput::Reference),"Reference sequence"},
+        {domain::NodeKind::DirectCorrelation,true,domain::PortId(domain::CorrelationInput::Compared),"Compared sequence"},
+        {domain::NodeKind::DirectCorrelation,true,domain::PortId(domain::CorrelationInput::LagCount),"Correlation lag count"},
+        {domain::NodeKind::DirectCorrelation,false,domain::PortId(domain::CorrelationOutput::Values),"Correlation by lag"},
+        {domain::NodeKind::VectorNormalize,true,0,"Values to normalize"},
+        {domain::NodeKind::VectorNormalize,false,0,"Normalized values"},
+        {domain::NodeKind::ArrayConcat,true,0,"Leading segment"},
+        {domain::NodeKind::ArrayConcat,true,1,"Trailing segment"},
+        {domain::NodeKind::ArrayConcat,false,0,"Concatenated values"},
+        {domain::NodeKind::Reroute,true,0,"Values to forward"},
+        {domain::NodeKind::Reroute,false,0,"Forwarded values"},
+        {domain::NodeKind::VectorLineView,true,0,"Displayed values"},
+        {domain::NodeKind::ScalarMetricsView,true,0,"Metric value"},
+        {domain::NodeKind::PowerToDb,true,0,"Linear power"},{domain::NodeKind::PowerToDb,false,0,"Log power, dB"},
+        {domain::NodeKind::Window,true,0,"New values"},{domain::NodeKind::Window,false,0,"Accumulated values"},
+        {domain::NodeKind::Mel,true,0,"Power spectrum"},{domain::NodeKind::Mel,false,0,"Mel band power"},
+        {domain::NodeKind::FeatureAggregate,true,0,"Feature values"},{domain::NodeKind::FeatureAggregate,false,0,"Aggregated feature"},
+        {domain::NodeKind::FrameStride,true,0,"Input frames"},{domain::NodeKind::FrameStride,false,0,"Selected frames"}};
+    const auto canonical=domain::node_kind(kind.toStdString());if(!canonical)return nullptr;
+    for(const auto& label:labels)if(*canonical==label.kind && label.input==(type==QtNodes::PortType::In) && label.port==id)return label.title;
     return nullptr;
 }
 
@@ -214,8 +436,9 @@ const char* amplitude_caption(signal_contracts::Quantity quantity,bool normalize
     }
 }
 const char* transform_output_caption(const QString& kind,domain::PortId id) {
-    if(kind=="AmplitudePhase" || kind=="ComplexPolar")return id==0?(kind=="AmplitudePhase"?"Amplitude":"Raw magnitude"):"Phase, radians";
-    switch(id){case 0:return "Re";case 1:return "Im";case 2:return "DC Re (zero frequency)";default:return "DC Im (zero frequency)";}
+    if(kind=="AmplitudePhase" && id==2)return "DC offset (zero frequency)";
+    if(kind=="AmplitudePhase" || kind=="ComplexPolar")return id==0?"Raw magnitude":"Phase, radians";
+    return id==0?"Real Fourier coefficients":"Imaginary Fourier coefficients";
 }
 bool transform_boolean(const domain::ConfiguredProcessingNode& node,std::string_view key,bool fallback) {
     const auto* parameters=std::get_if<domain::TransformProcessingParameters>(&node.parameters);if(!parameters)return fallback;
@@ -262,6 +485,7 @@ QString AudioNodeModel::music_port_caption(QtNodes::PortType type,QtNodes::PortI
     return {};
 }
 QString AudioNodeModel::numeric_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+    if(_numeric && _kind=="Converter")return ui::text(type==QtNodes::PortType::In?"Values to convert":"Converted values")+"\n"+dataType(type,port).name;
     const auto output=numeric_output_caption(type,port);
     if(!output.isEmpty())return output;
     if(_numeric && (_kind=="WindowFunction" || _kind=="ArrayFill") && type==QtNodes::PortType::In)return ui::text("Array size, N")+"\n"+dataType(type,port).name;
@@ -284,23 +508,27 @@ QString AudioNodeModel::numeric_output_caption(QtNodes::PortType type,QtNodes::P
         return ui::text("Window coefficient square sum")+QStringLiteral(" · ")+dataType(type,port).name;
     return {};
 }
-QString AudioNodeModel::array_multiply_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
-    bool add=false;
-    if(const auto* parameters=std::get_if<domain::TransformProcessingParameters>(&_numeric->parameters)) {
-        for(const auto& field:parameters->values) {
-            if(field.key!="operation")continue;
-            if(const auto* value=std::get_if<std::string>(&field.value))add=*value=="add";
-        }
+namespace {
+const char* array_math_node_title(domain::ArrayMathOperation operation) noexcept {
+    switch(operation){
+    case domain::ArrayMathOperation::Multiply:return "Elementwise multiplication";
+    case domain::ArrayMathOperation::Add:return "Elementwise addition";
+    case domain::ArrayMathOperation::Subtract:return "Elementwise subtraction";
+    case domain::ArrayMathOperation::Divide:return "Elementwise division";
     }
-    const auto label=type==QtNodes::PortType::In
-        ? ui::text(add?"Term %1":"Factor %1").arg(unsigned(port_id(type,port))+1)
-        : ui::text(add?"Sum":"Product");
-    return label+"\n"+dataType(type,port).name;
+    return "Array arithmetic";
+}
+}
+QString AudioNodeModel::array_multiply_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+    const auto label=numeric_editor::arithmetic_port_title(numeric_editor::array_operation(numeric_node()),type==QtNodes::PortType::In,
+        port_id(type,port)==domain::PortId(domain::BinaryInput::Left));
+    return ui::text(label)+"\n"+dataType(type,port).name;
 }
 QString AudioNodeModel::fourier_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
     if(_kind!="Fourier" && _kind!="RealFourier" && _kind!="ComplexPolar" && _kind!="AmplitudePhase")return {};
     const auto id=port_id(type,port);
-    const char* label=type==QtNodes::PortType::In?(id==0?"Real input":"Imaginary input"):transform_output_caption(_kind,id);
+    const bool projection=_kind=="ComplexPolar" || _kind=="AmplitudePhase";
+    const char* label=type==QtNodes::PortType::In?(projection?(id==0?"Real Fourier coefficients":"Imaginary Fourier coefficients"):(id==0?"Real signal":"Imaginary signal")):transform_output_caption(_kind,id);
     if(_kind=="AmplitudePhase" && type==QtNodes::PortType::Out && id==0){
         const auto data=_numeric->outputs[port].contract.view();const auto quantity=std::get<signal_contracts::NumericContract>(data).quantity;
         label=amplitude_caption(quantity,transform_boolean(*_numeric,"normalize",true));
@@ -321,11 +549,32 @@ QString AudioNodeModel::routing_port_caption(QtNodes::PortType type,QtNodes::Por
     if((_kind=="InputSelector" && type==QtNodes::PortType::Out) || (_kind=="Switch" && type==QtNodes::PortType::In))return ui::text("Channel %1").arg(unsigned(port_id(type,port))+1);
     return {};
 }
-QString AudioNodeModel::descriptive_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+QString AudioNodeModel::scalar_metric_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+    if(type!=QtNodes::PortType::In || (_kind!="ScalarMetricsView" && _kind!="ScalarView" && _kind!="ScalarSignedBarView"))return {};
+    const auto field=_presentation.value("scalar_inputs").toObject().value(QString::number(port_id(type,port))).toObject();
+    const auto title=numeric_editor::presentation_label(field);
+    return (title.isEmpty()?ui::text("Metric value"):title)+"\n"+dataType(type,port).name;
+}
+QString AudioNodeModel::named_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
     const auto labelKey=QString(type==QtNodes::PortType::In?"input%1":"output%1").arg(port_id(type,port));
     const auto custom=_presentation.value("port_labels").toObject().value(labelKey).toString();
     if(!custom.isEmpty())return custom+"\n"+dataType(type,port).name;
+    const auto scalar=scalar_metric_port_caption(type,port);
+    if(!scalar.isEmpty())return scalar;
     if(configuration_role(type,port))return dataType(type,port).name;
+    return {};
+}
+QString AudioNodeModel::source_operation_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+    if(_numeric && _kind=="BTrackOnset" && type==QtNodes::PortType::In && port_id(type,port)<2){
+        const bool real=port_id(type,port)==0;
+        const auto* title=real?"Real spectrum":"Imaginary spectrum";
+        return ui::text(title)+"\n"+dataType(type,port).name;
+    }
+    return {};
+}
+QString AudioNodeModel::descriptive_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
+    const auto named=named_port_caption(type,port);if(!named.isEmpty())return named;
+    const auto source=source_operation_port_caption(type,port);if(!source.isEmpty())return source;
     if(const auto* title=analysis_port_title(_kind,type,port_id(type,port)))return ui::text(title)+"\n"+dataType(type,port).name;
     if(_numeric && _kind=="FrequencyStep" && port_id(type,port)==0)return (type==QtNodes::PortType::In?QStringLiteral("Fs"):ui::text("Frequency step, Hz"))+QStringLiteral(" · ")+dataType(type,port).name;
     if (const auto* title = spectrum_peak_port_title(_kind, type, unsigned(port_id(type, port)))) return ui::text(title) + "\n" + dataType(type, port).name;
@@ -335,16 +584,18 @@ QString AudioNodeModel::specialized_port_caption(QtNodes::PortType type,QtNodes:
     for(const auto method:{&AudioNodeModel::numeric_port_caption,&AudioNodeModel::music_port_caption,&AudioNodeModel::fourier_port_caption,&AudioNodeModel::routing_port_caption}) {
         const auto caption=(this->*method)(type,port);if(!caption.isEmpty())return caption;
     }
-    return fallback_port_caption(type,port);
+    return {};
 }
 QString AudioNodeModel::fallback_port_caption(QtNodes::PortType type,QtNodes::PortIndex port) const {
     if(_numeric && _kind=="Spectrogram" && type==QtNodes::PortType::Out)
         return ui::text(port==0?"History":"Filled frames")+"\n"+dataType(type,port).name;
     const auto label=dataType(type,port).name;
-    return nPorts(type)>1?QStringLiteral("%1 · %2").arg(unsigned(port_id(type,port))+1).arg(label):label;
+    return ui::text(type==QtNodes::PortType::In?"Input values":"Output values")+"\n"+label;
 }
 QString AudioNodeModel::portCaption(QtNodes::PortType type,QtNodes::PortIndex port) const {
-    const auto caption=descriptive_port_caption(type,port);const auto type_name=dataType(type,port).name;
+    auto caption=descriptive_port_caption(type,port);
+    if(caption.isEmpty())caption=fallback_port_caption(type,port);
+    const auto type_name=dataType(type,port).name;
     const auto suffix=QStringLiteral(" · ")+type_name;
     return caption.endsWith(suffix)?caption.left(caption.size()-suffix.size())+"\n"+type_name:caption;
 }
@@ -465,7 +716,8 @@ bool valid_scalar_input_metadata(const QJsonValue& value) {
     if(!value.isObject())return false;
     const auto input=value.toObject();
     if(input.contains("enabled") && !input.value("enabled").isBool())return false;
-    return !input.contains("display_name") || valid_presentation_name(input.value("display_name"));
+    return (!input.contains("display_name") || valid_presentation_name(input.value("display_name"))) &&
+        (!input.contains("display_name_key") || valid_presentation_name(input.value("display_name_key")));
 }
 bool valid_scalar_input_labels(const QJsonValue& value) {
     if(value.isUndefined())return true;if(!value.isObject())return false;
@@ -488,6 +740,7 @@ bool valid_inline_parameters(const QJsonValue& value) {
 bool AudioNodeModel::valid_presentation(const QJsonObject& value) {
     if(value.contains("show_dc_outputs") && !value.value("show_dc_outputs").isBool())return false;
     if(value.contains("display_name") && !valid_presentation_name(value.value("display_name")))return false;
+    if(value.contains("display_name_key") && !valid_presentation_name(value.value("display_name_key")))return false;
     return valid_port_labels(value.value("port_labels")) && valid_stream_names(value.value("stream_names")) &&
         valid_scalar_input_labels(value.value("scalar_inputs")) && valid_inline_parameters(value.value("inline_parameters"));
 }
@@ -539,6 +792,8 @@ bool AudioNodeModel::select_input(domain::PortId id) {
 }
 bool AudioNodeModel::can_add_configured_input() const {
     if(!_numeric || !_admission_limits || _numeric->inputs.empty())return false;
+    if(_kind=="RecursiveFilter")return _numeric->inputs.size()==1;
+    if(_kind=="ArrayMultiply" && (numeric_editor::array_operation(numeric_node())==domain::ArrayMathOperation::Subtract || numeric_editor::array_operation(numeric_node())==domain::ArrayMathOperation::Divide))return false;
     const auto step=_kind=="InputSelector"?domain::data_outputs(*_numeric).size():std::size_t{1};
     const auto count=_numeric->inputs.size(),maximum=_admission_limits->max_ports_per_node;
     return step && count<=maximum && step<=maximum-count && _numeric->inputs.back().id<std::numeric_limits<domain::PortId>::max();
@@ -568,7 +823,18 @@ void AudioNodeModel::append_input_menu(QMenu* menu) {
     for(const auto& port:_numeric->inputs){auto* action=remove->addAction(ui::text(_kind=="ArrayMultiply"?"Factor %1":"Input %1").arg(unsigned(port.id)+1));
         connect(action,&QAction::triggered,menu,[guard,id=port.id]{if(guard)guard->remove_configured_input(id);});}
 }
+void AudioNodeModel::append_filter_state_menu(QMenu* menu) {
+        const QPointer<AudioNodeModel> guard(this);
+        const bool add=_numeric->inputs.size()==1;
+        auto* action=menu->addAction(ui::text(add?"Add initial filter state":"Remove initial filter state"));
+        connect(action,&QAction::triggered,menu,[guard,add]{
+            if(!guard)return;
+            if(add)guard->add_configured_input();
+            else guard->remove_configured_input(domain::PortId(domain::RecursiveFilterInput::InitialState));
+        });
+}
 void AudioNodeModel::populate_selector_menu(QMenu* menu) {
+    if(_numeric && _kind=="RecursiveFilter"){append_filter_state_menu(menu);return;}
     if(!_numeric || (_kind!="InputSelector" && _kind!="ArrayMultiply"))return;
     if(domain::data_outputs(*_numeric).size()>1)append_stream_menu(menu);else append_input_menu(menu);
 }
@@ -701,7 +967,8 @@ namespace {
 QLineEdit* scalar_name_editor(QWidget* parent,domain::PortId id,const QJsonObject& metadata) {
     auto* name=new QLineEdit(metadata.value("display_name").toString(),parent);
     name->setObjectName(QString("scalarInput%1Name").arg(id));name->setMaxLength(256);
-    name->setPlaceholderText(ui::text("Value %1").arg(unsigned(id)+1));return name;
+    const auto generated=numeric_editor::presentation_label(metadata);
+    name->setPlaceholderText(generated.isEmpty()?ui::text("Value %1").arg(unsigned(id)+1):generated);return name;
 }
 struct ScalarInputControls {QWidget* row;QCheckBox* enabled;QLineEdit* name;QPushButton* remove;};
 ScalarInputControls scalar_input_controls(QWidget* parent,domain::PortId id,const QJsonObject& metadata,bool removable) {
@@ -1111,16 +1378,22 @@ QString AudioNodeModel::routing_summary() const {
     if(_kind=="Mixer")return ui::text("Inputs: %1").arg(domain::data_inputs(*_numeric).size())+QStringLiteral(" · ")+ui::text(std::get<domain::MixerProcessingParameters>(_numeric->parameters).mode==domain::MixerMode::WeightedMean?"Normalized proportions":"Mixing operation");
     return {};
 }
-QString AudioNodeModel::processing_summary() const {
-    if(_kind=="PcmResampler")return ui::text("Sample rate, Hz")+QStringLiteral(": ")+port_sample_rate(_numeric->inputs)+QStringLiteral(" → ")+port_sample_rate(_numeric->outputs);
+QString AudioNodeModel::parameter_operation_summary() const {
+    if(_kind=="Window")return field_summary("size",true);
+    if(_kind=="FrameBuffer")return field_summary("size",true)+QStringLiteral(" · ")+field_summary("hop_samples",true);
     if(_kind=="WindowFunction" || _kind=="MatrixWindowFunction")return field_summary("function",false);
     if(_kind=="MatrixCenter")return field_summary("method",false);
-    if(_kind=="Spectrogram" || _kind=="NumberAccumulator")
-        return ui::text(_kind=="NumberAccumulator"?"History capacity, values":"History capacity, frames")+QStringLiteral(": ")+
-            QString::number(std::get<domain::HistoryProcessingParameters>(_numeric->parameters).capacity);
     if(_kind=="MatrixFFT")return field_summary("fft_size",true);
     if(_kind=="MatrixRow")return field_summary("row",true);
     return {};
+}
+QString AudioNodeModel::processing_summary() const {
+    if(_kind=="PcmResampler")return ui::text("Sample rate, Hz")+QStringLiteral(": ")+port_sample_rate(_numeric->inputs)+QStringLiteral(" → ")+port_sample_rate(_numeric->outputs);
+    if(_kind=="PcmSilence")return field_summary("threshold_db",true);
+    if(_kind=="Spectrogram" || _kind=="NumberAccumulator")
+        return ui::text(_kind=="NumberAccumulator"?"History capacity, values":"History capacity, frames")+QStringLiteral(": ")+
+            QString::number(std::get<domain::HistoryProcessingParameters>(_numeric->parameters).capacity);
+    return parameter_operation_summary();
 }
 QString AudioNodeModel::operation_summary() const {
     if(!_numeric)return {};
@@ -1131,8 +1404,41 @@ QString AudioNodeModel::operation_summary() const {
 namespace {
 QString static_node_caption(const QString& kind) {
     static const QMap<QString,const char*> names{
+        {"AbsoluteValue","Absolute value"},
+        {"AxisMaximum","Maximum along axis"},
+        {"AxisSum","Sum along axis"},
+        {"ArrayGather","Select by indices"},
+        {"NumericMap","Numeric mapping"},
+        {"OrderedPeaks","Ordered local peaks"},
+        {"Clamp","Clamp values"},
+        {"LinearExpansion","Linear expansion"},
+        {"QuantileMask","Quantile mask"},
+        {"BTrackAdaptiveThreshold","Adaptive onset threshold"},
+        {"BTrackCombResponse","Tempo comb response"},
+        {"AdaptivePeakPicker","Adaptive peak detection"},
+        {"BTrackBeatDecision","BTrack beat tracking"},
+        {"BTrackCombObservation","BTrack tempo observations"},
+        {"BTrackHistory","Onset history for tempo"},
+        {"BTrackHistoryResample","Resample onset history"},
+        {"BTrackOnset","BTrack onset strength"},
+        {"BeatIntervalSummary","Beat intervals and tempo"},
+        {"BeatTrackingSequence","Beat grid tracking"},
+        {"ContextBeatSequence","Beat context tracking"},
+        {"CrfBeatSequence","CRF beat tracking"},
+        {"EssentiaAgreement","Compare beat candidates"},
+        {"EssentiaCandidateInputs","Group rhythm candidates"},
+        {"EssentiaErbRows","ERB band analysis"},
+        {"EssentiaInformationRows","Spectral information gain"},
+        {"EssentiaNoveltyRows","Spectral change analysis"},
+        {"EssentiaOnsetRows","Essentia onset curves"},
+        {"HarmonicComb","Harmonic comb"},
+        {"OnsetDecision","Onset event detection"},
+        {"OnsetDescriptor","Spectral onset descriptor"},
+        {"PcmSilence","Silence detection"},
+        {"PeriodPath","Period sequence estimation"},
+        {"RenewalBeatDecoder","Decode beat times"},
         {"AudioSource","Audio source"},
-        {"Window","Value accumulator"},
+        {"Window","Sliding window"},
         {"WindowFunction","Window function"},
         {"WindowView","Audio vector graph"},
         {"WindowedView","Audio vector graph"},
@@ -1141,11 +1447,22 @@ QString static_node_caption(const QString& kind) {
         {"SignalGenerator","Signal generator"},
         {"SampleClock","Synchronization"},
         {"Mixer","Mixer"},
-        {"StereoFFT","FFT"},
         {"Reroute","Routing point"},
         {"Fs","Fs"},
         {"UInt32Constant","Integer value"},
         {"ArrayLength","Array size"},
+        {"FilterMatrixProjection","Filter bank projection"},
+        {"LogCompression","Logarithmic scaling"},
+        {"RecursiveFilter","Recursive filter"},
+        {"DirectCorrelation","Correlation by lag"},
+        {"InverseFourier","Inverse Fourier"},
+        {"VectorNormalize","Normalize values"},
+        {"TemporalFrameSequence","Split into analysis frames"},
+        {"CurveInterpolation","Curve interpolation"},
+        {"CombFilterBank","Comb filter bank"},
+        {"ValueHistogram","Value histogram"},
+        {"InterpolatedPeaks","Refine peak locations"},
+        {"SameConvolution","Convolution"},
         {"SampleRate","Signal sample rate"},
         {"SpectrumMerge","Spectrum merge"},
         {"SpectrumGain","Spectrum scaling"},
@@ -1192,13 +1509,13 @@ QString static_node_caption(const QString& kind) {
         {"PhaseDeviation","Phase deviation"},
         {"HighFrequencyContent","High frequency content"},
         {"PowerToDb","Power logarithm (dB)"},
-        {"AutocorrelationTempogram","Rhythm autocorrelation"},
+
         {"TempoEstimate","Tempo estimation"},
         {"DynamicBeatPath","Beat grid"},
         {"MatrixWindowFunction","Matrix window function"},
         {"MatrixFFT","Matrix row FFT"},
         {"MatrixRow","Matrix row selector"},
-        {"IndexExtract","Index extractor"},
+        {"IndexExtract","Extract values"},
         {"PcmResampler","PCM resampler"},
         {"RFFT","Real FFT (complex)"},
         {"Fourier","Fourier (complex input)"},
@@ -1228,12 +1545,7 @@ QString static_node_caption(const QString& kind) {
         {"NetworkOutput","BDSP socket output"},
         {"InputSelector","Input switch"},
         {"Converter","Numeric converter"}};
-    return names.contains(kind)?ui::text(names.value(kind)):kind;
-}
-bool array_addition(const domain::ConfiguredProcessingNode& node) {
-    const auto* parameters=std::get_if<domain::TransformProcessingParameters>(&node.parameters);if(!parameters)return false;
-    for(const auto& field:parameters->values)if(field.key=="operation")if(const auto* value=std::get_if<std::string>(&field.value))return *value=="add";
-    return false;
+    return ui::text(names.contains(kind)?names.value(kind):kind.toUtf8().constData());
 }
 QString normalizer_caption(const domain::ConfiguredProcessingNode* node) {
     if(node && !node->inputs.empty()){
@@ -1244,10 +1556,18 @@ QString normalizer_caption(const domain::ConfiguredProcessingNode* node) {
 }
 }
 QString AudioNodeModel::caption() const {
-    const auto custom=_presentation.value("display_name").toString().trimmed();
+    const auto custom=numeric_editor::presentation_label(_presentation);
     if(_kind=="AudioSource" && _numeric)return (custom.isEmpty()?ui::text("Audio source"):custom)+QStringLiteral(" · ")+ui::text(numeric_editor::capture_source_kind(*_numeric)==0?"Loopback":"Microphone");
     if(!custom.isEmpty())return custom;
-    if(_kind=="ArrayMultiply")return ui::text(_numeric && array_addition(*_numeric)?"Elementwise addition":"Elementwise multiplication");
+    if(_kind=="ArrayMultiply")return ui::text(array_math_node_title(numeric_editor::array_operation(numeric_node())));
     if(_kind=="FrequencyNormalizer")return normalizer_caption(numeric_node());
     return static_node_caption(_kind);
+}
+
+QString AudioNodeModel::default_caption(const QString& kind) {
+    if(kind!="AudioSource" && kind!="ArrayMultiply" && kind!="FrequencyNormalizer")return static_node_caption(kind);
+    const auto node=numeric_editor::default_node(kind);
+    if(kind=="ArrayMultiply")return ui::text(array_math_node_title(numeric_editor::array_operation(&node)));
+    if(kind=="FrequencyNormalizer")return normalizer_caption(&node);
+    return ui::text("Audio source")+QStringLiteral(" · ")+ui::text(numeric_editor::capture_source_kind(node)==0?"Loopback":"Microphone");
 }

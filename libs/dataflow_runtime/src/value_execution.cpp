@@ -1,5 +1,6 @@
 #include "value_execution.h"
 #include "frame_access.h"
+#include "array_extraction.h"
 #include <dsp_kernels/spectral_weights.h>
 #include <algorithm>
 namespace dataflow_runtime::detail {
@@ -54,7 +55,8 @@ Status execute_metadata(const PlanNode& node,State& state,const DataFrameView& c
 }
 Status execute_extract(const PlanNode& node,State& state,const DataFrameView& current,const FrameLimits& limits) noexcept {
     const auto& source=std::get<NumericView>(current.payload);auto output=mutable_output(node,state,0);std::uint64_t bits=0;Status status;
-    if(node.node.enabled){
+    if(node.endpoint_plan->axis_extraction)status=execute_axis_extraction(node,state,source,output,limits);
+    else if(node.node.enabled){
         const auto& index=node.endpoint_plan->indices;status=load_bits(source,{index[0],index[1],index[2]},source.contract->dtype,bits);if(status!=Status::ok)return status;
         status=store_bits(output,{0,0,0},output.contract->dtype,bits);
     }else status=fill_silence(output,limits);

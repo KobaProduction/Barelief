@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QProcess>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QFile>
 #include <QtNodes/DataFlowGraphModel>
@@ -18,14 +19,43 @@ static QByteArray read(const QString&path){QFile f(path);require(f.open(QIODevic
 static void shutdown_child(char** argv) {
   require(test_fixture::isolated_gui_platform(),"isolated offscreen only");
   QByteArray path=argv[2];char name[]="shutdown-child",option[]="--config";char* args[]{name,option,path.data(),nullptr};int count=3;
+  QElapsedTimer unwind;
   try{CoreApplication app(count,args,test_fixture::synthetic_capture_factory(false));
    MainWindow* window=nullptr;const auto topLevels=QApplication::topLevelWidgets();for(auto*w:topLevels)if(auto* m=qobject_cast<MainWindow*>(w))window=m;
    require(window,"shutdown window");window->show();QCoreApplication::processEvents();
    app._ctx.file_configs.ui.language="en";
    app._ctx.data_flow_graph->setNodeData(1,QtNodes::NodeRole::Position,QPointF(731,47));
    app._ctx.editor_draft_modified=true;
+   unwind.start();std::puts("BARELIEF_SHUTDOWN_READY");std::fflush(stdout);
    throw std::runtime_error("intentional shutdown unwind");
   }catch(const std::runtime_error&e){require(QByteArray(e.what())=="intentional shutdown unwind","unexpected child error");}
+  require(unwind.elapsed()<=6000,"shutdown child unwind exceeded six seconds");
+  std::fprintf(stderr,"shutdown child mode=%s unwind_ms=%lld\n",argv[3],static_cast<long long>(unwind.elapsed()));
+}
+static bool wait_shutdown_ready(QProcess& child) {
+ QElapsedTimer elapsed;elapsed.start();QByteArray output;
+ while(elapsed.elapsed()<10000) {
+  output+=child.readAllStandardOutput();
+  if(output.contains("BARELIEF_SHUTDOWN_READY"))return true;
+  const int remaining=10000-int(elapsed.elapsed());
+  if(remaining<=0 || !child.waitForReadyRead(remaining))break;
+ }
+ output+=child.readAllStandardOutput();
+ return output.contains("BARELIEF_SHUTDOWN_READY");
+}
+static void child_failure(QProcess& child,const char* message) {
+ child.kill();child.waitForFinished();
+ std::fprintf(stderr,"%s\n",child.readAllStandardError().constData());
+ throw std::runtime_error(message);
+}
+static void run_shutdown_child(const QString& executable,const QString& path,const QString& mode) {
+ QProcess child;child.start(executable,{"--child",path,mode});
+ require(child.waitForStarted(3000),"shutdown child start");
+ if(!wait_shutdown_ready(child))child_failure(child,"shutdown child initialization timeout");
+ QElapsedTimer elapsed;elapsed.start();
+ if(child.state()!=QProcess::NotRunning && !child.waitForFinished(6000))child_failure(child,"shutdown child unwind timeout");
+ std::fprintf(stderr,"shutdown mode=%s unwind_ms=%lld\n",qPrintable(mode),static_cast<long long>(elapsed.elapsed()));
+ if(child.exitStatus()!=QProcess::NormalExit||child.exitCode()!=0)child_failure(child,"shutdown child failure");
 }
 static void persisted_shutdown(const QString& path,bool autosave,bool protectedFile,const QByteArray& original) {
   const auto saved=read(path);if(!autosave||protectedFile)require(saved==original,"disabled/protected autosave wrote on unwind");
@@ -44,9 +74,7 @@ int main(int argc,char**argv){try{
   desktop::NumericProjectDocument source;require(bool(desktop::create_numeric_project(numeric_default_graph(),presentation,source)),"shutdown project");
   const auto path=directory.filePath(mode+".json");require(bool(desktop::save_numeric_project(source,path)),"save shutdown fixture");
   if(protectedFile){auto object=QJsonDocument::fromJson(read(path)).object();object["schema_version"]=99;const auto bytes=QJsonDocument(object).toJson(QJsonDocument::Compact);QFile f(path);require(f.open(QIODevice::WriteOnly),"future fixture");require(f.write(bytes)==bytes.size(),"write future fixture");}
-  const auto original=read(path);QProcess child;child.start(parent.applicationFilePath(),{"--child",path,mode});
-  require(child.waitForStarted(3000),"shutdown child start");if(!child.waitForFinished(6000)){child.kill();child.waitForFinished();throw std::runtime_error("shutdown child timeout");}
-  if(child.exitStatus()!=QProcess::NormalExit||child.exitCode()!=0){std::fprintf(stderr,"%s\n",child.readAllStandardError().constData());throw std::runtime_error("shutdown child failure");}
+  const auto original=read(path);run_shutdown_child(parent.applicationFilePath(),path,mode);
   persisted_shutdown(path,autosave,protectedFile,original);
  }
  std::puts("shutdown enabled/disabled/protected exception unwind PASS");return 0;

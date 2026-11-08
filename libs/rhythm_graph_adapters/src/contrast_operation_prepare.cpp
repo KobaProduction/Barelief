@@ -4,7 +4,7 @@
 
 namespace rhythm_graph_adapters::detail {
 using namespace rhythm_reference_ports;
-bool ContrastOperation::prepare(const domain::ConfiguredProcessingNode& node) {
+bool ContrastOperation::prepare(const dataflow_runtime::NumericOperationNode& node) {
     const auto view=definition_view(node);
     if(!plan_contrast_operation(view,plan_) || !contrast_output_contracts(view,plan_))return false;
     const bool ready=plan_.accumulator?kernel_.emplace<PreparedContrastPeakAccumulator>().prepare(plan_.maximum,plan_.events,plan_.config):
@@ -14,7 +14,7 @@ bool ContrastOperation::prepare(const domain::ConfiguredProcessingNode& node) {
     std::size_t bytes=plan_.kernel_bytes;
     return dataflow_runtime::numeric_operation_add_bytes(bytes,plan_.buffer_bytes) && workspace_bytes()<=bytes;
 }
-std::unique_ptr<AdapterOperation> prepare_contrast_operation(const domain::ConfiguredProcessingNode& node) {
+std::unique_ptr<AdapterOperation> prepare_contrast_operation(const dataflow_runtime::NumericOperationNode& node) {
     if(!contrast_operation_kind(node.kind))return {};
     auto operation=std::make_unique<ContrastOperation>();if(!operation->prepare(node))return {};
     return operation;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include <rhythm_graph_adapters/essentia_composition.h>
+#include "composition_support.h"
 #include "essentia_operations.h"
 namespace rhythm_graph_adapters {
 namespace {
@@ -37,7 +38,7 @@ signal_contracts::Status make_essentia_operation_node(domain::NodeId id,std::str
     domain::ConfiguredProcessingNode n;n.id=id;n.kind=kind;n.parameters=std::move(parameters);
     if(append_inputs(n,inputs,limits)!=Status::ok)return Status::invalid_argument;
     detail::EssentiaPlan plan;
-    if(!detail::essentia_operation_plan(detail::definition_view(n),plan))return Status::invalid_argument;
+    if(!detail::essentia_operation_plan(detail::composition_view(n),plan))return Status::invalid_argument;
     const auto status=append_outputs(n,plan,limits,metadata);if(status!=Status::ok)return status;
     output=std::move(n);return Status::ok;
 }

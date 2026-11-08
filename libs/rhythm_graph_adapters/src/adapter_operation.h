@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
-#include <dataflow_runtime/runtime.h>
+#include <dataflow_runtime/numeric_operation.h>
 
 namespace rhythm_graph_adapters::detail {
 class AdapterOperation:public dataflow_runtime::PreparedNumericOperation {
@@ -17,7 +17,7 @@ protected:
     signal_contracts::FrameLimits limits_{};
     domain::ProcessingAdmissionLimits admission_{};
 };
-std::unique_ptr<AdapterOperation> prepare_interval_operation(const domain::ConfiguredProcessingNode&);
+std::unique_ptr<AdapterOperation> prepare_interval_operation(const dataflow_runtime::NumericOperationNode&);
 bool interval_operation_kind(std::string_view) noexcept;
-domain::ProcessingSupport assess_interval_operation(const domain::ResolvedProcessingNode&,const dataflow_runtime::NumericRuntimeProfile&) noexcept;
+domain::ProcessingSupport assess_interval_operation(const dataflow_runtime::NumericOperationNodeView&,const dataflow_runtime::NumericOperationProfile&) noexcept;
 }

@@ -51,7 +51,23 @@ ctest --preset release-ui           # UI primitives и широкие UI-сце�
 ctest --preset release-audit        # сбор машинных UI evidence
 ctest --preset release-long         # длительные DSP/analysis/component проверки
 ctest --preset release-all          # все зарегистрированные CTest
+ctest --preset local-push           # quick-проверки локального pre-push
+ctest --preset release-validation   # полный обязательный набор перед релизом
 ```
+
+Локальный `pre-push` запускает `local-push`: только `quick`, с исключением
+`integration`, `audit`, `native` и `long`. Перед push нужно собрать актуальный
+Release; hook использует CTest из этой сборки и отвергает неподготовленный
+build-каталог или пустой набор тестов. clang-tidy, Clazy и checkdeps сохраняются.
+
+Обычные branch/PR CI-прогоны используют тот же быстрый отбор. Workflow
+`Release validation` запускается по тегу `v*` или вручную и вызывает общий
+Windows/Linux/portable workflow с `release_validation=true`. Тег должен
+совпадать с `v` + `VERSION.txt`. Release-конфигурация Windows и обе конфигурации
+Linux выполняют все зарегистрированные тесты, включая длительные интеграционные;
+portable-профили также проходят полный набор. Установщики и release-архивы
+собираются и загружаются в artifacts только после успешных тестов своего job.
+Отдельные `release-integration` и `release-long` остаются доступны вручную.
 
 Для полного Debug/SDK прогона используйте `debug-all`/`sdk-all`.
 Все CTest presets запускают до шести тестов одновременно. Измерения

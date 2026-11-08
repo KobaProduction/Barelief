@@ -1,4 +1,6 @@
 #include <desktop/numeric_project_document.h>
+#include <domain/graph/node_factory.h>
+#include <domain/numeric/sequence_operations.h>
 #include "numeric_test_builders.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -1094,9 +1096,41 @@ class NodeDisplayNameScenario {
         CHECK(load_numeric_project(path,reloaded,draft));
         return true;
     }
+    bool generated_name() {
+        const QJsonObject metric{{"display_name_key","Confidence"},{"display_name","Count"},{"enabled",true}};
+        delta.node_presentations["7"]=QJsonObject{{"display_name_key","Analysis step"},{"scalar_inputs",QJsonObject{{"0",metric}}}};
+        if(!stage_and_project(document))return false;
+        CHECK(view().value("display_name_key")=="Analysis step");
+        CHECK(view().value("display_name").toString().isEmpty());
+        CHECK(view().value("scalar_inputs").toObject().value("0").toObject()==metric);
+        return true;
+    }
+    bool invalid_generated_names() {
+        const auto before=std::string(document.source.bytes());
+        for(const QJsonValue& invalid:{QJsonValue(42),QJsonValue(QString(257,'x')),QJsonValue(QString("bad")+QChar(1))}) {
+            delta.node_presentations["7"]=QJsonObject{{"display_name_key",invalid}};
+            CHECK(!stage_numeric_presentation(document,delta,document));
+            CHECK(document.source.bytes()==before);
+        }
+        return true;
+    }
+    bool small_zoom() {
+        NumericDraftPresentation zoom;
+        zoom.editor_view=QJsonObject{{"version",1},{"scale",.025}};
+        CHECK(stage_numeric_presentation(document,zoom,document));
+        const auto before=std::string(document.source.bytes());
+        for(const double invalid:{0.,-1.,3.01,std::numeric_limits<double>::infinity()}){
+            zoom.editor_view["scale"]=invalid;
+            CHECK(!stage_numeric_presentation(document,zoom,document));
+            CHECK(document.source.bytes()==before);
+        }
+        return true;
+    }
     bool reloaded_name() {
         CHECK(read_numeric_presentation(reloaded,projected));
         CHECK(view().value("display_name").toString().isEmpty());
+        CHECK(view().value("display_name_key")=="Analysis step");
+        CHECK(projected.editor_view.value("scale")==.025);
         return future_presentation_preserved(reloaded);
     }
     bool save_dc_flag(bool shown) {
@@ -1130,7 +1164,8 @@ class NodeDisplayNameScenario {
     }
     bool names_and_fields() {
         return initialize() && set_name() && named_projection() && processing_unchanged()
-            && maximum_name() && invalid_names_refused() && scalar_labels() && replace_scalar_labels() && empty_name();
+            && maximum_name() && invalid_names_refused() && scalar_labels() && replace_scalar_labels() && empty_name()
+            && generated_name() && invalid_generated_names() && small_zoom();
     }
 public:
     bool run() {
@@ -2145,8 +2180,36 @@ static bool spectral_quantity_roundtrip() {
     }
     return true;
 }
+static bool retired_pcm_onset_graph_refused() {
+    const auto graph=connected_sample(9,3);
+    QByteArray encoded;
+    CHECK(encode_numeric_graph(graph,encoded));
+    encoded.replace("\"kind\":\"Converter\"","\"kind\":\"PcmOnsetEnvelope\"");
+    auto unchanged=graph;
+    CHECK(!decode_numeric_graph(encoded,unchanged));
+    CHECK(unchanged.nodes.size()==graph.nodes.size() && unchanged.edges==graph.edges);
+    CHECK(unchanged.nodes.front().kind==graph.nodes.front().kind);
+    return true;
+}
+static bool retired_pcm_onset_block_refused() {
+    constexpr auto retired="PcmOnsetEnvelope";
+    CHECK(!node_kind(retired));
+    CHECK(!sequence_operation_spec(retired));
+    ConfiguredProcessingNode candidate;
+    CHECK(!make_processing_node(retired,7,ProcessingAdmissionLimits{},candidate));
+    auto graph=connected_sample(9,3);
+    QByteArray node;
+    CHECK(encode_numeric_node(graph.nodes.front(),node));
+    node.replace("\"kind\":\"Converter\"","\"kind\":\"PcmOnsetEnvelope\"");
+    auto unchanged=graph.nodes.front();
+    CHECK(!decode_numeric_node(node,unchanged));
+    CHECK(unchanged.kind==graph.nodes.front().kind && unchanged.id==graph.nodes.front().id);
+    CHECK(same_processing_parameters(unchanged.parameters,graph.nodes.front().parameters));
+    return retired_pcm_onset_graph_refused();
+}
 static int run_document_scenarios() {
     int failures=0;
+    failures+=!retired_pcm_onset_block_refused();
     failures+=!spectral_quantity_roundtrip();
     failures+=!selective_node_settings();
     for(auto test:{malformed_position_projection,typed_array_storage_roundtrip,typed_array_storage_refusal,string_encoded_array_project_roundtrip,malformed_string_array_project_refused,confirmed_replacement,explicit_binding_storage,exact_clipboard_and_file,refusal_and_output_rollback,unsupported_version_diagnostics,alternatives_and_commit_failure,draft_applied_and_atomic_publication,editor_snapshot_boundary,retained_layout_identity_oracles,settings_arrays_and_opaque_refusal,fresh_project_and_node_presentation,node_display_name_persistence,preset_display_snapshot_roundtrip,node_adapter_storage_and_projection,presentation_vertical,visual_preset_options_refusal,network_projection_boundary,document_version_boundary})failures+=!test();

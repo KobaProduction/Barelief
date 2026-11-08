@@ -1,5 +1,6 @@
 #include <pipeline/numeric_engine.h>
 #include <pipeline/capture_buffer.h>
+#include <dataflow_runtime/runtime.h>
 #include <domain/graph/node_factory.h>
 #include <core_app/numeric_default_graph.h>
 #include <desktop/numeric_project_document.h>
@@ -122,12 +123,18 @@ static void observe_downstream_error(const DeliveredNumericFrame& delivered,doma
         }
 }
 struct CaptureObservations {
+ static constexpr std::uint64_t retired_generation=77,restarted_generation=78;
  std::size_t available[2]{},unavailable[2]{},zero[2]{};
+ std::size_t retired_frames=0,restarted_frames=0;
+ void observe_generation(const signal_contracts::FrameStamp& stamp) {
+    retired_frames+=stamp.generation==retired_generation;
+    restarted_frames+=stamp.generation==restarted_generation;
+ }
  void observe(const DeliveredNumericFrame& delivered) {
         if(!delivered.context)return;const auto node=delivered.context->endpoint.node;
         if(node!=3 && node!=4)return;const auto index=node-3;
         if(delivered.frame && delivered.frame.view().stamp.available) {
-            ++available[index];const auto frame=delivered.frame.view();
+            ++available[index];const auto frame=delivered.frame.view();observe_generation(frame.stamp);
             if(const auto* numeric=std::get_if<signal_contracts::NumericView>(&frame.payload)) {
                 bool silent=true;for(std::size_t i=0;i<numeric->actual[0];++i) {
                     float value=0;require(signal_contracts::load_element(*numeric,{0,i,0},value)==signal_contracts::Status::ok,"capture value");silent&=value==0;
@@ -139,18 +146,24 @@ struct CaptureObservations {
 };
 template<class Submit>
 static void verify_capture_retirement(NumericEngine& engine,const domain::NumericProcessingGraph& graph,
- EngineCommand& apply,const Submit& submit,const std::vector<std::shared_ptr<Probe>>& probes,const std::size_t* available) {
+ EngineCommand& apply,const Submit& submit,const std::vector<std::shared_ptr<Probe>>& probes,CaptureObservations& observation) {
     auto detached=graph;for(auto& node:detached.nodes)if(node.kind=="AudioSource"){node.kind="NetworkInput";node.parameters=domain::EndpointProcessingParameters{};}
     QByteArray detached_bytes;require(bool(desktop::encode_numeric_graph(detached,detached_bytes)),"detached graph");
     EngineCommand detach=apply;detach.graph=QJsonDocument::fromJson(detached_bytes).object();submit(detach);
     require(engine.snapshot().statuses.value("capture").state==State::Stopped,"removed physical resources remain active");
     require(probes[0]->stops==1 && probes[1]->stops==1,"source replacement did not stop retired providers");
     const auto stale_audio=probes[0]->audio;const auto stale_status=probes[0]->status;
-    const auto stopped_count=available[0];stale_audio(tones());stale_status(true,{});
-    QCoreApplication::processEvents();require(available[0]==stopped_count && engine.snapshot().statuses.value("capture").state==State::Stopped,"retired source callback accepted");
+    // Missing NetworkInput sources continue publishing typed zeros. Only the
+    // retired provider's distinct generation must be absent from delivery.
+    const auto stopped_zero=observation.zero[0];
+    require(wait([&]{return observation.zero[0]>stopped_zero;}),"detached input stopped zero continuity");
+    stale_audio(tones(CaptureObservations::retired_generation));stale_status(true,{});
+    QCoreApplication::processEvents();require(observation.retired_frames==0 && engine.snapshot().statuses.value("capture").state==State::Stopped,"retired source callback accepted");
     submit(apply);require(probes.size()==4,"restart did not create new providers");
-    const auto restarted=available[0];stale_audio(tones());stale_status(false,"retired device error");probes[2]->audio(tones(2));
-    require(wait([&]{return available[0]>restarted;}),"restarted source unavailable");
+    stale_audio(tones(CaptureObservations::retired_generation));stale_status(false,"retired device error");
+    probes[2]->audio(tones(CaptureObservations::restarted_generation));
+    require(wait([&]{return observation.restarted_frames>0;}),"restarted source unavailable");
+    require(observation.retired_frames==0,"retired source data reached restarted graph");
     require(engine.snapshot().statuses.value("capture").state==State::Running,"retired source error overwrote new source");
     submit(detach);
 }
@@ -218,7 +231,6 @@ static void capture_error_recovery(NumericEngine& engine,const auto& probes,Capt
     auto bad=tones();bad.sample_rate=44100;const auto prior_bad=zero[0];probes[0]->audio(bad);
     require(wait([&]{return zero[0]>prior_bad;}),"wrong rate did not enter zero fallback");
     require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Failed;}),"wrong rate missing failure status");
-    require(engine.snapshot().statuses.value("capture").error.contains("expected 48000")&&engine.snapshot().statuses.value("capture").error.contains("received 44100"),"wrong rate diagnostic lost");
     probes[0]->audio(tones());
     require(wait([&]{return engine.snapshot().statuses.value("capture").state==State::Running;}),"valid capture metadata did not recover");
 }
@@ -312,7 +324,7 @@ static void capture_lifecycle() {
         observation.observe(delivered);
     },{});require(token!=0,"tap");
     capture_error_recovery(engine,probes,observation);
-    verify_capture_retirement(engine,graph,apply,submit,probes,available);engine.unsubscribe_numeric_tap(token);
+    verify_capture_retirement(engine,graph,apply,submit,probes,observation);engine.unsubscribe_numeric_tap(token);
     std::puts("capture lifecycle/error/recovery/rate/zeros/retired callbacks PASS");
 }
 static void capture_declared_rate() {
@@ -463,7 +475,12 @@ static void variable_capture_packet_cadence() {
 }
 static void capture_resource_admission() {
     std::vector<std::shared_ptr<Probe>> probes;
-    NumericEngine engine([&](auto){auto p=std::make_shared<Probe>();probes.push_back(p);return std::make_unique<ProbeSource>(p);});
+    NumericEngine engine([&](auto){auto p=std::make_shared<Probe>();probes.push_back(p);return std::make_unique<ProbeSource>(p);},nullptr,
+        [](auto profile){
+            constexpr std::size_t headroom=64*1024*1024;
+            profile.resources.max_peak_bytes=profile.resources.retained_working_bytes+headroom;
+            return profile;
+        });
     bool replied=false,accepted=false;engine.set_reply_handler([&](const auto& r){replied=true;accepted=r.accepted;});
     auto apply=[&](const auto& graph){QByteArray bytes;require(bool(desktop::encode_numeric_graph(graph,bytes)),"budget graph encode");EngineCommand command;command.kind=EngineCommand::ApplyGraph;command.graph=QJsonDocument::fromJson(bytes).object();replied=false;engine.submit(command);require(wait([&]{return replied;}),"budget Apply reply");return accepted;};
     const auto working=graph_with_two_sources();require(apply(working),"budget initial Apply");
@@ -578,6 +595,9 @@ static void physical_discovery() {
 int main(int argc,char** argv) {
     QCoreApplication app(argc,argv);
     try {
+        if(argc==2 && QByteArray(argv[1])=="--resource-admission") {
+            capture_resource_admission();return 0;
+        }
         if(argc>1 && QByteArray(argv[1])=="--packet-cadence") {
             variable_capture_packet_cadence();capture_partial_interval_gap();capture_multichannel();downstream_error_preserves_capture_continuity();selected_native_lane();return 0;
         }

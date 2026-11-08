@@ -1,16 +1,20 @@
 add_library(dataflow_runtime STATIC
     src/runtime.cpp
-    src/numeric_operation.cpp src/numeric_extension_preparation.cpp
+    src/numeric_operation.cpp src/numeric_operation_binding.cpp src/numeric_operation_invocation.cpp
+    src/numeric_operation_requirements.cpp src/numeric_operation_axis_requirements.cpp
+    src/numeric_operation_metadata_values.cpp src/numeric_operation_coordinate_routes.cpp
+    src/numeric_extension_invocation.cpp src/numeric_extension_preparation.cpp
     src/numeric_extension_resources.cpp src/numeric_extension_latch.cpp
     src/numeric_extension_storage.cpp
     src/numeric_extension_join.cpp src/numeric_extension_publication.cpp
-    src/numeric_extension_process.cpp src/temporal_operation_execution.cpp
+    src/numeric_extension_process.cpp
     src/runtime_context.cpp
     src/runtime_queries.cpp
     src/graph_preparation.cpp
     src/graph_node_preparation.cpp
     src/graph_continuity_preparation.cpp
     src/value_execution.cpp
+    src/array_extraction.cpp
     src/ingress_acceptance.cpp
     src/clock_mix_execution.cpp
     src/history_execution.cpp

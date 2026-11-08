@@ -1,11 +1,9 @@
 #pragma once
-#include <signal_contracts/data_contract.h>
+#include <signal_contracts/numeric_buffer.h>
 #include <signal_contracts/buffer_pool.h>
 #include <cstring>
 #include <type_traits>
 namespace signal_contracts {
-struct PlaneLayout { std::size_t offset=0; std::array<std::size_t,2> stride_bytes{}; };
-struct RingRows { std::size_t capacity=0, oldest=0; std::span<const std::byte> silence_mask; };
 struct CoordinateView { std::array<std::span<const std::byte>,2> axes; };
 struct NumericView {
     const NumericContract* contract=nullptr; std::span<const std::byte> storage;
@@ -31,7 +29,6 @@ struct FrameStamp {
     bool frequency_dependent_latency=false;
 };
 struct DataFrameView { FrameStamp stamp; std::variant<NumericView,StructuredView> payload; };
-struct ElementIndex { std::size_t plane=0,row=0,column=0; };
 Status required_storage(const NumericContract&,std::span<const PlaneLayout>,std::size_t& out) noexcept;
 Status validate_view(const DataFrameView&,const FrameLimits&) noexcept;
 Status validate_mutable(const MutableNumericView&,const FrameLimits&) noexcept;
@@ -54,40 +51,6 @@ private:
 Status load_bits(const NumericView&,ElementIndex,DType,std::uint64_t& out) noexcept;
 Status store_bits(MutableNumericView&,ElementIndex,DType,std::uint64_t bits) noexcept;
 Status fill_silence(MutableNumericView&,const FrameLimits&) noexcept;
-template<class T> constexpr DType signed_integer_dtype() {
-    if constexpr(std::is_same_v<T,std::int8_t>)return DType::Int8;
-    else if constexpr(std::is_same_v<T,std::int16_t>)return DType::Int16;
-    else if constexpr(std::is_same_v<T,std::int32_t>)return DType::Int32;
-    else {static_assert(std::is_same_v<T,std::int64_t>);return DType::Int64;}
-}
-template<class T> constexpr DType unsigned_integer_dtype() {
-    if constexpr(std::is_same_v<T,std::uint8_t>)return DType::UInt8;
-    else if constexpr(std::is_same_v<T,std::uint16_t>)return DType::UInt16;
-    else if constexpr(std::is_same_v<T,std::uint32_t>)return DType::UInt32;
-    else {static_assert(std::is_same_v<T,std::uint64_t>);return DType::UInt64;}
-}
-template<class T> constexpr DType dtype_of() {
-    if constexpr(std::is_integral_v<T> && std::is_signed_v<T>)return signed_integer_dtype<T>();
-    else if constexpr(std::is_integral_v<T>)return unsigned_integer_dtype<T>();
-    else if constexpr(std::is_same_v<T,float>)return DType::Float32;
-    else {static_assert(std::is_same_v<T,double>);return DType::Float64;}
-}
-template<class T> Status load_element(const NumericView& v,ElementIndex i,T& out) noexcept {
-    std::uint64_t bits=0;auto s=load_bits(v,i,dtype_of<T>(),bits);if(s!=Status::ok)return s;
-    // Bit storage is host endian-independent. memcpy establishes a value in an existing T.
-    if constexpr(sizeof(T)==8)std::memcpy(&out,&bits,8);
-    else if constexpr(sizeof(T)==4){auto x=std::uint32_t(bits);std::memcpy(&out,&x,4);}
-    else if constexpr(sizeof(T)==2){auto x=std::uint16_t(bits);std::memcpy(&out,&x,2);}
-    else {auto x=std::uint8_t(bits);std::memcpy(&out,&x,1);}return Status::ok;
-}
-template<class T> Status store_element(MutableNumericView& v,ElementIndex i,T value) noexcept {
-    std::uint64_t bits=0;
-    if constexpr(sizeof(T)==8)std::memcpy(&bits,&value,8);
-    else if constexpr(sizeof(T)==4){std::uint32_t x;std::memcpy(&x,&value,4);bits=x;}
-    else if constexpr(sizeof(T)==2){std::uint16_t x;std::memcpy(&x,&value,2);bits=x;}
-    else {std::uint8_t x;std::memcpy(&x,&value,1);bits=x;}
-    return store_bits(v,i,dtype_of<T>(),bits);
-}
 struct RetentionRequirements { std::size_t payload_bytes=0,metadata_bytes=0,metadata_alignment=0; };
 class OwnedDataFrame {
 public:

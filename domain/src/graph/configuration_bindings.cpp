@@ -76,7 +76,7 @@ bool configuration_output_supported(const ConfiguredProcessingNode& node,Configu
         if(node.kind=="SampleClock")return true;
         const auto clock=referenced_clock(node);return clock && clock->sample_rate && !clock->domain.empty();
     }
-    constexpr std::string_view producers[]{"RFFT","SpectrumProjection","FrequencyNormalizer","BroadbandFeatures","StereoFFT","Mel","Spectrogram","BarkWeighting","MatrixFFT","MatrixRow"};
+    constexpr std::string_view producers[]{"RFFT","SpectrumProjection","AmplitudePhase","FrequencyNormalizer","BroadbandFeatures","Mel","Spectrogram","BarkWeighting","MatrixFFT","MatrixRow"};
     return role==ConfigurationRole::FrequencyGrid && std::find(std::begin(producers),std::end(producers),node.kind)!=std::end(producers);
 }
 bool configuration_input_supported(const ConfiguredProcessingNode& node,ConfigurationRole role) noexcept {

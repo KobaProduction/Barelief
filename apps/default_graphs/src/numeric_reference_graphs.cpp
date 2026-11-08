@@ -8,10 +8,5 @@ std::vector<NumericExampleGraph> numeric_library_reference_presets() {
         numeric_madmom_combined_reference_example(),numeric_essentia_combined_reference_example()};
 }
 std::vector<NumericExampleGraph> numeric_library_reference_examples() {
-    return {numeric_aubio_reference_example(),numeric_btrack_reference_example(),
-        numeric_madmom_reference_example(48000,MadmomReferenceMode::Fixed),
-        numeric_madmom_reference_example(48000,MadmomReferenceMode::Local),
-        numeric_madmom_reference_example(48000,MadmomReferenceMode::Crf),
-        numeric_essentia_reference_example(EssentiaReferenceMethod::Degara),
-        numeric_essentia_reference_example(EssentiaReferenceMethod::MultiFeature)};
+    return numeric_library_reference_presets();
 }

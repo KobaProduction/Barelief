@@ -5,6 +5,16 @@ This target binds the existing `dsp_kernels` implementations to the existing
 reference-port/GPL dependency, model loader or executor of its own. Classical
 model parameters enter through the owning `ClassicalModelProvider` port.
 
+The extension receives only explicit settings and physical `NumericBufferContract`
+geometry, in cold factories as well as processing. Clock, coordinate, meaning and
+provenance values remain private to the runtime. `operation_constraints.cpp`
+declares admission and per-frame requirements, retained coordinate routes and
+output grids. Runtime generates declared index/time grids and copies retained
+coordinates; supplied projection centers use a write-only coordinate capability.
+Outputs carry opaque origins with Frame/Point/Batch publication semantics.
+Full graph contracts enter only through `spectral_composition.cpp`; the runtime
+profile enters only through the profile composition entrypoint.
+
 ## Common operations
 
 All analytical payloads are mono native Float32, except exact histogram counts
@@ -107,3 +117,28 @@ Their catalogue and source-chain descriptions live in
 establish complete five-library coverage, numerical parity or integration-test
 acceptance. Ring-history ingress still follows the existing runtime retention
 and gather rules; these adapters do not retain asynchronous borrowed histories.
+
+## Absolute values and explicit elementwise arithmetic
+
+`AbsoluteValue` has one values input and one values output. It accepts native
+mono Float32/Float64 scalar/vector/matrix values, preserves dtype, shape, clock
+and coordinates, and rejects nonfinite input before publication. It needs no
+workspace or hot allocation. Disabled processing publishes typed zeros.
+
+The core `ArrayMultiply` node uses typed `domain::ArrayMathOperation` selectors
+serialized as `multiply`, `add`, `subtract` and `divide`. Subtract/divide have
+exactly two semantic inputs: left/numerator0 and right/denominator1; output0 is
+the result. Scalar and matrix-row-vector broadcasting use the existing prepared
+factor buffers. The explicit leading frame input controls publication/shape and does not swap
+the semantic left/numerator and right/denominator operands. `trigger_input=-1`
+retains the existing automatic pending-frame publication, including a cold frame
+waiting for its first held factor. An explicitly selected trigger port waits
+for its arrival before publishing the pending leading frame, allowing a matrix
+to keep its geometry/time while a later derived weight vector triggers processing.
+Updates after a published leading frame do not republish it. An unwired trigger
+factor is a ready typed zero on the leading clock, preserving disconnected-edge
+zero delivery.
+`zero_division=reject` is the only supported division policy: a zero denominator
+returns invalid_argument and does not publish a partial or stale numeric result.
+Unknown operation/policy settings reject preparation. Float32 binary subtraction
+and division preserve Float32 arithmetic; a Double operand selects Double.

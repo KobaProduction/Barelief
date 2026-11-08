@@ -16,13 +16,25 @@ bool overlapping_buffers(std::span<const float> input,std::span<float> output) n
     return before(input.data(),output.data()+output.size()) && before(output.data(),input.data()+input.size());
 }
 }
+namespace {
+bool finite_normalized_coefficients(std::span<const float> b,std::span<const float> a) noexcept {
+    const auto finite=[divisor=a[0]](float value){return std::isfinite(value/divisor);};
+    return std::all_of(b.begin(),b.end(),finite) && std::all_of(a.begin(),a.end(),finite);
+}
+void store_normalized_coefficients(std::span<const float> b,std::span<const float> a,
+    std::span<float> numerator,std::span<float> denominator) noexcept {
+    for(std::size_t i=0;i<b.size();++i)numerator[i]=b[i]/a[0];
+    for(std::size_t i=1;i<a.size();++i)denominator[i]=a[i]/a[0];
+    denominator[0]=1;
+}
+}
+
 bool PreparedRecursiveFilter::coefficients(std::span<const float> b,std::span<const float> a) {
     if(b.empty() || a.empty() || a[0]==0 || !finite_values(b) || !finite_values(a))return false;
     const auto count=std::max(b.size(),a.size());
     numerator_.assign(count,0);denominator_.assign(count,0);
-    for(std::size_t i=0;i<b.size();++i)numerator_[i]=b[i]/a[0];
-    for(std::size_t i=1;i<a.size();++i)denominator_[i]=a[i]/a[0];
-    denominator_[0]=1;numerator_size_=b.size();denominator_size_=a.size();active_size_=count;
+    store_normalized_coefficients(b,a,numerator_,denominator_);
+    numerator_size_=b.size();denominator_size_=a.size();active_size_=count;
     return finite_values(numerator_) && finite_values(denominator_);
 }
 std::size_t PreparedRecursiveFilter::state_count() const noexcept {
@@ -47,12 +59,10 @@ bool PreparedRecursiveFilter::reconfigure(std::span<const float> b,std::span<con
 }
 bool PreparedRecursiveFilter::copy_coefficients(std::span<const float> b,std::span<const float> a) noexcept {
     if(b.empty() || a.empty() || a[0]==0 || std::max(a.size(),b.size())>numerator_.size())return false;
-    const auto finite=[divisor=a[0]](float value){return std::isfinite(value/divisor);};
-    if(!std::all_of(b.begin(),b.end(),finite) || !std::all_of(a.begin(),a.end(),finite))return false;
+    if(!finite_normalized_coefficients(b,a))return false;
     std::fill(numerator_.begin(),numerator_.end(),0);std::fill(denominator_.begin(),denominator_.end(),0);
-    for(std::size_t i=0;i<b.size();++i)numerator_[i]=b[i]/a[0];
-    for(std::size_t i=1;i<a.size();++i)denominator_[i]=a[i]/a[0];
-    denominator_[0]=1;numerator_size_=b.size();denominator_size_=a.size();return true;
+    store_normalized_coefficients(b,a,numerator_,denominator_);
+    numerator_size_=b.size();denominator_size_=a.size();return true;
 }
 bool PreparedRecursiveFilter::set_coefficients(std::span<const float> b,std::span<const float> a,bool preserve) noexcept {
     const auto count=std::max(a.size(),b.size());
@@ -62,6 +72,10 @@ bool PreparedRecursiveFilter::set_coefficients(std::span<const float> b,std::spa
 }
 void PreparedRecursiveFilter::reset() noexcept {
     std::fill(state_.begin(),state_.end(),0);std::fill(pending_.begin(),pending_.end(),0);
+}
+bool PreparedRecursiveFilter::set_state(std::span<const float> values) noexcept {
+    if(values.size()!=state_count() || !finite_values(values))return false;
+    std::copy(values.begin(),values.end(),state_.begin());return true;
 }
 float PreparedRecursiveFilter::clean(float value,std::size_t index) const noexcept {
     if(cleanup_==SubnormalStatePolicy::Preserve)return value;

@@ -17,13 +17,11 @@ struct EssentiaPlan {
     std::array<std::size_t,5> counts{};
 };
 bool essentia_operation_kind(std::string_view) noexcept;
-bool essentia_frequency_contract(const signal_contracts::NumericContract&) noexcept;
-bool essentia_frequency_input(const dataflow_runtime::NumericOperationInput&) noexcept;
-bool essentia_operation_plan(const domain::ResolvedProcessingNode&,EssentiaPlan&) noexcept;
+bool essentia_operation_plan(const dataflow_runtime::NumericOperationNodeView&,EssentiaPlan&) noexcept;
 bool essentia_operation_storage(const EssentiaPlan&,std::size_t&) noexcept;
 std::size_t essentia_operation_object_bytes(EssentiaKind) noexcept;
-dataflow_runtime::NumericOperationPolicy essentia_operation_policy(const domain::ResolvedProcessingNode&);
-domain::ProcessingSupport assess_essentia_operation(const domain::ResolvedProcessingNode&,
-    const dataflow_runtime::NumericRuntimeProfile&) noexcept;
-std::unique_ptr<AdapterOperation> prepare_essentia_operation(const domain::ConfiguredProcessingNode&);
+dataflow_runtime::NumericOperationPolicy essentia_operation_policy(const dataflow_runtime::NumericOperationNodeView&);
+domain::ProcessingSupport assess_essentia_operation(const dataflow_runtime::NumericOperationNodeView&,
+    const dataflow_runtime::NumericOperationProfile&) noexcept;
+std::unique_ptr<AdapterOperation> prepare_essentia_operation(const dataflow_runtime::NumericOperationNode&);
 }

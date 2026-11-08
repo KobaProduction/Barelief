@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <dataflow_runtime/runtime.h>
+#include <rhythm_graph_adapters/stage_ports.h>
 #include <filesystem>
 #include <cstdlib>
 #include <fstream>
 #include <vector>
 
 namespace aubio_trace {
+using namespace rhythm_graph_adapters;
 struct Trace {
     std::vector<float> magnitude,phase,onset,tempo;
     std::vector<std::uint64_t> onset_sample,beat_sample,tatum;
@@ -21,26 +23,26 @@ struct Trace {
             if(signal_contracts::load_element(value,{0,i,0},values[(frame-1)*513+i])!=signal_contracts::Status::ok)std::abort();
     }
     void capture(domain::NodeId node,domain::PortId port,const signal_contracts::NumericView& value) {
-        if(node==12)row(value,magnitude);if(node==13)row(value,phase);
+        if(node==11 && port==0)row(value,magnitude);if(node==11 && port==1)row(value,phase);
         onset_event(node,port,value);
         if(node==33)tracking(port,value);
     }
     void onset_event(domain::NodeId node,domain::PortId port,const signal_contracts::NumericView& value) {
         if(node==21)scalar(value,onset[(frame-1)*3]);
-        if(node==22 && port==2)scalar(value,onset[(frame-1)*3+1]);
-        if(node==24 && port==0)scalar(value,onset[(frame-1)*3+2]);
-        if(node==24 && port==1)scalar(value,onset_sample[frame-1]);
+        if(node==22 && port==peak_picker_ports::thresholded)scalar(value,onset[(frame-1)*3+1]);
+        if(node==24 && port==onset_decision_ports::accepted_position)scalar(value,onset[(frame-1)*3+2]);
+        if(node==24 && port==onset_decision_ports::last_sample)scalar(value,onset_sample[frame-1]);
     }
     void tracking(domain::PortId port,const signal_contracts::NumericView& value) {
-        if(port==2)scalar(value,tempo[(frame-1)*4]);
-        if(port==4)scalar(value,tempo[(frame-1)*4+1]);
-        if(port==5)scalar(value,tempo[(frame-1)*4+2]);
-        if(port==3)scalar(value,tempo[(frame-1)*4+3]);
+        if(port==context_sequence_ports::tactus)scalar(value,tempo[(frame-1)*4]);
+        if(port==context_sequence_ports::bpm)scalar(value,tempo[(frame-1)*4+1]);
+        if(port==context_sequence_ports::confidence)scalar(value,tempo[(frame-1)*4+2]);
+        if(port==context_sequence_ports::period_samples)scalar(value,tempo[(frame-1)*4+3]);
         beat_event(port,value);
     }
     void beat_event(domain::PortId port,const signal_contracts::NumericView& value) {
-        if(port==6){std::int64_t v=0;scalar(value,v);beat_sample[frame-1]=std::uint64_t(v);}
-        if(port==8){std::uint32_t v=0;scalar(value,v);tatum[frame-1]=v;}
+        if(port==context_sequence_ports::beat_sample){std::int64_t v=0;scalar(value,v);beat_sample[frame-1]=std::uint64_t(v);}
+        if(port==context_sequence_ports::tatum_event){std::uint32_t v=0;scalar(value,v);tatum[frame-1]=v;}
     }
     template<class T> static void save(const std::filesystem::path& path,const std::vector<T>& values) {
         std::ofstream file(path,std::ios::binary);

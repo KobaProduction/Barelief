@@ -2,6 +2,7 @@
 #include <domain/graph/node_factory.h>
 #include <signal_contracts/spectral_calibration.h>
 #include "numeric_test_builders.h"
+#include "numeric_fourier_fixture.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -626,7 +627,7 @@ void scalar_window_device_admission(AdmissionFixture& fixture,const ConfiguredPr
     fixture.expect_retained(before);fixture.query_state.allow=true;
 }
 void scalar_window_semantics(ConfiguredProcessingNode node) {
-    node.kind="StereoFFT";node.parameters=TransformProcessingParameters{};expect(resolve(node).error==ProcessingError::IncompatiblePorts);
+    node.kind="StereoFFT";node.parameters=TransformProcessingParameters{};expect(resolve(node).error==ProcessingError::UnknownKind);
     node.kind="Window";node.parameters=TransformProcessingParameters{{{"size",NumericLiteral{std::uint64_t{512}}}}};
     const auto retained=node.inputs[0].contract;auto data=retained.view();std::get<NumericContract>(data).semantic=Semantic::Scalar;
     node.inputs[0].contract=owned(data);expect(resolve(node));
@@ -809,23 +810,20 @@ static NumericContract physical_window_contract(std::uint32_t rate,std::uint64_t
     window.shape.axes={Axis::Sample,Axis::None};window.shape.extents[0]={size,size};window.coordinates={};
     window.clock={"matrix.clock",{1,rate},rate};return window;
 }
-static NumericContract physical_spectrum_contract(const NumericContract& window,std::uint32_t rate,std::uint64_t size) {
-    auto spectrum=window;spectrum.semantic=Semantic::SpectrumMagnitude;spectrum.shape.axes[0]=Axis::Bin;
-    spectrum.shape.extents[0]={size/2,size/2};spectrum.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{std::int64_t(rate),size}};return spectrum;
-}
-static ConfiguredProcessingNode physical_fourier_node(const NumericContract& window,const NumericContract& spectrum) {
-    ConfiguredProcessingNode fft;fft.id=2;fft.kind="StereoFFT";fft.parameters=TransformProcessingParameters{};
-    fft.inputs={port(0,PortDirection::Input,window)};fft.outputs={port(0,PortDirection::Output,spectrum)};return fft;
-}
 struct PhysicalConfigurationFixture {
     std::uint32_t rate;
     std::uint64_t size;
-    NumericContract window,spectrum;
+    NumericContract window;
+    ConfiguredProcessingNode fourier,amplitude;
+    NumericContract spectrum;
     NumericProcessingGraph graph,resolved;
     PhysicalConfigurationFixture(std::uint32_t rate,std::uint64_t size):rate(rate),size(size),
-        window(physical_window_contract(rate,size)),spectrum(physical_spectrum_contract(window,rate,size)) {
-        graph.graph_id="physical.matrix";graph.nodes={source(1,window),physical_fourier_node(window,spectrum),sink(3,spectrum,"FFTView")};
-        graph.edges={{1,2,0,0},{2,3,0,0}};
+        window(physical_window_contract(rate,size)),
+        fourier(numeric_test_builders::real_fourier(4,window,size,limits,fixture_check)),
+        amplitude(numeric_test_builders::amplitude_phase(2,fourier,size,rate,NumericArray{std::vector<float>(size,1.f)},fixture_check)),
+        spectrum(std::get<NumericContract>(amplitude.outputs[0].contract.view())) {
+        graph.graph_id="physical.matrix";graph.nodes={source(1,window),amplitude,sink(3,spectrum,"FFTView"),fourier};
+        graph.edges={{1,4,0,0},{4,2,0,0},{4,2,1,1},{2,3,0,0}};
         graph.configuration_bindings={{2,3,ConfigurationRole::SampleClock,ConfigurationRole::SampleClock},{2,3,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};
     }
     void materialize() {
@@ -1052,8 +1050,13 @@ void bypass_declared_sample_rate_regression() {
 }
 void resampler_declared_input_errors(ConfiguredProcessingNode& node) {
     auto& fields=std::get<TransformProcessingParameters>(node.parameters).values;
-    fields.front().value=NumericLiteral{std::uint64_t{0}};expect(resolve(node).error==ProcessingError::PreparationValueUnavailable);
-    fields.front().value=NumericLiteral{std::uint64_t{32000}};expect(resolve(node).error==ProcessingError::IncompatiblePorts);
+    const auto input=node.inputs.front().contract;
+    fields.front().value=NumericLiteral{std::uint64_t{0}};
+    expect(configure_processing_input(node,input.view(),limits));
+    expect(resolve(node).error==ProcessingError::PreparationValueUnavailable);
+    std::get<TransformProcessingParameters>(node.parameters).values.front().value=NumericLiteral{std::uint64_t{32000}};
+    expect(configure_processing_input(node,input.view(),limits));
+    expect(resolve(node).error==ProcessingError::IncompatiblePorts);
 }
 void resampler_input_rate_binding_regression() {
     auto node=bypass_rate_fixture(false);resampler_declared_input_errors(node);

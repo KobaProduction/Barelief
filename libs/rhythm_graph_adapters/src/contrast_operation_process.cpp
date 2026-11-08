@@ -28,18 +28,22 @@ Status ContrastOperation::process(std::span<const NumericOperationInput> inputs,
         if(!output_contracts_match(outputs) || !disjoint_operation_buffers(inputs,outputs) || !proof_buffers_disjoint(inputs,outputs))return Status::invalid_argument;
         return publish_disabled(outputs,operation_frame_stamp(input_at(inputs,0),false));
     }
+    return process_enabled(inputs,outputs,control);
+}
+Status ContrastOperation::process_enabled(std::span<const NumericOperationInput> inputs,std::span<NumericOperationOutput> outputs,
+    NumericOperationControl control) noexcept {
     bool has_frame=false;auto status=validate_call(inputs,outputs,control,has_frame);if(status!=Status::ok)return status;
     if(!calculate(has_frame?input_at(inputs,0):nullptr,control.event))return Status::invalid_argument;
     status=publish(outputs,control.event);if(status!=Status::ok)invalidate_outputs(outputs);
     return status;
 }
-Status ContrastOperation::publish_disabled(std::span<NumericOperationOutput> outputs,const FrameStamp& stamp) noexcept {
+Status ContrastOperation::publish_disabled(std::span<NumericOperationOutput> outputs,const dataflow_runtime::NumericOperationOrigin& stamp) noexcept {
     auto status=validate_contrast_outputs(outputs);if(status!=Status::ok)return status;
     for(auto& output:outputs){
         const bool counter=plan_.accumulator?output.port==1:output.port==3;
         output.value.actual={counter?1u:0u,1};status=fill_silence(output.value,limits_);
         if(status!=Status::ok){invalidate_outputs(outputs);return status;}
-        output.stamp=output.port?stamp:batch_stamp(stamp);output.status=Status::ok;
+        output.origin=output.port?stamp:batch_stamp(stamp);output.status=Status::ok;
     }
     return Status::ok;
 }

@@ -9,21 +9,18 @@ using namespace dataflow_runtime;
 using namespace signal_contracts;
 namespace {
 bool corresponding_bands(const NumericOperationInput& current,const NumericOperationInput& delayed) noexcept {
-    const auto& a=current.stamp;const auto& b=delayed.stamp;
-    if(a.producer_epoch!=b.producer_epoch || a.generation!=b.generation || a.epoch!=b.epoch || a.graph_revision!=b.graph_revision)return false;
-    for(std::size_t axis=0;axis<2;++axis)
-        if(current.value.coordinates.axes[axis].size()!=delayed.value.coordinates.axes[axis].size() ||
-           !std::equal(current.value.coordinates.axes[axis].begin(),current.value.coordinates.axes[axis].end(),delayed.value.coordinates.axes[axis].begin()))return false;
-    return true;
+    return numeric_operation_same_session(current.origin,delayed.origin) && numeric_operation_same_coordinates(current.origin,delayed.origin);
 }
-Status read_buffers(std::span<const NumericOperationInput> inputs,const domain::ResolvedProcessingNode& node,
+Status bound_buffered_input(std::span<const NumericOperationInput> inputs,std::size_t index,const dataflow_runtime::NumericOperationNodeView& node,
     const BufferedPlan& plan,const FrameLimits& limits) noexcept {
-    for(std::size_t i=0;i<inputs.size();++i){
-        const auto& input=inputs[i];NumericContract expected;if(!numeric_port(node,true,input.port,expected))return Status::incompatible_contract;
-        for(std::size_t j=0;j<i;++j)if(inputs[j].port==input.port)return Status::invalid_argument;
-        const auto status=input.port==buffered_control_port?validate_operation_control(input,expected,limits):validate_vector(input,plan.maximum,expected,limits);
-        if(status!=Status::ok)return status;
-    }
+    const auto& input=inputs[index];NumericBufferContract expected;
+    if(!numeric_port(node,true,input.port,expected))return Status::incompatible_contract;
+    if(!operation_input_unique(inputs,index))return Status::invalid_argument;
+    return input.port==buffered_control_port?validate_operation_control(input,expected,limits):validate_vector(input,plan.maximum,expected,limits);
+}
+Status read_buffers(std::span<const NumericOperationInput> inputs,const dataflow_runtime::NumericOperationNodeView& node,
+    const BufferedPlan& plan,const FrameLimits& limits) noexcept {
+    for(std::size_t i=0;i<inputs.size();++i){const auto status=bound_buffered_input(inputs,i,node,plan,limits);if(status!=Status::ok)return status;}
     const auto* current=input_at(inputs,0);if(!current)return Status::unavailable;
     if(plan.kind!=BufferedOperationKind::Flux)return Status::ok;
     const auto* delayed=input_at(inputs,1);if(!delayed)return Status::unavailable;

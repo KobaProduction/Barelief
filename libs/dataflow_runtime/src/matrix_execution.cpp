@@ -82,24 +82,32 @@ Status window_rows(const PlanNode& node, State& state, const NumericView& source
     return Status::ok;
 }
 
-Status measured_row_center(const PlanNode& node,const NumericView& source,std::size_t row,float& center) noexcept {
+struct RowCenterAccumulator {
     float sum=0,correction=0,minimum=std::numeric_limits<float>::max(),maximum=-minimum;
+    template<bool mean> Status include(float value,std::size_t count) noexcept {
+        if constexpr(mean)return dsp_kernels::accumulate_scaled_mean_float32(value,float(count),sum,correction)?Status::ok:Status::overflow;
+        else {minimum=std::min(minimum,value);maximum=std::max(maximum,value);return Status::ok;}
+    }
+    template<bool mean> float value() const noexcept {return mean?sum:std::midpoint(minimum,maximum);}
+};
+template<bool mean>
+Status measured_row_center(const NumericView& source,std::size_t row,float& center) noexcept {
+    RowCenterAccumulator accumulator;
     for (std::size_t column = 0; column < source.actual[1]; ++column) {
         float value = 0;
-        const auto status = load_element(source, {0, row, column}, value);
+        auto status = load_element(source, {0, row, column}, value);
         if (status != Status::ok) return status;
         if (!std::isfinite(value)) return Status::invalid_argument;
-        if(node.center_method==0){if(!dsp_kernels::accumulate_scaled_mean_float32(value,float(source.actual[1]),sum,correction))return Status::overflow;}
-        else {minimum=std::min(minimum,value);maximum=std::max(maximum,value);}
+        status=accumulator.include<mean>(value,source.actual[1]);if(status!=Status::ok)return status;
     }
-    center=node.center_method==0?sum:std::midpoint(minimum,maximum);
+    center=accumulator.value<mean>();
     return std::isfinite(center) ? Status::ok : Status::overflow;
 }
 Status row_center(const PlanNode& node, const NumericView& source, std::size_t row, float& center) noexcept {
-    if (node.center_method == 2) { center = node.center_offset; return Status::ok; }
-    if (node.center_method > 2) return Status::invalid_argument;
+    if (node.center_method == MatrixCenterMethod::ManualOffset) { center = node.center_offset; return Status::ok; }
     if (!source.actual[1]) { center = 0; return Status::ok; }
-    return measured_row_center(node,source,row,center);
+    return node.center_method==MatrixCenterMethod::Mean?
+        measured_row_center<true>(source,row,center):measured_row_center<false>(source,row,center);
 }
 
 Status center_element(const NumericView& source,MutableNumericView& output,std::size_t row,std::size_t column,float center) noexcept {

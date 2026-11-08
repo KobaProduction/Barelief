@@ -4,7 +4,7 @@
 #include <dataflow_runtime/runtime.h>
 #include <rhythm_graph_adapters/essentia_composition.h>
 #include <rhythm_graph_adapters/profile.h>
-#include <rhythm_reference_ports/pcm_rhythm_summary.h>
+#include <rhythm_graph_adapters/essentia_ports.h>
 #include <kiss_backend.h>
 #include <algorithm>
 #include <array>
@@ -22,7 +22,7 @@ inline void check(bool value,const char* message) {
 }
 inline NumericRuntimeProfile profile() {
     constexpr FrameLimits frames{8,2097152,8388608,65536,4096,65536};
-    NumericRuntimeProfile p{{128,256,16,64,1048576,16777216,frames},
+    NumericRuntimeProfile p{{256,512,16,64,1048576,16777216,frames},
         {{33554432,268435456,134217728,1048576},0,536870912},
         {2097152,8,8388608,8388608,16777216},{true,true,true}};
     p.fourier_backend={&desktop_fourier::kiss_backend_factory(),[](const auto*){}};
@@ -69,7 +69,7 @@ struct Observation {
     void* diagnostic_context=nullptr;
     void (*diagnostic)(void*,const NumericPortFrameView&)=nullptr;
     struct Counts {std::size_t ok=0,unavailable=0,error=0;Status last=Status::unavailable;};
-    std::array<std::array<Counts,6>,64> stages{};
+    std::array<std::array<Counts,6>,1024> stages{};
     std::array<std::vector<float>,5> curves,candidates;
     std::vector<float> ticks,intervals,estimates,scores;
     std::array<float,25> pairwise{};std::uint64_t selected=0;
@@ -108,7 +108,7 @@ struct Observation {
     }
     void capture(NodeId id,PortId port,const NumericView& v) {
         onset(id,port,v);
-        if(id>=50 && id<=54 && port==1)candidate(id,v);
+        if(id>=50 && id<=54 && port==static_cast<PortId>(rhythm_graph_adapters::RenewalOutput::Times))candidate(id,v);
         if(id==60)agreement(port,v);
         if(id==61)summary(port,v);
     }
@@ -116,11 +116,12 @@ struct Observation {
         if(!port)vector(v,ticks);
         if(port==2)check(load_element(v,{0,0,0},selected)==Status::ok,"read selected method");
         if(port==3)vector(v,scores);
-        if(port==4){
-            check(v.actual==std::array<std::size_t,2>{5,5},"pairwise agreement shape");
-            for(std::size_t i=0;i<5;++i)for(std::size_t j=0;j<5;++j)
-                check(load_element(v,{0,i,j},pairwise[i*5+j])==Status::ok,"read pairwise agreement");
-        }
+        if(port==4)agreement_matrix(v);
+    }
+    void agreement_matrix(const NumericView& v) {
+        check(v.actual==std::array<std::size_t,2>{5,5},"pairwise agreement shape");
+        for(std::size_t i=0;i<5;++i)for(std::size_t j=0;j<5;++j)
+            check(load_element(v,{0,i,j},pairwise[i*5+j])==Status::ok,"read pairwise agreement");
     }
     void candidate(NodeId id,const NumericView& v) {
         check(candidate_count<candidate_order.size(),"one candidate per independent batch");
@@ -132,7 +133,7 @@ struct Observation {
         const auto id=event.identity.node;const auto port=event.identity.port;
         const bool watched=((id==40 || id==41 || id==42 || id==45 || id==46) && !port) ||
             ((id==40 || id==41 || id==42 || id==46) && port==1) ||
-            (id>=50 && id<=54 && port==1) || (id==60 && port<5) || (id==61 && port<4);
+            (id>=50 && id<=54 && port==static_cast<PortId>(rhythm_graph_adapters::RenewalOutput::Times)) || (id==60 && port<5) || (id==61 && port<4);
         if(!watched)return;
         if(event.status==Status::unavailable && !event.frame.stamp.available && !self.available[std::size_t(id)][port]){
             ++self.boundary_markers;return;
@@ -182,7 +183,7 @@ inline void require_publication(const Observation& seen,NodeId id,PortId port) {
 inline void require_candidate_publications(const Observation& seen,bool multi) {
     constexpr std::array<NodeId,5> odfs{40,41,42,45,46};
     for(std::size_t i=0;i<(multi?5u:1u);++i){
-        require_publication(seen,odfs[i],0);require_publication(seen,NodeId(50+i),1);
+        require_publication(seen,odfs[i],0);require_publication(seen,NodeId(50+i),static_cast<PortId>(rhythm_graph_adapters::RenewalOutput::Times));
         if(odfs[i]!=45)require_publication(seen,odfs[i],1);
         if(multi)require_publication(seen,47,PortId(i));
     }

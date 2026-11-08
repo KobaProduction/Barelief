@@ -4,7 +4,7 @@
 
 namespace rhythm_graph_adapters::detail {
 using namespace rhythm_reference_ports;
-bool BufferedOperation::prepare(const domain::ConfiguredProcessingNode& node) {
+bool BufferedOperation::prepare(const dataflow_runtime::NumericOperationNode& node) {
     const auto view=definition_view(node);
     if(!plan_buffered_operation(view,plan_) || !buffered_output_contracts(view,plan_))return false;
     bool ready=false;
@@ -16,7 +16,7 @@ bool BufferedOperation::prepare(const domain::ConfiguredProcessingNode& node) {
     std::size_t bound=plan_.kernel_bytes;
     return dataflow_runtime::numeric_operation_add_bytes(bound,plan_.buffer_bytes) && workspace_bytes()<=bound;
 }
-std::unique_ptr<AdapterOperation> prepare_buffered_operation(const domain::ConfiguredProcessingNode& node) {
+std::unique_ptr<AdapterOperation> prepare_buffered_operation(const dataflow_runtime::NumericOperationNode& node) {
     if(!buffered_operation_kind(node.kind))return {};
     auto operation=std::make_unique<BufferedOperation>();if(!operation->prepare(node))return {};
     return operation;

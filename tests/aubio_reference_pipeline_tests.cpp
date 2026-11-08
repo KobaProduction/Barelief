@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include <core_app/numeric_reference_graphs.h>
 #include <rhythm_graph_adapters/profile.h>
-#include <rhythm_reference_ports/pcm_context_tempo.h>
-#include <rhythm_reference_ports/pcm_onset_sequence.h>
+#include <rhythm_graph_adapters/stage_ports.h>
+#include <rhythm_reference_ports/context_beat_sequence.h>
+#include <rhythm_reference_ports/onset_descriptor.h>
+#include <rhythm_reference_ports/adaptive_peak_picker.h>
+#include <rhythm_reference_ports/onset_decision.h>
+#include <dsp_kernels/log_compression.h>
 #include <domain/graph/node_factory.h>
 #include "numeric_test_builders.h"
 #include "aubio_reference_trace.h"
+#include "aubio_context_test_inputs.h"
 #include <ooura_backend.h>
 #include <kiss_backend.h>
 #include <algorithm>
@@ -18,6 +23,7 @@
 
 namespace {
 using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
+using namespace rhythm_graph_adapters;
 std::size_t allocations=0;
 void check(bool value,const char* why){if(!value){std::fprintf(stderr,"Aubio pipeline: %s\n",why);std::exit(1);}}
 NumericRuntimeProfile profile() {
@@ -39,18 +45,50 @@ NumericProcessingGraph graph() {
     return result;
 }
 struct Seen {
-    rhythm_reference_ports::PreparedPcmOnsetSequence onset;
-    rhythm_reference_ports::PreparedPcmContextTempo tempo;
-    rhythm_reference_ports::PcmOnsetObservation expected_onset;
-    rhythm_reference_ports::PcmContextTempoObservation expected_tempo;
+    rhythm_reference_ports::PreparedOnsetDescriptor onset_descriptor,tempo_descriptor;
+    rhythm_reference_ports::PreparedAdaptivePeakPicker onset_picker,tempo_picker;
+    aubio_test::PeakInputs onset_smoothing,tempo_smoothing;
+    rhythm_reference_ports::PreparedOnsetDecision onset;
+    rhythm_reference_ports::PreparedContextBeatSequence tempo;
+    aubio_test::ContextInputs context_inputs;
+    rhythm_reference_ports::AdaptivePeakObservation expected_onset_peak,expected_tempo_peak;
+    rhythm_reference_ports::OnsetDecision expected_onset;
+    rhythm_reference_ports::ContextBeatFrame expected_tempo;
+    float expected_hfc=0,expected_flux=0;
+    bool onset_silent=false,tempo_silent=false;
+    std::array<float,513> magnitude{},compressed{};
     std::array<float,512> hop{};std::size_t frames=0,onsets=0,beats=0;
     unsigned tatum=0;aubio_trace::Trace* trace=nullptr;
-    Seen(){const auto* factory=&desktop_fourier::ooura_backend_factory();
-        check(onset.prepare({},factory) && tempo.prepare({},factory),"source Ooura recipes prepare");}
+    Seen(){
+        using namespace rhythm_reference_ports;
+        AdaptivePeakConfig onset_config;onset_config.threshold=.058f;
+        AdaptivePeakConfig tempo_config;tempo_config.threshold=.3f;
+        check(onset_descriptor.prepare(513,OnsetRecipe::FrequencyContent) &&
+            tempo_descriptor.prepare(513,OnsetRecipe::SpectralFlux),"atomic source descriptors prepare");
+        check(onset_picker.prepare(onset_config) && tempo_picker.prepare(tempo_config),"atomic source pickers prepare");
+        check(onset_smoothing.prepare() && tempo_smoothing.prepare(),"explicit recursive smoothing prepare");
+        ContextBeatSequenceConfig context;context.tracker.window=512;
+        check(onset.prepare() && tempo.prepare(context) && context_inputs.prepare(),"atomic source decisions prepare");
+    }
     void expected(const NumericView& value) {
         for(std::size_t i=0;i<hop.size();++i)check(load_element(value,{0,i,0},hop[i])==Status::ok,"PCM hop read");
-        check(onset.process_hop(hop,expected_onset) && tempo.process_hop(hop,expected_tempo),"native recipes process");
-        tatum=tempo.poll_tatum();++frames;
+        check(rhythm_reference_ports::pcm_is_silent(hop,-70,onset_silent) &&
+            rhythm_reference_ports::pcm_is_silent(hop,-90,tempo_silent),"explicit silence reductions");
+        ++frames;
+    }
+    void expected_spectrum(const NumericView& value) {
+        for(std::size_t i=0;i<magnitude.size();++i)
+            check(load_element(value,{0,i,0},magnitude[i])==Status::ok,"magnitude frame read");
+        check(dsp_kernels::logarithmic_magnitude(magnitude,compressed,1),"explicit log compression");
+        check(onset_descriptor.process(compressed,{},expected_hfc) &&
+            tempo_descriptor.process(magnitude,{},expected_flux),"atomic descriptor processing");
+        check(onset_smoothing.push(expected_hfc) && tempo_smoothing.push(expected_flux),"explicit forward/reverse smoothing");
+        check(onset_picker.process(onset_smoothing.smoothed,expected_onset_peak) &&
+            tempo_picker.process(tempo_smoothing.smoothed,expected_tempo_peak),"atomic peak processing");
+        check(context_inputs.push(expected_tempo_peak.thresholded),"explicit previous history and context math");
+        check(onset.process(expected_onset_peak.position,onset_silent,expected_onset) &&
+            tempo.process(context_inputs.reversed,context_inputs.acf,tempo_silent,expected_tempo),"atomic decisions processing");
+        tatum=tempo.poll_tatum();
     }
     void near(const NumericView& value,float expected,const char* why) {
         float actual=0;check(load_element(value,{0,0,0},actual)==Status::ok,why);
@@ -60,25 +98,26 @@ struct Seen {
         check(std::abs(actual-expected)<=1e-3f+2e-5f*std::abs(expected),why);
     }
     void scalar(NodeId node,PortId port,const NumericView& value) {
-        if(node==21)near(value,expected_onset.descriptor,"HFC descriptor parity");
-        if(node==30)near(value,expected_tempo.descriptor,"flux descriptor parity");
-        if(node==22 && port==2)near(value,expected_onset.peak.thresholded,"onset picker parity");
-        if(node==31 && port==2)near(value,expected_tempo.onset_peak.thresholded,"tempo picker parity");
-        if(node==24 && port==2){std::uint8_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && bool(v)==expected_onset.onset.detected,"onset event parity");++onsets;}
-        if(node==24 && port==1){std::uint64_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && v==expected_onset.onset.sample,"onset exact sample parity");}
+        if(node==21)near(value,expected_hfc,"HFC descriptor parity");
+        if(node==30)near(value,expected_flux,"flux descriptor parity");
+        if(node==22 && port==peak_picker_ports::thresholded)near(value,expected_onset_peak.thresholded,"onset picker parity");
+        if(node==31 && port==peak_picker_ports::thresholded)near(value,expected_tempo_peak.thresholded,"tempo picker parity");
+        if(node==24 && port==onset_decision_ports::detected){std::uint8_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && bool(v)==expected_onset.detected,"onset event parity");++onsets;}
+        if(node==24 && port==onset_decision_ports::last_sample){std::uint64_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && v==expected_onset.sample,"onset exact sample parity");}
     }
     void tracking(PortId port,const NumericView& value) {
-        if(port==2)near(value,expected_tempo.beat.source_tactus,"source tactus parity");
-        if(port==4){near(value,expected_tempo.beat.bpm,"BPM parity");++beats;}
-        if(port==5)near(value,expected_tempo.beat.confidence,"confidence parity");
-        if(port==6){std::int64_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && v==expected_tempo.beat.beat_sample,"beat sample parity");}
-        if(port==8){std::uint32_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && v==tatum,"tatum polling parity");}
+        if(port==context_sequence_ports::tactus)near(value,expected_tempo.source_tactus,"source tactus parity");
+        if(port==context_sequence_ports::bpm){near(value,expected_tempo.bpm,"BPM parity");++beats;}
+        if(port==context_sequence_ports::confidence)near(value,expected_tempo.confidence,"confidence parity");
+        if(port==context_sequence_ports::beat_sample){std::int64_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && v==expected_tempo.beat_sample,"beat sample parity");}
+        if(port==context_sequence_ports::tatum_event){std::uint32_t v=0;check(load_element(value,{0,0,0},v)==Status::ok && v==tatum,"tatum polling parity");}
     }
     static void output(void* user,const NumericPortFrameView& frame) {
         auto& self=*static_cast<Seen*>(user);if(frame.status==Status::unavailable)return;
         check(frame.status==Status::ok,"available graph outputs have no errors");
         const auto& value=std::get<NumericView>(frame.frame.payload);const auto node=frame.identity.node;const auto port=frame.identity.port;
         if(node==3){self.expected(value);if(self.trace)self.trace->frame=self.frames;}
+        if(node==11 && port==0)self.expected_spectrum(value);
         if(self.trace)self.trace->capture(node,port,value);
         if(node==33)self.tracking(port,value);else self.scalar(node,port,value);
     }

@@ -107,22 +107,34 @@ inline void deadline_regressions(){auto g=deadline_graph();deadline_boundary(g);
 }
 struct PhysicalObservation {std::size_t fs=0,n=0;unsigned fft=0,mel=0;bool full=false;};
 inline void physical_fft(const NumericPortFrameView& frame,const NumericView& view,PhysicalObservation& out){++out.fft;check(view.actual[0]==out.n/2,"real FFT bin count");const auto& axis=view.contract->coordinates[0];check(axis.mode==CoordinateMode::Regular&&axis.unit==NumericUnit::Hertz&&axis.step==Ratio(out.fs,out.n),"real FFT Hz grid Fs/N");
-  if(frame.frame.stamp.timestamp_ticks>=std::int64_t(out.n)){float dc=0;check(load_element(view,{0,0,0},dc)==Status::ok&&std::abs(dc-.25f)<1e-5f,"full rectangular FFT DC analytical magnitude");out.full=true;}
+  if(frame.frame.stamp.timestamp_ticks>=std::int64_t(out.n))for(std::size_t bin=0;bin<view.actual[0];++bin){
+   float value=0;check(load_element(view,{0,bin,0},value)==Status::ok&&std::abs(value)<1e-5f,"constant has no positive-frequency energy");
+  }
 }
 inline void physical_mel(const NumericView& view,PhysicalObservation& out){++out.mel;check(view.actual[0]==50&&view.coordinates.axes[0].size()==50*8,"real Mel centres complete");
   for(std::size_t band=0;band<50;++band){std::uint64_t bits=0;for(unsigned byte=0;byte<8;++byte)bits|=std::uint64_t(std::to_integer<unsigned>(view.coordinates.axes[0][band*8+byte]))<<(8*byte);
    const double actual=std::bit_cast<double>(bits),expected=700.*std::expm1(std::log1p(double(out.fs)/1400.)*double(band+1)/51.);
    check(std::isfinite(actual)&&std::abs(actual-expected)<1e-8,"real nonlinear Mel centre matches source Fs");}
 }
+inline void physical_dc(const NumericPortFrameView& frame,const NumericView& view,PhysicalObservation& out){
+ if(frame.frame.stamp.timestamp_ticks<std::int64_t(out.n))return;
+ float dc=0;check(load_element(view,{0,0,0},dc)==Status::ok&&std::abs(dc-.25f)<1e-5f,"separate signed DC matches the rectangular signal");out.full=true;
+}
 inline void physical_output(void* user,const NumericPortFrameView& frame){auto& out=*static_cast<PhysicalObservation*>(user);if(frame.identity.node!=4&&frame.identity.node!=6)return;
  check(frame.status==Status::ok&&frame.frame.stamp.available,"physical real frame available");const auto& view=std::get<NumericView>(frame.frame.payload);check(validate_view(frame.frame,limits)==Status::ok,"physical real frame validates");
+ if(frame.identity.node==4&&frame.identity.port==2){
+  physical_dc(frame,view,out);
+  return;
+ }
+ if(frame.identity.port!=0)return;
  check(view.contract->clock.sample_rate==out.fs&&view.contract->clock.tick_seconds==Ratio(1,out.fs),"real FFT/Mel sample clock");
  if(frame.identity.node==4)physical_fft(frame,view,out);else physical_mel(view,out);
 }
-inline NumericProcessingGraph physical_graph(std::size_t fs,std::size_t n){ auto g=oracle_graph();geometry(g,fs,n,317);std::erase_if(g.nodes,[](const auto& node){return node.id!=1&&node.id!=2&&node.id!=4&&node.id!=6&&node.id!=10&&node.id!=11;});
+inline NumericProcessingGraph physical_graph(std::size_t fs,std::size_t n){ auto g=oracle_graph();geometry(g,fs,n,317);std::erase_if(g.nodes,[](const auto& node){return node.id!=1&&node.id!=2&&node.id!=6&&node.id!=10&&node.id!=11;});
  node(g,1).kind="NetworkInput";node(g,1).parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{fs}}}}};
+ g.edges={{1,2,0,0}};core_regression::append_spectrum(g,2,3,4,n,std::uint32_t(fs));
  node(g,6).inputs[0].contract=node(g,4).outputs[0].contract;
- g.edges={{1,2,0,0},{2,4,0,0},{4,6,0,0},{4,10,0,0},{6,11,0,0}};
+ g.edges.insert(g.edges.end(),{{4,6,0,0},{4,10,0,0},{6,11,0,0}});
  g.configuration_bindings={{4,10,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid},{6,11,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};
  check(has_configuration_binding(g,10,ConfigurationRole::FrequencyGrid)&&has_configuration_binding(g,11,ConfigurationRole::FrequencyGrid),"matrix views explicit frequency association");
  return g;
@@ -135,17 +147,27 @@ inline void physical_grid_case(std::size_t fs,std::size_t n){auto g=physical_gra
 inline void physical_grid_matrix(){for(std::size_t fs:{44100u,48000u,96000u})for(std::size_t n:{512u,4096u})physical_grid_case(fs,n); std::puts("actual FFT/Mel grids Fs44100/48000/96000 x N512/4096 explicit bindings/noalloc PASS");
 }
 struct StereoObservation {std::array<std::array<std::int64_t,128>,2> ends{};std::array<unsigned,2> count{};unsigned mixed=0;};
-inline void stereo_mixed(const NumericPortFrameView& frame,const NumericView& view,float dc,StereoObservation& out){if(frame.frame.stamp.timestamp_ticks>=4096){check(view.actual[0]==2048&&std::abs(dc-3.f)<1e-5,"mixed PCM4096 rectangular FFT analytical DC3");++out.mixed;}
+inline void stereo_mixed(const NumericPortFrameView& frame,float dc,StereoObservation& out){if(frame.frame.stamp.timestamp_ticks>=4096){check(std::abs(dc-3.f)<1e-5,"mixed PCM4096 rectangular FFT analytical DC3");++out.mixed;}
+}
+inline void stereo_dc(const NumericPortFrameView& frame,const NumericView& view,StereoObservation& out,unsigned lane){
+ float dc=0;check(load_element(view,{0,0,0},dc)==Status::ok,"stereo DC access");
+ if(frame.identity.node==4)stereo_mixed(frame,dc,out);
+ else if(frame.frame.stamp.timestamp_ticks>=512)check(std::abs(dc-(lane?4.f:2.f))<1e-5,"separate FFT512 preserves distinct lane DC");
 }
 inline void stereo_output(void* user,const NumericPortFrameView& frame){auto& out=*static_cast<StereoObservation*>(user);if(frame.identity.node!=104&&frame.identity.node!=404&&frame.identity.node!=4)return;
- check(frame.status==Status::ok&&frame.frame.stamp.available,"stereo numerical real FFT");const auto& view=std::get<NumericView>(frame.frame.payload);float dc=0;check(load_element(view,{0,0,0},dc)==Status::ok,"stereo DC access");
- if(frame.identity.node==4){stereo_mixed(frame,view,dc,out);return;}
- const unsigned lane=frame.identity.node==104?0:1;check(out.count[lane]<128&&view.actual[0]==256,"paired FFT512 observation bound");out.ends[lane][out.count[lane]++]=frame.frame.stamp.timestamp_ticks;
- if(frame.frame.stamp.timestamp_ticks>=512)check(std::abs(dc-(lane?4.f:2.f))<1e-5,"separate FFT512 preserves distinct lane DC");
+ check(frame.status==Status::ok&&frame.frame.stamp.available,"stereo numerical real FFT");
+ const auto& view=std::get<NumericView>(frame.frame.payload);
+ const unsigned lane=frame.identity.node==104?0:1;
+ if(frame.identity.port==2){
+  stereo_dc(frame,view,out,lane);
+  return;
+ }
+ if(frame.identity.node==4 || frame.identity.port!=0)return;
+ check(out.count[lane]<128&&view.actual[0]==256,"paired FFT512 observation bound");out.ends[lane][out.count[lane]++]=frame.frame.stamp.timestamp_ticks;
 }
 inline void stereo_branch(NumericProcessingGraph& g,std::size_t aperture,NodeId offset,NodeId from,PortId port){auto branch=oracle_graph();geometry(branch,48000,aperture,317);
-  for(NodeId id:{2,4}){auto copy=node(branch,id);copy.id+=offset;g.nodes.push_back(std::move(copy));}
-  g.edges.push_back({from,2+offset,port,0});g.edges.push_back({2+offset,4+offset,0,0});}
+  auto copy=node(branch,2);copy.id+=offset;g.nodes.push_back(std::move(copy));
+  g.edges.push_back({from,2+offset,port,0});core_regression::append_spectrum(g,2+offset,3+offset,4+offset,aperture,48000);}
 inline void stereo_send_lane(GraphExecutor& e,Feed& feed,StereoObservation& out,PortId lane,std::int64_t begin,std::size_t count){auto frame=feed.frame(count);feed.samples.fill(lane?4.f:2.f);frame.stamp.has_sample_interval=true;frame.stamp.sample_begin=begin;frame.stamp.sample_count=count;frame.stamp.timestamp_ticks=begin+std::int64_t(count)-1;
    const auto before=allocations;check(e.process_numeric_ports(1,lane,frame,{},{stereo_output,nullptr,nullptr,&out})==Status::ok&&allocations==before,"paired512 mixed4096 irregular packets noalloc");}
 inline void stereo_feed(GraphExecutor& e,Feed& feed,StereoObservation& out){ std::int64_t begin=0;unsigned packet=0;

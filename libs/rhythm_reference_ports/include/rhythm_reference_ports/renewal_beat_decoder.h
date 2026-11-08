@@ -9,9 +9,6 @@ struct RenewalBeatConfig {
     float frame_rate=44100.f/512.f,maximum_period_s=1.5f,sigma_ibi=.025f,transition_mix=.5f;
     unsigned upsampling=1;
 };
-// Thin adapter to PreparedResampler's portable EndpointLinear window mode.
-// Factors 1..4, exact output length; disjoint buffers or in-place factor1.
-bool upsample_onset_curve(std::span<const float>,unsigned factor,std::span<float>) noexcept;
 // Source port of Degara's reliability-informed event-state decoder. Explicit
 // onset curve, period seconds and period-block end times. No hidden FFT, ODF
 // resampling, tempo estimation or global clocks. Output is an offline beat mask.
@@ -26,6 +23,7 @@ public:
     std::span<const std::uint32_t> state_path() const noexcept {return std::span(path_).first(result_samples_);}
 private:
     bool configure(std::size_t,std::size_t,RenewalBeatConfig);
+    bool prepare_model_storage();
     void allocate(std::size_t gaussian_radius);
     bool state_count(float maximum_period,std::size_t& count) const noexcept;
     void gaussian() noexcept;
@@ -35,6 +33,7 @@ private:
     bool normalize(std::span<const float>) noexcept;
     bool decode(std::span<const float> periods,std::span<const float> ends,std::size_t samples) noexcept;
     void advance(float activation,std::size_t model,std::size_t frame) noexcept;
+    std::uint32_t reset_source(std::size_t model,float& cost) const noexcept;
     bool backtrack(std::size_t samples) noexcept;
     RenewalBeatConfig config_;
     std::size_t maximum_samples_=0,maximum_blocks_=0,maximum_states_=0,states_=0,result_samples_=0;

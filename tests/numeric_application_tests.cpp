@@ -1,3 +1,8 @@
+#include <domain/numeric/matrix_center.h>
+#include <domain/numeric/array_processing_ports.h>
+#include <dsp_kernels/vector_normalization.h>
+#include <domain/numeric/array_math.h>
+#include <domain/numeric/correlation_ports.h>
 #include "isolated_gui_platform.h"
 #include "numeric_gui_fixture.h"
 #include <desktop/numeric_source_format.h>
@@ -721,9 +726,9 @@ static int temporal_center_method(CoreApplication& app,auto& query,auto& matrix_
     gui_fixture::phase_trace::Scope trace("temporal.center.method",int(method));
 
             const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
-            trace.mark("edit method BEGIN");CHECK(center->parameter_model()->edit("method",method));trace.mark("edit method END");
+            trace.mark("edit method BEGIN");CHECK(center->parameter_model()->edit("method",int(method)));trace.mark("edit method END");
             CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(23,centered_frame)&&query(17,matrix_frame);},6000));
-            if(method==2){
+            if(method==domain::MatrixCenterMethod::ManualOffset){
                 const auto offset_revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
                 trace.mark("edit offset 1.25 BEGIN");CHECK(center->parameter_model()->edit("offset",signal_contracts::NumericLiteral{1.25}));trace.mark("edit offset 1.25 END");
                 CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>offset_revision&&query(23,centered_frame);},6000));
@@ -735,7 +740,7 @@ return 0;
 static int temporal_center_changes(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,AudioNodeModel*& center,auto& ordinal,auto& filled,auto& history,auto& centered_frame) {
     report_temporal_phase("center edits",app);
     query.set_required({17,23});
-        for(int method:{1,2,0}){if(const int failure=temporal_center_method(app,query,matrix_frame,center,centered_frame,method);failure)return failure;}
+        for(const auto method:{domain::MatrixCenterMethod::Midrange,domain::MatrixCenterMethod::ManualOffset,domain::MatrixCenterMethod::Mean}){if(const int failure=temporal_center_method(app,query,matrix_frame,center,centered_frame,method);failure)return failure;}
         for(bool bypass:{true,false}){
             gui_fixture::phase_trace::Scope trace("temporal.center.bypass",int(bypass));
             const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
@@ -749,10 +754,11 @@ static int temporal_window_burst(auto& path,auto& next,auto& temporal_rate,auto&
     report_temporal_phase("window burst",app);
 const auto before_burst=gui_fixture::phase_trace::snapshot(app).graph_revision;
         CHECK(app.presenter().apply_pipeline_graph({})>0&&app.presenter().graph_request_pending());
-        for(int function:{1,2,3})CHECK(window_function->parameter_model()->edit("function",function));
+        using enum signal_contracts::WindowFunction;
+        for(const auto function:{Hamming,Blackman,Rectangular})CHECK(window_function->parameter_model()->edit("function",int(function)));
         QElapsedTimer burst;burst.start();
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>=before_burst+2&&query(17,matrix_frame);},6000));
-        CHECK(std::get<int>(window_function->parameter_model()->field("function")->read())==3);
+        CHECK(std::get<int>(window_function->parameter_model()->field("function")->read())==int(Rectangular));
         std::printf("Discrete window burst during pending Apply: latest selection delivered in %lld ms\n",static_cast<long long>(burst.elapsed()));
         CHECK(window_function->parameter_model()->setBypassed(true));
         CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&query(17,matrix_frame);},6000));
@@ -762,11 +768,12 @@ const auto before_burst=gui_fixture::phase_trace::snapshot(app).graph_revision;
 static int temporal_window_changes(auto& path,auto& next,auto& temporal_rate,auto& runtime_graph,auto& expected_bin_hz,auto& original,CoreApplication& app,NumericEditorGraphModel*& model,auto& query,auto& matrix_frame,auto& selected_frame,auto& step,AudioNodeModel*& window_function,AudioNodeModel*& center,auto& ordinal,auto& filled,auto& history,auto& before_ordinal,auto& centered_frame) {
     report_temporal_phase("window functions",app);
         qint64 slowest_window_switch=0,slowest_window_edit=0;
-        for(int function:{1,2,3,0}) {
-            gui_fixture::phase_trace::Scope trace("temporal.window.function",function);
+        using enum signal_contracts::WindowFunction;
+        for(const auto function:{Hamming,Blackman,Rectangular,Hann}) {
+            gui_fixture::phase_trace::Scope trace("temporal.window.function",int(function));
             const auto revision=gui_fixture::phase_trace::snapshot(app).graph_revision;
             QElapsedTimer elapsed;elapsed.start();
-            trace.mark("edit function BEGIN");CHECK(window_function->parameter_model()->edit("function",function));trace.mark("edit function END");
+            trace.mark("edit function BEGIN");CHECK(window_function->parameter_model()->edit("function",int(function)));trace.mark("edit function END");
             slowest_window_edit=std::max(slowest_window_edit,elapsed.elapsed());
             CHECK(wait_until([&]{return !app.presenter().graph_request_pending()&&gui_fixture::phase_trace::snapshot(app).graph_revision>revision&&query(17,matrix_frame);},6000));
             slowest_window_switch=std::max(slowest_window_switch,elapsed.elapsed());
@@ -959,7 +966,7 @@ static int temporal_delivery(auto& path,auto& next,auto& temporal_rate,auto& run
 static int temporal_start(auto& argv,auto& path,auto& next) {
         const unsigned temporal_rate=QByteArray(argv[1])=="--temporal-fft-44100"?44100:48000;
         const QByteArray traced_stage=argv[2]?QByteArray(argv[2]):QByteArray("matrices");
-        gui_fixture::phase_trace::Session diagnostic_session(traced_stage=="center" || (temporal_rate==48000 && traced_stage=="window-functions"));
+        gui_fixture::phase_trace::Session diagnostic_session(traced_stage=="center" || traced_stage=="rows" || traced_stage=="window-functions");
         gui_fixture::phase_trace::Scope scenario("temporal.scenario",int(temporal_rate));
         auto runtime_graph=numeric_temporal_fft_graph(temporal_rate);QString native_error;
         CHECK(desktop::resolve_numeric_source_format(runtime_graph,13,temporal_rate,1,numeric_editor::limits(),&native_error));
@@ -980,7 +987,10 @@ static int temporal_start(auto& argv,auto& path,auto& next) {
         // The test's injected device catalog replaces host discovery before
         // startup Apply. Import through that same catalog so the displayed and
         // applied contracts refer to the deterministic synthetic device.
+        lifetime.mark("graph import BEGIN; existing processing graph identical",
+            application::same_numeric_processing_graph(model->numeric_graph(),runtime_graph));
         const bool imported=model->set_numeric_graph(runtime_graph,&native_error);
+        lifetime.mark("graph import END",int(imported));
         if(!imported)std::fprintf(stderr,"Temporal native import %u Hz: %s\n",temporal_rate,native_error.toUtf8().constData());
         CHECK(imported);
         return temporal_delivery(path,next,temporal_rate,runtime_graph,expected_bin_hz,original,app,model,argv[2]?QByteArray(argv[2]):QByteArray("matrices"));
@@ -991,7 +1001,7 @@ static int validate_temporal_ports(auto& node,auto& rate,auto& port) {
                     const auto contract=port.contract.view();const auto* value=std::get_if<signal_contracts::NumericContract>(&contract);CHECK(value);
                     if(value->shape.rank!=signal_contracts::Rank::Scalar){CHECK(value->clock.sample_rate==rate&&value->clock.tick_seconds==(signal_contracts::Ratio{1,rate}));}
                     CHECK(value->channel_order.size()==1);
-                    if(node.id==4&&port.direction==domain::PortDirection::Output){
+                    if(node.id==4&&port.direction==domain::PortDirection::Output&&value->shape.rank==signal_contracts::Rank::Vector){
                         CHECK(value->coordinates[0].step.numerator*4096==std::int64_t(rate)*std::int64_t(value->coordinates[0].step.denominator));}
 
 return 0;
@@ -1249,26 +1259,76 @@ struct ReferenceDelivery {
         if(value->actual[0]==128 && endpoint.node==30)received.fetch_or(8u);
     }
 };
-static int reference_parameter_fields(NumericEditorGraphModel* model) {
+static int reference_frontend_fields(NumericEditorGraphModel* model) {
     auto* mel=model->delegateModel<AudioNodeModel>(26)->parameter_model();CHECK(mel && !mel->field("bin_hz"));
     CHECK(!mel->field("sample_rate"));
     CHECK(!mel->editLiteral("sample_rate","44100",0));
     auto* onset=model->delegateModel<AudioNodeModel>(30)->parameter_model();CHECK(onset && !onset->field("n_fft") && !onset->field("hop_length"));
     CHECK(model->delegateModel<AudioNodeModel>(30)->nPorts(QtNodes::PortType::In)==1);
     CHECK(model->nodeExists(49));
-    const auto& bpm=model->delegateModel<AudioNodeModel>(35)->numeric_node()->outputs.front().contract;
-    CHECK(std::get<signal_contracts::NumericContract>(bpm.view()).shape.rank==signal_contracts::Rank::Scalar);
+    return 0;
+}
+static int reference_normalization_parameters(const domain::ConfiguredProcessingNode& tempogram) {
+    using namespace signal_contracts;
+    const auto& normalization=std::get<domain::TransformProcessingParameters>(tempogram.parameters).values;
+    for(const auto& [key,expected]:std::array{std::pair{"axis",unsigned(domain::ArrayAxis::First)},std::pair{"method",unsigned(dsp_kernels::VectorNormalization::Maximum)}}){
+        const auto field=std::find_if(normalization.begin(),normalization.end(),[key](const auto& value){return value.key==key;});
+        CHECK(field!=normalization.end());
+        CHECK(std::visit([expected](auto value){return value==expected;},std::get<NumericLiteral>(field->value)));
+    }
+    return 0;
+}
+static int reference_parameter_fields(NumericEditorGraphModel* model) {
+    CHECK(reference_frontend_fields(model)==0);
+    using namespace signal_contracts;
+    const auto& tempo=*model->delegateModel<AudioNodeModel>(35)->numeric_node();
+    const auto bpm=std::get<NumericContract>(tempo.outputs.front().contract.view());
+    CHECK(domain::node_kind(tempo.kind)==domain::NodeKind::TempoEstimate && tempo.outputs.front().id==domain::processing_output);
+    CHECK(bpm.shape.rank==Rank::Scalar && bpm.dtype==DType::Float32);
+    const auto& tempogram=*model->delegateModel<AudioNodeModel>(34)->numeric_node();
+    const auto acf=std::get<NumericContract>(tempogram.outputs.front().contract.view());
+    CHECK(domain::node_kind(tempogram.kind)==domain::NodeKind::VectorNormalize && tempogram.outputs.front().id==domain::processing_output);
+    CHECK(acf.shape.rank==Rank::Vector && acf.dtype==DType::Float32);
+    CHECK(reference_normalization_parameters(tempogram)==0);
     auto* beat=model->delegateModel<AudioNodeModel>(4)->parameter_model();
     const auto* strictness=beat->field("tightness");CHECK(strictness && strictness->literal_type && !strictness->help.isEmpty());
     CHECK(!beat->field("input0Dtype"));
-    CHECK(model->delegateModel<AudioNodeModel>(35)->caption()==ui::text("Tempo estimation"));
-    CHECK(model->delegateModel<AudioNodeModel>(34)->portCaption(QtNodes::PortType::Out,0).startsWith(ui::text("Normalized autocorrelation")));
     return 0;
 }
 
+static int reference_acf_connections(const domain::NumericProcessingGraph& graph) {
+    const auto operation=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){
+        return domain::node_kind(node.kind)==domain::NodeKind::DirectCorrelation;
+    });
+    CHECK(operation!=graph.nodes.end());
+    const auto input=[&](domain::CorrelationInput port){
+        return std::find_if(graph.edges.begin(),graph.edges.end(),[&](const auto& edge){
+            return edge.to==operation->id && edge.input_port==domain::PortId(port);
+        });
+    };
+    const auto reference=input(domain::CorrelationInput::Reference),compared=input(domain::CorrelationInput::Compared);
+    const auto lags=input(domain::CorrelationInput::LagCount);
+    CHECK(reference!=graph.edges.end() && compared!=graph.edges.end() && lags!=graph.edges.end());
+    CHECK(reference->from==compared->from && reference->output_port==compared->output_port);
+    const auto kind=[&](domain::NodeId id){
+        const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[id](const auto& value){return value.id==id;});
+        return node==graph.nodes.end()?std::optional<domain::NodeKind>{}:domain::node_kind(node->kind);
+    };
+    CHECK(kind(reference->from)==domain::NodeKind::ArrayMultiply);
+    CHECK(kind(lags->from)==domain::NodeKind::ArrayLength);
+    CHECK(std::any_of(graph.edges.begin(),graph.edges.end(),[&](const auto& edge){
+        return edge.to==reference->from && edge.input_port==domain::PortId(domain::BinaryInput::Right)
+            && kind(edge.from)==domain::NodeKind::WindowFunction;
+    }));
+    CHECK(std::any_of(graph.edges.begin(),graph.edges.end(),[&](const auto& edge){
+        return edge.from==operation->id && kind(edge.to)==domain::NodeKind::VectorNormalize;
+    }));
+    return 0;
+}
 static int reference_saved_layout(NumericEditorGraphModel* model) {
-    const auto graph=model->numeric_graph();CHECK(graph.nodes.size()==37 && graph.edges.size()==52);
-    for(const auto id:{36,46,83,85,86,87,88,91,92,93,94,97})CHECK(!model->nodeExists(id));
+    const auto graph=model->numeric_graph();
+    if(const auto failure=reference_acf_connections(graph))return failure;
+    for(const auto id:{46,83,85,86,87,88,91,92,93,94,97})CHECK(!model->nodeExists(id));
     for(const auto& order:numeric_reference_beat_example().port_orders){
         QJsonArray expected;for(const auto port:order.inputs)expected.append(int(port));
         CHECK(model->delegateModel<AudioNodeModel>(order.node)->presentation().value("input_port_order").toArray()==expected);
@@ -1590,12 +1650,12 @@ static int saved_builtin_labels(CoreApplication& app,const QString& path,const N
     desktop::NumericProjectDocument saved;domain::NumericProcessingGraph graph;desktop::NumericDraftPresentation display;
     CHECK(desktop::load_numeric_project(path,saved,graph)&&desktop::read_numeric_presentation(saved,display));
     for(const auto& name:example.node_names)
-        CHECK(display.node_presentations[QString::number(name.node)].toObject()["display_name"]=="Batch label");
+        CHECK(display.node_presentations[QString::number(name.node)].toObject()["display_name_key"]=="Batch label");
     return 0;
 }
 static int builtin_label_payload(CoreApplication& app,NumericEditorGraphModel* model,const NumericExampleGraph& example,
                                  const domain::NumericProcessingGraph& before,std::uint64_t revision) {
-    for(const auto& name:example.node_names)CHECK(model->delegateModel<AudioNodeModel>(name.node)->presentation()["display_name"]=="Batch label");
+    for(const auto& name:example.node_names)CHECK(model->delegateModel<AudioNodeModel>(name.node)->presentation()["display_name_key"]=="Batch label");
     CHECK(application::same_numeric_processing_graph(before,model->numeric_graph()));
     CHECK(!app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision==revision);
     return 0;
@@ -1604,7 +1664,7 @@ static int builtin_manual_label_undo(CoreApplication& app,NumericEditorGraphMode
                                     QObject& witness,std::uint64_t revision) {
     auto* node=model->delegateModel<AudioNodeModel>(1);CHECK(node);
     CHECK(node->edit_display_name("Manual label")&&editor->history().index()==1&&editor->history().count()==1);
-    editor->history().undo();CHECK(node->presentation().value("display_name")=="Batch label");
+    editor->history().undo();CHECK(!node->presentation().contains("display_name") && node->presentation().value("display_name_key")=="Batch label");
     editor->history().redo();CHECK(node->presentation().value("display_name")=="Manual label");
     CHECK(flush_gui_turns(witness));
     CHECK(!app.presenter().graph_request_pending()&&app.presenter().client().snapshot().graph_revision==revision);
@@ -1979,7 +2039,7 @@ return 0;
 static int first_run_spectrum(CoreApplication& app,NumericEditorGraphModel*& model,auto& graph,MainWindow*& window) {
         auto* windowFunction=model->delegateModel<AudioNodeModel>(3);CHECK(windowFunction);
         const auto beforeFunctionRevision=app.presenter().client().snapshot().graph_revision;
-        CHECK(windowFunction->parameter_model()->edit("function",1));
+        CHECK(windowFunction->parameter_model()->edit("function",int(signal_contracts::WindowFunction::Hamming)));
         CHECK(wait_until([&]{return app.presenter().client().snapshot().graph_revision>beforeFunctionRevision && !app.presenter().graph_request_pending();},5000));
         const auto changedWindow=app.presenter().applied_numeric_graph();CHECK(changedWindow);
         for(const auto& n:changedWindow->nodes)if(n.kind=="AmplitudePhase"){ if(const int failure=validate_window_calibration(n);failure)return failure; }

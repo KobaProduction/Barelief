@@ -7,7 +7,6 @@
 #include <optional>
 #include <string_view>
 #include <vector>
-#include <signal_contracts/data_frame.h>
 #include <dsp_kernels/fft_storage.h>
 #include <dsp_kernels/complex_values.h>
 
@@ -122,10 +121,6 @@ class MagnitudeSpectrum {
     // Failed processing leaves both caller outputs unchanged; no allocation.
     bool process(std::span<const float> input, std::span<float> output,
                  std::span<float> phase);
-    // Reads and writes one plane directly; the instance scratch is the only
-    // intermediate payload. Views remain borrowed for this synchronous call.
-    signal_contracts::Status process_plane(const signal_contracts::NumericView& input,
-        signal_contracts::MutableNumericView& output, std::size_t plane);
     std::size_t workspace_bytes() const {
         return scratch_.capacity() * sizeof(float);
     }
@@ -223,6 +218,7 @@ class PreparedSpectrumScaling {
                  SpectrumProjectionOptions options, std::size_t fft_samples = 0) noexcept;
     bool prepare_raw(SpectrumProjectionOptions options) noexcept;
     bool project(float real, float imaginary, bool paired, float& output,bool real_axis=false) const noexcept;
+    bool dc_offset(float real,float& output) const noexcept;
   private:
     SpectrumProjectionOptions options_{};
     double amplitude_scale_=1, power_scale_=1, psd_scale_=1, bin_power_scale_=1;

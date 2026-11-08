@@ -19,27 +19,8 @@ bool shape(NumericOperationOutput& o,std::size_t rows,std::size_t columns=1) noe
     const auto* c=o.value.contract;if(!c || rows<c->shape.extents[0].minimum || rows>c->shape.extents[0].maximum || columns<c->shape.extents[1].minimum || columns>c->shape.extents[1].maximum)return false;
     o.value.actual={rows,columns};return true;
 }
-bool coordinate_pair(const NumericOperationInput& a,const NumericOperationInput& b,bool spectrum) noexcept {
-    for(std::size_t axis=0;axis<(spectrum?2u:1u);++axis){
-        const auto x=a.value.coordinates.axes[axis],y=b.value.coordinates.axes[axis];
-        if(x.size()!=y.size() || !std::equal(x.begin(),x.end(),y.begin()))return false;
-    }
-    return true;
-}
-double coordinate_value(std::span<const std::byte> bytes,std::size_t index) noexcept {
-    std::uint64_t bits=0;for(std::size_t i=0;i<8;++i)bits|=std::uint64_t(std::to_integer<unsigned char>(bytes[index*8+i]))<<(8*i);
-    return std::bit_cast<double>(bits);
-}
-bool frequency_coordinates(const NumericOperationInput& input,float step) noexcept {
-    const auto& axis=input.value.contract->coordinates[1];
-    if(axis.mode!=CoordinateMode::ExplicitFloat64LE || axis.unit!=NumericUnit::Hertz)return true;
-    const auto data=input.value.coordinates.axes[1];
-    for(std::size_t bin=0;bin<input.value.actual[1];++bin){
-        const double actual=coordinate_value(data,bin),expected=double(bin)*step;
-        if(!std::isfinite(actual) || std::abs(actual-expected)>1e-6*std::max(1.,std::abs(expected)))return false;
-    }
-    return true;
-}
+
+
 Status validate_batch_proof(const NumericOperationInput& input) noexcept {
     if(input.contiguous_float32.size()!=input.value.actual[0])return Status::incompatible_contract;
     for(std::size_t k=0;k<input.contiguous_float32.size();++k){
@@ -47,10 +28,10 @@ Status validate_batch_proof(const NumericOperationInput& input) noexcept {
     }
     return Status::ok;
 }
-Status validate_input(const NumericOperationInput& input,const domain::ProcessingPort& expected,const FrameLimits& limits) noexcept {
+Status validate_input(const NumericOperationInput& input,const dataflow_runtime::NumericOperationPort& expected,const FrameLimits& limits) noexcept {
     if(input.port!=expected.id || !input.value.contract || !same_physical_contract(*input.value.contract,expected.contract.view()))return Status::incompatible_contract;
-    if(input.status!=Status::ok || !input.stamp.available)return Status::unavailable;
-    if(validate_view({input.stamp,input.value},limits)!=Status::ok || validate_values(input.value,ValueDomain::FiniteOnly,limits)!=Status::ok)return Status::invalid_argument;
+    if(input.status!=Status::ok)return Status::unavailable;
+    if(validate_view(input.value,limits)!=Status::ok || validate_values(input.value,ValueDomain::FiniteOnly,limits)!=Status::ok)return Status::invalid_argument;
     if(input.value.contract->dtype!=DType::Float32 || input.value.contract->shape.rank!=Rank::Vector)return Status::ok;
     return validate_batch_proof(input);
 }
@@ -70,8 +51,8 @@ Status fill_disabled_batch(std::span<NumericOperationOutput> outputs,const Frame
 }
 Status publish(std::span<NumericOperationOutput> out,const NumericOperationInput& input,const BatchPlan& plan,const FrameLimits& limits) noexcept {
     for(auto& o:out){
-        auto stamp=plan.kind==BatchKind::PulseOnset?input.stamp:batch_stamp(input.stamp);stamp.available=true;o.stamp=stamp;
-        if(validate_view({stamp,o.value.view()},limits)!=Status::ok || validate_values(o.value.view(),plan.shape[o.port].values,limits)!=Status::ok){invalidate_outputs(out);return Status::invalid_argument;}
+        auto stamp=plan.kind==BatchKind::Stream?input.origin:batch_stamp(input.origin);o.origin=stamp;
+        if(validate_view(o.value.view(),limits)!=Status::ok || validate_values(o.value.view(),plan.shape[o.port].values,limits)!=Status::ok){invalidate_outputs(out);return Status::invalid_argument;}
     }
     for(auto& o:out)o.status=Status::ok;
     return Status::ok;
@@ -94,8 +75,6 @@ bool batch_peaks(NumericOperationOutput& o,std::span<const rhythm_reference_port
 Status BatchOperation::preflight(std::span<const NumericOperationInput> in,std::span<NumericOperationOutput> out) const noexcept {
     if(!descriptor_ || in.size()!=descriptor_->node.inputs.size() || out.size()!=plan_.outputs || !output_contracts_match(out) || !proof_buffers_disjoint(in,out) || !disjoint_operation_buffers(in,out))return Status::incompatible_contract;
     for(std::size_t i=0;i<in.size();++i){const auto status=validate_input(in[i],descriptor_->node.inputs[i],limits_);if(status!=Status::ok)return status;}
-    if((plan_.kind==BatchKind::FourierHistogram || plan_.kind==BatchKind::PhasePulse) &&
-       (!coordinate_pair(in[0],in[1],plan_.kind==BatchKind::FourierHistogram) || !frequency_coordinates(in[0],plan_.histogram.path.frequency_step)))return Status::incompatible_contract;
     return validate_batch_outputs(out,limits_);
 }
 Status BatchOperation::process(std::span<const NumericOperationInput> in,std::span<NumericOperationOutput> out,NumericOperationControl control) noexcept {

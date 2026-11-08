@@ -484,16 +484,16 @@ using namespace domain;using namespace dataflow_runtime;
 return fft;
 }
 
-auto polar_axis_node(unsigned size,unsigned rate,const std::vector<domain::OwnedProcessingContract>& coefficients,std::array<domain::OwnedProcessingContract,2>& projected) {
+auto polar_axis_node(unsigned size,unsigned rate,const std::vector<domain::OwnedProcessingContract>& coefficients,std::array<domain::OwnedProcessingContract,3>& projected) {
 using namespace domain;using namespace dataflow_runtime;
         ConfiguredProcessingNode polar;polar.id=4;polar.kind="AmplitudePhase";polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t(size)}},{"sample_rate",NumericLiteral{std::uint64_t(rate)}}}};
         polar.inputs={{0,PortDirection::Input,coefficients[0]},{1,PortDirection::Input,coefficients[1]}};
         CHECK(amplitude_phase_output_contracts(polar,std::get<NumericContract>(coefficients[0].view()),projected)==Status::ok);
-        polar.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]}};
+        polar.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]},{2,PortDirection::Output,projected[2]}};
 return polar;
 }
 
-auto gain_axis_product(const NumericContract& gains,const auto& own,const std::array<domain::OwnedProcessingContract,2>& projected) {
+auto gain_axis_product(const NumericContract& gains,const auto& own,const std::array<domain::OwnedProcessingContract,3>& projected) {
 using namespace domain;using namespace dataflow_runtime;
         ConfiguredProcessingNode product;product.id=5;product.kind="ArrayMultiply";product.parameters=TransformProcessingParameters{};
         product.inputs={{0,PortDirection::Input,projected[0]},{1,PortDirection::Input,own(gains)}};product.outputs={{0,PortDirection::Output,projected[0]}};
@@ -524,7 +524,7 @@ using namespace domain;using namespace dataflow_runtime;
         auto input=fourier_axis_input(size,rate);
         auto source=fourier_axis_source(input,own);
         std::vector<OwnedProcessingContract> coefficients;auto fft=fourier_axis_node(size,input,own,coefficients);
-        std::array<OwnedProcessingContract,2> projected;auto polar=polar_axis_node(size,rate,coefficients,projected);
+        std::array<OwnedProcessingContract,3> projected;auto polar=polar_axis_node(size,rate,coefficients,projected);
         const auto amplitudeContract=std::get<NumericContract>(projected[0].view()),phaseContract=std::get<NumericContract>(projected[1].view());
         CHECK(phaseContract.coordinates==amplitudeContract.coordinates && phaseContract.unit==NumericUnit::Radians);
         auto gainSource=axis_gain_source(amplitudeContract,own);
@@ -569,7 +569,7 @@ void fft_product_and_phase_axes() {
         } observed{frameLimits};
         NumericRuntimeCallbacks callbacks{Observation::output,nullptr,nullptr,&observed};
         process_fourier_axis(plan,state,callbacks,input,gains,size);
-        for(const auto pair:{std::pair{&observed.spectrum,&magnitude},std::pair{&observed.phase,&phase}}){render_fourier_axis(adapter,*pair.first,pair.second,size-(pair.first==&observed.phase?2:0));
+        for(const auto pair:{std::pair{&observed.spectrum,&magnitude},std::pair{&observed.phase,&phase}}){render_fourier_axis(adapter,*pair.first,pair.second,size);
         }
     }
 }

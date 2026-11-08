@@ -2,6 +2,7 @@
 #include <control/numeric_routing_adapter.h>
 #include <QJsonArray>
 #include <core_app/numeric_default_graph.h>
+#include <algorithm>
 #include <cmath>
 #include <bit>
 #include <cstdio>
@@ -17,7 +18,12 @@ DeliveredNumericFrame f;std::uint64_t ordinal=0,filled=0;
 }
 static auto pcm_recipient_graph() {
     auto recipient=numeric_default_graph();recipient.graph_id="pcm-gap-target";
-    const auto retained=[](domain::NodeId id){return id<=7||id==15||id==1000||id==1001;};
+    const auto fourier=std::find_if(recipient.nodes.begin(),recipient.nodes.end(),[](const auto& node){
+        return domain::node_kind(node.kind)==domain::NodeKind::RealFourier;
+    });
+    require(fourier!=recipient.nodes.end(),"canonical PCM Fourier stage");
+    const auto fourier_id=fourier->id;
+    const auto retained=[fourier_id](domain::NodeId id){return id<=7||id==15||id==1000||id==1001||id==fourier_id;};
     std::erase_if(recipient.nodes,[&](const auto& n){return !retained(n.id);});
     std::erase_if(recipient.edges,[&](const auto& e){return !retained(e.from)||!retained(e.to);});
     // Configuration wires are graph topology too: remove the view bindings
@@ -66,8 +72,29 @@ static void compare_retained_history(const DeliveredNumericFrame& warm_history,s
     require(compared>0,"delivery-gap oracle retained no comparable rows");
 }
 
+static bool pcm_producer_frame(const DeliveredNumericFrame& frame) {
+    if(frame.status!=Status::ok || !frame.frame)return false;
+    const auto stamp=frame.frame.view().stamp;
+    return stamp.available && stamp.producer_epoch==17 && stamp.generation==4 && stamp.source_sequence>0;
+}
+static void report_pcm_binding_failure(const FrameProbe& incoming,std::uint64_t sent_sequence) {
+    const auto frame=incoming.latest();
+    const auto stamp=frame.frame?frame.frame.view().stamp:FrameStamp{};
+    std::fprintf(stderr,
+        "PCM route binding failure incoming_count=%zu expected_source_feed=%llu owning=%d status=%u available=%d "
+        "producer_epoch=%llu generation=%llu source_sequence=%llu epoch=%llu sequence=%llu "
+        "delivery_epoch=%llu delivery_revision=%llu sent_producer_epoch=17 sent_generation=4\n",
+        incoming.count(),static_cast<unsigned long long>(sent_sequence),int(bool(frame.frame)),unsigned(frame.status),
+        int(bool(frame.frame) && stamp.available),static_cast<unsigned long long>(stamp.producer_epoch),
+        static_cast<unsigned long long>(stamp.generation),static_cast<unsigned long long>(stamp.source_sequence),
+        static_cast<unsigned long long>(stamp.epoch),static_cast<unsigned long long>(stamp.sequence),
+        static_cast<unsigned long long>(frame.delivery.epoch),static_cast<unsigned long long>(frame.delivery.graph_revision));
+}
 static void exercise_pcm_gap(NumericEngine& target,const auto& recipient,FrameProbe& incoming,std::uint64_t& sequence,const auto& feed_pcm,const auto& arrives,const auto& independent_retained) {
-    require(wait([&]{feed_pcm();return incoming.available();}),"PCM route DATA binding ready");
+    // Local typed zeros can be available before the remote DATA binding.
+    const bool bound=wait([&]{feed_pcm();return pcm_producer_frame(incoming.latest());});
+    if(!bound)report_pcm_binding_failure(incoming,sequence);
+    require(bound,"PCM route DATA binding ready");
     for(int i=0;i<4;++i){feed_pcm();require(wait(arrives),"paced PCM route warmup");}
     const EndpointIdentity history_endpoint{recipient.graph_id,7,domain::PortDirection::Output,0};
     auto history_rows=[&]{DeliveredNumericFrame f;std::uint64_t filled=0,ordinal=0;
@@ -127,7 +154,9 @@ static void pcm_delivery_gap(){
     NumericRoutingAdapter routing(target);
     require(routing.configure({{"network",QJsonObject{{"routes",QJsonArray{QJsonObject{{"node_id",1},{"host","127.0.0.1"},{"port",int(server.port())},
         {"remote_endpoint",QJsonObject{{"graph_id",producer.graph_id.c_str()},{"node_id",1},{"direction","input"},{"port_index",0}}}}}}}}}),"PCM gap route");
-    FrameProbe incoming(target,{recipient.graph_id,1,domain::PortDirection::Output,0});
+    // Clock-generated local zero frames may arrive between remote packets.
+    // Retain the latest actual remote DATA frame for its identity/gap assertions.
+    FrameProbe incoming(target,{recipient.graph_id,1,domain::PortDirection::Output,0},pcm_producer_frame);
     auto pcm=std::get<NumericContract>(pcm_owner.view());std::array<float,256> samples{};
     std::array<PlaneLayout,1> planes{{{0,{4,0}}}};std::uint64_t sequence=0,sent=0;
     auto feed_pcm=[&]{feed_pcm_block(source,pcm,samples,planes,sequence,sent);

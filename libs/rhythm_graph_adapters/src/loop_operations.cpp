@@ -22,23 +22,10 @@ private:
     }
     PreparedLoopLengthConfidence kernel_;
 };
-class LoopTempo final:public LoudnessKernel<LoopTempo> {
-public:
-    bool prepare(const LoudnessPlan& p){plan_=p;return kernel_.prepare(p.rows,p.threshold);}
-    std::size_t workspace_bytes() const noexcept override {return kernel_.workspace_bytes();}
-private:
-    void reset_kernel() noexcept override {kernel_.reset();}
-    bool run(std::span<const NumericOperationInput> in,std::span<NumericOperationOutput> out) noexcept override {
-        if(!kernel_.process(in[0].contiguous_float32))return false;const auto& fit=kernel_.confidence();
-        return batch_scalar(out[0],kernel_.bpm()) && batch_scalar(out[1],kernel_.raw_bpm()) && batch_scalar(out[2],fit.confidence) && batch_scalar(out[3],fit.rounded_bpm) &&
-            batch_integer(out[4],fit.start_sample) && batch_integer(out[5],fit.end_sample) && durations(out[6],fit.durations) && batch_vector(out[7],fit.scores) && batch_vector(out[8],kernel_.tempo().lag_histogram());
-    }
-    PreparedLoopTempoRecipe kernel_;
-};
 template<class T> std::unique_ptr<AdapterOperation> make(const LoudnessPlan& p){auto value=std::make_unique<T>();return value->prepare(p)?std::move(value):nullptr;}
 }
-std::unique_ptr<AdapterOperation> prepare_loop_kernel(const domain::ResolvedProcessingNode&,const LoudnessPlan& p){
-    return p.kind==LoudnessKind::LoopFit?make<LoopFit>(p):make<LoopTempo>(p);
+std::unique_ptr<AdapterOperation> prepare_loop_kernel(const dataflow_runtime::NumericOperationNodeView&,const LoudnessPlan& p){
+    return p.kind==LoudnessKind::LoopFit?make<LoopFit>(p):nullptr;
 }
-std::size_t loop_kernel_size(LoudnessKind kind) noexcept {return kind==LoudnessKind::LoopFit?sizeof(LoopFit):sizeof(LoopTempo);}
+std::size_t loop_kernel_size(LoudnessKind kind) noexcept {return kind==LoudnessKind::LoopFit?sizeof(LoopFit):0;}
 }

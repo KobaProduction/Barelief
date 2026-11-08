@@ -2,40 +2,38 @@
 #include <dsp_kernels/window_math.h>
 namespace domain {
 using namespace signal_contracts;
-Status window_function_coefficients(const ConfiguredProcessingNode& node,std::span<float> output) noexcept {
+namespace {
+bool window_output_size(const ConfiguredProcessingNode& node,std::size_t count) noexcept {
     const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,node.inputs,node.outputs,&node.parameters,node.enabled};
-    ProcessingParameterView size,function,periodic;
-    if(resolve_processing_parameter(resolved,"size",size)!=Status::ok || !std::holds_alternative<NumericLiteral>(size) ||
-       resolve_processing_parameter(resolved,"function",function)!=Status::ok || !std::holds_alternative<std::string_view>(function) ||
-       resolve_processing_parameter(resolved,"periodic",periodic)!=Status::ok || !std::holds_alternative<bool>(periodic))return Status::invalid_argument;
-    const auto count=std::visit([](auto value){return double(value);},std::get<NumericLiteral>(size));
-    if(output.empty() || double(output.size())!=count)return Status::invalid_argument;
-    auto window=dsp_kernels::WindowFunction::Rectangular;
-    if(node.enabled && !dsp_kernels::parse_window_function(std::get<std::string_view>(function),window))return Status::invalid_argument;
-    for(std::size_t index=0;index<output.size();++index)
-        output[index]=dsp_kernels::window_coefficient(index,output.size(),window,std::get<bool>(periodic));
+    ProcessingParameterView field;
+    if(!count || resolve_processing_parameter(resolved,"size",field)!=Status::ok || !std::holds_alternative<NumericLiteral>(field))return false;
+    return std::visit([count](auto size){return double(count)==double(size);},std::get<NumericLiteral>(field));
+}
+Status fill_default_window(std::span<float> output,const window_generation::WindowFunctionParameters& parameters) noexcept {
+    for(std::size_t i=0;i<output.size();++i)output[i]=dsp_kernels::window_coefficient(i,output.size(),parameters.function,parameters.periodic);
     return Status::ok;
 }
-namespace {
-Status fill_double_window(std::span<double> output,dsp_kernels::WindowFunction window,bool periodic) noexcept {
-    if(window==dsp_kernels::WindowFunction::Hann && output.size()>1){
-        constexpr std::array coefficients{.5,.5};const double period=double(output.size())-(periodic?0:1);
+Status fill_default_window(std::span<double> output,const window_generation::WindowFunctionParameters& parameters) noexcept {
+    if(parameters.function==WindowFunction::Hann && output.size()>1){
+        constexpr std::array coefficients{.5,.5};const double period=double(output.size())-(parameters.periodic?0:1);
         return dsp_kernels::cosine_sum_window(output,coefficients,period,false,-period/2.)?Status::ok:Status::invalid_argument;
     }
-    for(std::size_t i=0;i<output.size();++i)output[i]=dsp_kernels::window_coefficient_value<double>(i,output.size(),window,periodic);
+    for(std::size_t i=0;i<output.size();++i)output[i]=dsp_kernels::window_coefficient_value<double>(i,output.size(),parameters.function,parameters.periodic);
+    return Status::ok;
+}
+template<class Scalar> Status fill_window(const ConfiguredProcessingNode& node,std::span<Scalar> output) noexcept {
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,node.inputs,node.outputs,&node.parameters,node.enabled};
+    window_generation::WindowFunctionParameters parameters;
+    if(!window_output_size(node,output.size()) || !window_function_parameters(resolved,parameters))return Status::invalid_argument;
+    if(!node.enabled)parameters.function=WindowFunction::Rectangular;
+    if(parameters.evaluation==WindowEvaluation::Default)return fill_default_window(output,parameters);
+    if(parameters.evaluation==WindowEvaluation::SymmetricCosineSeries)
+        return dsp_kernels::symmetric_cosine_window(output,parameters.function,parameters.periodic)?Status::ok:Status::invalid_argument;
+    for(std::size_t i=0;i<output.size();++i)
+        output[i]=dsp_kernels::direct_window_coefficient<Scalar>(i,output.size(),parameters.function,parameters.periodic,parameters.pi);
     return Status::ok;
 }
 }
-Status window_function_coefficients(const ConfiguredProcessingNode& node,std::span<double> output) noexcept {
-    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::Transform,node.inputs,node.outputs,&node.parameters,node.enabled};
-    ProcessingParameterView size,function,periodic;
-    if(resolve_processing_parameter(resolved,"size",size)!=Status::ok || !std::holds_alternative<NumericLiteral>(size) ||
-       resolve_processing_parameter(resolved,"function",function)!=Status::ok || !std::holds_alternative<std::string_view>(function) ||
-       resolve_processing_parameter(resolved,"periodic",periodic)!=Status::ok || !std::holds_alternative<bool>(periodic))return Status::invalid_argument;
-    const auto count=std::visit([](auto value){return double(value);},std::get<NumericLiteral>(size));
-    if(output.empty() || double(output.size())!=count)return Status::invalid_argument;
-    auto window=dsp_kernels::WindowFunction::Rectangular;
-    if(node.enabled && !dsp_kernels::parse_window_function(std::get<std::string_view>(function),window))return Status::invalid_argument;
-    return fill_double_window(output,window,std::get<bool>(periodic));
-}
+Status window_function_coefficients(const ConfiguredProcessingNode& node,std::span<float> output) noexcept {return fill_window(node,output);}
+Status window_function_coefficients(const ConfiguredProcessingNode& node,std::span<double> output) noexcept {return fill_window(node,output);}
 }

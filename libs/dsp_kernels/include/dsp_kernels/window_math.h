@@ -8,6 +8,7 @@
 #include <array>
 #include <string_view>
 #include <limits>
+#include <type_traits>
 namespace dsp_kernels {
 namespace detail {
 inline float cosine_series_value(std::size_t i,std::span<const float> coefficients,float period,bool mirror) noexcept {
@@ -106,8 +107,51 @@ template<typename Scalar> inline Scalar window_coefficient_value(std::size_t i,s
     if(count<2 || function==WindowFunction::Rectangular)return 1;
     return window_from_cosine_value<Scalar>(i,count,function,std::cos(double(i)*6.2831853071795864769/(double(count)-(periodic?0:1))),periodic);
 }
+template<typename Scalar> inline Scalar direct_window_coefficient(std::size_t i,std::size_t count,WindowFunction function,bool periodic,double pi) noexcept {
+    if(count<2 || function==WindowFunction::Rectangular)return 1;
+    const double position=double(i)/(double(count)-(periodic?0:1));
+    const double cosine=std::cos(2*pi*position);
+    if(function==WindowFunction::Hann)return Scalar(.5*(1-cosine));
+    return window_from_cosine_value<Scalar>(i,count,function,cosine,periodic);
+}
 inline float window_coefficient(std::size_t i,std::size_t count,WindowFunction function,bool periodic=false) noexcept {
     return window_coefficient_value<float>(i,count,function,periodic);
+}
+template<class Scalar> inline std::array<Scalar,5> symmetric_cosine_terms(WindowFunction function) noexcept {
+    switch(function){
+    case WindowFunction::Hann:return {Scalar(.5),Scalar(.5),0,0,0};
+    case WindowFunction::Hamming:return {Scalar(.54),Scalar(.46),0,0,0};
+    case WindowFunction::Blackman:return {Scalar(.42),Scalar(.5),Scalar(.08),0,0};
+    case WindowFunction::BlackmanHarris:return {Scalar(.35875),Scalar(.48829),Scalar(.14128),Scalar(.01168),0};
+    case WindowFunction::FlatTop:return {Scalar(.21557895),Scalar(.41663158),Scalar(.277263158),Scalar(.083578947),Scalar(.006947368)};
+    default:return {Scalar(1),0,0,0,0};
+    }
+}
+inline std::size_t symmetric_cosine_term_count(WindowFunction function) noexcept {
+    switch(function){
+    case WindowFunction::FlatTop:return 5;
+    case WindowFunction::BlackmanHarris:return 4;
+    case WindowFunction::Blackman:return 3;
+    default:return 2;
+    }
+}
+inline bool evaluate_symmetric_cosine_series(std::span<float> output,std::span<float> coefficients,bool periodic) noexcept {
+    for(std::size_t i=1;i<coefficients.size();i+=2)coefficients[i]=-coefficients[i];
+    return cosine_sum_window(output,coefficients,float(output.size()-(periodic?0:1)),true);
+}
+inline bool evaluate_symmetric_cosine_series(std::span<double> output,std::span<double> coefficients,bool periodic) noexcept {
+    const double period=double(output.size())-(periodic?0:1);
+    return cosine_sum_window(output,coefficients,period,false,-period/2.);
+}
+
+template<class Scalar> inline bool symmetric_cosine_window(std::span<Scalar> output,WindowFunction function,bool periodic=false) noexcept {
+    if(output.empty())return false;
+    if(output.size()==1 || function==WindowFunction::Rectangular || function==WindowFunction::Bartlett){
+        for(std::size_t i=0;i<output.size();++i)output[i]=window_coefficient_value<Scalar>(i,output.size(),function,periodic);
+        return true;
+    }
+    auto terms=symmetric_cosine_terms<Scalar>(function);
+    return evaluate_symmetric_cosine_series(output,std::span(terms).first(symmetric_cosine_term_count(function)),periodic);
 }
 inline double window_sum(std::size_t count,WindowFunction function,bool periodic=false) noexcept {
     double sum=0;for(std::size_t i=0;i<count;++i)sum+=window_coefficient(i,count,function,periodic);

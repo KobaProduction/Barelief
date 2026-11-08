@@ -105,6 +105,8 @@ signals:
     void informationChanged();
 private:
     void ensure_optional_renderers();
+    void ensure_array_renderers();
+    void apply_array_preferences();
     QWidget* selected_renderer_widget();
     void build_layout();
     void build_renderers();

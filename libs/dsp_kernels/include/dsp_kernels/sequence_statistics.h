@@ -19,6 +19,7 @@ struct Float32Accumulator {
 // clamping a negative rounding residual or materializing a fitted sequence.
 // Stable log(sum(exp(x))), accepting -inf entries; all -inf/nonfinite fails.
 bool log_sum_exp_float32(std::span<const float>,float& output) noexcept;
+bool rayleigh_weights(std::span<float>,float scale) noexcept;
 bool sum_float32(std::span<const float>,float& output,Float32Summation=Float32Summation::Plain,bool allow_nonfinite=false) noexcept;
 bool arithmetic_mean_float32(std::span<const float>,float& output,Float32Summation=Float32Summation::Plain) noexcept;
 // One pre-scaled Kahan mean contribution. Call with the final sample count on

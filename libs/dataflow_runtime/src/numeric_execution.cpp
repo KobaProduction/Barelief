@@ -275,7 +275,7 @@ class NodeRun {
         return {};
     }
     std::optional<Status> process_paired() noexcept {
-            status=accept_fourier(n,state,selector_lane,current,limits);
+            status=accept_paired_operation(n,state,selector_lane,current,limits);
             if(status==Status::would_block)return Status::ok;
             if(status!=Status::ok)return reject(status,status==Status::unavailable);
 

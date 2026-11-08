@@ -33,28 +33,25 @@ bool PreparedContextBeatSequence::resolve_configuration(ContextBeatSequenceConfi
 }
 bool PreparedContextBeatSequence::storage_bytes(ContextBeatSequenceConfig supplied,std::size_t& output) noexcept {
     ContextBeatSequenceConfig config;if(!resolve_configuration(supplied,config))return false;
-    std::size_t bytes=0,history=0;
-    if(!PreparedContextBeatTracker::storage_bytes(config.tracker,bytes) || !ScalarHistory::storage_bytes(config.tracker.window,history) ||
-       !dsp_kernels::prepared_storage::add_bytes(bytes,history) ||
+    std::size_t bytes=0;
+    if(!PreparedContextBeatTracker::storage_bytes(config.tracker,bytes) ||
        !dsp_kernels::prepared_storage::add_array(bytes,config.tracker.window/4+1,sizeof(float)))return false;
     output=bytes;return true;
 }
 bool PreparedContextBeatSequence::configure(ContextBeatSequenceConfig supplied) {
     ContextBeatSequenceConfig config;if(!resolve_configuration(supplied,config))return false;
-    if(!tracker_.prepare(config.tracker) || !history_.prepare(config.tracker.window))return false;
+    if(!tracker_.prepare(config.tracker))return false;
     offsets_.resize(tracker_.maximum_beats());config_=config;reset();return true;
 }
 void PreparedContextBeatSequence::reset() noexcept {
-    tracker_.reset();history_.clear();std::fill(offsets_.begin(),offsets_.end(),0.f);
+    tracker_.reset();std::fill(offsets_.begin(),offsets_.end(),0.f);
     offset_count_=0;block_position_=0;total_=0;last_beat_=0;last_tatum_=0;
 }
-bool PreparedContextBeatSequence::advance_block() noexcept {
+bool PreparedContextBeatSequence::advance_block(std::span<const float> reversed,std::span<const float> acf) noexcept {
     if(block_position_!=std::ptrdiff_t(tracker_.step())-1)return true;
-    if(!tracker_.process(history_.values(),offsets_,offset_count_))return false;
-    for(std::size_t i=0;i<tracker_.step();++i)history_.push(0);
+    if(!tracker_.process(reversed,acf,offsets_,offset_count_))return false;
     block_position_=-1;return true;
 }
-bool PreparedContextBeatSequence::begin_frame() noexcept {return !offsets_.empty() && advance_block();}
 float PreparedContextBeatSequence::scheduled_fraction(bool silent,bool& matched) noexcept {
     float tactus=0;matched=false;
     for(std::size_t i=0;i<offset_count_;++i){
@@ -75,15 +72,23 @@ std::int64_t PreparedContextBeatSequence::last_beat_sample() const noexcept {
 std::int64_t PreparedContextBeatSequence::last_tatum_sample() const noexcept {
     return std::int64_t(last_tatum_)-config_.delay_samples;
 }
-bool PreparedContextBeatSequence::process(float descriptor,bool silent,ContextBeatFrame& output) noexcept {
+bool PreparedContextBeatSequence::valid_frame_inputs(std::span<const float> reversed,std::span<const float> acf) const noexcept {
     constexpr auto reserve=std::uint64_t(UINT32_MAX)+std::uint64_t(INT32_MAX)+1;
-    if(offsets_.empty() || !std::isfinite(descriptor) || total_>std::uint64_t(INT64_MAX)-reserve)return false;
-    if(!advance_block())return false;
-    ++block_position_;
-    history_.set(config_.tracker.window-tracker_.step()+std::size_t(block_position_),descriptor);
+    if(offsets_.empty() || reversed.size()!=config_.tracker.window || acf.size()!=config_.tracker.window ||
+       total_>std::uint64_t(INT64_MAX)-reserve)return false;
+    const auto finite=[](float value){return std::isfinite(value);};
+    if(!std::all_of(reversed.begin(),reversed.end(),finite) || !std::all_of(acf.begin(),acf.end(),finite))return false;
+    return true;
+}
+ContextBeatFrame PreparedContextBeatSequence::observe_frame(bool silent) noexcept {
     ContextBeatFrame frame;frame.silent=silent;frame.source_tactus=scheduled_fraction(silent,frame.scheduled);
     frame.period_samples=period_samples();frame.bpm=tracker_.bpm();frame.confidence=tracker_.confidence();
-    frame.beat_sample=last_beat_sample();total_+=config_.hop_samples;output=frame;return true;
+    frame.beat_sample=last_beat_sample();return frame;
+}
+bool PreparedContextBeatSequence::process(std::span<const float> reversed,std::span<const float> acf,bool silent,ContextBeatFrame& output) noexcept {
+    if(!valid_frame_inputs(reversed,acf) || !advance_block(reversed,acf))return false;
+    ++block_position_;
+    const auto frame=observe_frame(silent);total_+=config_.hop_samples;output=frame;return true;
 }
 unsigned PreparedContextBeatSequence::poll_tatum() noexcept {
     if(offsets_.empty())return 0;

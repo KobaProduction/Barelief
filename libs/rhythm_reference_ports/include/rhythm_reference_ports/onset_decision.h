@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
-#include <rhythm_reference_ports/spectral_whitening.h>
 #include <cstdint>
 #include <span>
 namespace rhythm_reference_ports {
@@ -38,12 +37,4 @@ private:
 bool pcm_is_silent(std::span<const float> pcm,float threshold_db,bool& silent) noexcept;
 enum class OnsetRecipe {Energy,FrequencyContent,Complex,Phase,WeightedPhase,
                         ModifiedKullbackLeibler,KullbackLeibler,SpectralFlux,SpectralDifference,OldDefault};
-struct OnsetRecipeParameters {
-    float threshold=.3f,compression=0,delay_hops=4.3f,minimum_interval_s=.05f,silence_db=-70;
-    bool whitening=false;
-    SpectralWhiteningConfig whitening_config;
-};
-// Source numerical presets only. Framing/FFT, descriptor, whitening,
-// compression, peak picker and decision remain separate explicit components.
-OnsetRecipeParameters onset_recipe_parameters(OnsetRecipe) noexcept;
 }

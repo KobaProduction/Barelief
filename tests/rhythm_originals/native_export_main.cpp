@@ -23,10 +23,7 @@ int main(int argc,char** argv) {
     try {
         native_export::require(argc==8,"library N hop Fs input output-prefix window-int");
         const auto data=arguments(argv);const std::string library=argv[1];
-        if(library=="aubio")native_export::aubio(data);
-        else if(library=="aubio_features")native_export::aubio_features(data);
-        else if(library=="btrack")native_export::btrack(data);
-        else if(library=="essentia")native_export::essentia(data);
+        if(library=="aubio_features")native_export::aubio_features(data);
         else throw std::runtime_error("unknown library");
         std::cout<<"{\"status\":\"ok\"}\n";
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

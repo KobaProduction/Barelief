@@ -1,5 +1,6 @@
 #pragma once
 #include <dataflow_runtime/runtime.h>
+#include <dataflow_runtime/numeric_operation_binding.h>
 #include <domain/numeric/common_operations.h>
 #include <rhythm_graph_adapters/composition.h>
 #include <rhythm_graph_adapters/contrast_composition.h>
@@ -39,11 +40,9 @@ inline OwnedProcessingContract contract(DType dtype,std::size_t maximum=1,bool v
 inline ProcessingParameter scalar(std::string key,float value) {
     return {std::move(key),NumericLiteral{value}};
 }
-inline ConfiguredProcessingNode spectral_node(std::string_view kind,std::size_t bins=4,bool warm=false) {
+inline ConfiguredProcessingNode spectral_node(std::string_view kind,std::size_t bins=4) {
     std::vector<ProcessingPort> inputs{{0,PortDirection::Input,contract(DType::Float32,bins)}};
-    if(warm){inputs.push_back({10,PortDirection::Input,contract(DType::UInt8)});inputs.push_back({11,PortDirection::Input,contract(DType::Float32)});}
     TransformProcessingParameters parameters;
-    if(warm)parameters.values={scalar("frame_period_s",.01f),scalar("relax_time_s",.5f),scalar("floor",.01f),{"whiten",true}};
     ConfiguredProcessingNode node;
     require(rhythm_graph_adapters::make_spectral_operation_node(10,kind,inputs,std::move(parameters),profile().admission.frame,65536,node)==Status::ok,"compose spectral operation");
     return node;
@@ -79,28 +78,28 @@ struct Operation {
     struct alignas(8) Buffer {std::array<std::byte,512> bytes{};};
     ConfiguredProcessingNode node;
     std::unique_ptr<PreparedNumericOperation> processor;
-    std::array<NumericContract,4> input_contracts{},output_contracts{};
+    std::array<NumericBufferContract,4> input_contracts{},output_contracts{};
     std::array<std::array<PlaneLayout,1>,4> input_planes{},output_planes{};
     std::array<Buffer,4> buffers;
     std::array<NumericOperationOutput,4> output_storage{};
     explicit Operation(ConfiguredProcessingNode value):node(std::move(value)) {
         auto p=profile();std::shared_ptr<const NumericOperationDescriptor> descriptor;
-        require(p.operation_factory->describe(resolved(node),descriptor)==Status::ok,"describe owned operation");
-        require(p.operation_factory->prepare(std::move(descriptor),p,processor)==Status::ok,"prepare owned operation");
-        for(std::size_t i=0;i<node.inputs.size();++i){input_contracts[i]=std::get<NumericContract>(node.inputs[i].contract.view());input_planes[i][0]={0,{dtype_descriptor(input_contracts[i].dtype)->bytes,0}};}
-        for(std::size_t i=0;i<node.outputs.size();++i)prepare_output(i);
+        require(p.operation_factory->describe(numeric_operation_node_view(resolved(node)),descriptor)==Status::ok,"describe owned operation");
+        require(p.operation_factory->prepare(std::move(descriptor),numeric_operation_profile(p),processor)==Status::ok,"prepare owned operation");
+        const auto physical=numeric_operation_node(node);
+        for(std::size_t i=0;i<physical.inputs.size();++i){input_contracts[i]=physical.inputs[i].contract;input_planes[i][0]={0,{dtype_descriptor(input_contracts[i].dtype)->bytes,0}};}
+        for(std::size_t i=0;i<physical.outputs.size();++i)prepare_output(i,physical.outputs[i].contract);
     }
-    void prepare_output(std::size_t i) {
-        output_contracts[i]=std::get<NumericContract>(node.outputs[i].contract.view());
+    void prepare_output(std::size_t i,const NumericBufferContract& contract) {
+        output_contracts[i]=contract;
         output_planes[i][0]={0,{dtype_descriptor(output_contracts[i].dtype)->bytes,0}};
         const auto rows=std::size_t(output_contracts[i].shape.extents[0].maximum);
         output_storage[i]={node.outputs[i].id,{&output_contracts[i],buffers[i].bytes,output_planes[i],{rows,1}}};
     }
     std::span<NumericOperationOutput> outputs() {return std::span(output_storage).first(node.outputs.size());}
     template<class T> NumericOperationInput input(std::size_t slot,std::span<const T> values,bool available=true) {
-        NumericView view{&input_contracts[slot],std::as_bytes(values),input_planes[slot],{values.size(),1}};
-        NumericOperationInput result{node.inputs[slot].id,view,stamp(1),available?Status::ok:Status::unavailable};
-        result.stamp.available=available;
+        NumericBufferView view{&input_contracts[slot],std::as_bytes(values),input_planes[slot],{values.size(),1}};
+        NumericOperationInput result{node.inputs[slot].id,view,{},available?Status::ok:Status::unavailable};
         if constexpr(std::is_same_v<T,float>)result.contiguous_float32=values;
         return result;
     }
@@ -110,7 +109,7 @@ struct Operation {
         return result;
     }
     void matches(std::size_t port,std::span<const float> expected) const {
-        require(output_storage[port].status==Status::ok && output_storage[port].stamp.available,"operation output available");
+        require(output_storage[port].status==Status::ok,"operation output available");
         require(output_storage[port].value.actual[0]==expected.size(),"operation actual extent");
         for(std::size_t i=0;i<expected.size();++i)require(value(port,i)==expected[i],"operation equals shared prepared kernel");
     }

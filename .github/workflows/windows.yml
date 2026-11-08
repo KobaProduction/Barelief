@@ -1,8 +1,19 @@
 name: Desktop and portable builds
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_validation:
+        description: Run all tests before packaging a release
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release_validation:
+        type: boolean
+        default: false
 permissions:
   contents: read
 # Keep only the latest desktop/portable CI run per branch or PR.
@@ -37,11 +48,30 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --parallel 4
-      - name: Test
-        run: ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration'
+      - name: Quick tests
+        if: ${{ !inputs.release_validation || matrix.configuration != 'Release' }}
+        run: ctest --test-dir build --output-on-failure --no-tests=error -L quick -LE 'integration|audit|native|long'
+      - name: Full release validation
+        if: ${{ inputs.release_validation && matrix.configuration == 'Release' }}
+        run: ctest --test-dir build --output-on-failure --no-tests=error --output-junit "$env:GITHUB_WORKSPACE/build/Testing/release-validation.xml"
       - name: Verify deployment
         if: matrix.configuration == 'Release'
         run: cmake --install build --prefix dist
+      - name: Install NSIS
+        if: ${{ inputs.release_validation && matrix.configuration == 'Release' }}
+        run: choco install nsis --yes --no-progress
+      - name: Package Windows release
+        if: ${{ inputs.release_validation && matrix.configuration == 'Release' }}
+        run: cpack --config build/CPackConfig.cmake -B packages
+      - name: Upload Windows release
+        if: ${{ inputs.release_validation && matrix.configuration == 'Release' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: barelief-windows-release
+          path: |
+            packages/*.zip
+            packages/*.exe
+          if-no-files-found: error
 
   portable:
     runs-on: ubuntu-24.04
@@ -55,8 +85,12 @@ jobs:
         run: cmake -S . -B build -DBUILD_DSP_ONLY=ON -DPORTABLE_DSP_MAX_FFT_SIZE=${{ matrix.fft_size }} -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
       - name: Build
         run: cmake --build build --parallel 2
-      - name: Test
-        run: ctest --test-dir build --output-on-failure --no-tests=error -L dsp
+      - name: Quick portable tests
+        if: ${{ !inputs.release_validation }}
+        run: ctest --test-dir build --output-on-failure --no-tests=error -L quick -LE 'integration|audit|native|long'
+      - name: Full portable release validation
+        if: ${{ inputs.release_validation }}
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
   linux:
     runs-on: ubuntu-24.04
@@ -95,8 +129,37 @@ jobs:
         run: |
           set -o pipefail
           cmake --build build --parallel 4 2>&1 | tee linux-build.log
-      - name: Package Linux installer
+      - name: Test headless
+        if: matrix.gui == 'OFF'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          RELEASE_VALIDATION: ${{ inputs.release_validation }}
+          QT_QUICK_BACKEND: software
+          QT_OPENGL: software
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -o pipefail
+          selection=()
+          if [[ "$RELEASE_VALIDATION" != true ]]; then selection=(-L quick -LE 'integration|audit|native|long'); fi
+          ctest --test-dir build --output-on-failure --no-tests=error "${selection[@]}" 2>&1 | tee linux-test.log
+      - name: Test GUI using virtual X11 display
         if: matrix.gui == 'ON'
+        env:
+          BARELIEF_TEST_VIRTUAL_DISPLAY: '1'
+          QT_QPA_PLATFORM: xcb
+          RELEASE_VALIDATION: ${{ inputs.release_validation }}
+          QSG_RHI_BACKEND: opengl
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          set -o pipefail
+          xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24 +extension GLX' bash -c 'openbox >/tmp/barelief-openbox.log 2>&1 & sleep 1; selection=(); if [[ "$RELEASE_VALIDATION" != true ]]; then selection=(-L quick -LE "integration|audit|native|long"); fi; exec ctest --test-dir build --output-on-failure --no-tests=error "${selection[@]}"' 2>&1 | tee linux-test.log
+      - name: Verify PulseAudio virtual capture endpoints
+        run: |
+          pactl info
+          pactl list short sinks | grep -F qa
+          pactl list short sources | grep -F qa.monitor
+      - name: Package Linux installer
+        if: ${{ inputs.release_validation && matrix.gui == 'ON' }}
         run: |
           set -o pipefail
           mkdir -p packages
@@ -106,44 +169,19 @@ jobs:
           dpkg-deb --info "$package"
           dpkg-deb --contents "$package" | grep -E '/bin/Barelief$'
       - name: Verify packaged Linux runtime
-        if: matrix.gui == 'ON'
+        if: ${{ inputs.release_validation && matrix.gui == 'ON' }}
         env:
           BARELIEF_TEST_VIRTUAL_DISPLAY: '1'
         run: |
           package=$(find packages -maxdepth 1 -type f -name '*.deb' -print -quit)
           xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24 +extension GLX' python scripts/verify-linux-package.py "$package" --evidence-dir build/package-verification
       - name: Upload Linux installer
-        if: matrix.gui == 'ON'
+        if: ${{ inputs.release_validation && matrix.gui == 'ON' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: barelief-linux-ubuntu-24.04
           path: packages/*.deb
           if-no-files-found: error
-      - name: Test headless
-        if: matrix.gui == 'OFF'
-        env:
-          QT_QPA_PLATFORM: offscreen
-          QT_QUICK_BACKEND: software
-          QT_OPENGL: software
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: |
-          set -o pipefail
-          ctest --test-dir build --output-on-failure --no-tests=error -L 'quick|integration' 2>&1 | tee linux-test.log
-      - name: Test GUI using virtual X11 display
-        if: matrix.gui == 'ON'
-        env:
-          BARELIEF_TEST_VIRTUAL_DISPLAY: '1'
-          QT_QPA_PLATFORM: xcb
-          QSG_RHI_BACKEND: opengl
-          LIBGL_ALWAYS_SOFTWARE: '1'
-        run: |
-          set -o pipefail
-          xvfb-run --auto-servernum --server-args='-screen 0 1920x1080x24 +extension GLX' bash -c 'openbox >/tmp/barelief-openbox.log 2>&1 & sleep 1; exec ctest --test-dir build --output-on-failure --no-tests=error -L "quick|integration"' 2>&1 | tee linux-test.log
-      - name: Verify PulseAudio virtual capture endpoints
-        run: |
-          pactl info
-          pactl list short sinks | grep -F qa
-          pactl list short sources | grep -F qa.monitor
       - name: Report Linux CI failure
         if: failure()
         run: |

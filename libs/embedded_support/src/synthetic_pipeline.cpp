@@ -27,8 +27,10 @@ Status append_window_length(domain::NumericProcessingGraph& graph,domain::OwnedP
     return Status::ok;
 }
 void connect_window_product(domain::NumericProcessingGraph& graph,domain::OwnedProcessingContract values) {
-    graph.nodes[2].inputs.push_back({1,domain::PortDirection::Input,std::move(values)});
+    graph.nodes[2].inputs.push_back({1,domain::PortDirection::Input,values});
+    graph.nodes[3].inputs.push_back({domain::window_coefficients_input,domain::PortDirection::Input,std::move(values)});
     graph.edges.push_back({8,2,0,1});
+    graph.edges.push_back({8,3,0,domain::window_coefficients_input});
 }
 Status append_window_coefficients(domain::NumericProcessingGraph& graph,const Profile& profile) {
     domain::OwnedProcessingContract scalar;
@@ -47,6 +49,7 @@ struct GraphComposition {
     const Profile& profile;
     domain::ProcessingAdmissionLimits limits;
     domain::NumericProcessingGraph graph;
+    domain::ConfiguredProcessingNode fourier;
     Status port(domain::ConfiguredProcessingNode& node,domain::PortDirection direction,const NumericContract* contract) {
         if(!contract)return Status::ok;
         domain::OwnedProcessingContract owned;
@@ -70,11 +73,42 @@ struct GraphComposition {
         if(status!=Status::ok)return status;
         return node("ArrayMultiply",&output,&output,domain::TransformProcessingParameters{});
     }
+    Status prepare_fourier(const NumericContract& window) {
+        fourier.id=9;fourier.kind="RealFourier";
+        fourier.parameters=domain::TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{profile.fft_size}}}}};
+        auto status=port(fourier,domain::PortDirection::Input,&window);if(status!=Status::ok)return status;
+        std::vector<domain::OwnedProcessingContract> planes;
+        status=domain::fourier_output_contracts(fourier,window,planes);if(status!=Status::ok)return status;
+        for(std::size_t index=0;index<planes.size();++index)
+            fourier.outputs.push_back({domain::PortId(index),domain::PortDirection::Output,std::move(planes[index])});
+        return Status::ok;
+    }
+    Status amplitude_phase_node() {
+        const auto status=node("AmplitudePhase",nullptr,nullptr,domain::TransformProcessingParameters{{
+            {"fft_size",NumericLiteral{std::uint64_t{profile.fft_size}}},
+            {"sample_rate",NumericLiteral{std::uint64_t{profile.sample_rate}}},
+            {"representation",std::string{"peak_amplitude"}},{"normalize",true},{"positive_half",true}}});
+        if(status!=Status::ok)return status;
+        graph.edges.back()={9,3,0,0};graph.edges.push_back({9,3,1,1});
+        auto& amplitude=graph.nodes.back();
+        for(const auto& plane:fourier.outputs)amplitude.inputs.push_back({plane.id,domain::PortDirection::Input,plane.contract});
+        return Status::ok;
+    }
+    Status prepare_amplitude_outputs(NumericContract& output) {
+        auto& amplitude=graph.nodes.back();
+        std::array<domain::OwnedProcessingContract,3> outputs;
+        const auto real=std::get<NumericContract>(fourier.outputs[0].contract.view());
+        auto status=domain::amplitude_phase_output_contracts(amplitude,real,outputs);if(status!=Status::ok)return status;
+        for(std::size_t index=0;index<outputs.size();++index)
+            amplitude.outputs.push_back({domain::PortId(index),domain::PortDirection::Output,std::move(outputs[index])});
+        output=std::get<NumericContract>(amplitude.outputs[0].contract.view());
+        return Status::ok;
+    }
+
     Status spectrum(const NumericContract& window,NumericContract& output) {
-        output=window;output.semantic=Semantic::SpectrumMagnitude;output.quantity=Quantity::SpectrumMagnitude;
-        output.unit=NumericUnit::Values;output.shape.axes[0]=Axis::Bin;output.shape.extents[0]={profile.fft_size/2,profile.fft_size/2};
-        output.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{0,1},{profile.sample_rate,profile.fft_size}};
-        return node("StereoFFT",&window,&output,domain::TransformProcessingParameters{});
+        auto status=prepare_fourier(window);if(status!=Status::ok)return status;
+        status=amplitude_phase_node();if(status!=Status::ok)return status;
+        return prepare_amplitude_outputs(output);
     }
     Status mel(const NumericContract& spectrum,NumericContract& output) {
         output=spectrum;output.semantic=Semantic::MelEnergy;output.quantity=Quantity::MelEnergy;
@@ -83,7 +117,7 @@ struct GraphComposition {
             {"bands",NumericLiteral{std::uint64_t{profile.mel_bands}}},
             {"sample_rate",NumericLiteral{std::uint64_t{profile.sample_rate}}},
             {"bin_hz",NumericLiteral{double(profile.sample_rate)/profile.fft_size}},
-            {"first_bin",NumericLiteral{std::uint64_t{0}}},
+            {"first_bin",NumericLiteral{std::uint64_t{1}}},
             {"frequencies_hz",domain::NumericArray{}}}});
         if(created!=Status::ok)return created;
         domain::OwnedProcessingContract derived;
@@ -105,6 +139,12 @@ struct GraphComposition {
         if(status!=Status::ok)return status;
         return node("NetworkOutput",&wire,nullptr,domain::EndpointProcessingParameters{});
     }
+    Status finish_spectral_graph() {
+        if(!profile.spectral)return Status::ok;
+        const auto status=append_window_coefficients(graph,profile);if(status!=Status::ok)return status;
+        graph.edges.push_back({2,9,0,0});graph.nodes.push_back(std::move(fourier));
+        return Status::ok;
+    }
     Status compose() {
         graph.graph_id="embedded-synthetic";graph.execution_interval=profile.execution_interval;
         const auto pcm=source_contract(profile);
@@ -112,7 +152,7 @@ struct GraphComposition {
         if(status!=Status::ok)return status;
         NumericContract result;status=analysis(pcm,result);if(status!=Status::ok)return status;
         status=output(result);if(status!=Status::ok)return status;
-        return profile.spectral?append_window_coefficients(graph,profile):Status::ok;
+        return finish_spectral_graph();
     }
     Status source(const NumericContract& pcm) {
         return node("AudioSource",nullptr,&pcm,domain::EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{profile.sample_rate}}}}});
@@ -137,9 +177,12 @@ struct StagedSyntheticPlan {
     }
     Status admission() {
         auto device=device_profile(profile);device.runtime=runtime;
+        domain::NumericProcessingGraph evaluated,executable;
+        const auto binding=domain::resolve_numeric_parameter_bindings(graph,runtime.admission,evaluated,executable,-1,&runtime.preparation_values);
+        if(!binding)return binding.error==domain::ProcessingError::Limit?Status::exhausted:Status::incompatible_contract;
         std::array<std::size_t,2*bdsp_protocol::numeric_control::device_limits().nodes> workspace{};
         domain::ProcessingGraphAdmission accepted;
-        const auto status=domain::admit_processing_graph(graph,runtime.admission,numeric_capabilities(device),workspace,accepted);
+        const auto status=domain::admit_processing_graph(executable,runtime.admission,numeric_capabilities(device),workspace,accepted);
         if(status)return Status::ok;
         return status.error==domain::ProcessingError::ResourceLimit?Status::exhausted:Status::incompatible_contract;
     }
@@ -193,7 +236,7 @@ void deliver_output(void* context,const dataflow_runtime::NumericPortFrameView& 
 }
 Status default_processing_graph(const Profile& profile,std::string_view id,domain::NumericProcessingGraph& out) {
     const auto admitted=admit(profile,id.size());if(admitted.status!=Status::ok)return admitted.status;
-    GraphComposition composition{profile,numeric_runtime_profile(profile).admission,{}};
+    GraphComposition composition{profile,numeric_runtime_profile(profile).admission,{},{}};
     const auto status=composition.compose();if(status!=Status::ok)return status;
     out=std::move(composition.graph);return Status::ok;
 }

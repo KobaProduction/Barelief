@@ -1,5 +1,6 @@
 #include <bdsp_protocol/numeric_control_codec.h>
 #include <bdsp_protocol/version_admission.h>
+#include "numeric_fourier_fixture.h"
 #include <array>
 #include <cstdio>
 #include <bit>
@@ -918,12 +919,12 @@ auto native_contracts(const std::array<std::uint32_t,1>& channels){
     coefficients.representation = {};
     coefficients.representation.alignment = alignof(float);
     auto spectrum = win;
-    spectrum.semantic = sc::Semantic::SpectrumMagnitude;
-    spectrum.quantity = sc::Quantity::SpectrumMagnitude;
-    spectrum.unit = sc::NumericUnit::Values;
+    spectrum.semantic = sc::Semantic::Numeric;
+    spectrum.quantity = sc::Quantity::SpectrumReal;
+    spectrum.unit = sc::NumericUnit::RawAmplitude;
     spectrum.shape.axes[0] = sc::Axis::Bin;
-    spectrum.shape.extents[0] = {256, 256};
-    spectrum.coordinates[0] = {sc::CoordinateMode::Regular, sc::NumericUnit::Hertz, {0, 1}, {48000, 512}};
+    spectrum.shape.extents[0] = {257, 257};
+    spectrum.coordinates[0] = {sc::CoordinateMode::Regular, sc::NumericUnit::Values, {0, 1}, {1, 1}};
     const std::array<sc::NumericContract, 3> input_contracts{pcm, length, win};
     const std::array<sc::NumericContract, 3> output_contracts{win, coefficients, spectrum};
     return std::pair{input_contracts,output_contracts};
@@ -932,8 +933,8 @@ domain::NumericProcessingGraph native_owned_graph(const auto& input_contracts,co
     namespace sc=signal_contracts;
     domain::NumericProcessingGraph owned;
     owned.graph_id = "typed.dsp.native";
-    const std::string_view kinds[]{"Window", "WindowFunction", "StereoFFT"};
-    for (std::size_t i = 0; i < 3; ++i) {
+    const std::string_view kinds[]{"Window", "WindowFunction"};
+    for (std::size_t i = 0; i < 2; ++i) {
         domain::ConfiguredProcessingNode n;
         n.id = static_cast<domain::NodeId>(i + 2);
         n.kind = kinds[i];
@@ -951,8 +952,10 @@ domain::NumericProcessingGraph native_owned_graph(const auto& input_contracts,co
         }
         owned.nodes.push_back(std::move(n));
     }
-    owned.edges = {{2, 4, 0, 0}};
     domain::ProcessingAdmissionLimits admission{128, 256, 512, 512, 256, 65536, limits.frame};
+    const auto check=[](bool okay,const char*){CHECK(okay);};
+    owned.nodes.push_back(numeric_test_builders::real_fourier(4,input_contracts[2],512,admission,check));
+    owned.edges = {{2, 4, 0, 0}};
     for (const auto &n : owned.nodes) {
         domain::ResolvedProcessingNode resolved;
         CHECK(domain::resolve_processing_node(n, admission, resolved));
@@ -1139,8 +1142,10 @@ void native_descriptor_regression(const Codec &c) {
     auto owned=native_owned_graph(input_contracts,output_contracts);
     std::array<Port, 3> inputs{}, outputs{};
     std::array<Node, 3> nodes{};
+    std::array<Port, 2> fourier_outputs{};
     Parameter size{"size", Literal{std::uint64_t{512}}};
     Parameter input_rate{"input_rate", Literal{std::uint64_t{48000}}};
+    Parameter fft_size{"fft_size", Literal{std::uint64_t{512}}};
     std::array<Parameter, 2> window_parameters{size, input_rate};
     for (std::size_t i = 0; i < 3; ++i) {
         const auto &n = owned.nodes[i];
@@ -1150,11 +1155,14 @@ void native_descriptor_regression(const Codec &c) {
                     n.kind,
                     TransformParameters{i == 0 ? std::span<const Parameter>{window_parameters}
                                                : i == 1 ? std::span<const Parameter>{&size, 1}
-                                                        : std::span<const Parameter>{}},
+                                                        : std::span<const Parameter>{&fft_size,1}},
                     {&inputs[i], 1},
                     {&outputs[i], 1},
                     true};
     }
+    for(std::size_t index=0;index<fourier_outputs.size();++index)
+        fourier_outputs[index]={domain::PortId(index),domain::PortDirection::Output,owned.nodes[2].outputs[index].contract.view()};
+    nodes[2].outputs=fourier_outputs;
     const GraphVersions envelope{bdsp_protocol::document_version,owned.versions.graph,owned.versions.processing,
         bdsp_protocol::control_version,bdsp_protocol::processing_data_version};
     Graph g{owned.graph_id, envelope, nodes, owned.edges};

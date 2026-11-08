@@ -1,6 +1,6 @@
-#include <domain/numeric/temporal_operations.h>
 #include <domain/numeric/interval_operations.h>
 #include <domain/numeric/common_operations.h>
+#include <domain/numeric/array_extraction.h>
 #include <domain/numeric/sequence_operations.h>
 #include <domain/numeric/reference_operations.h>
 #include "node_validation.h"
@@ -158,16 +158,21 @@ ProcessingDiagnostic validate_complex_pair(const OperationValidation& context) n
     return {};
 }
 ProcessingDiagnostic expected_outputs(const OperationValidation& context,std::span<const OwnedProcessingContract> expected) noexcept {
+    if(context.node.outputs.size()>expected.size())return context.error(ProcessingError::InvalidPort);
     for(std::size_t output=0;output<context.node.outputs.size();++output)
         if(!same_physical_contract(expected[output].view(),context.node.outputs[output].contract.view()))return context.error(ProcessingError::IncompatiblePorts,PortId(output));
     return {};
 }
 ProcessingDiagnostic validate_complexpolar(const OperationValidation& context) noexcept {
     if(!context.input || !transform_parameters_valid(context))return context.error(ProcessingError::InvalidParameters);
-    if(context.kind!=NodeKind::AmplitudePhase){const auto pair=validate_complex_pair(context);if(!pair)return pair;}
+    const auto pair=validate_complex_pair(context);if(!pair)return pair;
+    if(context.kind==NodeKind::AmplitudePhase){
+        std::array<OwnedProcessingContract,3> expected;
+        if(amplitude_phase_output_contracts(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
+        return expected_outputs(context,expected);
+    }
     std::array<OwnedProcessingContract,2> expected;
-    const auto status=context.kind==NodeKind::AmplitudePhase?amplitude_phase_output_contracts(context.configured,*context.input,expected):complex_polar_output_contracts(context.configured,*context.input,expected);
-    if(status!=Status::ok)return context.error(ProcessingError::InvalidContract);
+    if(complex_polar_output_contracts(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return expected_outputs(context,expected);
 }
 ProcessingDiagnostic validate_fourier(const OperationValidation& context) noexcept {
@@ -400,17 +405,13 @@ std::uint64_t unsigned_parameter(const OperationValidation& context,const char* 
     return std::visit([](auto v){return std::uint64_t(v);},std::get<NumericLiteral>(value));
 }
 ProcessingDiagnostic validate_extract(const OperationValidation& context) noexcept {
-    const auto& [configured,limits,n,k,role,op,input_count,output_count,in,result,input,output]=context;
- {
-        const auto* p=std::get_if<TransformProcessingParameters>(&n.parameters);
-        if(!p || !parameter_fields_valid(*k,p->values,limits) || !input || !output)return context.error(ProcessingError::InvalidParameters);
-        const auto channel=unsigned_parameter(context,"channel_index"),row=unsigned_parameter(context,"index"),column=unsigned_parameter(context,"column");
-        if(input->shape.rank==Rank::Scalar || channel>=input->channel_order.size() || row>=input->shape.extents[0].maximum ||
-            (input->shape.rank==Rank::Vector?column!=0:column>=input->shape.extents[1].maximum))return context.error(ProcessingError::InvalidParameters);
-        auto expected=*input;expected.shape={};expected.coordinates={};expected.channel_order=input->channel_order.subspan(std::size_t(channel),1);
-        if(!same_physical_contract(expected,*output))return context.error(ProcessingError::IncompatiblePorts);
-        return {};
-    }
+    const auto* parameters=std::get_if<TransformProcessingParameters>(&context.node.parameters);
+    if(!parameters || !parameter_fields_valid(*context.kind,parameters->values,context.limits) || !context.input || !context.output)
+        return context.error(ProcessingError::InvalidParameters);
+    NumericContract expected;
+    if(extraction_output_contract(context.configured,*context.input,expected)!=Status::ok)return context.error(ProcessingError::InvalidParameters);
+    if(!same_physical_contract(expected,*context.output))return context.error(ProcessingError::IncompatiblePorts);
+    return {};
 }
 bool reduction_policy_valid(const ReduceProcessingParameters* p) noexcept {
         return p && (p->operation==NumericReduction::MaxAbs || p->operation==NumericReduction::SignedMean || p->operation==NumericReduction::RMS) &&
@@ -550,7 +551,7 @@ ProcessingDiagnostic validate_portable_operation(const OperationValidation& cont
     const auto status=common_operation_kind(context.node.kind)?common_operation_output_contracts(context.configured,*context.input,expected):
         sequence_operation_kind(context.node.kind)?sequence_operation_output_contracts(context.configured,*context.input,expected):
         reference_operation_kind(context.node.kind)?reference_operation_output_contracts(context.configured,*context.input,expected):
-        temporal_operation_kind(context.node.kind)?temporal_operation_output_contracts(context.configured,*context.input,expected):interval_operation_output_contracts(context.configured,*context.input,expected);
+        interval_operation_output_contracts(context.configured,*context.input,expected);
     if(status!=Status::ok)return context.error(ProcessingError::InvalidContract);
     return expected_outputs(context,expected);
 }
@@ -592,10 +593,8 @@ ProcessingDiagnostic validate_musictransform(const OperationValidation& context)
 }
 ProcessingDiagnostic validate_transform_geometry(const OperationValidation& context) {
     const auto& input=*context.input;const auto& output=*context.output;
-    auto representation=input.representation;
-    if(context.kind==NodeKind::StereoFFT && representation.normalization==Normalization::FloatUnit)representation.normalization=Normalization::None;
     const bool input_shape=input.shape.rank==Rank::Vector || (context.kind==NodeKind::Window && input.shape.rank==Rank::Scalar);
-    if(!input_shape || output.shape.rank!=Rank::Vector || input.dtype!=output.dtype || representation!=output.representation)return context.error(ProcessingError::IncompatiblePorts);
+    if(!input_shape || output.shape.rank!=Rank::Vector || input.dtype!=output.dtype || input.representation!=output.representation)return context.error(ProcessingError::IncompatiblePorts);
     if(context.kind!=NodeKind::PcmResampler && !clock_equal(input.clock,output.clock))return context.error(ProcessingError::IncompatiblePorts);
     if(context.kind!=NodeKind::SpectrumMerge && !std::equal(input.channel_order.begin(),input.channel_order.end(),output.channel_order.begin(),output.channel_order.end()))return context.error(ProcessingError::IncompatiblePorts);
     return {};
@@ -764,7 +763,6 @@ constexpr OperationRule operation_rules[]{
 ProcessingDiagnostic validate_operation(const OperationValidation& context) noexcept {
     if(!context.node.enabled && (context.kind==NodeKind::Window || context.kind==NodeKind::FrameBuffer || context.operation==ProcessingOperation::History))
         return context.error(ProcessingError::InvalidParameters);
-    if(temporal_operation_kind(context.node.kind))return validate_portable_operation(context);
     for(const auto& rule:operation_rules)if(rule.operation==context.operation)return rule.validate(context);
     return {ProcessingError::UnsupportedCombination,context.configured.id};
 }

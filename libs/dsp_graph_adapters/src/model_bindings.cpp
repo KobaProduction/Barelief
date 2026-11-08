@@ -2,24 +2,33 @@
 #include <dsp_kernels/beat_feature_synchronization.h>
 #include <dsp_kernels/model_prediction_selection.h>
 #include <dsp_kernels/tempo_probability_histogram.h>
-#include <dsp_kernels/pcm_pattern_recipe.h>
+#include <dsp_kernels/pattern_state_decoder.h>
 #include <algorithm>
+#include <utility>
 
 namespace dsp_graph_adapters {
+namespace {
+using dsp_kernels::prepared_storage::add_array;
+bool mixture_storage(const dsp_kernels::GaussianMixtureData& mixture,std::size_t& bytes) noexcept {
+    return add_array(bytes,mixture.weights.capacity(),sizeof(float)) && add_array(bytes,mixture.means.capacity(),sizeof(float)) &&
+        add_array(bytes,mixture.covariances.capacity(),sizeof(float));
+}
+bool pattern_storage(const dsp_kernels::GmmPatternData& pattern,std::size_t& bytes) noexcept {
+    if(!add_array(bytes,pattern.gmms.capacity(),sizeof(dsp_kernels::GaussianMixtureData)))return false;
+    for(const auto& mixture:pattern.gmms)if(!mixture_storage(mixture,bytes))return false;
+    return true;
+}
+bool model_arrays(const ClassicalModel& model,std::size_t& bytes) noexcept {
+    return mixture_storage(model.mixture,bytes) && add_array(bytes,model.patterns.capacity(),sizeof(dsp_kernels::GmmPatternData)) &&
+        add_array(bytes,model.tempi.capacity(),sizeof(dsp_kernels::PatternTempoParameters)) &&
+        add_array(bytes,model.downbeat_patterns.capacity(),sizeof(dsp_kernels::DownbeatPatternConfig)) &&
+        add_array(bytes,model.meters.capacity(),sizeof(std::uint32_t)) && add_array(bytes,model.pattern_switches.capacity(),sizeof(float));
+}
+}
 bool ClassicalModel::owned_bytes(std::size_t& out) const noexcept {
-    using namespace dsp_kernels::prepared_storage;
-    std::size_t bytes=sizeof(*this);
-    if(!add_array(bytes,mixture.weights.capacity(),sizeof(float)) || !add_array(bytes,mixture.means.capacity(),sizeof(float)) ||
-       !add_array(bytes,mixture.covariances.capacity(),sizeof(float)) || !add_array(bytes,patterns.capacity(),sizeof(dsp_kernels::GmmPatternData)) ||
-       !add_array(bytes,tempi.capacity(),sizeof(dsp_kernels::PatternTempoParameters)) ||
-       !add_array(bytes,downbeat_patterns.capacity(),sizeof(dsp_kernels::DownbeatPatternConfig)) ||
-       !add_array(bytes,meters.capacity(),sizeof(std::uint32_t)) || !add_array(bytes,pattern_switches.capacity(),sizeof(float)))return false;
-    for(const auto& p:patterns){
-        if(!add_array(bytes,p.gmms.capacity(),sizeof(dsp_kernels::GaussianMixtureData)))return false;
-        for(const auto& g:p.gmms)if(!add_array(bytes,g.weights.capacity(),sizeof(float)) || !add_array(bytes,g.means.capacity(),sizeof(float)) ||
-            !add_array(bytes,g.covariances.capacity(),sizeof(float)))return false;
-    }
-    for(const auto& t:tempi)if(!add_array(bytes,t.beat_transitions.capacity(),sizeof(dsp_kernels::TempoTransitionRule)))return false;
+    std::size_t bytes=sizeof(*this);if(!model_arrays(*this,bytes))return false;
+    for(const auto& pattern:patterns)if(!pattern_storage(pattern,bytes))return false;
+    for(const auto& tempo:tempi)if(!add_array(bytes,tempo.beat_transitions.capacity(),sizeof(dsp_kernels::TempoTransitionRule)))return false;
     out=bytes;return true;
 }
 namespace detail {
@@ -33,7 +42,7 @@ bool pattern_outputs(const PreparedPatternStateDecoder& kernel,std::span<Numeric
 class Pattern final:public SequenceOperation {
 public:
     std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<Pattern>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n,const ClassicalModel& model) {
+    bool prepare(const dataflow_runtime::NumericOperationNodeView& n,const ClassicalModel& model) {
         std::size_t a=0,b=0;float rate=50;
         return input_geometry(n,0,Rank::Matrix,a,b) && number(n,"frame_rate",50,rate) &&
             kernel_.prepare(a,model.patterns,model.tempi,rate) && b==kernel_.feature_count();
@@ -47,63 +56,25 @@ private:
     }
     PreparedPatternStateDecoder kernel_;
 };
-class PatternPcm final:public SequenceOperation {
-public:
-    std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<PatternPcm>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n,const ClassicalModel& model) {
-        std::size_t a=0,b=0;return input_geometry(n,0,Rank::Vector,a,b) && kernel_.prepare(a,model.patterns,model.tempi);
-    }
-    std::size_t object_bytes() const noexcept override {return sizeof(*this);}
-    std::size_t workspace_bytes() const noexcept override {return kernel_.workspace_bytes();}
-private:
-    bool run(std::span<const NumericOperationInput> in,std::span<NumericOperationOutput> out) noexcept override {
-        return kernel_.process(input_at(in,0)->contiguous_float32) && pattern_outputs(kernel_.result(),out);
-    }
-    PreparedPcmPatternRecipe kernel_;
-};
-class PatternFeatures final:public SequenceOperation {
-public:
-    std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<PatternFeatures>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n) {
-        std::size_t a=0,b=0;return input_geometry(n,0,Rank::Vector,a,b) && kernel_.prepare(a);
-    }
-    std::size_t object_bytes() const noexcept override {return sizeof(*this);}
-    std::size_t workspace_bytes() const noexcept override {return kernel_.workspace_bytes();}
-private:
-    void reset_kernel() noexcept override {kernel_.reset();}
-    bool run(std::span<const NumericOperationInput> in,std::span<NumericOperationOutput> out) noexcept override {
-        const auto pcm=input_at(in,0)->contiguous_float32;auto& target=*output_at(out,0);
-        return set_shape(target,kernel_.frames(pcm.size()),kernel_.features()) && kernel_.process(pcm,rows(target));
-    }
-    PreparedPatternFeatureRecipe kernel_;
-};
-bool pattern_shape(const domain::ResolvedProcessingNode& n,std::size_t frames) noexcept {
+bool pattern_shape(const dataflow_runtime::NumericOperationNodeView& n,std::size_t frames) noexcept {
     return output_geometry(n,0,Rank::Vector,frames) && output_geometry(n,1,Rank::Vector,frames,1,DType::UInt32) &&
         output_geometry(n,2,Rank::Vector,frames,1,DType::UInt32) && output_geometry(n,3,Rank::Scalar,1);
 }
-domain::ProcessingSupport pattern_support(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p,const ClassicalModel* model) noexcept {
-    std::size_t a=0,b=0,frames=0,features=0,bytes=0,object=0;domain::ProcessingSupport s;
-    if(n.kind=="PatternFeatures"){
-        if(!input_geometry(n,0,Rank::Vector,a,b) || !PreparedPatternFeatureRecipe::geometry(a,frames,features) ||
-           !PreparedPatternFeatureRecipe::storage_bytes(a,bytes) || !output_geometry(n,0,Rank::Matrix,frames,features))return {};
-        object=sizeof(PatternFeatures);
-    }else if(n.kind=="PcmPatternSequence"){
-        if(!model || !input_geometry(n,0,Rank::Vector,a,b) || !PreparedPatternFeatureRecipe::geometry(a,frames,features) ||
-           !PreparedPcmPatternRecipe::storage_bytes(a,model->patterns,model->tempi,bytes) || !pattern_shape(n,frames))return {};
-        object=sizeof(PatternPcm);
-    }else{
-        float rate=50;
-        if(!model || !input_geometry(n,0,Rank::Matrix,a,b) || !number(n,"frame_rate",50,rate) ||
-           !PreparedPatternStateDecoder::storage_bytes(a,model->patterns,model->tempi,rate,bytes) || !pattern_shape(n,a))return {};
-        for(const auto& pattern:model->patterns)for(const auto& g:pattern.gmms)if(g.features!=b)return {};
-        object=sizeof(Pattern);
-    }
-    descriptor_resources(n,p,object,bytes,s);return s;
+bool pattern_features_match(const ClassicalModel& model,std::size_t features) noexcept {
+    for(const auto& pattern:model.patterns)for(const auto& mixture:pattern.gmms)if(mixture.features!=features)return false;
+    return true;
+}
+domain::ProcessingSupport pattern_state_support(const dataflow_runtime::NumericOperationNodeView& n,const dataflow_runtime::NumericOperationProfile& p,const ClassicalModel* model) noexcept {
+    std::size_t a=0,b=0,bytes=0;float rate=50;domain::ProcessingSupport support;
+    if(!model || !input_geometry(n,0,Rank::Matrix,a,b) || !number(n,"frame_rate",50,rate) ||
+       !PreparedPatternStateDecoder::storage_bytes(a,model->patterns,model->tempi,rate,bytes) || !pattern_shape(n,a) ||
+       !pattern_features_match(*model,b))return {};
+    descriptor_resources(n,p,sizeof(Pattern),bytes,support);return support;
 }
 class Mixture final:public SequenceOperation {
 public:
     std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<Mixture>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n,const ClassicalModel& model) {
+    bool prepare(const dataflow_runtime::NumericOperationNodeView& n,const ClassicalModel& model) {
         float retry=0;if(!number(n,"diagonal_retry",1e-7f,retry) || !kernel_.prepare(model.mixture.parameters(),retry))return false;
         sample_.resize(kernel_.features());return true;
     }
@@ -126,7 +97,7 @@ private:
 class PredictionSelection final:public SequenceOperation {
 public:
     std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<PredictionSelection>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n) {
+    bool prepare(const dataflow_runtime::NumericOperationNodeView& n) {
         std::size_t a=0,b=0;return integer(n,"reference_count",0,references_) && input_geometry(n,0,Rank::Matrix,a,b) && kernel_.prepare(a,b);
     }
     std::size_t object_bytes() const noexcept override {return sizeof(*this);}
@@ -145,7 +116,7 @@ private:
 class ProbabilityHistogram final:public SequenceOperation {
 public:
     std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<ProbabilityHistogram>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n) noexcept {
+    bool prepare(const dataflow_runtime::NumericOperationNodeView& n) noexcept {
         return number(n,"minimum_bpm",40,minimum_) && number(n,"maximum_bpm",250,maximum_) && minimum_<=maximum_;
     }
     std::size_t object_bytes() const noexcept override {return sizeof(*this);}
@@ -163,7 +134,7 @@ private:
 class Synchronization final:public SequenceOperation {
 public:
     std::unique_ptr<dataflow_runtime::PreparedNumericOperation> clone() const override {return std::make_unique<Synchronization>(*this);}
-    bool prepare(const domain::ResolvedProcessingNode& n) {
+    bool prepare(const dataflow_runtime::NumericOperationNodeView& n) {
         std::size_t a=0,b=0,empty=0;BeatFeatureSynchronizationConfig c;
         if(!input_geometry(n,0,Rank::Matrix,a,b) || !integer(n,"subdivisions",4,c.subdivisions) ||
            !number(n,"frame_rate",100,c.frame_rate) || !integer(n,"empty",0,empty) || empty>1)return false;
@@ -182,7 +153,7 @@ private:
     }
     PreparedBeatFeatureSynchronization kernel_;std::size_t subdivisions_=4;
 };
-domain::ProcessingSupport mixture_support(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p,const ClassicalModel* model) noexcept {
+domain::ProcessingSupport mixture_support(const dataflow_runtime::NumericOperationNodeView& n,const dataflow_runtime::NumericOperationProfile& p,const ClassicalModel* model) noexcept {
     if(!model)return {};
     std::size_t a=0,b=0,bytes=0;float retry=0;domain::ProcessingSupport s;
     const auto parameters=model->mixture.parameters();
@@ -192,20 +163,20 @@ domain::ProcessingSupport mixture_support(const domain::ResolvedProcessingNode& 
        !output_geometry(n,2,Rank::Matrix,a,parameters.components))return {};
     descriptor_resources(n,p,sizeof(Mixture),bytes,s);return s;
 }
-domain::ProcessingSupport selection_support(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p) noexcept {
+domain::ProcessingSupport selection_support(const dataflow_runtime::NumericOperationNodeView& n,const dataflow_runtime::NumericOperationProfile& p) noexcept {
     std::size_t a=0,b=0,bytes=0,refs=0;domain::ProcessingSupport s;
     if(!input_geometry(n,0,Rank::Matrix,a,b) || !integer(n,"reference_count",0,refs) ||
        !PreparedModelPredictionSelection::storage_bytes(a,b,bytes) || !output_geometry(n,0,Rank::Vector,b) ||
        !output_geometry(n,1,Rank::Vector,b) || !output_geometry(n,2,Rank::Vector,a) || !output_geometry(n,3,Rank::Vector,1,1,DType::UInt64))return {};
     descriptor_resources(n,p,sizeof(PredictionSelection),bytes,s);return s;
 }
-domain::ProcessingSupport probability_support(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p) noexcept {
+domain::ProcessingSupport probability_support(const dataflow_runtime::NumericOperationNodeView& n,const dataflow_runtime::NumericOperationProfile& p) noexcept {
     std::size_t a=0,b=0;float lo=0,hi=0;domain::ProcessingSupport s;
     if(!input_geometry(n,0,Rank::Vector,a,b) || !number(n,"minimum_bpm",40,lo) || !number(n,"maximum_bpm",250,hi) ||
        lo>hi || !output_geometry(n,0,Rank::Vector,a) || !output_geometry(n,1,Rank::Vector,a))return {};
     descriptor_resources(n,p,sizeof(ProbabilityHistogram),0,s);return s;
 }
-domain::ProcessingSupport synchronization_support(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p) noexcept {
+domain::ProcessingSupport synchronization_support(const dataflow_runtime::NumericOperationNodeView& n,const dataflow_runtime::NumericOperationProfile& p) noexcept {
     std::size_t a=0,b=0,beats=0,one=0,empty=0,bytes=0,count=0;BeatFeatureSynchronizationConfig c;domain::ProcessingSupport s;
     if(!input_geometry(n,0,Rank::Matrix,a,b) || !input_geometry(n,1,Rank::Vector,beats,one) ||
        !integer(n,"subdivisions",4,c.subdivisions) || !number(n,"frame_rate",100,c.frame_rate) || !integer(n,"empty",0,empty) || empty>1)return {};
@@ -214,20 +185,32 @@ domain::ProcessingSupport synchronization_support(const domain::ResolvedProcessi
        !output_geometry(n,0,Rank::Matrix,count,b) || !output_geometry(n,1,Rank::Scalar,1) || !output_geometry(n,2,Rank::Scalar,1))return {};
     descriptor_resources(n,p,sizeof(Synchronization),bytes,s);return s;
 }
+template<class Operation,class... Arguments> PreparedSequence prepare_model_kernel(const dataflow_runtime::NumericOperationNodeView& node,Arguments&&... arguments) {
+    auto operation=std::make_unique<Operation>();
+    return operation->prepare(node,std::forward<Arguments>(arguments)...)?std::move(operation):nullptr;
 }
-PreparedSequence prepare_model(const domain::ConfiguredProcessingNode& node,std::shared_ptr<const ClassicalModel> model) {
-    const auto n=definition(node);
-    if(n.kind=="PatternFeatures"){auto op=std::make_unique<PatternFeatures>();return op->prepare(n)?std::move(op):nullptr;}
-    if(n.kind=="PatternStateSequence" && model){auto op=std::make_unique<Pattern>();return op->prepare(n,*model)?std::move(op):nullptr;}
-    if(n.kind=="PcmPatternSequence" && model){auto op=std::make_unique<PatternPcm>();return op->prepare(n,*model)?std::move(op):nullptr;}
-    if(n.kind=="GaussianMixtureScore" && model){auto op=std::make_unique<Mixture>();return op->prepare(n,*model)?std::move(op):nullptr;}
-    if(n.kind=="ModelPredictionSelection"){auto op=std::make_unique<PredictionSelection>();return op->prepare(n)?std::move(op):nullptr;}
-    if(n.kind=="TempoProbabilityHistogram"){auto op=std::make_unique<ProbabilityHistogram>();return op->prepare(n)?std::move(op):nullptr;}
-    if(n.kind=="BeatFeatureSynchronization"){auto op=std::make_unique<Synchronization>();return op->prepare(n)?std::move(op):nullptr;}
+
+PreparedSequence prepare_supplied_model(const dataflow_runtime::NumericOperationNodeView& node,const ClassicalModel* model) {
+    if(!model)return {};
+    if(node.kind=="PatternStateSequence")return prepare_model_kernel<Pattern>(node,*model);
+    if(node.kind=="GaussianMixtureScore")return prepare_model_kernel<Mixture>(node,*model);
     return {};
 }
-domain::ProcessingSupport assess_model(const domain::ResolvedProcessingNode& n,const dataflow_runtime::NumericRuntimeProfile& p,const ClassicalModel* model) noexcept {
-    if(n.kind=="PatternFeatures" || n.kind=="PatternStateSequence" || n.kind=="PcmPatternSequence")return pattern_support(n,p,model);
+PreparedSequence prepare_feature_model(const dataflow_runtime::NumericOperationNodeView& node) {
+    if(node.kind=="ModelPredictionSelection")return prepare_model_kernel<PredictionSelection>(node);
+    if(node.kind=="TempoProbabilityHistogram")return prepare_model_kernel<ProbabilityHistogram>(node);
+    if(node.kind=="BeatFeatureSynchronization")return prepare_model_kernel<Synchronization>(node);
+    return {};
+}
+}
+PreparedSequence prepare_model(const dataflow_runtime::NumericOperationNode& node,std::shared_ptr<const ClassicalModel> model) {
+    const auto view=definition(node);
+    if(view.kind=="PatternStateSequence" || view.kind=="GaussianMixtureScore")return prepare_supplied_model(view,model.get());
+    return prepare_feature_model(view);
+}
+
+domain::ProcessingSupport assess_model(const dataflow_runtime::NumericOperationNodeView& n,const dataflow_runtime::NumericOperationProfile& p,const ClassicalModel* model) noexcept {
+    if(n.kind=="PatternStateSequence")return pattern_state_support(n,p,model);
     if(n.kind=="GaussianMixtureScore")return mixture_support(n,p,model);
     if(n.kind=="ModelPredictionSelection")return selection_support(n,p);
     if(n.kind=="TempoProbabilityHistogram")return probability_support(n,p);

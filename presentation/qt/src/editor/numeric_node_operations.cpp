@@ -1,5 +1,7 @@
+#include <domain/numeric/array_processing_ports.h>
 #include "numeric_graph_draft.h"
 #include <desktop/numeric_frame_budget.h>
+#include <desktop/numeric_graph_budget.h>
 #include <algorithm>
 #include <numeric>
 #include <cmath>
@@ -7,7 +9,7 @@
 namespace numeric_editor {
 using namespace domain;
 using namespace signal_contracts;
-ProcessingAdmissionLimits limits() {return {128,256,64,128,1024*1024,16*1024*1024,{16,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,4096,desktop::NumericFrameBudget::coordinate_bytes}};}
+ProcessingAdmissionLimits limits() {return {desktop::NumericGraphBudget::nodes,desktop::NumericGraphBudget::edges,64,128,1024*1024,16*1024*1024,{16,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,4096,desktop::NumericFrameBudget::coordinate_bytes}};}
 
 namespace {
 bool scalar_view_kind(std::string_view kind){const auto id=node_kind(kind);return id && is_scalar_view(*id);}
@@ -62,7 +64,7 @@ bool update_numeric_clock(const ConfiguredProcessingNode& node,NumericContract& 
     if(!scale_clock_coordinates(*contract,next_clock))return false;
     // Window owns its accumulated output size; fixed-window algorithms retain theirs.
     if(pcm_extent && contract->shape.rank==Rank::Vector && contract->shape.axes[0]==Axis::Sample &&
-       (node.kind!="Window" || !output) && node.kind!="WindowFunction" && node.kind!="StereoFFT")contract->shape.extents[0]=*pcm_extent;
+       (node.kind!="Window" || !output) && node.kind!="WindowFunction" && node.kind!="RealFourier" && node.kind!="Fourier")contract->shape.extents[0]=*pcm_extent;
     if(resampler && output && !resampler_extent(node,*contract,clock,output_rate,!node.enabled))return false;
     return true;
 }
@@ -186,7 +188,23 @@ bool add_selector_input_group(ConfiguredProcessingNode& n) {
         return true;
 }
 }
+namespace {
+bool add_filter_state_input(ConfiguredProcessingNode& node) {
+    if(node.inputs.size()!=1)return false;
+    const auto state=std::find_if(node.outputs.begin(),node.outputs.end(),[](const auto& port){
+        return port.id==PortId(domain::RecursiveFilterOutput::FinalState);
+    });
+    if(state==node.outputs.end())return false;
+    node.inputs.push_back({PortId(domain::RecursiveFilterInput::InitialState),PortDirection::Input,state->contract});
+    return true;
+}
+bool remove_filter_state_input(ConfiguredProcessingNode& node,PortId id) {
+    if(node.inputs.size()!=2 || id!=PortId(domain::RecursiveFilterInput::InitialState))return false;
+    return std::erase_if(node.inputs,[id](const auto& port){return port.id==id;})==1;
+}
+}
 bool add_input(ConfiguredProcessingNode& n) {
+    if(n.kind=="RecursiveFilter")return add_filter_state_input(n);
     if((n.kind!="InputSelector" && !scalar_view_kind(n.kind) && n.kind!="ArrayMultiply") || n.inputs.empty() || n.inputs.size()>=limits().max_ports_per_node)return false;
     if(n.kind=="InputSelector"&&data_outputs(n).size()>1) {
         return add_selector_input_group(n);
@@ -226,6 +244,7 @@ void reselect_removed_selector_input(ConfiguredProcessingNode& node,PortId id,st
 }
 }
 bool remove_input(ConfiguredProcessingNode& n,PortId id) {
+    if(n.kind=="RecursiveFilter")return remove_filter_state_input(n,id);
     if((n.kind!="InputSelector" && !scalar_view_kind(n.kind) && n.kind!="ArrayMultiply") || n.inputs.size()<=(n.kind=="ArrayMultiply"?2u:1u))return false;
     const auto it=std::find_if(n.inputs.begin(),n.inputs.end(),[&](const auto& p){return p.id==id;});
     if(it==n.inputs.end())return false;

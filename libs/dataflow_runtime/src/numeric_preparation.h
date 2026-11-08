@@ -101,7 +101,6 @@ class NumericPreparation {
     Status prepare_transform_window_function(NodeFrame&);
     Status prepare_window_coefficients(NodeFrame&,std::size_t);
     Status prepare_transform_bark_weighting(NodeFrame&);
-    Status prepare_transform_stereo_fft(NodeFrame&);
     Status prepare_transform_spectrum_merge(NodeFrame&);
     Status prepare_transform_spectrum_gain(NodeFrame&);
     Status prepare_transform_spectrum_amplitude(NodeFrame&);

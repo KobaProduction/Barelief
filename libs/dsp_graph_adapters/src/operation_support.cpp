@@ -1,4 +1,5 @@
 #include "operation_support.h"
+#include <dsp_kernels/kernel_support.h>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -9,21 +10,21 @@
 namespace dsp_graph_adapters::detail {
 using namespace signal_contracts;
 using namespace dataflow_runtime;
-domain::ResolvedProcessingNode definition(const domain::ConfiguredProcessingNode& n) noexcept {
-    domain::ResolvedProcessingNode r;r.id=n.id;r.kind=n.kind;r.parameters=&n.parameters;
+dataflow_runtime::NumericOperationNodeView definition(const dataflow_runtime::NumericOperationNode& n) noexcept {
+    dataflow_runtime::NumericOperationNodeView r;r.id=n.id;r.kind=n.kind;r.parameters=&n.parameters;
     r.inputs=n.inputs;r.outputs=n.outputs;r.enabled=n.enabled;return r;
 }
-const domain::ProcessingParameterValue* parameter(const domain::ResolvedProcessingNode& n,std::string_view key) noexcept {
+const domain::ProcessingParameterValue* parameter(const dataflow_runtime::NumericOperationNodeView& n,std::string_view key) noexcept {
     const auto* p=n.parameters?std::get_if<domain::TransformProcessingParameters>(n.parameters):nullptr;
     if(p)for(const auto& entry:p->values)if(entry.key==key)return &entry.value;
     return nullptr;
 }
-bool number(const domain::ResolvedProcessingNode& n,std::string_view key,float fallback,float& out) noexcept {
+bool number(const dataflow_runtime::NumericOperationNodeView& n,std::string_view key,float fallback,float& out) noexcept {
     const auto* p=parameter(n,key);if(!p){out=fallback;return true;}
     const auto* v=std::get_if<NumericLiteral>(p);if(!v)return false;
     out=std::visit([](auto x){return float(x);},*v);return std::isfinite(out);
 }
-bool integer(const domain::ResolvedProcessingNode& n,std::string_view key,std::size_t fallback,std::size_t& out) noexcept {
+bool integer(const dataflow_runtime::NumericOperationNodeView& n,std::string_view key,std::size_t fallback,std::size_t& out) noexcept {
     const auto* p=parameter(n,key);if(!p){out=fallback;return true;}
     const auto* v=std::get_if<NumericLiteral>(p);if(!v)return false;
     return std::visit([&](auto x){
@@ -31,108 +32,48 @@ bool integer(const domain::ResolvedProcessingNode& n,std::string_view key,std::s
         else {if(!std::in_range<std::size_t>(x))return false;out=std::size_t(x);return true;}
     },*v);
 }
-bool flag(const domain::ResolvedProcessingNode& n,std::string_view key,bool fallback,bool& out) noexcept {
+bool flag(const dataflow_runtime::NumericOperationNodeView& n,std::string_view key,bool fallback,bool& out) noexcept {
     const auto* p=parameter(n,key);if(!p){out=fallback;return true;}
     const auto* v=std::get_if<bool>(p);if(!v)return false;out=*v;return true;
 }
-bool feature_rate(const domain::ResolvedProcessingNode& node,float fallback,float& out) noexcept {
+bool feature_rate(const dataflow_runtime::NumericOperationNodeView& node,float fallback,float& out) noexcept {
     float rate=0;std::size_t hop=0;
     if(!number(node,"sample_rate",0,rate))return false;
     if(!rate)return number(node,"frame_rate",fallback,out) && out>0;
     if(rate<0 || !integer(node,"hop_samples",512,hop) || !hop)return false;
     out=rate/float(hop);return std::isfinite(out) && out>0;
 }
-std::span<const float> array(const domain::ResolvedProcessingNode& n,std::string_view key) noexcept {
+std::span<const float> array(const dataflow_runtime::NumericOperationNodeView& n,std::string_view key) noexcept {
     const auto* p=parameter(n,key);const auto* v=p?std::get_if<domain::NumericArray>(p):nullptr;
     return v?std::span<const float>(v->values):std::span<const float>{};
 }
-std::string_view text(const domain::ResolvedProcessingNode& n,std::string_view key) noexcept {
+std::string_view text(const dataflow_runtime::NumericOperationNodeView& n,std::string_view key) noexcept {
     const auto* p=parameter(n,key);const auto* v=p?std::get_if<std::string>(p):nullptr;return v?std::string_view(*v):std::string_view{};
 }
-std::optional<NumericContract> contract(const domain::ResolvedProcessingNode& n,domain::PortDirection direction,domain::PortId id) noexcept {
+std::optional<NumericBufferContract> contract(const dataflow_runtime::NumericOperationNodeView& n,domain::PortDirection direction,domain::PortId id) noexcept {
     const auto ports=direction==domain::PortDirection::Input?n.inputs:n.outputs;
     for(const auto& p:ports)if(p.id==id){
-        const auto value=p.contract.view();if(const auto* c=std::get_if<NumericContract>(&value))return *c;
+        return p.contract;
     }
     return std::nullopt;
 }
-bool input_geometry(const domain::ResolvedProcessingNode& n,domain::PortId id,Rank rank,std::size_t& a,std::size_t& b) noexcept {
+bool input_geometry(const dataflow_runtime::NumericOperationNodeView& n,domain::PortId id,Rank rank,std::size_t& a,std::size_t& b) noexcept {
     const auto c=contract(n,domain::PortDirection::Input,id);
-    if(!c || c->dtype!=DType::Float32 || c->shape.rank!=rank || c->channel_order.size()!=1 ||
+    if(!c || c->dtype!=DType::Float32 || c->shape.rank!=rank || c->plane_count!=1 ||
        c->representation.encoding!=StorageEncoding::Native || c->representation.layout!=ChannelLayout::Planar || c->representation.valid_bits ||
        (c->representation.normalization!=Normalization::None && c->representation.normalization!=Normalization::FloatUnit))return false;
     if(c->shape.extents[0].maximum>SIZE_MAX || c->shape.extents[1].maximum>SIZE_MAX)return false;
     a=std::size_t(c->shape.extents[0].maximum);b=std::size_t(c->shape.extents[1].maximum);return a && b;
 }
-bool optional_vector(const domain::ResolvedProcessingNode& n,domain::PortId port,std::size_t maximum,bool scalar) noexcept {
+bool optional_vector(const dataflow_runtime::NumericOperationNodeView& n,domain::PortId port,std::size_t maximum,bool scalar) noexcept {
     if(!contract(n,domain::PortDirection::Input,port))return true;
     std::size_t a=0,b=0;return input_geometry(n,port,Rank::Vector,a,b) && (a==maximum || (scalar && a==1));
 }
-namespace {
-bool index_axis(const AxisCoordinates& axis) noexcept {
-    if(axis.mode==CoordinateMode::None)return axis==AxisCoordinates{};
-    if(axis.unit!=NumericUnit::Values && axis.unit!=NumericUnit::Frames)return false;
-    if(axis.mode==CoordinateMode::ExplicitFloat64LE)return true;
-    return axis.mode==CoordinateMode::Regular && axis.origin==Ratio{0,1} && axis.step==Ratio{1,1};
-}
-double setting(const domain::ResolvedProcessingNode& n,std::string_view key,float fallback) noexcept {
-    float value=fallback;return number(n,key,fallback,value)?value:0;
-}
-double envelope_rate(const domain::ResolvedProcessingNode& n) noexcept {
-    std::size_t hop=512;if(!integer(n,"hop_samples",512,hop) || !hop)return 0;
-    return setting(n,"sample_rate",44100)/double(hop);
-}
-double configured_feature_rate(const domain::ResolvedProcessingNode& n) noexcept {
-    float value=0;return feature_rate(n,44100.f/512,value)?double(value):0;
-}
-double basic_output_step(const domain::ResolvedProcessingNode& n,domain::PortId port) noexcept {
-    const auto k=n.kind;
-    if(k=="SpectralNovelty" && port==0)return 1/setting(n,"frame_rate",100);
-    if(k=="PcmSpectralNovelty" && port==0)return setting(n,"hop_samples",441)/setting(n,"sample_rate",44100);
-    if(k=="OnsetStrengthSequence")return 1/setting(n,"frame_rate",120);
-    if(k=="DynamicBeatPath")return 1/configured_feature_rate(n);
-    if(k=="LocalPulse" || k=="TempoRatios")return 1/setting(n,"frame_rate",44100.f/512);
-    if(k=="PatternFeatures")return 1./50;
-    return 0;
-}
-bool envelope_output(std::string_view kind,domain::PortId port) noexcept {
-    if(kind=="PcmOnsetEnvelope")return true;
-    if((kind=="PcmTempo" || kind=="PcmTempoRatios") && port==1)return true;
-    if(kind=="PcmBeatPath" && port==2)return true;
-    if(kind=="PcmLocalPulse" && port<2)return true;
-    if(kind=="EnvelopeLocalPulse" && port==0)return true;
-    return kind=="EnvelopeBeatPath" && port>=2;
-}
-double ratio_output_step(const domain::ResolvedProcessingNode& n,domain::PortId port) noexcept {
-    const auto k=n.kind;
-    if(k!="EnvelopeTempoRatios" && !(k=="PcmTempoRatios" && port==0) && !(k=="PcmTempogram" && port<2))return 0;
-    std::size_t hop=1;if(!integer(n,"hop",1,hop))return 0;
-    return double(hop)/(k.starts_with("Pcm")?envelope_rate(n):setting(n,"frame_rate",44100.f/512));
-}
-
-double output_time_step(const domain::ResolvedProcessingNode& n,domain::PortId port,std::size_t axis) noexcept {
-    if(axis)return 0;
-    if(const auto step=basic_output_step(n,port);step)return step;
-    if(envelope_output(n.kind,port))return 1/envelope_rate(n);
-    return ratio_output_step(n,port);
-}
-bool declared_axis(const domain::ResolvedProcessingNode& n,domain::PortId port,std::size_t axis,const AxisCoordinates& c) noexcept {
-    if(index_axis(c))return true;
-    const double step=output_time_step(n,port,axis);
-    if(!std::isfinite(step) || step<=0 || c.unit!=NumericUnit::Seconds)return false;
-    if(c.mode==CoordinateMode::ExplicitFloat64LE)return true;
-    if(c.mode!=CoordinateMode::Regular || !c.origin.denominator || !c.step.denominator || c.origin.numerator)return false;
-    const double actual=double(c.step.numerator)/double(c.step.denominator);
-    return std::abs(actual-step)<=8*std::numeric_limits<double>::epsilon()*std::max(1.,step);
-}
-}
-bool output_geometry(const domain::ResolvedProcessingNode& n,domain::PortId id,Rank rank,std::size_t a,std::size_t b,DType type) noexcept {
+bool output_geometry(const dataflow_runtime::NumericOperationNodeView& n,domain::PortId id,Rank rank,std::size_t a,std::size_t b,DType type) noexcept {
     const auto c=contract(n,domain::PortDirection::Output,id);
-    return c && c->dtype==type && c->shape.rank==rank && c->channel_order.size()==1 &&
+    return c && c->dtype==type && c->shape.rank==rank && c->plane_count==1 &&
         c->shape.extents[0].maximum==a && c->shape.extents[1].maximum==b &&
         c->shape.extents[0].minimum==(rank==Rank::Scalar?1u:0u) && c->shape.extents[1].minimum==b &&
-        c->clock.domain.empty() && !c->clock.sample_rate && c->clock.tick_seconds==Ratio{1,1} &&
-        declared_axis(n,id,0,c->coordinates[0]) && declared_axis(n,id,1,c->coordinates[1]) &&
         c->representation.encoding==StorageEncoding::Native && c->representation.layout==ChannelLayout::Planar && !c->representation.valid_bits &&
         c->representation.normalization==Normalization::None;
 }
@@ -141,7 +82,7 @@ const NumericOperationInput* input_at(std::span<const NumericOperationInput> inp
 }
 const NumericOperationInput* available_input_at(std::span<const NumericOperationInput> inputs,domain::PortId id) noexcept {
     const auto* value=input_at(inputs,id);
-    return value && value->status==Status::ok && value->stamp.available?value:nullptr;
+    return value && value->status==Status::ok?value:nullptr;
 }
 NumericOperationOutput* output_at(std::span<NumericOperationOutput> outputs,domain::PortId id) noexcept {
     for(auto& o:outputs)if(o.port==id)return &o;return nullptr;
@@ -201,7 +142,7 @@ bool unique_parameter(std::span<const domain::ProcessingParameter> values,std::s
     return std::none_of(values.begin(),values.begin()+std::ptrdiff_t(index),[&](const auto& value){return value.key==values[index].key;});
 }
 
-bool parameters_valid(const domain::ResolvedProcessingNode& n) noexcept {
+bool parameters_valid(const dataflow_runtime::NumericOperationNodeView& n) noexcept {
     const auto* p=n.parameters?std::get_if<domain::TransformProcessingParameters>(n.parameters):nullptr;
     if(!p)return false;const auto descriptors=domain::sequence_operation_parameters(n.kind);
     for(std::size_t i=0;i<p->values.size();++i){
@@ -210,83 +151,27 @@ bool parameters_valid(const domain::ResolvedProcessingNode& n) noexcept {
     }
     return true;
 }
-double pulse_input_rate(const domain::ResolvedProcessingNode& n) noexcept {
-    std::size_t hop=1;if(!integer(n,"hop",1,hop) || !hop)return 0;
-    return setting(n,"frame_rate",44100.f/512)/double(hop);
-}
-double tracked_feature_rate(const domain::ResolvedProcessingNode& n) noexcept {
-    if(n.kind=="PatternStateSequence")return setting(n,"frame_rate",50);
-    const auto* spec=domain::sequence_operation_spec(n.kind);
-    if((spec && spec->family==domain::SequenceOperationFamily::Histogram) || n.kind=="BeatStateSequence" || n.kind=="DownbeatStateSequence")return setting(n,"frame_rate",100);
-    if(n.kind=="TempoRatios" || n.kind=="EnvelopeTempoRatios")return setting(n,"frame_rate",44100.f/512);
-    return 0;
-}
 
-double primary_input_rate(const domain::ResolvedProcessingNode& n) noexcept {
-    const auto k=n.kind;
-    if(k=="PatternFeatures" || k=="PcmPatternSequence")return 44100;
-    if(k.starts_with("Pcm"))return setting(n,"sample_rate",44100);
-    if(k=="OnsetStrengthSequence")return setting(n,"frame_rate",120);
-    if(k=="OnsetDetection" || k=="EnvelopeTempo" || k=="EnvelopeLocalPulse" || k=="EnvelopeBeatPath")return envelope_rate(n);
-    return tracked_feature_rate(n);
-}
 
-double input_rate(const domain::ResolvedProcessingNode& n,domain::PortId port) noexcept {
-    if(n.kind=="SpectralNovelty" || n.kind=="ActivationPeakMatrix")return setting(n,"frame_rate",100);
-    if(n.kind=="LocalPulse" && port<2)return pulse_input_rate(n);
-    if(port && !(port==1 && n.kind=="OnsetDetection"))return 0;
-    if(n.kind=="DynamicBeatPath")return port?0:configured_feature_rate(n);
-    if(n.kind=="TempoEstimate")return 0;
-    return primary_input_rate(n);
-}
-bool input_axis(const domain::ResolvedProcessingNode& n,domain::PortId port,const NumericContract& c) noexcept {
-    const auto& axis=c.coordinates[0];const double rate=input_rate(n,port);
-    if(rate && (n.kind.starts_with("Pcm") || n.kind=="PatternFeatures") && c.clock.sample_rate && double(c.clock.sample_rate)!=rate)return false;
-    if(axis.mode!=CoordinateMode::Regular || axis.unit!=NumericUnit::Seconds || !rate)return true;
-    if(!axis.origin.denominator || !axis.step.denominator)return false;
-    const double step=double(axis.step.numerator)/double(axis.step.denominator),expected=1/rate;
-    return std::abs(step-expected)<=8*std::numeric_limits<double>::epsilon()*std::max(1.,expected);
-}
-double axis_coordinate(std::span<const std::byte> bytes,std::size_t index) noexcept {
-    std::uint64_t bits=0;
-    for(std::size_t b=0;b<8;++b)bits|=std::uint64_t(std::to_integer<unsigned>(bytes[8*index+b]))<<(8*b);
-    return std::bit_cast<double>(bits);
-}
 
-bool uniform_snapshot_coordinates(std::span<const std::byte> bytes,std::size_t count,double rate) noexcept {
-    const double origin=axis_coordinate(bytes,0);double previous=origin;
-    for(std::size_t k=0;k<count;++k){
-        const double value=axis_coordinate(bytes,k),expected=origin+double(k)/rate;
-        if(!std::isfinite(value) || (k && value<=previous) || std::abs(value-expected)>8*std::numeric_limits<double>::epsilon()*std::max(1.,std::abs(expected)))return false;
-        previous=value;
-    }
-    return true;
-}
-bool explicit_input_axis(const NumericOperationInput& input,double rate) noexcept {
-    const auto& axis=input.value.contract->coordinates[0];
-    if(!rate || axis.mode!=CoordinateMode::ExplicitFloat64LE || axis.unit!=NumericUnit::Seconds)return true;
-    const auto bytes=input.value.coordinates.axes[0];if(input.value.actual[0]>bytes.size()/8)return false;
-    return !input.value.actual[0] || uniform_snapshot_coordinates(bytes,input.value.actual[0],rate);
-}
 }
 namespace {
-bool sequence_outputs_valid(const domain::ResolvedProcessingNode& n,const FrameLimits& limits) noexcept {
+bool sequence_outputs_valid(const dataflow_runtime::NumericOperationNodeView& n,const FrameLimits& limits) noexcept {
     for(std::size_t k=0;k<n.outputs.size();++k)
         if(n.outputs[k].id!=k || validate_contract(n.outputs[k].contract.view(),limits)!=Status::ok)return false;
     return true;
 }
-bool sequence_inputs_valid(const domain::ResolvedProcessingNode& n,std::size_t maximum,const FrameLimits& limits) noexcept {
+bool sequence_inputs_valid(const dataflow_runtime::NumericOperationNodeView& n,std::size_t maximum,const FrameLimits& limits) noexcept {
     for(std::size_t k=0;k<n.inputs.size();++k){
         const auto& input=n.inputs[k];
         if(input.id>=maximum || validate_contract(input.contract.view(),limits)!=Status::ok)return false;
-        const auto c=contract(n,domain::PortDirection::Input,input.id);if(!c || !input_axis(n,input.id,*c))return false;
         for(std::size_t j=0;j<k;++j)if(n.inputs[j].id==input.id)return false;
     }
     return true;
 }
 }
 
-bool descriptor_resources(const domain::ResolvedProcessingNode& n,const NumericRuntimeProfile& p,std::size_t object,
+bool descriptor_resources(const dataflow_runtime::NumericOperationNodeView& n,const NumericOperationProfile& p,std::size_t object,
     std::size_t kernel,domain::ProcessingSupport& out) noexcept {
     domain::ProcessingSupport s;const auto* spec=domain::sequence_operation_spec(n.kind);
     if(!spec || !parameters_valid(n) || n.outputs.size()!=spec->outputs || n.inputs.empty() || n.inputs.size()>spec->inputs)return false;
@@ -342,16 +227,6 @@ bool disjoint(std::span<const std::byte> a,std::span<const std::byte> b) noexcep
     if(a.empty() || b.empty())return true;const std::less<const std::byte*> less;
     return !less(a.data(),b.data()+b.size()) || !less(b.data(),a.data()+a.size());
 }
-bool output_coordinates(NumericOperationOutput& o,const domain::ResolvedProcessingNode& node) noexcept {
-    for(std::size_t axis=0;axis<2;++axis){
-        if(o.value.contract->coordinates[axis].mode!=CoordinateMode::ExplicitFloat64LE)continue;
-        const double step=o.value.contract->coordinates[axis].unit==NumericUnit::Seconds?output_time_step(node,o.port,axis):1;
-        for(std::size_t k=0;k<o.value.actual[axis];++k)
-            if(numeric_operation_coordinate(o,axis,k,double(k)*step)!=Status::ok)return false;
-        if(numeric_operation_axis(o,axis,o.value.actual[axis])!=Status::ok)return false;
-    }
-    return true;
-}
 }
 namespace {
 bool valid_input_ports(std::span<const NumericOperationInput> inputs,const auto& rules) noexcept {
@@ -362,12 +237,11 @@ bool valid_input_ports(std::span<const NumericOperationInput> inputs,const auto&
     }
     return true;
 }
-Status sequence_input_status(const domain::ResolvedProcessingNode& node,const auto& rule,std::span<const NumericOperationInput> inputs,const FrameLimits& limits) noexcept {
+Status sequence_input_status(const dataflow_runtime::NumericOperationNodeView& node,const auto& rule,std::span<const NumericOperationInput> inputs,const FrameLimits& limits) noexcept {
     const auto* input=available_input_at(inputs,rule.port);if(!input)return rule.required?Status::unavailable:Status::ok;
     const auto c=contract(node,domain::PortDirection::Input,rule.port);
     if(!input->value.contract || !c || !same_contract(*input->value.contract,*c))return Status::incompatible_contract;
-    if(validate_view(DataFrameView{input->stamp,input->value},limits)!=Status::ok || !finite_input(*input,rule.values) ||
-       !explicit_input_axis(*input,input_rate(node,rule.port)))return Status::invalid_argument;
+    if(validate_view(input->value,limits)!=Status::ok || !finite_input(*input,rule.values))return Status::invalid_argument;
     return Status::ok;
 }
 bool sequence_output_disjoint(std::span<const NumericOperationInput> inputs,std::span<NumericOperationOutput> outputs,std::size_t at) noexcept {
@@ -375,18 +249,13 @@ bool sequence_output_disjoint(std::span<const NumericOperationInput> inputs,std:
     for(std::size_t k=0;k<at;++k)if(!disjoint(outputs[k].value.storage,outputs[at].value.storage))return false;
     return true;
 }
-bool sequence_output_valid(NumericOperationOutput& output,const domain::ResolvedProcessingNode& node,const FrameLimits& limits) noexcept {
+bool sequence_output_valid(NumericOperationOutput& output,const dataflow_runtime::NumericOperationNodeView& node,const FrameLimits& limits) noexcept {
     const auto c=contract(node,domain::PortDirection::Output,output.port);
-    return output.value.contract && c && same_contract(*output.value.contract,*c) && output_coordinates(output,node) &&
+    return output.value.contract && c && same_contract(*output.value.contract,*c) &&
         validate_mutable(output.value,limits)==Status::ok;
 }
-FrameStamp sequence_stamp(const FrameStamp& source) noexcept {
-    FrameStamp stamp;stamp.sequence=source.sequence;stamp.generation=source.generation;stamp.epoch=source.epoch;
-    stamp.graph_revision=source.graph_revision;stamp.source_sequence=source.source_sequence;
-    stamp.producer_epoch=source.producer_epoch;stamp.discontinuity=source.discontinuity;return stamp;
-}
 void mark_sequence_unavailable(std::span<NumericOperationOutput> outputs) noexcept {
-    for(auto& output:outputs){output.status=Status::unavailable;output.stamp.available=false;}
+    for(auto& output:outputs){output.status=Status::unavailable;}
 }
 bool fill_disabled_sequence(std::span<NumericOperationOutput> outputs,const FrameLimits& limits) noexcept {
     for(auto& output:outputs){
@@ -420,18 +289,16 @@ Status SequenceOperation::preflight(std::span<const NumericOperationInput> input
     const auto status=preflight_inputs(inputs);return status==Status::ok?preflight_outputs(inputs,outputs):status;
 }
 namespace {
-bool prepare_sequence_publication(NumericOperationOutput& output,const domain::ResolvedProcessingNode& node,const FrameStamp& source,ValueDomain values,const FrameLimits& limits) noexcept {
-    if(!output_coordinates(output,node))return false;
-    output.stamp=sequence_stamp(source);
-    return validate_view(DataFrameView{output.stamp,output.value.view()},limits)==Status::ok && validate_values(output.value.view(),values,limits)==Status::ok;
+bool prepare_sequence_publication(NumericOperationOutput& output,NumericOperationOrigin source,ValueDomain values,const FrameLimits& limits) noexcept {
+    output.origin=numeric_operation_origin(source,NumericOperationPublication::Batch);
+    return validate_view(output.value.view(),limits)==Status::ok && validate_values(output.value.view(),values,limits)==Status::ok;
 }
 }
 
-bool SequenceOperation::publish(std::span<NumericOperationOutput> outputs,const FrameStamp& source) noexcept {
-    const auto node=definition(descriptor_->node);
+bool SequenceOperation::publish(std::span<NumericOperationOutput> outputs,NumericOperationOrigin source) noexcept {
     for(auto& output:outputs){
         const auto values=descriptor_->policy.output_values.empty()?ValueDomain::FiniteOnly:descriptor_->policy.output_values[output.port];
-        if(!prepare_sequence_publication(output,node,source,values,limits_.frame)){mark_sequence_unavailable(outputs);return false;}
+        if(!prepare_sequence_publication(output,source,values,limits_.frame)){mark_sequence_unavailable(outputs);return false;}
     }
     for(auto& output:outputs)output.status=Status::ok;
     return true;
@@ -443,6 +310,6 @@ Status SequenceOperation::process(std::span<const NumericOperationInput> inputs,
     if(control.reset)reset_kernel();
     const bool ready=control.enabled?run(inputs,outputs):fill_disabled_sequence(outputs,limits_.frame);
     if(!ready)return Status::invalid_argument;
-    return publish(outputs,trigger->stamp)?Status::ok:Status::invalid_argument;
+    return publish(outputs,trigger->origin)?Status::ok:Status::invalid_argument;
 }
 }

@@ -263,7 +263,7 @@ void NumericEditorGraphModel::add_adapted_connection(QtNodes::ConnectionId edge)
 void NumericEditorGraphModel::addConnection(QtNodes::ConnectionId edge) {
     if(connectionExists(edge))return;
     const auto* source=delegateModel<AudioNodeModel>(edge.outNodeId);
-    const bool dc=source && (source->name()=="Fourier" || source->name()=="RealFourier") && edge.outPortIndex>=2 && edge.outPortIndex<=3;
+    const bool dc=source && (source->name()=="AmplitudePhase") && edge.outPortIndex==2;
     if(dc)delegateModel<AudioNodeModel>(edge.outNodeId)->set_dc_connections_visible(true);
     if(!connectionPossible(edge)){if(dc)refresh_connected_dc(edge.outNodeId);return;}
     add_adapted_connection(edge);
@@ -370,12 +370,12 @@ void NumericEditorGraphModel::bind_node(QtNodes::NodeId id) {
 }
 void NumericEditorGraphModel::reveal_connected_dc(const domain::NumericProcessingGraph& graph) {
     for(const auto& edge:graph.edges)if(edge.output_port==2 || edge.output_port==3)
-        if(nodeExists(QtNodes::NodeId(edge.from)))if(auto* node=delegateModel<AudioNodeModel>(QtNodes::NodeId(edge.from));node && (node->name()=="Fourier" || node->name()=="RealFourier"))node->set_dc_connections_visible(true);
+        if(nodeExists(QtNodes::NodeId(edge.from)))if(auto* node=delegateModel<AudioNodeModel>(QtNodes::NodeId(edge.from));node && (node->name()=="AmplitudePhase"))node->set_dc_connections_visible(true);
 }
 void NumericEditorGraphModel::refresh_connected_dc(QtNodes::NodeId id) {
     if(!nodeExists(id))return;
     auto* node=delegateModel<AudioNodeModel>(id);
-    if(!node || (node->name()!="Fourier" && node->name()!="RealFourier"))return;
+    if(!node || (node->name()!="AmplitudePhase"))return;
     bool connected=false;
     for(const auto& edge:allConnectionIds(id))if(edge.outNodeId==id && (edge.outPortIndex==2 || edge.outPortIndex==3)){connected=true;break;}
     node->set_dc_connections_visible(connected);
@@ -581,7 +581,10 @@ bool prepare_parameter_edit(domain::NumericProcessingGraph& graph,domain::Config
 }
 }
 bool NumericEditorGraphModel::draft_preflight(const domain::NumericProcessingGraph& graph,QString* error) {
-    NumericEditorGraphModel preflight(dataModelRegistry());preflight.set_node_validator(_node_validator);preflight.set_admission_limits(_admission_limits);return preflight.set_numeric_graph(graph,error);
+    NumericEditorGraphModel preflight(dataModelRegistry());preflight.set_node_validator(_node_validator);preflight.set_admission_limits(_admission_limits);
+    domain::NumericProcessingGraph prepared;
+    if(!preflight.prepare_numeric_import(graph,{},prepared,error))return false;
+    return preflight.load_draft_candidate(prepared,{},error);
 }
 namespace {
 bool same_parameter_edit_graph(const domain::NumericProcessingGraph& before,const domain::NumericProcessingGraph& after){

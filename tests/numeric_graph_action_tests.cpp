@@ -80,6 +80,11 @@ static desktop::NumericDraftPresentation graph_settings(const domain::NumericPro
     return settings;
 }
 static void verify_single_input_menu(QtNodes::DataFlowGraphicsScene* scene,int node){
+    auto& graph=static_cast<NumericEditorGraphModel&>(scene->graphModel());
+    auto* model=graph.delegateModel<AudioNodeModel>(node);
+    const auto before=graph.save();
+    QSignalSpy parameters(model,&AudioNodeModel::parameter_values_changed);
+    QSignalSpy redraw(model,&AudioNodeModel::requestNodeUpdate);
     std::unique_ptr<QMenu> english(node_menu(scene,node));
     require(!english->findChild<QAction*>("openGraphPort0") &&
             !english->findChild<QAction*>("openGraphPort65526"),
@@ -92,6 +97,9 @@ static void verify_single_input_menu(QtNodes::DataFlowGraphicsScene* scene,int n
             "Single data input or parameter port leaked into Russian view menu");
     require(russian->findChild<QAction*>("openGraphPlacement1"),"Graph placement missing from Russian view menu");
     require(ui::Language::instance().set("en"),"English UI translation unavailable");
+    require(parameters.isEmpty() && graph.save()==before,
+            "Language refresh changed the graph or published a parameter edit");
+    require(redraw.size()>=2,"Language refresh failed to invalidate the node display");
 }
 static void verify_multi_input_menu(QtNodes::DataFlowGraphicsScene* scene,int node,CoreApplication& app){
     std::unique_ptr<QMenu> menu(node_menu(scene,node));
@@ -176,22 +184,31 @@ static void verify_floating_editor(MainWindow* window,SchemeEditorWidget* editor
     require(!external->isClosed() && external->isFloating(),"Floating editor open stole earlier external representation");
 }
 static void run_action_scenario(CoreApplication& app,const domain::NumericProcessingGraph& graph){
+    QElapsedTimer elapsed;elapsed.start();
     app._ctx.file_configs.ui.autosave_enabled=false;
     auto* window=editor_ui_test_fixture::main_window(require);window->show();
     auto* editor=editor_ui_test_fixture::editor(*window,require);
     auto* scene=editor_ui_test_fixture::scene(*editor,require);
-    require(wait_until([&]{return editor->isVisible() && app.presenter().client().snapshot().graph_revision>0 &&
-        !app.presenter().graph_request_pending();}),"Initial continuous graph unavailable");
+    const bool initialReady=wait_until([&]{return editor->isVisible() && app.presenter().client().snapshot().graph_revision>0 &&
+        !app.presenter().graph_request_pending();});
+    std::fprintf(stderr,"Graph action phase=initial-ready ready=%d pending=%d elapsed_ms=%lld\n",initialReady,
+        app.presenter().graph_request_pending(),static_cast<long long>(elapsed.elapsed()));
+    std::fflush(stderr);
+    require(initialReady,"Initial continuous graph unavailable");
     const auto initialRevision=app.presenter().client().snapshot().graph_revision;
     QSignalSpy applied(&app.presenter(),&GuiPresenter::graph_apply_finished);
     QSignalSpy opened(editor,&SchemeEditorWidget::graph_open_requested);
     QList<WorkspaceDock*> requested;
     open_sink_views(scene,graph,window,app,requested);
+    std::fprintf(stderr,"Graph action phase=sink-views elapsed_ms=%lld\n",static_cast<long long>(elapsed.elapsed()));
     auto* external=open_placement_variants(scene,requested);
     open_split_and_selected(scene,editor,opened);
+    std::fprintf(stderr,"Graph action phase=placements elapsed_ms=%lld\n",static_cast<long long>(elapsed.elapsed()));
     apply_explicitly(app,window,applied,initialRevision);
+    std::fprintf(stderr,"Graph action phase=applied elapsed_ms=%lld\n",static_cast<long long>(elapsed.elapsed()));
     verify_dock_bindings(requested,graph,app);
     verify_floating_editor(window,editor,scene,external);
+    std::fprintf(stderr,"Graph action phase=complete elapsed_ms=%lld\n",static_cast<long long>(elapsed.elapsed()));
 }
 int main(int argc,char** argv){
     if(!test_fixture::isolated_gui_platform()){

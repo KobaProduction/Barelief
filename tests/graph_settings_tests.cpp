@@ -106,11 +106,32 @@ static void drive_graph_rename(const QString& name,bool accept,QObject* context)
                 }
             });
 }
+static void saved_custom_graph_name(gui_fixture::App& fixture,CoreApplication& app,WorkspaceDock* dock) {
+    auto* scene=fixture.editor->findChild<QtNodes::DataFlowGraphicsScene*>();
+    auto* model=dynamic_cast<QtNodes::DataFlowGraphModel*>(&scene->graphModel())->delegateModel<AudioNodeModel>(10);
+    const auto original=model->presentation();
+    auto generated=original;
+    generated.remove("display_name");generated["display_name_key"]="Fourier window";
+    model->set_presentation(generated);
+    const auto key=dock->property("graphViewKey").toString();
+    const auto preferences=app._ctx.file_configs.ui.graph_views[key];
+    auto saved=preferences.toObject();saved["display_name"]="Saved custom graph";
+    app._ctx.file_configs.ui.graph_views[key]=saved;
+    dock->setProperty("graphCaptionModel",QVariant{});
+    ui::Language::instance().set("en");
+    check(dock->windowTitle()=="Saved custom graph" && model->caption()=="Saved custom graph" &&
+          app._ctx.file_configs.ui.graph_views[key].toObject().value("display_name")=="Saved custom graph",
+          "Generated label must preserve a saved custom graph title when binding the model");
+    model->set_presentation(original);
+    app._ctx.file_configs.ui.graph_views[key]=preferences;
+    ui::Language::instance().set("ru");
+}
 static void graph_names(gui_fixture::App& fixture,CoreApplication& app,MainWindow* window) {
         WorkspaceDock* namedGraph=nullptr;
         for(const auto docks=window->workspaceDocks();auto* dock:docks)
             if(dock->property("graphNode").toInt()==10)namedGraph=dock;
         check(namedGraph,"Rename graph fixture missing");
+        saved_custom_graph_name(fixture,app,namedGraph);
         const auto namedGraphKey=namedGraph->property("graphViewKey").toString();
         check(!namedGraphKey.isEmpty() && namedGraph->objectName()=="nodeView_"+namedGraphKey &&
               namedGraph->property("viewInstance").toInt()==0 &&

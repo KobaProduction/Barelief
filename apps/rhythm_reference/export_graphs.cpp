@@ -13,7 +13,7 @@ void scalar_labels(const NumericExampleGraph& example,desktop::NumericDraftPrese
         if(!present(example,names.view))continue;
         QJsonObject inputs;
         for(std::size_t port=0;port<names.labels.size();++port)
-            inputs[QString::number(port)]=QJsonObject{{"enabled",true},{"display_name",QString::fromUtf8(names.labels[port])}};
+            inputs[QString::number(port)]=QJsonObject{{"enabled",true},{"display_name_key",QString::fromUtf8(names.labels[port])}};
         const auto key=QString::number(names.view);auto node=presentation.node_presentations.value(key).toObject();
         node["scalar_inputs"]=inputs;presentation.node_presentations[key]=node;
     }
@@ -21,7 +21,7 @@ void scalar_labels(const NumericExampleGraph& example,desktop::NumericDraftPrese
 desktop::NumericDraftPresentation presentation(const NumericExampleGraph& example) {
     desktop::NumericDraftPresentation result;
     for(const auto& position:example.positions)result.positions[QString::number(position.node)]=QJsonObject{{"x",position.x},{"y",position.y}};
-    for(const auto& label:example.node_names)if(present(example,label.node))result.node_presentations[QString::number(label.node)]=QJsonObject{{"display_name",label.label}};
+    for(const auto& label:example.node_names)if(present(example,label.node))result.node_presentations[QString::number(label.node)]=QJsonObject{{"display_name_key",label.label}};
     scalar_labels(example,result);
     result.application_settings={{"ui",QJsonObject{{"language","en"},{"pipeline_auto_apply",false}}}};
     return result;

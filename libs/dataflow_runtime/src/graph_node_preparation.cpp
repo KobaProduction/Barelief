@@ -3,6 +3,7 @@
 #include "frame_access.h"
 #include "signal_time.h"
 #include "mixer_execution.h"
+#include "array_extraction.h"
 #include <dsp_kernels/spectral_weights.h>
 #include <domain/signal/contracts.h>
 #include <algorithm>
@@ -33,8 +34,21 @@ Status prepare_declared_window(detail::PlanNode& node,const ResolvedProcessingNo
     else node.windows=std::make_shared<const dsp_kernels::PreparedWindows>(count,node.periodic_window);
     return node.windows->prepared()?Status::ok:Status::exhausted;
 }
-Status prepare_double_coefficients(const ConfiguredProcessingNode& node,MutableNumericView output,std::size_t count) {
-    std::vector<double> coefficients(count);
+Status prepare_matrix_row_values(detail::PlanNode& node,const ResolvedProcessingNode& source) {
+    double row=0;
+    if(!numeric_parameter(source,"row",row))return Status::invalid_argument;
+    node.matrix_row=std::size_t(row);return Status::ok;
+}
+Status prepare_matrix_center_values(detail::PlanNode& node,const ResolvedProcessingNode& source) {
+    double method=0,offset=0;
+    if(!numeric_parameter(source,"method",method) || !numeric_parameter(source,"offset",offset) ||
+       std::abs(offset)>std::numeric_limits<float>::max())return Status::invalid_argument;
+    const auto mode=matrix_center_method(method);
+    if(!mode)return Status::invalid_argument;
+    node.center_method=*mode;node.center_offset=float(offset);return Status::ok;
+}
+template<class Scalar> Status prepare_typed_coefficients(const ConfiguredProcessingNode& node,MutableNumericView output,std::size_t count) {
+    std::vector<Scalar> coefficients(count);
     const auto status=window_function_coefficients(node,coefficients);if(status!=Status::ok)return status;
     for(std::size_t i=0;i<count;++i){const auto stored=store_element(output,{0,i,0},coefficients[i]);if(stored!=Status::ok)return stored;}
     return Status::ok;
@@ -179,7 +193,7 @@ Status NumericPreparation::initialize_node(NodeFrame& frame){
 Status NumericPreparation::initialize_node_input(NodeFrame& frame){
     const auto& cn=frame.cn;const auto& resolved=frame.resolved;auto& n=frame.n;
         if(!cn.inputs.empty())n.numeric_input=(resolved.operation==ProcessingOperation::InputSelector || resolved.operation==ProcessingOperation::Mixer || resolved.operation==ProcessingOperation::ArrayProduct || resolved.operation==ProcessingOperation::ChannelComparison || is_scalar_view(n.node.kind)?&cn.inputs.front():numeric_port(cn.inputs,0))->contract.view();
-        if(resolved.operation==ProcessingOperation::ArrayProduct){OwnedProcessingContract output;if(array_product_output_contract(cn,output,&n.product_frame_input)!=Status::ok)return Status::invalid_argument;n.numeric_input=cn.inputs[n.product_frame_input].contract.view();}
+        if(resolved.operation==ProcessingOperation::ArrayProduct){OwnedProcessingContract output;if(array_product_output_contract(cn,output,&n.product_frame_input,&n.product_trigger_input)!=Status::ok)return Status::invalid_argument;n.numeric_input=cn.inputs[n.product_frame_input].contract.view();}
     return Status::ok;
 }
 Status NumericPreparation::prepare_metadata_values(NodeFrame& frame){
@@ -228,14 +242,24 @@ Status NumericPreparation::prepare_fill_gain(NodeFrame& frame){
         if(n.operation==ProcessingOperation::ArrayFill){double value=0;if(!numeric_parameter(resolved,"value",value))return Status::invalid_argument;n.gain=float(value);}
     return Status::ok;
 }
+namespace {
+Status prepare_element_extraction(PlanNode::EndpointPlan& plan,const ResolvedProcessingNode& resolved) {
+    for(std::size_t axis=0;axis<3;++axis){
+        double value=0;if(!numeric_parameter(resolved,std::array{"channel_index","index","column"}[axis],value))return Status::invalid_argument;
+        plan.indices[axis]=std::size_t(value);
+    }
+    return Status::ok;
+}
+}
+
 Status NumericPreparation::prepare_extraction(NodeFrame& frame){
     auto& resolved=frame.resolved;
     auto& n=frame.n;
-        if(n.operation==ProcessingOperation::Extract){
-            n.endpoint_plan=std::make_unique<PlanNode::EndpointPlan>();
-            for(std::size_t axis=0;axis<3;++axis){double value=0;if(!numeric_parameter(resolved,std::array{"channel_index","index","column"}[axis],value))return Status::invalid_argument;n.endpoint_plan->indices[axis]=std::size_t(value);}
-        }
-    return Status::ok;
+    if(n.operation!=ProcessingOperation::Extract)return Status::ok;
+    n.endpoint_plan=std::make_unique<PlanNode::EndpointPlan>();
+    ExtractionMode mode;if(!extraction_mode(resolved,mode))return Status::invalid_argument;
+    if(mode==ExtractionMode::Axis)return detail::prepare_axis_extraction(n,resolved);
+    return prepare_element_extraction(*n.endpoint_plan,resolved);
 }
 Status NumericPreparation::prepare_comparison(NodeFrame& frame){
     auto& resolved=frame.resolved;
@@ -518,12 +542,8 @@ Status NumericPreparation::prepare_matrix_correlation(NodeFrame& frame){
     return Status::ok;
 }
 Status NumericPreparation::prepare_matrix_values(NodeFrame& frame){
-    auto& resolved=frame.resolved;
-    auto& n=frame.n;
-        if(n.operation==ProcessingOperation::MatrixRow){double row=0;if(!numeric_parameter(resolved,"row",row))return Status::invalid_argument;n.matrix_row=std::size_t(row);}
-        if(n.operation==ProcessingOperation::MatrixCenter){double method=0,offset=0;
-            if(!numeric_parameter(resolved,"method",method) || !numeric_parameter(resolved,"offset",offset) || std::abs(offset)>std::numeric_limits<float>::max())return Status::invalid_argument;
-            n.center_method=unsigned(method);n.center_offset=float(offset);}
+    if(frame.n.operation==ProcessingOperation::MatrixRow)return prepare_matrix_row_values(frame.n,frame.resolved);
+    if(frame.n.operation==ProcessingOperation::MatrixCenter)return prepare_matrix_center_values(frame.n,frame.resolved);
     return Status::ok;
 }
 Status NumericPreparation::prepare_operation(NodeFrame& frame){
@@ -554,7 +574,10 @@ Status NumericPreparation::prepare_transform_pcm_resampler(NodeFrame& frame){
 Status NumericPreparation::prepare_transform_window_function(NodeFrame& frame){
     const auto count=std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum);
     if(std::get<NumericContract>(frame.n.numeric_outputs[0]).dtype==DType::Float64)
-        return prepare_double_coefficients(frame.cn,mutable_output(frame.n,frame.state,0),count);
+        return prepare_typed_coefficients<double>(frame.cn,mutable_output(frame.n,frame.state,0),count);
+    window_generation::WindowFunctionParameters parameters;if(!window_function_parameters(frame.resolved,parameters))return Status::invalid_argument;
+    if(parameters.evaluation!=WindowEvaluation::Default)
+        return prepare_typed_coefficients<float>(frame.cn,mutable_output(frame.n,frame.state,0),count);
     const auto* prior=frame.old==absent?nullptr:&previous->impl_->nodes[frame.old];
     const auto status=prepare_declared_window(frame.n,frame.resolved,count,prior);if(status!=Status::ok)return status;
     return prepare_window_coefficients(frame,count);
@@ -574,13 +597,6 @@ Status NumericPreparation::prepare_transform_bark_weighting(NodeFrame& frame){
     for(std::size_t i=0;i<columns;++i)
         state.coefficients[i]=float(dsp_kernels::bark_weight(state.frequencies[i]));
     return Status::ok;
-}
-Status NumericPreparation::prepare_transform_stereo_fft(NodeFrame& frame){
-    auto& state=frame.state;
-    const auto& in=std::get<NumericContract>(frame.n.numeric_input);
-    const auto columns=std::size_t(in.shape.extents[0].maximum);
-state.kernel.emplace<dsp_kernels::MagnitudeSpectrum>();if(!std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel).prepare(columns))return Status::unavailable;return Status::ok;
-
 }
 Status NumericPreparation::prepare_transform_spectrum_merge(NodeFrame& frame){
     auto& resolved=frame.resolved;
@@ -608,7 +624,7 @@ Status NumericPreparation::prepare_transform_spectrum_amplitude(NodeFrame& frame
 Status NumericPreparation::prepare_transform(NodeFrame& frame){
     if(frame.n.operation!=ProcessingOperation::Transform)return Status::ok;
     switch(frame.n.node.kind){
-    case NodeKind::FrameStride:case NodeKind::PcmResampler:case NodeKind::Window:case NodeKind::FrameBuffer:case NodeKind::WindowFunction:case NodeKind::StereoFFT:return prepare_signal_transform(frame);
+    case NodeKind::FrameStride:case NodeKind::PcmResampler:case NodeKind::Window:case NodeKind::FrameBuffer:case NodeKind::WindowFunction:return prepare_signal_transform(frame);
     default:return prepare_spectrum_transform(frame);
     }
 }
@@ -624,7 +640,6 @@ Status NumericPreparation::prepare_signal_transform(NodeFrame& frame){
         else frame.state.pcm.resize(count);return Status::ok;
     }
     case NodeKind::WindowFunction:return prepare_transform_window_function(frame);
-    case NodeKind::StereoFFT:return prepare_transform_stereo_fft(frame);
     default:return Status::invalid_argument;
     }
 }

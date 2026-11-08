@@ -102,7 +102,7 @@ static int collect_widget_matrix(auto& languages,auto& themes,auto& platform,aut
     auto bounded=[&]{if(elapsed.elapsed()>=45000 || !failure.isEmpty())throw std::runtime_error("probe deadline");};
     auto settle=[&]{bounded();QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents,5);bounded();};
     auto record=[&](QString name,QWidget* widget,QRect region={}){record_widget(name,widget,region,bounded,directory,captures,platform);};
-    const std::array<const char*,30> kinds{{"AudioSource","SignalGenerator","SampleClock","PcmResampler","Window","WindowFunction","StereoFFT","BarkWeighting","Mel","SpectrumGain","Mixer","InputSelector","Switch","Gate","Spectrogram","IndexExtract","ScalarReduce","Converter","AudioView","WindowView","WindowedView","FFTView","MelView","SpectrogramView","ScalarView","NetworkInput","NetworkOutput","WLEDEncode","WLEDOutput","ChannelComparison"}};
+    const std::array<const char*,31> kinds{{"AudioSource","SignalGenerator","SampleClock","PcmResampler","Window","WindowFunction","RealFourier","AmplitudePhase","BarkWeighting","Mel","SpectrumGain","Mixer","InputSelector","Switch","Gate","Spectrogram","IndexExtract","ScalarReduce","Converter","AudioView","WindowView","WindowedView","FFTView","MelView","SpectrogramView","ScalarView","NetworkInput","NetworkOutput","WLEDEncode","WLEDOutput","ChannelComparison"}};
     try{
         QStringList expected;for(auto kind:kinds)expected.append(kind);expected.sort();auto actual=numeric_editor::catalog();actual.sort();if(actual!=expected)throw std::runtime_error("catalogue differs from product inventory");
         host.show();settle();

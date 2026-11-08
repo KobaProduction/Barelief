@@ -11,7 +11,19 @@ using namespace domain;using namespace signal_contracts;
 TransformProcessingParameters regular_spectrum_grid(std::uint32_t sample_rate,std::uint64_t fft_size) {
     return examples::transform({{"sample_rate",NumericLiteral{std::uint64_t{sample_rate}}},
         {"bin_hz",NumericLiteral{double(sample_rate)/double(fft_size)}},
-        {"first_bin",NumericLiteral{std::uint64_t{0}}},{"frequencies_hz",NumericArray{}}});
+        {"first_bin",NumericLiteral{std::uint64_t{1}}},{"frequencies_hz",NumericArray{}}});
+}
+void add_amplitude_spectrum(examples::Builder& b,NodeId input,NodeId coefficients,NodeId length,
+                            NodeId rate_source,PortId rate_port,NodeId fourier,NodeId amplitude,std::uint64_t size,std::uint32_t sample_rate) {
+    b.chain(fourier,"RealFourier",input,examples::transform({{"fft_size",NumericLiteral{size}}}));
+    b.connect(length,fourier,0,window_size_input);
+    b.add(amplitude,"AmplitudePhase",examples::transform({{"fft_size",NumericLiteral{size}},
+        {"sample_rate",NumericLiteral{std::uint64_t{sample_rate}}},
+        {"representation",std::string{"peak_amplitude"}},{"normalize",true},{"positive_half",true}}));
+    b.connect(fourier,amplitude,0,0);b.connect(fourier,amplitude,1,1);
+    b.connect(length,amplitude,0,window_size_input);
+    b.connect(rate_source,amplitude,rate_port,target_sample_rate_input);
+    b.connect(coefficients,amplitude,0,window_coefficients_input);b.derive(amplitude);
 }
 std::vector<OscillatorParameters> example_tones(unsigned channel) {
     std::vector<OscillatorParameters> bank;
@@ -94,7 +106,8 @@ void add_capture_stream(examples::Builder& b,unsigned stream,unsigned lanes) {
 void add_short_spectrum(examples::Builder& b,unsigned lane) {
     const NodeId base=lane==0?100:400;
     examples::add_window(b,200,base+2,base+3,base+20,base+21,512,PortId(lane));
-    b.chain(base+4,"StereoFFT",base+21);b.chain(base+10,"AudioLineView",base+4);
+    add_amplitude_spectrum(b,base+21,base+3,base+20,200,2,base+23,base+4,512,48000);
+    b.chain(base+10,"AudioLineView",base+4,examples::transform({{"first_bin",NumericLiteral{std::uint64_t{1}}}}));
     b.add(base+22,"FrequencyStep");b.connect(200,base+22,2,0);
     b.connect(base+20,base+22,0,window_size_input);
     b.connect(base+22,base+10,0,frequency_step_input);
@@ -162,7 +175,8 @@ NumericProcessingGraph independent_example() {
 NumericProcessingGraph spectral_mix_example() {
     examples::Builder b;b.graph=generator_example();add_second_generator(b);
     examples::add_window(b,101,102,103,1005,1004,4096);
-    b.chain(104,"StereoFFT",1004);b.chain(115,"BarkWeighting",104,regular_spectrum_grid(48000,4096));
+    add_amplitude_spectrum(b,1004,103,1005,101,sample_rate_output,1006,104,4096,48000);
+    b.chain(115,"BarkWeighting",104,regular_spectrum_grid(48000,4096));
     add_mixer(b,200,15,115);replace_source(b,15,200);return b.finish();
 }
 }
@@ -176,10 +190,12 @@ domain::NumericProcessingGraph numeric_basic_signal_graph(std::uint32_t sample_r
 }
 domain::NumericProcessingGraph numeric_default_graph(std::uint32_t sample_rate) {
     examples::Builder b({sample_rate,4096,256,400});b.add(1,"AudioSource");examples::add_window(b,1,2,3,1000,1001,4096);
-    b.chain(4,"StereoFFT",1001);b.chain(15,"BarkWeighting",4,regular_spectrum_grid(sample_rate,4096));
+    add_amplitude_spectrum(b,1001,3,1000,1,sample_rate_output,1002,4,4096,sample_rate);
+    b.chain(15,"BarkWeighting",4,regular_spectrum_grid(sample_rate,4096));
     b.chain(6,"Mel",15,regular_spectrum_grid(sample_rate,4096));
     b.chain(7,"Spectrogram",6);b.chain(8,"AudioSurfaceView",7);b.chain(9,"AudioLineView",1);
-    b.chain(10,"AudioLineView",15);b.chain(11,"AudioLineView",6);b.chain(12,"ScalarMetricsView",7,{},1);
+    b.chain(10,"AudioLineView",15,examples::transform({{"first_bin",NumericLiteral{std::uint64_t{1}}}}));
+    b.chain(11,"AudioLineView",6);b.chain(12,"ScalarMetricsView",7,{},1);
     examples::add_frequency_step(b,1,1000,1003);b.connect(1003,10,0,domain::frequency_step_input);return b.finish();
 }
 domain::NumericProcessingGraph numeric_test_graph() {

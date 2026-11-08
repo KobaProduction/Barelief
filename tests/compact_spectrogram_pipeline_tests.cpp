@@ -109,7 +109,7 @@ struct Fixture {
     QJsonObject source_evidence;
     explicit Fixture(NumericProcessingGraph configured=numeric_compact_spectrogram_graph()):graph(std::move(configured)) {
         check(node(graph,4).kind=="RealFourier" && node(graph,5).kind=="AmplitudePhase","Existing split Fourier and amplitude/phase nodes");
-        check(node(graph,4).outputs.size()==3 && node(graph,5).outputs.size()==2,"Separate Re/Im, DC and amplitude/phase ports");
+        check(node(graph,4).outputs.size()==2 && node(graph,5).outputs.size()==3,"Separate Re/Im, DC and amplitude/phase ports");
         check(node(graph,3).outputs.size()==1,"WindowFunction publishes only coefficients");
         check(std::any_of(graph.edges.begin(),graph.edges.end(),[](const auto& edge){return edge.from==3 && edge.to==5 && edge.output_port==0 && edge.input_port==window_coefficients_input;}),"Actual window coefficients explicitly feed AmplitudePhase");
         check(node(graph,31).kind=="BroadbandFeatures","existing configurable maximum reducer");

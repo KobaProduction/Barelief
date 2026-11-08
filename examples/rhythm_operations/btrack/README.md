@@ -25,116 +25,85 @@ Add `--port <port>` to expose its existing CONTROL/DATA service on loopback for 
 remote editor; the default port 0 disables the listener. These commands describe
 the entrypoints; verification results must come from the corresponding run.
 
-`numeric_btrack_reference_example(input_rate=44100)` builds the graph. Its explicit
-PCM resampler converts the source to 44100 Hz; this ingress conversion is outside
-the original BTrack recipe and is identity at 44100 Hz. `FrameBuffer(size512,
-hop512)` fixes cadence independently of capture packet size. `Window(1024)` adds
-the initial zero-left prefix. `FrameStride(every_n=1,materialize=true)` owns that
-bounded chronological window at the extension boundary. `BTrackWindowProduct`
-uses explicit N1024/Hann settings and the original Double coefficients/product,
-rounding only its result to Float32. It contains no framing, rotation or FFT.
-`ArrayReindex` swaps the two 512-sample halves. `Fourier(1024)` explicitly selects
-`backend_id=kiss_fft130_float32`; the research profile pins the matching existing
-KISS1.30 provider. A missing or mismatched provider rejects preparation. Empty
-backend selection retains the ordinary builtin FFT in other graphs.
+`numeric_btrack_reference_example(input_rate=44100)` builds the current graph.
+The PCM resampler converts ingress to 44100 Hz; this conversion is outside the
+original recipe and is identity at 44100 Hz. `FrameBuffer(size512,hop512)` fixes
+cadence independently of capture packet size. `Window(1024)` includes the initial
+zero-left prefix. The general `WindowFunction` has `precision=1`,
+`evaluation=Direct`, `pi=3.14159265358979`, symmetric Hann and explicit N1024.
+`ArrayMultiply` applies its Double coefficients; an explicit Float32 `Converter`
+is the source rounding boundary. `IndexExtract(mode=Axis)` swaps the two
+512-sample halves through explicit indices; the same operation later selects the
+first 512 autocorrelation lags.
+`Fourier(1024)` selects `backend_id=kiss_fft130_float32`; missing or mismatched
+providers reject preparation. No BTrack stage frames or transforms PCM internally.
 
-The source ODF receives full real/imaginary FFT outputs directly. The separate
-`AmplitudePhase` branch is a Float32 diagnostic view and is not the numerical
-input to source ODF. Its settings are raw full1024 SquaredNorm/Atan2, without
-normalization.
+`BTrackOnset` consumes full real/imaginary FFT planes and publishes the raw
+Double positive complex spectral difference. Its Double polar histories are
+part of that source descriptor. A separate `ComplexPolar` exposes raw Float32
+magnitude/phase for comparison, using all 1024 bins and SquaredNorm/Atan2.
+The ODF's absolute value, Double epsilon0.0001 and Float32 conversion are explicit
+`AbsoluteValue`, `NumericMap(scale=1, offset=0.0001, output_dtype=Float64)` and
+`Converter` nodes. The finite Double offset is applied on the first input hop;
+scaling and addition have separate Double rounding.
+`BTrackHistory` only appends that Float32 value to a seeded512 ring; the initial
+ring has unit impulses every43 frames. It performs no preprocessing or resampling.
 
-The remaining graph edges are:
+The whole-window sinc operation is a separate `BTrackHistoryResample` node. Its
+finite512→512 call uses libsamplerate0.2.2 best-quality coefficients and explicit
+DesktopReference arithmetic, including at ratio1. Float32 I/O/table values and
+Double coefficient interpolation/serial accumulation are retained. This operation
+is independent of the ingress PCM resampler and requires the declared provider.
+
+The observation chain is fully explicit:
 
 ```text
-FFT Re/Im -> BTrackOnset (Float64 ODF) -> BTrackHistory
-BTrackHistory[1] -> BTrackHistoryResample -> BTrackCombObservation
-BTrackHistory[0] -----------------------> BTrackBeatDecision[0]
-BTrackCombObservation[0] ---------------> BTrackBeatDecision[1]
+history -> whole-window sinc -> BTrackAdaptiveThreshold(size512)
+ -> concatenate512 zeros -> Fourier1024
+ -> Re*Re + Im*Im -> InverseFourier1024 -> hypot(Re,Im)
+ -> first512 lags -> divide by [512,511,...,1]
+ -> BTrackCombResponse -> BTrackAdaptiveThreshold(size128)
+ -> BTrackCombObservation -> BTrackBeatDecision.tempo_observations
+history.newest_onset ------> BTrackBeatDecision.onset
 ```
 
-`BTrackOnset(cartesian_input=true)` reuses the original Double polar/strict
-positive complex-distance/history/reduction code through an explicit complex
-frame API. It publishes Float64 ODF. `BTrackHistory` computes abs+Double0.0001,
-then rounds once into its Float32 seeded512 ring. This preserves the source
-boundary rather than rounding ODF before epsilon. The default polar-input onset
-mode remains Float32 for explicitly selected portable use. The ring starts with
-unit impulses every 43 frames and advances without shifting the full history.
-The independent history
-SRC is a finite 512→512 window, **not PCM rate conversion or a bypass**.
-It uses the existing prepared sinc backend, full libsamplerate 0.2.2 best-quality
-coefficients and its explicit DesktopReference arithmetic profile. Its I/O and
-coefficient table are Float32; original coefficient interpolation and serial
-accumulation inside this backend use Double. Comb/prediction analytics are Float32. A missing provider rejects preparation, including at ratio 1.
+The powers and their sum explicitly choose the last-updated operand as the
+publication driver; no stale opposite FFT plane is reused. `BTrackCombResponse`
+contains only the source four-harmonic/Rayleigh reduction. Thresholding and
+41 observations for80:2:160 BPM are separate pure stages. The tempo transition
+owns no FFT or resampling plan. `BTrackBeatDecision` scores/predicts first with
+tightness5 and alpha0.9; it advances tempo state only on a predicted beat, then
+sets the period for the next hop. This preserves the source scheduling order.
 
-`BTrackCombObservation` reuses the source adaptive thresholds, balanced complex
-ACF 1024, four-harmonic comb/Rayleigh weights and 41 observations for 80:2:160 BPM.
-It does not advance a tempo prior. `BTrackBeatDecision` scores/predicts first with
-tightness 5 and alpha 0.9; only on `beat_due` does it advance the tempo transition
-and change the next hop's period. This preserves source order without a hidden
-graph feedback edge. Analysis/SRC are additionally evaluated between beats;
-their diagnostics describe the current snapshot, while tempo state remains held.
-That extra work is a scheduling cost, not evidence of a realtime budget.
-
-| Stage | Output ports |
+| Stage | Semantic outputs |
 | --- | --- |
-| BTrackOnset | 0 Float64 raw scalar ODF in source Cartesian mode |
-| BTrackHistory | 0 adjusted ODF; 1 seeded history512 |
-| BTrackHistoryResample | 0 sinc history512 |
-| BTrackCombObservation | 0 observations41; 1 thresholded comb128; 2 balanced ACF512 |
-| BTrackBeatDecision | 0 Float32 beat flag; 1 BPM; 2 period in hops; 3 newest score; 4 score history512; 5/6 Int64 next-beat/prediction timers; 7 tempo-state41 |
+| BTrackOnset | raw Float64 onset strength |
+| BTrackHistory | newest Float32 onset; seeded onset window512 |
+| BTrackHistoryResample | resampled onset window512 |
+| BTrackAdaptiveThreshold | baseline-subtracted positive values, same geometry |
+| BTrackCombResponse | comb response128, period axis in frames |
+| BTrackCombObservation | tempo observations41,80:2:160 BPM |
+| BTrackBeatDecision | beat flag; BPM; period in hops; newest score; score window512; Int64 next-beat/prediction timers; tempo probabilities41 |
 
-History axes use seconds relative to the newest point (zero). ACF lags use
-seconds; comb positions use frames; tempo-state coordinates are BPM values.
-Source stamps retain exact counters and clocks. Feature frames do not claim to
-be PCM sample intervals. Diagnostic callbacks borrow views only synchronously.
+The GUI shows BPM, the last512 beat flags and current raw onset strength.
+A beat flag of1 marks the corresponding analysis hop. Intermediate outputs stay
+available at their explicit producer ports. Stable numeric port IDs are expressed
+by typed names in `rhythm_graph_adapters/btrack_ports.h`; display names do not
+select routes or tests. Feature frames preserve source provenance without claiming
+PCM sample intervals. Synchronous diagnostics borrow their views only for the call.
 
-The source window/product and polar/ODF retain their original Double arithmetic;
-FFT inputs/outputs use the source Float32 KISS provider. ACF/prediction analytics
-remain Float32 and do not claim bitwise equivalence to every upstream Double
-intermediate. The source sinc arithmetic is selected independently. Invalid/nonfinite input is rejected
-before state mutation; arithmetic failure invalidates outputs and resets the
-affected stage. Disabled stages publish zeros without advancing state. Cold
-clones own independent histories/backends; Apply explicitly declares reset for
-these reference stages. Warm setTempo/fixTempo, alternate ODFs/windows/hops and
-all BTrack entrypoints are outside this single canonical preset.
+`btrack_reference_pipeline_tests` checks this graph against shared ACF/SRC
+primitives and separate tempo/prediction state, including every-hop history
+rounding, no C++ allocation, packet partitioning, producer epoch reset and missing
+providers. Its optional output-prefix argument exports stage traces.
+`tests/rhythm_originals/btrack_pipeline_compare.py` compares those traces with the
+separately compiled pinned original. The fresh 2026-11-08 source-fan-in capture
+passes all eight unchanged native comparison policies, including complete
+intermediate state. Events and periods match exactly; floating values remain
+within their recorded budgets. The bounded tones/silence fixture does not establish
+music-dataset quality. Its identities, policies and results are recorded in
+`cmake-build-release/Testing/atomic-rhythm-20261108-013954/btrack-source-fanin-v4/qualification.json`.
 
-`btrack_reference_pipeline_tests` compares the modular graph against the existing
-monolithic portable composition, checks scheduling/no C++ allocation/missing
-provider, and can export intermediate traces using an output prefix argument.
-`tests/rhythm_originals/btrack_pipeline_compare.py` compares such a trace to a
-separately compiled pinned source. Raw failures/rejections and optional repaired
-oracle results are recorded separately. The raw SRC observation bridge must be
-declared explicitly; already-thresholded source buffers are not raw SRC evidence.
-These are validation tools, not claims that unexecuted checks passed or that
-synthetic agreement establishes quality on arbitrary music.
-
-The earlier 2026-11-02 generic-FFT snapshot integration run passed the modular runtime/lifecycle and
-no-C++-allocation checks, including 97/8192-sample packet partitions and producer
-epoch reset. Comparison against the pinned raw native original on the same 1024
-hop, eight-tone trace **failed the unchanged numerical tolerance**: one ODF
-sample at hop 345 differed by 0.4138854 (allowed 0.219811), followed by 529 raw SRC
-history mismatches. Beat flags and rounded periods matched exactly; BPM, score,
-tempo-state and comb passed their declared tolerance. This is a measured limit
-of this preset's current numerical comparison, not whole-pipeline parity PASS.
-The cause must be isolated before attributing it to a particular FFT/gate stage;
-no backend or tolerance was changed to turn this result into a pass.
-
-The optional runner also completed a bounded 4-second internal-synthetic smoke
-run: 309 complete ODF/history/SRC frames and all comb/decision outputs, with zero
-processing errors, deadline misses or dropped PCM samples. This confirms actual
-execution beyond Apply; it does not establish native rendering, arbitrary-music
-accuracy or a hardware realtime budget.
-
-The source-precision correction above supersedes that earlier graph. The fresh
-v12 graph trace passes the unchanged native comparator on the same 1024-hop,
-eight-tone PCM: ODF and pre-threshold SRC history both have maximum absolute
-error 0; beat flags and periods match exactly. BPM, score, tempo state and comb
-pass the original tolerances (these Float32 tracker values are not all bitwise
-identical to upstream Double). The raw-original execution is explicitly reused
-from v3 after verifying identical PCM SHA and original binary/output hashes;
-the corrected graph capture is fresh. No original rerun or tolerance change is
-claimed. Runtime also passes exact Double ODF against the existing source
-frontend at every hop, 97/8192 packet partitions, producer epoch reset,
-no-C++-allocation and missing/mismatched/default-empty Fourier-provider checks.
-The separate source-boundary test checks 1024 complex frames, NaN and reset.
-These finite cases do not establish arbitrary-input or general music accuracy.
+Unused PCM predictive wrappers, their graph adapters, directed benchmarks and
+monolithic reference exporters have been removed. They are not retained as a
+second processing path or as hidden preset implementations.

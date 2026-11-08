@@ -19,8 +19,12 @@ namespace signal_contracts {
             const auto padding=(a-n%a)%a;
             return add(n,padding);
         }
-        std::size_t rank(const NumericContract& c){return c.shape.rank==Rank::Scalar?0:c.shape.rank==Rank::Vector?1:2;
+        template<class Contract> std::size_t rank(const Contract& c){return c.shape.rank==Rank::Scalar?0:c.shape.rank==Rank::Vector?1:2;
         }
+        std::size_t plane_count(const NumericContract& c) noexcept {return c.channel_order.size();}
+        std::size_t plane_count(const NumericBufferContract& c) noexcept {return c.plane_count;}
+        bool vector_ring(const NumericView& v) noexcept {return v.contract->semantic==Semantic::History;}
+        bool vector_ring(const NumericBufferView&) noexcept {return true;}
         std::uint64_t mask(unsigned bits){return bits==64?UINT64_MAX:(std::uint64_t{1}<<bits)-1;
         }
         bool big(StorageEncoding e){return e==StorageEncoding::FixedBigEndian || e==StorageEncoding::PackedSigned24BE || (e==StorageEncoding::Native && std::endian::native==std::endian::big);
@@ -31,33 +35,33 @@ namespace signal_contracts {
         }
         void write(std::span<std::byte> bytes,std::uint64_t x,bool be){for(std::size_t i=0;i<bytes.size();++i)bytes[i]=std::byte((x>>(8*(be?bytes.size()-1-i:i)))&255);
         }
-        std::uint64_t silence(const NumericContract& c){const auto* d=dtype_descriptor(c.dtype);
+        template<class Contract> std::uint64_t silence(const Contract& c){const auto* d=dtype_descriptor(c.dtype);
             if(c.representation.normalization==Normalization::UnsignedUnit)if(d && !d->signed_value && !d->ieee)return std::uint64_t{1}<<((c.representation.valid_bits?c.representation.valid_bits:d->bytes*8)-1);
             return 0;
         }
-        Status validate_actual(const NumericView& view,std::size_t dimensions) {
+        template<class View> Status validate_actual(const View& view,std::size_t dimensions) {
             for(std::size_t axis=0;axis<2;++axis)
                 if(view.actual[axis]<view.contract->shape.extents[axis].minimum || view.actual[axis]>view.contract->shape.extents[axis].maximum || (axis>=dimensions && view.actual[axis]!=1))return Status::invalid_argument;
             return Status::ok;
         }
-        Status validate_element_geometry(const NumericView& v,ElementIndex i,std::size_t r) {
+        template<class View> Status validate_element_geometry(const View& v,ElementIndex i,std::size_t r) {
             if(v.contract->shape.rank!=Rank::Scalar && v.contract->shape.rank!=Rank::Vector && v.contract->shape.rank!=Rank::Matrix)return Status::invalid_argument;
             if(!r && v.planes.size()!=1)return Status::invalid_argument;
             const auto actual=validate_actual(v,r);if(actual!=Status::ok)return actual;
             if((r==0 && (i.row || i.column)) || (r==1 && (i.row>=v.actual[0] || i.column)) || (r==2 && (i.row>=v.actual[0] || i.column>=v.actual[1])))return Status::invalid_argument;
             return Status::ok;
         }
-        Status history_silence(const NumericView& v,std::size_t logical,bool& silent) {
+        template<class View> Status history_silence(const View& v,std::size_t logical,bool& silent) {
             if(v.ring.silence_mask.empty())return Status::ok;
             const auto flag=v.ring.silence_mask[logical];
             if(flag!=std::byte{0} && flag!=std::byte{1})return Status::malformed;
             silent=silent || flag!=std::byte{0};
             return Status::ok;
         }
-        Status physical_row(const NumericView& v,std::size_t logical,std::size_t r,std::size_t& row,bool& silent) {
+        template<class View> Status physical_row(const View& v,std::size_t logical,std::size_t r,std::size_t& row,bool& silent) {
             row=logical;
             silent=v.semantic_silence;
-            if(v.ring.capacity){if((r!=1 && r!=2) || (r==1 && v.contract->semantic!=Semantic::History) || !v.ring.capacity || v.actual[0]>v.ring.capacity || v.ring.oldest>=v.ring.capacity || (!v.ring.silence_mask.empty() && v.ring.silence_mask.size()<v.actual[0]))return Status::invalid_argument;
+            if(v.ring.capacity){if((r!=1 && r!=2) || (r==1 && !vector_ring(v)) || !v.ring.capacity || v.actual[0]>v.ring.capacity || v.ring.oldest>=v.ring.capacity || (!v.ring.silence_mask.empty() && v.ring.silence_mask.size()<v.actual[0]))return Status::invalid_argument;
                 const auto status=history_silence(v,logical,silent);
                 if(status!=Status::ok)return status;
                 row=v.ring.oldest;
@@ -66,7 +70,7 @@ namespace signal_contracts {
             }
             return Status::ok;
         }
-        Status element_byte_offset(const NumericView& v,ElementIndex i,std::size_t r,std::size_t row,std::size_t width,std::size_t& out) {
+        template<class View> Status element_byte_offset(const View& v,ElementIndex i,std::size_t r,std::size_t row,std::size_t width,std::size_t& out) {
             out=v.planes[i.plane].offset;
             std::size_t term=0;
             if(r && (!product(row,v.planes[i.plane].stride_bytes[0],term) || !add(out,term)))return Status::overflow;
@@ -75,19 +79,19 @@ namespace signal_contracts {
             if(!v.contract->representation.alignment || reinterpret_cast<std::uintptr_t>(v.storage.data()+out)%v.contract->representation.alignment)return Status::invalid_argument;
             return Status::ok;
         }
-        Status offset(const NumericView& v,ElementIndex i,std::size_t& out,std::size_t& width,bool& silent) {
-            if(!v.contract || i.plane>=v.planes.size() || v.planes.size()!=v.contract->channel_order.size())return Status::invalid_argument;
+        template<class View> Status offset(const View& v,ElementIndex i,std::size_t& out,std::size_t& width,bool& silent) {
+            if(!v.contract || i.plane>=v.planes.size() || v.planes.size()!=plane_count(*v.contract))return Status::invalid_argument;
             auto status=storage_width(*v.contract,width);if(status!=Status::ok)return status;
             const auto dimensions=rank(*v.contract);
             status=validate_element_geometry(v,i,dimensions);if(status!=Status::ok)return status;
             std::size_t row=0;status=physical_row(v,i.row,dimensions,row,silent);if(status!=Status::ok)return status;
             return element_byte_offset(v,i,dimensions,row,width,out);
         }
-        struct LayoutGeometry {
-            const NumericContract& contract;std::span<const PlaneLayout> planes;
+        template<class Contract> struct LayoutGeometry {
+            const Contract& contract;std::span<const PlaneLayout> planes;
             std::size_t width=0,dimensions=0,lane=0;std::array<std::size_t,2> extents{1,1};bool interleaved=false;
             Status describe() {
-                if(planes.empty() || planes.size()!=contract.channel_order.size() || !contract.representation.alignment || (contract.representation.alignment&(contract.representation.alignment-1)))return Status::invalid_argument;
+                if(planes.empty() || planes.size()!=plane_count(contract) || !contract.representation.alignment || (contract.representation.alignment&(contract.representation.alignment-1)))return Status::invalid_argument;
                 if(contract.shape.rank!=Rank::Scalar && contract.shape.rank!=Rank::Vector && contract.shape.rank!=Rank::Matrix)return Status::invalid_argument;
                 dimensions=rank(contract);interleaved=contract.representation.layout==ChannelLayout::Interleaved;
                 for(std::size_t axis=0;axis<dimensions;++axis) {
@@ -141,20 +145,20 @@ namespace signal_contracts {
                 out=maximum_end;return Status::ok;
             }
         };
-        Status layout(const NumericContract& contract,std::span<const PlaneLayout> planes,std::size_t& out) {
+        template<class Contract> Status layout(const Contract& contract,std::span<const PlaneLayout> planes,std::size_t& out) {
             std::size_t width=0;auto status=storage_width(contract,width);if(status!=Status::ok)return status;
             LayoutGeometry geometry{contract,planes,width};
             status=geometry.describe();if(status!=Status::ok)return status;
             return geometry.measure(out);
         }
-        Status validate_ring(const NumericView& v,std::size_t r) {
-            if(v.ring.capacity){if((r!=1 && r!=2) || (r==1 && v.contract->semantic!=Semantic::History) || v.ring.capacity!=v.contract->shape.extents[0].maximum || !v.ring.capacity || v.ring.oldest>=v.ring.capacity || (!v.ring.silence_mask.empty() && v.ring.silence_mask.size()!=v.ring.capacity))return Status::invalid_argument;
+        template<class View> Status validate_ring(const View& v,std::size_t r) {
+            if(v.ring.capacity){if((r!=1 && r!=2) || (r==1 && !vector_ring(v)) || v.ring.capacity!=v.contract->shape.extents[0].maximum || !v.ring.capacity || v.ring.oldest>=v.ring.capacity || (!v.ring.silence_mask.empty() && v.ring.silence_mask.size()!=v.ring.capacity))return Status::invalid_argument;
                 for(auto m:v.ring.silence_mask)if(m!=std::byte{0} && m!=std::byte{1})return Status::invalid_argument;
             }
             else if(v.ring.capacity || v.ring.oldest || !v.ring.silence_mask.empty())return Status::invalid_argument;
             return Status::ok;
         }
-        Status validate_numeric_payload(const NumericView& v,const FrameLimits& l) {
+        template<class View> Status validate_numeric_payload(const View& v,const FrameLimits& l) {
             std::size_t needed=0;
             const auto s=layout(*v.contract,v.planes,needed);
             if(s!=Status::ok)return s;
@@ -186,7 +190,7 @@ namespace signal_contracts {
             if(coordinates>l.max_coordinate_bytes)return Status::exhausted;
             return Status::ok;
         }
-        Status validate_numeric_shape(const NumericView& view) {
+        template<class View> Status validate_numeric_shape(const View& view) {
             const auto dimensions=rank(*view.contract);
             const auto actual=validate_actual(view,dimensions);
             return actual==Status::ok?validate_ring(view,dimensions):actual;
@@ -226,7 +230,7 @@ namespace signal_contracts {
             auto x=reinterpret_cast<std::uintptr_t>(a.data()),y=reinterpret_cast<std::uintptr_t>(b.data());
             return x<=y?y-x<a.size():x-y<b.size();
         }
-        Status decode_padding(const NumericContract& contract,const DTypeDescriptor& dtype,unsigned bits,std::size_t width,std::uint64_t& raw) {
+        template<class Contract> Status decode_padding(const Contract& contract,const DTypeDescriptor& dtype,unsigned bits,std::size_t width,std::uint64_t& raw) {
             const auto shift=unsigned(width*8)-bits;
             if(contract.representation.placement==BitPlacement::MostSignificant) {
                 if(raw&mask(shift))return Status::malformed;
@@ -237,7 +241,7 @@ namespace signal_contracts {
             if(high!=expected)return Status::malformed;
             raw&=mask(bits);return Status::ok;
         }
-        Status decode_integer_bits(const NumericContract& contract,std::size_t width,std::uint64_t& raw) {
+        template<class Contract> Status decode_integer_bits(const Contract& contract,std::size_t width,std::uint64_t& raw) {
             const auto* dtype=dtype_descriptor(contract.dtype);
             const unsigned bits=contract.representation.valid_bits?contract.representation.valid_bits:dtype->bytes*8;
             if(!dtype->ieee && bits<width*8) {
@@ -252,7 +256,7 @@ namespace signal_contracts {
             const auto extended=dtype.signed_value && (truncated&(std::uint64_t{1}<<(bits-1)))?truncated|(mask(dtype.bytes*8)&~mask(bits)):truncated;
             return (value&mask(dtype.bytes*8))==extended?Status::ok:Status::overflow;
         }
-        Status encode_integer_bits(const NumericContract& contract,std::size_t width,std::uint64_t value,std::uint64_t& raw) {
+        template<class Contract> Status encode_integer_bits(const Contract& contract,std::size_t width,std::uint64_t value,std::uint64_t& raw) {
             const auto* dtype=dtype_descriptor(contract.dtype);
             const unsigned bits=contract.representation.valid_bits?contract.representation.valid_bits:dtype->bytes*8;
             const auto status=validate_integer_bits(*dtype,bits,value);if(status!=Status::ok)return status;
@@ -268,7 +272,7 @@ namespace signal_contracts {
             if(dtype==DType::Float32)return std::isfinite(std::bit_cast<float>(std::uint32_t(bits)));
             return true;
         }
-        Status validate_value_row(const NumericView& view,std::size_t plane,std::size_t row,std::size_t columns,ValueDomain domain) {
+        template<class View> Status validate_value_row(const View& view,std::size_t plane,std::size_t row,std::size_t columns,ValueDomain domain) {
             for(std::size_t column=0;column<columns;++column) {
                 std::uint64_t bits=0;const auto status=load_bits(view,{plane,row,column},view.contract->dtype,bits);
                 if(status!=Status::ok)return status;
@@ -276,7 +280,7 @@ namespace signal_contracts {
             }
             return Status::ok;
         }
-        Status validate_value_plane(const NumericView& view,std::size_t plane,ValueDomain domain) {
+        template<class View> Status validate_value_plane(const View& view,std::size_t plane,ValueDomain domain) {
             const auto dimensions=rank(*view.contract);
             const auto rows=dimensions?view.actual[0]:1,columns=dimensions==2?view.actual[1]:1;
             for(std::size_t row=0;row<rows;++row) {
@@ -289,7 +293,7 @@ namespace signal_contracts {
             for(const auto coordinate:view.coordinates.axes)if(overlaps(bytes,coordinate))return true;
             return false;
         }
-        Status silence_plane(MutableNumericView& view,std::size_t plane,std::uint64_t value) {
+        template<class View> Status silence_plane(View& view,std::size_t plane,std::uint64_t value) {
             const auto dimensions=rank(*view.contract);
             const auto rows=dimensions?view.actual[0]:1,columns=dimensions==2?view.actual[1]:1;
             for(std::size_t row=0;row<rows;++row)for(std::size_t column=0;column<columns;++column) {
@@ -385,7 +389,8 @@ namespace signal_contracts {
 Status validate_mutable(const MutableNumericView& v,const FrameLimits& l) noexcept {
     return validate_view(DataFrameView{{},v.view()},l);
 }
-Status load_bits(const NumericView& v,ElementIndex i,DType type,std::uint64_t& out) noexcept {
+namespace {
+    template<class View> Status load_numeric_bits(const View& v,ElementIndex i,DType type,std::uint64_t& out) noexcept {
         if(!v.contract || v.contract->dtype!=type)return Status::incompatible_contract;
         std::size_t pos=0,width=0;
         bool silent=false;
@@ -399,7 +404,12 @@ Status load_bits(const NumericView& v,ElementIndex i,DType type,std::uint64_t& o
         out=raw;
         return Status::ok;
     }
-    Status store_bits(MutableNumericView& v,ElementIndex i,DType type,std::uint64_t bits_value) noexcept {
+}
+Status load_bits(const NumericView& v,ElementIndex i,DType type,std::uint64_t& out) noexcept {return load_numeric_bits(v,i,type,out);}
+Status load_bits(const NumericBufferView& v,ElementIndex i,DType type,std::uint64_t& out) noexcept {return load_numeric_bits(v,i,type,out);}
+
+    namespace {
+    template<class View> Status store_numeric_bits(View& v,ElementIndex i,DType type,std::uint64_t bits_value) noexcept {
         if(!v.contract || v.contract->dtype!=type)return Status::incompatible_contract;
         std::size_t pos=0,width=0;
         bool silent=false;
@@ -409,6 +419,10 @@ Status load_bits(const NumericView& v,ElementIndex i,DType type,std::uint64_t& o
         write(v.storage.subspan(pos,width),raw,big(v.contract->representation.encoding));
         return Status::ok;
     }
+}
+Status store_bits(MutableNumericView& v,ElementIndex i,DType type,std::uint64_t bits_value) noexcept {return store_numeric_bits(v,i,type,bits_value);}
+Status store_bits(MutableNumericBufferView& v,ElementIndex i,DType type,std::uint64_t bits_value) noexcept {return store_numeric_bits(v,i,type,bits_value);}
+
     Status validate_values(const NumericView& v,ValueDomain domain,const FrameLimits& l) noexcept {
         auto s=numeric_validation(v,l);
         if(s!=Status::ok)return s;
@@ -427,6 +441,28 @@ Status load_bits(const NumericView& v,ElementIndex i,DType type,std::uint64_t& o
             if(s!=Status::ok)return s;
         }return Status::ok;
     }
+Status required_storage(const NumericBufferContract& c,std::span<const PlaneLayout> p,std::size_t& out) noexcept {return layout(c,p,out);}
+Status validate_view(const NumericBufferView& value,const FrameLimits& limits) noexcept {
+    if(!value.contract)return Status::invalid_argument;
+    auto status=validate_contract(*value.contract,limits);if(status!=Status::ok)return status;
+    status=validate_numeric_shape(value);if(status!=Status::ok)return status;
+    return validate_numeric_payload(value,limits);
+}
+Status validate_mutable(const MutableNumericBufferView& value,const FrameLimits& limits) noexcept {return validate_view(value.view(),limits);}
+Status validate_values(const NumericBufferView& value,ValueDomain domain,const FrameLimits& limits) noexcept {
+    auto status=validate_view(value,limits);if(status!=Status::ok)return status;
+    if(domain!=ValueDomain::FiniteOnly && domain!=ValueDomain::AnyIeee)return Status::invalid_argument;
+    for(std::size_t plane=0;plane<value.planes.size();++plane){status=validate_value_plane(value,plane,domain);if(status!=Status::ok)return status;}
+    return Status::ok;
+}
+Status fill_silence(MutableNumericBufferView& value,const FrameLimits& limits) noexcept {
+    auto status=validate_mutable(value,limits);if(status!=Status::ok)return status;
+    if(overlaps(value.storage,std::as_bytes(std::span(&value,1))) || overlaps(value.storage,std::as_bytes(std::span(value.contract,1))) ||
+       overlaps(value.storage,std::as_bytes(value.planes)) || overlaps(value.storage,value.ring.silence_mask))return Status::invalid_argument;
+    const auto zero=silence(*value.contract);
+    for(std::size_t plane=0;plane<value.planes.size();++plane){status=silence_plane(value,plane,zero);if(status!=Status::ok)return status;}
+    return Status::ok;
+}
 static Status validate_history_row_source(const NumericView& view,std::size_t row) noexcept {
     constexpr FrameLimits structural_limits{maximum,maximum,maximum,maximum,maximum,maximum};
     auto status=validate_view(DataFrameView{{},view},structural_limits);

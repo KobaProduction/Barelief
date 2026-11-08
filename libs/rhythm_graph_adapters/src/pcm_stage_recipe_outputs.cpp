@@ -6,45 +6,17 @@ namespace rhythm_graph_adapters::detail {
 using namespace rhythm_reference_ports;
 using namespace dataflow_runtime;
 using namespace signal_contracts;
-Status PcmStageOperation::publish_onset(NumericOperationOutput& output,const FrameStamp& stamp) noexcept {
-    const auto& source=std::get<PreparedPcmOnsetSequence>(kernel_);const auto port=output.port;
-    if(port<5){
-        const std::array<float,5> values{onset_.descriptor,onset_.peak.position,onset_.peak.thresholded,onset_.peak.mean,onset_.peak.median};
-        return write_pcm_scalar(output,values[port],stamp);
-    }
-    if(port==5)return write_pcm_scalar(output,std::uint8_t(onset_.onset.detected),stamp);
-    if(port==6)return write_pcm_scalar(output,onset_.onset.sample,stamp);
-    if(port==7)return write_pcm_scalar(output,std::uint8_t(onset_.silent),stamp);
-    if(port==10)return write_vector(output,source.whitening_peaks(),stamp);
-    return publish_spectrum(output,port<10?domain::PortId(port-8):domain::PortId(port-9),source.spectrum_stage(),source.processed_magnitude(),source.phase(),stamp);
+Status PcmStageOperation::publish_output(std::span<const NumericOperationInput> inputs,NumericOperationOutput& output,const NumericOperationOrigin& stamp) noexcept {
+    if(plan_.kind==PcmStageKind::Tracker)return publish_tracker(output,stamp);
+    if(output.port==context_sequence_ports::onset_history)
+        return write_vector(output,input_at(inputs,context_sequence_ports::history_input)->contiguous_float32,stamp);
+    return publish_context(output,output.port,std::get<PreparedContextBeatSequence>(kernel_),stamp);
 }
-Status PcmStageOperation::publish_tempo(NumericOperationOutput& output,const FrameStamp& stamp) noexcept {
-    const auto& source=std::get<PreparedPcmContextTempo>(kernel_);const auto port=output.port;
-    if(port<3){
-        const std::array<float,3> values{tempo_.descriptor,tempo_.onset_peak.position,tempo_.onset_peak.thresholded};
-        return write_pcm_scalar(output,values[port],stamp);
-    }
-    if(port<11){
-        const auto relative=port==3?domain::PortId{0}:domain::PortId(port-2);
-        return publish_context(output,relative,source.sequence_stage(),stamp);
-    }
-    if(port==11)return write_vector(output,source.raw_magnitude(),stamp);
-    if(port==12)return write_vector(output,source.phase(),stamp);
-    if(port<18)return publish_context(output,domain::PortId(port-4),source.sequence_stage(),stamp);
-    return publish_spectrum(output,domain::PortId(port-16),source.spectrum_stage(),source.raw_magnitude(),source.phase(),stamp);
-}
-Status PcmStageOperation::publish(std::span<NumericOperationOutput> outputs,const FrameStamp& stamp) noexcept {
+Status PcmStageOperation::publish(std::span<const NumericOperationInput> inputs,std::span<NumericOperationOutput> outputs,const NumericOperationOrigin& stamp) noexcept {
     for(auto& output:outputs){
-        Status status=Status::invalid_argument;
-        switch(plan_.kind){
-        case PcmStageKind::Spectrum:status=publish_spectrum(output,output.port,std::get<PreparedHopSpectrum>(kernel_),magnitude_,phase_,stamp);break;
-        case PcmStageKind::Onset:status=publish_onset(output,stamp);break;
-        case PcmStageKind::Tempo:status=publish_tempo(output,stamp);break;
-        case PcmStageKind::Tracker:status=publish_tracker(output,stamp);break;
-        case PcmStageKind::Sequence:status=publish_context(output,output.port,std::get<PreparedContextBeatSequence>(kernel_),stamp);break;
-        }
+        auto status=publish_output(inputs,output,stamp);if(status!=Status::ok)return status;
+        status=validate_values(output.value.view(),pcm_stage_output_spec(plan_,output.port).values,limits_);
         if(status!=Status::ok)return status;
-        status=validate_values(output.value.view(),pcm_stage_output_spec(plan_,output.port).values,limits_);if(status!=Status::ok)return status;
     }
     return Status::ok;
 }

@@ -40,7 +40,7 @@ void apply_scalar_labels(NumericEditorGraphModel* model,const NumericExampleScal
     if(!node)return;
     QJsonObject inputs;
     for(std::size_t port=0;port<names.labels.size();++port)
-        inputs[QString::number(port)]=QJsonObject{{"enabled",true},{"display_name",ui::text(names.labels[port])}};
+        inputs[QString::number(port)]=QJsonObject{{"enabled",true},{"display_name_key",names.labels[port]}};
     auto presentation=node->presentation();
     presentation["scalar_inputs"]=inputs;
     node->set_presentation(presentation);
@@ -71,9 +71,10 @@ void apply_node_label(NumericEditorGraphModel* model,const NumericExampleNodeNam
     auto* node=model->delegateModel<AudioNodeModel>(name.node);
     if(!node)return;
     auto presentation=node->presentation();
-    const auto title=ui::text(name.label).trimmed();
-    if(title.isEmpty())presentation.remove("display_name");
-    else presentation["display_name"]=title;
+    const auto title=QString::fromUtf8(name.label).trimmed();
+    presentation.remove("display_name");
+    if(title.isEmpty())presentation.remove("display_name_key");
+    else presentation["display_name_key"]=title;
     node->set_presentation(presentation);
 }
 void configure_research_modes(QJsonObject& view,std::string_view kind) {

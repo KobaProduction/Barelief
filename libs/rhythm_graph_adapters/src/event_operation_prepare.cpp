@@ -4,7 +4,7 @@
 
 namespace rhythm_graph_adapters::detail {
 using namespace rhythm_reference_ports;
-bool EventOperation::prepare(const domain::ConfiguredProcessingNode& node) {
+bool EventOperation::prepare(const dataflow_runtime::NumericOperationNode& node) {
     const auto view=definition_view(node);
     if(!plan_event_operation(view,plan_) || !event_output_contracts(view,plan_))return false;
     bool ready=true;
@@ -13,7 +13,7 @@ bool EventOperation::prepare(const domain::ConfiguredProcessingNode& node) {
     else kernel_.emplace<std::monostate>();
     return ready && workspace_bytes()<=plan_.kernel_bytes;
 }
-std::unique_ptr<AdapterOperation> prepare_event_operation(const domain::ConfiguredProcessingNode& node) {
+std::unique_ptr<AdapterOperation> prepare_event_operation(const dataflow_runtime::NumericOperationNode& node) {
     if(!event_operation_kind(node.kind))return {};
     auto operation=std::make_unique<EventOperation>();if(!operation->prepare(node))return {};
     return operation;

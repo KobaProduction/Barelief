@@ -1,4 +1,5 @@
 #include <desktop/numeric_source_format.h>
+#include <desktop/numeric_graph_budget.h>
 #include "numeric_engine_ingress.h"
 #include <pipeline/numeric_engine.h>
 #include <desktop/numeric_project_document.h>
@@ -37,7 +38,7 @@ dataflow_runtime::NumericRuntimeProfile desktop_profile() {
     constexpr std::size_t fixed=2*DeliveryArena::slot_count*(DeliveryArena::payload_bytes+DeliveryArena::metadata_bytes)
         +HistorySnapshotArena::slot_count*(HistorySnapshotArena::payload_bytes+HistorySnapshotArena::metadata_bytes)
         +(384+48)*1024*1024+remote_numeric::ControlTransportReservationBytes;
-    auto profile=dataflow_runtime::NumericRuntimeProfile{{512,2048,16,32,1024*1024,4*1024*1024,frame_limits},
+    auto profile=dataflow_runtime::NumericRuntimeProfile{{desktop::NumericGraphBudget::nodes,desktop::NumericGraphBudget::edges,16,32,1024*1024,4*1024*1024,frame_limits},
         {{desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::payload_bytes,1024*1024},fixed,desktop::NumericFrameBudget::payload_bytes},
         {32768,8,262144,262144,16*1024*1024},{true,true,true},true};
     profile.music_enabled=true;profile.shared_silence_bytes=0;
@@ -445,7 +446,7 @@ struct NumericEngine::Impl final : application::NumericGraphPreparationPort,appl
     static std::pair<int,QString> processing_rate_role(std::string_view kind) {
         if(kind=="Window")return {4,QStringLiteral("window_outputs")};
         if(kind=="Mixer")return {3,QStringLiteral("mixer_outputs")};
-        if(kind=="StereoFFT" || kind=="Mel" || kind=="PcmResampler")return {2,QStringLiteral("transform_outputs")};
+        if(kind=="Mel" || kind=="PcmResampler")return {2,QStringLiteral("transform_outputs")};
         if(kind=="AudioSource" || kind=="TestSignal" || kind=="SignalGenerator" || kind=="NetworkInput")
             return {1,QStringLiteral("source_outputs")};
         return {};

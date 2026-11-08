@@ -1,4 +1,3 @@
-#include <domain/numeric/temporal_operations.h>
 #include <domain/numeric/interval_operations.h>
 #include <domain/numeric/common_operations.h>
 #include <domain/numeric/sequence_operations.h>
@@ -82,7 +81,6 @@ std::optional<ProcessingOperation> numerical_operation(NodeKind k) noexcept {
     return {};
 }
 std::optional<ProcessingOperation> music_operation(NodeKind k) noexcept {
-    if(temporal_operation_kind(kind_id(k)))return ProcessingOperation::MusicTransform;
     if(interval_operation_kind(kind_id(k)) || common_operation_kind(kind_id(k)) || sequence_operation_kind(kind_id(k)) || reference_operation_kind(kind_id(k)))return ProcessingOperation::NumericExtension;
     if(k==NodeKind::TempoEvidence)return ProcessingOperation::TempoEvidence;
     if(k==NodeKind::RhythmAnalyzer || k==NodeKind::RhythmFeatures || k==NodeKind::OnsetStrength || spectral_descriptor_kind(kind_id(k)))return ProcessingOperation::MusicTransform;
@@ -433,13 +431,15 @@ void paired_arity(NodeResolution& state) {
     const auto op=state.operation;
     if(op==ProcessingOperation::WLEDEncoder)state.input_count=3;
     if(op==ProcessingOperation::SpectrumPeak || op==ProcessingOperation::MatrixFFT)state.output_count=2;
-    if(op==ProcessingOperation::Fourier){state.input_count=state.kind==NodeKind::Fourier?2:1;state.output_count=state.kind==NodeKind::Fourier?2:3;}
-    if(op==ProcessingOperation::ComplexPolar){state.input_count=2;state.output_count=2;}
+    if(op==ProcessingOperation::Fourier){state.input_count=state.kind==NodeKind::Fourier?2:1;state.output_count=2;}
+    if(op==ProcessingOperation::ComplexPolar){state.input_count=2;state.output_count=state.kind==NodeKind::AmplitudePhase?3:2;}
 }
 void numeric_extension_arity(NodeResolution& state) {
     if(sequence_operation_kind(state.configured.kind) || reference_operation_kind(state.configured.kind)){state.input_count=state.inputs.size();state.output_count=state.outputs.size();}
-    if(const auto* spec=common_operation_spec(state.configured.kind)){state.input_count=spec->inputs;state.output_count=spec->outputs;}
-    if(temporal_operation_kind(state.configured.kind))state.output_count=temporal_operation_output_count(state.configured.kind);
+    if(const auto* spec=common_operation_spec(state.configured.kind)){
+        state.input_count=spec->optional_inputs?state.inputs.size():spec->inputs;
+        state.output_count=spec->outputs;
+    }
     if(interval_operation_kind(state.configured.kind))state.output_count=interval_operation_output_count(state.configured.kind);
 }
 void music_arity(NodeResolution& state) {

@@ -21,7 +21,7 @@ def main() -> int:
         with patch.dict(os.environ, environment):
             suite = unittest.defaultTestLoader.loadTestsFromNames([
                 "quality_scope_tests", "quality_execution_tests", "quality_cpu_tests", "quality_compile_context_tests",
-                "run_clang_tidy_tests", "run_clazy_tests",
+                "run_clang_tidy_tests", "run_clazy_tests", "run_ctest_tests",
             ])
             if not suite.countTestCases():
                 print("Quality-tool regressions were not discovered", file=sys.stderr)

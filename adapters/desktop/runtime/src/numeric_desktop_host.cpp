@@ -20,7 +20,7 @@ struct NumericDesktopHost::Impl {
  std::unique_ptr<EnginePort> endpoint;NumericEngine* local=nullptr;
  NumericRoutingAdapter* routing=nullptr;std::unique_ptr<AggregatorClient> registry;
  std::unique_ptr<NumericControlServer> server;
- mutable std::mutex mutex;EngineSnapshot cache;bool pending=false,retired=false,snapshot_dirty=true;
+ mutable std::mutex mutex;EngineSnapshot cache;QString cached_network_warning;bool pending=false,retired=false,snapshot_dirty=true;
  std::size_t outstanding=0;std::array<quint64,128> submitted{};std::uint64_t data_generation=0;
  std::atomic<PortDeliveryMode> delivery_mode{PortDeliveryMode::Unsupported};
  NumericDeliveryMailbox<EngineReply,128> replies;
@@ -49,21 +49,25 @@ struct NumericDesktopHost::Impl {
  explicit Impl(NumericDesktopHost& target):owner(target){worker->moveToThread(&thread);QObject::connect(&thread,&QThread::finished,worker,&QObject::deleteLater);thread.start();}
  template<class F> void call(F&& f)const{if(QThread::currentThread()==&thread)f();else QMetaObject::invokeMethod(worker,std::forward<F>(f),Qt::BlockingQueuedConnection);}
  void schedule_locked(){if(pending||retired)return;pending=true;QMetaObject::invokeMethod(&owner,[this]{drain();},Qt::QueuedConnection);}
- void update_cache_locked(EngineSnapshot value){
+ void update_cache_locked(EngineSnapshot value,QString warning){
   if(value.epoch!=cache.epoch||value.graph_revision!=cache.graph_revision||
       (value.statuses.value("analyzer").state==State::Stopped&&cache.statuses.value("analyzer").state!=State::Stopped)){
    ++data_generation;frames.clear();histories.clear();history_snapshots.clear();history_resync=false;
    resync_all=false;resync_endpoints.clear();
    std::fill(preview_service_age.begin(),preview_service_age.end(),0);preview_service_serial=0;
-  }cache=std::move(value);snapshot_dirty=true;
+  }cache=std::move(value);cached_network_warning=std::move(warning);snapshot_dirty=true;
  }
- void publish(EngineSnapshot value){delivery_mode=endpoint->port_delivery_mode();std::lock_guard lock(mutex);update_cache_locked(std::move(value));schedule_locked();}
- void publish(EngineReply value){auto live=endpoint->snapshot();std::lock_guard lock(mutex);update_cache_locked(std::move(live));
+ void publish(EngineSnapshot value){
+  delivery_mode=endpoint->port_delivery_mode();auto warning=endpoint->network_warning();
+  std::lock_guard lock(mutex);update_cache_locked(std::move(value),std::move(warning));schedule_locked();
+ }
+ void publish(EngineReply value){auto live=endpoint->snapshot();auto warning=endpoint->network_warning();
+  std::lock_guard lock(mutex);update_cache_locked(std::move(live),std::move(warning));
   if(value.request_id==resync_request){resync_request=0;resync_inflight=false;schedule_locked();return;}
   const auto id=std::find(submitted.begin(),submitted.end(),value.request_id);if(id==submitted.end())return;*id=0;
-  // submit reserves a completion slot before dispatch. Accepted request IDs are
-  // never evicted, and internal transport requests do not consume GUI slots.
-  replies.push(std::move(value));schedule_locked();}
+  // Every admitted request retains its reserved, correlated completion.
+  replies.push(std::move(value));schedule_locked();
+ }
  std::size_t selected_index(const EndpointIdentity& id) const {
   const auto at=std::lower_bound(selected.begin(),selected.end(),id);
   return at!=selected.end()&&*at==id?std::size_t(at-selected.begin()):selected.size();
@@ -367,13 +371,27 @@ void NumericDesktopHost::request_numeric_snapshot(const EndpointIdentity& endpoi
 }
 void NumericDesktopHost::set_numeric_preview_cadence_hz(int hz){impl_->call([this,hz]{impl_->endpoint->set_numeric_preview_cadence_hz(hz);});}
 EngineSnapshot NumericDesktopHost::snapshot()const{std::lock_guard lock(impl_->mutex);return impl_->cache;}
-bool NumericDesktopHost::configure_network(QJsonObject config,QString* error){bool ok=false;QString e;impl_->call([&]{ok=impl_->endpoint->configure_network(std::move(config),&e);});if(error)*error=e;return ok;}
-QString NumericDesktopHost::network_warning()const{QString value;impl_->call([&]{value=impl_->endpoint->network_warning();});return value;}
+bool NumericDesktopHost::configure_network(QJsonObject config,QString* error){
+ bool ok=false;QString e;
+ impl_->call([&]{
+  ok=impl_->endpoint->configure_network(std::move(config),&e);
+  auto warning=impl_->endpoint->network_warning();
+  std::lock_guard lock(impl_->mutex);impl_->cached_network_warning=std::move(warning);
+ });
+ if(error)*error=e;return ok;
+}
+QString NumericDesktopHost::network_warning()const{
+ std::lock_guard lock(impl_->mutex);return impl_->cached_network_warning;
+}
 void NumericDesktopHost::connect_remote(){impl_->call([&]{impl_->endpoint->connect_remote();});}
 void NumericDesktopHost::disconnect_remote(){impl_->call([&]{impl_->endpoint->disconnect_remote();impl_->publish(impl_->endpoint->snapshot());});}
 EnginePort::PortDeliveryMode NumericDesktopHost::port_delivery_mode()const noexcept{return impl_->delivery_mode.load();}
 bool NumericDesktopHost::subscribe_numeric_frames(std::vector<EndpointIdentity> endpoints,QString* error){
  std::sort(endpoints.begin(),endpoints.end());endpoints.erase(std::unique(endpoints.begin(),endpoints.end()),endpoints.end());
+ {
+  std::lock_guard lock(impl_->mutex);
+  if(impl_->selected==endpoints){if(error)error->clear();return true;}
+ }
  bool ok=false;QString e;impl_->call([&]{ok=impl_->subscribe_frames(std::move(endpoints),e);});
  if(error)*error=e;return ok;
 }

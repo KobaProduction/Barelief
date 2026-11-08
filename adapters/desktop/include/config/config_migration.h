@@ -61,13 +61,6 @@ inline bool map_legacy_nodes(QJsonArray& nodes,QMap<int,QString>& kinds,int& nex
     }
     return true;
 }
-inline int append_legacy_node(QJsonArray& nodes,int& next,const QString& kind,const QJsonObject& near) {
-    const int id=next++;nodes.append(QJsonObject{{"id",id},{"position",near.value("position").toObject()},
-        {"internal-data",QJsonObject{{"model-name",kind}}}});return id;
-}
-inline QJsonObject legacy_edge(int from,int to) {
-    return {{"outNodeId",from},{"inNodeId",to},{"outPortIndex",0},{"inPortIndex",0}};
-}
 inline bool valid_legacy_edge_ids(const QJsonObject& edge,const QMap<int,QString>& kinds) {
     const auto from=edge.value("outNodeId"),to=edge.value("inNodeId");
     const double source=from.toDouble(-1),target=to.toDouble(-1);
@@ -76,54 +69,15 @@ inline bool valid_legacy_edge_ids(const QJsonObject& edge,const QMap<int,QString
         std::floor(source)==source && std::floor(target)==target &&
         kinds.contains(int(source)) && kinds.contains(int(target));
 }
-inline QJsonObject legacy_node_near(const QJsonArray& nodes,const QJsonValue& id) {
-    for(const auto& node:nodes)if(node.toObject().value("id")==id)return node.toObject();
-    return {};
-}
-inline bool legacy_capture_edge(const QJsonObject& edge,const QMap<int,QString>& kinds) {
-    const int source=int(edge["outNodeId"].toDouble()),target=int(edge["inNodeId"].toDouble());
-    return kinds.value(target)=="StereoFFT" &&
-        (kinds.value(source)=="AudioSource" || kinds.value(source)=="TestSignal");
-}
-inline void insert_legacy_window_chain(QJsonArray& nodes,QJsonArray& edges,QJsonObject edge,int index,int& next) {
-    const int target=int(edge["inNodeId"].toDouble());
-    const auto near=legacy_node_near(nodes,edge["inNodeId"]);
-    const int window=append_legacy_node(nodes,next,"Window",near);
-    const int function=append_legacy_node(nodes,next,"WindowFunction",near);
-    edge["inNodeId"]=window;edges[index]=edge;
-    edges.append(legacy_edge(window,function));edges.append(legacy_edge(function,target));
-}
-inline bool rewrite_legacy_capture_edges(QJsonArray& nodes,QJsonArray& edges,const QMap<int,QString>& kinds,
-                                         int& next,MigrationResult& result) {
-    const auto original=edges;
-    for(int i=0;i<original.size();++i) {
-        auto edge=original[i].toObject();
-        if(!valid_legacy_edge_ids(edge,kinds)) {
-            result=migration_error(result,"Invalid legacy edge identity","connections");return false;
-        }
-        if(!legacy_capture_edge(edge,kinds))continue;
-        if(edge["outPortIndex"]!=0 || edge["inPortIndex"]!=0){
-            result=migration_error(result,"Unsupported legacy edge port","connections");return false;
-        }
-        insert_legacy_window_chain(nodes,edges,edge,i,next);
-    }
-    return true;
-}
-inline void append_legacy_bark_nodes(QJsonArray& nodes,QJsonArray& edges,const QMap<int,QString>& kinds,int& next) {
-    for(auto it=kinds.cbegin();it!=kinds.cend();++it)if(it.value()=="StereoFFT") {
-        const int bark=append_legacy_node(nodes,next,"BarkWeighting",{});
-        for(int i=0;i<edges.size();++i){auto edge=edges[i].toObject();if(edge["outNodeId"]==it.key()){edge["outNodeId"]=bark;edges[i]=edge;}}
-        edges.append(legacy_edge(it.key(),bark));
-    }
-}
 inline bool prepare_legacy_graph(QJsonArray& nodes,QJsonArray& edges,MigrationResult& result) {
     QMap<int,QString> kinds;int next=0;
     if(!map_legacy_nodes(nodes,kinds,next,result))return false;
     if(qint64(next)+qint64(edges.size())*2+kinds.size()>=std::numeric_limits<int>::max()) {
         result=migration_error(result,"Legacy node ID space exhausted","nodes/id");return false;
     }
-    if(!rewrite_legacy_capture_edges(nodes,edges,kinds,next,result))return false;
-    append_legacy_bark_nodes(nodes,edges,kinds,next);
+    for(const auto& edge:edges)if(!valid_legacy_edge_ids(edge.toObject(),kinds)) {
+        result=migration_error(result,"Invalid legacy edge identity","connections");return false;
+    }
     return true;
 }
 inline QJsonObject mapped_legacy_graph(const QJsonObject& raw,const QJsonArray& nodes,const QJsonArray& edges) {

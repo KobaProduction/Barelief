@@ -294,7 +294,27 @@ static void feed_query_matrix(NumericDesktopHost& host,const domain::NumericProc
  stamp.producer_epoch=host.snapshot().epoch;stamp.generation=1;stamp.sequence=stamp.source_sequence=1;
  require(host.feed_numeric(0,{stamp,NumericView{&c,std::as_bytes(std::span(values)),std::span(&plane,1),{2,3}}})==Status::ok,"async Matrix feed");
 }
+static void worker_queries_do_not_wait(){
+ NumericDesktopHost host;auto g=matrix_query_graph();{Replies replies(host);replies.accepted(apply(g));}
+ require(host.subscribe_numeric_frames({sink(g)}),"worker query fixture subscription");
+ const auto warning=host.network_warning();
+ struct Gate {std::mutex mutex;std::condition_variable changed;bool entered=false,released=false,expired=false;};
+ auto gate=std::make_shared<Gate>();
+ require(QMetaObject::invokeMethod(host.local_engine(),[gate]{
+  std::unique_lock lock(gate->mutex);gate->entered=true;gate->changed.notify_all();
+  gate->expired=!gate->changed.wait_for(lock,std::chrono::seconds(2),[&]{return gate->released;});
+ },Qt::QueuedConnection),"worker query gate queued");
+ {std::unique_lock lock(gate->mutex);require(gate->changed.wait_for(lock,std::chrono::seconds(1),[&]{return gate->entered;}),"worker query gate entered");}
+ QString error="previous failure";
+ const bool subscribed=host.subscribe_numeric_frames({sink(g),sink(g)},&error);
+ const auto actual_warning=host.network_warning();
+ bool independent=false;
+ {std::lock_guard lock(gate->mutex);independent=!gate->expired;gate->released=true;}gate->changed.notify_all();
+ require(independent,"unchanged subscription or warning query waited for the occupied worker");
+ require(subscribed && error.isEmpty() && actual_warning==warning,"cached query changed subscription or warning semantics");
+}
 static void asynchronous_snapshot_query(){
+ worker_queries_do_not_wait();
  NumericDesktopHost host;auto g=matrix_query_graph();{Replies replies(host);replies.accepted(apply(g));}
  require(host.subscribe_numeric_frames({sink(g)}),"async snapshot subscription");
  feed_query_matrix(host,g);settle();

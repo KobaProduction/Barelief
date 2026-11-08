@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string_view>
 namespace signal_contracts {
+enum class WindowEvaluation { Default=0, Direct=1, SymmetricCosineSeries=2 };
 enum class WindowFunction { Hann, Hamming, Blackman, Rectangular, Bartlett, BlackmanHarris, FlatTop };
 inline constexpr std::array<std::string_view,7> window_function_names{
     "hann","hamming","blackman","rectangular","bartlett","blackman_harris","flat_top"};

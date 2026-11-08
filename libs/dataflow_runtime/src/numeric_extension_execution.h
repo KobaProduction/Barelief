@@ -1,5 +1,8 @@
 #pragma once
 #include <dataflow_runtime/numeric_operation.h>
+#include <signal_contracts/data_frame.h>
+
+namespace dataflow_runtime {struct NumericRuntimeProfile;}
 
 namespace dataflow_runtime::detail {
 struct PlanNode;struct State;

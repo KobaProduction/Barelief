@@ -4,10 +4,10 @@
 #include <dsp_kernels/correlation.h>
 #include <dsp_kernels/spectral_autocorrelation.h>
 #include <dsp_kernels/curve_interpolation.h>
+#include <dsp_kernels/vector_normalization.h>
+#include <limits>
 
 namespace dsp_kernels {
-enum class VectorNormalization {None,Maximum,Minimum,L0,Lp};
-bool normalize_vector(std::span<float>,VectorNormalization,float exponent=2) noexcept;
 struct FourierTempogramView {
     std::span<const float> windowed_input,transform_input,complex_values;
     std::size_t fft_size=0;

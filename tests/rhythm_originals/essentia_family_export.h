@@ -21,6 +21,5 @@ struct Matrix {
 void intervals(const Case&,const std::string&);
 void matrix(const Case&,const std::string&);
 void pcm(const Case&,const std::string&);
-void summary(const Case&,const std::string&);
 void diagnostics(const Case&,const std::string&);
 }

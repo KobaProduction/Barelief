@@ -43,6 +43,14 @@ bool accumulate_scaled_mean_float32(float value,float count,float& sum,float& co
     if(!std::isfinite(accumulator.value) || !std::isfinite(accumulator.error))return false;
     sum=accumulator.value;correction=accumulator.error;return true;
 }
+bool rayleigh_weights(std::span<float> values,float scale) noexcept {
+    if(!std::isfinite(scale) || scale<=0 || !std::isfinite(scale*scale))return false;
+    const float variance=scale*scale;
+    for(std::size_t i=0;i<values.size();++i){
+        const float tau=float(i+1);values[i]=tau/variance*std::exp(-.5f*tau*tau/variance);
+    }
+    return std::all_of(values.begin(),values.end(),[](float value){return std::isfinite(value);});
+}
 bool variance_float32(std::span<const float> values,float& output,std::size_t correction,Float32Summation mode,bool count_divisor) noexcept {
     float mean=0;
     if(values.size()<=correction || !arithmetic_mean_float32(values,mean,mode))return false;

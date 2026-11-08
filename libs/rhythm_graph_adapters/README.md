@@ -77,21 +77,19 @@ derive FFT size, Fs, frame period or coefficients from a produced FrameStamp.
 | `PolarNovelty` | UInt64 `method=0`: Complex / ComplexPhase / BeatEmphasis | 0:N source per-bin distances |
 | `HistogramOnset` | UInt64 `method=0`: Phase / WeightedPhase / SpectralDifference; `histogram_bins=10`, minimum0, maximumπ, magnitude_threshold.1 | 0:descriptor; 1:H center-weighted histogram counts; 2:N rescaled histogram values |
 | `SpectralWhitening` | `frame_period_s=512/44100`, `relax_time_s=250`, `floor=1e-4` | 0:N whitened values; 1:N peak history |
-| `OnsetMagnitude` | Whitening settings above, Bool `whiten=false`, `compression=0` | 0:N processed values; 1:N whitening peaks |
 | `SpectralRmsFlux` | No extra settings | 0:source sqrt(sum(magnitude²))/N positive RMS difference, including first-frame suppression |
 
 Histogram setting keys are `histogram_minimum`, `histogram_maximum` and
 `magnitude_threshold`. All Float32 scalar settings must be finite; source
 validation applies. Methods are bounded0…2; histogram bins are positive.
-Whitening period/relax/floor are positive; compression is nonnegative.
+Whitening period/relax/floor are positive.
 SpectralDifference requires magnitude0 only: the source consumes magnitude and
 previous magnitude, and the adapter calls the existing kernel's magnitude-only
 entry. Phase1 is required only for Phase/WeightedPhase and PolarNovelty. The
 magnitude-only branch neither invents nor validates a phase row.
 
-Optional HeldValue ports preserve source warm-control history: OnsetMagnitude
-port10 is a UInt8 flag0/1, port11 is Float32 compression≥0; both whitening
-operations accept Float32 floor>0 at12 and relaxation seconds>0 at13. All controls
+Optional HeldValue controls preserve SpectralWhitening history: Float32 floor>0
+at port12 and relaxation seconds>0 at port13. All controls
 are validated before changing any source state. An unavailable optional control
 retains current/default settings. Optional UInt8 scalar65500 uses the shared
 continue/batch-complete/EOF/reset protocol. Complete frame geometry remains
@@ -133,9 +131,8 @@ not source data. All eleven stages below reuse existing R/D kernels.
 | Stable kind | Existing source kernel | Outputs |
 |---|---|---|
 | `OnsetDescriptor` | `PreparedOnsetDescriptor`; nine source presets plus old HFC alias | scalar0; histogram methods also weighted-counts1 and rescaled-values2 |
-| `SpectralOnset` | `PreparedSpectralOnset`; six source presets | scalar0; complex methods distances1; MelFlux source amp2db bands1 |
-| `TriangularSpectralBands` | `PreparedTriangularSpectralBands` → existing generic `MelFilterBank` matrix projection | bands0, center-Hz-values1, weights2[band,bin] |
-| `AdaptivePeakPicker` | source forward/reverse recursive filtering, median/mean, interpolation | position0, picked1 UInt8, thresholded2, mean3, statistic4 |
+| `SpectralOnset` | `PreparedSpectralOnset`; independent spectral descriptors | scalar0; complex methods distances1; positive flux exposes supplied values1 |
+| `AdaptivePeakPicker` | adaptive median/mean threshold and peak interpolation from an explicitly smoothed history | position0, picked1 UInt8, thresholded2, mean3, statistic4 |
 | `OnsetDecision` | source startup/minimum-interval/delay acceptance | position0, local-sample1 UInt64, detected2 UInt8 |
 | `PcmSilence` | existing `pcm_is_silent`, explicit dB threshold | silence0 UInt8 |
 | `BufferedMaximum` | `PreparedBufferedMaximum`, source causal/noncausal initialization/reset | filtered0 |
@@ -187,28 +184,29 @@ and [SuperFluxPeaks](https://github.com/MTG/essentia/blob/b9fa6cb674ca43dfb94d28
 
 ## PCM/context and batch source compositions
 
-`pcm_stage_composition.h` provides `make_pcm_stage_node` for `HopSpectrum`,
-`PcmOnsetSequence`, `PcmContextTempo`, `ContextBeatTracker` and
-`ContextBeatSequence`. Its public contract lists all explicit settings, warm
-controls and intermediate ports. Frequency axes use the block's own Fs/N;
-local acquisition coordinates include source zero padding and differ from
-incoming provenance timestamps. Onset reset preserves analytical histories as
-in the source; context restart clears analysis. Tatum polling is explicit.
+`pcm_stage_composition.h` provides `make_pcm_stage_node` for
+`ContextBeatTracker` and `ContextBeatSequence`. The tracker consumes a declared
+reversed-weighted ODF history and an unbiased correlation row. The sequence
+also receives the previous raw history and an explicit silence flag. They retain
+musical context, period/phase estimation and sample-clock scheduling. History
+accumulation, multiplication, reversal, correlation, PCM framing, windows, FFT,
+polar conversion, compression and peak picking are explicit graph stages.
+`stage_ports.h` names their stable port IDs and the descriptor/picker/decision
+ports. Context response axes are indices. Tatum polling is explicit.
 
 `make_batch_operation_node` and [the batch API map](batch_operation_contracts.md)
 compose the thirteen pulse/novelty/tempo-histogram stages through the same
 factory. Their source kernels and per-operation domain/resource policies stay
 in the batch binders; no source mathematics is duplicated in the router.
 
-`predictive_composition.h` adds the five predictive/comb/PCM source stages,
-including all ten ODF choices. The tracker requires an explicitly supplied
-whole-window SincBestQuality provider; absent support remains unsupported.
-Raw source FFT order and independent callback-rebound clones are retained.
-Optional held inputs expose source warm method, tempo/fix/release, and standalone
-prediction period/indication setters. Unchanged held values do not repeatedly
-reseed source histories. The public header lists their exact per-kind ports;
-hop/frame/window geometry remains cold preparation. Optional protocol65500
-uses the existing explicit continue/batch/EOF/reset mechanism.
+`btrack_composition.h` binds only the current canonical source stages:
+positive complex ODF, seeded onset history, explicit whole-window sinc,
+adaptive threshold, four-harmonic comb response, tempo observations and beat
+prediction/tempo state. PCM framing/windows, Fourier-domain ACF and shared
+absolute/add/division operations are explicit graph nodes. The tempo state
+owns no Fourier plan. `btrack_ports.h` names the stable semantic ports.
+Unused PCM predictive compositions and their warm-control graph API are removed.
+See [the current BTrack graph](../../examples/rhythm_operations/btrack/README.md).
 
 `sequence_source_composition.h` adds ten feature-fusion, onset-selection,
 onset-rate, interval/PCM-summary, activation, spectral-difference and trajectory

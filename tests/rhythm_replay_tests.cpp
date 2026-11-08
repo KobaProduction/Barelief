@@ -198,7 +198,10 @@ void refined_candidates_from_production_history() {
     if(!result.success)std::fprintf(stderr,"tempo replay error: %s\n",qPrintable(result.error));
     require(result.success,"Twelve second production history executes");
     const auto summary=QJsonDocument::fromJson(contents(out+"/summary.json")).object()["tempo_evidence"].toObject();
-    require(summary["frames"].toInt()==int(result.analysis_frames) && summary["source"].toString().startsWith("production TempoEvidence"),"Replay records graph candidate outputs on every analysis frame");
+    require(summary["frames"].toInt()==int(result.analysis_frames) &&
+            summary["snapshots"].toInt()>0 && summary["rows"].toInt()>=summary["snapshots"].toInt() &&
+            summary["confirmed_decision"].isBool() && !summary["confirmed_decision"].toBool(),
+            "Replay counts all analysis frames and emits candidate snapshots");
     const auto lines=contents(out+"/tempo_candidates.csv").split('\n');bool warmup=false,found=false;
     for(const auto& line:lines){
         if(line.isEmpty() || line.startsWith("frame,"))continue;

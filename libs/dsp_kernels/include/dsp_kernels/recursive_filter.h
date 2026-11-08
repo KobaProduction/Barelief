@@ -27,6 +27,8 @@ public:
     bool set_coefficients(std::span<const float> numerator,std::span<const float> denominator,
                           bool preserve_state=true) noexcept;
     void reset() noexcept;
+    // Bind an explicitly supplied delay state, atomically, without allocation.
+    bool set_state(std::span<const float>) noexcept;
     bool process(float input,float& output) noexcept;
     bool process(std::span<const float> input,std::span<float> output) noexcept;
     std::size_t order() const noexcept {return active_size_;}

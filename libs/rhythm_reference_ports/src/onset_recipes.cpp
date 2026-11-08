@@ -35,30 +35,9 @@ bool spectral_recipe(OnsetRecipe method,SpectralDescriptorConfig& c) noexcept {
     c.epsilon=.1f;c.divergence_arithmetic=dsp_kernels::SpectralDivergenceArithmetic::Float64RatioFloat32Log;
     c.ratio_epsilon=.1;return true;
 }
-bool predictive_difference(PredictiveOnsetMethod method,SpectralDescriptorConfig& c) noexcept {
-    if(method==PredictiveOnsetMethod::SpectralDifference || method==PredictiveOnsetMethod::PositiveSpectralDifference){
-        c.method=SpectralDescriptor::Flux;c.half_wave=method==PredictiveOnsetMethod::PositiveSpectralDifference;return true;
-    }
-    if(method==PredictiveOnsetMethod::ComplexDifference || method==PredictiveOnsetMethod::PositiveComplexDifference){
-        c.method=SpectralDescriptor::ComplexDifference;c.half_wave=method==PredictiveOnsetMethod::PositiveComplexDifference;
-        c.strict_half_wave=c.half_wave;return true;
-    }
-    if(method==PredictiveOnsetMethod::FrequencyDifference || method==PredictiveOnsetMethod::PositiveFrequencyDifference){
-        c.method=SpectralDescriptor::HighFrequencyDifference;c.half_wave=method==PredictiveOnsetMethod::PositiveFrequencyDifference;return true;
-    }
-    return false;
-}
-bool predictive_spectral(PredictiveOnsetMethod method,SpectralDescriptorConfig& c) noexcept {
-    if(predictive_difference(method,c))return true;
-    if(method==PredictiveOnsetMethod::PhaseDeviation){c.method=SpectralDescriptor::PhaseDeviation;c.magnitude_threshold=.1f;return true;}
-    if(method==PredictiveOnsetMethod::FrequencyContent){c.method=SpectralDescriptor::HighFrequencyContent;return true;}
-    return false;
-}
-bool predictive_energy(PredictiveOnsetMethod method,PredictiveOnsetParameters& result) noexcept {
-    if(method!=PredictiveOnsetMethod::EnergyEnvelope && method!=PredictiveOnsetMethod::EnergyDifference)return false;
-    result.uses_pcm_energy=true;result.energy.positive_difference=method==PredictiveOnsetMethod::EnergyDifference;
-    result.energy.compensated_sum=false;return true;
-}
+
+
+
 }
 bool onset_descriptor_recipe(OnsetRecipe method,OnsetDescriptorRecipe& output) noexcept {
     OnsetDescriptorRecipe result;result.spectral.compensated_sum=false;result.spectral.stable_log1p=false;
@@ -66,25 +45,5 @@ bool onset_descriptor_recipe(OnsetRecipe method,OnsetDescriptorRecipe& output) n
     if(!histogram_recipe(method,result) && !spectral_recipe(method,result.spectral))return false;
     output=result;return true;
 }
-bool onset_decision_parameters(OnsetRecipe method,std::uint32_t hop,float rate,OnsetDecisionConfig& output) noexcept {
-    if(!hop || !std::isfinite(rate) || rate<=0)return false;
-    OnsetDescriptorRecipe descriptor;if(!onset_descriptor_recipe(method,descriptor))return false;
-    const auto recipe=onset_recipe_parameters(method);
-    const float delay=recipe.delay_hops*float(hop),interval=std::round(recipe.minimum_interval_s*rate);
-    if(!std::isfinite(delay) || delay>=float(UINT64_MAX) || !std::isfinite(interval) || interval>=float(UINT64_MAX))return false;
-    output={hop,std::uint64_t(interval),std::uint64_t(delay)};return true;
-}
-bool predictive_onset_parameters(PredictiveOnsetMethod method,std::size_t fft,PredictiveOnsetParameters& output) noexcept {
-    PredictiveOnsetParameters result;
-    if(predictive_energy(method,result)){output=result;return true;}
-    if(fft<2 || fft%2)return false;
-    result.spectral.source_fft_size=fft;result.spectral.mirror_spectrum=true;
-    result.spectral.aggregation=dsp_kernels::SpectralAggregation::Sum;result.spectral.compensated_sum=false;
-    result.spectral.complex_distance=dsp_kernels::ComplexDistanceMode::SquaredCosineRaw;
-    if(!predictive_spectral(method,result.spectral))return false;
-    result.spectral.update_phase_history=method==PredictiveOnsetMethod::PhaseDeviation ||
-        result.spectral.method==SpectralDescriptor::ComplexDifference;
-    result.spectral.update_magnitude_history=method!=PredictiveOnsetMethod::PhaseDeviation;
-    output=result;return true;
-}
+
 }

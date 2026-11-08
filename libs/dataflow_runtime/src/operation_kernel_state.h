@@ -1,8 +1,9 @@
 #pragma once
+#include <domain/numeric/array_math.h>
+#include <domain/numeric/array_concat.h>
 #include "music_execution.h"
 #include "prepared_node.h"
 #include "tempo_evidence_execution.h"
-#include "temporal_operation_execution.h"
 #include <dsp_kernels/dsp.h>
 #include <dsp_kernels/musical_features.h>
 #include <dsp_kernels/frequency_profile.h>
@@ -19,7 +20,6 @@ namespace dataflow_runtime::detail {
 struct OperationKernelState {
     std::optional<dsp_kernels::rhythm::Analyzer> rhythm;
     std::optional<PreparedTempoEvidenceOperation> tempo;
-    std::optional<PreparedTemporalOperation> temporal;
     std::optional<dsp_kernels::PreparedOnsetStrength> onset_strength;
     bool onset_features=false,rhythm_peak_amplitudes=false;
     std::vector<float> onset_envelope;
@@ -39,11 +39,12 @@ struct OperationKernelState {
     std::vector<std::uint8_t> factor_ready,factor_initial_ready;
     std::vector<std::array<std::size_t,2>> factor_actual;
     std::array<std::size_t,2> product_actual{1,1};
-    std::size_t frame_input=0;
+    std::size_t frame_input=0,trigger_input=0,binary_left_input=0;
     std::size_t fourier_size=0;
-    bool fourier_include_endpoints=false;
+    domain::ArrayConcatAxis concat_axis=domain::ArrayConcatAxis::First;
     std::uint32_t note_first_midi=21;
-    bool product_pending=false,add_arrays=false,clamp_floor=false;
+    domain::ArrayMathOperation array_operation=domain::ArrayMathOperation::Multiply;
+    bool product_pending=false,product_triggered=false,clamp_floor=false;
     FrameStamp product_stamp{};
     std::vector<char> data_stream;std::size_t stream_size=0;
     std::vector<float> note_power;

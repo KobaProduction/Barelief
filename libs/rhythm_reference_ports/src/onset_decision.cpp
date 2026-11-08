@@ -58,29 +58,4 @@ bool pcm_is_silent(std::span<const float> pcm,float threshold,bool& silent) noex
     const float level=10.f*std::log10(energy/float(pcm.size()));
     silent=level<threshold;return true;
 }
-namespace {
-void complex_recipe(OnsetRecipeParameters& p) noexcept {
-    p.delay_hops=4.6f;p.threshold=.15f;p.whitening=true;p.compression=1;
-}
-void divergence_recipe(OnsetRecipeParameters& p,bool modified) noexcept {
-    p.threshold=modified?.05f:.35f;p.whitening=true;p.compression=.02f;
-}
-void flux_recipe(OnsetRecipeParameters& p) noexcept {
-    p.threshold=.18f;p.whitening=true;p.whitening_config.relax_time_s=100;
-    p.whitening_config.floor=1;p.compression=10;
-}
-}
-OnsetRecipeParameters onset_recipe_parameters(OnsetRecipe recipe) noexcept {
-    OnsetRecipeParameters result;
-    switch(recipe){
-    case OnsetRecipe::FrequencyContent:result.threshold=.058f;result.compression=1;break;
-    case OnsetRecipe::Complex:complex_recipe(result);break;
-    case OnsetRecipe::ModifiedKullbackLeibler:divergence_recipe(result,true);break;
-    case OnsetRecipe::KullbackLeibler:divergence_recipe(result,false);break;
-    case OnsetRecipe::SpectralFlux:flux_recipe(result);break;
-    case OnsetRecipe::OldDefault:result.minimum_interval_s=.02f;break;
-    default:break;
-    }
-    return result;
-}
 }

@@ -750,14 +750,15 @@ class NodePresentationReader {
         for(auto entry=node(source,handle).first_child;entry.source;entry=node(source,entry).next_sibling){const auto result=scalar(entry,++count,values);if(!result)return result;}
         candidate["scalar_inputs"]=values;return {};
     }
-    NumericDocumentResult display_name() {
-        const auto handle=member(source,root,"display_name");if(!handle.source)return {};
+    NumericDocumentResult display_name(const char* key) {
+        const auto handle=member(source,root,key);if(!handle.source)return {};
+        const auto path=QStringLiteral("node.presentation.")+QString::fromLatin1(key);
         const auto value=node(source,handle);
-        if(value.kind!=NodeKind::String)return failure("Expected display name string","node.presentation.display_name");
+        if(value.kind!=NodeKind::String)return failure("Expected display name string",path);
         const auto name=text(value.decoded);
-        if(name.size()>256)return failure("Display name limit","node.presentation.display_name");
-        if(!valid_display_text(name))return failure("Invalid display name","node.presentation.display_name");
-        candidate["display_name"]=name;return {};
+        if(name.size()>256)return failure("Display name limit",path);
+        if(!valid_display_text(name))return failure("Invalid display name",path);
+        candidate[key]=name;return {};
     }
     NumericDocumentResult inline_key(Handle item,QJsonArray& keys,QSet<QString>& seen) const {
         const auto value=node(source,item);
@@ -797,14 +798,18 @@ class NodePresentationReader {
         }
         candidate[name]=ids;return {};
     }
+    NumericDocumentResult read_names() {
+        auto result=streams();if(result)result=scalars();if(result)result=display_name("display_name");
+        if(result)result=display_name("display_name_key");return result;
+    }
     NumericDocumentResult read_lists() {
-        auto result=streams();if(result)result=scalars();if(result)result=display_name();if(result)result=inline_keys();
+        auto result=read_names();if(result)result=inline_keys();
         if(result)result=port_order("input_port_order");if(result)result=port_order("output_port_order");return result;
     }
 public:
     NodePresentationReader(const Source& input,Handle handle):source(input),root(handle){}
     NumericDocumentResult read(QJsonObject* out) {
-        auto result=object_keys(source,root,{"inline_parameters","input_port_order","output_port_order","port_labels","display_name","scalar_inputs","stream_names","show_dc_outputs"},"node.presentation");
+        auto result=object_keys(source,root,{"inline_parameters","input_port_order","output_port_order","port_labels","display_name","display_name_key","scalar_inputs","stream_names","show_dc_outputs"},"node.presentation");
         if(result)result=labels();
         if(result)result=boolean(member(source,root,"show_dc_outputs"),"show_dc_outputs","Expected DC visibility boolean","node.presentation.show_dc_outputs");
         if(result)result=read_lists();
@@ -2045,7 +2050,7 @@ NumericDocumentResult validate_position_update(const QJsonObject& update) {
     return {};
 }
 NumericDocumentResult validate_presentation_update(const QJsonObject& update) {
-    constexpr std::array<std::string_view,8> fields{"inline_parameters","display_name","scalar_inputs","stream_names","show_dc_outputs","input_port_order","output_port_order","port_labels"};
+    constexpr std::array<std::string_view,9> fields{"inline_parameters","display_name","display_name_key","scalar_inputs","stream_names","show_dc_outputs","input_port_order","output_port_order","port_labels"};
     for(auto field=update.begin();field!=update.end();++field){
         const auto name=field.key().toStdString();if(std::find(fields.begin(),fields.end(),name)==fields.end())return failure("Unregistered node presentation field",field.key());
     }
@@ -2062,7 +2067,7 @@ NumericDocumentResult validate_editor_update(const QJsonObject& update) {
     constexpr std::array<std::string_view,8> fields{"version","scale","center_x","center_y","node_width","port_spacing","port_radius","port_font"};
     for(auto field=update.begin();field!=update.end();++field){
         const auto key=field.key().toStdString();const auto& value=field.value();
-        if(std::find(fields.begin(),fields.end(),key)==fields.end() || !value.isDouble() || !std::isfinite(value.toDouble()) || (key=="version" && value!=1) || (key=="scale" && (value.toDouble()<.2 || value.toDouble()>3)))return failure("Unregistered/invalid editor-view field",field.key());
+        if(std::find(fields.begin(),fields.end(),key)==fields.end() || !value.isDouble() || !std::isfinite(value.toDouble()) || (key=="version" && value!=1) || (key=="scale" && (value.toDouble()<=0 || value.toDouble()>3)))return failure("Unregistered/invalid editor-view field",field.key());
     }
     return {};
 }

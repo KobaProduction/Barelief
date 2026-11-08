@@ -1,5 +1,6 @@
 #include <core_app/numeric_default_graph.h>
 #include <dataflow_runtime/runtime.h>
+#include <dataflow_runtime/numeric_operation_binding.h>
 #include <dsp_graph_adapters/profile.h>
 #include <domain/graph/node_factory.h>
 #include <domain/graph/preparation_values.h>
@@ -143,7 +144,7 @@ void live_case(std::uint32_t rate,bool silence,const char* directory,std::size_t
         const auto diagnostic=resolve_numeric_parameter_bindings(graph,p.admission,evaluated,executable);
         std::fprintf(stderr,"prepare rate=%u status=%d bindings=%u node=%d port=%u\n",rate,int(status),unsigned(diagnostic.error),int(diagnostic.node),unsigned(diagnostic.port));
         for(const auto& node:graph.nodes){ResolvedProcessingNode resolved;const auto d=resolve_processing_node(node,p.admission,resolved);
-            const auto support=d?p.operation_factory->assess(resolved,p):ProcessingSupport{};
+            const auto support=d?p.operation_factory->assess(numeric_operation_node_view(resolved),numeric_operation_profile(p)):ProcessingSupport{};
             std::fprintf(stderr," node=%d %s resolve=%u support=%d\n",int(node.id),node.kind.c_str(),unsigned(d.error),int(support.supported));}}
     check(status==Status::ok,"prepare full reference pipeline");
     const auto values=signal(rate,silence);Observation seen{values,rate};const auto start=std::chrono::steady_clock::now();

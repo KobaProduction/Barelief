@@ -3,7 +3,7 @@
 #include <domain/processing_contracts.h>
 namespace rhythm_graph_adapters {
 // Explicit primitive/whole-recipe builders. Inputs are in port order, Float32
-// native mono vectors, except BandBeatEmphasis/PeriodPath/BeatAgreement input0
+// native mono vectors, except PeriodPath/BeatAgreement/HarmonicComb matrix input0
 // matrices and BeatAgreement input1 UInt64 per-row counts. Public output tables
 // and source settings are documented in tracking_operations.md. No implicit
 // PCM/spectrum conversion, source clock inference, or hidden history is added.

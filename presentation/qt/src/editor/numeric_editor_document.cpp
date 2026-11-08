@@ -132,7 +132,11 @@ QString native_source_failure(const desktop::NumericSourceFormatDiagnostic& diag
     case E::MissingSource:return ui::text("Node %1: source is missing").arg(diagnostic.node);
     case E::InvalidContract:return ui::text("Node %1: invalid native source contract").arg(diagnostic.node);
     case E::ConnectedOutputUnavailable:return ui::text("Node %1: connected output %2 is unavailable in the native format").arg(diagnostic.node).arg(diagnostic.port.value_or(0));
-    case E::IncompatibleRoute:return ui::text("Node %1: native source format is incompatible with the route").arg(diagnostic.node);
+    case E::IncompatibleRoute:
+        if(diagnostic.route && diagnostic.route->node>=0)
+            return ui::text("Source %1: native format is incompatible with input %2 on node %3")
+                .arg(diagnostic.node).arg(diagnostic.route->port).arg(diagnostic.route->node);
+        return ui::text("Node %1: native source format is incompatible with the route").arg(diagnostic.node);
     }
     return ui::text("Unsupported node settings");
 }
@@ -252,7 +256,8 @@ bool draft_header_valid(const domain::NumericProcessingGraph& graph,QString* err
 }
 }
 bool NumericEditorGraphModel::load_draft_node(const domain::ConfiguredProcessingNode& node,const QJsonObject& adapters,QString* error){
-    if(node.id<0 || std::uint64_t(node.id)>=std::numeric_limits<QtNodes::NodeId>::max() || nodeExists(QtNodes::NodeId(node.id)) || !dataModelRegistry()->create(QString::fromStdString(node.kind)))return draft_failure(error,"Draft contains unsupported nodes");
+    if(node.id<0 || std::uint64_t(node.id)>=std::numeric_limits<QtNodes::NodeId>::max() || nodeExists(QtNodes::NodeId(node.id)) ||
+       !dataModelRegistry()->registeredModelCreators().contains(QString::fromStdString(node.kind)))return draft_failure(error,"Draft contains unsupported nodes");
     const QJsonObject json{{"id",node.id},{"internal-data",QJsonObject{{"model-name",QString::fromStdString(node.kind)}}}};
     loadNode(json);auto* model=delegateModel<AudioNodeModel>(QtNodes::NodeId(node.id));
     if(!model)return draft_failure(error,"Draft contains unsupported nodes");
@@ -282,12 +287,16 @@ bool NumericEditorGraphModel::load_draft_bindings(const domain::NumericProcessin
     return true;
 }
 void NumericEditorGraphModel::install_draft_graph(const domain::NumericProcessingGraph& graph,const NumericEditorGraphModel& candidate){
-    QScopedValueRollback<bool> structural(_allow_connection_clock_adaptation,false);
-    for(auto id:allNodeIds())deleteNode(id);
-    _graph_id=graph.graph_id;_versions=graph.versions;_execution_interval=graph.execution_interval;
-    install_draft_nodes(graph,candidate);
-    install_draft_edges(graph);
-    refresh_bound_parameters();
+    {
+        QScopedValueRollback<bool> structural(_allow_connection_clock_adaptation,false);
+        QScopedValueRollback<bool> transaction(_atomic_edit_in_progress,true);
+        for(auto id:allNodeIds())deleteNode(id);
+        _graph_id=graph.graph_id;_versions=graph.versions;_execution_interval=graph.execution_interval;
+        install_draft_nodes(graph,candidate);
+        install_draft_edges(graph);
+        refresh_bound_parameters();
+    }
+    if(!_atomic_edit_in_progress)emit atomic_edit_finished();
 }
 void NumericEditorGraphModel::install_draft_nodes(const domain::NumericProcessingGraph& graph,const NumericEditorGraphModel& candidate) {
     for(const auto& node:graph.nodes){
@@ -302,11 +311,18 @@ void NumericEditorGraphModel::install_draft_edges(const domain::NumericProcessin
     for(const auto& edge:graph.edges){const auto id=connection_id(edge);_edge_policies[edge_key(id)]=edge.conversion;addConnection(id);}
     for(const auto& binding:graph.configuration_bindings)DataFlowGraphModel::addConnection(configuration_connection(binding));
 }
+bool NumericEditorGraphModel::load_draft_candidate(const domain::NumericProcessingGraph& graph,
+                                                   const QJsonObject& node_adapters,QString* error) {
+    if(!draft_header_valid(graph,error))return false;
+    _allow_connection_clock_adaptation=false;
+    for(const auto& node:graph.nodes)if(!load_draft_node(node,node_adapters,error))return false;
+    return load_draft_edges(graph,error) && load_draft_bindings(graph,error);
+}
+
 bool NumericEditorGraphModel::set_numeric_graph(const domain::NumericProcessingGraph& requested,QString* error,const QJsonObject& node_adapters){
     domain::NumericProcessingGraph graph;
-    if(!prepare_numeric_import(requested,node_adapters,graph,error) || !draft_header_valid(graph,error))return false;
-    NumericEditorGraphModel candidate(dataModelRegistry());candidate.set_node_validator(_node_validator);candidate.set_admission_limits(_admission_limits);candidate._allow_connection_clock_adaptation=false;
-    for(const auto& node:graph.nodes)if(!candidate.load_draft_node(node,node_adapters,error))return false;
-    if(!candidate.load_draft_edges(graph,error) || !candidate.load_draft_bindings(graph,error))return false;
+    if(!prepare_numeric_import(requested,node_adapters,graph,error))return false;
+    NumericEditorGraphModel candidate(dataModelRegistry());candidate.set_node_validator(_node_validator);candidate.set_admission_limits(_admission_limits);
+    if(!candidate.load_draft_candidate(graph,node_adapters,error))return false;
     install_draft_graph(graph,candidate);return true;
 }

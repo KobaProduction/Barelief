@@ -1,4 +1,6 @@
 #include <core_app/numeric_default_graph.h>
+#include <domain/numeric/array_math.h>
+#include <domain/numeric/correlation_ports.h>
 #include "example_builder.h"
 #include <stdexcept>
 namespace {
@@ -32,7 +34,7 @@ void spectral_frames(examples::Builder& b) {
     b.chain(84,"Reroute",2);
 }
 void power_mel(examples::Builder& b,std::uint32_t rate) {
-    b.add(25,"AmplitudePhase",examples::transform({{"fft_size",NumericLiteral{std::uint64_t{2048}}},{"first_bin",NumericLiteral{std::uint64_t{1}}},
+    b.add(25,"AmplitudePhase",examples::transform({{"fft_size",NumericLiteral{std::uint64_t{2048}}},
         {"sample_rate",NumericLiteral{std::uint64_t(rate)}},{"normalize",false},{"representation",std::string{"power"}},{"real_endpoints",true}}));
     b.connect(24,25,0,0);b.connect(24,25,1,1);b.derive(25);
     b.connect(21,25,0,window_size_input);b.connect(80,25,0,target_sample_rate_input);
@@ -54,10 +56,15 @@ void rate_connections(examples::Builder& b,NodeId target) {
 }
 void tempo(examples::Builder& b,std::uint32_t rate,std::size_t frames) {
     b.chain(38,"ArrayLength",27);
-    b.chain(34,"AutocorrelationTempogram",31,examples::transform({{"window_length",NumericLiteral{std::uint64_t(frames)}},
-        {"center",false},{"padding",NumericLiteral{std::uint64_t{0}}},{"frame_index",NumericLiteral{std::uint64_t{0}}},
-        {"sample_rate",NumericLiteral{std::uint64_t(rate)}},{"hop_samples",NumericLiteral{std::uint64_t{512}}}}));
-    b.connect(38,34,0,window_size_input);rate_connections(b,34);
+    b.chain(32,"WindowFunction",38,examples::transform({{"size",NumericLiteral{std::uint64_t(frames)}},
+        {"function",std::string{"hann"}},{"periodic",true}}));
+    b.add(33,"ArrayMultiply");b.connect(31,33);b.connect(32,33,processing_output,PortId(BinaryInput::Right));b.derive(33);
+    b.add(36,"DirectCorrelation",examples::transform({{"lags",NumericLiteral{std::uint64_t(frames)}}}));
+    b.connect(33,36,processing_output,PortId(CorrelationInput::Reference));
+    b.connect(33,36,processing_output,PortId(CorrelationInput::Compared));
+    b.connect(38,36,processing_output,PortId(CorrelationInput::LagCount));b.derive(36);
+    b.chain(34,"VectorNormalize",36,examples::transform({{"axis",NumericLiteral{std::uint64_t{0}}},
+        {"method",NumericLiteral{std::uint64_t{1}}}}));
     b.add(35,"TempoEstimate",examples::transform({{"sample_rate",NumericLiteral{std::uint64_t(rate)}},
         {"hop_samples",NumericLiteral{std::uint64_t{512}}},{"silence_zero",true}}));
     auto& node=b.node(35);node.inputs.clear();node.outputs.clear();
@@ -112,6 +119,7 @@ void layout(NumericExampleGraph& graph) {
         {29,6785.717100578102,106.0366944948906},
         {30,7457.262116714808,215.35386151722415},
         {31,9872.42735490496,222.41783723802436},
+        {32,10300.,500.},{33,10800.,220.},{36,11250.,220.},
         {34,11645.217805766839,192.62257981361506},
         {35,12811.407194411562,303.32604037517416},
         {37,13500.531968165546,874.5424041485528},
@@ -133,7 +141,6 @@ void layout(NumericExampleGraph& graph) {
     graph.port_orders={{4,{0,hop_samples_input,1,target_sample_rate_input},{}},
         {25,{0,1,window_coefficients_input,window_size_input,target_sample_rate_input},{}},
         {26,{0,window_size_input,target_sample_rate_input},{}},
-        {34,{hop_samples_input,window_size_input,0,target_sample_rate_input},{}},
         {35,{hop_samples_input,0,target_sample_rate_input},{}}};
     graph.node_names={{10,"Onset strength history"},{11,"Beat grid history"},{13,"Tempo, BPM"},{14,"Beat local scores"},
         {40,"Short signal window"},{44,"Spectral power"},{45,"Linear Mel values"},{47,"Autocorrelation"},{48,"Tempo history"},{49,"Window coefficients"}};

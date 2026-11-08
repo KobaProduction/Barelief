@@ -10,7 +10,7 @@ import pickle
 import tempfile
 import numpy as np
 
-from common import Case, SEED, tones
+from common import Case, SEED
 
 
 def parameters(count):
@@ -25,23 +25,6 @@ def parameters(count):
     tempo = np.tile(np.array([100, 150, 0, 100], np.float32), (count, 1))
     return {".weights": weights, ".means": means, ".covariances": covariances,
             ".beats": beats, ".tempo": tempo}
-
-
-def original_features(original, values):
-    signal = original.signal.Signal(values, sample_rate=44100, num_channels=1, norm=False, gain=0)
-    frames = original.signal.FramedSignal(signal, frame_size=2048, hop_size=882, origin=0, end="normal")
-    stft = original.stft.ShortTimeFourierTransform(frames, window=np.hanning, fft_size=2048,
-                                                  circular_shift=False, include_nyquist=False)
-    filtered = original.spectrogram.FilteredSpectrogram(stft, num_bands=12, fmin=30, fmax=17000,
-                                                        norm_filters=False, unique_filters=True)
-    logarithm = original.spectrogram.LogarithmicSpectrogram(filtered, log=np.log10, mul=1, add=1)
-    difference = original.spectrogram.SpectrogramDifference(logarithm, diff_ratio=.5,
-                                                           diff_frames=None, diff_max_bins=None,
-                                                           positive_diffs=True, keep_dims=True)
-    features = original.spectrogram.MultiBandSpectrogram(difference, crossover_frequencies=[270],
-                                                         fmin=30, fmax=17000, norm_filters=False,
-                                                         unique_filters=True)
-    return np.asarray(features)
 
 
 def original_model(original, directory, data):
@@ -73,34 +56,19 @@ def original_outputs(original, features, data):
             "path": path, "log_probability": np.array([score])}
 
 
-def pattern_settings(count, pcm):
+def pattern_settings(count):
     return dict(pattern_count=count, profiles_per_pattern=2, components_per_gmm=2, features=2,
                 covariance="diag", supplied_models=True, fitting=False, pretrained=False, neural_network=False,
                 beats=[3, 4][:count], minimum_bpm=100, maximum_bpm=150, num_tempi=None,
                 transition_lambda=100, fps=50, pattern_switches=False,
-                frontend="actual GMMPatternTracker fixed pipeline" if pcm else "supplied Float32 feature rows",
-                fs=44100 if pcm else None, frame_size=2048 if pcm else None, hop=882 if pcm else None)
+                frontend="supplied Float32 feature rows")
 
 
 def cases(original):
-    pcm = tones(88200, 44100)
-    for kind, values in (("tones", pcm), ("silence", np.zeros_like(pcm))):
-        def reference(x):
-            return {"features": original_features(original, x)}
-        yield Case("python.madmom.pattern.features." + kind, "patterns", "features", values, [], reference,
-                   dict(fs=44100, fps=50, n_fft=2048, hop=882, center=True, end="normal", window="symmetric Hann",
-                        include_nyquist=False, circular_shift=False, bands_per_octave=12, fmin=30, fmax=17000,
-                        normalized_filters=False, logarithm="log10(1+x)", diff_ratio=.5,
-                        positive_diffs=True, crossover_hz=[270]))
     values = np.random.default_rng(SEED).random((192, 2)).astype(np.float32)
     for count in (1, 2):
         data = parameters(count)
         def feature_reference(x, data=data):
             return original_outputs(original, x, data)
         yield Case(f"python.madmom.pattern.state.patterns{count}", "patterns", "state", values, [count, 2, 2],
-                   feature_reference, pattern_settings(count, False), data)
-        def pcm_reference(x, data=data):
-            features = original_features(original, x)
-            return {"features": features, **original_outputs(original, features, data)}
-        yield Case(f"python.madmom.pattern.pcm.patterns{count}", "patterns", "pcm", pcm, [count, 2, 2],
-                   pcm_reference, pattern_settings(count, True), data)
+                   feature_reference, pattern_settings(count), data)

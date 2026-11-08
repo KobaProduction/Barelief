@@ -306,12 +306,13 @@ static void exercise_incompatible_draft(GestureScenario& scenario,QtNodes::NodeI
 }
 static void refuse_invalid_source_field(GestureScenario& scenario,AudioNodeModel& source,QWidget& form,
                                         QtNodes::NodeId signal,const QJsonObject& before,
-                                        const std::unordered_set<QtNodes::ConnectionId>& edges,int undo,const char* field){
+                                        const std::unordered_set<QtNodes::ConnectionId>& edges,int undo,const char* field,int rejected_value){
     auto* choice=form.findChild<QComboBox*>(field);
     require(choice,"Registered source contract editor missing");
-    require(choice->currentIndex()!=0,"Unsupported source choice fixture is already selected");
+    const auto rejected=choice->findData(rejected_value);
+    require(rejected>=0 && choice->currentIndex()!=rejected,"Unsupported typed option is available and unselected");
     QSignalSpy refusal(&scenario.editor,&SchemeEditorWidget::status_message);
-    choice->setCurrentIndex(0);QCoreApplication::processEvents();
+    choice->setCurrentIndex(rejected);QCoreApplication::processEvents();
     require(source.save()==before && scenario.model.allConnectionIds(signal)==edges &&
             scenario.editor.history().index()==undo,"Unsupported source choice changed node/edges/undo");
     const auto* row=form.findChild<QWidget*>(QString::fromLatin1(field)+"_row");
@@ -335,8 +336,8 @@ static void exercise_invalid_source_edits(GestureScenario& scenario,QtNodes::Nod
     const auto before=source->save();
     const auto edges=scenario.model.allConnectionIds(signal);
     const int undo=scenario.editor.history().index();
-    for(const auto field:{"output0Dtype","output0Rank"})
-        refuse_invalid_source_field(scenario,*source,*form,signal,before,edges,undo,field);
+    refuse_invalid_source_field(scenario,*source,*form,signal,before,edges,undo,"output0Dtype",int(signal_contracts::DType::Int8));
+    refuse_invalid_source_field(scenario,*source,*form,signal,before,edges,undo,"output0Rank",int(signal_contracts::Rank::Scalar));
     form->hide();
     auto impossible=*source->numeric_node();
     require(numeric_editor::set_dtype(impossible,domain::PortDirection::Output,0,signal_contracts::DType::Int64),

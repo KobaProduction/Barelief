@@ -1,4 +1,5 @@
 #include <signal_contracts/data_contract.h>
+#include <signal_contracts/numeric_buffer.h>
 #include <algorithm>
 #include <climits>
 #include <bit>
@@ -53,14 +54,19 @@ namespace signal_contracts {
             if(!value.origin.denominator || !value.step.denominator || (!used && value.mode!=CoordinateMode::None))return Status::invalid_argument;
             return Status::ok;
         }
-        Status validate_numeric_axis(const NumericContract& value,std::size_t axis,std::size_t rank,std::size_t& elements) {
-            const auto extent=value.shape.extents[axis];
-            if(static_cast<unsigned>(value.shape.axes[axis])>static_cast<unsigned>(Axis::Component) || static_cast<unsigned>(value.coordinates[axis].unit)>static_cast<unsigned>(NumericUnit::Decibels))return Status::invalid_argument;
-            if(extent.minimum>extent.maximum || !extent.maximum || extent.maximum>std::numeric_limits<std::size_t>::max() || (axis>=rank && (value.shape.axes[axis]!=Axis::None || extent!=ExtentBounds{})))return Status::invalid_argument;
-            if(axis<rank) {
+        Status validate_extent(ExtentBounds extent,std::size_t axis,std::size_t dimensions,std::size_t& elements) {
+            if(extent.minimum>extent.maximum || !extent.maximum || extent.maximum>std::numeric_limits<std::size_t>::max() || (axis>=dimensions && extent!=ExtentBounds{}))return Status::invalid_argument;
+            if(axis<dimensions){
                 if(extent.maximum>std::numeric_limits<std::size_t>::max()/elements)return Status::overflow;
                 elements*=static_cast<std::size_t>(extent.maximum);
             }
+            return Status::ok;
+        }
+        Status validate_numeric_axis(const NumericContract& value,std::size_t axis,std::size_t rank,std::size_t& elements) {
+            const auto extent=value.shape.extents[axis];
+            if(static_cast<unsigned>(value.shape.axes[axis])>static_cast<unsigned>(Axis::Component) || static_cast<unsigned>(value.coordinates[axis].unit)>static_cast<unsigned>(NumericUnit::Decibels))return Status::invalid_argument;
+            if(axis>=rank && value.shape.axes[axis]!=Axis::None)return Status::invalid_argument;
+            const auto status=validate_extent(extent,axis,rank,elements);if(status!=Status::ok)return status;
             return validate_axis_coordinates(value.coordinates[axis],axis<rank);
         }
         Status validate_numeric_shape(const NumericContract& value,const FrameLimits& limits) {
@@ -92,7 +98,7 @@ namespace signal_contracts {
     const DTypeDescriptor* dtype_descriptor(DType t) noexcept {for(const auto& d:types)if(d.type==t)return &d;
         return nullptr;
     }
-    Status storage_width(const NumericContract& c,std::size_t& out) noexcept {
+    template<class Contract> Status storage_width_impl(const Contract& c,std::size_t& out) noexcept {
         const auto* d=dtype_descriptor(c.dtype);
         if(!d || !encoding_valid(c.representation.encoding))return Status::invalid_argument;
         if(c.representation.valid_bits>d->bytes*8 || (d->ieee && c.representation.valid_bits) || (c.representation.placement!=BitPlacement::LeastSignificant && c.representation.placement!=BitPlacement::MostSignificant))return Status::incompatible_contract;
@@ -100,6 +106,26 @@ namespace signal_contracts {
         if(packed && (c.dtype!=DType::Int32 || c.representation.valid_bits!=24 || c.representation.placement!=BitPlacement::LeastSignificant))return Status::incompatible_contract;
         out=packed?3:d->bytes;
         return Status::ok;
+    }
+    Status storage_width(const NumericContract& c,std::size_t& out) noexcept {return storage_width_impl(c,out);}
+    Status storage_width(const NumericBufferContract& c,std::size_t& out) noexcept {return storage_width_impl(c,out);}
+
+    namespace {
+    Status validate_buffer_shape(const NumericBufferContract& value,const FrameLimits& limits) noexcept {
+        if(value.shape.rank!=Rank::Scalar && value.shape.rank!=Rank::Vector && value.shape.rank!=Rank::Matrix)return Status::invalid_argument;
+        if(!value.plane_count || value.plane_count>limits.max_planes)return Status::exhausted;
+        const std::size_t dimensions=value.shape.rank==Rank::Scalar?0:value.shape.rank==Rank::Vector?1:2;
+        if(!dimensions && value.plane_count!=1)return Status::incompatible_contract;
+        auto elements=value.plane_count;
+        for(std::size_t axis=0;axis<2;++axis){const auto status=validate_extent(value.shape.extents[axis],axis,dimensions,elements);if(status!=Status::ok)return status;}
+        return elements>limits.max_elements?Status::exhausted:Status::ok;
+    }
+    }
+    Status validate_contract(const NumericBufferContract& value,const FrameLimits& limits) noexcept {
+        const auto* dtype=dtype_descriptor(value.dtype);if(!dtype)return Status::invalid_argument;
+        std::size_t width=0;auto status=storage_width(value,width);if(status!=Status::ok)return status;
+        status=validate_representation(value.representation,*dtype);if(status!=Status::ok)return status;
+        return validate_buffer_shape(value,limits);
     }
     Status validate_contract(const DataContract& data,const FrameLimits& limits) noexcept {
     if(const auto* structured=std::get_if<StructuredContract>(&data))return validate_structured(*structured,limits);

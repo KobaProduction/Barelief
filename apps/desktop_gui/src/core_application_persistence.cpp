@@ -179,6 +179,7 @@ QJsonObject CoreApplication::_persisted_node_presentation(const QJsonObject& pre
         {"port_labels",presentation.value("port_labels").toObject()},
         {"show_dc_outputs",presentation.value("show_dc_outputs").toBool()},
         {"display_name",presentation.value("display_name").toString()},
+        {"display_name_key",presentation.value("display_name_key").toString()},
         {"scalar_inputs",presentation.value("scalar_inputs").toObject()},
         {"stream_names",presentation.value("stream_names").toArray()}};
 }

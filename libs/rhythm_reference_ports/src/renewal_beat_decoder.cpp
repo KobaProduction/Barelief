@@ -5,7 +5,6 @@
 // C++/Float32 decomposition Copyright (C) 2026 Koba Production.
 // AGPL version3 or later; no warranty. See ../AGPL-COPYING.
 #include <rhythm_reference_ports/renewal_beat_decoder.h>
-#include <dsp_kernels/prepared_resampler.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -18,32 +17,34 @@ bool finite_positive(std::span<const float> values) noexcept {
     return std::all_of(values.begin(),values.end(),[](float x){return std::isfinite(x) && x>0;});
 }
 }
-bool upsample_onset_curve(std::span<const float> input,unsigned factor,std::span<float> output) noexcept {
-    std::size_t count=0;
-    if(factor>4 || !dsp_kernels::endpoint_expansion_size(input.size(),factor,count) || output.size()!=count)return false;
-    if(input.empty())return true;
-    const dsp_kernels::ResamplingWindowConfig config{input.size(),count,1,
-        dsp_kernels::ResamplingWindowMode::EndpointLinear,factor};
-    dsp_kernels::PreparedResampler expansion;std::size_t written=0;
-    return expansion.prepare_window(config) &&
-        expansion.process_window(input,input.size(),output,output.size(),written) && written==count;
-}
 bool PreparedRenewalBeatDecoder::prepare(std::size_t samples,std::size_t blocks,RenewalBeatConfig c) {
     std::size_t admitted=0;if(!storage_bytes(samples,blocks,c,admitted))return false;
     PreparedRenewalBeatDecoder next;if(!next.configure(samples,blocks,c))return false;
     if(next.workspace_bytes()>admitted)return false;
     *this=std::move(next);return true;
 }
+bool PreparedRenewalBeatDecoder::prepare_model_storage() {
+    rate_=config_.frame_rate*float(config_.upsampling);resolution_=1.f/rate_;
+    if(!std::isfinite(rate_) || !state_count(config_.maximum_period_s,maximum_states_) || maximum_blocks_>SIZE_MAX/maximum_states_)return false;
+    const float radius=std::ceil(4.f*config_.sigma_ibi/resolution_);
+    if(!std::isfinite(radius) || radius>=float((PTRDIFF_MAX-1)/2))return false;
+    allocate(std::size_t(radius));gaussian();return true;
+}
+std::uint32_t PreparedRenewalBeatDecoder::reset_source(std::size_t block,float& best) const noexcept {
+    std::uint32_t source=UINT32_MAX;
+    for(std::size_t state=0;state<states_;++state){
+        const float value=previous_[state]-reset_log_[block*maximum_states_+state];
+        if(value<best){best=value;source=std::uint32_t(state);}
+    }
+    return source;
+}
+
 bool PreparedRenewalBeatDecoder::configure(std::size_t samples,std::size_t blocks,RenewalBeatConfig c) {
     if(!samples || !blocks || !c.upsampling || c.upsampling>4 || !std::isfinite(c.frame_rate) || c.frame_rate<=0)return false;
     if(!std::isfinite(c.maximum_period_s) || c.maximum_period_s<=0 || !std::isfinite(c.sigma_ibi) || c.sigma_ibi<=0)return false;
     if(!std::isfinite(c.transition_mix) || c.transition_mix<=0 || c.transition_mix>=1)return false;
     config_=c;maximum_samples_=samples;maximum_blocks_=blocks;
-    rate_=c.frame_rate*float(c.upsampling);resolution_=1.f/rate_;
-    if(!std::isfinite(rate_) || !state_count(c.maximum_period_s,maximum_states_) || blocks>SIZE_MAX/maximum_states_)return false;
-    const float radius=std::ceil(4.f*c.sigma_ibi/resolution_);
-    if(!std::isfinite(radius) || radius>=float((PTRDIFF_MAX-1)/2))return false;
-    allocate(std::size_t(radius));gaussian();return true;
+    return prepare_model_storage();
 }
 void PreparedRenewalBeatDecoder::allocate(std::size_t radius) {
     gaussian_.resize(2*radius+1);reset_log_.resize(maximum_blocks_*maximum_states_);advance_log_.resize(maximum_blocks_*maximum_states_);
@@ -108,11 +109,7 @@ bool PreparedRenewalBeatDecoder::models(std::span<const float> periods) noexcept
 void PreparedRenewalBeatDecoder::advance(float activation,std::size_t block,std::size_t frame) noexcept {
     const float beat_log=(1.f-config_.transition_mix)*std::log(.99f*activation);
     const float other_log=(1.f-config_.transition_mix)*std::log(1.f-.99f*activation);
-    float best=infinity;std::uint32_t source=UINT32_MAX;
-    for(std::size_t state=0;state<states_;++state){
-        const float value=previous_[state]-reset_log_[block*maximum_states_+state];
-        if(value<best){best=value;source=std::uint32_t(state);}
-    }
+    float best=infinity;const auto source=reset_source(block,best);
     current_[0]=best-beat_log;reset_from_[frame]=source;
     for(std::size_t state=1;state<states_;++state)
         current_[state]=previous_[state-1]-advance_log_[block*maximum_states_+state-1]-other_log;

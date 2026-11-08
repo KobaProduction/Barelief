@@ -19,9 +19,17 @@ constexpr ProcessingAdmissionLimits limits{32,64,16,16,256,65536,frames};
 NumericRuntimeProfile profile(){NumericRuntimeProfile p{limits,{{4194304,4194304,4194304,131072},0,16777216},{32768,8,262144,262144,262144},{true,true,true}};p.music_enabled=true;return p;}
 OwnedProcessingContract own(const NumericContract& c){OwnedProcessingContract result;check(own_processing_contract(c,frames,65536,result)==Status::ok,"own numeric value contract");return result;}
 NumericContract base(){static constexpr std::array<std::uint32_t,1> mono{0};NumericContract c;c.channel_order=mono;c.dtype=DType::UInt32;c.semantic=Semantic::Scalar;c.unit=NumericUnit::Values;c.representation.alignment=alignof(std::uint32_t);return c;}
+void report_primitive_prepare(const NumericProcessingGraph& graph,Status status){
+ auto p=profile();const auto capabilities=PreparedGraph::numeric_capabilities(p);
+ std::array<std::size_t,64> workspace{};ProcessingGraphAdmission admission;
+ const auto diagnostic=admit_processing_graph(graph,limits,capabilities,workspace,admission);
+ std::fprintf(stderr,"graph=%s status=%u admission=%u node=%d port=%u reason=%u parameter=%.*s\n",
+  graph.graph_id.c_str(),unsigned(status),unsigned(diagnostic.error),int(diagnostic.node),unsigned(diagnostic.port),
+  unsigned(diagnostic.reason),int(diagnostic.parameter.size()),diagnostic.parameter.empty()?"":diagnostic.parameter.data());
+}
 struct Running {
  std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
- explicit Running(const NumericProcessingGraph& g){const auto status=PreparedGraph::prepare_numeric(g,profile(),plan,state);if(status!=Status::ok)std::fprintf(stderr,"graph=%s status=%u\n",g.graph_id.c_str(),unsigned(status));check(status==Status::ok,"prepare numeric primitives");}
+ explicit Running(const NumericProcessingGraph& g){const auto status=PreparedGraph::prepare_numeric(g,profile(),plan,state);if(status!=Status::ok)report_primitive_prepare(g,status);check(status==Status::ok,"prepare numeric primitives");}
 };
 struct Observation {
  std::array<std::uint32_t,8> values{};std::array<unsigned,8> available{},unavailable{};FrameStamp stamp{};
@@ -218,7 +226,7 @@ void native_selector(){
  struct SpectrumObservation {float tone=0,nyquist=0,dc=0;unsigned count=0;const std::byte* amplitude_data=nullptr;static void output(void* context,const NumericPortFrameView& event){auto& self=*static_cast<SpectrumObservation*>(context);if(!event.frame.stamp.available)return;const auto& data=std::get<NumericView>(event.frame.payload);
    if(event.identity.node==6){double delta=0;check(load_element(data,{0,0,0},delta)==Status::ok && delta==93.75,"runtime divides actual Fs by N into ordinary Float64");}
    if(event.identity.node==4 && !event.identity.port)self.amplitude_data=data.storage.data();
-   if(event.identity.node==2 && event.identity.port==2)check(load_element(data,{0,0,0},self.dc)==Status::ok,"raw DC load");
+   if(event.identity.node==4 && event.identity.port==2)check(load_element(data,{0,0,0},self.dc)==Status::ok,"signed DC load");
    if(event.identity.node==4 && !event.identity.port){check(data.actual[0]==256,"nonzero half includes exactly N/2 amplitudes");check(load_element(data,{0,4,0},self.tone)==Status::ok && load_element(data,{0,255,0},self.nyquist)==Status::ok,"peak amplitude loads");const auto axis=data.contract->coordinates[0];check(axis.mode==CoordinateMode::Regular && axis.unit==NumericUnit::Hertz && double(axis.step.numerator)/double(axis.step.denominator)==93.75,"amplitude constructs its explicitly configured frequency grid");++self.count;}
  }};
 NumericProcessingGraph explicit_spectrum_graph(const NumericContract& input){
@@ -226,7 +234,7 @@ NumericProcessingGraph explicit_spectrum_graph(const NumericContract& input){
  ConfiguredProcessingNode fft;fft.id=2;fft.kind="RealFourier";fft.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};fft.inputs={{0,PortDirection::Input,own(input)}};
  std::vector<OwnedProcessingContract> transformed;check(fourier_output_contracts(fft,input,transformed)==Status::ok,"spectral transform outputs");for(PortId p=0;p<transformed.size();++p)fft.outputs.push_back({p,PortDirection::Output,transformed[p]});
  ConfiguredProcessingNode amplitude;amplitude.id=4;amplitude.kind="AmplitudePhase";amplitude.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}},{"sample_rate",NumericLiteral{std::uint64_t{48000}}}}};amplitude.inputs={{0,PortDirection::Input,transformed[0]},{1,PortDirection::Input,transformed[1]}};
- std::array<OwnedProcessingContract,2> projected;check(amplitude_phase_output_contracts(amplitude,std::get<NumericContract>(transformed[0].view()),projected)==Status::ok,"spectral polar outputs");amplitude.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]}};
+ std::array<OwnedProcessingContract,3> projected;check(amplitude_phase_output_contracts(amplitude,std::get<NumericContract>(transformed[0].view()),projected)==Status::ok,"spectral polar outputs");amplitude.outputs={{0,PortDirection::Output,projected[0]},{1,PortDirection::Output,projected[1]},{2,PortDirection::Output,projected[2]}};
  ConfiguredProcessingNode step;step.id=6;step.kind="FrequencyStep";step.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}}}};step.inputs={{0,PortDirection::Input,source.outputs.back().contract}};OwnedProcessingContract delta;check(frequency_step_output_contract(std::get<NumericContract>(step.inputs[0].contract.view()),delta)==Status::ok,"ordinary frequency step contract");step.outputs={{0,PortDirection::Output,delta}};check(attach_numeric_parameter_ports(step,limits)==Status::ok,"step accepts measured N");
  NumericProcessingGraph graph;graph.graph_id="spectrum-pipeline";graph.nodes={source,fft,amplitude,step};graph.edges={{1,2,0,0},{2,4,0,0},{2,4,1,1},{1,6,sample_rate_output,0}};
  return graph;
@@ -236,10 +244,10 @@ void spectrum_pipeline(){
  auto graph=explicit_spectrum_graph(input);Running running(graph);
  SpectrumObservation observed;
 
- std::array<float,512> values{};for(unsigned i=0;i<512;++i)values[i]=float(.125+.3*std::cos(2.*3.14159265358979323846*5*i/512.)+.2*(i%2?-1.:1.));const PlaneLayout plane{0,{sizeof(float),0}};
+ std::array<float,512> values{};for(unsigned i=0;i<512;++i)values[i]=float(-.125+.3*std::cos(2.*3.14159265358979323846*5*i/512.)+.2*(i%2?-1.:1.));const PlaneLayout plane{0,{sizeof(float),0}};
  NumericView view{&input,std::as_bytes(std::span(values)),std::span(&plane,1),{512,1},{},{}};auto stamp=tick();stamp.sample_count=512;const auto before=allocations;
  check(running.plan->process_numeric_ports(1,{stamp,view},*running.state,{},NumericRuntimeCallbacks{SpectrumObservation::output,nullptr,nullptr,&observed})==Status::ok,"full explicit spectrum pipeline");
- check(allocations==before && observed.count==1 && std::abs(observed.tone-.3)<1e-5 && std::abs(observed.nyquist-.2)<1e-5 && std::abs(observed.dc/512-.125)<1e-5,"tone, unpaired Nyquist amplitude, separate signed DC and noalloc");
+ check(allocations==before && observed.count==1 && std::abs(observed.tone-.3)<1e-5 && std::abs(observed.nyquist-.2)<1e-5 && std::abs(observed.dc+.125)<1e-5,"tone, unpaired Nyquist amplitude, separate signed DC and noalloc");
 }
  struct CorrectionObservation{unsigned count=0;std::array<float,3> values{};static void output(void* p,const NumericPortFrameView& e){if(e.identity.node!=3 || !e.frame.stamp.available)return;auto& r=*static_cast<CorrectionObservation*>(p);++r.count;check(e.frame.stamp.stream_id=="signal" && e.frame.stamp.timestamp_ticks==42,"correction retains data clock and owned data stream identity");const auto& view=std::get<NumericView>(e.frame.payload);std::array<double,3> expected_coordinates{10,20,30};check(view.coordinates.axes[0].size()==24 && std::equal(view.coordinates.axes[0].begin(),view.coordinates.axes[0].end(),std::as_bytes(std::span(expected_coordinates)).begin()),"array product owns delayed data coordinates");for(std::size_t i=0;i<3;++i)check(load_element(std::get<NumericView>(e.frame.payload),{0,i,0},r.values[i])==Status::ok,"array product values");}};
 NumericProcessingGraph array_correction_graph(const NumericContract& data,const NumericContract& gains){
@@ -286,20 +294,46 @@ void array_correction(){
  check(plan->process_numeric_ports(1,{signal,values},*state,{},callbacks)==Status::ok && result.count==3 && result.values==std::array<float,3>{3,-4,-4} && allocations==before,"updated coefficients and no hot allocations");
  array_correction_recovery(*plan,*state,profile_stamp,weights,signal,values,callbacks,result,before);
 }
-void array_product_bypass(){
+void check_disabled_product_values(const NumericView& value){
+ check(value.contract->dtype==DType::Float32 && value.contract->shape.rank==Rank::Vector,"disabled product retains driver dtype and rank");
+ check(value.actual==std::array<std::size_t,2>{3,1},"disabled product retains actual driver geometry");
+ check(value.contract->clock.domain=="data" && value.contract->clock.sample_rate==48000 && value.contract->clock.tick_seconds==Ratio(1,48000),"disabled product retains driver clock");
+ for(std::size_t i=0;i<3;++i){
+  float x=1;check(load_element(value,{0,i,0},x)==Status::ok && x==0.f && !std::signbit(x),"disabled product publishes typed positive zeros without coefficients");
+ }
+}
+void check_disabled_product_stamp(const FrameStamp& actual,const FrameStamp& expected){
+ check(actual.sequence==expected.sequence && actual.timestamp_ticks==expected.timestamp_ticks && actual.stream_id==expected.stream_id,"disabled product retains the current driver stamp");
+ check(actual.has_sample_interval==expected.has_sample_interval && actual.sample_begin==expected.sample_begin && actual.sample_count==expected.sample_count,"disabled product retains the driver sample interval");
+}
+struct DisabledProductObservation {
+ unsigned count=0,unavailable=0;FrameStamp expected;
+ static void output(void* user,const NumericPortFrameView& event){
+  if(event.identity.node!=2)return;
+  auto& result=*static_cast<DisabledProductObservation*>(user);
+  if(!event.frame.stamp.available){++result.unavailable;return;}
+  check(event.status==Status::ok,"disabled product publishes available zero frames");++result.count;
+  check_disabled_product_values(std::get<NumericView>(event.frame.payload));
+  check_disabled_product_stamp(event.frame.stamp,result.expected);
+ }
+};
+void array_product_disabled_zero(){
  auto c=base();c.dtype=DType::Float32;c.semantic=Semantic::Numeric;c.representation.alignment=alignof(float);c.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{3,3},ExtentBounds{}}};c.clock={"data",{1,48000},48000};
  ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={{0,PortDirection::Output,own(c)}};
  ConfiguredProcessingNode product;product.id=2;product.kind="ArrayMultiply";product.enabled=false;product.parameters=TransformProcessingParameters{};product.inputs={{0,PortDirection::Input,own(c)},{1,PortDirection::Input,own(c)}};product.outputs={{0,PortDirection::Output,own(c)}};
  auto coefficient_source=source;coefficient_source.id=3;
- NumericProcessingGraph graph;graph.graph_id="array-bypass";graph.nodes={source,product,coefficient_source};graph.edges={{1,2,0,0},{3,2,0,1}};Running running(graph);
- struct Result{unsigned count=0,unavailable=0;static void output(void* user,const NumericPortFrameView& e){if(e.identity.node!=2)return;if(!e.frame.stamp.available){++static_cast<Result*>(user)->unavailable;return;}++static_cast<Result*>(user)->count;const auto& v=std::get<NumericView>(e.frame.payload);for(unsigned i=0;i<3;++i){float x=0;check(load_element(v,{0,i,0},x)==Status::ok && x==float(i+1),"bypass preserves every data element without coefficient input");}}} result;
- std::array<float,3> samples{1,2,3};const PlaneLayout plane{0,{4,0}};NumericView values{&c,std::as_bytes(std::span(samples)),std::span(&plane,1),{3,1},{},{}};auto stamp=tick();stamp.sample_count=3;const auto before=allocations;
- check(running.plan->process_numeric_ports(1,{stamp,values},*running.state,{},NumericRuntimeCallbacks{Result::output,nullptr,nullptr,&result})==Status::ok && result.count==1 && allocations==before,"array bypass is immediate identity, no coefficient wait or allocation");
- check(running.plan->process_numeric_ports(3,{stamp,values},*running.state,{},NumericRuntimeCallbacks{Result::output,nullptr,nullptr,&result})==Status::ok && result.count==1,"coefficient updates cannot duplicate bypassed data");
- auto missing=values;missing.storage={};auto marker=stamp;++marker.sequence;marker.available=false;
- check(running.plan->process_numeric_ports(3,{marker,missing},*running.state,{},NumericRuntimeCallbacks{Result::output,nullptr,nullptr,&result})==Status::ok && result.count==1 && result.unavailable==0,"unavailable auxiliary factors cannot invalidate bypassed data");
- ++stamp.sequence;stamp.sample_begin+=3;
- check(running.plan->process_numeric_ports(1,{stamp,values},*running.state,{},NumericRuntimeCallbacks{Result::output,nullptr,nullptr,&result})==Status::ok && result.count==2 && allocations==before,"bypass survives coefficient unavailability without allocations");
+ NumericProcessingGraph graph;graph.graph_id="array-disabled-zero";graph.nodes={source,product,coefficient_source};graph.edges={{1,2,0,0},{3,2,0,1}};Running running(graph);
+ DisabledProductObservation result;
+ std::array<float,3> samples{1,2,3};const PlaneLayout plane{0,{4,0}};NumericView values{&c,std::as_bytes(std::span(samples)),std::span(&plane,1),{3,1},{},{}};
+ auto stamp=tick();stamp.sample_count=3;stamp.timestamp_ticks=42;stamp.stream_id="data";result.expected=stamp;
+ auto auxiliary=stamp;auxiliary.timestamp_ticks=99;auxiliary.producer_epoch=99;auxiliary.stream_id="coefficient";
+ const auto before=allocations;const NumericRuntimeCallbacks callbacks{DisabledProductObservation::output,nullptr,nullptr,&result};
+ check(running.plan->process_numeric_ports(1,{stamp,values},*running.state,{},callbacks)==Status::ok && result.count==1 && allocations==before,"disabled product immediately publishes zero without coefficient wait or allocation");
+ check(running.plan->process_numeric_ports(3,{auxiliary,values},*running.state,{},callbacks)==Status::ok && result.count==1,"coefficient updates cannot duplicate disabled driver frames");
+ auto missing=values;missing.storage={};auto marker=auxiliary;++marker.sequence;marker.available=false;
+ check(running.plan->process_numeric_ports(3,{marker,missing},*running.state,{},callbacks)==Status::ok && result.count==1 && result.unavailable==0,"unavailable auxiliary factors cannot invalidate disabled zero frames");
+ ++stamp.sequence;stamp.sample_begin+=3;stamp.timestamp_ticks+=3;result.expected=stamp;
+ check(running.plan->process_numeric_ports(1,{stamp,values},*running.state,{},callbacks)==Status::ok && result.count==2 && result.unavailable==0 && allocations==before,"disabled zero output survives coefficient unavailability without allocations");
 }
 struct VariadicProductObservation{unsigned count=0,unavailable=0;std::array<float,3> values{};static void output(void* user,const NumericPortFrameView& event){if(event.identity.node!=8)return;auto& result=*static_cast<VariadicProductObservation*>(user);if(!event.frame.stamp.available){++result.unavailable;return;}++result.count;check(event.frame.stamp.stream_id=="signal" && event.frame.stamp.timestamp_ticks==42,"factor permutation retains frame input time and owning stream identity");const auto& view=std::get<NumericView>(event.frame.payload);check(view.contract->quantity==Quantity::SpectrumReal && view.contract->unit==NumericUnit::RawAmplitude && view.contract->clock.sample_rate==48000,"factor permutation retains frame context");std::array<double,3> expected{10,20,30};check(view.coordinates.axes[0].size()==24 && std::equal(view.coordinates.axes[0].begin(),view.coordinates.axes[0].end(),std::as_bytes(std::span(expected)).begin()),"variadic product owns delayed coordinates");for(unsigned i=0;i<3;++i)check(load_element(view,{0,i,0},result.values[i])==Status::ok,"read variadic product");}};
 NumericProcessingGraph variadic_product_graph(const NumericContract& data,const NumericContract& coefficient,unsigned driver){
@@ -359,6 +393,137 @@ void concat_intervals(){
  check(send(true,3,12,false)==Status::ok && result.missing==1,"concat propagates unavailable and clears both pending rows");r={10,11,12};l={8,9};
  check(send(false,2,12)==Status::ok && result.count==1 && send(true,4,12)==Status::ok && result.count==2 && result.values==std::array<float,5>{8,9,10,11,12} && allocations==before,"concat recovery emits one fresh matching frame without allocation");
 }
+NumericContract concat_matrix(ExtentBounds rows,ExtentBounds columns){
+ auto value=base();value.dtype=DType::Float32;value.representation.alignment=alignof(float);
+ value.shape={Rank::Matrix,{Axis::Time,Axis::Band},{rows,columns}};value.clock={"concat-matrix",{1,120},0};return value;
+}
+ConfiguredProcessingNode concat_source(NodeId id,const NumericContract& contract){
+ ConfiguredProcessingNode node;node.id=id;node.kind="NetworkInput";node.outputs={{0,PortDirection::Output,own(contract)}};return node;
+}
+NumericProcessingGraph concat_graph(const NumericContract& left,const NumericContract& right,std::uint64_t axis){
+ auto a=concat_source(1,left),b=concat_source(2,right);
+ ConfiguredProcessingNode join;join.id=3;join.kind="ArrayConcat";
+ join.parameters=TransformProcessingParameters{{{"axis",NumericLiteral{axis}}}};
+ join.inputs={{0,PortDirection::Input,a.outputs[0].contract},{1,PortDirection::Input,b.outputs[0].contract}};
+ OwnedProcessingContract result;check(array_concat_output_contract(join,result)==Status::ok,"derive variable concat");join.outputs={{0,PortDirection::Output,result}};
+ NumericProcessingGraph graph;graph.graph_id="variable-concat";graph.nodes={a,b,join};graph.edges={{1,3,0,0},{2,3,0,1}};return graph;
+}
+struct MatrixConcatObservation {
+ unsigned count=0;std::array<std::size_t,2> actual{};std::array<float,128> values{};std::array<std::byte,32> coordinates{};
+ static void output(void* user,const NumericPortFrameView& event){
+  if(event.identity.node!=3 || event.direction!=PortDirection::Output || !event.frame.stamp.available)return;
+  auto& self=*static_cast<MatrixConcatObservation*>(user);const auto& frame=std::get<NumericView>(event.frame.payload);
+  ++self.count;self.actual=frame.actual;self.values.fill(-999);
+  check(frame.actual[0]*frame.actual[1]<=self.values.size(),"bounded concat observation");
+  for(std::size_t row=0;row<frame.actual[0];++row)for(std::size_t column=0;column<frame.actual[1];++column)
+    check(load_element(frame,{0,row,column},self.values[row*frame.actual[1]+column])==Status::ok,"read compact concatenated matrix");
+  for(const auto axis:frame.coordinates.axes)if(!axis.empty()){
+    check(axis.size()<=self.coordinates.size(),"bounded concat coordinates");std::copy(axis.begin(),axis.end(),self.coordinates.begin());
+  }
+ }
+};
+void pack_concat_values(std::span<const float> values,std::array<std::size_t,2> actual,
+                        std::size_t width,std::span<float> storage){
+ for(std::size_t row=0;row<actual[0];++row)
+  for(std::size_t column=0;column<actual[1];++column)
+   storage[row*width+column]=values[row*actual[1]+column];
+}
+
+Status send_concat(Running& running,const NumericContract& contract,std::span<const float> values,
+                   std::array<std::size_t,2> actual,NodeId source,std::uint64_t time,MatrixConcatObservation& seen,CoordinateView coordinates={}){
+ std::array<float,128> storage{};
+ const auto width=contract.shape.rank==Rank::Matrix?contract.shape.extents[1].maximum:1;
+ const auto capacity=contract.shape.extents[0].maximum*width;
+ check(capacity<=storage.size() && values.size()>=actual[0]*actual[1],"concat fixture fits declared capacity and actual geometry");
+ pack_concat_values(values,actual,width,storage);
+ const PlaneLayout plane{0,{width*sizeof(float),contract.shape.rank==Rank::Matrix?sizeof(float):0}};
+ auto stamp=tick(time);stamp.has_sample_interval=false;stamp.timestamp_ticks=std::int64_t(time);
+ const NumericView frame{&contract,std::as_bytes(std::span(storage).first(capacity)),{&plane,1},actual,{},coordinates};
+ return running.plan->process_numeric_ports(source,{stamp,frame},*running.state,{},NumericRuntimeCallbacks{MatrixConcatObservation::output,nullptr,nullptr,&seen});
+}
+void concat_variable_rows(){
+ auto left=concat_matrix({1,4},{2,2}),right=concat_matrix({16,16},{2,2});
+ left.coordinates[1]=right.coordinates[1]={CoordinateMode::ExplicitFloat64LE,NumericUnit::Values,{},{}};
+ auto graph=concat_graph(left,right,0);const auto output=std::get<NumericContract>(graph.nodes.back().outputs[0].contract.view());
+ check(output.shape.extents[0]==ExtentBounds{17,20} && output.shape.extents[1]==ExtentBounds{2,2},"sum row bounds, preserve bands");
+ check(output.coordinates[0].mode==CoordinateMode::None && output.coordinates[1]==left.coordinates[1],"preserve only unchanged coordinate contract");
+ Running running(graph);MatrixConcatObservation seen;
+ std::array<float,8> data{1,2,3,4,90,91,92,93};std::array<float,32> tail;
+ for(std::size_t i=0;i<tail.size();++i)tail[i]=i%2?.25f:-.5f;
+ std::array<double,2> bands{10,20};CoordinateView coordinates;coordinates.axes[1]=std::as_bytes(std::span(bands));
+ const auto before=allocations;
+ check(send_concat(running,left,data,{2,2},1,1,seen,coordinates)==Status::ok && seen.count==0,"matrix concat waits for its tail");
+ data.fill(99);
+ check(send_concat(running,right,tail,{16,2},2,1,seen,coordinates)==Status::ok && seen.count==1,"matrix concat completes matching interval");
+ check(seen.actual==std::array<std::size_t,2>{18,2} && seen.values[0]==1 && seen.values[3]==4 && seen.values[4]==-.5f && seen.values[35]==.25f && seen.values[36]==-999,"no max padding or thresholding of the owned tail");
+ check(std::equal(coordinates.axes[1].begin(),coordinates.axes[1].end(),seen.coordinates.begin()),"preserve explicit band coordinate values");
+ check(send_concat(running,right,tail,{16,2},2,2,seen,coordinates)==Status::ok,"retain tail before a shorter frame");
+ check(send_concat(running,left,data,{1,2},1,2,seen,coordinates)==Status::ok && seen.actual==std::array<std::size_t,2>{17,2} && seen.values[34]==-999,"actual row count shrinks without stale padding");
+ bands[1]=30;
+ check(send_concat(running,left,data,{1,2},1,3,seen,coordinates)==Status::ok,"retain changed explicit coordinates");
+ bands[1]=20;
+ check(send_concat(running,right,tail,{16,2},2,3,seen,coordinates)!=Status::ok && seen.count==2,"reject mismatched actual coordinate values");
+ check(allocations==before,"variable row concat has no hot allocation");
+}
+void concat_variable_columns(){
+ auto left=concat_matrix({1,3},{0,3}),right=concat_matrix({1,3},{0,2});
+ const auto graph=concat_graph(left,right,1);Running running(graph);MatrixConcatObservation seen;
+ const std::array<float,6> a{1,2,3,4,98,99};const std::array<float,4> b{5,6,97,96};
+ const auto before=allocations;
+ check(send_concat(running,left,a,{2,2},1,1,seen)==Status::ok && send_concat(running,right,b,{2,1},2,1,seen)==Status::ok,"concatenate variable column rows");
+ check(seen.actual==std::array<std::size_t,2>{2,3} && std::equal(seen.values.begin(),seen.values.begin()+6,std::array<float,6>{1,2,5,3,4,6}.begin()),"interleave each actual row, ignore unused capacity");
+ check(send_concat(running,left,a,{1,1},1,2,seen)==Status::ok && send_concat(running,right,b,{1,2},2,2,seen)==Status::ok,"both selected and unchanged actual dimensions may vary");
+ check(seen.actual==std::array<std::size_t,2>{1,3} && seen.values[0]==1 && seen.values[1]==5 && seen.values[2]==6 && seen.values[3]==-999,"column concat shrinks actual geometry");
+ check(send_concat(running,left,a,{2,1},1,3,seen)==Status::ok && send_concat(running,right,b,{1,1},2,4,seen)==Status::ok && seen.count==2,"different interval geometry waits without rejection");
+ check(send_concat(running,left,a,{1,1},1,4,seen)==Status::ok && seen.count==3,"fresh matching geometry completes retained right input");
+ check(send_concat(running,left,a,{2,1},1,5,seen)==Status::ok,"retain valid left geometry");
+ check(send_concat(running,right,b,{1,1},2,5,seen)!=Status::ok && seen.count==3,"reject unequal actual non-concat dimensions");
+ check(send_concat(running,left,a,{1,0},1,6,seen)==Status::ok && send_concat(running,right,b,{1,0},2,6,seen)==Status::ok,"zero-width variable matrices remain bounded");
+ check(seen.count==4 && seen.actual==std::array<std::size_t,2>{1,0} && seen.values[0]==-999,"empty column sum publishes no stale values");
+ check(allocations==before,"variable column concat has no hot allocation");
+}
+void concat_variable_vectors(){
+ auto left=concat_matrix({0,4},{1,1}),right=concat_matrix({1,3},{1,1});
+ left.shape.rank=right.shape.rank=Rank::Vector;left.shape.axes[1]=right.shape.axes[1]=Axis::None;
+ auto graph=concat_graph(left,right,0);Running running(graph);MatrixConcatObservation seen;
+ const std::array<float,4> a{1,2,99,98};const std::array<float,3> b{3,4,97};
+ const auto before=allocations;
+ check(send_concat(running,left,a,{2,1},1,1,seen)==Status::ok && send_concat(running,right,b,{1,1},2,1,seen)==Status::ok,"variable vector concat");
+ check(seen.actual==std::array<std::size_t,2>{3,1} && seen.values[0]==1 && seen.values[1]==2 && seen.values[2]==3 && seen.values[3]==-999,"sum actual vector extents");
+ check(send_concat(running,left,a,{0,1},1,2,seen)==Status::ok && send_concat(running,right,b,{1,1},2,2,seen)==Status::ok,"empty variable input remains an available array");
+ check(seen.actual==std::array<std::size_t,2>{1,1} && seen.values[0]==3 && seen.values[1]==-999,"zero actual extent adds no padding");
+ check(allocations==before,"variable vector concat allocates nothing");
+}
+void concat_missing_and_disabled(){
+ const auto left=concat_matrix({1,3},{2,2}),right=concat_matrix({2,2},{2,2});
+ auto graph=concat_graph(left,right,0);graph.edges.pop_back();Running missing(graph);MatrixConcatObservation seen;
+ const std::array<float,2> data{1,2};
+ check(send_concat(missing,left,data,{1,2},1,1,seen)==Status::ok,"missing concat input has typed zeros");
+ check(seen.actual==std::array<std::size_t,2>{3,2} && seen.values[0]==1 && seen.values[1]==2 && seen.values[2]==0 && seen.values[5]==0,"missing side uses its own declared row extent");
+ graph=concat_graph(left,right,0);graph.nodes.back().enabled=false;Running disabled(graph);seen={};
+ const std::array<float,4> tail{3,4,5,6};
+ check(send_concat(disabled,left,data,{1,2},1,1,seen)==Status::ok && send_concat(disabled,right,tail,{2,2},2,1,seen)==Status::ok,"disabled concat retains variable geometry");
+ check(seen.actual==std::array<std::size_t,2>{3,2} && std::all_of(seen.values.begin(),seen.values.begin()+6,[](float v){return v==0;}),"disabled concat publishes typed zeros");
+}
+void concat_contract_rejections(){
+ auto left=concat_matrix({1,4},{2,2}),right=concat_matrix({1,4},{2,2});auto graph=concat_graph(left,right,0);auto node=graph.nodes.back();
+ OwnedProcessingContract untouched=node.outputs[0].contract;
+ std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{1.5};
+ check(array_concat_output_contract(node,untouched)==Status::invalid_argument,"reject fractional concat selector");
+ std::get<TransformProcessingParameters>(node.parameters).values[0].value=NumericLiteral{2.};
+ check(array_concat_output_contract(node,untouched)==Status::invalid_argument,"reject unknown concat selector");
+ node=graph.nodes.back();right.shape.extents[1]={3,3};node.inputs[1].contract=own(right);
+ check(array_concat_output_contract(node,untouched)==Status::incompatible_contract,"reject different non-concat bounds");
+ right=left;right.coordinates[1]={CoordinateMode::Regular,NumericUnit::Hertz,{},{1,1}};node.inputs[1].contract=own(right);
+ check(array_concat_output_contract(node,untouched)==Status::incompatible_contract,"reject different non-concat coordinates");
+ left=concat_matrix({1,UINT32_MAX},{2,2});right=left;
+ left.shape.extents[1]=right.shape.extents[1]={1,1};
+ auto large=graph.nodes.back();
+ const FrameLimits huge{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX};
+ check(own_processing_contract(left,huge,SIZE_MAX,large.inputs[0].contract)==Status::ok && own_processing_contract(right,huge,SIZE_MAX,large.inputs[1].contract)==Status::ok,"own large bounded concat inputs");
+ check(array_concat_output_contract(large,untouched)==Status::exhausted,"reject concat extent overflow before mutation");
+ check(same_physical_contract(untouched.view(),graph.nodes.back().outputs[0].contract.view()),"rejected concat leaves output contract untouched");
+}
 void frequency_step_math(){
  auto input=base();input.unit=NumericUnit::Hertz;
  ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={{0,PortDirection::Output,own(input)}};
@@ -401,7 +566,7 @@ std::array<float,48> expected_note_row(const std::array<float,256>& real,
 }
 
     struct CorrectedMusicalObservation{double gain=0,power_gain=0;float amplitude=0,nyquist=0,normalized=0,phase=0;std::array<float,256> re{},im{},projected{};std::array<float,48> notes{};unsigned rows=0,gain_events=0,power_events=0;static void output(void* p,const NumericPortFrameView& e){auto& r=*static_cast<CorrectedMusicalObservation*>(p);if(!e.frame.stamp.available)return;const auto& v=std::get<NumericView>(e.frame.payload);
-      if(e.identity.node==3 && e.identity.port<2)for(std::size_t i=0;i<v.actual[0];++i)check(load_element(v,{0,i,0},e.identity.port?r.im[i]:r.re[i])==Status::ok,"retain same Re/Im for batch/graph comparison");
+      if(e.identity.node==3 && e.identity.port<2)for(std::size_t i=0;i<r.re.size();++i)check(load_element(v,{0,i+1,0},e.identity.port?r.im[i]:r.re[i])==Status::ok,"retain same Re/Im for batch/graph comparison");
       if(e.identity.node==4 && e.identity.port==0)for(std::size_t i=0;i<256;++i)check(load_element(v,{0,i,0},r.projected[i])==Status::ok,"retain graph spectral values");
       if(e.identity.node==2 && e.identity.port==0){float first=0,middle=0;check(v.actual[0]==512 && load_element(v,{0,0,0},first)==Status::ok && load_element(v,{0,256,0},middle)==Status::ok && std::isfinite(first) && middle>.99f,"generator publishes full coefficient bank, not multiplied signal");}
       if(e.identity.node==2 && e.identity.port==coherent_gain_output){check(load_element(v,{0,0,0},r.gain)==Status::ok,"window gain load");++r.gain_events;}
@@ -422,11 +587,11 @@ auto corrected_fft_node(const NumericContract& windowed){
     return std::pair{std::move(fft),std::move(frequency)};
 }
 auto corrected_polar_node(const char* representation,bool normalize,const std::vector<OwnedProcessingContract>& frequency){
-    ConfiguredProcessingNode polar;polar.id=4;polar.kind="AmplitudePhase";polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}},{"sample_rate",NumericLiteral{std::uint64_t{48000}}},{"representation",std::string{representation}},{"normalize",normalize}}};polar.inputs={{0,PortDirection::Input,frequency[0]},{1,PortDirection::Input,frequency[1]}};std::array<OwnedProcessingContract,2> projection;check(amplitude_phase_output_contracts(polar,std::get<NumericContract>(frequency[0].view()),projection)==Status::ok,"fused amplitude phase contract");polar.outputs={{0,PortDirection::Output,projection[0]},{1,PortDirection::Output,projection[1]}};check(attach_numeric_parameter_ports(polar,limits)==Status::ok,"fused numeric inputs");
+    ConfiguredProcessingNode polar;polar.id=4;polar.kind="AmplitudePhase";polar.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t{512}}},{"sample_rate",NumericLiteral{std::uint64_t{48000}}},{"representation",std::string{representation}},{"normalize",normalize}}};polar.inputs={{0,PortDirection::Input,frequency[0]},{1,PortDirection::Input,frequency[1]}};std::array<OwnedProcessingContract,3> projection;check(amplitude_phase_output_contracts(polar,std::get<NumericContract>(frequency[0].view()),projection)==Status::ok,"fused amplitude phase contract");polar.outputs={{0,PortDirection::Output,projection[0]},{1,PortDirection::Output,projection[1]},{2,PortDirection::Output,projection[2]}};check(attach_numeric_parameter_ports(polar,limits)==Status::ok,"fused numeric inputs");
     return std::pair{std::move(polar),std::move(projection)};
 }
-auto corrected_fill_nodes(const std::vector<OwnedProcessingContract>& frequency){
-    ConfiguredProcessingNode fill;fill.id=8;fill.kind="ArrayFill";fill.parameters=TransformProcessingParameters{{{"value",NumericLiteral{2.}},{"values",NumericArray{}}}};auto spectrum_length=metadata(10,"ArrayLength",std::get<NumericContract>(frequency[0].view()));std::get<TransformProcessingParameters>(fill.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{256}}});fill.inputs={{0,PortDirection::Input,spectrum_length.outputs[0].contract}};OwnedProcessingContract fill_coefficients;check(array_generator_output_contract(fill,std::get<NumericContract>(spectrum_length.outputs[0].contract.view()),fill_coefficients)==Status::ok,"coefficient generator numeric N contract");fill.outputs={{0,PortDirection::Output,fill_coefficients}};
+auto corrected_fill_nodes(const OwnedProcessingContract& amplitude){
+    ConfiguredProcessingNode fill;fill.id=8;fill.kind="ArrayFill";fill.parameters=TransformProcessingParameters{{{"value",NumericLiteral{2.}},{"values",NumericArray{}}}};auto spectrum_length=metadata(10,"ArrayLength",std::get<NumericContract>(amplitude.view()));std::get<TransformProcessingParameters>(fill.parameters).values.push_back({"size",NumericLiteral{std::uint64_t{256}}});fill.inputs={{0,PortDirection::Input,spectrum_length.outputs[0].contract}};OwnedProcessingContract fill_coefficients;check(array_generator_output_contract(fill,std::get<NumericContract>(spectrum_length.outputs[0].contract.view()),fill_coefficients)==Status::ok,"coefficient generator numeric N contract");fill.outputs={{0,PortDirection::Output,fill_coefficients}};
     return std::array{std::move(fill),std::move(spectrum_length)};
 }
 ConfiguredProcessingNode corrected_normalizer(const OwnedProcessingContract& projection,const OwnedProcessingContract& fill_coefficients){
@@ -451,10 +616,10 @@ NumericProcessingGraph corrected_musical_graph(const char* function,const char* 
     auto windowed=input;auto [length,apply_window]=corrected_window_nodes(window,input,windowed,function);
     auto [fft,frequency]=corrected_fft_node(windowed);
     auto [polar,projection]=corrected_polar_node(representation,normalize,frequency);
-    auto [fill,spectrum_length]=corrected_fill_nodes(frequency);const auto fill_coefficients=fill.outputs[0].contract;
+    auto [fill,spectrum_length]=corrected_fill_nodes(projection[0]);const auto fill_coefficients=fill.outputs[0].contract;
     auto norm=corrected_normalizer(projection[0],fill_coefficients);const auto normalized=projection[0];
     auto row=corrected_note_row(window,normalized,representation,normalize);
-    NumericProcessingGraph graph;graph.graph_id="window-corrected-musical-row";graph.nodes={source,window,fft,polar,norm,row,length,fill,apply_window,spectrum_length};graph.edges={{7,2,0,0},{1,9,0,0},{2,9,0,1},{9,3,0,0},{3,4,0,0},{3,4,1,1},{2,4,0,window_coefficients_input},{1,7,0,0},{3,10,0,0},{10,8,0,0},{8,5,0,1},{5,6,0,0}};
+    NumericProcessingGraph graph;graph.graph_id="window-corrected-musical-row";graph.nodes={source,window,fft,polar,norm,row,length,fill,apply_window,spectrum_length};graph.edges={{7,2,0,0},{1,9,0,0},{2,9,0,1},{9,3,0,0},{3,4,0,0},{3,4,1,1},{2,4,0,window_coefficients_input},{1,7,0,0},{4,10,0,0},{10,8,0,0},{8,5,0,1},{5,6,0,0}};
     graph.edges.push_back({4,5,0,0});
     return graph;
 }
@@ -608,4 +773,4 @@ void* operator new(std::size_t n){++allocations;if(auto* p=std::malloc(n?n:1))re
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
 void operator delete(void* p,std::size_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
-int main(){number_history();constants();constant_materialization();constant_capability_admission();lengths();matrix();parameter_bindings();native_selector();spectrum_pipeline();corrected_musical_pipeline();generic_number();array_correction();array_product_bypass();variadic_product();frequency_step_math();concat_intervals();std::puts("ordinary UInt32 Fs/N, native selector, explicit spectrum pipeline, parameter bindings, metadata, noalloc PASS");}
+int main(){number_history();constants();constant_materialization();constant_capability_admission();lengths();matrix();parameter_bindings();native_selector();spectrum_pipeline();corrected_musical_pipeline();generic_number();array_correction();array_product_disabled_zero();variadic_product();frequency_step_math();concat_intervals();concat_variable_rows();concat_variable_columns();concat_variable_vectors();concat_missing_and_disabled();concat_contract_rejections();std::puts("ordinary UInt32 Fs/N, native selector, explicit spectrum pipeline, parameter bindings, metadata, noalloc PASS");}

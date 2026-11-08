@@ -124,7 +124,9 @@ dataflow_runtime::NumericRuntimeProfile numeric_runtime_profile(const Profile& p
     signal_contracts::FrameLimits frame{p.channels,4096*std::min<std::uint32_t>(p.channels,2),32768,2048,64,256};
     const auto control=bdsp_protocol::numeric_control::device_limits();
     dataflow_runtime::NumericRuntimeProfile result{};
-    result.admission={control.nodes,control.edges,4,16,64,16384,frame};
+    // Prepared parameter arrays share the processing memory budget. The wire
+    // arena remains bounded independently by numeric_control::device_limits.
+    result.admission={control.nodes,control.edges,4,16,64,budget,frame};
     result.resources={{budget,budget,budget,p.task_stack_bytes},0,budget};
     result.kernels={frame.max_elements,p.channels,32768,32768,budget};
     result.capabilities={true,true,false};result.history_enabled=false;return result;

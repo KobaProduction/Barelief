@@ -2,10 +2,12 @@
 #pragma once
 #include <dsp_kernels/mel_filter_bank.h>
 #include <dsp_kernels/spectral_descriptors.h>
+#include <array>
 #include <span>
 #include <vector>
 
 namespace rhythm_reference_ports {
+inline constexpr std::array<float,7> default_single_beat_borders{0,200,400,800,1600,3200,22000};
 // Source EnergyBandRatio over adjacent explicit borders. Both endpoints are
 // included after normalized-frequency nearest-bin rounding, so adjacent bands
 // can overlap by one bin. Borders above Nyquist yield clipped/empty support.

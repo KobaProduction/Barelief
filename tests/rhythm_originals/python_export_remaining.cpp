@@ -1,7 +1,6 @@
 #include "python_export_remaining.h"
 #include "python_export_benchmark.h"
 #include <dsp_kernels/onset_peaks.h>
-#include <dsp_kernels/local_pulse.h>
 #include <dsp_kernels/beat_feature_synchronization.h>
 #include <dsp_kernels/model_prediction_selection.h>
 #include <dsp_kernels/tempo_probability_histogram.h>
@@ -17,12 +16,6 @@ bool backtrack(const Request& r,const Matrix& input,Result& result) {
     require(benchmark::prepare([&](std::size_t& b){return decltype(kernel)::storage_bytes(r.frames,b);},[&]{return kernel.prepare(r.frames);}),"prepare standalone backtrack");
     std::vector<std::size_t> output(indices.size());const bool ok=benchmark::measured_process(r.prefix,kernel.workspace_bytes(),[&]{return kernel.process(indices,input.values,output);});
     result.integers("events",output);report_workspace(result,kernel.workspace_bytes());return ok;
-}
-bool local_pulse(const Request& r,const Matrix& input,Result& result) {
-    dsp_kernels::LocalPulseConfig c;c.window.length=r.size(1);c.frame_rate=float(r.number(2));c.min_bpm=30;c.max_bpm=300;
-    dsp_kernels::PreparedLocalPulse kernel;require(kernel.prepare(r.size(0),c),"prepare direct local pulse");
-    std::vector<float> output(r.size(0));const bool ok=kernel.process(input.source(),r.frames,output);
-    result.floats("values",output,{output.size()});report_workspace(result,kernel.workspace_bytes());return ok;
 }
 bool synchronization(const Request& r,const Matrix& input,Result& result) {
     const auto beats=sidecar(r,".beats",1,r.size(1));dsp_kernels::BeatFeatureSynchronizationConfig c;
@@ -63,16 +56,15 @@ bool remaining_vectors(const Request& r,const Matrix& input,Result& result) {
     if(r.method=="selection")return selection(r,input,result);
     if(r.method=="probabilities")return probabilities(r,input,result);
     if(r.method=="polar")return polar(r,input,result);
-    return remaining_pcm(r,input,result);
+    require(false,"unknown remaining vector method");return false;
 }
 }
 
 bool remaining(const Request& r,const Matrix& input,Result& result) {
     if(r.method=="backtrack")return backtrack(r,input,result);
-    if(r.method=="local_pulse")return local_pulse(r,input,result);
     if(r.method=="synchronization")return synchronization(r,input,result);
     if(r.method=="downbeat" || r.method=="bar" || r.method=="state_wrapper")return remaining_models(r,input,result);
-    if(r.method=="analysis" || r.method=="analysis_lifecycle" || r.method=="tracking" || r.method=="crf_wrapper")return remaining_tempo(r,input,result);
+    if(r.method=="interval_search" || r.method=="crf_search")return remaining_tempo(r,input,result);
     return remaining_vectors(r,input,result);
 }
 }

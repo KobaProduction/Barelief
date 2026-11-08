@@ -1,6 +1,4 @@
 #include <dsp_kernels/spectral_novelty.h>
-#include <dsp_kernels/pcm_spectral_novelty.h>
-#include <dsp_kernels/activation_peak_matrix.h>
 #include <dsp_kernels/prepared_storage.h>
 #include <algorithm>
 #include <cmath>
@@ -66,36 +64,5 @@ bool PreparedSpectralNovelty::storage_bytes(std::size_t frames,std::size_t featu
 std::size_t PreparedSpectralNovelty::workspace_bytes() const noexcept {
     return descriptor_.workspace_bytes()+difference_.workspace_bytes()+phase_mask_.workspace_bytes()+alignment_.workspace_bytes()+
         (current_.capacity()+previous_.capacity()+differences_.capacity()+phase_.capacity()+unit_magnitude_.capacity()+ones_.capacity()+result_.capacity())*sizeof(float);
-}
-bool PreparedPcmSpectralNovelty::storage_bytes(std::size_t maximum,PcmSpectralNoveltyConfig c,
-    std::span<const float> window,ExplicitSpectralFilters filters,std::size_t& output) noexcept {
-    if(spectral_novelty_uses_phase(c.novelty.method))c.spectrum.circular_shift=true;
-    std::size_t frames=0,features=0,bytes=0,nested=0;
-    const auto fft=c.spectrum.fft_size?c.spectrum.fft_size:c.spectrum.framing.length;
-    const auto bins=fft/2+std::size_t(c.spectrum.include_nyquist);
-    const double hop=c.spectrum.frame_rate>0?double(c.spectrum.sample_rate)/c.spectrum.frame_rate:c.spectrum.framing.hop_samples;
-    if(c.automatic_difference_lag && spectral_novelty_uses_overlap_lag(c.novelty.method)){
-        const auto limit=std::ceil(double(c.spectrum.framing.length)/hop)+1;
-        if(!std::isfinite(limit) || limit<1 || limit>=double(SIZE_MAX))return false;
-        c.novelty.lag=std::max(c.novelty.lag,std::size_t(limit));
-    }
-    if(!PreparedSpectralFrameRecipe::geometry(maximum,c.spectrum,filters,frames,features) ||
-       !PreparedSpectralFrameRecipe::storage_bytes(maximum,c.spectrum,window,filters,bytes) ||
-       !PreparedSpectralNovelty::storage_bytes(std::max(std::size_t{1},frames),features,bins,c.novelty,features,nested) ||
-       !prepared_storage::add_bytes(bytes,nested))return false;
-    output=bytes;return true;
-}
-bool PreparedActivationPeakMatrix::storage_bytes(std::size_t frames,std::size_t channels,
-    ActivationPeakConfig c,std::span<const float> smoothing,std::size_t& output) noexcept {
-    if(!frames || !channels || frames>std::size_t(PTRDIFF_MAX)/channels)return false;
-    c.smoothing_crop=SameConvolutionCrop::Input;std::size_t bytes=0;
-    if(!PreparedActivationPeaks::storage_bytes(frames,c,smoothing,bytes) ||
-       !prepared_storage::add_array(bytes,channels,sizeof(float)) || !prepared_storage::add_array(bytes,frames,sizeof(float)+sizeof(std::uint8_t)) ||
-       !prepared_storage::add_array(bytes,frames*channels,sizeof(ActivationPeakPosition)))return false;
-    output=bytes;return true;
-}
-std::size_t PreparedActivationPeakMatrix::workspace_bytes() const noexcept {
-    return peaks_.workspace_bytes()+(row_.capacity()+column_.capacity())*sizeof(float)+
-        mask_.capacity()+positions_.capacity()*sizeof(ActivationPeakPosition);
 }
 }

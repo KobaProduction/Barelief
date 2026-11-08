@@ -1,4 +1,3 @@
-#include <domain/numeric/temporal_operations.h>
 #include <domain/numeric/interval_operations.h>
 #include <domain/numeric/common_operations.h>
 #include <domain/numeric/sequence_operations.h>
@@ -99,20 +98,18 @@ void initialize_matrix(Factory& f,std::string_view kind) {
 void initialize_fourier(Factory& f,std::string_view kind) {
     auto input=f.vector(Semantic::Numeric,f.settings.fft_size);input.clock={"values",{1,1},0};
     f.field("fft_size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
-    f.io(input,input,kind=="Fourier"?2:1,kind=="Fourier"?2:3);
+    f.io(input,input,kind=="Fourier"?2:1,2);
 }
 void initialize_polar(Factory& f,std::string_view kind) {
-    auto input=f.vector(Semantic::Numeric,f.settings.fft_size/2,Axis::Bin);
+    const bool amplitude_phase=kind=="AmplitudePhase";
+    auto input=f.vector(Semantic::Numeric,f.settings.fft_size/2+unsigned(amplitude_phase),Axis::Bin);
     input.quantity=Quantity::SpectrumReal;input.unit=NumericUnit::RawAmplitude;
-    f.io(input,input,2,2);
+    f.io(input,input,2,amplitude_phase?3:2);
     f.field("fft_size",NumericLiteral{std::uint64_t(f.settings.fft_size)});
-    f.field("first_bin",NumericLiteral{std::uint64_t{1}});
+    if(!amplitude_phase)f.field("first_bin",NumericLiteral{std::uint64_t{1}});
     f.field("positive_half",true);
-    if(kind=="AmplitudePhase"){
-        auto imaginary=input;imaginary.quantity=Quantity::SpectrumImaginary;
-        --imaginary.shape.extents[0].minimum;--imaginary.shape.extents[0].maximum;
-        f.node.inputs.pop_back();f.port(PortDirection::Input,1,imaginary);
-    }
+    auto imaginary=input;imaginary.quantity=Quantity::SpectrumImaginary;
+    f.node.inputs.pop_back();f.port(PortDirection::Input,1,imaginary);
 }
 NumericContract music_input(Factory& f,std::string_view kind) {
     auto input=f.spectrum(true);input.quantity=Quantity::SpectrumPower;input.unit=NumericUnit::SquaredAmplitude;
@@ -256,7 +253,6 @@ void initialize_numeric(Factory& f,std::string_view kind) {
 }
 NumericContract signal_input(Factory& f,std::string_view kind) {
     auto input=f.vector(Semantic::PCM,f.settings.packet_samples);
-    if(kind=="StereoFFT")input=f.vector(Semantic::Windowed,f.settings.fft_size);
     if(one_of(kind,{"SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude"}))input=f.spectrum();
     if(kind=="SpectrumAmplitude")input.quantity=Quantity::SpectrumMagnitude;
     if(kind=="Mixer"){input.shape.extents[0].minimum=1;f.node.parameters=MixerProcessingParameters{};}
@@ -325,8 +321,8 @@ bool initialize_librosa_family(Factory& f,std::string_view kind) {
     return false;
 }
 bool initialize_portable_operations(Factory& factory,std::string_view kind) {
-    if(!temporal_operation_kind(kind) && !interval_operation_kind(kind))return false;
-    const auto count=temporal_operation_kind(kind)?temporal_operation_output_count(kind):interval_operation_output_count(kind);
+    if(!interval_operation_kind(kind))return false;
+    const auto count=interval_operation_output_count(kind);
     const auto input=factory.vector(Semantic::Numeric,512,Axis::Declared);
     factory.io(input,input,1,count);
     if(kind=="DetrendedFluctuation")factory.field("scales",NumericArray{{4,8,16,32,64}});
@@ -339,7 +335,6 @@ void curve_interpolation_defaults(Factory& f) {
 }
 
 void common_defaults(Factory& f,std::string_view kind) {
-    if(kind=="ArrayReindex")f.field("indices",NumericArray{{0}});
     if(kind=="CombFilterBank"){f.field("delays",NumericArray{{1}});f.field("alpha",NumericArray{{.5f}});}
     if(kind=="RecursiveFilter"){f.field("numerator",NumericArray{{1}});f.field("denominator",NumericArray{{1}});}
     if(kind=="FilterMatrixProjection")f.field("weights",NumericArray{std::vector<float>(512,1.f/512.f)});
@@ -383,7 +378,7 @@ bool initialize_operations(Factory& f,std::string_view kind) {
     if(initialize_music_family(f,kind))return true;
     if(initialize_numerical(f,kind))return true;
     if(initialize_accumulation(f,kind))return true;
-    if(one_of(kind,{"StereoFFT","SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude","PcmResampler","Mixer","ChannelComparison"})){initialize_signal(f,kind);return true;}
+    if(one_of(kind,{"SpectrumGain","SpectrumMerge","BarkWeighting","Mel","SpectrumAmplitude","PcmResampler","Mixer","ChannelComparison"})){initialize_signal(f,kind);return true;}
     return false;
 }
 bool initialize_interface(Factory& f,std::string_view kind,NodeRole role) {

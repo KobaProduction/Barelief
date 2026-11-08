@@ -9,8 +9,8 @@ using namespace rhythm_reference_ports;
 using namespace dataflow_runtime;
 using namespace signal_contracts;
 namespace {
-std::size_t disabled_count(const domain::ResolvedProcessingNode& node,const NumericOperationInput* input) noexcept {
-    NumericContract expected;if(!numeric_port(node,true,0,expected))return 0;
+std::size_t disabled_count(const dataflow_runtime::NumericOperationNodeView& node,const NumericOperationInput* input) noexcept {
+    NumericBufferContract expected;if(!numeric_port(node,true,0,expected))return 0;
     const auto count=input?input->value.actual[0]:std::size_t(expected.shape.extents[0].minimum);
     return std::size_t(std::clamp<std::uint64_t>(count,expected.shape.extents[0].minimum,expected.shape.extents[0].maximum));
 }
@@ -32,22 +32,27 @@ Status BufferedOperation::process(std::span<const NumericOperationInput> inputs,
         if(!output_contracts_match(outputs) || !disjoint_operation_buffers(inputs,outputs) || !proof_buffers_disjoint(inputs,outputs))return Status::invalid_argument;
         return publish_disabled(outputs,operation_frame_stamp(current,false),disabled_count(definition_view(descriptor_->node),current));
     }
+    return process_enabled(inputs,outputs,control);
+}
+Status BufferedOperation::process_enabled(std::span<const NumericOperationInput> inputs,std::span<NumericOperationOutput> outputs,
+    NumericOperationControl) noexcept {
+    const auto* current=input_at(inputs,0);
     auto status=validate_call(inputs,outputs);if(status!=Status::ok)return status;
     if(!calculate(inputs))return Status::invalid_argument;
     status=publish(outputs,operation_frame_stamp(current,true),current->contiguous_float32.size());
     if(status!=Status::ok)invalidate_outputs(outputs);
     return status;
 }
-Status BufferedOperation::publish_disabled(std::span<NumericOperationOutput> outputs,const FrameStamp& stamp,std::size_t count) noexcept {
+Status BufferedOperation::publish_disabled(std::span<NumericOperationOutput> outputs,const dataflow_runtime::NumericOperationOrigin& stamp,std::size_t count) noexcept {
     auto status=validate_outputs(outputs,limits_);if(status!=Status::ok)return status;
     for(auto& output:outputs){
         output.value.actual={plan_.kind==BufferedOperationKind::Flux && output.port==0?1:count,1};
         status=fill_silence(output.value,limits_);if(status!=Status::ok){invalidate_outputs(outputs);return status;}
-        output.stamp=stamp;output.status=Status::ok;
+        output.origin=stamp;output.status=Status::ok;
     }
     return Status::ok;
 }
-Status BufferedOperation::publish(std::span<NumericOperationOutput> outputs,const FrameStamp& stamp,std::size_t count) noexcept {
+Status BufferedOperation::publish(std::span<NumericOperationOutput> outputs,const dataflow_runtime::NumericOperationOrigin& stamp,std::size_t count) noexcept {
     if(plan_.kind!=BufferedOperationKind::Flux)return write_vector(*output_at(outputs,0),std::span<const float>(values_).first(count),stamp);
     const auto& kernel=std::get<PreparedBufferedBandFlux>(kernel_);
     auto status=write_scalar(*output_at(outputs,0),result_,stamp);if(status!=Status::ok)return status;

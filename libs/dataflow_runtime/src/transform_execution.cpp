@@ -14,9 +14,6 @@ double explicit_coordinate(std::span<const std::byte> bytes,std::size_t at) noex
     std::uint64_t bits=0;for(std::size_t byte=0;byte<8;++byte)bits|=std::uint64_t(std::to_integer<unsigned char>(bytes[at*8+byte]))<<(byte*8);
     double value=0;std::memcpy(&value,&bits,8);return value;
 }
-void write_coordinate(std::span<std::byte> bytes,std::size_t at,double value) noexcept {
-    std::uint64_t bits=0;std::memcpy(&bits,&value,8);for(std::size_t byte=0;byte<8;++byte)bytes[at*8+byte]=std::byte((bits>>(byte*8))&255);
-}
 TransformResult window_coefficients(const PlanNode& node,State& state,const DataFrameView& current,TransformDelivery delivery) noexcept {
     const auto& source=std::get<NumericView>(current.payload);const auto output=mutable_output(node,state,0);std::uint32_t size=0;
     if(load_element(source,{0,0,0},size)!=Status::ok || size!=output.actual[0])return {delivery.reject(delivery.user,Status::incompatible_contract),true};
@@ -81,13 +78,8 @@ class SpectralExecution {
     Status output_coordinates() noexcept {
         if(output.contract->coordinates[0].mode!=CoordinateMode::ExplicitFloat64LE)return Status::ok;
         auto& coordinates=state.numeric_outputs[0].coordinates[0];
-        if(node.node.kind==NodeKind::StereoFFT)write_fft_coordinates(coordinates);
-        else if(!copy_source_coordinates(coordinates))return Status::incompatible_contract;
+        if(!copy_source_coordinates(coordinates))return Status::incompatible_contract;
         output.coordinates.axes[0]={coordinates.data(),count*8};return Status::ok;
-    }
-    void write_fft_coordinates(std::span<std::byte> coordinates) const noexcept {
-        for(std::size_t column=0;column<count;++column)
-            write_coordinate(coordinates,column,double(column)*source.contract->clock.sample_rate/double(columns));
     }
     bool copy_source_coordinates(std::span<std::byte> coordinates) const noexcept {
         if(source.coordinates.axes[0].size()!=count*8)return false;
@@ -96,11 +88,6 @@ class SpectralExecution {
     }
     Status prepare_coordinates() noexcept {
         const auto status=validate_frequency_coordinates();return status==Status::ok?output_coordinates():status;
-    }
-    Status fft() noexcept {
-        auto& kernel=std::get<dsp_kernels::MagnitudeSpectrum>(state.kernel);
-        for(std::size_t plane=0;plane<output.planes.size();++plane){const auto status=kernel.process_plane(source,output,plane);if(status!=Status::ok)return status;}
-        return Status::ok;
     }
     float bark_weight(std::size_t column) const noexcept {
         return state.coefficients[column];
@@ -132,7 +119,6 @@ class SpectralExecution {
     Status render() noexcept {
         if(!node.node.enabled)return fill_silence(output,limits);
         const auto status=validate_values(source,ValueDomain::FiniteOnly,limits);if(status!=Status::ok)return status;
-        if(node.node.kind==NodeKind::StereoFFT)return fft();
         return pointwise();
     }
 public:

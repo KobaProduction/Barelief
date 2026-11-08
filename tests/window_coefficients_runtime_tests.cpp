@@ -34,8 +34,8 @@ NumericProcessingGraph graph(){
     for(PortId id=0;id<spectra.size();++id)fft.outputs.push_back({id,PortDirection::Output,spectra[id]});
     ConfiguredProcessingNode amplitude;amplitude.id=5;amplitude.kind="AmplitudePhase";amplitude.parameters=TransformProcessingParameters{{{"fft_size",NumericLiteral{std::uint64_t(size)}}}};
     amplitude.inputs={{0,PortDirection::Input,spectra[0]},{1,PortDirection::Input,spectra[1]}};
-    std::array<OwnedProcessingContract,2> outputs;check(amplitude_phase_output_contracts(amplitude,std::get<NumericContract>(spectra[0].view()),outputs)==Status::ok,"compact polar contracts");
-    amplitude.outputs={{0,PortDirection::Output,outputs[0]},{1,PortDirection::Output,outputs[1]}};
+    std::array<OwnedProcessingContract,3> outputs;check(amplitude_phase_output_contracts(amplitude,std::get<NumericContract>(spectra[0].view()),outputs)==Status::ok,"compact polar contracts");
+    amplitude.outputs={{0,PortDirection::Output,outputs[0]},{1,PortDirection::Output,outputs[1]},{2,PortDirection::Output,outputs[2]}};
     check(attach_numeric_parameter_ports(amplitude,profile().admission)==Status::ok,"one coefficient input");
     ConfiguredProcessingNode count;check(bool(make_processing_node("UInt32Constant",4,profile().admission,count,{48000,size,256,32})),"size factory");
     auto window=window_node();window.inputs[0].contract=count.outputs[0].contract;
@@ -49,7 +49,8 @@ struct Observation {
         if(event.identity.node!=5 || event.direction!=PortDirection::Output)return;
         auto& self=*static_cast<Observation*>(user);check(event.status==Status::ok,"amplitude output status");
         const auto& value=std::get<NumericView>(event.frame.payload);
-        check(value.actual[0]==(event.identity.port?255:256),"Nyquist is real, phase is interior only");
+        if(event.identity.port==2){check(value.contract->shape.rank==Rank::Scalar,"DC is scalar");return;}
+        check(value.actual[0]==256,"amplitude and phase have identical non-DC bins");
         check(value.contract->clock.sample_rate==0 && value.contract->coordinates[0].unit==NumericUnit::Values,"no implicit sampling frequency");
         check(load_element(value,{0,2,0},event.identity.port?self.phase:self.tone)==Status::ok,"read tone");
         if(!event.identity.port)++self.frames;
@@ -132,7 +133,8 @@ struct MatrixObservation {
     static void output(void* user,const NumericPortFrameView& event){
         if(event.identity.node!=5)return;auto& self=*static_cast<MatrixObservation*>(user);check(event.status==Status::ok,"matrix window pipeline status");
         const auto& view=std::get<NumericView>(event.frame.payload);const auto phase=event.identity.port==1;
-        check(view.actual==std::array<std::size_t,2>{self.rows,phase?255u:256u},"matrix magnitude/phase preserve actual rows and independent widths");
+        if(event.identity.port==2){check(view.actual==std::array<std::size_t,2>{self.rows,1},"one DC per matrix row");return;}
+        check(view.actual==std::array<std::size_t,2>{self.rows,256},"matrix magnitude/phase preserve actual rows and shared non-DC width");
         for(std::size_t row=0;row<self.rows;++row){float value=0;check(load_element(view,{0,row,2},value)==Status::ok,"matrix amplitude value");
             const auto expected=phase?(row?-1.57079632679f:0.f):(row?.2f:.4f);check(std::abs(value-expected)<1e-5f,"broadcast window normalization and phase match each row");}
         if(!phase)++self.frames;

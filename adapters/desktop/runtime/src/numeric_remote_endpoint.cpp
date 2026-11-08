@@ -189,9 +189,9 @@ struct NumericRemoteEndpoint::Impl {
     void reply(const nc::Message& m) {
         if(m.request!=waiting)return;waiting=0;
         const auto* r=std::get_if<nc::Reply>(&m.body);if(!r)return;
-        // Pace observation from completion: a large/slow State reply must not
-        // immediately schedule another query and starve DATA binding/transport.
-        if(phase==nc::CommandId::State)last_state=clock.now_ms();
+        // Both replies carry current applied graph/state. Pace observation from
+        // completion so initial DATA binding gets a turn after either snapshot.
+        if(phase==nc::CommandId::Capabilities || phase==nc::CommandId::State)last_state=clock.now_ms();
         apply_graph_reply(m,*r);
     }
     void apply_graph_reply(const nc::Message& m,const nc::Reply& reply) {

@@ -132,8 +132,7 @@ void GraphPanel::build_layout(){
 }
 void GraphPanel::build_renderers(){
     _renderers=new QStackedWidget(_splitter);_renderers->addWidget(_chart);
-    _image=new NumericImageView(_renderers);_renderers->addWidget(_image);
-    _pie=new NumericPieView(_renderers);_renderers->addWidget(_pie);
+    ensure_array_renderers();
     if(_surface)_renderers->addWidget(_surface);
     ensure_optional_renderers();
 }
@@ -147,18 +146,27 @@ void GraphPanel::ensure_optional_renderers(){
         _metrics=new NumericMetricsView(_renderers);_renderers->addWidget(_metrics);
     }
 }
+void GraphPanel::ensure_array_renderers(){
+    if(!_image && _allowed_modes.contains("image2d")){
+        _image=new NumericImageView(_renderers);_renderers->addWidget(_image);
+        _image->set_axis_precision(_axis_precision);
+        connect(_image,&NumericImageView::axis_metadata_changed,this,&GraphPanel::refresh_axis_display_controls);
+    }
+    if(!_pie && _allowed_modes.contains("pie")){
+        _pie=new NumericPieView(_renderers);_renderers->addWidget(_pie);
+    }
+}
 void GraphPanel::set_plot_capabilities(PlotCapabilities capabilities){
     if(capabilities.modes.isEmpty())capabilities.modes={"line"};
     if(_allowed_modes==capabilities.modes && _audio_scales==capabilities.audio_scales)return;
     _allowed_modes=std::move(capabilities.modes);_audio_scales=capabilities.audio_scales;
-    ensure_optional_renderers();
+    ensure_array_renderers();ensure_optional_renderers();
     _default_display_mode=_allowed_modes.contains(_display_mode)?_display_mode:_allowed_modes.front();
     const bool restoring=_restoring;_restoring=true;
     set_display_mode(_default_display_mode);
     apply_preferences();_restoring=restoring;emit state_changed();
 }
 void GraphPanel::bind_panel_events(){
-    connect(_image,&NumericImageView::axis_metadata_changed,this,&GraphPanel::refresh_axis_display_controls);
     connect(_splitter,&QSplitter::splitterMoved,this,[this]{
         const auto sizes=_splitter->sizes();const int total=sizes[0]+sizes[1];
         if(total && !_restoring){_preferences["side_ratio"]=double(sizes[1])/total;emit presentation_changed(_id,{{"side_ratio",_preferences["side_ratio"]}});}
@@ -216,7 +224,8 @@ QString GraphPanel::caption(QObject* target,const char* source,QStringList args,
 }
 void GraphPanel::refresh_captions(){
     const auto refresh=[this](QObject* object){return caption(object,object->property("numericCaptionSource").toString().toUtf8().constData(),object->property("numericCaptionArguments").toStringList(),object->property("numericCaptionLoss").toBool(),object->property("numericCaptionUnavailable").toBool());};
-    set_diagnostic(refresh(this));refresh_information();_chart->set_projection_status(refresh(_chart));_image->set_projection_status(refresh(_image));_pie->set_projection_status(refresh(_pie));
+    set_diagnostic(refresh(this));refresh_information();_chart->set_projection_status(refresh(_chart));
+    if(_image)_image->set_projection_status(refresh(_image));if(_pie)_pie->set_projection_status(refresh(_pie));
     if(_surface)_surface->set_projection_status(refresh(_surface));if(_piano)_piano->set_projection_status(refresh(_piano));
     refresh_value_titles();emit state_changed();
 }
@@ -305,19 +314,24 @@ presentation::NumericRenderTarget GraphPanel::render_target(bool visible){
     const bool metrics_active=_display_mode=="metrics"||_display_mode=="signedbar";
     return {active_chart()?&_chart_port:nullptr,active_spectrogram()?&_surface_port:nullptr,&_caption_port,visible,compact_view()?&_compact_port:image_view()?&_image_port:nullptr,pie_view()?&_pie_port:nullptr,metrics_active&&_metrics?&_metrics_port:nullptr,_axis_permissions,piano_view()?&_piano_port:nullptr,_frequency_grid,_plot_presentation};
 }
-presentation::NumericRenderTarget GraphPanel::all_render_targets(){return {&_chart_port,_surface?&_surface_port:nullptr,&_caption_port,true,_compact?&_compact_port:&_image_port,&_pie_port,_metrics?&_metrics_port:nullptr,_axis_permissions,_piano?&_piano_port:nullptr,_frequency_grid,_plot_presentation};}
+presentation::NumericRenderTarget GraphPanel::all_render_targets(){return {&_chart_port,_surface?&_surface_port:nullptr,&_caption_port,true,_compact?&_compact_port:_image?&_image_port:nullptr,_pie?&_pie_port:nullptr,_metrics?&_metrics_port:nullptr,_axis_permissions,_piano?&_piano_port:nullptr,_frequency_grid,_plot_presentation};}
 void GraphPanel::apply_preferences(){
     const auto scale=display_scale(current_value_source());
-    _image->set_axis_metadata(display_metadata(_image->source_axis_metadata()));
     if(_surface)_surface->set_value_scale(display_scale(_surface->source_axis_metadata().value_scale));
     if(_compact){_compact->set_layout(_preferences.value("compact_layout").toObject());_compact->set_orientation(_preferences.value("spectrogram_orientation").toString("vertical"));_compact->set_value_range(_preferences.value("minimum").toDouble(),_preferences.value("maximum").toDouble(255));}
     _chart->set_axis_density(_preferences.value("grid_lines_x").toInt(),_preferences.value("grid_lines_y").toInt(),_preferences.value("axis_labels_x").toInt(),_preferences.value("axis_labels_y").toInt());
-    _image->set_axis_density(_preferences.value("grid_lines_x").toInt(),_preferences.value("grid_lines_y").toInt(),_preferences.value("axis_labels_x").toInt(),_preferences.value("axis_labels_y").toInt());
     refresh_value_titles();
     _chart->set_series_style(_preferences.value("line_width").toDouble(1.25),_preferences.value("point_size").toDouble(12),_preferences.value("bar_width_percent").toDouble(80));
     if(_piano)_piano->set_activity_floor(_preferences.value("piano_activity_floor").toDouble(1e-9));
-    _pie->set_slice_labels_visible(_preferences.value("pie_labels_visible").toBool(true));
-    apply_value_range(scale);apply_axis_preferences();
+    apply_value_range(scale);apply_array_preferences();apply_axis_preferences();
+}
+void GraphPanel::apply_array_preferences(){
+    if(_image){
+        _image->set_axis_metadata(display_metadata(_image->source_axis_metadata()));
+        _image->set_axis_density(_preferences.value("grid_lines_x").toInt(),_preferences.value("grid_lines_y").toInt(),_preferences.value("axis_labels_x").toInt(),_preferences.value("axis_labels_y").toInt());
+        _image->set_y_range(_preferences.value("auto_range").toBool(true),_preferences.value("minimum").toDouble(),_preferences.value("maximum").toDouble(),_preferences.value("auto_range_interval_seconds").toDouble(10));
+    }
+    if(_pie)_pie->set_slice_labels_visible(_preferences.value("pie_labels_visible").toBool(true));
 }
 void GraphPanel::apply_value_range(ValueDisplayScale scale){
     const bool spectrum=_audio_scales,automatic=_preferences.value("auto_range").toBool(true),decibels=scale.decibels();
@@ -335,14 +349,13 @@ void GraphPanel::apply_value_range(ValueDisplayScale scale){
     if(!automatic || !wasAutomatic || scaleChanged)
         _chart->set_range(automatic?automatic_y_minimum(decibels,spectrum):low,automatic?(decibels?0:.001):high);
     _chart->set_value_scale(scale);
-    _image->set_y_range(automatic,low,high,interval);
 }
 void GraphPanel::apply_axis_preferences(){
     _chart->set_x_range(_preferences.value("auto_range_x").toBool(true),_preferences.value("minimum_x").toDouble(0),_preferences.value("maximum_x").toDouble(1));
     const bool reverseX=_preferences.value("reverse_x").toBool(),reverseY=_preferences.value("reverse_y").toBool();
-    _chart->set_reverse_axes(reverseX,reverseY);_image->set_reverse_axes(reverseX,reverseY);
+    _chart->set_reverse_axes(reverseX,reverseY);if(_image)_image->set_reverse_axes(reverseX,reverseY);
     const auto frequency=_preferences.value("frequency_axis_mode").toString("coordinates"),time=_preferences.value("time_axis_mode").toString("coordinates");
-    _image->set_axis_display_modes(frequency,time);if(_surface)_surface->set_axis_display_modes(frequency,time);
+    if(_image)_image->set_axis_display_modes(frequency,time);if(_surface)_surface->set_axis_display_modes(frequency,time);
 }
 void GraphPanel::restore_compact_preferences(){
     if(!_compact)return;
@@ -464,12 +477,12 @@ void GraphPanel::set_auxiliary_render_visibility(bool visible){
     if(_metrics)_metrics->set_render_visible(visible && (_display_mode=="metrics" || _display_mode=="signedbar"));
 }
 void GraphPanel::set_render_visible(bool visible){
-    _render_visible=visible;_chart->set_render_visible(visible && active_chart());_image->set_render_visible(visible && image_view());_pie->set_render_visible(visible && pie_view());
+    _render_visible=visible;_chart->set_render_visible(visible && active_chart());if(_image)_image->set_render_visible(visible && image_view());if(_pie)_pie->set_render_visible(visible && pie_view());
     set_auxiliary_render_visibility(visible);
     if(_surface)_surface->set_render_visible(visible && active_spectrogram());if(_information_timer){if(visible)_information_timer->start();else _information_timer->stop();}
 }
 void GraphPanel::set_render_fps(int fps){_render_fps=std::clamp(fps,1,1000);_chart->set_render_fps(_render_fps);if(_piano)_piano->set_render_fps(_render_fps);if(_surface)_surface->set_render_fps(_render_fps);emit state_changed();}
-void GraphPanel::set_axis_precision(int precision){_axis_precision=std::clamp(precision,0,8);_chart->set_axis_precision(_axis_precision);_image->set_axis_precision(_axis_precision);if(_surface){auto options=_surface->surface_settings();options["axis_precision"]=_axis_precision;const QSignalBlocker block(_surface);_surface->set_surface_settings(options);}emit state_changed();}
+void GraphPanel::set_axis_precision(int precision){_axis_precision=std::clamp(precision,0,8);_chart->set_axis_precision(_axis_precision);if(_image)_image->set_axis_precision(_axis_precision);if(_surface){auto options=_surface->surface_settings();options["axis_precision"]=_axis_precision;const QSignalBlocker block(_surface);_surface->set_surface_settings(options);}emit state_changed();}
 qreal GraphPanel::display_fps() const {
     if(!_render_visible)return 0;
     if(active_spectrogram())return _surface->display_fps();
@@ -485,8 +498,8 @@ NumericImageView* GraphPanel::image_view() const{return _display_mode=="image2d"
 NumericPieView* GraphPanel::pie_view() const{return _display_mode=="pie"?_pie:nullptr;}
 NumericPianoView* GraphPanel::piano_view() const{return _display_mode=="piano"?_piano:nullptr;}
 void GraphPanel::set_first_midi(unsigned first){if(_piano)_piano->set_first_midi(first);}
-bool GraphPanel::physical_frequency() const{if(compact_view())return _axis_permissions.frequency && _compact->source_axis_metadata().column_coordinates;const auto& a=active_spectrogram()?_surface->source_axis_metadata():_image->source_axis_metadata();return _axis_permissions.frequency && a.column_coordinates;}
-bool GraphPanel::physical_time() const{if(compact_view())return _axis_permissions.time && _compact->source_axis_metadata().time_coordinates;const auto& a=active_spectrogram()?_surface->source_axis_metadata():_image->source_axis_metadata();return _axis_permissions.time && a.time_coordinates;}
+bool GraphPanel::physical_frequency() const{if(compact_view())return _axis_permissions.frequency && _compact->source_axis_metadata().column_coordinates;if(!active_spectrogram() && !_image)return false;const auto& a=active_spectrogram()?_surface->source_axis_metadata():_image->source_axis_metadata();return _axis_permissions.frequency && a.column_coordinates;}
+bool GraphPanel::physical_time() const{if(compact_view())return _axis_permissions.time && _compact->source_axis_metadata().time_coordinates;if(!active_spectrogram() && !_image)return false;const auto& a=active_spectrogram()?_surface->source_axis_metadata():_image->source_axis_metadata();return _axis_permissions.time && a.time_coordinates;}
 void GraphPanel::refresh_axis_display_controls(){
     const bool frequency=physical_frequency(),time=physical_time();
     if(frequency==_physical_frequency_available && time==_physical_time_available)return;

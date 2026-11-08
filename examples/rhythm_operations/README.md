@@ -12,8 +12,7 @@ stages, with intermediate ports available for inspection.
 | `madmom-superflux-reference` | [One SuperFlux frontend with Fixed, Local and CRF outputs](madmom/README.md) |
 | `essentia-reference` | [Shared Degara and MultiFeature graph](essentia/README.md) |
 
-The individual madmom and Essentia project files remain available for
-source comparisons. The exporter produces the five library presets above.
+The exporter saves the same five presets as versioned projects in this format.
 
 Build the optional research composition from the repository root:
 

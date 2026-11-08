@@ -49,13 +49,17 @@ void stage_trace_output(void* user,const NumericPortFrameView& frame) {
     trace_copy_stage(view,values);
     trace.seen[stage]=true;
 }
+void trace_spectrum_geometry(NumericContract& contract) {
+    if(contract.shape.rank!=Rank::Vector || contract.shape.axes[0]!=Axis::Bin)return;
+    const bool complex=contract.quantity==Quantity::SpectrumReal || contract.quantity==Quantity::SpectrumImaginary;
+    const auto count=trace_bins+unsigned(complex);contract.shape.extents[0]={count,count};
+    if(!complex)contract.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{48000,trace_n},{48000,trace_n}};
+}
 NumericContract trace_geometry(NumericContract c) {
     // The ingress owns one 256-sample block; intermediate storage uses N4096.
     if(c.semantic==Semantic::PCM)c.shape.extents[0]={256,256};
     if(c.semantic==Semantic::Window||c.semantic==Semantic::Windowed)c.shape.extents[0]={trace_n,trace_n};
-    if(c.semantic==Semantic::SpectrumMagnitude) {
-        c.shape.extents[0]={trace_bins,trace_bins};c.coordinates[0].step={48000,trace_n};
-    }
+    trace_spectrum_geometry(c);
     if(c.semantic==Semantic::MelEnergy)c.shape.extents[0]={trace_bands,trace_bands};
     if(c.semantic==Semantic::History)c.shape.extents[1]={trace_bands,trace_bands};
     return c;
@@ -70,10 +74,11 @@ void trace_transform_geometry(ConfiguredProcessingNode& node) {
     if(node.kind=="Window") {
         trace_setting(node,"size",std::uint64_t(trace_n));
     }
+    if(node.kind=="RealFourier" || node.kind=="AmplitudePhase")trace_setting(node,"fft_size",std::uint64_t(trace_n));
     if(node.kind=="BarkWeighting"||node.kind=="Mel") {
         trace_setting(node,"sample_rate",std::uint64_t{48000});
         trace_setting(node,"bin_hz",48000./trace_n);
-        trace_setting(node,"first_bin",std::uint64_t{0});
+        trace_setting(node,"first_bin",std::uint64_t{1});
     }
     if(node.kind=="Mel")trace_setting(node,"bands",std::uint64_t(trace_bands));
 }
@@ -87,6 +92,12 @@ void trace_coefficient_geometry(ConfiguredProcessingNode& node) {
         auto coefficient=std::get<NumericContract>(node.inputs[1].contract.view());
         coefficient.shape.extents[0]={trace_n,trace_n};
         node.inputs[1].contract=own(coefficient);
+    }
+    if(node.kind=="AmplitudePhase") {
+        auto& port=node.inputs.back();
+        CHECK(port.id==window_coefficients_input);
+        auto coefficient=std::get<NumericContract>(port.contract.view());
+        coefficient.shape.extents[0]={trace_n,trace_n};port.contract=own(coefficient);
     }
 }
 void trace_retag_node(ConfiguredProcessingNode& node) {
@@ -159,15 +170,16 @@ double trace_dft_magnitude(const std::array<double,trace_n>& windowed,std::size_
         const auto next=phase_real*step_real-phase_imaginary*step_imaginary;
         phase_imaginary=phase_real*step_imaginary+phase_imaginary*step_real;phase_real=next;
     }
-    return std::hypot(real,imaginary)/trace_n;
+    // Symmetric Hann has coherent sum (N-1)/2; the Nyquist bin is not doubled.
+    return std::hypot(real,imaginary)*(bin==trace_n/2?1.:2.)/(double(trace_n-1)/2.);
 }
 std::array<double,trace_bins> trace_spectrum_reference(const StageTrace& trace,const TraceWindow& windowed) {
     std::array<double,trace_bins> merged{};
     for(std::size_t bin=0;bin<trace_bins;++bin) {
         std::array<double,1> weighted{};
         for(std::size_t channel=0;channel<1;++channel) {
-            const auto magnitude=trace_dft_magnitude(windowed[channel],bin);
-            weighted[channel]=magnitude*7*std::asinh((double(bin)*48000/trace_n)/650);
+            const auto magnitude=trace_dft_magnitude(windowed[channel],bin+1);
+            weighted[channel]=magnitude*7*std::asinh((double(bin+1)*48000/trace_n)/650);
             trace_close(trace.stages[4][channel*trace_bins+bin],magnitude);
             trace_close(trace.stages[5][channel*trace_bins+bin],weighted[channel]);
         }
@@ -184,7 +196,7 @@ double trace_mel_reference(const std::array<double,trace_bins>& merged,std::size
     const auto left=trace_mel_hz(band),center=trace_mel_hz(band+1),right=trace_mel_hz(band+2);
     double value=0;
     for(std::size_t bin=0;bin<trace_bins;++bin) {
-        const auto frequency=double(bin)*48000/trace_n;
+        const auto frequency=double(bin+1)*48000/trace_n;
         const auto weight=frequency<left||frequency>right?0.:frequency<center?
             (frequency-left)/(center-left):(right-frequency)/(right-center);
         value+=merged[bin]*weight;

@@ -7,7 +7,6 @@ class QCommandLineParser;
 struct WholeInputArguments {
     QString preset,input,output;
     std::size_t packet_samples=4096;
-    bool frontend_diagnostic=false;
 };
 void add_whole_input_options(QCommandLineParser&);
 WholeInputArguments whole_input_arguments(const QCommandLineParser&);

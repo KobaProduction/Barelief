@@ -144,6 +144,13 @@ source кадры; host передаёт их в `GraphExecutor::process_numeric
 Не запускайте рядом второй helper `prepare`/`tick`, который владеет собственным
 prepared graph. Точные версии CONTROL4/DATA6 описаны в [протоколе](protocol.md).
 
+Спектральная helper-схема содержит десять узлов: преобразование `RealFourier`
+отделено от `AmplitudePhase`, коэффициенты окна подключены явно. Общий device
+CONTROL envelope допускает десять узлов; остальные wire/arena пределы сохранены.
+Внутреннее владеющее описание схемы, включая вычисленные массивы параметров,
+ограничено `processing_budget(profile)` и учитывается в общем peak admission.
+Этот бюджет отделён от размера CONTROL-сообщения и метаданных отдельного кадра.
+
 [host_hooks.h](../../examples/esp32_streamer/main/host_hooks.h) задаёт точки расширения:
 
 | Hook | Обязанность host |

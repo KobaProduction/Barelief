@@ -44,7 +44,7 @@ static bool seed(const QString& path) {
         desktop::stage_numeric_presentation(document,display,document) && desktop::save_numeric_project(document,path);
 }
 static MainWindow* main_window() {
-    for(auto* widget:QApplication::topLevelWidgets())if(auto* window=qobject_cast<MainWindow*>(widget))return window;
+    for(const auto widgets=QApplication::topLevelWidgets();auto* widget:widgets)if(auto* window=qobject_cast<MainWindow*>(widget))return window;
     return nullptr;
 }
 static bool saved(MainWindow* window) {

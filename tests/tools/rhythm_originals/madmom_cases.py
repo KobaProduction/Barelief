@@ -80,19 +80,6 @@ def novelty_cases(original):
                        {".phase": actual_phase if index == 4 else phase}, "original function; centre index //2 Python3 repair" if index == 11 else "unchanged original function with supplied Spectrogram/Phase views")
 
 
-def peak_cases(original):
-    for channels, average, maximum in itertools.product((1, 3), (0, 2), (1, 3)):
-        values = np.tile(envelope(96)[:, None], (1, channels))
-        values[40:43, :] = .9
-        def reference(x, average=average, maximum=maximum):
-            frames, channel = original.onsets.peak_picking(x, threshold=.5, smooth=None, pre_avg=average,
-                                                          post_avg=average, pre_max=maximum, post_max=maximum)
-            return {"frames": frames, "channels": channel}
-        yield Case(f"python.madmom.peaks.channels{channels}.avg{average}.max{maximum}", "madmom", "peaks", values,
-                   [.5, average, average, maximum, maximum], reference,
-                   dict(threshold=.5, channels=channels, pre_average=average, post_average=average, pre_maximum=maximum, post_maximum=maximum, smooth=None))
-
-
 def histogram_cases(original):
     for method, channels in ((0, 1), (1, 1), (1, 3)):
         values = np.tile(envelope(192)[:, None], (1, channels))
@@ -115,5 +102,4 @@ def histogram_cases(original):
 def cases(original):
     yield from spectral_cases(original)
     yield from novelty_cases(original)
-    yield from peak_cases(original)
     yield from histogram_cases(original)

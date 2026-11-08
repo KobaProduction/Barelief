@@ -24,12 +24,7 @@ bool SequenceSourceOperation::calculate_onsets(std::span<const NumericOperationI
 bool SequenceSourceOperation::calculate(std::span<const NumericOperationInput> inputs,std::span<NumericOperationOutput> outputs) noexcept {
     histogram_ready_=false;
     if(plan_.kind==SequenceSourceKind::Fusion || plan_.kind==SequenceSourceKind::Selection || plan_.kind==SequenceSourceKind::Events)return calculate_onsets(inputs);
-    if(plan_.kind==SequenceSourceKind::Activation || plan_.kind==SequenceSourceKind::Difference || plan_.kind==SequenceSourceKind::PcmDifference || plan_.kind==SequenceSourceKind::Trajectory)return calculate_stream(inputs,outputs);
-    if(plan_.kind==SequenceSourceKind::Rate)return std::get<PreparedOnsetRateRecipe>(kernel_).process(inputs[0].contiguous_float32);
-    if(plan_.kind==SequenceSourceKind::PcmSummary){
-        auto& source=std::get<PreparedPcmRhythmSummary>(kernel_);if(!source.process(inputs[0].contiguous_float32))return false;
-        histogram_ready_=source.histogram_descriptors(histogram_);return true;
-    }
+    if(plan_.kind==SequenceSourceKind::Activation || plan_.kind==SequenceSourceKind::Difference)return calculate_stream(inputs,outputs);
     float confidence=0;if(load_element(inputs[1].value,{0,0,0},confidence)!=Status::ok)return false;
     auto& source=std::get<PreparedBeatIntervalSummary>(kernel_);if(!source.process(inputs[0].contiguous_float32,confidence))return false;
     histogram_ready_=source.histogram_descriptors(histogram_);return true;

@@ -67,7 +67,7 @@ bool IngressAcceptance::belongs_to_lane(std::size_t branch) const noexcept {
 }
 void IngressAcceptance::reset_descendant(std::size_t index) noexcept {
     // History retains rows. A Fourier join retains a pending opposite plane;
-    // accept_fourier fences the new interval/epoch before publishing a pair.
+    // Paired input processing fences the new interval/epoch before publication.
     if(nodes[index].operation==ProcessingOperation::History || paired_processing(nodes[index].operation))states[index].pending_discontinuity=true;
     else clear_node_state(nodes[index],states[index]);
 }

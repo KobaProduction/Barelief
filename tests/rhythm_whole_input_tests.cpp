@@ -65,14 +65,16 @@ void verify(const QString& directory,std::size_t count,std::size_t collected,std
     check(result.value("packet_samples").toInteger()==qint64(packet),"requested real packet envelope");
     check(result.value("batch_attempts").toInteger()==1,"exactly one final batch");
     check(result.value("numeric_parity")=="not_evaluated","execution is separate from source numerical comparison");
-    for(const auto& value:result.value("endpoints").toArray()){
+    const auto endpoints=result.value("endpoints").toArray();
+    for(const auto& value:endpoints){
         const auto endpoint=value.toObject();check(endpoint.value("complete").toBool(),"every required endpoint complete");
         check(endpoint.value("available_publications").toInteger()==1,"one final available publication");
         check(!endpoint.value("streaming_publications").toInteger(),"no rolling temporal result before EOF");
     }
 }
 void packet_parity(const QString& first,const QString& second) {
-    for(const auto& value:report(first).value("endpoints").toArray()){
+    const auto endpoints=report(first).value("endpoints").toArray();
+    for(const auto& value:endpoints){
         const auto file=value.toObject().value("file").toString();
         check(read(QDir(first).filePath(file))==read(QDir(second).filePath(file)),"packet97/4096 final payload bit parity");
     }
@@ -82,8 +84,7 @@ void complete_input(const QDir& root,const QString& preset,std::uint32_t count,s
     const auto first=root.filePath(preset+"-97"),second=root.filePath(preset+"-4096");
     check(run_whole_input({preset,input,first,97})==0,"actual whole runner packet97");
     check(run_whole_input({preset,input,second,4096})==0,"actual whole runner packet4096");
-    const auto collected=rate==44100?count:1+(count-2048)/240;
-    verify(first,count,collected,97);verify(second,count,collected,4096);packet_parity(first,second);
+    verify(first,count,count,97);verify(second,count,count,4096);packet_parity(first,second);
 }
 void lifecycle() {
     WholeInputProgress state(101);
@@ -119,11 +120,17 @@ void malformed_inputs(const QDir& root) {
     {QFile file(oversized);check(file.open(QIODevice::WriteOnly),"oversize fixture");file.write(wave_header(4194305,44100));check(file.resize(44+4194305LL*4),"sparse PCM beyond explicit4M profile");}
     rejected({"essentia-finite-degara",oversized,root.filePath("oversized-result"),4096});
     const auto wrong_rate=root.filePath("wrong-rate.wav");wave(wrong_rate,4096,32000);
-    rejected({"madmom-whole-superflux-crf",wrong_rate,root.filePath("rate-result"),4096});
-    rejected({"madmom-reference-superflux-crf",wrong_rate,root.filePath("old-preset-result"),4096});
+    rejected({"essentia-finite-degara",wrong_rate,root.filePath("rate-result"),4096});
     const auto clamped=root.filePath("clamped-long-header.wav");
-    {QFile file(clamped);check(file.open(QIODevice::WriteOnly),"long header truncated physical fixture");file.write(wave_header(514761,48000));file.write(QByteArray(4096*4,0));}
-    rejected({"madmom-whole-superflux-crf",clamped,root.filePath("clamped-result"),97});
+    {QFile file(clamped);check(file.open(QIODevice::WriteOnly),"long header truncated physical fixture");file.write(wave_header(514761,44100));file.write(QByteArray(4096*4,0));}
+    rejected({"essentia-finite-degara",clamped,root.filePath("clamped-result"),97});
+}
+void unsupported_presets(const QDir& root) {
+    const auto input=root.filePath("retired-preset.wav");wave(input,4096,48000);
+    for(const auto* id:{"madmom-whole-superflux-fixed","madmom-whole-superflux-local","madmom-whole-superflux-crf"})
+        rejected({id,input,root.filePath(QString::fromLatin1(id)+"-rejected"),97});
+    QCommandLineParser parser;add_whole_input_options(parser);
+    check(!parser.parse({"test","--frontend-diagnostic"}),"removed frontend diagnostic is not a registered option");
 }
 void rejected_container(const QDir& root,const QString& name,const QByteArray& contents) {
     const auto input=root.filePath(name+".wav");
@@ -159,24 +166,15 @@ void incompatible_options(const QDir& root) {
     bool failed=false;try {(void)whole_input_arguments(parser);}catch(const std::exception&){failed=true;}
     check(failed && !QFileInfo::exists(output),"reject live duration before any capture or output");
 }
-void defined_empty(const QDir& root) {
-    const auto input=root.filePath("short-silence.wav"),output=root.filePath("short-silence-result");
-    {QFile file(input);check(file.open(QIODevice::WriteOnly),"short silence WAV");file.write(wave_header(2048,48000));file.write(QByteArray(2048*4,0));}
-    check(run_whole_input({"madmom-whole-superflux-crf",input,output,97})==0,"defined short silence is successful typed empty");
-    verify(output,2048,1,97);check(report(output).value("result")=="no_result","only available empty is no_result");
-}
 }
 int main(int argc,char** argv) {
     QCoreApplication application(argc,argv);QTemporaryDir temporary;
     check(temporary.isValid(),"owned temporary evidence directory");const QDir root(temporary.path());
-    if(argc>1 && std::strcmp(argv[1],"--no-result-only")==0){defined_empty(root);std::puts("Whole WAV no-result PASS");return 0;}
     if(argc>1 && std::strcmp(argv[1],"--positive-only")==0){
         complete_input(root,"essentia-finite-multifeature",396900,44100);
-        complete_input(root,"madmom-whole-superflux-crf",514761,48000);
         std::puts("Whole WAV positive partition regression PASS");return 0;
     }
-    lifecycle();publication_lifecycle();malformed_inputs(root);container_boundaries(root);incompatible_options(root);defined_empty(root);
+    lifecycle();publication_lifecycle();malformed_inputs(root);container_boundaries(root);incompatible_options(root);unsupported_presets(root);
     complete_input(root,"essentia-finite-multifeature",396900,44100);
-    complete_input(root,"madmom-whole-superflux-crf",514761,48000);
     std::puts("Whole WAV input PASS");return 0;
 }

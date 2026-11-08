@@ -14,7 +14,7 @@ bool write_row(NumericOperationOutput& out,std::size_t row,std::span<const float
 class Rows final:public BatchKernel<Rows> {
 public:
     bool prepare(const EssentiaPlan& p) {
-        source_=p;plan_.kind=BatchKind::PulseTempo;plan_.outputs=p.outputs;
+        source_=p;plan_.kind=BatchKind::Independent;plan_.outputs=p.outputs;
         std::copy_n(p.shapes.begin(),p.outputs,plan_.shape.begin());
         magnitude_.resize(p.bins);phase_.resize(p.bins);distances_.resize(p.bins);bands_.resize(40);
         if(p.kind==EssentiaKind::Onset)return onset_.prepare(p.bins,{SpectralOnsetMethod(p.method),44100});
@@ -26,19 +26,15 @@ public:
         return onset_.workspace_bytes()+gain_.workspace_bytes()+novelty_.workspace_bytes()+erb_.workspace_bytes()+
             (magnitude_.capacity()+phase_.capacity()+distances_.capacity()+bands_.capacity())*sizeof(float);
     }
-    Status process(std::span<const NumericOperationInput> in,std::span<NumericOperationOutput> out,
-        NumericOperationControl control) noexcept override {
-        invalidate_outputs(out);
-        for(const auto& input:in)if(!essentia_frequency_input(input))return Status::incompatible_contract;
-        return BatchOperation::process(in,out,control);
-    }
+
 private:
     void reset_kernel() noexcept override {onset_.reset();gain_.reset();novelty_.reset();}
     bool read(std::span<const NumericOperationInput> in,std::size_t row) noexcept {
         const auto magnitude=batch_rows(in[0]);
         if(!magnitude.read(magnitude.context,row,magnitude_))return false;
         if(in.size()==2){const auto phase=batch_rows(in[1]);if(!phase.read(phase.context,row,phase_))return false;}
-        return std::all_of(magnitude_.begin(),magnitude_.end(),[](float x){return x>=0;});
+        return (source_.kind==EssentiaKind::Onset && source_.method==4) ||
+            std::all_of(magnitude_.begin(),magnitude_.end(),[](float x){return x>=0;});
     }
     bool onset_row(std::size_t row,std::span<NumericOperationOutput> out) noexcept {
         float value=0;
@@ -86,7 +82,7 @@ private:
 class Agreement final:public BatchKernel<Agreement> {
 public:
     bool prepare(const EssentiaPlan& p) {
-        plan_.kind=BatchKind::PulseTempo;plan_.outputs=p.outputs;
+        plan_.kind=BatchKind::Independent;plan_.outputs=p.outputs;
         std::copy_n(p.shapes.begin(),p.outputs,plan_.shape.begin());
         return kernel_.prepare(5,p.rows,p.minimum_time);
     }
@@ -114,7 +110,7 @@ private:
 class CandidateInputs final:public BatchKernel<CandidateInputs> {
 public:
     bool prepare(const EssentiaPlan& p) {
-        plan_.kind=BatchKind::PulseTempo;plan_.outputs=p.outputs;
+        plan_.kind=BatchKind::Independent;plan_.outputs=p.outputs;
         std::copy_n(p.shapes.begin(),p.outputs,plan_.shape.begin());return true;
     }
     std::size_t workspace_bytes() const noexcept override {return 0;}
@@ -147,7 +143,7 @@ std::size_t essentia_operation_object_bytes(EssentiaKind kind) noexcept {
     if(kind==EssentiaKind::CandidateInputs)return sizeof(CandidateInputs);
     return kind==EssentiaKind::Agreement?sizeof(Agreement):sizeof(Rows);
 }
-std::unique_ptr<AdapterOperation> prepare_essentia_operation(const domain::ConfiguredProcessingNode& node) {
+std::unique_ptr<AdapterOperation> prepare_essentia_operation(const dataflow_runtime::NumericOperationNode& node) {
     EssentiaPlan p;if(!essentia_operation_plan(definition_view(node),p))return {};
     if(p.kind==EssentiaKind::CandidateInputs)return make<CandidateInputs>(p);
     return p.kind==EssentiaKind::Agreement?make<Agreement>(p):make<Rows>(p);

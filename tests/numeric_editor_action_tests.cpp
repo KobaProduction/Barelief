@@ -86,7 +86,7 @@ static void exercise_exact_parameter(ActionContext& context,QtNodes::NodeId conv
     auto* type=form->findChild<QComboBox*>("numericNan_type");
     auto* literal=form->findChild<QLineEdit*>("numericNan");
     require(type && literal,"Exact parameter controls missing");
-    type->setCurrentIndex(1);literal->setText("18446744073709551615");literal->setModified(true);
+    type->setCurrentIndex(int(signal_contracts::NumericLiteral{std::uint64_t{0}}.index()));literal->setText("18446744073709551615");literal->setModified(true);
     QMetaObject::invokeMethod(literal,"editingFinished",Qt::DirectConnection);
     auto nan=[&]{return std::get<domain::ConverterProcessingParameters>(model->numeric_node()->parameters).policy.nan_replacement;};
     require(std::get<std::uint64_t>(nan())==UINT64_MAX,"Actual edit rounds UInt64");

@@ -1,5 +1,6 @@
 #include "example_builder.h"
 #include <desktop/numeric_frame_budget.h>
+#include <desktop/numeric_graph_budget.h>
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -27,7 +28,7 @@ void apply_parameters(domain::ConfiguredProcessingNode& node,domain::ProcessingP
 }
 }
 Builder::Builder(domain::NodeFactorySettings settings)
-    : limits{512,2048,64,128,1048576,16777216,{16,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,4096,desktop::NumericFrameBudget::coordinate_bytes}},settings_(settings) {
+    : limits{desktop::NumericGraphBudget::nodes,desktop::NumericGraphBudget::edges,64,128,1048576,16777216,{16,desktop::NumericFrameBudget::elements,desktop::NumericFrameBudget::payload_bytes,desktop::NumericFrameBudget::metadata_bytes,4096,desktop::NumericFrameBudget::coordinate_bytes}},settings_(settings) {
     graph.graph_id="main";
     graph.execution_interval={1,120};
 }
@@ -63,7 +64,10 @@ void Builder::connect(NodeId from,NodeId to,PortId out,PortId in) {
     else found->contract=contract;
     graph.edges.push_back({from,to,out,in});
 }
-void Builder::derive(NodeId id) {require(domain::derive_processing_node_contracts(node(id),limits));}
+void Builder::derive(NodeId id) {
+    auto& value=node(id);
+    require(domain::derive_processing_node_contracts(value,limits),"derive "+graph.graph_id+"/"+value.kind);
+}
 void Builder::number(NodeId id,double value,signal_contracts::NumericUnit unit) {
     add(id,"Number",domain::EndpointProcessingParameters{{{"value",signal_contracts::NumericLiteral{value}}}});
     auto data=output(id).view();
@@ -83,7 +87,7 @@ domain::NumericProcessingGraph Builder::finish() {
     for(auto& value:graph.nodes)require(domain::attach_numeric_parameter_ports(value,limits)==signal_contracts::Status::ok?
         domain::ProcessingDiagnostic{}:domain::ProcessingDiagnostic{domain::ProcessingError::InvalidPort,value.id});
     domain::NumericProcessingGraph evaluated,executable;
-    require(domain::resolve_numeric_parameter_bindings(graph,limits,evaluated,executable),"resolve example bindings");
+    require(domain::resolve_numeric_parameter_bindings(graph,limits,evaluated,executable),"resolve "+graph.graph_id);
     return evaluated;
 }
 domain::TransformProcessingParameters transform(std::initializer_list<domain::ProcessingParameter> fields) {

@@ -2,6 +2,7 @@
 #pragma once
 #include "essentia_reference_fixture.h"
 #include <ooura_backend.h>
+#include <dataflow_runtime/numeric_operation_binding.h>
 namespace essentia_reference {
 inline OwnedProcessingContract spectral_contract(std::uint32_t fs,double frequency_step=44100./2048) {
     static constexpr std::uint32_t mono=0;
@@ -15,21 +16,47 @@ inline OwnedProcessingContract spectral_contract(std::uint32_t fs,double frequen
 }
 inline Status compose_spectral(std::string_view kind,const OwnedProcessingContract& c,ConfiguredProcessingNode& out) {
     const std::array inputs{c};TransformProcessingParameters parameters;
-    parameters.values={{"method",NumericLiteral{std::uint64_t{4}}}};
+    parameters.values={{"method",NumericLiteral{std::uint64_t{5}}}};
     return rhythm_graph_adapters::make_essentia_operation_node(10,kind,inputs,std::move(parameters),
         profile().admission.frame,65536,out);
+}
+inline void reject_declared_frequency(const ConfiguredProcessingNode& node) {
+    const ResolvedProcessingNode resolved{node.id,node.kind,NodeRole::Processor,ProcessingOperation::NumericExtension,
+        node.inputs,node.outputs,&node.parameters,node.enabled};
+    const auto p=profile();
+    check(p.operation_factory->assess(numeric_operation_node_view(resolved),numeric_operation_profile(p)).supported,
+        "numerical assessment sees identical storage geometry");
+    ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";
+    source.parameters=EndpointProcessingParameters{{{"sample_rate",NumericLiteral{std::uint64_t{48000}}}}};
+    source.outputs={{0,PortDirection::Output,node.inputs[0].contract}};
+    NumericProcessingGraph graph;graph.graph_id="essentia-declared-frequency";
+    graph.nodes={source,node};graph.edges={{1,node.id,0,0}};
+    std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> state;
+    check(PreparedGraph::prepare_numeric(graph,p,plan,state)!=Status::ok && !plan && !state,
+        "runtime rejects hand-edited incompatible declared frequency atomically");
 }
 inline void fixed_source_admission() {
     for(const auto kind:std::array<std::string_view,3>{"EssentiaOnsetRows","EssentiaInformationRows","EssentiaErbRows"}){
         ConfiguredProcessingNode good;
         check(compose_spectral(kind,spectral_contract(44100),good)==Status::ok,"canonical physical frequency grid admitted");
-        ConfiguredProcessingNode rejected;
-        check(compose_spectral(kind,spectral_contract(48000),rejected)!=Status::ok,"wrong known PCM Fs rejected before source bank selection");
-        check(compose_spectral(kind,spectral_contract(0,48000./2048),rejected)!=Status::ok,"wrong declared Hz step rejected even with unknown PCM clock");
-        good.inputs[0].contract=spectral_contract(48000);
-        const ResolvedProcessingNode resolved{good.id,good.kind,NodeRole::Processor,ProcessingOperation::NumericExtension,
-            good.inputs,good.outputs,&good.parameters,good.enabled};
-        auto p=profile();check(!p.operation_factory->assess(resolved,p).supported,"assessment rejects hand-edited incompatible physical declaration");
+        ConfiguredProcessingNode wrong_rate,wrong_grid;
+        check(compose_spectral(kind,spectral_contract(48000),wrong_rate)==Status::ok,"numerical factory sees matching buffer geometry");
+        reject_declared_frequency(wrong_rate);
+        check(compose_spectral(kind,spectral_contract(0,48000./2048),wrong_grid)==Status::ok,"numerical factory does not inspect coordinate metadata");
+        reject_declared_frequency(wrong_grid);
+    }
+}
+inline void retired_compositions_have_no_dispatch() {
+    constexpr std::array<std::string_view,26> retired{"PcmBeat","PcmRhythmSummary","GlobalOnset","PeriodBeatTracker",
+        "MultiFeatureBeatTracker","BandBeatEmphasis","LegacyRhythm","PulseTempo","NoveltyTempoHistogram",
+        "BandRhythmTransform","BeatSegmentEnergy","BeatLoudnessSequence","LoopPcmTempo","CorrelationMeter",
+        "ActivityFluctuation","PulseCorrelation","FixedTempoCandidates","CombPeriodPhase","FeaturePeriodTracker",
+        "MovingThreshold","PulseOnset","BandNovelty","FourierTempoHistogram","PhaseTempoPulse","OnsetRate","TriangularSpectralBands"};
+    const auto factory=profile().operation_factory;
+    for(const auto kind:retired){
+        NumericOperationNodeView node;node.id=1;node.kind=kind;
+        std::shared_ptr<const NumericOperationDescriptor> descriptor;
+        check(factory->describe(node,descriptor)==Status::unavailable && !descriptor,"retired composition has no runtime descriptor");
     }
 }
 inline void builtin_fourier(NumericProcessingGraph& graph) {

@@ -1,3 +1,4 @@
+#include <domain/numeric/matrix_center.h>
 #include <desktop/numeric_source_format.h>
 #include "synthetic_engine_provider.h"
 #include "core_app/gui_presenter.h"
@@ -64,7 +65,7 @@ static std::vector<CatalogueSpec> established_catalogue_specs(){
         {"SampleClock",0,0,"clockSampleRate",E::Integer},{"PcmResampler",1,1,"output_rate",E::Literal},
         {"Window",1,1,"size",E::Literal},{"WindowFunction",1,1,"function",E::Choice},
         {"WindowFunction",1,1,"periodic",E::Boolean},{"Fourier",2,2,"radix",E::Choice},
-        {"RealFourier",1,3,"fft_size",E::Literal},{"AmplitudePhase",2,2,"normalize",E::Boolean},{"BarkWeighting",1,1,nullptr,E::Caption},
+        {"RealFourier",1,2,"fft_size",E::Literal},{"AmplitudePhase",2,3,"normalize",E::Boolean},{"BarkWeighting",1,1,nullptr,E::Caption},
         {"Mel",1,1,"bands",E::Literal},{"SpectrumGain",1,1,"gain",E::Literal},
         {"Mel",1,1,"scale",E::Choice},{"Mel",1,1,"norm",E::Choice},
         {"Mixer",2,1,"mixerMode",E::Choice},{"InputSelector",2,1,"numericSelectorChannels",E::Integer},
@@ -103,24 +104,24 @@ static void catalogue_contract_controls(AudioNodeModel& node){
     }
 }
 static void matrix_center_offset_availability(NodeParameterModel& parameters){
-    for(int method:{0,1}) {
-        require(parameters.edit("method",method),"Automatic centering method selection failed");
+    for(const auto method:{domain::MatrixCenterMethod::Mean,domain::MatrixCenterMethod::Midrange}) {
+        require(parameters.edit("method",int(method)),"Automatic centering method selection failed");
         const auto* offset=parameters.field("offset");
         require(offset && offset->available && !offset->available(),"Manual centering offset is enabled for an automatic method");
         require(!parameters.edit("offset",signal_contracts::NumericLiteral{1.0}),"Automatic centering accepted a manual offset edit");
     }
-    require(parameters.edit("method",2),"Manual centering method selection failed");
+    require(parameters.edit("method",int(domain::MatrixCenterMethod::ManualOffset)),"Manual centering method selection failed");
     const auto* offset=parameters.field("offset");
     require(offset && offset->available && offset->available(),"Manual centering offset remains disabled in manual mode");
     require(parameters.edit("offset",signal_contracts::NumericLiteral{0.0}),"Manual centering rejected a numeric offset edit");
-    require(parameters.edit("method",0),"Default centering method could not be restored");
+    require(parameters.edit("method",int(domain::MatrixCenterMethod::Mean)),"Default centering method could not be restored");
 }
 static void matrix_center_controls(const domain::ConfiguredProcessingNode& dto,NodeParameterModel& parameters){
     const auto* method=parameters.field("method");const auto* offset=parameters.field("offset");
     require(method && offset,"Centering controls absent");
-    QStringList methods;for(const auto& option:method->options)methods.append(option.label);
-    require(methods==QStringList{"Subtract mean","Center between minimum and maximum","Manual offset"} && std::get<int>(method->read())==0 && dto.enabled && method->primary,"Row centering exposes its explicit methods and defaults to enabled mean subtraction");
-    require(offset->editor==NodeParameterModel::Editor::Literal && offset->label=="Manual offset","Manual centering offset lacks its numeric editor or user-facing label");
+    require(method->options.size()==3 && std::get<int>(method->read())==int(domain::MatrixCenterMethod::Mean) && dto.enabled && method->primary,
+            "Row centering exposes all registered methods and defaults to mean subtraction");
+    require(offset->editor==NodeParameterModel::Editor::Literal,"Manual centering uses a numeric offset");
     require(offset->literal_type==3 && std::holds_alternative<double>(std::get<signal_contracts::NumericLiteral>(offset->read())),"Centering offset preserves Float64 without a redundant type selector");
     require(offset->available && !offset->available(),"Manual centering offset is disabled for automatic methods");
     matrix_center_offset_availability(parameters);
@@ -137,7 +138,7 @@ static void matrix_operation_controls(AudioNodeModel& node,const QString& kind){
     }
     if(kind=="MatrixWindowFunction"){
         const auto* window=parameters->field("function");
-        require(window && window->editor==E::Choice && window->options.size()==7 && std::get<int>(window->read())==0 && !node.numeric_node()->enabled,"Matrix window exposes the shared window functions and defaults to generic bypass");
+        require(window && window->editor==E::Choice && window->options.size()==signal_contracts::window_function_names.size() && std::get<int>(window->read())==int(signal_contracts::WindowFunction::Hann) && !node.numeric_node()->enabled,"Matrix window exposes the shared window functions and defaults to generic bypass");
     }
     if(kind=="MatrixRow")require(parameters->field("row")->numeric_minimum==0 && std::visit([](auto value){return value==0;},std::get<signal_contracts::NumericLiteral>(parameters->field("row")->read())),"Matrix row selection must begin at zero");
     if(kind=="MatrixCenter")matrix_center_controls(*node.numeric_node(),*parameters);
@@ -156,7 +157,16 @@ static void catalogue_specialized_controls(AudioNodeModel& node,const QString& k
     if(numeric_editor::is_graph_view(kind))require(!parameters->field("input0Dtype") && !parameters->field("input0Extent0"),"View must derive its contract from upstream");
     if(kind=="AudioSource")require(!parameters->field("sample_rate") && parameters->field("source") && parameters->field("captureSavedFormat") && parameters->field("captureDeviceError") && parameters->field("refreshCaptureDevices"),"Capture operation and adapter responsibilities are not separated");
     if(kind=="NetworkInput")for(const auto* key:{"adapterProviderUuid","adapterStreamId","adapterHost","adapterPort","adapterDeviceIdentity","adapterGraphId","adapterNodeId","adapterPortIndex","adapterDirection"})require(parameters->field(key),"Network adapter route editor absent");
-    if(kind=="Spectrogram")require(node.portCaption(QtNodes::PortType::Out,0).startsWith(ui::text("History")) && node.portCaption(QtNodes::PortType::Out,1).startsWith(ui::text("Filled frames")),"History/count outputs have ambiguous roles");
+    if(kind=="Spectrogram"){
+        using namespace signal_contracts;
+        const auto& outputs=node.numeric_node()->outputs;
+        const auto history=std::get<NumericContract>(outputs[0].contract.view());
+        const auto count=std::get<NumericContract>(outputs[1].contract.view());
+        require(outputs[0].id==domain::history_output && history.semantic==Semantic::History && history.shape.rank==Rank::Matrix,
+                "History output is a matrix on its stable port");
+        require(outputs[1].id==domain::filled_count_output && count.dtype==DType::UInt64 && count.shape.rank==Rank::Scalar &&
+                count.quantity==Quantity::FilledFrameCount && count.unit==NumericUnit::Frames,"Filled frame count is a scalar on its stable port");
+    }
     if(kind=="WLEDEncode")wled_encoder_port_contracts(*node.numeric_node());
     matrix_operation_controls(node,kind);
 }
@@ -200,7 +210,7 @@ static void oscillator_table_translation(){
 static void catalogue_acceptance_checks(){
     const auto specs=established_catalogue_specs();
     const auto actual=numeric_editor::catalog();
-    for(const auto* retired:{"StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain","PcmOnsetEnvelope"})require(!actual.contains(retired),"Internal reference blocks remain in the editor catalogue");
+    for(const auto* retired:{"StereoFFT","RFFT","MatrixFFT","MatrixWindowFunction","ComplexPolar","SpectrumAmplitude","SpectrumProjection","WindowGain"})require(!actual.contains(retired),"Internal reference blocks remain in the editor catalogue");
     for(const auto* kind:{"MatrixFFT","ComplexPolar","RFFT"})require(numeric_editor::model_catalog().contains(kind),"Hidden operations remain registered for graph loading");
     for(const auto& spec:specs)require(actual.contains(spec.kind),qPrintable(QString("Missing established catalogue operation: ")+spec.kind));
     for(const auto& kind:actual){AudioNodeModel node(kind);require(node.numeric_node() && node.parameter_model(),"Catalogue operation has no numeric UI contract");}
@@ -569,8 +579,13 @@ static void canonical_routing_checks(){
 static void canonical_processing_controls_checks(){
     AudioNodeModel window("WindowFunction");auto* function=window.parameter_model()->field("function");
     require(function && function->editor==NodeParameterModel::Editor::Choice && function->options.size()==7,"Window function requires the complete shared enumerated editor");
-    require(window.parameter_model()->edit("function",1),"Window choice edit rejected");
-    require(std::get<int>(window.parameter_model()->field("function")->read())==1,"Window choice does not roundtrip canonical string parameter");
+    constexpr auto choice=signal_contracts::WindowFunction::Hamming;
+    require(window.parameter_model()->edit("function",int(choice)),"Window choice edit rejected");
+    domain::ResolvedProcessingNode resolved;domain::ProcessingParameterView value;
+    require(bool(domain::resolve_processing_node(*window.numeric_node(),numeric_editor::limits(),resolved)) &&
+            domain::resolve_processing_parameter(resolved,"function",value)==signal_contracts::Status::ok &&
+            std::get<std::string_view>(value)==signal_contracts::window_function_name(choice),
+            "Window choice roundtrips the canonical enum identifier");
     AudioNodeModel history("Spectrogram");auto* capacity=history.parameter_model()->field("numericCapacity");
     require(capacity && capacity->literal_type==1,"History capacity must retain UInt64 representation");
     AudioNodeModel generator("SignalGenerator");require(generator.parameter_model()->edit("generatorBank1",false),"Generator bank action rejected");

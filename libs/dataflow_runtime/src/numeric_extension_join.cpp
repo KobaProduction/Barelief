@@ -35,22 +35,30 @@ bool PreparedNumericExtension::Impl::ready() const noexcept {
     }
     return true;
 }
+namespace {
+template<class Extension> Status apply_control(Extension& state,NumericInputLatch& latch) noexcept {
+    if(!state.descriptor->policy.control || latch.rule.port!=*state.descriptor->policy.control)return Status::ok;
+    const auto status=read_control(latch,state.control);if(status!=Status::ok){latch.ready=false;return status;}
+    if(state.control.reset){state.reset();return Status::unavailable;}
+    state.triggered=true;return Status::ok;
+}
+template<class Extension> void apply_trigger(Extension& state,const NumericInputLatch& latch) noexcept {
+    if(latch.rule.port!=state.descriptor->policy.trigger)return;
+    state.triggered=true;
+    if(state.descriptor->policy.mode==NumericOperationMode::IndependentBatch)state.control.event=NumericOperationEvent::BatchComplete;
+}
+}
 Status PreparedNumericExtension::Impl::retain(std::size_t lane,const DataFrameView& frame,const FrameLimits& limits) noexcept {
     if(lane>=latches.size() || !descriptor || !processor)return Status::invalid_argument;
     auto& latch=latches[lane];latch.ready=false;
-    const auto status=latch.retain(frame,limits);if(status!=Status::ok)return status;
-    if(descriptor->policy.control && latch.rule.port==*descriptor->policy.control){
-        const auto parsed=read_control(latch,control);if(parsed!=Status::ok){latch.ready=false;return parsed;}
-        if(control.reset){reset();return Status::unavailable;}
-        triggered=true;
-    }
-    if(latch.rule.port==descriptor->policy.trigger){
-        triggered=true;
-        if(descriptor->policy.mode==NumericOperationMode::IndependentBatch)control.event=NumericOperationEvent::BatchComplete;
-    }
+    auto status=latch.retain(frame,limits);if(status!=Status::ok)return status;
+    status=apply_control(*this,latch);if(status!=Status::ok)return status;
+    apply_trigger(*this,latch);
     return ready()?Status::ok:Status::would_block;
 }
 void PreparedNumericExtension::Impl::clear_borrowed() noexcept {
+    if(writer_lease)writer_lease->active=nullptr;
+    invocation={};
     for(auto& input:inputs)input={};
     for(auto& output:outputs)output={};
 }

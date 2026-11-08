@@ -62,9 +62,10 @@ Status load_pair_plane(OperationKernelState& kernel,std::size_t lane,const Numer
     if(lane && polar)std::fill(target.begin(),target.end(),0.f);
     return load_plane(kernel,source,std::span(target),stride);
 }
-Status retain_plane(OperationKernelState& kernel,std::size_t lane,const DataFrameView& current,const FrameLimits& limits,bool polar,bool calibrated) noexcept {
+Status retain_plane(OperationKernelState& kernel,std::size_t lane,const DataFrameView& current,const FrameLimits& limits,bool polar,bool calibrated,bool empty_columns=false) noexcept {
     const auto* source=std::get_if<NumericView>(&current.payload);auto& target=lane?kernel.imaginary:kernel.input;
-    if(!source || !source->actual[1] || source->actual[1]>target.size() || source->actual[0]>target.size()/source->actual[1]){kernel.pending={};return Status::incompatible_contract;}
+    if(!source || source->actual[1]>target.size() ||
+       (source->actual[1]?source->actual[0]>target.size()/source->actual[1]:!empty_columns)){kernel.pending={};return Status::incompatible_contract;}
     if(calibrated && !amplitude_grid(kernel,*source)){kernel.pending={};return Status::incompatible_contract;}
     const auto valid=validate_values(*source,ValueDomain::FiniteOnly,limits);if(valid!=Status::ok){kernel.pending={};return valid;}
     const auto loaded=load_pair_plane(kernel,lane,*source,polar);if(loaded!=Status::ok)return loaded;
@@ -76,28 +77,42 @@ void copy_pair_coordinates(OperationKernelState& kernel,std::size_t from,std::si
         std::copy_n(source.begin(),std::min(source.size(),target.size()),target.begin());
     }
 }
+Status missing_concat_geometry(OperationKernelState& kernel,const PlanNode& node,std::size_t lane,std::size_t other) noexcept {
+    const auto contract=std::get<NumericContract>(node.endpoint_plan->inputs[other].contract);
+    const auto axis=std::size_t(kernel.concat_axis),unchanged=1-axis;
+    const auto actual=kernel.pair_actual[lane][unchanged];const auto bounds=contract.shape.extents[unchanged];
+    if(actual<bounds.minimum || actual>bounds.maximum)return Status::incompatible_contract;
+    kernel.pair_actual[other]=kernel.pair_actual[lane];
+    kernel.pair_actual[other][axis]=std::size_t(contract.shape.extents[axis].maximum);
+    return Status::ok;
+}
 Status prepare_missing_plane(OperationKernelState& kernel,const PlanNode& node,std::size_t lane,std::size_t other) noexcept {
     if(node.endpoint_plan->inputs[other].parent==absent){
         if(node.operation==ProcessingOperation::ComplexPolar){kernel.pending={};return Status::unavailable;}
         auto& target=other?kernel.imaginary:kernel.input;std::fill(target.begin(),target.end(),0);
         kernel.stamps[other]=kernel.stamps[lane];kernel.pair_actual[other]=kernel.pair_actual[lane];kernel.pending[other]=true;
         copy_pair_coordinates(kernel,lane,other);
+        if(node.operation==ProcessingOperation::ArrayConcat)return missing_concat_geometry(kernel,node,lane,other);
     }
     return Status::ok;
 }
 bool pair_geometry_matches(const OperationKernelState& kernel,const PlanNode& node) noexcept {
-    if(node.operation==ProcessingOperation::ArrayConcat)return true;
-    if(node.operation!=ProcessingOperation::ComplexPolar)return kernel.pair_actual[0]==kernel.pair_actual[1];
+    if(node.operation==ProcessingOperation::ArrayConcat)return kernel.pair_actual[0][1-std::size_t(kernel.concat_axis)]==kernel.pair_actual[1][1-std::size_t(kernel.concat_axis)];
+    if(node.operation!=ProcessingOperation::ComplexPolar || node.node.kind==NodeKind::AmplitudePhase)return kernel.pair_actual[0]==kernel.pair_actual[1];
     return std::get<NumericContract>(node.numeric_input).shape.rank!=Rank::Matrix || kernel.pair_actual[0][0]==kernel.pair_actual[1][0];
+}
+Status validate_pending_pair(OperationKernelState& kernel,const PlanNode& node,std::size_t other) noexcept {
+    if(node.operation==ProcessingOperation::ArrayConcat && !same_interval(kernel.stamps[0],kernel.stamps[1])){kernel.pending[other]=false;return Status::would_block;}
+    if(!pair_geometry_matches(kernel,node)){kernel.pending={};return Status::incompatible_contract;}
+    if(!same_interval(kernel.stamps[0],kernel.stamps[1])){kernel.pending[other]=false;return Status::would_block;}
+    return Status::ok;
 }
 Status await_pair(OperationKernelState& kernel,const PlanNode& node,std::size_t lane) noexcept {
     if(node.node.kind==NodeKind::RealFourier)return Status::ok;
     const auto other=1-lane;
     const auto ready=prepare_missing_plane(kernel,node,lane,other);if(ready!=Status::ok)return ready;
     if(!kernel.pending[0] || !kernel.pending[1])return Status::would_block;
-    if(!pair_geometry_matches(kernel,node)){kernel.pending={};return Status::incompatible_contract;}
-    if(!same_interval(kernel.stamps[0],kernel.stamps[1])){kernel.pending[other]=false;return Status::would_block;}
-    return Status::ok;
+    return validate_pending_pair(kernel,node,other);
 }
 FrameStamp combined_stamp(const OperationKernelState& kernel,const DataFrameView& current,bool paired) noexcept {
     auto result=current.stamp;if(!paired)return result;
@@ -106,15 +121,24 @@ FrameStamp combined_stamp(const OperationKernelState& kernel,const DataFrameView
     result.latency_seconds=latency_greater(kernel.stamps[0].latency_seconds,kernel.stamps[1].latency_seconds)?kernel.stamps[0].latency_seconds:kernel.stamps[1].latency_seconds;
     return result;
 }
-Status project_polar(OperationKernelState& kernel,const PlanNode&) noexcept {
-    const auto geometry=kernel.polar_geometry;const auto count=kernel.pair_actual[0][0]*kernel.pair_actual[0][1];
-    for(std::size_t i=0;i<count;++i){
+Status project_polar_value(OperationKernelState& kernel,const PlanNode& node,std::size_t i) noexcept {
+        const auto geometry=kernel.polar_geometry;
         const auto bin=geometry.first_bin+i%geometry.bins;
+        if(node.node.kind==NodeKind::AmplitudePhase && bin==0){
+            if(!kernel.spectrum_scaling.dc_offset(kernel.input[i],kernel.output[2*i]))return Status::overflow;
+            return Status::ok;
+        }
         const bool endpoint=!bin || (!(geometry.fft_size%2) && bin==geometry.fft_size/2);
         if(!kernel.spectrum_scaling.project(kernel.input[i],kernel.imaginary[i],geometry.one_sided && !endpoint,kernel.output[2*i],endpoint))return Status::overflow;
         const auto options=kernel.polar_options;
         if(!dsp_kernels::complex_polar_value(kernel.input[i],kernel.imaginary[i],nullptr,&kernel.output[2*i+1],
             {options.zero_phase,options.magnitude_norm,options.real_endpoints && endpoint}))return Status::overflow;
+    return Status::ok;
+}
+Status project_polar(OperationKernelState& kernel,const PlanNode& node) noexcept {
+    const auto count=kernel.pair_actual[0][0]*kernel.pair_actual[0][1];
+    for(std::size_t i=0;i<count;++i){
+        const auto status=project_polar_value(kernel,node,i);if(status!=Status::ok)return status;
     }
     return Status::ok;
 }
@@ -155,27 +179,45 @@ Status transform_rows(OperationKernelState& kernel,const PlanNode& node) noexcep
     }
     return Status::ok;
 }
+Status concatenate_pair(OperationKernelState& kernel) noexcept {
+    const auto left=kernel.pair_actual[0],right=kernel.pair_actual[1];
+    if(kernel.concat_axis==ArrayConcatAxis::First){
+        const auto count=left[0]*left[1];
+        std::copy_n(kernel.input.begin(),count,kernel.output.begin());
+        std::copy_n(kernel.imaginary.begin(),right[0]*right[1],kernel.output.begin()+count);
+        return Status::ok;
+    }
+    const auto columns=left[1]+right[1];
+    for(std::size_t row=0;row<left[0];++row){
+        std::copy_n(kernel.input.begin()+row*left[1],left[1],kernel.output.begin()+row*columns);
+        std::copy_n(kernel.imaginary.begin()+row*right[1],right[1],kernel.output.begin()+row*columns+left[1]);
+    }
+    return Status::ok;
+}
 Status compute_paired(OperationKernelState& kernel,const PlanNode& node) noexcept {
     if(!node.node.enabled){std::fill(kernel.output.begin(),kernel.output.end(),0);return Status::ok;}
-    if(node.operation==ProcessingOperation::ArrayConcat){
-        std::copy(kernel.input.begin(),kernel.input.end(),kernel.output.begin());
-        std::copy(kernel.imaginary.begin(),kernel.imaginary.end(),kernel.output.begin()+kernel.input.size());return Status::ok;
-    }
+    if(node.operation==ProcessingOperation::ArrayConcat)return concatenate_pair(kernel);
     if(node.operation==ProcessingOperation::ComplexPolar)return project_polar(kernel,node);
     return transform_rows(kernel,node);
 }
 std::size_t fourier_index(const OperationKernelState& kernel,const MutableNumericView& output,PortId port,std::size_t index,bool real) noexcept {
     const auto n=kernel.fourier_size;
-    if(port==2)return index*(n+2);
     const auto row=output.contract->shape.rank==Rank::Matrix?index/output.actual[1]:0;
     const auto bin=output.contract->shape.rank==Rank::Matrix?index%output.actual[1]:index;
-    const auto skipped=real && !kernel.fourier_include_endpoints?1u:0u;
-    return row*(real?n+2:2*n)+2*(bin+skipped)+port;
+    return row*(real?n+2:2*n)+2*bin+port;
 }
-Status write_plane(const OperationKernelState& kernel,MutableNumericView& output,PortId port,std::size_t count,bool concat,bool polar,bool real) noexcept {
+std::size_t polar_index(const OperationKernelState& kernel,const MutableNumericView& output,PortId port,std::size_t index,bool amplitude_phase) noexcept {
+    const auto bins=kernel.polar_geometry.bins;
+    if(amplitude_phase && port==2)return 2*index*bins;
+    const auto row=output.contract->shape.rank==Rank::Matrix?index/output.actual[1]:0;
+    const auto column=output.contract->shape.rank==Rank::Matrix?index%output.actual[1]:index;
+    return 2*(row*bins+column+std::size_t(amplitude_phase))+port;
+}
+Status write_plane(const OperationKernelState& kernel,const PlanNode& node,MutableNumericView& output,PortId port,std::size_t count) noexcept {
+    const bool concat=node.operation==ProcessingOperation::ArrayConcat,polar=node.operation==ProcessingOperation::ComplexPolar;
     for(std::size_t i=0;i<count;++i){
-        const auto polar_index=output.contract->shape.rank==Rank::Matrix?(i/output.actual[1])*kernel.polar_geometry.bins+i%output.actual[1]:i;
-        const auto index=concat?i:polar?2*polar_index+port:fourier_index(kernel,output,port,i,real);
+        const auto index=concat?i:polar?polar_index(kernel,output,port,i,node.node.kind==NodeKind::AmplitudePhase):
+            fourier_index(kernel,output,port,i,node.node.kind==NodeKind::RealFourier);
         const auto status=store_element(output,{0,i/output.actual[1],i%output.actual[1]},kernel.output[index]);if(status!=Status::ok)return status;
     }
     return Status::ok;
@@ -192,42 +234,62 @@ bool coordinate_prefix_matches(const OperationKernelState& kernel,std::size_t ax
     const auto common=std::min(kernel.pair_actual[0][axis],kernel.pair_actual[1][axis])*sizeof(double);
     return left.size()>=common && right.size()>=common && std::equal(left.begin(),left.begin()+common,right.begin());
 }
-Status polar_coordinate_axis(const OperationKernelState& kernel,State& state,MutableNumericView& output,PortId port,std::size_t axis) noexcept {
+Status polar_coordinate_axis(const OperationKernelState& kernel,State& state,MutableNumericView& output,PortId port,std::size_t axis,std::size_t skip) noexcept {
     const auto bytes=output.actual[axis]*sizeof(double);
     if(!coordinate_prefix_matches(kernel,axis))return Status::incompatible_contract;
-    const auto& source=kernel.pair_coordinates[port][axis];if(source.size()<bytes)return Status::incompatible_contract;
+    const auto& source=kernel.pair_coordinates[port==2?0:port][axis];if(source.size()<bytes+skip)return Status::incompatible_contract;
     auto& destination=state.numeric_outputs[port].coordinates[axis];if(destination.size()<bytes)return Status::exhausted;
-    std::copy_n(source.begin(),bytes,destination.begin());output.coordinates.axes[axis]={destination.data(),bytes};
+    std::copy_n(source.begin()+skip,bytes,destination.begin());output.coordinates.axes[axis]={destination.data(),bytes};
     return Status::ok;
 }
-Status polar_coordinates(const OperationKernelState& kernel,State& state,MutableNumericView& output,PortId port) noexcept {
+Status polar_coordinates(const OperationKernelState& kernel,State& state,MutableNumericView& output,PortId port,bool amplitude_phase) noexcept {
     for(std::size_t axis=0;axis<2;++axis)if(output.contract->coordinates[axis].mode==CoordinateMode::ExplicitFloat64LE){
-        const auto status=polar_coordinate_axis(kernel,state,output,port,axis);if(status!=Status::ok)return status;
+        const auto bin_axis=output.contract->shape.rank==Rank::Matrix?1u:0u;
+        const auto skip=amplitude_phase && port!=2 && axis==bin_axis?sizeof(double):0;
+        const auto status=polar_coordinate_axis(kernel,state,output,port,axis,skip);if(status!=Status::ok)return status;
     }
     return Status::ok;
 }
 MutableNumericView plane_output(const OperationKernelState& kernel,const PlanNode& node,State& state,PortId port) noexcept {
     auto output=mutable_output(node,state,port);
-    if(node.operation==ProcessingOperation::ComplexPolar)output.actual=kernel.pair_actual[port];
+    if(node.operation==ProcessingOperation::ComplexPolar){
+        if(node.node.kind!=NodeKind::AmplitudePhase)output.actual=kernel.pair_actual[port];
+        else if(std::get<NumericContract>(node.numeric_input).shape.rank==Rank::Matrix)output.actual[0]=kernel.pair_actual[0][0];
+    }
     if(node.operation==ProcessingOperation::Fourier && std::get<NumericContract>(node.numeric_input).shape.rank==Rank::Matrix)output.actual[0]=kernel.pair_actual[0][0];
+    if(node.operation==ProcessingOperation::ArrayConcat){
+        output.actual=kernel.pair_actual[0];
+        const auto axis=std::size_t(kernel.concat_axis);output.actual[axis]+=kernel.pair_actual[1][axis];
+    }
     return output;
 }
+Status concat_coordinates(const OperationKernelState& kernel,State& state,MutableNumericView& output) noexcept {
+    const auto axis=1-std::size_t(kernel.concat_axis);
+    if(output.contract->coordinates[axis].mode!=CoordinateMode::ExplicitFloat64LE)return Status::ok;
+    const auto bytes=output.actual[axis]*sizeof(double);
+    const auto& left=kernel.pair_coordinates[0][axis];const auto& right=kernel.pair_coordinates[1][axis];
+    auto& target=state.numeric_outputs[0].coordinates[axis];
+    if(left.size()<bytes || right.size()<bytes || target.size()<bytes)return Status::exhausted;
+    if(!std::equal(left.begin(),left.begin()+bytes,right.begin()))return Status::incompatible_contract;
+    std::copy_n(left.begin(),bytes,target.begin());output.coordinates.axes[axis]={target.data(),bytes};
+    return Status::ok;
+}
 Status plane_coordinates(const OperationKernelState& kernel,const PlanNode& node,State& state,MutableNumericView& output,PortId port) noexcept {
-    if(node.operation==ProcessingOperation::ComplexPolar)return polar_coordinates(kernel,state,output,port);
+    if(node.operation==ProcessingOperation::ComplexPolar)return polar_coordinates(kernel,state,output,port,node.node.kind==NodeKind::AmplitudePhase);
+    if(node.operation==ProcessingOperation::ArrayConcat)return concat_coordinates(kernel,state,output);
     return node.operation==ProcessingOperation::Fourier?fourier_coordinates(kernel,state,output,port):Status::ok;
 }
 Status publish_planes(OperationKernelState& kernel,const PlanNode& node,State& state,const FrameStamp& stamp) noexcept {
-    const bool concat=node.operation==ProcessingOperation::ArrayConcat,polar=node.operation==ProcessingOperation::ComplexPolar;
     for(PortId port=0;port<state.numeric_frames.size();++port){
         auto output=plane_output(kernel,node,state,port);
         const auto count=output.actual[0]*output.actual[1];
         const auto coordinates=plane_coordinates(kernel,node,state,output,port);if(coordinates!=Status::ok)return coordinates;
-        const auto status=write_plane(kernel,output,port,count,concat,polar,node.node.kind==NodeKind::RealFourier);if(status!=Status::ok)return status;
+        const auto status=write_plane(kernel,node,output,port,count);if(status!=Status::ok)return status;
         state.numeric_frames[port]={stamp,output.view()};
     }
     return Status::ok;
 }
-Status complete_fourier(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current) noexcept {
+Status complete_signal_pair(OperationKernelState& kernel,const PlanNode& node,State& state,const DataFrameView& current) noexcept {
     const auto stamp=combined_stamp(kernel,current,node.node.kind!=NodeKind::RealFourier);kernel.pending={};
     const auto computed=compute_paired(kernel,node);if(computed!=Status::ok)return computed;
     return publish_planes(kernel,node,state,stamp);
@@ -237,12 +299,12 @@ namespace {
 Status accept_signal_pair(OperationKernelState& kernel,const PlanNode& node,State& state,std::size_t lane,const DataFrameView& current,const FrameLimits& limits) noexcept {
     if(lane>=(node.node.kind==NodeKind::RealFourier?1u:2u))return Status::invalid_argument;
     if(!current.stamp.available){kernel.pending={};return Status::unavailable;}
-    const auto retained=retain_plane(kernel,lane,current,limits,node.operation==ProcessingOperation::ComplexPolar,node.node.kind==NodeKind::AmplitudePhase);if(retained!=Status::ok)return retained;
+    const auto retained=retain_plane(kernel,lane,current,limits,node.operation==ProcessingOperation::ComplexPolar,node.node.kind==NodeKind::AmplitudePhase,node.operation==ProcessingOperation::ArrayConcat);if(retained!=Status::ok)return retained;
     const auto paired=await_pair(kernel,node,lane);if(paired!=Status::ok)return paired;
-    return complete_fourier(kernel,node,state,current);
+    return complete_signal_pair(kernel,node,state,current);
 }
 }
-Status accept_fourier(const PlanNode& node,State& state,std::size_t lane,const DataFrameView& current,const FrameLimits& limits) noexcept {
+Status accept_paired_operation(const PlanNode& node,State& state,std::size_t lane,const DataFrameView& current,const FrameLimits& limits) noexcept {
     auto& kernel=*std::get<PreparedOperationKernel>(state.kernel).value_;
     if(kernel.tempo)return kernel.tempo->accept(node,state,lane,current,limits);
     if(node.operation==ProcessingOperation::ArrayProduct)return accept_array_product(kernel,node,state,lane,current,limits);

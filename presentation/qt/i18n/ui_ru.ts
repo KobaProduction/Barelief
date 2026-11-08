@@ -2,6 +2,182 @@
 <TS version="2.1" language="ru_RU" sourcelanguage="en_US">
   <context>
     <name>Ui</name>
+    <message><source>Beat delay, samples</source><translation>Задержка доли, отсчёты</translation></message>
+    <message><source>Time signature</source><translation>Музыкальный размер</translation></message>
+    <message><source>Poll tatum events</source><translation>Опрос событий татумов</translation></message>
+    <message><source>Scale values</source><translation>Масштабирование значений</translation></message>
+    <message><source>Scaled reciprocal</source><translation>Масштабированное обратное значение</translation></message>
+    <message><source>Forward comb</source><translation>Прямая гребёнка</translation></message>
+    <message><source>Backward comb</source><translation>Обратная гребёнка</translation></message>
+    <message><source>Centered on input</source><translation>Центрирование по входу</translation></message>
+    <message><source>Centered on larger operand</source><translation>Центрирование по большему операнду</translation></message>
+    <message><source>Period observations</source><translation>Наблюдения периодов</translation></message>
+    <message><source>Period path, frames</source><translation>Последовательность периодов, кадры</translation></message>
+    <message><source>Period segment ends</source><translation>Концы участков периодов</translation></message>
+    <message><source>Noisy period observations</source><translation>Наблюдения периодов с шумом</translation></message>
+    <message><source>Period state path</source><translation>Путь состояний периодов</translation></message>
+    <message><source>Onset curve</source><translation>Кривая новизны</translation></message>
+    <message><source>Beat mask</source><translation>Маска долей</translation></message>
+    <message><source>Renewal state path</source><translation>Путь состояний декодера долей</translation></message>
+    <message><source>Comb weights</source><translation>Коэффициенты гребёнки</translation></message>
+    <message><source>Harmonic comb response</source><translation>Гармонический гребенчатый отклик</translation></message>
+    <message><source>Feature rows</source><translation>Строки признаков</translation></message>
+    <message><source>Phase rows</source><translation>Строки фаз</translation></message>
+    <message><source>Spectral novelty values</source><translation>Значения спектральной новизны</translation></message>
+    <message><source>Spectral differences</source><translation>Спектральные разности</translation></message>
+    <message><source>Phase selection mask</source><translation>Маска выбора фаз</translation></message>
+    <message><source>Alignment correlations</source><translation>Корреляции выравнивания</translation></message>
+    <message><source>Alignment offset</source><translation>Смещение выравнивания</translation></message>
+    <message><source>Constant value</source><translation>Постоянное значение</translation></message>
+    <message><source>Values to convert</source><translation>Преобразуемые значения</translation></message>
+    <message><source>Converted values</source><translation>Преобразованные значения</translation></message>
+    <message><source>Absolute value</source><translation>Абсолютное значение</translation></message>
+    <message><source>Maximum along axis</source><translation>Максимум вдоль оси</translation></message>
+    <message><source>Sum along axis</source><translation>Сумма вдоль оси</translation></message>
+    <message><source>Select by indices</source><translation>Выбор по индексам</translation></message>
+    <message><source>Numeric mapping</source><translation>Числовое преобразование</translation></message>
+    <message><source>Ordered local peaks</source><translation>Упорядоченные локальные пики</translation></message>
+    <message><source>Clamp values</source><translation>Ограничение значений</translation></message>
+    <message><source>Linear expansion</source><translation>Линейная интерполяция</translation></message>
+    <message><source>Quantile mask</source><translation>Квантильная маска</translation></message>
+    <message><source>Adaptive onset threshold</source><translation>Адаптивный порог новизны</translation></message>
+    <message><source>Tempo comb response</source><translation>Гребенчатый отклик темпа</translation></message>
+    <message><source>Signed values</source><translation>Значения со знаком</translation></message>
+    <message><source>Absolute values</source><translation>Абсолютные значения</translation></message>
+    <message><source>Values to clamp</source><translation>Ограничиваемые значения</translation></message>
+    <message><source>Clamped values</source><translation>Ограниченные значения</translation></message>
+    <message><source>Interpolation source values</source><translation>Исходные значения интерполяции</translation></message>
+    <message><source>Expanded values</source><translation>Интерполированные значения</translation></message>
+    <message><source>Quantile source values</source><translation>Значения для расчёта квантиля</translation></message>
+    <message><source>Upper-tail mask</source><translation>Маска верхнего квантиля</translation></message>
+    <message><source>Values to compare</source><translation>Сравниваемые значения</translation></message>
+    <message><source>Maximum indices</source><translation>Индексы максимумов</translation></message>
+    <message><source>Maximum values</source><translation>Максимальные значения</translation></message>
+    <message><source>Tied maximum values</source><translation>Все равные максимумы</translation></message>
+    <message><source>Values to sum</source><translation>Суммируемые значения</translation></message>
+    <message><source>Summed values</source><translation>Результат суммирования</translation></message>
+    <message><source>Coordinate table</source><translation>Таблица координат</translation></message>
+    <message><source>Selection indices</source><translation>Индексы выбора</translation></message>
+    <message><source>Selected values</source><translation>Выбранные значения</translation></message>
+    <message><source>Values to transform</source><translation>Преобразуемые значения</translation></message>
+    <message><source>Transformed values</source><translation>Преобразованные значения</translation></message>
+    <message><source>Peak search values</source><translation>Значения для поиска пиков</translation></message>
+    <message><source>Ordered peak indices</source><translation>Упорядоченные индексы пиков</translation></message>
+    <message><source>Ordered peak heights</source><translation>Упорядоченные высоты пиков</translation></message>
+    <message><source>Values to convolve</source><translation>Входные значения свёртки</translation></message>
+    <message><source>Convolution kernel</source><translation>Ядро свёртки</translation></message>
+    <message><source>Convolved values</source><translation>Результат свёртки</translation></message>
+    <message><source>Comb filter responses</source><translation>Отклики гребенчатых фильтров</translation></message>
+    <message><source>Comb delays</source><translation>Задержки гребенчатых фильтров</translation></message>
+    <message><source>Onset values</source><translation>Значения новизны</translation></message>
+    <message><source>Thresholded onset values</source><translation>Значения новизны после порога</translation></message>
+    <message><source>Prediction intervals, frames</source><translation>Интервалы предсказания, кадры</translation></message>
+    <message><source>History values</source><translation>Значения истории</translation></message>
+    <message><source>History value</source><translation>Значение для истории</translation></message>
+    <message><source>Value history</source><translation>История значений</translation></message>
+    <message><source>Reversed weighted onset history</source><translation>Обращённая взвешенная история новизны</translation></message>
+    <message><source>Unbiased autocorrelation</source><translation>Несмещённая автокорреляция</translation></message>
+    <message><source>Projection weights</source><translation>Коэффициенты проекции</translation></message>
+    <message><source>Band centers, Hz</source><translation>Центры полос, Гц</translation></message>
+    <message><source>Smoothed onset history</source><translation>Сглаженная история новизны</translation></message>
+    <message><source>Previous onset history</source><translation>Предыдущая история новизны</translation></message>
+    <message><source>Thresholded comb response</source><translation>Гребенчатый отклик после порога</translation></message>
+    <message><source>Sum norm</source><translation>Нормировка по сумме</translation></message>
+    <message><source>Standard deviation scale</source><translation>Масштабирование по стандартному отклонению</translation></message>
+    <message><source>Continue filter state</source><translation>Продолжать состояние фильтра</translation></message>
+    <message><source>Reset for each input</source><translation>Сброс перед каждым входным массивом</translation></message>
+    <message><source>Reset for each row</source><translation>Сброс перед каждой строкой</translation></message>
+    <message><source>Transposed direct form II</source><translation>Транспонированная прямая форма II</translation></message>
+    <message><source>Direct form I</source><translation>Прямая форма I</translation></message>
+    <message><source>Preserve subnormal state</source><translation>Сохранять субнормальное состояние</translation></message>
+    <message><source>Flush subnormal state</source><translation>Обнулять субнормальное состояние</translation></message>
+    <message><source>Flush after first sample</source><translation>Обнулять после первого отсчёта</translation></message>
+    <message><source>Constant padding</source><translation>Дополнение константой</translation></message>
+    <message><source>Repeat edge value</source><translation>Повтор крайнего значения</translation></message>
+    <message><source>Unbiased correlation</source><translation>Несмещённая корреляция</translation></message>
+    <message><source>Biased correlation</source><translation>Смещённая корреляция</translation></message>
+    <message><source>Overlap-energy correlation</source><translation>Нормировка по энергии перекрытия</translation></message>
+    <message><source>Base 10</source><translation>Основание 10</translation></message>
+    <message><source>Natural logarithm</source><translation>Натуральный логарифм</translation></message>
+    <message><source>Base 2</source><translation>Основание 2</translation></message>
+    <message><source>Rows (each column)</source><translation>По строкам (каждый столбец)</translation></message>
+    <message><source>Columns (each row)</source><translation>По столбцам (каждая строка)</translation></message>
+    <message><source>Last dimension</source><translation>Последнее измерение</translation></message>
+    <message><source>First correlation lag</source><translation>Начальная задержка корреляции</translation></message>
+    <message><source>Correlation normalization</source><translation>Нормировка корреляции</translation></message>
+    <message><source>Normalization method</source><translation>Способ нормировки</translation></message>
+    <message><source>Minimum normalization scale</source><translation>Минимальный масштаб нормировки</translation></message>
+    <message><source>Normalization dimension</source><translation>Измерение нормировки</translation></message>
+    <message><source>Filter state handling</source><translation>Обработка состояния фильтра</translation></message>
+    <message><source>Feedforward coefficients</source><translation>Коэффициенты прямой связи</translation></message>
+    <message><source>Feedback coefficients</source><translation>Коэффициенты обратной связи</translation></message>
+    <message><source>Input zero threshold</source><translation>Порог обнуления входа</translation></message>
+    <message><source>Filtering dimension</source><translation>Измерение фильтрации</translation></message>
+    <message><source>Selected dimension</source><translation>Выбираемое измерение</translation></message>
+    <message><source>First selected index</source><translation>Начальный выбираемый индекс</translation></message>
+    <message><source>Selected length</source><translation>Выбираемая длина</translation></message>
+    <message><source>Output length</source><translation>Длина выхода</translation></message>
+    <message><source>Leading padding</source><translation>Дополнение в начале</translation></message>
+    <message><source>Trailing padding</source><translation>Дополнение в конце</translation></message>
+    <message><source>Padding value</source><translation>Значение дополнения</translation></message>
+    <message><source>Lower bound</source><translation>Нижняя граница</translation></message>
+    <message><source>Upper bound</source><translation>Верхняя граница</translation></message>
+    <message><source>Interpolation factor</source><translation>Коэффициент интерполяции</translation></message>
+    <message><source>Quantile fraction</source><translation>Доля квантиля</translation></message>
+    <message><source>Base value</source><translation>Основное значение</translation></message>
+    <message><source>Added value</source><translation>Добавляемое значение</translation></message>
+    <message><source>Update trigger</source><translation>Обновление по входу</translation></message>
+    <message><source>Shape and time source</source><translation>Источник формы и времени</translation></message>
+    <message><source>Division by zero</source><translation>Деление на ноль</translation></message>
+    <message><source>Reject division by zero</source><translation>Отклонить деление на ноль</translation></message>
+    <message><source>Input that defines the output size, coordinates and time.</source><translation>Вход, задающий размер, координаты и время результата.</translation></message>
+    <message><source>Input whose update publishes a result. Automatic follows the main data input.</source><translation>Вход, обновление которого выдаёт результат. Автоматический режим следует основному входу данных.</translation></message>
+    <message><source>Correlation lag count</source><translation>Число задержек корреляции</translation></message>
+    <message><source>Leading segment</source><translation>Начальный сегмент</translation></message>
+    <message><source>Trailing segment</source><translation>Добавляемый сегмент</translation></message>
+    <message><source>Concatenation axis</source><translation>Ось объединения</translation></message>
+    <message><source>First dimension (rows)</source><translation>Первое измерение (строки)</translation></message>
+    <message><source>Second dimension (columns)</source><translation>Второе измерение (столбцы)</translation></message>
+    <message><source>Elementwise subtraction</source><translation>Поэлементное вычитание</translation></message>
+    <message><source>Elementwise division</source><translation>Поэлементное деление</translation></message>
+    <message><source>Array arithmetic</source><translation>Арифметика массивов</translation></message>
+    <message><source>Values to filter</source><translation>Значения для фильтрации</translation></message>
+    <message><source>Filtered values</source><translation>Отфильтрованные значения</translation></message>
+    <message><source>Initial filter state</source><translation>Начальное состояние фильтра</translation></message>
+    <message><source>Final filter state</source><translation>Конечное состояние фильтра</translation></message>
+    <message><source>Add initial filter state</source><translation>Добавить начальное состояние фильтра</translation></message>
+    <message><source>Remove initial filter state</source><translation>Убрать начальное состояние фильтра</translation></message>
+    <message><source>Coefficient count</source><translation>Число коэффициентов</translation></message>
+    <message><source>Reference sequence</source><translation>Опорная последовательность</translation></message>
+    <message><source>Compared sequence</source><translation>Сравниваемая последовательность</translation></message>
+    <message><source>Correlation by lag</source><translation>Корреляция по задержкам</translation></message>
+    <message><source>Values to normalize</source><translation>Значения для нормировки</translation></message>
+    <message><source>Normalized values</source><translation>Нормированные значения</translation></message>
+    <message><source>Values to concatenate</source><translation>Объединяемые значения</translation></message>
+    <message><source>Concatenated values</source><translation>Объединённые значения</translation></message>
+    <message><source>Values to forward</source><translation>Передаваемые значения</translation></message>
+    <message><source>Forwarded values</source><translation>Переданные значения</translation></message>
+    <message><source>Displayed values</source><translation>Отображаемые значения</translation></message>
+    <message><source>Metric value</source><translation>Значение показателя</translation></message>
+    <message><source>Multiplicand</source><translation>Множимое</translation></message>
+    <message><source>Multiplier</source><translation>Множитель</translation></message>
+    <message><source>Summand</source><translation>Слагаемое</translation></message>
+    <message><source>Minuend</source><translation>Уменьшаемое</translation></message>
+    <message><source>Subtrahend</source><translation>Вычитаемое</translation></message>
+    <message><source>Difference</source><translation>Разность</translation></message>
+    <message><source>Numerator</source><translation>Числитель</translation></message>
+    <message><source>Denominator</source><translation>Знаменатель</translation></message>
+    <message><source>Quotient</source><translation>Частное</translation></message>
+    <message><source>Output values</source><translation>Выходные значения</translation></message>
+    <message><source>Real Fourier coefficients</source><translation>Действительные коэффициенты Фурье</translation></message>
+    <message><source>Imaginary Fourier coefficients</source><translation>Мнимые коэффициенты Фурье</translation></message>
+    <message><source>Real signal</source><translation>Действительная часть сигнала</translation></message>
+    <message><source>Imaginary signal</source><translation>Мнимая часть сигнала</translation></message>
+    <message><source>Window evaluation</source><translation>Вычисление окна</translation></message>
+    <message><source>Pi for direct window evaluation</source><translation>Пи для прямого вычисления окна</translation></message>
+    <message><source>Default evaluation</source><translation>Стандартное вычисление</translation></message>
+    <message><source>Direct evaluation</source><translation>Прямое вычисление</translation></message>
+<message><source>Symmetric cosine series</source><translation>Симметрический косинусный ряд</translation></message>
     <message><source>Rhythm autocorrelation</source><translation>Автокорреляция ритма</translation></message>
     <message><source>Tempo estimation</source><translation>Оценка темпа</translation></message>
     <message><source>Beat grid</source><translation>Сетка долей</translation></message>
@@ -18,6 +194,16 @@
     <message><source>Local beat score</source><translation>Локальная оценка долей</translation></message>
     <message><source>Accumulated path score</source><translation>Накопленная оценка пути</translation></message>
     <message><source>Previous beat index</source><translation>Индекс предыдущей доли</translation></message>
+    <message><source>Onset activations</source><translation>Активации атак</translation></message>
+    <message><source>Interval histogram</source><translation>Гистограмма интервалов</translation></message>
+    <message><source>Interval axis, frames</source><translation>Шкала интервалов, кадры</translation></message>
+    <message><source>Tempo candidates: BPM and strength</source><translation>Кандидаты темпа: BPM и сила</translation></message>
+    <message><source>Raw interval histogram</source><translation>Исходная гистограмма интервалов</translation></message>
+    <message><source>Smoothed interval histogram</source><translation>Сглаженная гистограмма интервалов</translation></message>
+    <message><source>Beat times, s</source><translation>Время долей, с</translation></message>
+    <message><source>Beat frame indices</source><translation>Индексы кадров долей</translation></message>
+    <message><source>Trial intervals, frames</source><translation>Пробные интервалы, кадры</translation></message>
+    <message><source>Normalized trial scores</source><translation>Нормированные оценки проб</translation></message>
     <message><source>Linear power</source><translation>Линейная мощность</translation></message>
     <message><source>Log power, dB</source><translation>Логарифмическая мощность, dB</translation></message>
     <message><source>New values</source><translation>Новые значения</translation></message>
@@ -374,6 +560,105 @@
     <message><source>Power to decibels</source><translation>Перевод мощности в децибелы</translation></message>
     <message><source>Positive log-Mel differences</source><translation>Положительные разности log-Mel</translation></message>
     <message><source>Median across Mel bands</source><translation>Медиана по Mel-полосам</translation></message>
+    <message><source>PCM window</source><translation>Окно PCM</translation></message>
+    <message><source>Windowed PCM</source><translation>PCM после применения окна</translation></message>
+    <message><source>Onset strength (ODF)</source><translation>Сила атаки (ODF)</translation></message>
+    <message><source>Adjusted onset strength</source><translation>Скорректированная сила атаки</translation></message>
+    <message><source>Onset history</source><translation>История силы атак</translation></message>
+    <message><source>Resampled onset history</source><translation>Пересчитанная история атак</translation></message>
+    <message><source>Comb response</source><translation>Отклик гребенчатого фильтра</translation></message>
+    <message><source>Balanced autocorrelation</source><translation>Сбалансированная автокорреляция</translation></message>
+    <message><source>Beat flag (0/1)</source><translation>Флаг доли (0/1)</translation></message>
+    <message><source>Beat flag history (0/1)</source><translation>История флага доли (0/1)</translation></message>
+    <message><source>Beat period, hops</source><translation>Период доли, шаги анализа</translation></message>
+    <message><source>Cumulative score</source><translation>Накопленная оценка</translation></message>
+    <message><source>Cumulative score history</source><translation>История накопленной оценки</translation></message>
+    <message><source>Next beat, hops</source><translation>До следующей доли, шаги анализа</translation></message>
+    <message><source>Next prediction, hops</source><translation>До следующего прогноза, шаги анализа</translation></message>
+    <message><source>Tempo state weights</source><translation>Веса состояний темпа</translation></message>
+    <message><source>Spectrum magnitude</source><translation>Модуль спектра</translation></message>
+    <message><source>Processed magnitude</source><translation>Обработанный модуль спектра</translation></message>
+    <message><source>Whitening peaks</source><translation>Пики для отбеливания спектра</translation></message>
+    <message><source>Onset descriptor value</source><translation>Значение дескриптора атаки</translation></message>
+    <message><source>Interpolated peak position, hops</source><translation>Интерполированная позиция пика, шаги анализа</translation></message>
+    <message><source>Peak found (0/1)</source><translation>Пик найден (0/1)</translation></message>
+    <message><source>Thresholded onset descriptor</source><translation>Дескриптор атаки после вычитания порога</translation></message>
+    <message><source>Filtered mean</source><translation>Среднее после фильтрации</translation></message>
+    <message><source>Threshold statistic</source><translation>Статистика порога</translation></message>
+    <message><source>PCM hop</source><translation>Блок PCM</translation></message>
+    <message><source>Silence flag (0/1)</source><translation>Признак тишины (0/1)</translation></message>
+    <message><source>Peak position, hops</source><translation>Позиция пика, шаги анализа</translation></message>
+    <message><source>Accepted onset position, hops</source><translation>Позиция принятой атаки, шаги анализа</translation></message>
+    <message><source>Last onset sample</source><translation>Отсчёт последней атаки</translation></message>
+    <message><source>Onset detected (0/1)</source><translation>Атака обнаружена (0/1)</translation></message>
+    <message><source>Beat scheduled (0/1)</source><translation>Доля запланирована (0/1)</translation></message>
+    <message><source>Beat offset within hop</source><translation>Смещение доли внутри шага анализа</translation></message>
+    <message><source>Beat period, samples</source><translation>Период доли, отсчёты</translation></message>
+    <message><source>Tempo confidence</source><translation>Уверенность оценки темпа</translation></message>
+    <message><source>Last beat sample</source><translation>Отсчёт последней доли</translation></message>
+    <message><source>Last tatum sample</source><translation>Отсчёт последней пульсации</translation></message>
+    <message><source>Tatum event code (0/1/2)</source><translation>Код события пульсации (0/1/2)</translation></message>
+    <message><source>Tracker onset history</source><translation>История атак трекера</translation></message>
+    <message><source>Onset autocorrelation</source><translation>Автокорреляция атак</translation></message>
+    <message><source>Phase response</source><translation>Отклик по фазовому смещению</translation></message>
+    <message><source>Scheduled offsets, frames</source><translation>Запланированные смещения долей, кадры</translation></message>
+    <message><source>Real spectrum</source><translation>Вещественная часть спектра</translation></message>
+    <message><source>Imaginary spectrum</source><translation>Мнимая часть спектра</translation></message>
+    <message><source>DC offset (zero frequency)</source><translation>Постоянная составляющая (нулевая частота)</translation></message>
+    <message><source>Aubio last onset sample</source><translation>Aubio: отсчёт последней атаки</translation></message>
+    <message><source>Aubio beat scheduled</source><translation>Aubio: доля запланирована</translation></message>
+    <message><source>Aubio last beat sample</source><translation>Aubio: отсчёт последней доли</translation></message>
+    <message><source>Aubio tatum event code</source><translation>Aubio: код события пульсации</translation></message>
+    <message><source>Aubio last tatum sample</source><translation>Aubio: отсчёт последней пульсации</translation></message>
+    <message><source>PCM samples</source><translation>Отсчёты PCM</translation></message>
+    <message><source>Input PCM samples</source><translation>Входные отсчёты PCM</translation></message>
+    <message><source>Resampled PCM samples</source><translation>Пересчитанные отсчёты PCM</translation></message>
+    <message><source>Input samples</source><translation>Входные отсчёты</translation></message>
+    <message><source>Sample frame</source><translation>Кадр отсчётов</translation></message>
+    <message><source>Input array</source><translation>Входной массив</translation></message>
+    <message><source>Element count</source><translation>Число элементов</translation></message>
+    <message><source>Generated values</source><translation>Сформированные значения</translation></message>
+    <message><source>Input values</source><translation>Входные значения</translation></message>
+    <message><source>Reindexed values</source><translation>Значения в заданном порядке</translation></message>
+    <message><source>Sample frames</source><translation>Кадры отсчётов</translation></message>
+    <message><source>Input spectra</source><translation>Входные спектры</translation></message>
+    <message><source>Filtered bands</source><translation>Значения полос после фильтрации</translation></message>
+    <message><source>Compressed values</source><translation>Значения после компрессии</translation></message>
+    <message><source>Onset descriptor values</source><translation>Значения дескриптора атаки</translation></message>
+    <message><source>Frame times, s</source><translation>Время кадров, с</translation></message>
+    <message><source>Intermediate spectral values</source><translation>Промежуточные значения спектра</translation></message>
+    <message><source>Information gain</source><translation>Информационный выигрыш</translation></message>
+    <message><source>Spectral novelty by bin</source><translation>Спектральная новизна по бинам</translation></message>
+    <message><source>Spectral values</source><translation>Значения спектра</translation></message>
+    <message><source>ERB band values</source><translation>Значения полос ERB</translation></message>
+    <message><source>ERB band centers, Hz</source><translation>Центры полос ERB, Гц</translation></message>
+    <message><source>ERB filter weights</source><translation>Веса фильтров ERB</translation></message>
+    <message><source>Band activations</source><translation>Активации по полосам</translation></message>
+    <message><source>Beat emphasis onset curve</source><translation>Кривая атак с выделением долей</translation></message>
+    <message><source>Band weights</source><translation>Веса полос</translation></message>
+    <message><source>Beat periods, s</source><translation>Периоды долей, с</translation></message>
+    <message><source>Block end times, s</source><translation>Время конца блоков, с</translation></message>
+    <message><source>Normalized onset curve</source><translation>Нормированная кривая атак</translation></message>
+    <message><source>Decoder state indices</source><translation>Индексы состояний декодера</translation></message>
+    <message><source>Confidence</source><translation>Уверенность</translation></message>
+    <message><source>Beat intervals, s</source><translation>Интервалы между долями, с</translation></message>
+    <message><source>Tempo estimates, BPM</source><translation>Оценки темпа, уд/мин</translation></message>
+    <message><source>Tempo histogram</source><translation>Гистограмма темпа</translation></message>
+    <message><source>Tempo histogram peaks</source><translation>Пики гистограммы темпа</translation></message>
+    <message><source>Interval count</source><translation>Число интервалов</translation></message>
+    <message><source>Complex beat times, s</source><translation>Время долей Complex, с</translation></message>
+    <message><source>RMS beat times, s</source><translation>Время долей RMS, с</translation></message>
+    <message><source>Mel flux beat times, s</source><translation>Время долей Mel Flux, с</translation></message>
+    <message><source>Beat emphasis beat times, s</source><translation>Время долей Beat Emphasis, с</translation></message>
+    <message><source>Information gain beat times, s</source><translation>Время долей Information Gain, с</translation></message>
+    <message><source>Selected beat times, s</source><translation>Время выбранных долей, с</translation></message>
+    <message><source>Selected method index</source><translation>Индекс выбранного метода</translation></message>
+    <message><source>Method scores</source><translation>Оценки методов</translation></message>
+    <message><source>Pairwise information gain</source><translation>Попарный информационный выигрыш</translation></message>
+    <message><source>Complex onset curve</source><translation>Кривая атак Complex</translation></message>
+    <message><source>RMS onset curve</source><translation>Кривая атак RMS</translation></message>
+    <message><source>Mel flux onset curve</source><translation>Кривая атак Mel Flux</translation></message>
+    <message><source>Information gain onset curve</source><translation>Кривая атак Information Gain</translation></message>
     <message><source>Onset strength history</source><translation>История силы атак</translation></message>
     <message><source>Beat grid history</source><translation>История сетки долей</translation></message>
     <message><source>Short signal window</source><translation>Короткое окно сигнала</translation></message>
@@ -574,8 +859,8 @@
       <translation>Рабочая схема недоступна: </translation>
     </message>
     <message>
-      <source>Add a TestSignal source and connect its audio output to StereoFFT. Use one source per pipeline.</source>
-      <translation>Добавьте тестовый источник и соедините его с FFT. В схеме должен быть один источник.</translation>
+      <source>Add a TestSignal source and connect its audio output to a Window. Use one source per pipeline.</source>
+      <translation>Добавьте тестовый источник и соедините его аудиовыход с накопителем Window. Используйте один источник на схему.</translation>
     </message>
     <message>
       <source>Alternative</source>
@@ -1889,6 +2174,7 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Node %1: source is missing</source><translation>Узел %1: источник отсутствует</translation></message>
 <message><source>Node %1: invalid native source contract</source><translation>Узел %1: некорректный контракт собственного формата источника</translation></message>
 <message><source>Node %1: connected output %2 is unavailable in the native format</source><translation>Узел %1: подключённый выход %2 недоступен в собственном формате источника</translation></message>
+<message><source>Source %1: native format is incompatible with input %2 on node %3</source><translation>Источник %1: формат устройства несовместим со входом %2 узла %3</translation></message>
 <message><source>Node %1: native source format is incompatible with the route</source><translation>Узел %1: собственный формат источника несовместим с маршрутом</translation></message>
 <message><source>Peak frequency, Hz</source><translation>Частота пика, Гц</translation></message>
 <message><source>Peak magnitude</source><translation>Величина пика</translation></message>
@@ -1926,6 +2212,94 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Tempo evidence candidates</source><translation>Кандидаты оценки темпа</translation></message>
 <message><source>Tempo evidence metrics</source><translation>Метрики оценки темпа</translation></message>
 <message><source>Evidence maturity</source><translation>Зрелость оценки</translation></message>
+<message><source>Select/reorder elements</source><translation>Выбор/перестановка элементов</translation></message>
+<message><source>Extract values</source><translation>Извлечение значений</translation></message>
+<message><source>One element</source><translation>Один элемент</translation></message>
+<message><source>Select along axis</source><translation>Выбор по оси</translation></message>
+<message><source>Sliding window</source><translation>Скользящее окно</translation></message>
+<message><source>Window size, values</source><translation>Размер окна, значений</translation></message>
+<message><source>Frame size, samples</source><translation>Размер кадра, отсчётов</translation></message>
+<message><source>Frame step, samples</source><translation>Шаг кадра, отсчётов</translation></message>
+<message><source>Filter bank projection</source><translation>Применение банка фильтров</translation></message>
+<message><source>Logarithmic scaling</source><translation>Логарифмическое масштабирование</translation></message>
+<message><source>Recursive filter</source><translation>Рекурсивный фильтр</translation></message>
+<message><source>Inverse Fourier</source><translation>Обратное преобразование Фурье</translation></message>
+<message><source>Normalize values</source><translation>Нормализация значений</translation></message>
+<message><source>Split into analysis frames</source><translation>Разбиение на кадры анализа</translation></message>
+<message><source>Curve interpolation</source><translation>Интерполяция кривой</translation></message>
+<message><source>Comb filter bank</source><translation>Банк гребенчатых фильтров</translation></message>
+<message><source>Value histogram</source><translation>Гистограмма значений</translation></message>
+<message><source>Refine peak locations</source><translation>Уточнение положений пиков</translation></message>
+<message><source>Convolution</source><translation>Свёртка</translation></message>
+<message><source>Audio input</source><translation>Аудиовход</translation></message>
+<message><source>Resample for analysis</source><translation>Частота дискретизации для анализа</translation></message>
+<message><source>Analysis step</source><translation>Шаг анализа</translation></message>
+<message><source>Fourier window</source><translation>Окно для Фурье</translation></message>
+<message><source>Fourier window length</source><translation>Длина окна Фурье</translation></message>
+<message><source>Hann coefficients</source><translation>Коэффициенты окна Ханна</translation></message>
+<message><source>Apply Hann window</source><translation>Применение окна Ханна</translation></message>
+<message><source>Rotate analysis window</source><translation>Циклический сдвиг окна</translation></message>
+<message><source>Fourier transform</source><translation>Преобразование Фурье</translation></message>
+<message><source>Spectrum magnitude and phase</source><translation>Модуль и фаза спектра</translation></message>
+<message><source>Indexed spectrum magnitude</source><translation>Модуль спектра по индексам</translation></message>
+<message><source>Indexed spectrum phase</source><translation>Фаза спектра по индексам</translation></message>
+<message><source>Compress onset spectrum</source><translation>Сжатие спектра для атак</translation></message>
+<message><source>Onset high-frequency content</source><translation>Высокочастотный признак атак</translation></message>
+<message><source>Find onset peaks</source><translation>Поиск пиков атак</translation></message>
+<message><source>Onset silence gate</source><translation>Тишина при поиске атак</translation></message>
+<message><source>Detect onsets</source><translation>Обнаружение атак</translation></message>
+<message><source>Tempo spectral flux</source><translation>Спектральный поток для темпа</translation></message>
+<message><source>Find tempo peaks</source><translation>Поиск пиков для темпа</translation></message>
+<message><source>Tempo silence gate</source><translation>Тишина при поиске темпа</translation></message>
+<message><source>Track beat context</source><translation>Отслеживание контекста долей</translation></message>
+<message><source>Thresholded tempo history</source><translation>История пороговых значений темпа</translation></message>
+<message><source>Tempo context window</source><translation>Окно контекста темпа</translation></message>
+<message><source>Exclude current onset</source><translation>Исключение текущей атаки</translation></message>
+<message><source>Tempo context length</source><translation>Длина контекста темпа</translation></message>
+<message><source>Recency weights</source><translation>Веса давности</translation></message>
+<message><source>Weight recent onsets</source><translation>Взвешивание недавних атак</translation></message>
+<message><source>Reverse weighted history</source><translation>Разворот взвешенной истории</translation></message>
+<message><source>Indexed autocorrelation</source><translation>Автокорреляция по индексам</translation></message>
+<message><source>Onset smoothing window</source><translation>Окно сглаживания атак</translation></message>
+<message><source>Onset forward smoothing</source><translation>Прямое сглаживание атак</translation></message>
+<message><source>Reverse onset history</source><translation>Разворот истории атак</translation></message>
+<message><source>Onset reverse smoothing</source><translation>Обратное сглаживание атак</translation></message>
+<message><source>Restore onset order</source><translation>Восстановление порядка атак</translation></message>
+<message><source>Tempo smoothing window</source><translation>Окно сглаживания темпа</translation></message>
+<message><source>Tempo forward smoothing</source><translation>Прямое сглаживание темпа</translation></message>
+<message><source>Reverse tempo history</source><translation>Разворот истории темпа</translation></message>
+<message><source>Tempo reverse smoothing</source><translation>Обратное сглаживание темпа</translation></message>
+<message><source>Restore tempo order</source><translation>Восстановление порядка темпа</translation></message>
+<message><source>Essentia complete finite input</source><translation>Essentia: полный конечный вход</translation></message>
+<message><source>Selection mode</source><translation>Способ выбора</translation></message>
+<message><source>Element or row index</source><translation>Индекс элемента или строки</translation></message>
+<message><source>Selection indices (empty uses range)</source><translation>Индексы выборки (пусто — диапазон)</translation></message>
+<message><source>Selected length (0: remaining)</source><translation>Длина выборки (0 — до конца)</translation></message>
+<message><source>Essentia analysis session</source><translation>Essentia: сессия анализа</translation></message>
+<message><source>Summation order</source><translation>Порядок суммирования</translation></message>
+<message><source>Sequential accumulation</source><translation>Последовательное суммирование</translation></message>
+<message><source>Pairwise accumulation</source><translation>Попарное суммирование</translation></message>
+<message><source>Adaptive peak detection</source><translation>Адаптивный поиск пиков</translation></message>
+<message><source>BTrack beat tracking</source><translation>BTrack: отслеживание долей</translation></message>
+<message><source>Onset history for tempo</source><translation>История атак для темпа</translation></message>
+<message><source>Resample onset history</source><translation>Ресэмплинг истории атак</translation></message>
+<message><source>BTrack onset strength</source><translation>BTrack: сила атак</translation></message>
+<message><source>Beat intervals and tempo</source><translation>Интервалы долей и темп</translation></message>
+<message><source>Beat grid tracking</source><translation>Отслеживание сетки долей</translation></message>
+<message><source>Beat context tracking</source><translation>Отслеживание контекста долей</translation></message>
+<message><source>CRF beat tracking</source><translation>Отслеживание долей CRF</translation></message>
+<message><source>Compare beat candidates</source><translation>Сопоставление кандидатов долей</translation></message>
+<message><source>Group rhythm candidates</source><translation>Группировка кандидатов ритма</translation></message>
+<message><source>ERB band analysis</source><translation>Анализ полос ERB</translation></message>
+<message><source>Spectral information gain</source><translation>Прирост спектральной информации</translation></message>
+<message><source>Spectral change analysis</source><translation>Анализ изменений спектра</translation></message>
+<message><source>Essentia onset curves</source><translation>Essentia: кривые атак</translation></message>
+<message><source>Harmonic comb</source><translation>Гармоническая гребёнка</translation></message>
+<message><source>Onset event detection</source><translation>Обнаружение событий атаки</translation></message>
+<message><source>Spectral onset descriptor</source><translation>Спектральный признак атак</translation></message>
+<message><source>Silence detection</source><translation>Обнаружение тишины</translation></message>
+<message><source>Period sequence estimation</source><translation>Оценка последовательности периодов</translation></message>
+<message><source>Decode beat times</source><translation>Определение времени долей</translation></message>
 </context>
     <context><name>Ui</name>
     <message><source>Save settings as…</source><translation>Сохранить настройки как…</translation></message>
@@ -2696,6 +3070,8 @@ Escape — отмена. Поддерживаются все раскладки.
 <message><source>Essentia: MultiFeature BPM and confidence</source><translation>Essentia: темп и уверенность MultiFeature</translation></message>
 <message><source>Multiply</source><translation>Умножение</translation></message>
 <message><source>Add</source><translation>Сложение</translation></message>
+<message><source>Subtract</source><translation>Вычитание</translation></message>
+<message><source>Divide</source><translation>Деление</translation></message>
 <message><source>Elementwise addition</source><translation>Поэлементное сложение</translation></message>
 <message><source>Term %1</source><translation>Слагаемое %1</translation></message>
 <message><source>Sum</source><translation>Сумма</translation></message>

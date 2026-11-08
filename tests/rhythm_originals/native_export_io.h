@@ -34,8 +34,5 @@ private:
     std::string prefix_;
     std::map<std::string,std::ofstream> streams_;
 };
-void aubio(const Case&);
 void aubio_features(const Case&);
-void btrack(const Case&);
-void essentia(const Case&);
 }

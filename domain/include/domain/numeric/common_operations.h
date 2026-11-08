@@ -8,7 +8,7 @@ namespace domain {
 struct ParameterDescriptor;
 struct ConfiguredProcessingNode;
 class OwnedProcessingContract;
-struct CommonOperationSpec {std::string_view kind;std::size_t inputs,outputs;std::string_view stages;};
+struct CommonOperationSpec {std::string_view kind;std::size_t inputs,outputs;std::string_view stages;std::size_t optional_inputs=0;};
 std::span<const CommonOperationSpec> common_operation_catalogue() noexcept;
 const CommonOperationSpec* common_operation_spec(std::string_view) noexcept;
 bool common_operation_kind(std::string_view) noexcept;

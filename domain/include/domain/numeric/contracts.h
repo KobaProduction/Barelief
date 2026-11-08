@@ -26,5 +26,5 @@ signal_contracts::Status array_generator_output_contract(const ConfiguredProcess
 // Empty typed coefficients select scalar fill. An empty destination validates only.
 signal_contracts::Status array_generator_values(const ConfiguredProcessingNode&,std::span<float>,std::size_t& count) noexcept;
 signal_contracts::Status array_concat_output_contract(const ConfiguredProcessingNode&,OwnedProcessingContract&) noexcept;
-signal_contracts::Status array_product_output_contract(const ConfiguredProcessingNode&,OwnedProcessingContract&,std::size_t* frame_input=nullptr) noexcept;
+signal_contracts::Status array_product_output_contract(const ConfiguredProcessingNode&,OwnedProcessingContract&,std::size_t* frame_input=nullptr,std::size_t* trigger_input=nullptr) noexcept;
 }

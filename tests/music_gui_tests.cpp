@@ -260,7 +260,12 @@ return 0;
 
 static int music_projection_representations(const auto& edit) {
     music_gui_diagnostics::Scope trace("music_projection_representations");
-    for(int representation:{0,1,3,4,5,6,2})CHECK(edit(30,"representation",representation));
+    using enum dsp_kernels::SpectrumProjection;
+    const auto choices=dsp_kernels::amplitude_spectrum_projections();
+    for(const auto representation:{Magnitude,PeakAmplitude,Psd,RmsAmplitude,BinPower,WindowScaledMagnitude,Power}){
+        const auto found=std::find(choices.begin(),choices.end(),representation);
+        CHECK(found!=choices.end() && edit(30,"representation",int(found-choices.begin())));
+    }
 return 0;
 }
 static int broadband_projection_cells(const auto& query,const auto& edit) {
@@ -388,12 +393,13 @@ static void music_window_calibration(domain::ConfiguredProcessingNode& node,sign
 }
 static int music_window_function_choices(CoreApplication& app,NumericEditorGraphModel* model,const auto& query) {
     music_gui_diagnostics::Scope trace("music_window_function_choices");
-    for(int function:{1,2,3,4,5,6,0}){
-        music_gui_diagnostics::edit(3,"function",function);
+    using enum signal_contracts::WindowFunction;
+    for(const auto function:{Hamming,Blackman,Rectangular,Bartlett,BlackmanHarris,FlatTop,Hann}){
+        music_gui_diagnostics::edit(3,"function",int(function));
         auto requested=model->numeric_graph();
         const auto* fft=model->delegateModel<AudioNodeModel>(4)->numeric_node();
         const auto input=std::get<NumericContract>(fft->inputs[0].contract.view());
-        for(auto& node:requested.nodes)music_window_calibration(node,signal_contracts::WindowFunction(function),input.shape.extents[0].maximum,double(input.clock.sample_rate));
+        for(auto& node:requested.nodes)music_window_calibration(node,function,input.shape.extents[0].maximum,double(input.clock.sample_rate));
         if(const int failure=commit_music_geometry(app,model,query,requested,3,3);failure)return failure;
     }
     return 0;

@@ -200,9 +200,8 @@ def worker(args):
         result = variant.best_sequence(np.ascontiguousarray(envelope, dtype=np.float32), args.interval, .18)
     else:
         sys.path.insert(0, str(Path(__file__).parent))
-        import madmom_pipeline_oracle as oracle
-        tempo = oracle.tempo_processor(original, 2)
-        processor = oracle.tracker(original, 2, tempo)
+        from madmom_crf_safe_oracle import source_processor
+        processor = source_processor(original)
         # Pinned processor chooses/sorts/smooths each trial unchanged; only its
         # Cython call is delegated to the diagnostic source copy.
         original.beats._process_crf = lambda trial: variant.best_sequence(*trial)
