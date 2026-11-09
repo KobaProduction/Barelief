@@ -13,17 +13,23 @@ permissions:
 jobs:
   function-quality:
     runs-on: windows-2022
+    env:
+      QUALITY_JOBS: '4'
+      IDF_PATH: ${{ github.workspace }}/.tools/quality-sdk/esp-idf
+      IDF_TOOLS_PATH: ${{ github.workspace }}/.tools/quality-idf-tools
+      IDF_PYTHON_ENV_PATH: ${{ github.workspace }}/.tools/quality-idf-python
+      ESP_DSP_SOURCE_DIR: ${{ github.workspace }}/.tools/quality-sdk/esp-dsp
+      GMF_FFT_SOURCE_DIR: ${{ github.workspace }}/.tools/quality-sdk/esp-gmf/packages/gmf_fft
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - id: python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.14'
       - name: Install standard linters
         run: python -m pip install -r scripts/requirements-quality.txt
-      - name: Quality-tool regression tests
-        run: python -m pre_commit run quality-tools --all-files --hook-stage pre-push
       - name: Module boundaries
         run: python scripts/vendor/chromium_checkdeps/checkdeps.py --root .
       - name: Boundary regression checks
@@ -42,9 +48,63 @@ jobs:
           $toolchain = Join-Path (Split-Path (Split-Path $env:QT_ROOT_DIR)) 'Tools/mingw1310_64/bin'
           $env:PATH = "$toolchain;$env:PATH"
           $env:QT_ROOT = $env:QT_ROOT_DIR
-          cmake --preset dev -DBUILD_QUALITY_HEADER_AUDIT=ON -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe"
+          $env:CC = Join-Path $toolchain 'gcc.exe'
+          $env:CXX = Join-Path $toolchain 'g++.exe'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value @("CC=$env:CC", "CXX=$env:CXX", "QT_ROOT=$env:QT_ROOT")
+          cmake --preset dev -DBUILD_QUALITY_HEADER_AUDIT=ON -DBARELIEF_RHYTHM_REFERENCE_GUI=ON -DCMAKE_C_COMPILER="$env:CC" -DCMAKE_CXX_COMPILER="$env:CXX"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset dev --parallel 4
+      - name: Pinned ESP-IDF sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: espressif/esp-idf
+          ref: fff9895c82d744c7237be8847347bdd1b07c6643
+          path: .tools/quality-sdk/esp-idf
+          submodules: recursive
+          persist-credentials: false
+      - name: Pinned ESP-DSP sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: espressif/esp-dsp
+          ref: a53a0756833c045311ea1d79a2badf495cdfde4c
+          path: .tools/quality-sdk/esp-dsp
+          persist-credentials: false
+      - name: Locked GMF FFT sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: espressif/esp-gmf
+          ref: 255fb531ddc97ff5e1e113dad97c88f70d6297be
+          path: .tools/quality-sdk/esp-gmf
+          persist-credentials: false
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            .tools/quality-idf-tools
+            .tools/quality-idf-python
+          key: quality-idf-fff9895c-windows-${{ steps.python.outputs.python-version }}-v1
+      - name: Prepare official quality toolchains
+        shell: pwsh
+        run: |
+          python "$env:IDF_PATH/tools/idf_tools.py" install esp-clang xtensa-esp-elf esp32ulp-elf esp-rom-elfs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python "$env:IDF_PATH/tools/idf_tools.py" install-python-env
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $compilers = @(Get-ChildItem -LiteralPath "$env:IDF_TOOLS_PATH/tools/xtensa-esp-elf" -Recurse -File -Filter xtensa-esp-elf-gcc.exe)
+          $analyzers = @(Get-ChildItem -LiteralPath "$env:IDF_TOOLS_PATH/tools/esp-clang" -Recurse -File -Filter clang-tidy.exe)
+          if ($compilers.Count -ne 1 -or $analyzers.Count -ne 1) { throw 'Expected one compiler and one ESP clang-tidy from the pinned IDF tool metadata' }
+          $bdsp = @(Get-Content -LiteralPath cmake-build-dev/CMakeCache.txt | Select-String '^BDSP_SOURCE_DIR:[^=]+=')
+          if ($bdsp.Count -ne 1) { throw 'The configured desktop BDSP source must have one cache entry' }
+          $paths = @{
+            ESP32_TOOLCHAIN_DIR = $compilers[0].Directory.Parent.FullName
+            ESP_CLANG_TIDY = $analyzers[0].FullName
+            BDSP_SOURCE_DIR = $bdsp[0].Line.Split('=', 2)[1]
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $paths.BDSP_SOURCE_DIR 'CMakeLists.txt'))) { throw 'Configured BDSP sources are missing' }
+          foreach ($entry in $paths.GetEnumerator()) { Add-Content -LiteralPath $env:GITHUB_ENV -Value "$($entry.Key)=$($entry.Value)" }
+      - name: Quality-tool regression tests
+        run: python -m pre_commit run quality-tools --all-files --hook-stage pre-push
+      - name: Prepare actual SDK and benchmark compile profiles
+        run: python scripts/prepare_quality_profiles.py
       - name: clang-tidy
         run: python -m pre_commit run clang-tidy --all-files --hook-stage pre-push
       - name: Clazy
