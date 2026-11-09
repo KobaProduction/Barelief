@@ -25,6 +25,7 @@ public:
     std::span<const std::uint32_t> state_path() const noexcept {return model_.state_path();}
     const PreparedMetricalStateSpace& state_space() const noexcept {return space_;}
 private:
+    void publish_numbers(std::span<const std::uint32_t>,std::size_t) noexcept;
     struct Input {std::span<const float> probability;float weight;};
     bool configure(std::size_t,std::span<const std::uint32_t>,BarStateDecoderConfig,std::span<const float>);
     bool prepare_model(std::size_t,std::span<const std::uint32_t>,std::span<const float>);

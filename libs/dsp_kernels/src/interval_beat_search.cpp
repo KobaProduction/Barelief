@@ -10,14 +10,15 @@
 #include <cstdint>
 #include <utility>
 namespace dsp_kernels {
+void PreparedIntervalBeatSearch::allocate_results(std::size_t frames,std::size_t interval,float look_aside) {
+    maximum_frames_=frames;maximum_interval_=interval;look_aside_=look_aside;
+    scores_.resize(interval);positions_.resize(frames);
+}
 bool PreparedIntervalBeatSearch::prepare(std::size_t frames,std::size_t interval,float look_aside) {
     std::size_t bound=0;if(!storage_bytes(frames,interval,look_aside,bound))return false;
-    if(!frames || !interval || interval>frames || frames>std::size_t(PTRDIFF_MAX)/4)return false;
-    if(!std::isfinite(look_aside) || look_aside<0 || look_aside>1)return false;
     const auto radius=std::max(std::size_t{1},std::size_t(float(interval)*look_aside));
     PreparedIntervalBeatSearch next;if(!next.prepare_windows(radius))return false;
-    next.maximum_frames_=frames;next.maximum_interval_=interval;next.look_aside_=look_aside;
-    next.scores_.resize(interval);next.positions_.resize(frames);
+    next.allocate_results(frames,interval,look_aside);
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
 }
@@ -40,14 +41,30 @@ std::size_t PreparedIntervalBeatSearch::refine(std::span<const float> input,std:
     // The source deliberately ignores an argmax at index zero.
     return peak?std::size_t(start+std::ptrdiff_t(peak)):position;
 }
+bool PreparedIntervalBeatSearch::retain_position(std::size_t position,bool retain) noexcept {
+    if(!retain)return true;
+    if(count_>=positions_.size())return false;
+    positions_[count_++]=position;
+    return true;
+}
+bool PreparedIntervalBeatSearch::select_phase(std::span<const float> input,std::size_t interval) noexcept {
+    const auto best=std::size_t(std::max_element(scores_.begin(),scores_.begin()+std::ptrdiff_t(interval))-scores_.begin());
+    float score=0;
+    if(!sequence(input,interval,best,true,score)){count_=0;return false;}
+    result_interval_=interval;
+    return true;
+}
+bool PreparedIntervalBeatSearch::score_position(std::span<const float> input,std::size_t& position,bool retain,float& score) noexcept {
+    position=refine(input,position);
+    if(position>=input.size())return false;
+    score+=input[position];
+    return std::isfinite(score) && retain_position(position,retain);
+}
 bool PreparedIntervalBeatSearch::sequence(std::span<const float> input,std::size_t interval,std::size_t start,bool retain,float& score) noexcept {
     score=0;auto position=start;
     while(position<input.size()){
         const auto prediction=position;
-        position=refine(input,position);
-        if(position>=input.size())return false;
-        score+=input[position];if(!std::isfinite(score))return false;
-        if(retain){if(count_>=positions_.size())return false;positions_[count_++]=position;}
+        if(!score_position(input,position,retain,score))return false;
         if(interval>=input.size()-position)break;
         position+=interval;if(position<=prediction)return false;
     }
@@ -65,9 +82,7 @@ bool PreparedIntervalBeatSearch::process(std::span<const float> input,std::size_
     radius_=std::max(std::size_t{1},std::size_t(float(interval)*look_aside_));
     if(radius_>interval)return false;
     if(!score_phases(input,interval))return false;
-    const auto best=std::size_t(std::max_element(scores_.begin(),scores_.begin()+std::ptrdiff_t(interval))-scores_.begin());
-    float score=0;if(!sequence(input,interval,best,true,score)){count_=0;return false;}
-    result_interval_=interval;return true;
+    return select_phase(input,interval);
 }
 }
 

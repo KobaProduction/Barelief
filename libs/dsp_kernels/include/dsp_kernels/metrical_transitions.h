@@ -22,6 +22,13 @@ public:
                  std::span<const float> pattern_switches={});
     std::span<const MarkovTransition> edges() const noexcept {return edges_;}
 private:
+    bool connect_patterns(std::span<const float>);
+    bool configure_patterns(const PreparedMetricalStateSpace&,std::span<const TempoTransitionRule>,std::span<const float>,std::size_t);
+    void append_boundary_edge(std::size_t,std::size_t,MarkovTransition);
+    void append_boundary_edges(std::size_t,std::size_t,std::span<const std::uint32_t>,std::span<const std::uint32_t>,std::span<const float>);
+    void scale_pattern_boundaries(std::span<const float>) noexcept;
+    void reserve_boundaries(const PreparedMetricalStateSpace&,std::size_t);
+    bool build_patterns(const PreparedMetricalStateSpace&,std::span<const TempoTransitionRule>);
     bool pattern(const PreparedMetricalStateSpace&,std::size_t,std::span<const TempoTransitionRule>);
     bool boundary(const PreparedMetricalStateSpace&,std::size_t,std::size_t,TempoTransitionRule);
     bool switch_patterns(std::span<const float>);

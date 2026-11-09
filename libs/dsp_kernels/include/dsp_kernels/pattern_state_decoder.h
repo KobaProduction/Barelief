@@ -39,6 +39,10 @@ public:
     float log_probability() const noexcept {return model_.log_probability();}
     const PreparedMetricalStateSpace& state_space() const noexcept {return space_;}
 private:
+    bool reserve_rules(std::span<const GmmPatternData>);
+    bool append_pattern_mixtures(const GmmPatternData&);
+    void append_rules(std::uint32_t,const PatternTempoParameters&);
+    bool append_mixture(const GaussianMixtureData&);
     struct Input {PreparedPatternStateDecoder* self;FloatMatrixSource features;};
     bool configure(std::size_t,std::span<const GmmPatternData>,std::span<const PatternTempoParameters>,float);
     bool states(std::span<const GmmPatternData>,std::span<const PatternTempoParameters>);

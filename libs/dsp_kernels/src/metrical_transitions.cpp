@@ -18,20 +18,27 @@ bool uniform_pattern_switches(std::size_t patterns,float probability,std::vector
     for(std::size_t p=0;p<patterns;++p)values[p*patterns+p]=patterns>1?1.f-probability:1.f;
     output=std::move(values);return true;
 }
+void PreparedMetricalTransitions::append_boundary_edge(std::size_t pattern,std::size_t beat,MarkovTransition edge) {
+    edges_.push_back(edge);
+    if(!beat){
+        boundaries_[pattern].push_back(edge);
+        boundary_indices_[pattern].push_back(edges_.size()-1);
+    }
+}
+void PreparedMetricalTransitions::append_boundary_edges(std::size_t pattern,std::size_t beat,std::span<const std::uint32_t> from,std::span<const std::uint32_t> to,std::span<const float> probabilities) {
+    for(std::size_t target=0;target<to.size();++target)
+        for(std::size_t origin=0;origin<from.size();++origin){
+            const float probability=probabilities[origin*to.size()+target];
+            if(probability!=0)append_boundary_edge(pattern,beat,{from[origin],to[target],probability});
+        }
+}
 bool PreparedMetricalTransitions::boundary(const PreparedMetricalStateSpace& space,std::size_t p,std::size_t beat,TempoTransitionRule rule) {
     const auto periods=space.periods(p),to=space.first_states(p,beat);
     const auto from=space.last_states(p,beat?beat-1:space.beats(p)-1);
     if(periods.size()>std::numeric_limits<std::size_t>::max()/periods.size())return false;
     std::vector<float> probabilities(periods.size()*periods.size());
     if(!exponential_period_transitions(periods,periods,rule,probabilities))return false;
-    for(std::size_t target=0;target<to.size();++target)
-        for(std::size_t origin=0;origin<from.size();++origin){
-            const float probability=probabilities[origin*to.size()+target];
-            if(probability==0)continue;
-            const MarkovTransition edge{from[origin],to[target],probability};
-            edges_.push_back(edge);
-            if(!beat){boundaries_[p].push_back(edge);boundary_indices_[p].push_back(edges_.size()-1);}
-        }
+    append_boundary_edges(p,beat,from,to,probabilities);
     return true;
 }
 bool PreparedMetricalTransitions::pattern(const PreparedMetricalStateSpace& space,std::size_t p,std::span<const TempoTransitionRule> rules) {
@@ -50,41 +57,66 @@ bool PreparedMetricalTransitions::switches(std::size_t target,std::size_t origin
         edges_.push_back({from[edge].from,to[edge].to,to[edge].probability*probability});
     return true;
 }
-bool PreparedMetricalTransitions::switch_patterns(std::span<const float> matrix) {
+void PreparedMetricalTransitions::scale_pattern_boundaries(std::span<const float> matrix) noexcept {
     const auto n=boundaries_.size();
-    if(matrix.empty() || n<2)return true;
-    if(n>std::numeric_limits<std::size_t>::max()/n || matrix.size()!=n*n ||
-       !std::all_of(matrix.begin(),matrix.end(),[](float p){return std::isfinite(p) && p>=0 && p<=1;}))return false;
     for(std::size_t p=0;p<n;++p)
         for(const auto index:boundary_indices_[p])edges_[index].probability*=matrix[p*n+p];
+}
+bool PreparedMetricalTransitions::connect_patterns(std::span<const float> matrix) {
+    const auto n=boundaries_.size();
     for(std::size_t target=0;target<n;++target)
         for(std::size_t origin=0;origin<n;++origin)
             if(target!=origin && !switches(target,origin,matrix[target*n+origin]))return false;
     return true;
 }
-bool PreparedMetricalTransitions::prepare(const PreparedMetricalStateSpace& space,std::span<const TempoTransitionRule> rules,
-                                         std::span<const float> switches) {
-    if(!space.states())return false;
-    std::size_t count=0;
+bool PreparedMetricalTransitions::configure_patterns(const PreparedMetricalStateSpace& space,std::span<const TempoTransitionRule> rules,std::span<const float> switches,std::size_t edges) {
+    reserve_boundaries(space,edges);
+    return build_patterns(space,rules) && switch_patterns(switches);
+}
+bool PreparedMetricalTransitions::switch_patterns(std::span<const float> matrix) {
+    const auto n=boundaries_.size();
+    if(matrix.empty() || n<2)return true;
+    if(n>std::numeric_limits<std::size_t>::max()/n || matrix.size()!=n*n ||
+       !std::all_of(matrix.begin(),matrix.end(),[](float p){return std::isfinite(p) && p>=0 && p<=1;}))return false;
+    scale_pattern_boundaries(matrix);
+    return connect_patterns(matrix);
+}
+namespace {
+bool transition_geometry(const PreparedMetricalStateSpace& space,std::size_t& count,std::size_t& periods) noexcept {
     for(std::size_t p=0;p<space.patterns();++p){
         if(space.beats(p)>std::numeric_limits<std::size_t>::max()-count)return false;
         count+=space.beats(p);
     }
-    if(rules.size()!=count)return false;
-    std::size_t periods=0;for(std::size_t p=0;p<space.patterns();++p)periods=std::max(periods,space.periods(p).size());
-    std::size_t bound=0,edges=0;
-    if(!storage_bytes(space.states(),space.patterns(),count,periods,!switches.empty(),bound,edges))return false;
-    PreparedMetricalTransitions next;next.edges_.reserve(edges);next.boundaries_.resize(space.patterns());
-    next.boundary_indices_.resize(space.patterns());std::size_t offset=0;
+    for(std::size_t p=0;p<space.patterns();++p)periods=std::max(periods,space.periods(p).size());
+    return true;
+}
+}
+void PreparedMetricalTransitions::reserve_boundaries(const PreparedMetricalStateSpace& space,std::size_t edges) {
+    edges_.reserve(edges);
+    boundaries_.resize(space.patterns());
+    boundary_indices_.resize(space.patterns());
     for(std::size_t p=0;p<space.patterns();++p){
         const auto square=space.periods(p).size()*space.periods(p).size();
-        next.boundaries_[p].reserve(square);next.boundary_indices_[p].reserve(square);
+        boundaries_[p].reserve(square);boundary_indices_[p].reserve(square);
     }
+}
+bool PreparedMetricalTransitions::build_patterns(const PreparedMetricalStateSpace& space,std::span<const TempoTransitionRule> rules) {
+    std::size_t offset=0;
     for(std::size_t p=0;p<space.patterns();++p){
-        if(!next.pattern(space,p,rules.subspan(offset,space.beats(p))))return false;
+        if(!pattern(space,p,rules.subspan(offset,space.beats(p))))return false;
         offset+=space.beats(p);
     }
-    if(!next.switch_patterns(switches))return false;
+    return true;
+}
+bool PreparedMetricalTransitions::prepare(const PreparedMetricalStateSpace& space,std::span<const TempoTransitionRule> rules,
+                                         std::span<const float> switches) {
+    if(!space.states())return false;
+    std::size_t count=0,periods=0;
+    if(!transition_geometry(space,count,periods) || rules.size()!=count)return false;
+    std::size_t bound=0,edges=0;
+    if(!storage_bytes(space.states(),space.patterns(),count,periods,!switches.empty(),bound,edges))return false;
+    PreparedMetricalTransitions next;
+    if(!next.configure_patterns(space,rules,switches,edges))return false;
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
 }

@@ -1,6 +1,7 @@
 // Bounded lifecycle regressions for the optional composition consumer.
 // These check validity of current-call diagnostics, not numerical parity.
-#include <dsp_kernels/pcm_spectral_novelty.h>
+#include <dsp_kernels/spectral_novelty.h>
+#include <dsp_kernels/spectral_frame_recipe.h>
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -29,18 +30,31 @@ bool empty_spectrum(const PreparedSpectralFrameRecipe& kernel) noexcept {
     return value.complex.empty() && value.magnitude.empty() && value.phase.empty() &&
         value.powered.empty() && value.linear.empty() && value.features.empty();
 }
-bool pcm_diagnostics() {
-    PreparedPcmSpectralNovelty kernel;PcmSpectralNoveltyConfig config;
-    config.spectrum.framing.length=8;config.spectrum.framing.hop_samples=4;
-    config.spectrum.framing.center=false;config.spectrum.framing.tail=FrameSamplingTail::Complete;
-    config.automatic_difference_lag=false;
-    if(!kernel.prepare(16,config))return false;
-    std::array<float,16> pcm;pcm.fill(.25f);const FloatMatrixDestination target{nullptr,accept_row};
-    if(!kernel.process(pcm,target) || empty_spectrum(kernel.spectrum()))return false;
-    if(!kernel.process({},target) || !empty_spectrum(kernel.spectrum()) || !empty_diagnostics(kernel.novelty()))return false;
-    if(!kernel.process(pcm,target))return false;
+SpectralFrameRecipeConfig diagnostic_recipe() {
+    SpectralFrameRecipeConfig config;
+    config.framing.length=8;
+    config.framing.hop_samples=4;
+    config.framing.center=false;
+    config.framing.tail=FrameSamplingTail::Complete;
+    return config;
+}
+bool nonfinite_pcm_diagnostics(PreparedSpectralFrameRecipe& kernel,std::span<float> features) {
+    std::array<float,16> pcm;
+    pcm.fill(.25f);
+    if(!kernel.process_frame(pcm,0,features))return false;
     pcm[0]=std::numeric_limits<float>::quiet_NaN();
-    return !kernel.process(pcm,target) && empty_spectrum(kernel.spectrum()) && empty_diagnostics(kernel.novelty());
+    return !kernel.process_frame(pcm,0,features) && empty_spectrum(kernel);
+}
+
+bool pcm_diagnostics() {
+    PreparedSpectralFrameRecipe kernel;
+    if(!kernel.prepare(16,diagnostic_recipe()))return false;
+    std::array<float,16> pcm;
+    pcm.fill(.25f);
+    std::vector<float> features(kernel.features());
+    if(!kernel.process_frame(pcm,0,features) || empty_spectrum(kernel))return false;
+    if(kernel.process_frame({},0,features) || !empty_spectrum(kernel))return false;
+    return nonfinite_pcm_diagnostics(kernel,features);
 }
 }
 bool spectral_diagnostic_regressions() {

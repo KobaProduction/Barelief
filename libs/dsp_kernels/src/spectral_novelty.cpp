@@ -61,19 +61,28 @@ bool PreparedSpectralNovelty::configure(std::size_t frames,std::size_t features,
     unit_magnitude_.assign(bins,1.f);ones_.assign(features,1.f);result_.resize(output_features());
     return prepare_operation(supports);
 }
+bool PreparedSpectralNovelty::prepare_phase_mask(std::span<const FilterBandSupport> supports) {
+    ComplexFluxConfig mask;
+    mask.lag=config_.lag;mask.frequency_maximum=config_.frequency_maximum;
+    mask.temporal_maximum=config_.temporal_maximum;mask.temporal_origin=config_.temporal_origin;mask.compensated_sum=false;
+    return phase_mask_.prepare(maximum_frames_,features_,phase_bins_,supports,mask);
+}
+bool PreparedSpectralNovelty::prepare_difference() {
+    OnsetStrengthConfig difference;
+    difference.center=false;difference.aggregate=OnsetAggregate::Sum;
+    difference.max_size=config_.method==SpectralNoveltyMethod::MaximumDifference?std::max(std::size_t{1},config_.frequency_maximum):1;
+    return difference_.prepare(features_,maximum_frames_,difference);
+}
+bool PreparedSpectralNovelty::relative_descriptor(FloatMatrixSource source,std::size_t frame,float& output) noexcept {
+    if(frame<config_.lag){output=0;return true;}
+    if(!read(source,frame,current_) || !read(source,frame-config_.lag,previous_))return false;
+    return descriptor_.process_values(current_,output,previous_);
+}
 bool PreparedSpectralNovelty::prepare_operation(std::span<const FilterBandSupport> supports) {
     const auto method=config_.method;
-    if(method==SpectralNoveltyMethod::PhaseMaskedDifference){
-        ComplexFluxConfig mask;mask.lag=config_.lag;mask.frequency_maximum=config_.frequency_maximum;
-        mask.temporal_maximum=config_.temporal_maximum;mask.temporal_origin=config_.temporal_origin;mask.compensated_sum=false;
-        return phase_mask_.prepare(maximum_frames_,features_,phase_bins_,supports,mask);
-    }
+    if(method==SpectralNoveltyMethod::PhaseMaskedDifference)return prepare_phase_mask(supports);
     if(method==SpectralNoveltyMethod::AlignedDifference)return alignment_.prepare(features_,config_.alignment_radius,config_.positive_alignment);
-    if(method==SpectralNoveltyMethod::SquaredDifference || method==SpectralNoveltyMethod::PositiveDifference || method==SpectralNoveltyMethod::MaximumDifference){
-        OnsetStrengthConfig difference;difference.center=false;difference.aggregate=OnsetAggregate::Sum;
-        difference.max_size=method==SpectralNoveltyMethod::MaximumDifference?std::max(std::size_t{1},config_.frequency_maximum):1;
-        return difference_.prepare(features_,maximum_frames_,difference);
-    }
+    if(method==SpectralNoveltyMethod::SquaredDifference || method==SpectralNoveltyMethod::PositiveDifference || method==SpectralNoveltyMethod::MaximumDifference)return prepare_difference();
     const auto count=method==SpectralNoveltyMethod::PhaseDeviation?phase_bins_:features_;
     return descriptor_.prepare(count,descriptor_recipe(config_));
 }
@@ -108,11 +117,7 @@ bool PreparedSpectralNovelty::scalar(FloatMatrixSource source,FloatMatrixSource 
     if(spectral_novelty_uses_phase(method))return phase_descriptor(source,phase,frame,output);
     if(method==SpectralNoveltyMethod::SquaredDifference || method==SpectralNoveltyMethod::PositiveDifference || method==SpectralNoveltyMethod::MaximumDifference)
         return difference(source,frame,output);
-    if(method==SpectralNoveltyMethod::ModifiedKullbackLeibler){
-        if(frame<config_.lag){output=0;return true;}
-        if(!read(source,frame,current_) || !read(source,frame-config_.lag,previous_))return false;
-        return descriptor_.process_values(current_,output,previous_);
-    }
+    if(method==SpectralNoveltyMethod::ModifiedKullbackLeibler)return relative_descriptor(source,frame,output);
     return read(source,frame,current_) && descriptor_.process_values(current_,output);
 }
 bool PreparedSpectralNovelty::aligned(FloatMatrixSource source,std::size_t frame,std::span<float> output) noexcept {

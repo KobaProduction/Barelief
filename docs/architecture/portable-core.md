@@ -514,7 +514,11 @@ original-reference harness. Float32-counterexamples сохраняются ка�
 путей состояний, lifecycle, времени и памяти.
 
 Desktop real FFT использует подготовленный PocketFFT с неизменённой математикой
-и внешним заранее выделенным scratch. Копии разделяют только неизменяемый plan;
+и внешним заранее выделенным scratch. Собственный `PreparedFourierTransform`
+вычисляет в Float32 и не заменяет этот профиль Float64 без изменения точности.
+Вендорный include-каталог PocketFFT подключён как private system dependency;
+исходники адаптера проверяются обычной C++ диагностикой проекта.
+Копии разделяют только неизменяемый plan;
 рабочие буферы принадлежат каждому экземпляру. Консервативные storage queries
 учитывают Double payload и cold construction. Этот профиль ограничен FFT до
 65536; circular/zero-phase rotation использует общие операции размещения окна

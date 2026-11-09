@@ -26,6 +26,7 @@ public:
     std::span<const float> intervals() const noexcept;
     TickSequenceStatus status() const noexcept {return status_;}
 private:
+    bool refine_ticks(float,float,float) noexcept;
     bool extend(float file_length) noexcept;
     void clip(float begin,float end) noexcept;
     void separate() noexcept;

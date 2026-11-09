@@ -26,15 +26,19 @@ bool PreparedBeatIntervalSummary::storage_bytes(std::size_t maximum,float maximu
        !dsp_kernels::prepared_storage::add_array(bytes,maximum-1,sizeof(float)))return false;
     output=bytes;return true;
 }
-bool PreparedBeatIntervalSummary::process(std::span<const float> ticks,float confidence) noexcept {
-    ready_=false;count_=0;confidence_=0;
-    if(!maximum_ticks_ || ticks.size()>maximum_ticks_ || !std::isfinite(confidence) ||
-       !std::all_of(ticks.begin(),ticks.end(),[](float x){return std::isfinite(x);}))return false;
+bool PreparedBeatIntervalSummary::measure_intervals(std::span<const float> ticks) noexcept {
     for(std::size_t i=1;i<ticks.size();++i){
         const float interval=ticks[i]-ticks[i-1];
         if(!std::isfinite(interval) || interval<=0)return false;
         intervals_[i-1]=interval;
     }
+    return true;
+}
+bool PreparedBeatIntervalSummary::process(std::span<const float> ticks,float confidence) noexcept {
+    ready_=false;count_=0;confidence_=0;
+    if(!maximum_ticks_ || ticks.size()>maximum_ticks_ || !std::isfinite(confidence) ||
+       !std::all_of(ticks.begin(),ticks.end(),[](float x){return std::isfinite(x);}))return false;
+    if(!measure_intervals(ticks))return false;
     const auto count=ticks.empty()?0:ticks.size()-1;
     if(!vote_.process(std::span(intervals_).first(count)))return false;
     count_=count;confidence_=confidence;ready_=true;return true;

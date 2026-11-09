@@ -61,6 +61,8 @@ public:
     static bool matrix_storage_bytes(std::size_t bins,std::size_t bands,std::size_t&) noexcept;
     static bool band_count(FrequencyGridView,const MelFilterBankConfig&,std::size_t&) noexcept;
 private:
+    std::vector<std::size_t> binned_corners(std::span<const double>) const;
+    void assign_matrix(std::span<const float>,std::span<const double>,FilterProjectionOptions,std::span<const FilterBandSupport>);
     void allocate_storage(std::size_t,const MelFilterBankConfig&);
     bool build_filters(std::span<const double>);
     bool build_binned_filters(std::span<const double>);

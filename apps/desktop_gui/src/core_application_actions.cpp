@@ -61,15 +61,26 @@ void CoreApplication::_bind_editor_actions(StartupState& state) {
     connect(editor,&SchemeEditorWidget::numeric_draft_changed,this,[this]{_ctx.editor_draft_modified=true;_save_configuration(false);});
     _bind_incremental_saves();
 }
-void CoreApplication::_populate_example_menu(SchemeEditorWidget* editor) {
-    auto* menu=_main_window->findChild<QMenu*>("pipelinePresetsMenu");if(!menu)return;
-    for(const auto* id:{"defaultPipeline","generatorLoopbackPreset","useTestSource"})if(auto* old=menu->findChild<QAction*>(id))old->setVisible(false);
-    auto* anchor=menu->findChild<QAction*>("loadActivePipeline");
-    _add_example_action(menu,anchor,editor,numeric_compact_spectrogram_example());
+namespace {
+void hide_replaced_example_actions(QMenu* menu) {
+    for(const auto* id:{"defaultPipeline","generatorLoopbackPreset","useTestSource"})
+        if(auto* action=menu->findChild<QAction*>(id))action->setVisible(false);
+}
+QMenu* rhythm_reference_menu(QMenu* menu,QAction* anchor) {
     auto* reference=new QMenu(ui::text("Rhythm references"),menu);
     reference->setObjectName("rhythmReferencePresetsMenu");
     ui::bind(reference,"title","Rhythm references");
     menu->insertMenu(anchor,reference);
+    return reference;
+}
+}
+
+void CoreApplication::_populate_example_menu(SchemeEditorWidget* editor) {
+    auto* menu=_main_window->findChild<QMenu*>("pipelinePresetsMenu");if(!menu)return;
+    hide_replaced_example_actions(menu);
+    auto* anchor=menu->findChild<QAction*>("loadActivePipeline");
+    _add_example_action(menu,anchor,editor,numeric_compact_spectrogram_example());
+    auto* reference=rhythm_reference_menu(menu,anchor);
 #ifdef BARELIEF_RHYTHM_REFERENCE_GUI
     if(_remote_host.isEmpty()){
         for(auto example:numeric_library_reference_presets())

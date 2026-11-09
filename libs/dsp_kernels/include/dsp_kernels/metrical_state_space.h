@@ -43,6 +43,8 @@ private:
         std::size_t beats=0;
         std::vector<std::uint32_t> periods,first,last;
     };
+    bool append_pattern_beats(Pattern&,std::size_t);
+    void reserve_states(std::size_t,std::size_t);
     bool pattern(MetricalPatternConfig,std::size_t);
     bool beat(Pattern&,std::size_t,std::size_t);
     std::vector<Pattern> patterns_;

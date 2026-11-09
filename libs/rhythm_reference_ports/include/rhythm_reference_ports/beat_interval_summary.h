@@ -24,6 +24,7 @@ public:
     std::span<const float> estimates() const noexcept;
     bool histogram_descriptors(BeatIntervalHistogram&) const noexcept;
 private:
+    bool measure_intervals(std::span<const float>) noexcept;
     std::size_t maximum_ticks_=0,count_=0;
     float confidence_=0;
     bool ready_=false;

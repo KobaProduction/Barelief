@@ -75,26 +75,32 @@ float PreparedFrameTempoPath::nearby_bin(std::span<const InterpolatedPeak> peaks
     }
     return 0;
 }
+bool PreparedFrameTempoPath::select_peak(std::span<const InterpolatedPeak> peaks,float main,float& last,float& bpm) const noexcept {
+    if(!std::all_of(peaks.begin(),peaks.end(),valid_peak))return false;
+    if(peaks.empty()){bpm=0;return true;}
+    float bin=equal_bin(peaks,main);
+    if(bin<0)bin=harmonic_bin(peaks,main);
+    if(bin<0)bin=nearby_bin(peaks,main,last);
+    last=bin;bpm=bin*bpm_ratio_;
+    return std::isfinite(bpm);
+}
+void PreparedFrameTempoPath::matching_tempi(float main,float& sum,std::size_t& matches) const noexcept {
+    for(std::size_t i=0;i<count_;++i)if(approximately_equal_tempo(main,bpms_[i],config_.tolerance_percent)){
+        sum+=bpms_[i];++matches;
+    }
+}
 bool PreparedFrameTempoPath::select(SpectralPeakFrames source,std::size_t frames,float main) noexcept {
     float last=-1;
     for(std::size_t i=0;i<frames;++i){
         const auto peaks=source.read(source.context,i);
-        if(!std::all_of(peaks.begin(),peaks.end(),valid_peak))return false;
-        if(peaks.empty()){bpms_[i]=0;continue;}
-        float bin=equal_bin(peaks,main);
-        if(bin<0)bin=harmonic_bin(peaks,main);
-        if(bin<0)bin=nearby_bin(peaks,main,last);
-        last=bin;bpms_[i]=bin*bpm_ratio_;
-        if(!std::isfinite(bpms_[i]))return false;
+        if(!select_peak(peaks,main,last,bpms_[i]))return false;
     }
     count_=frames;return true;
 }
 bool PreparedFrameTempoPath::learn_mean(float main) noexcept {
     if(mean_bpm_>0)return true;
     float sum=0;std::size_t matches=0;
-    for(std::size_t i=0;i<count_;++i)if(approximately_equal_tempo(main,bpms_[i],config_.tolerance_percent)){
-        sum+=bpms_[i];++matches;
-    }
+    matching_tempi(main,sum,matches);
     if(!matches){status_=FrameTempoPathStatus::NoMatchingTempo;return true;}
     if(!std::isfinite(sum))return false;
     mean_bpm_=sum/float(matches);return true;

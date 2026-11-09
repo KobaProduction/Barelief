@@ -64,6 +64,9 @@ public:
                        std::size_t frame,std::span<float> output) noexcept;
     bool process(FloatMatrixSource features,FloatMatrixSource phase,std::size_t frames,FloatMatrixDestination) noexcept;
 private:
+    bool prepare_phase_mask(std::span<const FilterBandSupport>);
+    bool prepare_difference();
+    bool relative_descriptor(FloatMatrixSource,std::size_t,float&) noexcept;
     bool configure(std::size_t,std::size_t,std::size_t,SpectralNoveltyConfig,std::span<const FilterBandSupport>);
     bool prepare_operation(std::span<const FilterBandSupport>);
     bool read(FloatMatrixSource,std::size_t,std::span<float>) noexcept;

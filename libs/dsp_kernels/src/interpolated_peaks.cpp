@@ -1,5 +1,14 @@
 #include <dsp_kernels/peaks.h>
 namespace dsp_kernels {
+namespace {
+bool is_local_peak(std::span<const float> input,std::size_t i,float threshold,bool endpoints) noexcept {
+    if(input[i]<threshold || ((!i || i+1==input.size()) && !endpoints))return false;
+    return !((i && input[i]<=input[i-1]) || (i+1<input.size() && input[i]<input[i+1]));
+}
+float local_peak_offset(std::span<const float> input,std::size_t i) noexcept {
+    return i && i+1<input.size()?quadratic_peak_offset(input[i-1],input[i],input[i+1]):0;
+}
+}
 bool interpolated_local_peaks(std::span<const float> input,float threshold,bool endpoints,
     std::span<float> positions,std::span<float> heights,std::span<float> offsets,std::size_t& count) noexcept {
     count=0;
@@ -7,9 +16,8 @@ bool interpolated_local_peaks(std::span<const float> input,float threshold,bool 
        !std::all_of(input.begin(),input.end(),[](float v){return std::isfinite(v);}))return false;
     std::fill(offsets.begin(),offsets.end(),0.f);
     for(std::size_t i=0;i<input.size();++i){
-        if(input[i]<threshold || ((!i || i+1==input.size()) && !endpoints))continue;
-        if((i && input[i]<=input[i-1]) || (i+1<input.size() && input[i]<input[i+1]))continue;
-        const float offset=i && i+1<input.size()?quadratic_peak_offset(input[i-1],input[i],input[i+1]):0;
+        if(!is_local_peak(input,i,threshold,endpoints))continue;
+        const float offset=local_peak_offset(input,i);
         offsets[i]=offset;positions[count]=float(i)+offset;heights[count]=input[i];++count;
     }
     return true;

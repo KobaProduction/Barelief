@@ -27,6 +27,8 @@ public:
     std::span<const std::size_t> trial_intervals() const noexcept {return std::span(intervals_).first(trials_);}
     std::span<const float> normalized_scores() const noexcept {return std::span(scores_).first(trials_);}
 private:
+    void allocate_results(std::size_t,std::size_t,std::size_t,std::size_t);
+    void load_candidates(std::span<const std::size_t>) noexcept;
     void clear_result() noexcept;
     bool fail(const char*) noexcept;
     bool trial(std::span<const float>,std::size_t,float&) noexcept;

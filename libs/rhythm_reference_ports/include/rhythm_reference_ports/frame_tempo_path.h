@@ -37,6 +37,8 @@ public:
     float mean_bpm() const noexcept {return mean_bpm_;}
     FrameTempoPathStatus status() const noexcept {return status_;}
 private:
+    bool select_peak(std::span<const InterpolatedPeak>,float,float&,float&) const noexcept;
+    void matching_tempi(float,float&,std::size_t&) const noexcept;
     bool configure(std::size_t,FrameTempoPathConfig);
     bool select(SpectralPeakFrames,std::size_t,float) noexcept;
     float equal_bin(std::span<const InterpolatedPeak>,float) const noexcept;

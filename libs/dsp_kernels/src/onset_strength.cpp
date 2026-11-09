@@ -70,6 +70,14 @@ bool detrend_storage(std::size_t features,std::size_t& bytes) noexcept {
         add_bytes(features,sizeof(PreparedRecursiveFilter)+filter,bytes) && add_bytes(1,filter,bytes);
 }
 }
+namespace {
+bool aggregate_sum(std::span<const float> values,OnsetAggregate mode,bool allow_nonfinite,float& result) noexcept {
+    const auto summation=allow_nonfinite?Float32Summation::Plain:Float32Summation::Compensated;
+    if(!sum_float32(values,result,summation,allow_nonfinite))return false;
+    if(mode==OnsetAggregate::Mean)result/=float(values.size());
+    return true;
+}
+}
 bool aggregate_onset_values(std::span<float> values,OnsetAggregate mode,float& output,bool allow_nonfinite) noexcept {
     if(values.empty() || (!allow_nonfinite && !finite(values)) || unsigned(mode)>unsigned(OnsetAggregate::Sum))return false;
     if(allow_nonfinite && std::any_of(values.begin(),values.end(),[](float x){return std::isnan(x);})){
@@ -78,11 +86,7 @@ bool aggregate_onset_values(std::span<float> values,OnsetAggregate mode,float& o
     float result=0;
     if(mode==OnsetAggregate::Median){
         result=median_in_place(values,EvenMedian::Mean,allow_nonfinite);
-    } else {
-        const auto summation=allow_nonfinite?Float32Summation::Plain:Float32Summation::Compensated;
-        if(!sum_float32(values,result,summation,allow_nonfinite))return false;
-        if(mode==OnsetAggregate::Mean)result/=float(values.size());
-    }
+    }else if(!aggregate_sum(values,mode,allow_nonfinite,result))return false;
     if(!allow_nonfinite && !std::isfinite(result))return false;
     output=result;return true;
 }
@@ -94,11 +98,14 @@ bool PreparedOnsetStrength::storage_bytes(std::size_t features,std::size_t frame
     if(c.detrend && !detrend_storage(features,bytes))return false;
     out=bytes;return true;
 }
+void PreparedOnsetStrength::allocate_rows(std::size_t features) {
+    reference_.resize(features);positive_.resize(features);queue_.resize(3*features);
+    current_.resize(features);previous_.resize(features);
+}
 bool PreparedOnsetStrength::prepare(std::size_t features,std::size_t frames,const OnsetStrengthConfig& config) {
     std::size_t bytes=0;if(!storage_bytes(features,frames,config,bytes) || frames>SIZE_MAX/features)return false;
     PreparedOnsetStrength next;next.features_=features;next.maximum_frames_=frames;next.config_=config;
-    next.reference_.resize(features);next.positive_.resize(features);next.queue_.resize(3*features);
-    next.current_.resize(features);next.previous_.resize(features);
+    next.allocate_rows(features);
     if(!next.prepare_detrend())return false;
     next.result_.resize(std::max(frames,config.lag));
     if(next.workspace_bytes()>bytes-sizeof(PreparedOnsetStrength))return false;

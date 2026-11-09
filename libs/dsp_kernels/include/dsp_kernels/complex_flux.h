@@ -27,6 +27,8 @@ public:
     bool process_frame(FloatMatrixSource magnitude,FloatMatrixSource phase,
                        std::size_t frames,std::size_t frame,float& result) noexcept;
 private:
+    bool prepare_difference(std::size_t,std::size_t,ComplexFluxConfig);
+    float masked_sum() const noexcept;
     bool configure(std::size_t frames,std::size_t bands,std::size_t bins,
                    std::span<const FilterBandSupport>,ComplexFluxConfig);
     void allocate();

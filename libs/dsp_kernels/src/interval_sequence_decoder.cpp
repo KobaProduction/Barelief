@@ -17,8 +17,6 @@ float logarithm(float value) noexcept {return value>0?std::log(value):unreachabl
 }
 bool PreparedIntervalSequenceDecoder::prepare(std::size_t frames,std::size_t low,std::size_t high,float sigma) {
     std::size_t bound=0;if(!storage_bytes(frames,low,high,sigma,bound))return false;
-    if(!frames || !low || low>high || high>frames || high>SIZE_MAX/2 || !std::isfinite(sigma) || sigma<=0)return false;
-    if(frames/low-1>SIZE_MAX/frames)return false;
     PreparedIntervalSequenceDecoder next;next.maximum_frames_=frames;next.minimum_interval_=low;next.maximum_interval_=high;next.sigma_=sigma;
     next.allocate();if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
@@ -98,15 +96,18 @@ bool PreparedIntervalSequenceDecoder::no_path() noexcept {
 bool PreparedIntervalSequenceDecoder::fail(const char* reason) noexcept {
     count_=0;probability_=unreachable;outcome_=SequenceDecodeOutcome::Error;error_reason_=reason;return false;
 }
+bool PreparedIntervalSequenceDecoder::decode_sequence(std::size_t frames,std::size_t interval) noexcept {
+    const auto steps=frames/interval;
+    for(std::size_t step=0;step+1<steps;++step)advance(frames,step);
+    return trace(frames,steps);
+}
 bool PreparedIntervalSequenceDecoder::process(std::span<const float> input,std::size_t interval) noexcept {
     clear_result();
     if(!maximum_frames_ || input.size()>maximum_frames_ || interval<minimum_interval_ || interval>maximum_interval_)return fail("invalid_input");
     if(!std::all_of(input.begin(),input.end(),[](float x){return std::isfinite(x) && x>=0;}))return fail("invalid_activation");
     if(interval>input.size())return no_path();
     if(!distribution(interval) || !load(input,interval))return fail("nonfinite_distribution_or_normalizer");
-    const auto steps=input.size()/interval;
-    for(std::size_t step=0;step+1<steps;++step)advance(input.size(),step);
-    return trace(input.size(),steps);
+    return decode_sequence(input.size(),interval);
 }
 }
 

@@ -28,13 +28,19 @@ bool PreparedComplexFlux::prepare(std::size_t frames,std::size_t bands,std::size
     PreparedComplexFlux next;if(!next.configure(frames,bands,bins,supports,c))return false;
     *this=std::move(next);return true;
 }
+bool PreparedComplexFlux::prepare_difference(std::size_t bands,std::size_t frames,ComplexFluxConfig c) {
+    OnsetStrengthConfig difference;
+    difference.lag=c.lag;
+    difference.max_size=std::max(std::size_t{1},c.frequency_maximum);
+    difference.center=false;
+    difference.aggregate=OnsetAggregate::Sum;
+    return difference_.prepare(bands,frames,difference);
+}
 bool PreparedComplexFlux::configure(std::size_t frames,std::size_t bands,std::size_t bins,std::span<const FilterBandSupport> supports,ComplexFluxConfig c) {
     if(!frames || !bands || !bins || frames>std::size_t(std::numeric_limits<std::ptrdiff_t>::max())/2 || !c.lag)return false;
     if(!std::isfinite(c.phase_step) || !valid_temporal_filter(c) || !valid_supports(supports,bands,bins))return false;
     config_=c;maximum_frames_=frames;bands_=bands;phase_bins_=bins;supports_.assign(supports.begin(),supports.end());
-    OnsetStrengthConfig difference;difference.lag=c.lag;difference.max_size=std::max(std::size_t{1},c.frequency_maximum);
-    difference.center=false;difference.aggregate=OnsetAggregate::Sum;
-    if(!difference_.prepare(bands,frames,difference))return false;
+    if(!prepare_difference(bands,frames,c))return false;
     allocate();return true;
 }
 void PreparedComplexFlux::allocate() {
@@ -75,11 +81,7 @@ float PreparedComplexFlux::band_mask(std::size_t band) const noexcept {
     const auto last=support.first+support.count+std::size_t(support.first+support.count<phase_bins_);
     return *std::min_element(maximum_.begin()+std::ptrdiff_t(first),maximum_.begin()+std::ptrdiff_t(last));
 }
-bool PreparedComplexFlux::process_frame(FloatMatrixSource magnitude,FloatMatrixSource phase,std::size_t frames,std::size_t frame,float& output) noexcept {
-    if(!maximum_frames_ || !frames || frames>maximum_frames_ || frame>=frames)return false;
-    if(frame<config_.lag){output=0;return true;}
-    if(!load(magnitude,frame,current_) || !load(magnitude,frame-config_.lag,previous_))return false;
-    if(!difference_.positive_differences(current_,previous_,difference_values_) || !phase_mask(phase,frames,frame))return false;
+float PreparedComplexFlux::masked_sum() const noexcept {
     float result=0,error=0;
     for(std::size_t band=0;band<bands_;++band){
         const float value=difference_values_[band]*band_mask(band);
@@ -87,6 +89,14 @@ bool PreparedComplexFlux::process_frame(FloatMatrixSource magnitude,FloatMatrixS
         const float corrected=value-error,next=result+corrected;
         error=(next-result)-corrected;result=next;
     }
+    return result;
+}
+bool PreparedComplexFlux::process_frame(FloatMatrixSource magnitude,FloatMatrixSource phase,std::size_t frames,std::size_t frame,float& output) noexcept {
+    if(!maximum_frames_ || !frames || frames>maximum_frames_ || frame>=frames)return false;
+    if(frame<config_.lag){output=0;return true;}
+    if(!load(magnitude,frame,current_) || !load(magnitude,frame-config_.lag,previous_))return false;
+    if(!difference_.positive_differences(current_,previous_,difference_values_) || !phase_mask(phase,frames,frame))return false;
+    const float result=masked_sum();
     if(!std::isfinite(result))return false;
     output=result;return true;
 }

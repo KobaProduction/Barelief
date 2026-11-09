@@ -31,6 +31,7 @@ private:
     bool configure(std::size_t,ContrastPeakPickerConfig);
     bool prepare_filters(ContrastPeakPickerConfig);
     bool over_threshold(float,float) const noexcept;
+    bool finish_scan(std::span<const float>,float) noexcept;
     bool scan(std::span<const float>) noexcept;
     ContrastPeakPickerConfig config_;
     float start_time_=0,combine_seconds_=0;

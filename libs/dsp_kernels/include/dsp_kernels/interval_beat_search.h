@@ -20,10 +20,14 @@ public:
     std::span<const std::size_t> positions() const noexcept {return std::span(positions_).first(count_);}
     std::span<const float> phase_scores() const noexcept {return std::span(scores_).first(result_interval_);}
 private:
+    void allocate_results(std::size_t,std::size_t,float);
+    bool retain_position(std::size_t,bool) noexcept;
+    bool select_phase(std::span<const float>,std::size_t) noexcept;
     bool prepare_windows(std::size_t maximum_radius);
     std::size_t refine(std::span<const float>,std::size_t) const noexcept;
     bool score_phases(std::span<const float>,std::size_t) noexcept;
     float weighted(std::span<const float>,std::ptrdiff_t,std::size_t) const noexcept;
+    bool score_position(std::span<const float>,std::size_t&,bool,float&) noexcept;
     bool sequence(std::span<const float>,std::size_t,std::size_t,bool,float&) noexcept;
     std::size_t maximum_frames_=0,maximum_interval_=0,radius_=0,count_=0,result_interval_=0;
     float look_aside_=0;

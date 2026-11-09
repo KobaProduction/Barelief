@@ -26,6 +26,9 @@ public:
     bool process(FloatMatrixSource,std::size_t frames,std::span<float> bpm,
                  std::span<const float> log_prior={},FloatMatrixReductionPort={}) noexcept;
 private:
+    void allocate(std::size_t,std::size_t,TempoEstimatorConfig);
+    bool select_aggregate(FloatMatrixSource,std::size_t,std::span<const float>,FloatMatrixReductionPort) noexcept;
+    bool select_frames(FloatMatrixSource,std::size_t,std::span<const float>) noexcept;
     bool read(FloatMatrixSource,std::size_t) noexcept;
     bool aggregate(FloatMatrixSource,std::size_t) noexcept;
     bool reduce(FloatMatrixSource,std::size_t,FloatMatrixReductionPort) noexcept;

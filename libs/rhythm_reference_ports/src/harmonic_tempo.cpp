@@ -51,6 +51,14 @@ bool harmonically_related_tempo(float left,float right,float tolerance) noexcept
     return tolerance_valid(tolerance) && harmonic_tempo_distance(left,right,distance) &&
         std::abs(distance.error_percent)<=std::max(tolerance,std::numeric_limits<float>::epsilon());
 }
+namespace {
+bool bounded_common_tempo(float left,float right,float tolerance,float error,float& result) noexcept {
+    const float maximum=std::nextafter(float(std::numeric_limits<std::int32_t>::max()),0.f);
+    if(left>maximum || right>maximum)return false;
+    result=integer_common_tempo(std::int32_t(left+.5f),std::int32_t(right+.5f),tolerance,error);
+    return true;
+}
+}
 bool greatest_common_tempo(float left,float right,float tolerance,float& result) noexcept {
     if(!tolerance_valid(tolerance))return false;
     if(left<right)std::swap(left,right);
@@ -58,10 +66,7 @@ bool greatest_common_tempo(float left,float right,float tolerance,float& result)
     if(!harmonic_tempo_distance(left,right,distance))return false;
     tolerance=std::max(tolerance,std::numeric_limits<float>::epsilon());
     if(std::abs(distance.error_percent)<=tolerance){result=right;return true;}
-    const float maximum=std::nextafter(float(std::numeric_limits<std::int32_t>::max()),0.f);
-    if(left>maximum || right>maximum)return false;
-    result=integer_common_tempo(std::int32_t(left+.5f),std::int32_t(right+.5f),tolerance,distance.error_percent);
-    return true;
+    return bounded_common_tempo(left,right,tolerance,distance.error_percent,result);
 }
 bool PreparedHarmonicTempoCandidates::required_workspace_bytes(std::size_t capacity,HarmonicTempoConfig config,std::size_t& bytes) noexcept {
     if(!capacity || capacity>SIZE_MAX/(2*sizeof(float)) || !positive_bpm(config.reference_bpm) || !std::isfinite(config.minimum_common_bpm) ||

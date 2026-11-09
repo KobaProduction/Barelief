@@ -34,6 +34,8 @@ public:
         return scales_.capacity()*sizeof(std::size_t)+(fluctuations_.capacity()+exponents_.capacity())*sizeof(float);
     }
 private:
+    bool publish_score(float) noexcept;
+    bool calculate_scales(std::span<const float>) noexcept;
     bool scale(std::span<const float>,std::size_t index) noexcept;
     bool score() noexcept;
     std::vector<std::size_t> scales_;

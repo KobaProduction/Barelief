@@ -29,15 +29,25 @@ bool PreparedOnsetEvents::storage_bytes(std::size_t features,std::size_t frames,
 void PreparedOnsetEvents::reset() noexcept {
     average_.reset();fusion_.reset();selection_.reset();result_frames_=0;
 }
+bool PreparedOnsetEvents::select_events(std::size_t frames,float total,std::span<std::uint8_t> output,bool reset_filter) noexcept {
+    if(reset_filter)average_.reset();
+    if(!average_.process(std::span(fused_).first(frames),std::span(smoothed_).first(frames)))return false;
+    return selection_.process(std::span(smoothed_).first(frames),total,output);
+}
+namespace {
+bool onset_weight_sum(std::span<const float> weights,float& total) noexcept {
+    if(!std::all_of(weights.begin(),weights.end(),[](float x){return std::isfinite(x);}))return false;
+    total=std::accumulate(weights.begin(),weights.end(),0.f);
+    return std::isfinite(total);
+}
+}
 bool PreparedOnsetEvents::process(dsp_kernels::FloatMatrixSource source,std::size_t features,std::size_t frames,std::span<const float> weights,std::span<std::uint8_t> output,bool reset_filter) noexcept {
     result_frames_=0;selection_.reset();
     if(!maximum_frames_ || frames>maximum_frames_ || output.size()!=frames)return false;
-    if(!std::all_of(weights.begin(),weights.end(),[](float x){return std::isfinite(x);}))return false;
-    const float total=std::accumulate(weights.begin(),weights.end(),0.f);if(!std::isfinite(total))return false;
+    float total=0;
+    if(!onset_weight_sum(weights,total))return false;
     if(!fusion_.process(source,features,frames,weights,std::span(fused_).first(frames)))return false;
-    if(reset_filter)average_.reset();
-    if(!average_.process(std::span(fused_).first(frames),std::span(smoothed_).first(frames)))return false;
-    if(!selection_.process(std::span(smoothed_).first(frames),total,output))return false;
+    if(!select_events(frames,total,output,reset_filter))return false;
     result_frames_=frames;return true;
 }
 }

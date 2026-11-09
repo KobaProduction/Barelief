@@ -26,6 +26,10 @@ public:
     bool process(std::span<const float>,std::span<std::uint8_t> mask) noexcept;
     std::span<const float> processed_envelope() const noexcept {return std::span(values_).first(result_frames_);}
 private:
+    void allocate(std::size_t,OnsetPeakConfig);
+    bool accumulate_prefix(std::size_t) noexcept;
+    bool normalize(std::span<const float>) noexcept;
+    void pick(std::size_t) noexcept;
     bool load(std::span<const float>) noexcept;
     bool candidate(std::size_t index,std::size_t count) const noexcept;
     float average(std::size_t first,std::size_t last) const noexcept;
@@ -51,6 +55,7 @@ public:
                  std::span<std::size_t> output) noexcept;
 private:
     std::size_t maximum_frames_=0;
+    std::size_t collect_minima(std::span<const float>) noexcept;
     std::vector<std::size_t> minima_;
 };
 // Backtrack each marked onset to the nearest preceding local energy minimum.

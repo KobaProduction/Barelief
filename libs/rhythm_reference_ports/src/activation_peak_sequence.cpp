@@ -32,18 +32,28 @@ bool PreparedActivationPeakSequence::prepare(std::size_t maximum,ActivationPeakS
     if(!storage_bytes(maximum,config,bytes) || !next.configure(maximum,config) || next.workspace_bytes()>bytes)return false;
     *this=std::move(next);return true;
 }
+namespace {
+void causal_peak_config(ActivationPeakSequenceConfig& config) noexcept {
+    if(config.online){config.smooth=0;config.post_average=0;config.post_maximum=0;}
+}
+bool peak_sequence_storage(std::size_t buffered,std::size_t count,std::size_t smoothing,std::size_t& bytes) noexcept {
+    std::size_t history=0;
+    using namespace dsp_kernels::prepared_storage;
+    return ScalarHistory::storage_bytes(buffered,history) && add_bytes(bytes,history) &&
+        add_array(bytes,smoothing,2*sizeof(float)) && add_array(bytes,count,4*sizeof(float)+3*sizeof(std::uint8_t)) &&
+        add_array(bytes,count+1,2*sizeof(float));
+}
+}
 bool PreparedActivationPeakSequence::storage_bytes(std::size_t maximum,ActivationPeakSequenceConfig config,std::size_t& output) noexcept {
     if(!maximum || maximum>std::size_t(INT32_MAX/4) || !valid_config(config))return false;
-    if(config.online){config.smooth=0;config.post_average=0;config.post_maximum=0;}
+    causal_peak_config(config);
     dsp_kernels::ActivationPeakConfig peak;std::size_t smoothing=0;
     if(!timing_parameters(config,peak,smoothing) || smoothing==1 || peak.pre_maximum>SIZE_MAX-maximum)return false;
     const auto buffered=maximum+peak.pre_maximum,count=std::max(buffered,smoothing);
     if(count==SIZE_MAX)return false;
     // Each D kernel owns <=kernel +2*max(input,kernel) floats and flags.
-    std::size_t bytes=0,history=0;using namespace dsp_kernels::prepared_storage;
-    if(!ScalarHistory::storage_bytes(buffered,history) || !add_bytes(bytes,history) ||
-       !add_array(bytes,smoothing,2*sizeof(float)) || !add_array(bytes,count,4*sizeof(float)+3*sizeof(std::uint8_t)) ||
-       !add_array(bytes,count+1,2*sizeof(float)))return false;
+    std::size_t bytes=0;
+    if(!peak_sequence_storage(buffered,count,smoothing,bytes))return false;
     output=bytes;return true;
 }
 std::size_t PreparedActivationPeakSequence::workspace_bytes() const noexcept {
@@ -52,7 +62,7 @@ std::size_t PreparedActivationPeakSequence::workspace_bytes() const noexcept {
 }
 bool PreparedActivationPeakSequence::configure(std::size_t maximum,ActivationPeakSequenceConfig c) {
     if(!maximum || maximum>std::size_t(INT32_MAX/4) || !valid_config(c))return false;
-    if(c.online){c.smooth=0;c.post_average=0;c.post_maximum=0;}
+    causal_peak_config(c);
     config_=c;maximum_frames_=maximum;std::size_t smoothing=0;
     if(!timing_parameters(c,peak_config_,smoothing) || smoothing==1)return false;
     smoothing_.resize(smoothing);
@@ -90,16 +100,23 @@ bool PreparedActivationPeakSequence::collect(dsp_kernels::PreparedActivationPeak
     }
     return true;
 }
+void PreparedActivationPeakSequence::prepend_previous() noexcept {
+    std::move_backward(raw_.begin(),raw_.begin()+std::ptrdiff_t(raw_count_),raw_.begin()+std::ptrdiff_t(raw_count_+1));
+    raw_[0]=last_onset_;
+}
+void PreparedActivationPeakSequence::publish_combined(std::size_t count,std::size_t skip,bool remember) noexcept {
+    if(remember && count){last_onset_=events_[count-1];has_last_=true;}
+    event_count_=count-skip;
+    if(skip)std::move(events_.begin()+1,events_.begin()+std::ptrdiff_t(count),events_.begin());
+}
 bool PreparedActivationPeakSequence::combine(bool previous,bool remember) noexcept {
     const auto skip=std::size_t(previous);
-    if(previous){std::move_backward(raw_.begin(),raw_.begin()+std::ptrdiff_t(raw_count_),raw_.begin()+std::ptrdiff_t(raw_count_+1));raw_[0]=last_onset_;}
+    if(previous)prepend_previous();
     std::size_t count=0;
     if(!dsp_kernels::combine_event_times(std::span(raw_).first(raw_count_+skip),config_.combine,
         dsp_kernels::EventCombination::Left,events_,count,dsp_kernels::EventOrdering::Sequence))return false;
     if(previous && events_[count-1]==last_onset_){event_count_=0;return true;}
-    if(remember && count){last_onset_=events_[count-1];has_last_=true;}
-    event_count_=count-skip;
-    if(skip)std::move(events_.begin()+1,events_.begin()+std::ptrdiff_t(count),events_.begin());
+    publish_combined(count,skip,remember);
     return true;
 }
 bool PreparedActivationPeakSequence::process_offline(std::span<const float> input) noexcept {

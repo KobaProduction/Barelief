@@ -32,6 +32,22 @@ bool PreparedDetrendedFluctuation::scale(std::span<const float> values,std::size
     if(!std::isfinite(value))return false;
     fluctuations_[index]=value;return true;
 }
+bool PreparedDetrendedFluctuation::publish_score(float sum) noexcept {
+    const float alpha=sum/float(result_.available_scales-1);
+    result_.score=alpha>0?1.f/alpha:0.f;
+    if(!std::isfinite(alpha) || !std::isfinite(result_.score)){
+        result_.score=0;result_.status=FluctuationStatus::NonFiniteExponent;return false;
+    }
+    result_.status=FluctuationStatus::Ok;
+    return true;
+}
+bool PreparedDetrendedFluctuation::calculate_scales(std::span<const float> values) noexcept {
+    for(std::size_t i=0;i<scales_.size() && scales_[i]<=values.size();++i){
+        if(!scale(values,i)){result_.status=FluctuationStatus::NonFiniteFluctuation;return false;}
+        ++result_.available_scales;
+    }
+    return true;
+}
 bool PreparedDetrendedFluctuation::score() noexcept {
     float sum=0;
     for(std::size_t i=0;i+1<result_.available_scales;++i){
@@ -44,21 +60,13 @@ bool PreparedDetrendedFluctuation::score() noexcept {
         if(!std::isfinite(exponent)){result_.status=FluctuationStatus::NonFiniteExponent;return false;}
         exponents_[i]=exponent;sum+=exponent;
     }
-    const float alpha=sum/float(result_.available_scales-1);
-    result_.score=alpha>0?1.f/alpha:0.f;
-    if(!std::isfinite(alpha) || !std::isfinite(result_.score)){
-        result_.score=0;result_.status=FluctuationStatus::NonFiniteExponent;return false;
-    }
-    result_.status=FluctuationStatus::Ok;return true;
+    return publish_score(sum);
 }
 bool PreparedDetrendedFluctuation::process(std::span<const float> values) noexcept {
     result_={};std::fill(fluctuations_.begin(),fluctuations_.end(),0.f);std::fill(exponents_.begin(),exponents_.end(),0.f);
     if(scales_.empty() || values.size()>std::size_t(std::numeric_limits<int>::max()) ||
        !std::all_of(values.begin(),values.end(),[](float x){return std::isfinite(x);}))return false;
-    for(std::size_t i=0;i<scales_.size() && scales_[i]<=values.size();++i){
-        if(!scale(values,i)){result_.status=FluctuationStatus::NonFiniteFluctuation;return false;}
-        ++result_.available_scales;
-    }
+    if(!calculate_scales(values))return false;
     if(result_.available_scales<2){result_.status=FluctuationStatus::TooShort;return true;}
     return score();
 }

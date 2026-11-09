@@ -44,18 +44,20 @@ QString covariance_name(GaussianCovariance value) {
     }
     return {};
 }
+bool append_number(const QJsonValue& value,std::vector<float>& output) {
+    if(!value.isDouble() || !std::isfinite(value.toDouble()))return false;
+    const float number=float(value.toDouble());
+    if(!std::isfinite(number))return false;
+    output.push_back(number);return true;
+}
+
 bool values(const QJsonObject& object,const char* key,std::vector<float>& output,Budget& budget) {
     const auto value=object.value(QLatin1String(key));
     if(!value.isArray())return false;
     const auto array=value.toArray();
     if(std::size_t(array.size())>budget.limits.maximum_values-budget.values)return false;
     output.reserve(std::size_t(array.size()));
-    for(const auto& item:array){
-        if(!item.isDouble() || !std::isfinite(item.toDouble()))return false;
-        const float number=float(item.toDouble());
-        if(!std::isfinite(number))return false;
-        output.push_back(number);
-    }
+    for(const auto& item:array)if(!append_number(item,output))return false;
     budget.values+=output.size();return true;
 }
 bool mixture(const QJsonObject& object,GaussianMixtureData& output,Budget& budget,RhythmPatternDataDiagnostic& error) {
@@ -71,24 +73,58 @@ bool mixture(const QJsonObject& object,GaussianMixtureData& output,Budget& budge
     if(!admitted.prepare(data.parameters()))return fail(error,RhythmPatternDataError::Model,"gmm");
     ++budget.gmms;output=std::move(data);return true;
 }
-bool pattern(const QJsonObject& object,RhythmPatternDataDocument& output,Budget& budget,RhythmPatternDataDiagnostic& error) {
-    QString id;std::size_t beats=0;
+bool pattern_shape(const QJsonObject& object,const RhythmPatternDataDocument& output,QString& id,std::size_t& beats,RhythmPatternDataDiagnostic& error) {
     if(!identifier(object,id) || output.ids.contains(id))return fail(error,RhythmPatternDataError::Identifier,"pattern.id");
     if(!count(object,"num_beats",UINT32_MAX,beats) || !object.value(QLatin1String("gmms")).isArray())
         return fail(error,RhythmPatternDataError::Format,"pattern");
-    const auto gmms=object.value(QLatin1String("gmms")).toArray();
+    return true;
+}
+bool append_mixture(const QJsonValue& value,GmmPatternData& data,QStringList& ids,Budget& budget,RhythmPatternDataDiagnostic& error) {
+    if(!value.isObject())return fail(error,RhythmPatternDataError::Format,"gmm");
+    const auto object=value.toObject();QString id;
+    if(!identifier(object,id) || ids.contains(id))return fail(error,RhythmPatternDataError::Identifier,"gmm.id");
+    GaussianMixtureData gmm;
+    if(!mixture(object,gmm,budget,error))return false;
+    data.gmms.push_back(std::move(gmm));ids.append(id);return true;
+}
+bool pattern_mixtures(const QJsonArray& gmms,GmmPatternData& data,QStringList& ids,Budget& budget,RhythmPatternDataDiagnostic& error) {
     if(gmms.isEmpty())return fail(error,RhythmPatternDataError::Format,"pattern.gmms");
+    for(const auto& value:gmms)if(!append_mixture(value,data,ids,budget,error))return false;
+    return true;
+}
+
+bool pattern(const QJsonObject& object,RhythmPatternDataDocument& output,Budget& budget,RhythmPatternDataDiagnostic& error) {
+    QString id;std::size_t beats=0;
+    if(!pattern_shape(object,output,id,beats,error))return false;
+    const auto gmms=object.value(QLatin1String("gmms")).toArray();
     GmmPatternData data;data.beats=std::uint32_t(beats);QStringList ids;
-    for(const auto& value:gmms){
-        if(!value.isObject())return fail(error,RhythmPatternDataError::Format,"gmm");
-        QString gmm_id;
-        if(!identifier(value.toObject(),gmm_id) || ids.contains(gmm_id))return fail(error,RhythmPatternDataError::Identifier,"gmm.id");
-        GaussianMixtureData gmm;
-        if(!mixture(value.toObject(),gmm,budget,error))return false;
-        data.gmms.push_back(std::move(gmm));ids.append(gmm_id);
-    }
+    if(!pattern_mixtures(gmms,data,ids,budget,error))return false;
     output.patterns.push_back(std::move(data));output.ids.append(id);output.gmm_ids.push_back(std::move(ids));return true;
 }
+bool root_format(const QJsonObject& root,RhythmPatternDataDiagnostic& error) {
+    if(root.value(QLatin1String("version"))!=QJsonValue(1))return fail(error,RhythmPatternDataError::Version,"version");
+    if(root.value(QLatin1String("format"))!=QJsonValue(QStringLiteral("barelief.rhythm-patterns")) ||
+       root.value(QLatin1String("dtype"))!=QJsonValue(QStringLiteral("float32")) ||
+       !root.value(QLatin1String("patterns")).isArray())return fail(error,RhythmPatternDataError::Format,"format");
+    return true;
+}
+bool parse_root(const QByteArray& bytes,RhythmPatternDataLimits limits,QJsonObject& root,RhythmPatternDataDiagnostic& error) {
+    if(std::size_t(bytes.size())>limits.maximum_bytes)return fail(error,RhythmPatternDataError::Limit,"bytes");
+    QJsonParseError parse;const auto document=QJsonDocument::fromJson(bytes,&parse);
+    if(parse.error!=QJsonParseError::NoError || !document.isObject())return fail(error,RhythmPatternDataError::Encoding,"json");
+    root=document.object();return root_format(root,error);
+}
+bool document_patterns(const QJsonObject& root,RhythmPatternDataDocument& output,Budget& budget,RhythmPatternDataDiagnostic& error) {
+    const auto patterns=root.value(QLatin1String("patterns")).toArray();
+    if(patterns.isEmpty() || std::size_t(patterns.size())>budget.limits.maximum_patterns)
+        return fail(error,RhythmPatternDataError::Limit,"patterns");
+    for(const auto& item:patterns){
+        if(!item.isObject())return fail(error,RhythmPatternDataError::Format,"pattern");
+        if(!pattern(item.toObject(),output,budget,error))return false;
+    }
+    return true;
+}
+
 QJsonObject by_id(const QJsonArray& array,const QString& id) {
     for(const auto& item:array)if(item.toObject().value(QLatin1String("id")).toString()==id)return item.toObject();
     return {};
@@ -114,22 +150,10 @@ QJsonObject encode_pattern(const GmmPatternData& data,const QString& id,const QS
 }
 bool decode_rhythm_pattern_data(const QByteArray& bytes,RhythmPatternDataDocument& output,
                                 RhythmPatternDataDiagnostic& error,RhythmPatternDataLimits limits) {
-    error={};
-    if(std::size_t(bytes.size())>limits.maximum_bytes)return fail(error,RhythmPatternDataError::Limit,"bytes");
-    QJsonParseError parse;const auto document=QJsonDocument::fromJson(bytes,&parse);
-    if(parse.error!=QJsonParseError::NoError || !document.isObject())return fail(error,RhythmPatternDataError::Encoding,"json");
-    const auto root=document.object();
-    if(root.value(QLatin1String("version"))!=QJsonValue(1))return fail(error,RhythmPatternDataError::Version,"version");
-    if(root.value(QLatin1String("format"))!=QJsonValue(QStringLiteral("barelief.rhythm-patterns")) ||
-       root.value(QLatin1String("dtype"))!=QJsonValue(QStringLiteral("float32")) ||
-       !root.value(QLatin1String("patterns")).isArray())return fail(error,RhythmPatternDataError::Format,"format");
-    const auto patterns=root.value(QLatin1String("patterns")).toArray();
-    if(patterns.isEmpty() || std::size_t(patterns.size())>limits.maximum_patterns)return fail(error,RhythmPatternDataError::Limit,"patterns");
+    error={};QJsonObject root;
+    if(!parse_root(bytes,limits,root,error))return false;
     RhythmPatternDataDocument next;next.preserved=root;Budget budget{limits};
-    for(const auto& item:patterns){
-        if(!item.isObject())return fail(error,RhythmPatternDataError::Format,"pattern");
-        if(!pattern(item.toObject(),next,budget,error))return false;
-    }
+    if(!document_patterns(root,next,budget,error))return false;
     output=std::move(next);return true;
 }
 QByteArray encode_rhythm_pattern_data(const RhythmPatternDataDocument& data) {

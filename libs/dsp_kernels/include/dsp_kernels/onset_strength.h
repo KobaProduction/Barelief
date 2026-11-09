@@ -63,6 +63,7 @@ public:
     static bool storage_bytes(std::size_t features,std::size_t maximum_frames,const OnsetStrengthConfig&,std::size_t&) noexcept;
     std::size_t workspace_bytes() const noexcept;
 private:
+    void allocate_rows(std::size_t);
     void filter(std::span<const float>) noexcept;
     float aggregate(std::span<const float>,std::span<const float>,bool apply_maximum) noexcept;
     bool calculate(OnsetSpectrumRows,OnsetSpectrumRows reference,std::size_t frames,std::size_t count,bool apply_maximum) noexcept;

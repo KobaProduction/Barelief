@@ -29,6 +29,8 @@ public:
     std::size_t retained_beats() const noexcept {return retained_beats_;}
     std::size_t empty_subdivisions() const noexcept {return empty_count_;}
 private:
+    void accumulate_row(std::span<const float>,std::size_t) noexcept;
+    bool interval_end(std::span<const float>,std::size_t,std::size_t,std::size_t&) const noexcept;
     bool boundaries(std::size_t,std::span<const float>,std::size_t&) noexcept;
     bool interval(FloatMatrixSource,std::size_t start,std::size_t end,std::size_t features) noexcept;
     bool write(FloatMatrixDestination,std::size_t interval,std::size_t features) noexcept;

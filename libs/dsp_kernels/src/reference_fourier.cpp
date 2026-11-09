@@ -2,7 +2,7 @@
 #include <dsp_kernels/prepared_storage.h>
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
 #define POCKETFFT_NO_MULTITHREADING
-#include "../vendor/pocketfft/pocketfft_hdronly.h"
+#include <pocketfft_hdronly.h>
 #endif
 #include <algorithm>
 #include <cmath>

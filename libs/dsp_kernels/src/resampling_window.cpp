@@ -84,6 +84,14 @@ bool PreparedResampler::process_window_prefix(std::span<const float> input,std::
     ProcessBuffers buffers{input,count,stride,output,capacity,written};
     return process_endpoint_window(buffers);
 }
+bool PreparedResampler::expand_endpoint_channels(ProcessBuffers& buffers,std::size_t count) noexcept {
+    const auto& c=window_config_;
+    for(std::size_t channel=0;channel<c.channels;++channel)
+        if(!expand_channel(buffers.input.subspan(channel*buffers.stride,buffers.count),c.expansion_factor,
+            buffers.output.subspan(channel*buffers.capacity,count)))return reject_output(buffers.written);
+    buffers.written=count;produced_+=count;
+    return true;
+}
 bool PreparedResampler::process_endpoint_window(ProcessBuffers& buffers) noexcept {
     const auto& c=window_config_;const auto count=window_output_samples(buffers.count);
     if(buffers.count>c.input_samples || (buffers.count && !count) ||
@@ -93,9 +101,6 @@ bool PreparedResampler::process_endpoint_window(ProcessBuffers& buffers) noexcep
     const bool identity=c.expansion_factor==1 && buffers.stride==buffers.capacity;
     if(!compatible_buffers(buffers.input,buffers.output,identity) ||
        !finite_window_channels(buffers.input,buffers.count,buffers.stride,c.channels))return false;
-    for(std::size_t channel=0;channel<c.channels;++channel)
-        if(!expand_channel(buffers.input.subspan(channel*buffers.stride,buffers.count),c.expansion_factor,
-            buffers.output.subspan(channel*buffers.capacity,count)))return reject_output(buffers.written);
-    buffers.written=count;produced_+=count;return true;
+    return expand_endpoint_channels(buffers,count);
 }
 }

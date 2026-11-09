@@ -32,6 +32,14 @@ unsigned Engine::possible_ops() const noexcept {
     for(unsigned lag=low;lag<=high;++lag)result+=length-lag;
     return result;
 }
+namespace {
+void append_acf_evidence(Engine& e,std::span<const float> scores,unsigned low) noexcept {
+    for(std::size_t i=0;i<scores.size();++i){
+        const auto lag=low+i;
+        if(scores[i]>=0)e.acf.push({rounded(60.f*float(e.cfg.feature_rate_fps)/float(lag),3),scores[i],lag});
+    }
+}
+}
 bool Engine::calculate_acf(unsigned length) noexcept {
     centered_count=0;lag_count=0;acf.clear();
     if(!center_values(*this,length))return false;
@@ -41,10 +49,7 @@ bool Engine::calculate_acf(unsigned length) noexcept {
     constexpr OverlapEnergyPolicy policy{1e-18f,-1.f,0.f,1.f,true};
     if(!overlap_energy_autocorrelation(std::span(centered).first(length),low,scores,policy))return false;
     lag_count=scores.size();
-    for(std::size_t i=0;i<scores.size();++i){
-        const auto lag=low+i;
-        if(scores[i]>=0)acf.push({rounded(60.f*float(cfg.feature_rate_fps)/float(lag),3),scores[i],lag});
-    }
+    append_acf_evidence(*this,scores,low);
     return true;
 }
 void Engine::refine(const Frame& frame,bool ambiguous) noexcept {

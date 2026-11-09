@@ -61,16 +61,24 @@ bool PreparedOnsets::measure(OnsetBand range,Measurement& output) const noexcept
     output.positive_mass=positive;
     return true;
 }
+bool PreparedOnsets::measure_channel(unsigned channel,Measurement& measured) const noexcept {
+    if(!measure(band(channel),measured))return false;
+    auto& value=measured.observation;
+    value.threshold=adaptive_threshold(std::span{channels_[channel].noise}.first(channels_[channel].noise_count),config_);
+    return std::isfinite(value.threshold);
+}
+void PreparedOnsets::publish_measurements(std::span<const Measurement> measured,double observed,double ready) noexcept {
+    for(unsigned i=0;i<channel_count_;++i){
+        output_[i]=measured[i].observation;
+        if(!last_time_){output_[i].flux=0;output_[i].contrast=0;}
+        detect(i,output_[i],measured[i].positive_mass,observed,ready);
+    }
+}
 bool PreparedOnsets::measure_input(const Input& input,std::span<Measurement> measured) noexcept {
     auto current=std::span(current_).first(input.size());
     for(std::size_t i=0;i<input.size();++i)current[i]=input.value(i);
     if(!spectral_difference_values(current,std::span(previous_).first(input.size()),std::span(differences_).first(input.size())))return false;
-    for(unsigned i=0;i<channel_count_;++i){
-        if(!measure(band(i),measured[i]))return false;
-        auto& value=measured[i].observation;
-        value.threshold=adaptive_threshold(std::span{channels_[i].noise}.first(channels_[i].noise_count),config_);
-        if(!std::isfinite(value.threshold))return false;
-    }
+    for(unsigned i=0;i<channel_count_;++i)if(!measure_channel(i,measured[i]))return false;
     return true;
 }
 void PreparedOnsets::detect(unsigned channel,OnsetObservation& value,float positive_mass,double observed,double ready) noexcept {
@@ -93,11 +101,7 @@ bool PreparedOnsets::process_input(const Input& input,double observed,double rea
     if(!valid_input(input,observed,ready))return false;
     std::array<Measurement,max_onset_channels> measured{};
     if(!measure_input(input,std::span(measured).first(channel_count_)))return false;
-    for(unsigned i=0;i<channel_count_;++i){
-        output_[i]=measured[i].observation;
-        if(!last_time_){output_[i].flux=0;output_[i].contrast=0;}
-        detect(i,output_[i],measured[i].positive_mass,observed,ready);
-    }
+    publish_measurements(std::span(measured).first(channel_count_),observed,ready);
     for(unsigned i=0;i<config_.feature_count;++i)previous_[i]=input.value(i);
     last_time_=observed;return true;
 }

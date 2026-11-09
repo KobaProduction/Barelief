@@ -22,6 +22,7 @@ public:
     std::span<const float> smoothed_curve() const noexcept {return std::span(smoothed_).first(result_frames_);}
     const PreparedAdaptiveOnsetSelection& selection() const noexcept {return selection_;}
 private:
+    bool select_events(std::size_t,float,std::span<std::uint8_t>,bool) noexcept;
     PreparedNormalizedFeatureFusion fusion_;
     PreparedCausalAverage average_;
     PreparedAdaptiveOnsetSelection selection_;

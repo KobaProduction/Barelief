@@ -31,15 +31,18 @@ bool PreparedBeatStateDecoder::prepare(std::size_t frames,BeatStateDecoderConfig
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
 }
+void PreparedBeatStateDecoder::allocate_state_buffers(std::size_t frames) {
+    links_.resize(frames*states_);path_.resize(frames);mask_.resize(frames);
+    previous_.resize(states_);current_.resize(states_);forward_previous_.resize(states_);
+    transition_.resize(intervals_.size()*intervals_.size());
+    densities_.resize(states_);
+}
 bool PreparedBeatStateDecoder::configure(std::size_t frames,BeatStateDecoderConfig config) {
     if(!frames || !valid(config))return false;
     config_=config;maximum_frames_=frames;
     if(!build_intervals() || !build_states())return false;
     if(states_>UINT32_MAX || frames>SIZE_MAX/states_ || intervals_.size()>SIZE_MAX/intervals_.size())return false;
-    links_.resize(frames*states_);path_.resize(frames);mask_.resize(frames);
-    previous_.resize(states_);current_.resize(states_);forward_previous_.resize(states_);
-    transition_.resize(intervals_.size()*intervals_.size());
-    densities_.resize(states_);
+    allocate_state_buffers(frames);
     if(!build_transitions())return false;
     reset();return true;
 }
@@ -47,19 +50,40 @@ bool PreparedBeatStateDecoder::build_intervals() {
     return discrete_period_grid(60.f*config_.frame_rate/config_.max_bpm,
                                 60.f*config_.frame_rate/config_.min_bpm,config_.num_intervals,intervals_);
 }
+bool PreparedBeatStateDecoder::append_period(std::uint32_t period) {
+    if(states_>UINT32_MAX-period)return false;
+    first_.push_back(std::uint32_t(states_));
+    states_+=period;
+    last_.push_back(std::uint32_t(states_-1));
+    for(std::uint32_t phase=0;phase<period;++phase){
+        const float position=float(phase)/float(period);
+        positions_.push_back(position);
+        beat_state_.push_back(std::uint8_t(position<1.f/config_.observation_lambda));
+        state_intervals_.push_back(period);
+    }
+    return true;
+}
+void PreparedBeatStateDecoder::reserve_states(std::size_t count,std::size_t states) {
+    first_.reserve(count);last_.reserve(count);positions_.reserve(states);
+    beat_state_.reserve(states);state_intervals_.reserve(states);
+}
 bool PreparedBeatStateDecoder::build_states() {
     std::size_t count=0,states=0;
     if(!period_grid_bound(60.f*config_.frame_rate/config_.max_bpm,60.f*config_.frame_rate/config_.min_bpm,count,states))return false;
-    first_.reserve(count);last_.reserve(count);positions_.reserve(states);beat_state_.reserve(states);state_intervals_.reserve(states);
-    for(const auto period:intervals_){
-        if(states_>UINT32_MAX-period)return false;
-        first_.push_back(std::uint32_t(states_));states_+=period;last_.push_back(std::uint32_t(states_-1));
-        for(std::uint32_t phase=0;phase<period;++phase){
-            const float position=float(phase)/float(period);positions_.push_back(position);
-            beat_state_.push_back(std::uint8_t(position<1.f/config_.observation_lambda));state_intervals_.push_back(period);
-        }
-    }
+    reserve_states(count,states);
+    for(const auto period:intervals_)if(!append_period(period))return false;
     return states_>0;
+}
+void PreparedBeatStateDecoder::append_internal_edges(std::vector<MarkovTransition>& edges) const {
+    for(std::size_t interval=0;interval<intervals_.size();++interval)
+        for(auto state=first_[interval]+1;state<=last_[interval];++state)edges.push_back({state-1,state,1});
+}
+void PreparedBeatStateDecoder::append_period_edges(std::vector<MarkovTransition>& edges) const {
+    const auto count=intervals_.size();
+    append_internal_edges(edges);
+    for(std::size_t from=0;from<count;++from)
+        for(std::size_t to=0;to<count;++to)
+            if(transition_[from*count+to]>0)edges.push_back({last_[from],first_[to],transition_[from*count+to]});
 }
 bool PreparedBeatStateDecoder::build_transitions() {
     if(!exponential_period_transitions(intervals_,intervals_,
@@ -69,11 +93,7 @@ bool PreparedBeatStateDecoder::build_transitions() {
     std::size_t capacity=states_;
     if(!prepared_storage::add_array(capacity,count,count))return false;
     edges.reserve(capacity);
-    for(std::size_t interval=0;interval<count;++interval)
-        for(auto state=first_[interval]+1;state<=last_[interval];++state)edges.push_back({state-1,state,1});
-    for(std::size_t from=0;from<count;++from)
-        for(std::size_t to=0;to<count;++to)
-            if(transition_[from*count+to]>0)edges.push_back({last_[from],first_[to],transition_[from*count+to]});
+    append_period_edges(edges);
     return transitions_.prepare(states_,edges);
 }
 void PreparedBeatStateDecoder::initialize(bool logarithmic) noexcept {
@@ -97,15 +117,20 @@ bool PreparedBeatStateDecoder::viterbi_states(std::span<const float> input) noex
     if(input.empty()){path_status_=MarkovResultStatus::Ready;return true;}
     return viterbi(input);
 }
+bool PreparedBeatStateDecoder::decode_forward_path(std::span<const float> input) noexcept {
+    for(std::size_t i=0;i<input.size();++i){
+        const auto state=forward(input[i]);
+        if(state==states_)return false;
+        path_[i]=std::uint32_t(state);
+    }
+    return true;
+}
 bool PreparedBeatStateDecoder::forward_states(std::span<const float> input,bool reset_state) noexcept {
     result_frames_=0;path_start_=0;path_status_=MarkovResultStatus::InvalidInput;
     if(!valid_activations(input))return false;
     if(reset_state)reset_online();
     path_status_=MarkovResultStatus::ArithmeticFailure;
-    for(std::size_t i=0;i<input.size();++i){
-        const auto state=forward(input[i]);if(state==states_)return false;
-        path_[i]=std::uint32_t(state);
-    }
+    if(!decode_forward_path(input))return false;
     result_frames_=input.size();path_status_=MarkovResultStatus::Ready;return true;
 }
 float PreparedBeatStateDecoder::observation(float value,std::size_t state,bool logarithmic) const noexcept {
@@ -121,15 +146,22 @@ bool PreparedBeatStateDecoder::viterbi_frame(float value,std::size_t frame) noex
                             std::span(links_).subspan(frame*states_,states_)))return false;
     previous_.swap(current_);return true;
 }
+void PreparedBeatStateDecoder::trace_path(std::size_t frames,std::uint32_t state) noexcept {
+    for(std::size_t frame=frames;frame-->0;){
+        path_[frame]=state;
+        state=links_[frame*states_+state];
+    }
+    result_frames_=frames;
+    path_status_=MarkovResultStatus::Ready;
+}
 bool PreparedBeatStateDecoder::viterbi(std::span<const float> input) noexcept {
     path_status_=MarkovResultStatus::ArithmeticFailure;initialize(true);
     for(std::size_t frame=0;frame<input.size();++frame)if(!viterbi_frame(input[frame],frame))return false;
     const auto best=std::max_element(previous_.begin(),previous_.end());
     if(*best==-std::numeric_limits<float>::infinity()){path_status_=MarkovResultStatus::NoPath;return true;}
     if(!std::isfinite(*best))return false;
-    auto state=std::uint32_t(best-previous_.begin());
-    for(std::size_t frame=input.size();frame-->0;){path_[frame]=state;state=links_[frame*states_+state];}
-    result_frames_=input.size();path_status_=MarkovResultStatus::Ready;return true;
+    trace_path(input.size(),std::uint32_t(best-previous_.begin()));
+    return true;
 }
 void PreparedBeatStateDecoder::correct_beats(std::span<const float> input,std::span<std::uint8_t> mask) const noexcept {
     std::size_t left=0;
@@ -185,6 +217,21 @@ bool PreparedBeatStateDecoder::accept_online(std::size_t state,std::uint64_t fra
     online_tempo_=60.f/(current-last_beat_seconds_);
     last_beat_seconds_=current;last_beat_frame_=frame;return true;
 }
+bool PreparedBeatStateDecoder::decode_online_path(std::span<const float> input) noexcept {
+    for(std::size_t i=0;i<input.size();++i){
+        const auto state=forward(input[i]);
+        if(state==states_)return false;
+        path_[i]=std::uint32_t(state);
+        mask_[i]=std::uint8_t(accept_online(state,counter_+i));
+    }
+    return true;
+}
+void PreparedBeatStateDecoder::publish_online(std::span<std::uint8_t> output) noexcept {
+    counter_+=output.size();
+    result_frames_=output.size();
+    path_status_=MarkovResultStatus::Ready;
+    std::copy_n(mask_.begin(),output.size(),output.begin());
+}
 bool PreparedBeatStateDecoder::online(std::span<const float> input,std::span<std::uint8_t> output,bool reset_state) noexcept {
     path_status_=MarkovResultStatus::InvalidInput;
     if(!valid_input(input,output))return false;
@@ -192,12 +239,9 @@ bool PreparedBeatStateDecoder::online(std::span<const float> input,std::span<std
     if(input.size()>UINT64_MAX-counter_)return false;
     result_frames_=0;path_start_=0;path_status_=MarkovResultStatus::ArithmeticFailure;
     std::fill_n(mask_.begin(),input.size(),std::uint8_t{0});
-    for(std::size_t i=0;i<input.size();++i){
-        const auto state=forward(input[i]);if(state==states_)return false;path_[i]=std::uint32_t(state);
-        mask_[i]=std::uint8_t(accept_online(state,counter_+i));
-    }
-    counter_+=input.size();result_frames_=input.size();path_status_=MarkovResultStatus::Ready;
-    std::copy_n(mask_.begin(),input.size(),output.begin());return true;
+    if(!decode_online_path(input))return false;
+    publish_online(output);
+    return true;
 }
 }
 

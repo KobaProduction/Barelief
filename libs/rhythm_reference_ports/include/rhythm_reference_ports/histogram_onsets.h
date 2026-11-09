@@ -49,6 +49,7 @@ public:
     bool process_magnitude(std::span<const float> magnitude,float& output) noexcept;
 private:
     bool polar(std::span<const float>) noexcept;
+    bool weighted_phase(float&) noexcept;
     bool evaluate(float& output) noexcept;
     void phase_difference() noexcept;
     void magnitude_difference() noexcept;

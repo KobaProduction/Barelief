@@ -18,6 +18,12 @@ bool PreparedLagObservationPool::prepare(std::size_t rows,std::size_t values,std
 void PreparedLagObservationPool::reset() noexcept {
     value_count_=0;row_count_=0;flat_count_=0;active_start_=0;active_count_=0;
 }
+void PreparedLagObservationPool::append_row(std::span<const float> values) noexcept {
+    const auto suffix=values.subspan(active_count_);
+    std::copy(suffix.begin(),suffix.end(),values_.begin()+std::ptrdiff_t(value_count_));
+    value_count_+=suffix.size();flat_count_+=values.size();
+    rows_[row_count_++]={active_start_,flat_count_};active_count_=values.size();
+}
 bool PreparedLagObservationPool::push(std::span<const float> values) noexcept {
     if(!maximum_flat_)return false;
     if(values.empty()){active_start_=value_count_;active_count_=0;return true;}
@@ -25,10 +31,8 @@ bool PreparedLagObservationPool::push(std::span<const float> values) noexcept {
        values.size()-active_count_>values_.size()-value_count_)return false;
     if(!std::all_of(values.begin(),values.end(),[](float x){return std::isfinite(x);}) ||
        !std::equal(values.begin(),values.begin()+std::ptrdiff_t(active_count_),values_.begin()+std::ptrdiff_t(active_start_)))return false;
-    const auto suffix=values.subspan(active_count_);
-    std::copy(suffix.begin(),suffix.end(),values_.begin()+std::ptrdiff_t(value_count_));
-    value_count_+=suffix.size();flat_count_+=values.size();
-    rows_[row_count_++]={active_start_,flat_count_};active_count_=values.size();return true;
+    append_row(values);
+    return true;
 }
 bool PreparedLagObservationPool::read(const void* context,std::size_t at,float& output) noexcept {
     const auto& self=*static_cast<const PreparedLagObservationPool*>(context);

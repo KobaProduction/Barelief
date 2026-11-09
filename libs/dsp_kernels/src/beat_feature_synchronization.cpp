@@ -33,6 +33,18 @@ bool PreparedBeatFeatureSynchronization::boundaries(std::size_t frames,std::span
     if(!std::isfinite(first) || first>float(frames))return false;
     start=std::min(frames,std::size_t(first));return true;
 }
+void PreparedBeatFeatureSynchronization::accumulate_row(std::span<const float> row,std::size_t subdivision) noexcept {
+    ++counts_[subdivision];
+    for(std::size_t feature=0;feature<row.size();++feature)sums_[subdivision*maximum_features_+feature]+=row[feature];
+}
+bool PreparedBeatFeatureSynchronization::interval_end(std::span<const float> beats,std::size_t i,std::size_t frames,std::size_t& end) const noexcept {
+    const float duration=beats[i+1]-beats[i],offset=std::min(.5f*duration/float(config_.subdivisions),.05f);
+    const float terminal=std::floor((beats[i+1]-offset)*config_.frame_rate);
+    if(!std::isfinite(terminal) || terminal<0 || terminal>float(frames))return false;
+    end=std::min(frames,std::size_t(terminal));
+    return true;
+}
+
 bool PreparedBeatFeatureSynchronization::interval(FloatMatrixSource source,std::size_t start,std::size_t end,std::size_t features) noexcept {
     std::fill(sums_.begin(),sums_.end(),0.f);std::fill(counts_.begin(),counts_.end(),0);
     if(end<start)return false;
@@ -42,8 +54,7 @@ bool PreparedBeatFeatureSynchronization::interval(FloatMatrixSource source,std::
         if(!source.read(source.context,frame,row) ||
            !std::all_of(row.begin(),row.end(),[](float x){return std::isfinite(x);}))return false;
         const auto subdivision=std::min(config_.subdivisions-1,std::size_t(std::floor(float(frame-start)*step)));
-        ++counts_[subdivision];
-        for(std::size_t feature=0;feature<features;++feature)sums_[subdivision*maximum_features_+feature]+=row[feature];
+        accumulate_row(row,subdivision);
     }
     return std::all_of(sums_.begin(),sums_.end(),[](float x){return std::isfinite(x);});
 }
@@ -66,10 +77,8 @@ bool PreparedBeatFeatureSynchronization::process(FloatMatrixSource source,std::s
        !boundaries(frames,beats,start) ||
        (retained_beats_ && retained_beats_-1>std::numeric_limits<std::size_t>::max()/config_.subdivisions))return false;
     for(std::size_t i=0;i+1<retained_beats_;++i){
-        const float duration=beats[i+1]-beats[i],offset=std::min(.5f*duration/float(config_.subdivisions),.05f);
-        const float terminal=std::floor((beats[i+1]-offset)*config_.frame_rate);
-        if(!std::isfinite(terminal) || terminal<0 || terminal>float(frames))return false;
-        const auto end=std::min(frames,std::size_t(terminal));
+        std::size_t end=0;
+        if(!interval_end(beats,i,frames,end))return false;
         if(!interval(source,start,end,features) || !write(output,i,features))return false;
         start=end;
     }

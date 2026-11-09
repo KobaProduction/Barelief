@@ -1,5 +1,6 @@
 #include "processing_admission.h"
 #include <algorithm>
+#include <span>
 namespace domain {
 namespace {
 using namespace signal_contracts;
@@ -28,10 +29,14 @@ struct Footprint {
         for(const auto& parameter:values)if(!field(parameter))return false;
         return true;
     }
-    bool ports(const std::vector<ProcessingPort>& values) noexcept {
-        if(!charge(values.capacity(),sizeof(ProcessingPort)))return false;
-        for(const auto& port:values)if(include_contracts && !charge(port.contract.owned_bytes()))return false;
+    bool contracts(std::span<const ProcessingPort> values) noexcept {
+        if(!include_contracts)return true;
+        for(const auto& port:values)if(!charge(port.contract.owned_bytes()))return false;
         return true;
+    }
+
+    bool ports(const std::vector<ProcessingPort>& values) noexcept {
+        return charge(values.capacity(),sizeof(ProcessingPort)) && contracts(values);
     }
     bool parameters(const ProcessingParameters& parameters) noexcept;
     bool stateful_parameters(const ProcessingParameters& parameters) noexcept;
@@ -66,7 +71,7 @@ bool processing_node_required_bytes(const ResolvedProcessingNode& node,const Pro
     // string object size also bounds its small-string representation.
     const auto text_capacity=std::max(node.kind.size(),sizeof(std::string));
     if(!footprint.text(node.kind,text_capacity) || !footprint.charge(node.inputs.size(),sizeof(ProcessingPort)) || !footprint.charge(node.outputs.size(),sizeof(ProcessingPort)) || !footprint.parameters(*node.parameters))return false;
-    if(include_contracts)for(auto ports:{node.inputs,node.outputs})for(const auto& port:ports)if(!footprint.charge(port.contract.owned_bytes()))return false;
+    if(!footprint.contracts(node.inputs) || !footprint.contracts(node.outputs))return false;
     out=footprint.bytes;return true;
 }
 namespace detail {

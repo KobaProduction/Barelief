@@ -36,6 +36,15 @@ public:
     bool forward_states(std::span<const float> activations,bool reset_state=true) noexcept;
     std::span<const std::uint32_t> state_intervals() const noexcept {return state_intervals_;}
 private:
+    void allocate_state_buffers(std::size_t);
+    bool append_period(std::uint32_t);
+    void reserve_states(std::size_t,std::size_t);
+    void append_internal_edges(std::vector<MarkovTransition>&) const;
+    void append_period_edges(std::vector<MarkovTransition>&) const;
+    bool decode_forward_path(std::span<const float>) noexcept;
+    void trace_path(std::size_t,std::uint32_t) noexcept;
+    bool decode_online_path(std::span<const float>) noexcept;
+    void publish_online(std::span<std::uint8_t>) noexcept;
     bool configure(std::size_t,BeatStateDecoderConfig);
     bool build_intervals();
     bool build_states();

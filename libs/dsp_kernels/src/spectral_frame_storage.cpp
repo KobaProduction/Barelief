@@ -54,6 +54,16 @@ bool PreparedSpectralFrameRecipe::resolve_config(SpectralFrameRecipeConfig& c) n
     if(c.frame_rate>0)c.framing.hop_samples=double(c.sample_rate)/c.frame_rate;
     return std::isfinite(c.framing.hop_samples) && c.framing.hop_samples>0;
 }
+namespace {
+bool filtered_frame_geometry(const SpectralFrameRecipeConfig& c,std::size_t fft,std::size_t bins,std::size_t& features) noexcept {
+    Grid grid{c.sample_rate,fft,bins,c.physical_filter_axis,c.filtering==SpectralFilterMode::Mel};
+    if(c.filtering==SpectralFilterMode::Logarithmic)return LogFrequencyFilterBank::band_count({&grid,bins,frequency},c.logarithmic_filters,features);
+    auto mel=c.mel_filters;
+    mel.sample_rate=c.sample_rate;mel.first_bin=0;
+    mel.bin_hz=double(c.sample_rate)/double(c.physical_filter_axis?fft:2*bins);
+    return MelFilterBank::band_count({&grid,bins,frequency},mel,features);
+}
+}
 bool PreparedSpectralFrameRecipe::geometry(std::size_t maximum,SpectralFrameRecipeConfig c,
     ExplicitSpectralFilters filters,std::size_t& frames,std::size_t& features) noexcept {
     std::size_t fft=0,bins=0;
@@ -61,11 +71,7 @@ bool PreparedSpectralFrameRecipe::geometry(std::size_t maximum,SpectralFrameReci
     if(!PreparedFrameSampling::frame_count(maximum,c.framing,frames))return false;
     if(c.filtering==SpectralFilterMode::None){features=bins;return true;}
     if(c.filtering==SpectralFilterMode::Explicit){features=filters.bands;return features && features<=SIZE_MAX/bins && filters.weights.size()==features*bins;}
-    Grid grid{c.sample_rate,fft,bins,c.physical_filter_axis,c.filtering==SpectralFilterMode::Mel};
-    if(c.filtering==SpectralFilterMode::Logarithmic)return LogFrequencyFilterBank::band_count({&grid,bins,frequency},c.logarithmic_filters,features);
-    auto mel=c.mel_filters;mel.sample_rate=c.sample_rate;mel.first_bin=0;
-    mel.bin_hz=double(c.sample_rate)/double(c.physical_filter_axis?fft:2*bins);
-    return MelFilterBank::band_count({&grid,bins,frequency},mel,features);
+    return filtered_frame_geometry(c,fft,bins,features);
 }
 bool PreparedSpectralFrameRecipe::storage_bytes(std::size_t maximum,SpectralFrameRecipeConfig c,
     std::span<const float> window,ExplicitSpectralFilters filters,std::size_t& output) noexcept {

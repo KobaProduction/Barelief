@@ -26,6 +26,7 @@ public:
     bool process(dsp_kernels::FloatMatrixSource,std::size_t frames,float& novelty) noexcept;
     bool process_pair(std::span<const float> current,std::span<const float> delayed,float& novelty) noexcept;
 private:
+    void allocate(std::size_t,std::size_t,BufferedBandFluxConfig);
     bool accumulate(std::span<const float>,std::span<const float>,float&) noexcept;
     std::size_t maximum_frames_=0;
     BufferedBandFluxConfig config_;

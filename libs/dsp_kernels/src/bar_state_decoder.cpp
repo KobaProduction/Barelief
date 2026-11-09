@@ -12,9 +12,10 @@
 #include <utility>
 
 namespace dsp_kernels {
-bool PreparedBarStateDecoder::prepare_model(std::size_t maximum,std::span<const std::uint32_t> meters,std::span<const float> switches) {
-    std::vector<MetricalPatternConfig> patterns;std::vector<TempoTransitionRule> rules;
-    patterns.reserve(meters.size());std::size_t rule_count=0;
+namespace {
+bool bar_patterns(std::span<const std::uint32_t> meters,std::vector<MetricalPatternConfig>& patterns,std::vector<TempoTransitionRule>& rules) {
+    patterns.reserve(meters.size());
+    std::size_t rule_count=0;
     for(const auto beats:meters)if(!prepared_storage::add_bytes(rule_count,beats))return false;
     rules.reserve(rule_count);
     for(const auto beats:meters){
@@ -22,6 +23,13 @@ bool PreparedBarStateDecoder::prepare_model(std::size_t maximum,std::span<const 
         patterns.push_back({beats,1,1,0});
         rules.insert(rules.end(),beats,TempoTransitionRule{1,false});
     }
+    return true;
+}
+}
+
+bool PreparedBarStateDecoder::prepare_model(std::size_t maximum,std::span<const std::uint32_t> meters,std::span<const float> switches) {
+    std::vector<MetricalPatternConfig> patterns;std::vector<TempoTransitionRule> rules;
+    if(!bar_patterns(meters,patterns,rules))return false;
     if(!space_.prepare(patterns))return false;
     PreparedMetricalTransitions transitions;
     if(!transitions.prepare(space_,rules,switches))return false;
@@ -55,6 +63,15 @@ bool PreparedBarStateDecoder::read(const void* context,std::size_t frame,std::sp
     output[0]=beat_activation_density(value,input.weight,false,true);
     output[1]=beat_activation_density(value,input.weight,true,true);return true;
 }
+void PreparedBarStateDecoder::publish_numbers(std::span<const std::uint32_t> path,std::size_t beats) noexcept {
+    const auto positions=space_.positions();
+    const auto patterns=space_.state_patterns();
+    for(std::size_t i=0;i<path.size();++i)numbers_[i]=std::uint32_t(positions[path[i]])+1;
+    const auto meter=std::uint32_t(space_.beats(patterns[path.back()]));
+    numbers_[path.size()]=numbers_[path.size()-1]%meter+1;
+    count_=beats;
+}
+
 bool PreparedBarStateDecoder::process(std::span<const float> beats,std::span<const float> probabilities) noexcept {
     count_=0;model_.reset();
     if(!maximum_beats_ || beats.size()!=probabilities.size() || beats.size()>maximum_beats_ ||
@@ -64,10 +81,8 @@ bool PreparedBarStateDecoder::process(std::span<const float> beats,std::span<con
     if(!model_.viterbi({&input,read},input.probability.size()))return false;
     const auto path=model_.state_path();
     if(path.empty())return true;
-    const auto positions=space_.positions();const auto patterns=space_.state_patterns();
-    for(std::size_t i=0;i<path.size();++i)numbers_[i]=std::uint32_t(positions[path[i]])+1;
-    const auto meter=std::uint32_t(space_.beats(patterns[path.back()]));
-    numbers_[path.size()]=numbers_[path.size()-1]%meter+1;count_=beats.size();return true;
+    publish_numbers(path,beats.size());
+    return true;
 }
 }
 

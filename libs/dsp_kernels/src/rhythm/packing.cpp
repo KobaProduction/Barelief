@@ -18,19 +18,22 @@ std::optional<float> amplitude_band_energy(std::span<const float> input,std::siz
     if(!project_filter_weights(values,values,energy,{false,false}))return {};
     return energy;
 }
+bool project_band(std::span<const float> input,std::size_t band,std::span<float> output,PackingStatistics& stats,bool complex) noexcept {
+    const auto first=2048*band/output.size(),last=2048*(band+1)/output.size();
+    const auto energy=complex?raw_band_energy(input,first+1,last+1):amplitude_band_energy(input,first,last);
+    if(!energy)return false;
+    const float scale=complex?2.f/2048.f:1.f;
+    const float level=scale*std::sqrt(*energy);
+    stats.clipped_bands+=unsigned(level>=1.f);stats.nonzero_bands+=unsigned(level>0);
+    output[band]=std::min(1.f,level);
+    return true;
+}
 bool project_bands(std::span<const float> input,std::span<float> output,
                    PackingStatistics& statistics,bool complex) noexcept {
     if(input.size()!=(complex?4098u:2048u) || (output.size()!=64 && output.size()!=96))return false;
     std::array<float,96> prepared{};PackingStatistics stats;
-    const float scale=complex?2.f/2048.f:1.f;
-    for(std::size_t band=0;band<output.size();++band){
-        const auto first=2048*band/output.size(),last=2048*(band+1)/output.size();
-        const auto energy=complex?raw_band_energy(input,first+1,last+1):amplitude_band_energy(input,first,last);
-        if(!energy)return false;
-        const float level=scale*std::sqrt(*energy);
-        stats.clipped_bands+=unsigned(level>=1.f);stats.nonzero_bands+=unsigned(level>0);
-        prepared[band]=std::min(1.f,level);
-    }
+    for(std::size_t band=0;band<output.size();++band)
+        if(!project_band(input,band,std::span(prepared).first(output.size()),stats,complex))return false;
     std::copy_n(prepared.begin(),output.size(),output.begin());statistics=stats;return true;
 }
 bool pack_bands(std::span<const float> input,std::span<std::uint8_t> output,

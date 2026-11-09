@@ -24,6 +24,9 @@ public:
     std::size_t beats() const noexcept {return ready_?beats_:0;}
     std::size_t bands() const noexcept {return ready_?bands_:0;}
 private:
+    void allocate(std::size_t,std::size_t,std::size_t);
+    bool band_thresholds(std::span<const float>) noexcept;
+    bool filter_bands(std::span<const float>,std::size_t) noexcept;
     bool read(dsp_kernels::FloatMatrixSource,std::size_t,std::size_t) noexcept;
     bool filter_band(std::size_t,std::span<const float>) noexcept;
     float threshold(std::span<float>) noexcept;

@@ -69,27 +69,41 @@ float PreparedActivationPeaks::maximum(std::size_t frame,std::size_t count) cons
     for(auto i=start;i<stop;++i)value=std::max(value,detected_[i]);
     return value;
 }
+void PreparedActivationPeaks::detect(std::size_t count) noexcept {
+    for(std::size_t i=0;i<count;++i)detected_[i]=smoothed_[i]>=mean(i,count)+config_.threshold?smoothed_[i]:0;
+    for(std::size_t i=0;i<count;++i)result_[i]=std::uint8_t(detected_[i]!=0 && detected_[i]==maximum(i,count));
+}
+
 bool PreparedActivationPeaks::process(std::span<const float> input,std::span<std::uint8_t> output) noexcept {
     const auto count=output_frames(input.size());
     if(!maximum_frames_ || input.size()>maximum_frames_ || output.size()!=count || !finite(input))return false;
     if(input.empty())return kernel_.empty();
     if(!smooth(input,count))return false;
-    for(std::size_t i=0;i<count;++i)detected_[i]=smoothed_[i]>=mean(i,count)+config_.threshold?smoothed_[i]:0;
-    for(std::size_t i=0;i<count;++i)result_[i]=std::uint8_t(detected_[i]!=0 && detected_[i]==maximum(i,count));
+    detect(count);
     std::copy_n(result_.begin(),count,output.begin());return true;
 }
-bool combine_event_times(std::span<const float> events,float delta,EventCombination method,std::span<float> output,std::size_t& count,EventOrdering order) noexcept {
-    if(output.size()<events.size() || !std::isfinite(delta) || delta<0 || unsigned(method)>unsigned(EventCombination::Right))return false;
-    if(unsigned(order)>unsigned(EventOrdering::Sequence))return false;
-    if(order==EventOrdering::Nondecreasing?!ordered(events):!finite(events))return false;
-    if(events.empty()){count=0;return true;}
-    std::size_t index=0;float left=events[0];output[0]=left;delta+=1e-12f;
+namespace {
+std::size_t combine_valid_events(std::span<const float> events,float delta,EventCombination method,std::span<float> output) noexcept {
+    std::size_t index=0;
+    float left=events[0];
+    output[0]=left;
+    delta+=1e-12f;
     for(std::size_t i=1;i<events.size();++i){
         const float right=events[i];
         if(right-left<=delta)left=combine_pair(left,right,method);
         else{++index;left=right;}
         output[index]=left;
     }
-    count=index+1;return true;
+    return index+1;
+}
+}
+
+bool combine_event_times(std::span<const float> events,float delta,EventCombination method,std::span<float> output,std::size_t& count,EventOrdering order) noexcept {
+    if(output.size()<events.size() || !std::isfinite(delta) || delta<0 || unsigned(method)>unsigned(EventCombination::Right))return false;
+    if(unsigned(order)>unsigned(EventOrdering::Sequence))return false;
+    if(order==EventOrdering::Nondecreasing?!ordered(events):!finite(events))return false;
+    if(events.empty()){count=0;return true;}
+    count=combine_valid_events(events,delta,method,output);
+    return true;
 }
 }

@@ -26,6 +26,31 @@ void log_grid(float low,float high,std::size_t count,std::vector<std::uint32_t>&
     }
 }
 }
+namespace {
+bool requested_log_grid(float low,float high,std::size_t requested,std::vector<std::uint32_t>& values) {
+    auto count=requested;
+    do{
+        if(count==std::size_t(UINT32_MAX))return false;
+        log_grid(low,high,count++,values);
+    }while(values.size()<requested);
+    return true;
+}
+bool normalize_period_row(std::span<float> output,float sum,bool fixed_interval) noexcept {
+    if(fixed_interval)return true;
+    if(sum<=0 || !std::isfinite(sum))return false;
+    for(auto& probability:output)probability/=sum;
+    return true;
+}
+bool period_transition_row(std::uint32_t from,std::size_t origin,std::span<const std::uint32_t> to,TempoTransitionRule rule,std::span<float> output,float threshold) noexcept {
+    float sum=0;
+    for(std::size_t target=0;target<to.size();++target){
+        float p=rule.fixed_interval?float(origin==target):std::exp(-rule.lambda*std::abs(float(to[target])/float(from)-1.f));
+        if(!rule.fixed_interval && p<=threshold)p=0;
+        output[target]=p;sum+=p;
+    }
+    return normalize_period_row(output,sum,rule.fixed_interval);
+}
+}
 bool discrete_period_grid(float low,float high,std::size_t requested,std::vector<std::uint32_t>& output) {
     if(!std::isfinite(low) || !std::isfinite(high) || low<1 || high<low || high>=float(UINT32_MAX))return false;
     const auto minimum=round_even(low),maximum=round_even(high);
@@ -33,13 +58,7 @@ bool discrete_period_grid(float low,float high,std::size_t requested,std::vector
     values.reserve(std::size_t(maximum-minimum)+1);
     if(!requested || requested>=std::size_t(maximum-minimum)+1){
         for(auto period=minimum;;++period){values.push_back(period);if(period==maximum)break;}
-    }else{
-        auto count=requested;
-        do {
-            if(count==std::size_t(UINT32_MAX))return false;
-            log_grid(low,high,count++,values);
-        }while(values.size()<requested);
-    }
+    }else if(!requested_log_grid(low,high,requested,values))return false;
     output=std::move(values);return true;
 }
 bool exponential_period_transitions(std::span<const std::uint32_t> from,std::span<const std::uint32_t> to,
@@ -48,17 +67,8 @@ bool exponential_period_transitions(std::span<const std::uint32_t> from,std::spa
        output.size()!=from.size()*to.size() || !std::isfinite(rule.lambda) ||
        !std::isfinite(threshold) || threshold<0 || threshold>=1 ||
        std::find(from.begin(),from.end(),0)!=from.end() || std::find(to.begin(),to.end(),0)!=to.end())return false;
-    for(std::size_t origin=0;origin<from.size();++origin){
-        float sum=0;
-        for(std::size_t target=0;target<to.size();++target){
-            float p=rule.fixed_interval?float(origin==target):std::exp(-rule.lambda*std::abs(float(to[target])/float(from[origin])-1.f));
-            if(!rule.fixed_interval && p<=threshold)p=0;
-            output[origin*to.size()+target]=p;sum+=p;
-        }
-        if(rule.fixed_interval)continue;
-        if(sum<=0 || !std::isfinite(sum))return false;
-        for(std::size_t target=0;target<to.size();++target)output[origin*to.size()+target]/=sum;
-    }
+    for(std::size_t origin=0;origin<from.size();++origin)
+        if(!period_transition_row(from[origin],origin,to,rule,output.subspan(origin*to.size(),to.size()),threshold))return false;
     return true;
 }
 bool PreparedMetricalStateSpace::beat(Pattern& pattern,std::size_t beat_number,std::size_t pattern_number) {
@@ -73,22 +83,29 @@ bool PreparedMetricalStateSpace::beat(Pattern& pattern,std::size_t beat_number,s
     }
     return true;
 }
-bool PreparedMetricalStateSpace::pattern(MetricalPatternConfig config,std::size_t index) {
-    if(!config.beats)return false;
-    Pattern pattern;pattern.beats=config.beats;
-    if(!discrete_period_grid(config.minimum_interval,config.maximum_interval,config.num_intervals,pattern.periods))return false;
+bool PreparedMetricalStateSpace::append_pattern_beats(Pattern& pattern,std::size_t index) {
     if(pattern.beats>SIZE_MAX/pattern.periods.size())return false;
     pattern.first.reserve(pattern.beats*pattern.periods.size());pattern.last.reserve(pattern.beats*pattern.periods.size());
     for(std::size_t beat_number=0;beat_number<pattern.beats;++beat_number)
         if(!beat(pattern,beat_number,index))return false;
+    return true;
+}
+void PreparedMetricalStateSpace::reserve_states(std::size_t patterns,std::size_t states) {
+    patterns_.reserve(patterns);positions_.reserve(states);
+    state_periods_.reserve(states);state_patterns_.reserve(states);
+}
+bool PreparedMetricalStateSpace::pattern(MetricalPatternConfig config,std::size_t index) {
+    if(!config.beats)return false;
+    Pattern pattern;pattern.beats=config.beats;
+    if(!discrete_period_grid(config.minimum_interval,config.maximum_interval,config.num_intervals,pattern.periods))return false;
+    if(!append_pattern_beats(pattern,index))return false;
     patterns_.push_back(std::move(pattern));return true;
 }
 bool PreparedMetricalStateSpace::prepare(std::span<const MetricalPatternConfig> configs) {
-    if(configs.empty() || configs.size()>UINT32_MAX)return false;
     PreparedMetricalStateSpace next;
     std::size_t bytes=0,states=0,edges=0;
     if(!storage_bytes(configs,bytes) || !geometry(configs,states,edges))return false;
-    next.patterns_.reserve(configs.size());next.positions_.reserve(states);next.state_periods_.reserve(states);next.state_patterns_.reserve(states);
+    next.reserve_states(configs.size(),states);
     for(std::size_t i=0;i<configs.size();++i)if(!next.pattern(configs[i],i))return false;
     if(next.workspace_bytes()>bytes)return false;
     *this=std::move(next);return true;

@@ -39,17 +39,22 @@ bool dimensions(SparseMarkovView model,std::size_t density,std::size_t previous,
         model.probabilities.size()==model.predecessors.size() && model.log_probabilities.size()==model.predecessors.size();
 }
 }
+void PreparedSparseMarkovTransitions::append_edge(const MarkovTransition& edge) {
+    if(predecessors_.empty() || !offsets_[edge.to+1] || predecessors_.back()!=edge.from){
+        predecessors_.push_back(edge.from);probabilities_.push_back(edge.probability);++offsets_[edge.to+1];
+    }else probabilities_.back()+=edge.probability;
+}
+void PreparedSparseMarkovTransitions::finish_offsets() {
+    for(std::size_t i=1;i<offsets_.size();++i)offsets_[i]+=offsets_[i-1];
+    logs_.resize(probabilities_.size());
+    std::transform(probabilities_.begin(),probabilities_.end(),logs_.begin(),[](float p){return std::log(p);});
+}
 bool PreparedSparseMarkovTransitions::append(std::span<const MarkovTransition> edges,std::size_t states) {
     offsets_.assign(states+1,0);
     predecessors_.reserve(edges.size());probabilities_.reserve(edges.size());logs_.reserve(edges.size());
-    for(const auto& edge:edges){
-        if(predecessors_.empty() || !offsets_[edge.to+1] || predecessors_.back()!=edge.from){
-            predecessors_.push_back(edge.from);probabilities_.push_back(edge.probability);++offsets_[edge.to+1];
-        }else probabilities_.back()+=edge.probability;
-    }
-    for(std::size_t i=1;i<offsets_.size();++i)offsets_[i]+=offsets_[i-1];
-    logs_.resize(probabilities_.size());
-    std::transform(probabilities_.begin(),probabilities_.end(),logs_.begin(),[](float p){return std::log(p);});return true;
+    for(const auto& edge:edges)append_edge(edge);
+    finish_offsets();
+    return true;
 }
 bool PreparedSparseMarkovTransitions::configure(std::size_t states,std::span<const MarkovTransition> input) {
     if(!states || states>UINT32_MAX || input.empty() || input.size()>UINT32_MAX)return false;
@@ -68,38 +73,49 @@ bool PreparedSparseMarkovTransitions::prepare(std::size_t states,std::span<const
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
 }
+namespace {
+bool viterbi_state(SparseMarkovView model,std::size_t state,float density,std::span<const float> previous,float& current,std::uint32_t& backlink) noexcept {
+    if(!log_value(density))return false;
+    float best=negative_infinity;
+    std::uint32_t origin=0;
+    for(std::size_t edge=model.offsets[state];edge<model.offsets[state+1];++edge){
+        const auto from=model.predecessors[edge];
+        const float score=previous[from]+model.log_probabilities[edge]+density;
+        if(score>best){best=score;origin=from;}
+    }
+    current=best;backlink=origin;
+    return log_value(best);
+}
+bool forward_state(SparseMarkovView model,std::size_t state,float density,std::span<const float> previous,float& current,float& total) noexcept {
+    if(!std::isfinite(density) || density<0)return false;
+    float sum=0;
+    for(std::size_t edge=model.offsets[state];edge<model.offsets[state+1];++edge)
+        sum+=previous[model.predecessors[edge]]*model.probabilities[edge];
+    current=sum*density;total+=current;
+    return true;
+}
+bool normalize_forward(std::span<float> current,float total) noexcept {
+    if(!std::isfinite(total) || total<=0)return false;
+    const float factor=1.f/total;
+    if(!std::isfinite(factor))return false;
+    for(auto& value:current)value*=factor;
+    return true;
+}
+}
 bool sparse_viterbi_step(SparseMarkovView model,std::span<const float> density,std::span<const float> previous,
                          std::span<float> current,std::span<std::uint32_t> backlinks) noexcept {
     if(!dimensions(model,density.size(),previous.size(),current.size()) || backlinks.size()!=current.size())return false;
-    for(std::size_t state=0;state<current.size();++state){
-        if(!log_value(density[state]))return false;
-        float best=negative_infinity;std::uint32_t origin=0;
-        for(std::size_t edge=model.offsets[state];edge<model.offsets[state+1];++edge){
-            const auto from=model.predecessors[edge];
-            const float score=previous[from]+model.log_probabilities[edge]+density[state];
-            if(score>best){best=score;origin=from;}
-        }
-        current[state]=best;backlinks[state]=origin;
-        if(!log_value(best))return false;
-    }
+    for(std::size_t state=0;state<current.size();++state)
+        if(!viterbi_state(model,state,density[state],previous,current[state],backlinks[state]))return false;
     return true;
 }
 bool sparse_forward_step(SparseMarkovView model,std::span<const float> density,std::span<const float> previous,
                          std::span<float> current) noexcept {
     if(!dimensions(model,density.size(),previous.size(),current.size()))return false;
     float total=0;
-    for(std::size_t state=0;state<current.size();++state){
-        if(!std::isfinite(density[state]) || density[state]<0)return false;
-        float sum=0;
-        for(std::size_t edge=model.offsets[state];edge<model.offsets[state+1];++edge)
-            sum+=previous[model.predecessors[edge]]*model.probabilities[edge];
-        current[state]=sum*density[state];total+=current[state];
-    }
-    if(!std::isfinite(total) || total<=0)return false;
-    const float factor=1.f/total;
-    if(!std::isfinite(factor))return false;
-    for(auto& value:current)value*=factor;
-    return true;
+    for(std::size_t state=0;state<current.size();++state)
+        if(!forward_state(model,state,density[state],previous,current[state],total))return false;
+    return normalize_forward(current,total);
 }
 bool PreparedSparseMarkovModel::initial(std::span<const float> values) {
     initial_.assign(pointers_.size(),1.f/float(pointers_.size()));
@@ -111,6 +127,10 @@ bool PreparedSparseMarkovModel::initial(std::span<const float> values) {
     std::vector<float> ones(initial_.size(),1.f);float sum=0;
     return project_filter_weights(initial_,ones,sum) && std::abs(sum-1.f)<=1.001e-5f;
 }
+void PreparedSparseMarkovModel::allocate(std::size_t frames,std::size_t densities,std::size_t states) {
+    backlinks_.resize(frames*states);path_.resize(frames);row_.resize(densities);state_densities_.resize(states);
+    previous_.resize(states);current_.resize(states);forward_previous_.resize(states);forward_current_.resize(states);
+}
 bool PreparedSparseMarkovModel::configure(std::size_t frames,std::size_t densities,std::span<const std::uint32_t> pointers,
                                          std::span<const MarkovTransition> edges,std::span<const float> initial_values) {
     if(!frames || !densities || pointers.empty() || frames>std::numeric_limits<std::size_t>::max()/pointers.size() ||
@@ -118,9 +138,7 @@ bool PreparedSparseMarkovModel::configure(std::size_t frames,std::size_t densiti
     if(!transitions_.prepare(pointers.size(),edges))return false;
     pointers_.assign(pointers.begin(),pointers.end());maximum_frames_=frames;density_count_=densities;
     if(!initial(initial_values))return false;
-    const auto states=pointers.size();
-    backlinks_.resize(frames*states);path_.resize(frames);row_.resize(densities);state_densities_.resize(states);
-    previous_.resize(states);current_.resize(states);forward_previous_.resize(states);forward_current_.resize(states);
+    allocate(frames,densities,pointers.size());
     reset();return true;
 }
 bool PreparedSparseMarkovModel::prepare(std::size_t frames,std::size_t densities,std::span<const std::uint32_t> pointers,
@@ -151,28 +169,31 @@ bool PreparedSparseMarkovModel::trace(std::size_t frames) noexcept {
     for(std::size_t frame=frames;frame-->0;){path_[frame]=state;state=backlinks_[frame*pointers_.size()+state];}
     result_frames_=frames;status_=MarkovResultStatus::Ready;return true;
 }
+bool PreparedSparseMarkovModel::viterbi_frame(FloatMatrixSource source,std::size_t frame) noexcept {
+    if(!load(source,frame,true) || !sparse_viterbi_step(transitions_.view(),state_densities_,previous_,current_,
+            std::span(backlinks_).subspan(frame*pointers_.size(),pointers_.size())))return false;
+    previous_.swap(current_);
+    return true;
+}
+bool PreparedSparseMarkovModel::forward_frame(FloatMatrixSource source,std::size_t frame,FloatMatrixDestination output) noexcept {
+    if(!load(source,frame,false) || !sparse_forward_step(transitions_.view(),state_densities_,forward_previous_,forward_current_))return false;
+    forward_previous_.swap(forward_current_);
+    path_[frame]=std::uint32_t(std::max_element(forward_previous_.begin(),forward_previous_.end())-forward_previous_.begin());
+    return !output.write || output.write(output.context,frame,forward_previous_);
+}
 bool PreparedSparseMarkovModel::viterbi(FloatMatrixSource source,std::size_t frames) noexcept {
     result_frames_=0;probability_=negative_infinity;status_=MarkovResultStatus::InvalidInput;
     if(!maximum_frames_ || !source.read || frames>maximum_frames_)return false;
     if(!frames){status_=MarkovResultStatus::Ready;return true;}
     std::transform(initial_.begin(),initial_.end(),previous_.begin(),[](float p){return std::log(p);});
-    for(std::size_t frame=0;frame<frames;++frame){
-        if(!load(source,frame,true) || !sparse_viterbi_step(transitions_.view(),state_densities_,previous_,current_,
-                std::span(backlinks_).subspan(frame*pointers_.size(),pointers_.size())))return false;
-        previous_.swap(current_);
-    }
+    for(std::size_t frame=0;frame<frames;++frame)if(!viterbi_frame(source,frame))return false;
     return trace(frames);
 }
 bool PreparedSparseMarkovModel::forward(FloatMatrixSource source,std::size_t frames,bool reset_state,FloatMatrixDestination output) noexcept {
     result_frames_=0;probability_=negative_infinity;status_=MarkovResultStatus::InvalidInput;
     if(!maximum_frames_ || !source.read || frames>maximum_frames_)return false;
     if(reset_state)reset();
-    for(std::size_t frame=0;frame<frames;++frame){
-        if(!load(source,frame,false) || !sparse_forward_step(transitions_.view(),state_densities_,forward_previous_,forward_current_))return false;
-        forward_previous_.swap(forward_current_);
-        path_[frame]=std::uint32_t(std::max_element(forward_previous_.begin(),forward_previous_.end())-forward_previous_.begin());
-        if(output.write && !output.write(output.context,frame,forward_previous_))return false;
-    }
+    for(std::size_t frame=0;frame<frames;++frame)if(!forward_frame(source,frame,output))return false;
     result_frames_=frames;status_=MarkovResultStatus::Ready;return true;
 }
 }

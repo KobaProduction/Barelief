@@ -26,14 +26,12 @@ ValueDomain input_domain(std::string_view kind,domain::PortId port) noexcept {
 
 bool model_ieee_output(std::string_view kind,domain::PortId port) noexcept {
     if(kind=="GaussianMixtureScore")return port==1;
-    if(kind=="PatternStateSequence" || kind=="PcmPatternSequence")return port==3;
+    if(kind=="PatternStateSequence")return port==3;
     if(kind=="DownbeatStateSequence")return port==2;
-    return kind=="CrfBeatSequence" && (port==3 || port==4);
+    return kind=="CrfBeatSequence" && port==3;
 }
-bool tempo_ieee_output(std::string_view kind,domain::PortId port) noexcept {
-    if(kind=="TempoEstimate")return true;
-    if(kind=="TempoAnalysis")return port==0;
-    return false;
+bool tempo_ieee_output(std::string_view kind,domain::PortId) noexcept {
+    return kind=="TempoEstimate";
 }
 ValueDomain output_domain(std::string_view kind,domain::PortId port) noexcept {
     return model_ieee_output(kind,port) || tempo_ieee_output(kind,port) || (kind=="BeatFeatureSynchronization" && port==0)?
@@ -44,7 +42,7 @@ void stream_policy(const NumericOperationNodeView& n,NumericOperationPolicy& p) 
         p.match=NumericInputMatch::SessionSequence;p.session=NumericInputSession::SharedProvenance;
     }
     bool online=false,reset=true;
-    if((n.kind=="BeatStateSequence" || n.kind=="TempoHistogram" || n.kind=="TempoAnalysis") && detail::flag(n,"online",false,online) &&
+    if(n.kind=="BeatStateSequence" && detail::flag(n,"online",false,online) &&
        detail::flag(n,"reset_state",true,reset) && online && !reset){
         p.mode=NumericOperationMode::ContinuingStream;p.match=NumericInputMatch::SessionSequence;p.session=NumericInputSession::SharedProvenance;
     }

@@ -14,38 +14,72 @@
 #include <utility>
 
 namespace dsp_kernels {
+namespace {
+bool pattern_layout(std::uint32_t beats,const PatternTempoParameters& t,float rate,MetricalPatternConfig& layout) noexcept {
+    if(!std::isfinite(t.minimum_bpm) || t.minimum_bpm<=0 || !std::isfinite(t.maximum_bpm) || t.maximum_bpm<t.minimum_bpm ||
+       (!t.beat_transitions.empty() && t.beat_transitions.size()!=beats))return false;
+    layout={beats,60.f*rate/t.maximum_bpm,60.f*rate/t.minimum_bpm,t.num_tempi};
+    return true;
+}
+struct PatternMixtureStorage {std::size_t bytes=0,models=0,features=0;};
+bool add_mixture_storage(const GaussianMixtureData& g,PatternMixtureStorage& storage) noexcept {
+    std::size_t nested=0;
+    if((storage.features && storage.features!=g.features) ||
+       !PreparedGaussianMixture::storage_bytes(g.parameters(),1e-7f,nested) ||
+       !prepared_storage::add_bytes(storage.bytes,nested))return false;
+    storage.features=g.features;
+    return true;
+}
+bool pattern_mixture_storage(std::span<const GmmPatternData> data,PatternMixtureStorage& storage) noexcept {
+    for(const auto& p:data){
+        if(p.gmms.empty() || !prepared_storage::add_bytes(storage.models,p.gmms.size()))return false;
+        for(const auto& g:p.gmms)if(!add_mixture_storage(g,storage))return false;
+    }
+    return true;
+}
+}
+void PreparedPatternStateDecoder::append_rules(std::uint32_t beats,const PatternTempoParameters& tempo) {
+    if(tempo.beat_transitions.empty())rules_.insert(rules_.end(),beats,tempo.transition);
+    else rules_.insert(rules_.end(),tempo.beat_transitions.begin(),tempo.beat_transitions.end());
+}
+bool PreparedPatternStateDecoder::reserve_rules(std::span<const GmmPatternData> data) {
+    std::size_t count=0;
+    for(const auto& pattern:data)if(!prepared_storage::add_bytes(count,pattern.beats))return false;
+    rules_.reserve(count);
+    return true;
+}
+bool PreparedPatternStateDecoder::append_pattern_mixtures(const GmmPatternData& pattern) {
+    if(pattern.gmms.empty() || pattern.gmms.size()>std::size_t(UINT32_MAX)-gmms_.size())return false;
+    for(const auto& parameters:pattern.gmms)if(!append_mixture(parameters))return false;
+    profile_offsets_.push_back(gmms_.size());
+    return true;
+}
 bool PreparedPatternStateDecoder::states(std::span<const GmmPatternData> data,std::span<const PatternTempoParameters> parameters) {
     std::vector<MetricalPatternConfig> patterns;
-    patterns.reserve(data.size());std::size_t rule_count=0;
-    for(const auto& pattern:data)if(!prepared_storage::add_bytes(rule_count,pattern.beats))return false;
-    rules_.reserve(rule_count);
+    patterns.reserve(data.size());
+    if(!reserve_rules(data))return false;
     for(std::size_t p=0;p<data.size();++p){
         const auto& tempo=parameters[parameters.size()==1?0:p];
-        if(!data[p].beats || !std::isfinite(tempo.minimum_bpm) || tempo.minimum_bpm<=0 ||
-           !std::isfinite(tempo.maximum_bpm) || tempo.maximum_bpm<tempo.minimum_bpm)return false;
-        patterns.push_back({data[p].beats,60.f*rate_/tempo.maximum_bpm,60.f*rate_/tempo.minimum_bpm,tempo.num_tempi});
-        if(tempo.beat_transitions.empty())rules_.insert(rules_.end(),data[p].beats,tempo.transition);
-        else{
-            if(tempo.beat_transitions.size()!=data[p].beats)return false;
-            rules_.insert(rules_.end(),tempo.beat_transitions.begin(),tempo.beat_transitions.end());
-        }
+        MetricalPatternConfig layout;
+        if(!data[p].beats || !pattern_layout(data[p].beats,tempo,rate_,layout))return false;
+        patterns.push_back(layout);
+        append_rules(data[p].beats,tempo);
     }
     return space_.prepare(patterns);
+}
+bool PreparedPatternStateDecoder::append_mixture(const GaussianMixtureData& parameters) {
+    if(features_ && features_!=parameters.features)return false;
+    PreparedGaussianMixture gmm;
+    if(!gmm.prepare(parameters.parameters()))return false;
+    features_=parameters.features;
+    gmms_.push_back(std::move(gmm));
+    return true;
 }
 bool PreparedPatternStateDecoder::mixtures(std::span<const GmmPatternData> data) {
     std::size_t count=0;for(const auto& p:data)if(!prepared_storage::add_bytes(count,p.gmms.size()))return false;
     gmms_.reserve(count);profile_offsets_.reserve(data.size()+1);
     profile_offsets_.push_back(0);
-    for(const auto& pattern:data){
-        if(pattern.gmms.empty() || pattern.gmms.size()>std::size_t(UINT32_MAX)-gmms_.size())return false;
-        for(const auto& parameters:pattern.gmms){
-            if(features_ && features_!=parameters.features)return false;
-            PreparedGaussianMixture gmm;
-            if(!gmm.prepare(parameters.parameters()))return false;
-            features_=parameters.features;gmms_.push_back(std::move(gmm));
-        }
-        profile_offsets_.push_back(gmms_.size());
-    }
+    for(const auto& pattern:data)if(!append_pattern_mixtures(pattern))return false;
     return true;
 }
 bool PreparedPatternStateDecoder::model(std::size_t maximum) {
@@ -101,29 +135,19 @@ bool PreparedPatternStateDecoder::storage_bytes(std::size_t maximum,std::span<co
     std::span<const PatternTempoParameters> tempi,float rate,std::size_t& out) noexcept {
     if(!maximum || maximum>UINT32_MAX || data.empty() || (tempi.size()!=1 && tempi.size()!=data.size()) ||
        !std::isfinite(rate) || rate<=0 || !std::isfinite(float(maximum)/rate))return false;
-    std::size_t bytes=0,models=0,features=0;
-    for(const auto& p:data){
-        if(p.gmms.empty() || !prepared_storage::add_bytes(models,p.gmms.size()))return false;
-        for(const auto& g:p.gmms){
-            std::size_t nested=0;
-            if((features && features!=g.features) || !PreparedGaussianMixture::storage_bytes(g.parameters(),1e-7f,nested) ||
-               !prepared_storage::add_bytes(bytes,nested))return false;
-            features=g.features;
-        }
-    }
+    PatternMixtureStorage storage;
+    if(!pattern_mixture_storage(data,storage))return false;
     detail::MetricalStorage s;
     const auto read=[&](std::size_t p,MetricalPatternConfig& v){
         const auto& t=tempi[tempi.size()==1?0:p];
-        if(!std::isfinite(t.minimum_bpm) || t.minimum_bpm<=0 || !std::isfinite(t.maximum_bpm) || t.maximum_bpm<t.minimum_bpm ||
-           (!t.beat_transitions.empty() && t.beat_transitions.size()!=data[p].beats))return false;
-        v={data[p].beats,60.f*rate/t.maximum_bpm,60.f*rate/t.minimum_bpm,t.num_tempi};return true;
+        return pattern_layout(data[p].beats,t,rate,v);
     };
-    if(!detail::metrical_storage(data.size(),read,maximum,models,false,s) || !prepared_storage::add_bytes(bytes,s.total) ||
-       !prepared_storage::add_array(bytes,models,sizeof(PreparedGaussianMixture)) ||
-       !prepared_storage::add_array(bytes,data.size()+1,sizeof(std::size_t)) ||
-       !prepared_storage::add_array(bytes,features,sizeof(float)) ||
-       !prepared_storage::add_array(bytes,maximum,sizeof(float)+2*sizeof(std::uint32_t)))return false;
-    out=bytes;return true;
+    if(!detail::metrical_storage(data.size(),read,maximum,storage.models,false,s) || !prepared_storage::add_bytes(storage.bytes,s.total) ||
+       !prepared_storage::add_array(storage.bytes,storage.models,sizeof(PreparedGaussianMixture)) ||
+       !prepared_storage::add_array(storage.bytes,data.size()+1,sizeof(std::size_t)) ||
+       !prepared_storage::add_array(storage.bytes,storage.features,sizeof(float)) ||
+       !prepared_storage::add_array(storage.bytes,maximum,sizeof(float)+2*sizeof(std::uint32_t)))return false;
+    out=storage.bytes;return true;
 }
 std::size_t PreparedPatternStateDecoder::workspace_bytes() const noexcept {
     std::size_t bytes=space_.workspace_bytes()+model_.workspace_bytes()+rules_.capacity()*sizeof(TempoTransitionRule)+

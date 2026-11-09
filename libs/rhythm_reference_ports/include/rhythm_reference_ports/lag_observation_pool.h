@@ -24,6 +24,7 @@ public:
     std::span<const float> unique_values() const noexcept {return std::span(values_).first(value_count_);}
     dsp_kernels::FloatSequenceSource source() const noexcept {return {this,read};}
 private:
+    void append_row(std::span<const float>) noexcept;
     struct Row {std::size_t start=0,end=0;};
     static bool read(const void*,std::size_t,float&) noexcept;
     std::size_t maximum_flat_=0,value_count_=0,row_count_=0,flat_count_=0,active_start_=0,active_count_=0;

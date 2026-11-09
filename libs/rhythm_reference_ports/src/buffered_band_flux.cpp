@@ -8,13 +8,16 @@
 #include <dsp_kernels/prepared_storage.h>
 
 namespace rhythm_reference_ports {
+void PreparedBufferedBandFlux::allocate(std::size_t bands,std::size_t frames,BufferedBandFluxConfig config) {
+    config_=config;maximum_frames_=frames;
+    current_.resize(bands);delayed_.resize(bands);reference_.resize(bands);differences_.resize(bands);
+}
 bool PreparedBufferedBandFlux::prepare(std::size_t bands,std::size_t frames,BufferedBandFluxConfig config) {
     std::size_t bytes=0;if(!storage_bytes(bands,frames,config,bytes))return false;
     PreparedBufferedBandFlux next;
     dsp_kernels::OnsetStrengthConfig difference;difference.center=false;difference.aggregate=dsp_kernels::OnsetAggregate::Sum;
     if(!next.maximum_.prepare(config.bin_width,false) || !next.difference_.prepare(bands,1,difference))return false;
-    next.config_=config;next.maximum_frames_=frames;
-    next.current_.resize(bands);next.delayed_.resize(bands);next.reference_.resize(bands);next.differences_.resize(bands);
+    next.allocate(bands,frames,config);
     if(next.workspace_bytes()>bytes)return false;
     *this=std::move(next);return true;
 }

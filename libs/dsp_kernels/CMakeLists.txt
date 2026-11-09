@@ -59,6 +59,7 @@ target_sources(dsp_kernels PRIVATE
 target_include_directories(dsp_kernels PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
+target_include_directories(dsp_kernels SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/pocketfft")
 target_compile_features(dsp_kernels PUBLIC cxx_std_20)
 target_link_libraries(dsp_kernels PUBLIC signal_contracts PRIVATE ${dsp_backend_target})
 # Preserve the historical consumer target without a second implementation.

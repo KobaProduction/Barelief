@@ -38,6 +38,8 @@ public:
     std::span<const float> component_log_probabilities() const noexcept;
     std::span<const float> responsibilities() const noexcept;
 private:
+    bool diagonal_component(GaussianMixtureParameters,std::size_t);
+    bool full_constant(std::size_t,GaussianCovariance);
     bool configure(GaussianMixtureParameters,float);
     bool diagonal(GaussianMixtureParameters);
     bool covariance(std::span<const float>,std::span<float>,float);

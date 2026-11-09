@@ -110,6 +110,7 @@ private:
     bool process_backend(ProcessBuffers&) noexcept;
     bool process_identity(ProcessBuffers&) noexcept;
     bool process_interpolated(ProcessBuffers&) noexcept;
+    bool expand_endpoint_channels(ProcessBuffers&,std::size_t) noexcept;
     bool process_endpoint_window(ProcessBuffers&) noexcept;
     bool filter_sample(const ProcessBuffers&,std::size_t,std::array<float,2>&) noexcept;
     float filter_iir(float,std::size_t) noexcept;

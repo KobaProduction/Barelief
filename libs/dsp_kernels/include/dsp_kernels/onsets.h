@@ -71,6 +71,8 @@ private:
     bool process_input(const Input& input,double observed,double ready) noexcept;
     OnsetBand band(unsigned channel) const noexcept;
     bool measure(OnsetBand range,Measurement&) const noexcept;
+    bool measure_channel(unsigned,Measurement&) const noexcept;
+    void publish_measurements(std::span<const Measurement>,double,double) noexcept;
     bool measure_input(const Input&,std::span<Measurement>) noexcept;
     void detect(unsigned channel,OnsetObservation& value,float positive_mass,double observed,double ready) noexcept;
     OnsetConfig config_;

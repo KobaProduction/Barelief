@@ -9,12 +9,17 @@
 #include <limits>
 
 namespace dsp_kernels {
+namespace {
+std::size_t tempo_boundary(std::span<const float> values,float boundary,bool strict) noexcept {
+    for(std::size_t i=0;i<values.size();++i)
+        if(strict?float(i)>boundary:float(i)>=boundary)return i;
+    return 0;
+}
+}
 bool tempo_probability_range(std::span<const float> values,float minimum,float maximum,TempoProbabilityRange& output) noexcept {
     if(values.empty() || !std::isfinite(minimum) || !std::isfinite(maximum) || minimum<=0 || maximum<minimum ||
        !std::all_of(values.begin(),values.end(),[](float x){return std::isfinite(x) && x>=0 && x<=1;}))return false;
-    std::size_t first=0,last=0;
-    for(std::size_t i=0;i<values.size();++i)if(float(i)>=minimum){first=i;break;}
-    for(std::size_t i=0;i<values.size();++i)if(float(i)>maximum){last=i;break;}
+    const auto first=tempo_boundary(values,minimum,false),last=tempo_boundary(values,maximum,true);
     output={first,last>first?last-first:0};return true;
 }
 bool tempo_probability_coordinates(TempoProbabilityRange range,std::span<float> output) noexcept {

@@ -49,14 +49,15 @@ void PreparedTempoChangeSections::finish(float time) noexcept {
     else stops_[stop_count_++]=time;
     open_=false;
 }
+void PreparedTempoChangeSections::update_section(const std::array<float,5>& tempo,float time) noexcept {
+    if(!step(tempo))return;
+    if(open_)close(time);else open(time);
+}
 void PreparedTempoChangeSections::advance(std::span<const float> beats) noexcept {
     std::array<float,5> tempo{};
     for(std::size_t i=0;i<tempo.size();++i)tempo[i]=60.f/(beats[5-i]-beats[4-i]);
     for(std::size_t i=6;i<beats.size();++i){
-        if(step(tempo)){
-            if(open_)close(beats[i-2]);
-            else open(beats[i-2]);
-        }
+        update_section(tempo,beats[i-2]);
         for(std::size_t j=tempo.size()-1;j>0;--j)tempo[j]=tempo[j-1];
         tempo[0]=60.f/(beats[i]-beats[i-1]);
     }

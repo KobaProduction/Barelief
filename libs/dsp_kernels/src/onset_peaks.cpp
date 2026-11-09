@@ -29,28 +29,45 @@ bool onset_detection_parameters(float rate,OnsetPeakConfig& output) noexcept {
     config.pre_average=std::size_t(average);config.post_average=config.pre_average+1;config.wait=config.pre_max;
     config.normalize=true;config.suppress_empty=true;output=config;return true;
 }
+void PreparedOnsetPeakPicker::allocate(std::size_t frames,OnsetPeakConfig config) {
+    config_=config;maximum_frames_=frames;
+    values_.resize(frames);prefix_.resize(frames+1);scores_.resize(frames+1);
+    links_.resize(frames+1);counts_.resize(frames+1);taken_.resize(frames);mask_.resize(frames);
+}
 bool PreparedOnsetPeakPicker::prepare(std::size_t frames,OnsetPeakConfig config) {
     std::size_t required=0;if(!storage_bytes(frames,config,required))return false;
     if(!frames || frames==SIZE_MAX || !config.post_max || !config.post_average || !std::isfinite(config.delta) || config.delta<0)return false;
     if(config.selection<PeakSelection::Greedy || config.selection>PeakSelection::MaximumValue)return false;
-    PreparedOnsetPeakPicker next;next.config_=config;next.maximum_frames_=frames;
-    next.values_.resize(frames);next.prefix_.resize(frames+1);next.scores_.resize(frames+1);
-    next.links_.resize(frames+1);next.counts_.resize(frames+1);next.taken_.resize(frames);next.mask_.resize(frames);
+    PreparedOnsetPeakPicker next;
+    next.allocate(frames,config);
     if(next.workspace_bytes()>required)return false;
     *this=std::move(next);return true;
+}
+bool PreparedOnsetPeakPicker::normalize(std::span<const float> input) noexcept {
+    const auto [low,high]=std::minmax_element(input.begin(),input.end());
+    const float range=*high-*low;
+    if(!std::isfinite(range))return false;
+    for(std::size_t i=0;i<input.size();++i)values_[i]=(input[i]-*low)/(range+std::numeric_limits<float>::min());
+    return true;
+}
+void PreparedOnsetPeakPicker::pick(std::size_t count) noexcept {
+    if(config_.suppress_empty && !std::any_of(values_.begin(),values_.begin()+std::ptrdiff_t(count),[](float value){return value!=0;}))return;
+    if(config_.selection==PeakSelection::Greedy)greedy(count);else optimal(count);
+}
+bool PreparedOnsetPeakPicker::accumulate_prefix(std::size_t count) noexcept {
+    prefix_[0]=0;
+    for(std::size_t i=0;i<count;++i){
+        prefix_[i+1]=prefix_[i]+values_[i];
+        if(!std::isfinite(prefix_[i+1]))return false;
+    }
+    return true;
 }
 bool PreparedOnsetPeakPicker::load(std::span<const float> input) noexcept {
     if(!std::all_of(input.begin(),input.end(),[](float x){return std::isfinite(x);}))return false;
     std::copy(input.begin(),input.end(),values_.begin());
-    if(config_.normalize && !input.empty()){
-        const auto [low,high]=std::minmax_element(input.begin(),input.end());const float range=*high-*low;
-        if(!std::isfinite(range))return false;
-        for(std::size_t i=0;i<input.size();++i)values_[i]=(input[i]-*low)/(range+std::numeric_limits<float>::min());
-    }
+    if(config_.normalize && !input.empty() && !normalize(input))return false;
     if(config_.selection==PeakSelection::Greedy)return true;
-    prefix_[0]=0;
-    for(std::size_t i=0;i<input.size();++i){prefix_[i+1]=prefix_[i]+values_[i];if(!std::isfinite(prefix_[i+1]))return false;}
-    return true;
+    return accumulate_prefix(input.size());
 }
 bool PreparedOnsetPeakPicker::candidate(std::size_t i,std::size_t count) const noexcept {
     const auto left=i>config_.pre_max?i-config_.pre_max:0,right=i+std::min(config_.post_max,count-i);
@@ -100,9 +117,7 @@ bool PreparedOnsetPeakPicker::process(std::span<const float> input,std::span<std
     result_frames_=0;
     if(!maximum_frames_ || input.size()>maximum_frames_ || output.size()!=input.size() || !load(input))return false;
     std::fill_n(mask_.begin(),input.size(),std::uint8_t{0});
-    if(!config_.suppress_empty || std::any_of(values_.begin(),values_.begin()+std::ptrdiff_t(input.size()),[](float value){return value!=0;})){
-        if(config_.selection==PeakSelection::Greedy)greedy(input.size());else optimal(input.size());
-    }
+    pick(input.size());
     std::copy_n(mask_.begin(),input.size(),output.begin());result_frames_=input.size();return true;
 }
 bool PreparedOnsetBacktracker::prepare(std::size_t frames) {
@@ -111,31 +126,46 @@ bool PreparedOnsetBacktracker::prepare(std::size_t frames) {
     PreparedOnsetBacktracker next;next.maximum_frames_=frames;next.minima_.resize(frames);if(next.workspace_bytes()>required)return false;
     *this=std::move(next);return true;
 }
+std::size_t PreparedOnsetBacktracker::collect_minima(std::span<const float> energy) noexcept {
+    std::size_t count=1;
+    minima_[0]=0;
+    for(std::size_t i=1;i+1<energy.size();++i)if(energy_minimum(energy,i))minima_[count++]=i;
+    return count;
+}
 bool PreparedOnsetBacktracker::process(std::span<const std::size_t> events,std::span<const float> energy,std::span<std::size_t> output) noexcept {
     if(!maximum_frames_ || energy.size()>maximum_frames_ || events.size()!=output.size() || overlap(events,output))return false;
     if(!std::all_of(energy.begin(),energy.end(),[](float x){return std::isfinite(x);}))return false;
     // Events may lie beyond the supplied energy curve; source left matching
     // still selects its final preceding minimum (or the frame-zero anchor).
-    std::size_t count=1;minima_[0]=0;
-    for(std::size_t i=1;i+1<energy.size();++i)if(energy_minimum(energy,i))minima_[count++]=i;
+    const auto count=collect_minima(energy);
     for(std::size_t i=0;i<events.size();++i){
         const auto right=std::upper_bound(minima_.begin(),minima_.begin()+std::ptrdiff_t(count),events[i]);
         output[i]=*(right-1);
     }
     return true;
 }
-bool backtrack_onset_peaks(std::span<const std::uint8_t> input,std::span<const float> energy,std::span<std::uint8_t> output) noexcept {
-    if(input.size()!=energy.size() || input.size()!=output.size())return false;
-    if(!input.empty()){
-        const std::less<const std::uint8_t*> less;
-        if(less(input.data(),output.data()+output.size()) && less(output.data(),input.data()+input.size()))return false;
-    }
-    if(!std::all_of(energy.begin(),energy.end(),[](float x){return std::isfinite(x);}))return false;
-    std::fill(output.begin(),output.end(),std::uint8_t{0});std::size_t minimum=0;
+namespace {
+bool masks_overlap(std::span<const std::uint8_t> input,std::span<std::uint8_t> output) noexcept {
+    if(input.empty())return false;
+    const std::less<const std::uint8_t*> less;
+    return less(input.data(),output.data()+output.size()) && less(output.data(),input.data()+input.size());
+}
+}
+namespace {
+void backtrack_mask(std::span<const std::uint8_t> input,std::span<const float> energy,std::span<std::uint8_t> output) noexcept {
+    std::fill(output.begin(),output.end(),std::uint8_t{0});
+    std::size_t minimum=0;
     for(std::size_t i=0;i<input.size();++i){
         if(i && i+1<energy.size() && energy_minimum(energy,i))minimum=i;
         if(input[i])output[minimum]=1;
     }
+}
+}
+bool backtrack_onset_peaks(std::span<const std::uint8_t> input,std::span<const float> energy,std::span<std::uint8_t> output) noexcept {
+    if(input.size()!=energy.size() || input.size()!=output.size())return false;
+    if(masks_overlap(input,output))return false;
+    if(!std::all_of(energy.begin(),energy.end(),[](float x){return std::isfinite(x);}))return false;
+    backtrack_mask(input,energy,output);
     return true;
 }
 }

@@ -49,17 +49,27 @@ bool PreparedRectangularFilterBank::storage_bytes(std::size_t bins,std::size_t b
        !prepared_storage::add_array(bytes,borders,sizeof(std::size_t)))return false;
     out=bytes;return true;
 }
-bool PreparedRectangularFilterBank::prepare(std::span<const float> grid,std::span<const float> borders,bool normalize,bool unique) {
-    std::size_t bound=0;if(!storage_bytes(grid.size(),borders.size(),bound))return false;
-    if(grid.size()<2 || borders.size()<2 || !ordered(grid,true) || !ordered(borders,false) ||
-       borders.size()-1>std::numeric_limits<std::size_t>::max()/grid.size())return false;
+namespace {
+bool valid_rectangular_axes(std::span<const float> grid,std::span<const float> borders) noexcept {
+    return grid.size()>=2 && borders.size()>=2 && ordered(grid,true) && ordered(borders,false) &&
+        borders.size()-1<=std::numeric_limits<std::size_t>::max()/grid.size();
+}
+}
+bool PreparedRectangularFilterBank::configure(std::span<const float> grid,std::span<const float> borders,bool normalize,bool unique,std::size_t bound) {
     const auto corners=filter_corners(grid,borders,unique);
     const auto bands=borders.size()-1;
-    std::vector<float> weights(bands*grid.size(),0.f);std::vector<FilterBandSupport> supports(bands);
+    std::vector<float> weights(bands*grid.size(),0.f);
+    std::vector<FilterBandSupport> supports(bands);
     filter_weights(corners,grid.size(),normalize,weights,supports);
-    PreparedRectangularFilterBank next;next.bands_=bands;
-    if(!next.projection_.prepare_matrix(grid.size(),bands,weights,{}, {false,false},supports))return false;
-    if(!within_peak(next.workspace_bytes(),bound,corners,weights,supports))return false;
+    bands_=bands;
+    return projection_.prepare_matrix(grid.size(),bands,weights,{}, {false,false},supports) &&
+        within_peak(workspace_bytes(),bound,corners,weights,supports);
+}
+bool PreparedRectangularFilterBank::prepare(std::span<const float> grid,std::span<const float> borders,bool normalize,bool unique) {
+    std::size_t bound=0;if(!storage_bytes(grid.size(),borders.size(),bound))return false;
+    if(!valid_rectangular_axes(grid,borders))return false;
+    PreparedRectangularFilterBank next;
+    if(!next.configure(grid,borders,normalize,unique,bound))return false;
     *this=std::move(next);return true;
 }
 }

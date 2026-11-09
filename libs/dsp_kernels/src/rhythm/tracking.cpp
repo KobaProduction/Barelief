@@ -72,13 +72,16 @@ bool follow_spectral(Engine& e,double delta) noexcept {
     if(std::abs(delta-baseline)/baseline>e.cfg.change_separation_relative)return false;
     e.spectral_pending.clear();e.spectral_stable=.9*baseline+.1*delta;return true;
 }
-void confirm_spectral(Engine& e,double delta,double now) noexcept {
+void retain_spectral_candidate(Engine& e,double delta) noexcept {
     if(e.spectral_pending.count){
         const double candidate=average(e.spectral_pending);
         if(std::abs(delta-candidate)>e.cfg.change_stability_relative*candidate)e.spectral_pending.clear();
     }
     e.spectral_pending.push(delta);
     while(e.spectral_pending.count>e.cfg.change_min_intervals)e.spectral_pending.pop();
+}
+void confirm_spectral(Engine& e,double delta,double now) noexcept {
+    retain_spectral_candidate(e,delta);
     if(e.spectral_pending.count<e.cfg.change_min_intervals)return;
     const double period=average(e.spectral_pending);
     const float relative=float(spread(e.spectral_pending,period)/period);

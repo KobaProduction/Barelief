@@ -11,9 +11,8 @@
 #include <limits>
 #include <utility>
 namespace dsp_kernels {
-bool factor_beat_intervals(float dominant,std::span<const float> factors,std::size_t low,std::size_t high,std::span<std::size_t> output,std::size_t& count) noexcept {
-    if(!std::isfinite(dominant) || dominant<=0 || !low || low>high || output.size()<factors.size())return false;
-    for(float factor:factors)if(!std::isfinite(factor) || !std::isfinite(dominant*factor))return false;
+namespace {
+std::size_t bounded_factor_intervals(float dominant,std::span<const float> factors,std::size_t low,std::size_t high,std::span<std::size_t> output) noexcept {
     std::size_t result=0;
     for(float factor:factors){
         const float value=std::trunc(dominant*factor);
@@ -21,13 +20,24 @@ bool factor_beat_intervals(float dominant,std::span<const float> factors,std::si
         const auto interval=std::size_t(value);
         if(interval>=low && interval<=high)output[result++]=interval;
     }
-    count=result;return true;
+    return result;
+}
+}
+bool factor_beat_intervals(float dominant,std::span<const float> factors,std::size_t low,std::size_t high,std::span<std::size_t> output,std::size_t& count) noexcept {
+    if(!std::isfinite(dominant) || dominant<=0 || !low || low>high || output.size()<factors.size())return false;
+    for(float factor:factors)if(!std::isfinite(factor) || !std::isfinite(dominant*factor))return false;
+    count=bounded_factor_intervals(dominant,factors,low,high,output);
+    return true;
+}
+void PreparedIntervalSequenceSearch::allocate_results(std::size_t frames,std::size_t low,std::size_t high,std::size_t candidates) {
+    minimum_=low;maximum_=high;
+    intervals_.resize(candidates);scores_.resize(candidates);positions_.resize(frames/low);
 }
 bool PreparedIntervalSequenceSearch::prepare(std::size_t frames,std::size_t low,std::size_t high,std::size_t candidates,float sigma) {
     std::size_t bound=0;if(!storage_bytes(frames,low,high,candidates,sigma,bound))return false;
     if(!candidates)return false;
     PreparedIntervalSequenceSearch next;if(!next.decoder_.prepare(frames,low,high,sigma))return false;
-    next.minimum_=low;next.maximum_=high;next.intervals_.resize(candidates);next.scores_.resize(candidates);next.positions_.resize(frames/low);
+    next.allocate_results(frames,low,high,candidates);
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
 }
@@ -41,13 +51,17 @@ bool PreparedIntervalSequenceSearch::trial(std::span<const float> input,std::siz
     }
     return true;
 }
+void PreparedIntervalSequenceSearch::load_candidates(std::span<const std::size_t> candidates) noexcept {
+    std::fill(scores_.begin(),scores_.end(),-std::numeric_limits<float>::infinity());
+    std::copy(candidates.begin(),candidates.end(),intervals_.begin());
+    trials_=candidates.size();
+    std::sort(intervals_.begin(),intervals_.begin()+std::ptrdiff_t(trials_),std::greater<>{});
+}
 bool PreparedIntervalSequenceSearch::process(std::span<const float> input,std::span<const std::size_t> candidates) noexcept {
     clear_result();
     if(!minimum_ || candidates.empty() || candidates.size()>intervals_.size())return fail("invalid_candidates");
     if(!std::all_of(candidates.begin(),candidates.end(),[this](auto interval){return interval>=minimum_ && interval<=maximum_;}))return fail("invalid_candidates");
-    std::fill(scores_.begin(),scores_.end(),-std::numeric_limits<float>::infinity());
-    std::copy(candidates.begin(),candidates.end(),intervals_.begin());trials_=candidates.size();
-    std::sort(intervals_.begin(),intervals_.begin()+std::ptrdiff_t(trials_),std::greater<>{});
+    load_candidates(candidates);
     float best=-std::numeric_limits<float>::infinity();
     for(std::size_t i=0;i<trials_;++i){
         if(!trial(input,i,best) && decoder_.outcome()!=SequenceDecodeOutcome::NoPath)

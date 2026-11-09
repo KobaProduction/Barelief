@@ -21,6 +21,7 @@ public:
     void reset() noexcept;
     bool process(std::span<const float> bands,std::span<float> scaled,float& cumulative) noexcept;
 private:
+    void allocate(std::span<const float>,float);
     bool differences(float& cumulative) noexcept;
     float frame_factor_=0;
     std::vector<float> gains_,previous_,current_,result_;

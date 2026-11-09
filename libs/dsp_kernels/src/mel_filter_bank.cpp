@@ -66,17 +66,25 @@ bool MelFilterBank::matrix_storage_bytes(std::size_t bins,std::size_t bands,std:
     if(!storage_bytes(bins,config,bytes))return false;
     out=bytes-sizeof(MelFilterBank);return true;
 }
-bool MelFilterBank::band_count(FrequencyGridView grid,const MelFilterBankConfig& c,std::size_t& out) noexcept {
-    if(!grid.size || !grid.at || !valid(c) || c.bands>SIZE_MAX-2)return false;
-    if(c.construction==MelConstruction::Continuous){out=c.bands;return true;}
+namespace {
+bool count_mel_corners(FrequencyGridView grid,const MelFilterBankConfig& c,std::size_t& count) noexcept {
     const auto low=to_mel(c.fmin_hz,c.scale==MelScale::Htk),high=to_mel(c.fmax_hz?c.fmax_hz:c.sample_rate/2,c.scale==MelScale::Htk);
-    const auto step=(high-low)/double(c.bands+1);std::size_t count=0,previous=SIZE_MAX;
+    const auto step=(high-low)/double(c.bands+1);
+    std::size_t previous=SIZE_MAX;
     for(std::size_t i=0;i<c.bands+2;++i){
         const auto hz=from_mel(i==c.bands+1?high:low+double(i)*step,c.scale==MelScale::Htk);
         const auto bin=nearest_frequency_bin(grid,hz);
         if(bin==SIZE_MAX)return false;
         if(!c.unique_filters || previous!=bin){++count;previous=bin;}
     }
+    return true;
+}
+}
+bool MelFilterBank::band_count(FrequencyGridView grid,const MelFilterBankConfig& c,std::size_t& out) noexcept {
+    if(!grid.size || !grid.at || !valid(c) || c.bands>SIZE_MAX-2)return false;
+    if(c.construction==MelConstruction::Continuous){out=c.bands;return true;}
+    std::size_t count=0;
+    if(!count_mel_corners(grid,c,count))return false;
     if(count<3)return false;
     out=count-2;return true;
 }
@@ -134,6 +142,15 @@ bool MelFilterBank::build_filters(std::span<const double> frequencies) {
 }
 // Discrete triangle construction also follows madmom audio/filters.py at
 // 27f032e8947204902c675e5e341a3faf5dc86dae; BSD notice: packaging/licenses/madmom.txt.
+std::vector<std::size_t> MelFilterBank::binned_corners(std::span<const double> frequencies) const {
+    std::vector<std::size_t> corners;
+    corners.reserve(boundaries_.size());
+    for(const auto hz:boundaries_){
+        const auto bin=nearest_frequency_bin(frequencies,hz);
+        if(!config_.unique_filters || corners.empty() || corners.back()!=bin)corners.push_back(bin);
+    }
+    return corners;
+}
 bool MelFilterBank::build_binned_filters(std::span<const double> frequencies) {
     build_boundaries();if(!valid_boundaries())return false;
     std::vector<double> generated;
@@ -142,11 +159,7 @@ bool MelFilterBank::build_binned_filters(std::span<const double> frequencies) {
         for(std::size_t i=0;i<bins_;++i)generated[i]=(double(i)+double(config_.first_bin))*config_.bin_hz;
         frequencies=generated;
     }
-    std::vector<std::size_t> corners;corners.reserve(boundaries_.size());
-    for(const auto hz:boundaries_){
-        const auto bin=nearest_frequency_bin(frequencies,hz);
-        if(!config_.unique_filters || corners.empty() || corners.back()!=bin)corners.push_back(bin);
-    }
+    const auto corners=binned_corners(frequencies);
     return corners.size()>=3 && bind_binned_filters(corners,frequencies);
 }
 bool MelFilterBank::bind_binned_filters(std::span<const std::size_t> corners,std::span<const double> frequencies) {
@@ -169,6 +182,12 @@ bool MelFilterBank::prepare(std::size_t bins,const MelFilterBankConfig& config,s
     if(!built || next.workspace_bytes()>bytes-sizeof(MelFilterBank))return false;
     *this=std::move(next);return true;
 }
+void MelFilterBank::assign_matrix(std::span<const float> weights,std::span<const double> centers,FilterProjectionOptions options,std::span<const FilterBandSupport> supports) {
+    std::copy(weights.begin(),weights.end(),weights_.begin());
+    if(!supports.empty())std::copy(supports.begin(),supports.end(),supports_.begin());
+    centers_.assign(centers.begin(),centers.end());
+    projection_=options;
+}
 bool MelFilterBank::prepare_matrix(std::size_t bins,std::size_t bands,std::span<const float> weights,
                                    std::span<const double> centers,FilterProjectionOptions options,
                                    std::span<const FilterBandSupport> supports) {
@@ -178,9 +197,7 @@ bool MelFilterBank::prepare_matrix(std::size_t bins,std::size_t bands,std::span<
     if(!valid_explicit_weights(weights,supports,bins) ||
        !std::all_of(centers.begin(),centers.end(),[](double hz){return std::isfinite(hz) && hz>=0;}))return false;
     MelFilterBank next;next.allocate_storage(bins,config);
-    std::copy(weights.begin(),weights.end(),next.weights_.begin());
-    if(!supports.empty())std::copy(supports.begin(),supports.end(),next.supports_.begin());
-    next.centers_.assign(centers.begin(),centers.end());next.projection_=options;
+    next.assign_matrix(weights,centers,options,supports);
     if(next.workspace_bytes()>bytes-sizeof(MelFilterBank))return false;
     *this=std::move(next);return true;
 }

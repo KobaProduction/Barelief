@@ -29,6 +29,9 @@ public:
     std::span<const InterpolatedPeak> candidates() const noexcept {return std::span(result_).first(count_);}
     bool silent() const noexcept {return silent_;}
 private:
+    void allocate(std::size_t,std::size_t,WeightedTempoHistogramConfig);
+    float seed_threshold() const noexcept;
+    bool finish_histogram(dsp_kernels::FloatMatrixSource,std::size_t) noexcept;
     bool read(dsp_kernels::FloatMatrixSource,std::size_t,InterpolatedPeak&) const noexcept;
     bool scan(dsp_kernels::FloatMatrixSource,std::size_t,float&) noexcept;
     float deviation_weight(float candidate,float center) const noexcept;

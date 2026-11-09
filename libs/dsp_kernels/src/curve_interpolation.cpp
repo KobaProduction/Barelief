@@ -57,40 +57,51 @@ bool PreparedCurveInterpolation::prepare_dynamic(std::size_t count,CurveInterpol
     for(std::size_t i=0;i<count;++i)grid[i]=float(i);
     return prepare(grid,c);
 }
-bool PreparedCurveInterpolation::coordinates(std::span<const float> input) noexcept {
-    if(input.size()>indices_.capacity() || input.size()>x_.capacity())return false;
-    indices_.clear();x_.clear();
+bool PreparedCurveInterpolation::collect_coordinate_indices(std::span<const float> input) noexcept {
     if(config_.keep_infinite_coordinates && std::any_of(input.begin(),input.end(),[](float x){return std::isnan(x);}))return false;
     for(std::size_t i=0;i<input.size();++i)
         if(std::isfinite(input[i]) || (config_.keep_infinite_coordinates && std::isinf(input[i])))indices_.push_back(i);
     std::sort(indices_.begin(),indices_.end(),[input](auto a,auto b){return input[a]<input[b];});
-    if(indices_.empty())return false;
+    return !indices_.empty();
+}
+bool PreparedCurveInterpolation::coordinates(std::span<const float> input) noexcept {
+    if(input.size()>indices_.capacity() || input.size()>x_.capacity())return false;
+    indices_.clear();x_.clear();
+    if(!collect_coordinate_indices(input))return false;
     for(auto index:indices_)x_.push_back(input[index]);
     return std::adjacent_find(x_.begin(),x_.end(),[](float a,float b){return a>=b;})==x_.end();
+}
+bool PreparedCurveInterpolation::prepare_spline_geometry() {
+    if(!std::all_of(x_.begin(),x_.end(),[](float x){return std::isfinite(x);}))return false;
+    knots();geometry_ready_=factor();
+    return geometry_ready_;
+}
+bool PreparedCurveInterpolation::prepare_geometry() {
+    degree_=order(config_);spline_=degree_>0;
+    if(degree_>=x_.size() || degree_>(SIZE_MAX-1)/2)return false;
+    if(config_.kind==CurveInterpolation::Linear && x_.size()<2)return false;
+    if(!allocate())return false;
+    geometry_ready_=!spline_;
+    return !spline_ || prepare_spline_geometry();
 }
 bool PreparedCurveInterpolation::configure(std::span<const float> input,CurveInterpolationConfig config) {
     if(!valid(config))return false;
     config_=config;input_count_=input.size();indices_.reserve(input.size());x_.reserve(input.size());
     if(!coordinates(input))return false;
-    degree_=order(config);spline_=degree_>0;
-    if(degree_>=x_.size() || degree_>(SIZE_MAX-1)/2)return false;
-    if(config.kind==CurveInterpolation::Linear && x_.size()<2)return false;
-    if(!allocate())return false;
-    geometry_ready_=!spline_;
-    if(!spline_)return true;
-    if(!std::all_of(x_.begin(),x_.end(),[](float x){return std::isfinite(x);}))return false;
-    knots();geometry_ready_=factor();return geometry_ready_;
+    return prepare_geometry();
 }
-bool PreparedCurveInterpolation::allocate() {
-    values_.reserve(input_count_);coefficients_.reserve(input_count_);scratch_.reserve(input_count_);
-    values_.resize(x_.size());coefficients_.resize(x_.size());scratch_.resize(x_.size());
-    if(!spline_)return true;
+bool PreparedCurveInterpolation::allocate_spline() {
     width_=2*degree_+1;
     if(input_count_>SIZE_MAX/width_ || input_count_>SIZE_MAX-degree_-1)return false;
     lu_.reserve(input_count_*width_);knots_.reserve(input_count_+degree_+1);
     lu_.assign(x_.size()*width_,0);knots_.resize(x_.size()+degree_+1);
     basis_.resize(degree_+1);left_.resize(degree_+1);right_.resize(degree_+1);
     return true;
+}
+bool PreparedCurveInterpolation::allocate() {
+    values_.reserve(input_count_);coefficients_.reserve(input_count_);scratch_.reserve(input_count_);
+    values_.resize(x_.size());coefficients_.resize(x_.size());scratch_.resize(x_.size());
+    return !spline_ || allocate_spline();
 }
 void PreparedCurveInterpolation::knots() {
     std::fill_n(knots_.begin(),degree_+1,x_.front());
@@ -144,11 +155,14 @@ bool PreparedCurveInterpolation::eliminate(std::size_t pivot) noexcept {
     }
     return true;
 }
-bool PreparedCurveInterpolation::solve() noexcept {
+void PreparedCurveInterpolation::forward_substitution() noexcept {
     for(std::size_t row=0;row<x_.size();++row){
         const auto start=row>degree_?row-degree_:0;
         for(auto column=start;column<row;++column)scratch_[row]-=matrix(row,column)*scratch_[column];
     }
+}
+bool PreparedCurveInterpolation::solve() noexcept {
+    forward_substitution();
     for(auto row=x_.size();row-->0;){
         const auto end=std::min(x_.size(),row+degree_+1);
         for(auto column=row+1;column<end;++column)scratch_[row]-=matrix(row,column)*scratch_[column];
@@ -170,13 +184,17 @@ bool PreparedCurveInterpolation::set_coordinates(std::span<const float> input) n
     if(input.data()==x_.data() || input.size()!=input_count_ || !coordinates(input) || !resize_geometry())return false;
     geometry_ready_=true;return true;
 }
-bool PreparedCurveInterpolation::set_values(std::span<const float> input) noexcept {
-    if(!geometry_ready_ || indices_.empty() || input.size()!=input_count_)return false;
+bool PreparedCurveInterpolation::load_values(std::span<const float> input) noexcept {
     for(std::size_t i=0;i<indices_.size();++i){
         const float value=input[indices_[i]];
         if(!std::isfinite(value))return false;
         scratch_[i]=value;
     }
+    return true;
+}
+bool PreparedCurveInterpolation::set_values(std::span<const float> input) noexcept {
+    if(!geometry_ready_ || indices_.empty() || input.size()!=input_count_)return false;
+    if(!load_values(input))return false;
     if(spline_ && !solve())return false;
     for(std::size_t i=0;i<indices_.size();++i)values_[i]=input[indices_[i]];
     std::copy(scratch_.begin(),scratch_.end(),coefficients_.begin());ready_=true;return true;
@@ -191,6 +209,12 @@ bool PreparedCurveInterpolation::outside(float query,float& value) const noexcep
     }
     return false;
 }
+float PreparedCurveInterpolation::interpolate_between(float query,std::size_t upper) const noexcept {
+    if(config_.kind==CurveInterpolation::Zero || config_.kind==CurveInterpolation::Previous || config_.kind==CurveInterpolation::Spline)
+        return values_[upper?upper-1:0];
+    if(config_.kind==CurveInterpolation::Nearest || config_.kind==CurveInterpolation::NearestUp)return nearest(query,upper);
+    return linear(query,upper);
+}
 float PreparedCurveInterpolation::interpolate(float query) const noexcept {
     const auto at=std::lower_bound(x_.begin(),x_.end(),query);
     auto upper=std::size_t(at-x_.begin());
@@ -198,10 +222,7 @@ float PreparedCurveInterpolation::interpolate(float query) const noexcept {
     if(config_.keep_infinite_coordinates && (config_.kind==CurveInterpolation::Nearest || config_.kind==CurveInterpolation::NearestUp))return nearest(query,upper);
     if(config_.source_linear && config_.kind==CurveInterpolation::Linear)return linear(query,upper);
     if(upper<x_.size() && x_[upper]==query)return values_[upper];
-    if(config_.kind==CurveInterpolation::Zero || config_.kind==CurveInterpolation::Previous || config_.kind==CurveInterpolation::Spline)
-        return values_[upper?upper-1:0];
-    if(config_.kind==CurveInterpolation::Nearest || config_.kind==CurveInterpolation::NearestUp)return nearest(query,upper);
-    return linear(query,upper);
+    return interpolate_between(query,upper);
 }
 float PreparedCurveInterpolation::nearest(float query,std::size_t upper) const noexcept {
     if(config_.keep_infinite_coordinates){
@@ -224,16 +245,20 @@ float PreparedCurveInterpolation::linear(float query,std::size_t upper) const no
     const float fraction=(query-x_[upper-1])/(x_[upper]-x_[upper-1]);
     return values_[upper-1]+fraction*(values_[upper]-values_[upper-1]);
 }
+float PreparedCurveInterpolation::sample_spline(float query) const noexcept {
+    float result=0;
+    const auto span=interval(query);
+    basis(query,span);
+    for(std::size_t j=0;j<=degree_;++j)result+=basis_[j]*coefficients_[span-degree_+j];
+    return result;
+}
 bool PreparedCurveInterpolation::sample(float query,float& value) const noexcept {
     if(!ready_)return false;
     if(std::isnan(query)){value=std::numeric_limits<float>::quiet_NaN();return true;}
     if(config_.bounds_error && (query<x_.front() || query>x_.back()))return false;
     float result=0;
     if(outside(query,result)){value=result;return true;}
-    if(spline_){
-        const auto span=interval(query);basis(query,span);
-        for(std::size_t j=0;j<=degree_;++j)result+=basis_[j]*coefficients_[span-degree_+j];
-    }else result=interpolate(query);
+    result=spline_?sample_spline(query):interpolate(query);
     value=result;return true;
 }
 }

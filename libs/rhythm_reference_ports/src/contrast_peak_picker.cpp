@@ -70,6 +70,11 @@ bool PreparedContrastPeakPicker::scan(std::span<const float> input) noexcept {
     }
     return true;
 }
+bool PreparedContrastPeakPicker::finish_scan(std::span<const float> input,float next) noexcept {
+    if(!scan(input) || count_>std::numeric_limits<std::uint64_t>::max()-detections_){count_=0;return false;}
+    detections_+=count_;start_time_=next;processed_=input.size();
+    return true;
+}
 bool PreparedContrastPeakPicker::process(std::span<const float> input) noexcept {
     count_=0;processed_=0;
     if(onsets_.empty() || input.size()>onsets_.size())return false;
@@ -78,8 +83,7 @@ bool PreparedContrastPeakPicker::process(std::span<const float> input) noexcept 
     if(!std::isfinite(next))return false;
     if(!average_.process(input,std::span(averages_).first(input.size())) ||
        !maximum_.process(input,std::span(maxima_).first(input.size())))return false;
-    if(!scan(input) || count_>std::numeric_limits<std::uint64_t>::max()-detections_){count_=0;return false;}
-    detections_+=count_;start_time_=next;processed_=input.size();return true;
+    return finish_scan(input,next);
 }
 std::span<const float> PreparedContrastPeakPicker::averages(std::size_t count) const noexcept {
     return count<=processed_?std::span<const float>(averages_).first(count):std::span<const float>{};

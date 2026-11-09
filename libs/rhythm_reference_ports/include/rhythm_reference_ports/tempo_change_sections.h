@@ -24,6 +24,7 @@ public:
     std::size_t section_count() const noexcept {return stop_count_;}
     std::size_t workspace_bytes() const noexcept {return (starts_.capacity()+stops_.capacity())*sizeof(float);}
 private:
+    void update_section(const std::array<float,5>&,float) noexcept;
     bool validate(std::span<const float>) const noexcept;
     bool step(const std::array<float,5>&) const noexcept;
     void open(float time) noexcept;

@@ -72,6 +72,7 @@ private:
     bool forward_reference(std::span<const double>) noexcept;
     bool compress_reference() noexcept;
     bool collect_reference(std::size_t,std::size_t) noexcept;
+    void publish_reference_spectrum() noexcept;
     bool publish_reference(std::size_t) noexcept;
     PreparedRfft real_fft_;
     PreparedFourierTransform complex_fft_;

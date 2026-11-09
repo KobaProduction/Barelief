@@ -6,16 +6,23 @@
 #include <limits>
 
 namespace dsp_kernels {
+namespace {
+bool metrical_number(std::uint32_t state,std::span<const float> positions,std::uint32_t& number) noexcept {
+    if(state>=positions.size())return false;
+    const float position=positions[state];
+    if(!std::isfinite(position) || position<0 || position>=float(UINT32_MAX))return false;
+    number=std::uint32_t(position)+1;
+    return true;
+}
+}
 bool metrical_change_events(std::span<const std::uint32_t> path,std::span<const float> positions,
                              std::span<std::uint32_t> frames,std::span<std::uint32_t> numbers,std::size_t& count) noexcept {
     count=0;
     if(path.size()>UINT32_MAX || frames.size()<path.size() || numbers.size()<path.size())return false;
     std::uint32_t previous=0;
     for(std::size_t frame=0;frame<path.size();++frame){
-        if(path[frame]>=positions.size())return false;
-        const float position=positions[path[frame]];
-        if(!std::isfinite(position) || position<0 || position>=float(UINT32_MAX))return false;
-        const auto number=std::uint32_t(position)+1;
+        std::uint32_t number=0;
+        if(!metrical_number(path[frame],positions,number))return false;
         if(frame && number!=previous){frames[count]=std::uint32_t(frame);numbers[count++]=number;}
         previous=number;
     }

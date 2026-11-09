@@ -93,14 +93,19 @@ bool PreparedSpectralFrameRecipe::prepare_reference_window_coefficients(std::spa
         output[offset+i]=supplied.empty()?window_coefficient_value<double>(i,count,config_.window,config_.periodic):double(supplied[i]);
     return true;
 }
+namespace {
+FilterBandSupport explicit_band_support(std::span<const float> row) noexcept {
+    std::size_t first=0,last=row.size();
+    while(first<last && row[first]==0)++first;
+    while(last>first && row[last-1]==0)--last;
+    return {first,last-first};
+}
+}
 bool PreparedSpectralFrameRecipe::explicit_filter(std::size_t bands,std::span<const float> weights,std::span<const double> centers) {
     if(!bands || bands>SIZE_MAX/phase_bins() || weights.size()!=bands*phase_bins())return false;
     supports_.resize(bands);
     for(std::size_t band=0;band<bands;++band){
-        const auto row=weights.subspan(band*phase_bins(),phase_bins());std::size_t first=0,last=row.size();
-        while(first<last && row[first]==0)++first;
-        while(last>first && row[last-1]==0)--last;
-        supports_[band]={first,last-first};
+        supports_[band]=explicit_band_support(weights.subspan(band*phase_bins(),phase_bins()));
     }
     // Full projection retains source matrix semantics, including all-zero bands.
     if(!filtering_.prepare_matrix(phase_bins(),bands,weights,centers,{false,false}))return false;

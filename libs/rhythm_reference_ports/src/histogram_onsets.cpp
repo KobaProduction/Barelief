@@ -105,13 +105,14 @@ void PreparedHistogramOnset::commit() noexcept {
     std::copy(previous_phase_.begin(),previous_phase_.end(),older_phase_.begin());
     std::copy(phase_.begin(),phase_.end(),previous_phase_.begin());std::copy(magnitude_.begin(),magnitude_.end(),previous_magnitude_.begin());
 }
+bool PreparedHistogramOnset::weighted_phase(float& result) noexcept {
+    for(std::size_t bin=0;bin<values_.size();++bin)values_[bin]*=magnitude_[bin];
+    return histogram_.process(values_,result);
+}
 bool PreparedHistogramOnset::evaluate(float& output) noexcept {
     if(config_.method==HistogramOnsetMethod::SpectralDifference)magnitude_difference();else phase_difference();
     float result=0;if(!histogram_.process(values_,result))return false;
-    if(config_.method==HistogramOnsetMethod::WeightedPhase){
-        for(std::size_t bin=0;bin<values_.size();++bin)values_[bin]*=magnitude_[bin];
-        if(!histogram_.process(values_,result))return false;
-    }
+    if(config_.method==HistogramOnsetMethod::WeightedPhase && !weighted_phase(result))return false;
     commit();output=result;return true;
 }
 bool PreparedHistogramOnset::process(std::span<const float> input,float& output) noexcept {

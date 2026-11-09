@@ -29,12 +29,16 @@ bool valid_prior(std::span<const float> values) noexcept {
     return std::all_of(values.begin(),values.end(),[](float x){return !std::isnan(x) && x!=std::numeric_limits<float>::infinity();});
 }
 }
+void PreparedTempoEstimator::allocate(std::size_t frames,std::size_t lags,TempoEstimatorConfig config) {
+    config_=config;maximum_frames_=frames;lags_=lags;
+    row_.resize(lags);aggregate_.resize(lags);correction_.resize(lags);
+    column_.resize(frames);result_.resize(frames);
+}
 bool PreparedTempoEstimator::prepare(std::size_t frames,std::size_t lags,TempoEstimatorConfig config) {
     std::size_t required=0;if(!storage_bytes(frames,lags,config,required))return false;
     if(!frames || !lags || !valid(config))return false;
-    PreparedTempoEstimator next;next.config_=config;next.maximum_frames_=frames;next.lags_=lags;
-    next.row_.resize(lags);next.aggregate_.resize(lags);next.correction_.resize(lags);
-    next.column_.resize(frames);next.result_.resize(frames);
+    PreparedTempoEstimator next;
+    next.allocate(frames,lags,config);
     if(next.workspace_bytes()>required)return false;
     *this=std::move(next);return true;
 }
@@ -87,30 +91,69 @@ bool PreparedTempoEstimator::reduce(FloatMatrixSource source,std::size_t frames,
     return reduction.reduce(reduction.context,source,frames,lags_,aggregate_) &&
         std::all_of(aggregate_.begin(),aggregate_.end(),[](float x){return std::isfinite(x);});
 }
+bool PreparedTempoEstimator::select_aggregate(FloatMatrixSource source,std::size_t frames,std::span<const float> prior,FloatMatrixReductionPort reduction) noexcept {
+    if(!reduce(source,frames,reduction))return false;
+    std::copy(aggregate_.begin(),aggregate_.end(),row_.begin());
+    return select(prior,result_[0]);
+}
+bool PreparedTempoEstimator::select_frames(FloatMatrixSource source,std::size_t frames,std::span<const float> prior) noexcept {
+    for(std::size_t i=0;i<frames;++i)if(!read(source,i) || !select(prior,result_[i]))return false;
+    return true;
+}
 bool PreparedTempoEstimator::process(FloatMatrixSource source,std::size_t frames,std::span<float> output,std::span<const float> prior,FloatMatrixReductionPort reduction) noexcept {
     if(!maximum_frames_ || !frames || frames>maximum_frames_ || (!prior.empty() && prior.size()!=lags_))return false;
     const bool aggregated=config_.aggregate!=TempoAggregation::None || reduction.reduce;
     const auto count=aggregated?1:frames;
     if(output.size()!=count || !valid_prior(prior))return false;
-    if(aggregated){
-        if(!reduce(source,frames,reduction))return false;
-        std::copy(aggregate_.begin(),aggregate_.end(),row_.begin());if(!select(prior,result_[0]))return false;
-    }else for(std::size_t i=0;i<frames;++i)if(!read(source,i) || !select(prior,result_[i]))return false;
+    const bool selected=aggregated?select_aggregate(source,frames,prior,reduction):select_frames(source,frames,prior);
+    if(!selected)return false;
     std::copy_n(result_.begin(),count,output.begin());return true;
 }
-bool interpolate_tempo_curve(std::span<const float> grid,std::span<const float> values,float query,float& result,float fill) noexcept {
-    if(grid.size()!=values.size() || std::isnan(query) || !std::isfinite(fill))return false;
-    std::size_t previous=grid.size();result=fill;
+namespace {
+bool tempo_curve_brackets(std::span<const float> grid,std::size_t previous,std::size_t i,float query) noexcept {
+    return previous<grid.size() && query>std::min(grid[i],grid[previous]) && query<std::max(grid[i],grid[previous]);
+}
+bool interpolate_tempo_segment(std::span<const float> grid,std::span<const float> values,std::size_t previous,std::size_t i,float query,float& result) noexcept {
+    const float t=(query-grid[previous])/(grid[i]-grid[previous]);
+    result=values[previous]+t*(values[i]-values[previous]);
+    return std::isfinite(result);
+}
+bool sample_tempo_curve(std::span<const float> grid,std::span<const float> values,float query,float& result) noexcept {
+    std::size_t previous=grid.size();
     for(std::size_t i=0;i<grid.size();++i){
         if(!std::isfinite(grid[i]))continue;
         if(!std::isfinite(values[i]))return false;
         if(query==grid[i]){result=values[i];return true;}
-        if(previous<grid.size() && query>std::min(grid[i],grid[previous]) && query<std::max(grid[i],grid[previous])){
-            const float t=(query-grid[previous])/(grid[i]-grid[previous]);result=values[previous]+t*(values[i]-values[previous]);return std::isfinite(result);
-        }
+        if(tempo_curve_brackets(grid,previous,i,query))return interpolate_tempo_segment(grid,values,previous,i,query,result);
         previous=i;
     }
     return true;
+}
+bool metrical_row(std::span<const float> grid,std::span<const float> values,float factor,std::span<float> output) noexcept {
+    for(std::size_t j=0;j<values.size();++j){
+        if(!std::isfinite(grid[j])){output[j]=0;continue;}
+        float sample=0;
+        if(!interpolate_tempo_curve(grid,values,grid[j]*factor,sample))return false;
+        output[j]=sample*values[j];
+    }
+    return true;
+}
+bool metrical_row(const PreparedCurveInterpolation& curve,float factor,std::span<float> output) noexcept {
+    const auto grid=curve.coordinates(),values=curve.values();
+    for(std::size_t j=0;j<values.size();++j){
+        float sample=0;
+        if(!curve.sample(grid[j]*factor,sample))return false;
+        const float value=sample*values[j];
+        if(!std::isfinite(value))return false;
+        output[j]=value;
+    }
+    return true;
+}
+}
+bool interpolate_tempo_curve(std::span<const float> grid,std::span<const float> values,float query,float& result,float fill) noexcept {
+    if(grid.size()!=values.size() || std::isnan(query) || !std::isfinite(fill))return false;
+    result=fill;
+    return sample_tempo_curve(grid,values,query,result);
 }
 bool tempogram_ratios(std::span<const float> grid,std::span<const float> values,float bpm,std::span<const float> factors,std::span<float> output,float fill) noexcept {
     if(!std::isfinite(fill) || grid.size()!=values.size() || output.size()!=factors.size())return false;
@@ -123,11 +166,8 @@ bool tempogram_ratios(std::span<const float> grid,std::span<const float> values,
 }
 bool metrical_tempogram(std::span<const float> grid,std::span<const float> values,std::span<const float> factors,std::span<float> output) noexcept {
     if(grid.size()!=values.size() || (values.size() && factors.size()>SIZE_MAX/values.size()) || output.size()!=values.size()*factors.size())return false;
-    for(std::size_t i=0;i<factors.size();++i)for(std::size_t j=0;j<values.size();++j){
-        if(!std::isfinite(grid[j])){output[i*values.size()+j]=0;continue;}
-        float sample=0;if(!interpolate_tempo_curve(grid,values,grid[j]*factors[i],sample))return false;
-        output[i*values.size()+j]=sample*values[j];
-    }
+    for(std::size_t i=0;i<factors.size();++i)
+        if(!metrical_row(grid,values,factors[i],output.subspan(i*values.size(),values.size())))return false;
     return true;
 }
 bool tempogram_ratios(const PreparedCurveInterpolation& curve,float bpm,std::span<const float> factors,std::span<float> output,float fill) noexcept {
@@ -148,13 +188,10 @@ bool metrical_tempogram(const PreparedCurveInterpolation& curve,std::span<const 
     return true;
 }
 bool metrical_tempogram(const PreparedCurveInterpolation& curve,std::span<const float> factors,std::span<float> output) noexcept {
-    const auto grid=curve.coordinates(),values=curve.values();
+    const auto values=curve.values();
     if(values.empty() || factors.size()>SIZE_MAX/values.size() || output.size()!=values.size()*factors.size())return false;
-    for(std::size_t i=0;i<factors.size();++i)for(std::size_t j=0;j<values.size();++j){
-        float sample=0;if(!curve.sample(grid[j]*factors[i],sample))return false;
-        const float value=sample*values[j];if(!std::isfinite(value))return false;
-        output[i*values.size()+j]=value;
-    }
+    for(std::size_t i=0;i<factors.size();++i)
+        if(!metrical_row(curve,factors[i],output.subspan(i*values.size(),values.size())))return false;
     return true;
 }
 

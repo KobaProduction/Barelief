@@ -24,6 +24,7 @@ public:
     float log_probability() const noexcept {return probability_;}
     std::span<const float> transition_distribution() const noexcept {return std::span(transition_).first(transition_count_);}
 private:
+    bool decode_sequence(std::size_t,std::size_t) noexcept;
     void clear_result() noexcept;
     bool no_path() noexcept;
     bool fail(const char*) noexcept;

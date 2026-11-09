@@ -13,13 +13,19 @@
 #include <utility>
 
 namespace rhythm_reference_ports {
+void PreparedBeatBandSalience::allocate(std::size_t beats,std::size_t bands,std::size_t window) {
+    maximum_beats_=beats;maximum_bands_=bands;window_size_=window;
+    values_.resize(beats*bands);row_.resize(bands);scratch_.resize(std::min(beats,window));
+    tick_thresholds_.resize(beats);band_thresholds_.resize(beats);
+}
 bool PreparedBeatBandSalience::prepare(std::size_t beats,std::size_t bands,std::size_t window) {
     if(!beats || !bands || !window || beats>SIZE_MAX/bands ||
        beats>std::size_t(std::numeric_limits<std::ptrdiff_t>::max())/2)return false;
     std::size_t bound=0;if(!storage_bytes(beats,bands,window,bound))return false;
-    PreparedBeatBandSalience next;next.maximum_beats_=beats;next.maximum_bands_=bands;next.window_size_=window;
-    next.values_.resize(beats*bands);next.row_.resize(bands);next.scratch_.resize(std::min(beats,window));
-    next.tick_thresholds_.resize(beats);next.band_thresholds_.resize(beats);if(next.workspace_bytes()>bound)return false;*this=std::move(next);return true;
+    PreparedBeatBandSalience next;
+    next.allocate(beats,bands,window);
+    if(next.workspace_bytes()>bound)return false;
+    *this=std::move(next);return true;
 }
 float PreparedBeatBandSalience::threshold(std::span<float> values) noexcept {
     const float mean=std::accumulate(values.begin(),values.end(),0.f)/float(values.size());
@@ -36,18 +42,27 @@ bool PreparedBeatBandSalience::read(dsp_kernels::FloatMatrixSource source,std::s
     }
     return true;
 }
-bool PreparedBeatBandSalience::filter_band(std::size_t band,std::span<const float> energy) noexcept {
-    auto values=std::span(values_).subspan(band*maximum_beats_,energy.size());
-    const auto window=std::min(window_size_,energy.size());
-    for(std::size_t beat=0;beat<energy.size();++beat){
+bool PreparedBeatBandSalience::band_thresholds(std::span<const float> values) noexcept {
+    const auto window=std::min(window_size_,values.size());
+    for(std::size_t beat=0;beat<values.size();++beat){
         auto start=beat>window/2?beat-window/2:0;
-        const auto end=std::min(energy.size(),start+window);
-        if(end==energy.size())start=end-window;
+        const auto end=std::min(values.size(),start+window);
+        if(end==values.size())start=end-window;
         auto scratch=std::span(scratch_).first(end-start);
         std::copy(values.begin()+std::ptrdiff_t(start),values.begin()+std::ptrdiff_t(end),scratch.begin());
         band_thresholds_[beat]=threshold(scratch);
         if(!std::isfinite(band_thresholds_[beat]))return false;
     }
+    return true;
+}
+bool PreparedBeatBandSalience::filter_bands(std::span<const float> energy,std::size_t bands) noexcept {
+    for(std::size_t band=0;band<bands;++band)if(!filter_band(band,energy))return false;
+    beats_=energy.size();bands_=bands;ready_=true;
+    return true;
+}
+bool PreparedBeatBandSalience::filter_band(std::size_t band,std::span<const float> energy) noexcept {
+    auto values=std::span(values_).subspan(band*maximum_beats_,energy.size());
+    if(!band_thresholds(values))return false;
     for(std::size_t beat=0;beat<energy.size();++beat){
         if(values[beat]<band_thresholds_[beat] && values[beat]<=tick_thresholds_[beat])values[beat]=0;
         else values[beat]*=energy[beat];
@@ -61,8 +76,7 @@ bool PreparedBeatBandSalience::process(dsp_kernels::FloatMatrixSource ratios,std
        !std::all_of(energy.begin(),energy.end(),[](float x){return std::isfinite(x);}))return false;
     if(energy.empty()){ready_=true;return true;}
     if(!bands || !ratios.read || !read(ratios,energy.size(),bands))return false;
-    for(std::size_t band=0;band<bands;++band)if(!filter_band(band,energy))return false;
-    beats_=energy.size();bands_=bands;ready_=true;return true;
+    return filter_bands(energy,bands);
 }
 std::span<const float> PreparedBeatBandSalience::band_values(std::size_t band) const noexcept {
     if(!ready_ || band>=bands_)return {};

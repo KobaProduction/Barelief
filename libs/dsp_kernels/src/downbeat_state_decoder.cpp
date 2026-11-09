@@ -115,6 +115,14 @@ std::span<const std::uint32_t> PreparedDownbeatStateDecoder::state_path() const 
 
 
 namespace dsp_kernels {
+namespace {
+bool add_downbeat_pattern_storage(const DownbeatPatternConfig& p,float frame_rate,std::size_t maximum,std::size_t& bytes) noexcept {
+    if(!p.beats || !std::isfinite(p.minimum_bpm) || p.minimum_bpm<=0 || !std::isfinite(p.maximum_bpm) || p.maximum_bpm<p.minimum_bpm)return false;
+    detail::MetricalStorage storage;
+    const auto read=[&](std::size_t,MetricalPatternConfig& v){v={p.beats,60.f*frame_rate/p.maximum_bpm,60.f*frame_rate/p.minimum_bpm,p.num_tempi};return true;};
+    return detail::metrical_storage(1,read,maximum,3,false,storage) && prepared_storage::add_bytes(bytes,storage.total);
+}
+}
 bool PreparedDownbeatStateDecoder::storage_bytes(std::size_t maximum,std::span<const DownbeatPatternConfig> patterns,DownbeatStateDecoderConfig c,std::size_t& out) noexcept {
     if(!maximum || maximum>UINT32_MAX || patterns.empty() || !std::isfinite(c.frame_rate) || c.frame_rate<=0 ||
        !std::isfinite(float(maximum)/c.frame_rate) || !std::isfinite(c.observation_lambda) || c.observation_lambda<=1 ||
@@ -122,12 +130,7 @@ bool PreparedDownbeatStateDecoder::storage_bytes(std::size_t maximum,std::span<c
     std::size_t bytes=0;
     if(!prepared_storage::add_array(bytes,patterns.size(),sizeof(PreparedMetricalStateSpace)+sizeof(PreparedSparseMarkovModel)+sizeof(float)) ||
        !prepared_storage::add_array(bytes,maximum,sizeof(float)+2*sizeof(std::uint32_t)))return false;
-    for(const auto& p:patterns){
-        if(!p.beats || !std::isfinite(p.minimum_bpm) || p.minimum_bpm<=0 || !std::isfinite(p.maximum_bpm) || p.maximum_bpm<p.minimum_bpm)return false;
-        detail::MetricalStorage s;
-        const auto read=[&](std::size_t,MetricalPatternConfig& v){v={p.beats,60.f*c.frame_rate/p.maximum_bpm,60.f*c.frame_rate/p.minimum_bpm,p.num_tempi};return true;};
-        if(!detail::metrical_storage(1,read,maximum,3,false,s) || !prepared_storage::add_bytes(bytes,s.total))return false;
-    }
+    for(const auto& p:patterns)if(!add_downbeat_pattern_storage(p,c.frame_rate,maximum,bytes))return false;
     out=bytes;return true;
 }
 std::size_t PreparedDownbeatStateDecoder::workspace_bytes() const noexcept {

@@ -15,17 +15,21 @@ bool PreparedSpectralAlignment::prepare(std::size_t bins,std::size_t radius,bool
     next.correlations_.resize(2*radius+1);next.difference_.resize(bins);
     *this=std::move(next);return true;
 }
-bool PreparedSpectralAlignment::process(std::span<const float> current,std::span<const float> reference,std::span<float> output) noexcept {
-    if(!bins_ || current.size()!=bins_ || reference.size()!=bins_ || output.size()!=bins_)return false;
-    if(!linear_crosscorrelation(current,reference,-std::ptrdiff_t(radius_),correlations_,CorrelationNormalization::Raw))return false;
-    const auto peak=std::size_t(std::max_element(correlations_.begin(),correlations_.end())-correlations_.begin());
-    const auto offset=std::ptrdiff_t(radius_)-std::ptrdiff_t(peak);
+bool PreparedSpectralAlignment::aligned_difference(std::span<const float> current,std::span<const float> reference,std::ptrdiff_t offset) noexcept {
     std::fill(difference_.begin(),difference_.end(),0.f);
     for(std::size_t i=radius_;i<bins_-radius_;++i){
         const float value=current[i]-reference[std::size_t(std::ptrdiff_t(i)+offset)];
         if(!std::isfinite(value))return false;
         difference_[i]=positive_?std::max(0.f,value):value;
     }
+    return true;
+}
+bool PreparedSpectralAlignment::process(std::span<const float> current,std::span<const float> reference,std::span<float> output) noexcept {
+    if(!bins_ || current.size()!=bins_ || reference.size()!=bins_ || output.size()!=bins_)return false;
+    if(!linear_crosscorrelation(current,reference,-std::ptrdiff_t(radius_),correlations_,CorrelationNormalization::Raw))return false;
+    const auto peak=std::size_t(std::max_element(correlations_.begin(),correlations_.end())-correlations_.begin());
+    const auto offset=std::ptrdiff_t(radius_)-std::ptrdiff_t(peak);
+    if(!aligned_difference(current,reference,offset))return false;
     std::copy(difference_.begin(),difference_.end(),output.begin());offset_=offset;return true;
 }
 }

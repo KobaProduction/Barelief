@@ -58,6 +58,12 @@ bool PreparedTickSequenceRefinement::finalize() noexcept {
     }
     status_=TickSequenceStatus::Ready;return true;
 }
+bool PreparedTickSequenceRefinement::refine_ticks(float length,float begin,float end) noexcept {
+    if(count_<=1)return true;
+    if(!extend(length))return false;
+    clip(begin,end);separate();remove_offbeats();
+    return true;
+}
 bool PreparedTickSequenceRefinement::process(std::span<const float> candidates,std::uint64_t frames,float start,float stop) noexcept {
     count_=0;status_=TickSequenceStatus::InvalidInput;
     if(ticks_.empty() || !std::isfinite(start) || start<0 || !std::isfinite(stop) || stop<0 ||
@@ -67,11 +73,7 @@ bool PreparedTickSequenceRefinement::process(std::span<const float> candidates,s
     const float end=std::max(stop,float(frames)-5.f*config_.frame_rate)/config_.frame_rate-config_.last_beat_interval_seconds;
     if(!std::isfinite(length) || !std::isfinite(begin) || !std::isfinite(end))return false;
     std::copy(candidates.begin(),candidates.end(),ticks_.begin());count_=candidates.size();
-    if(count_>1){
-        if(!extend(length))return false;
-        clip(begin,end);separate();remove_offbeats();
-    }
-    return finalize();
+    return refine_ticks(length,begin,end) && finalize();
 }
 std::span<const float> PreparedTickSequenceRefinement::ticks() const noexcept {
     return status_==TickSequenceStatus::Ready?std::span<const float>(ticks_).first(count_):std::span<const float>{};

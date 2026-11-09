@@ -23,6 +23,9 @@ public:
     std::span<const float> reference() const noexcept;
     std::span<const float> candidate_errors() const noexcept;
 private:
+    void add_reference_row(std::size_t) noexcept;
+    bool candidate_error(std::size_t,float&) noexcept;
+    bool publish_selection(FloatMatrixSource,std::size_t) noexcept;
     bool read(FloatMatrixSource,std::size_t,std::size_t) noexcept;
     bool average(FloatMatrixSource,std::size_t,std::size_t) noexcept;
     bool select(FloatMatrixSource,std::size_t,std::size_t,std::size_t) noexcept;

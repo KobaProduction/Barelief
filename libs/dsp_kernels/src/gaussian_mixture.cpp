@@ -32,36 +32,40 @@ bool finite(std::span<const float> values) noexcept {
     return std::all_of(values.begin(),values.end(),[](float x){return std::isfinite(x);});
 }
 }
+bool PreparedGaussianMixture::diagonal_component(GaussianMixtureParameters p,std::size_t component) {
+    float log_determinant=0,mean_square=0;
+    for(std::size_t feature=0;feature<features_;++feature){
+        const auto at=component*features_+feature;
+        const float variance=p.covariances[p.covariances.size()==p.components?component:at],mean=means_[at];
+        if(variance<=0)return false;
+        inverse_variance_[at]=1.f/variance;mean_over_variance_[at]=mean/variance;
+        log_determinant+=std::log(variance);mean_square+=(mean*mean)/variance;
+    }
+    constants_[component]=float(features_)*log_two_pi+log_determinant+mean_square;
+    return std::isfinite(constants_[component]);
+}
 bool PreparedGaussianMixture::diagonal(GaussianMixtureParameters p) {
     inverse_variance_.resize(p.means.size());mean_over_variance_.resize(p.means.size());
-    for(std::size_t component=0;component<p.components;++component){
-        float log_determinant=0,mean_square=0;
-        for(std::size_t feature=0;feature<features_;++feature){
-            const auto at=component*features_+feature;
-            const float variance=p.covariances[p.covariances.size()==p.components?component:at],mean=means_[at];
-            if(variance<=0)return false;
-            inverse_variance_[at]=1.f/variance;mean_over_variance_[at]=mean/variance;
-            log_determinant+=std::log(variance);mean_square+=(mean*mean)/variance;
-        }
-        constants_[component]=float(features_)*log_two_pi+log_determinant+mean_square;
-        if(!std::isfinite(constants_[component]))return false;
-    }
+    for(std::size_t component=0;component<p.components;++component)if(!diagonal_component(p,component))return false;
     return finite(inverse_variance_) && finite(mean_over_variance_);
 }
 bool PreparedGaussianMixture::covariance(std::span<const float> input,std::span<float> output,float retry) {
     return cholesky_lower(input,features_,output) || cholesky_lower(input,features_,output,retry);
+}
+bool PreparedGaussianMixture::full_constant(std::size_t component,GaussianCovariance covariance) {
+    const auto matrix=covariance==GaussianCovariance::Tied?0:component;
+    const auto square=features_*features_;
+    float sum=0;
+    for(std::size_t feature=0;feature<features_;++feature)sum+=std::log(lower_[matrix*square+feature*features_+feature]);
+    constants_[component]=float(features_)*log_two_pi+2.f*sum;
+    return std::isfinite(constants_[component]);
 }
 bool PreparedGaussianMixture::full(GaussianMixtureParameters p,float retry) {
     const auto square=features_*features_,matrices=p.covariance==GaussianCovariance::Tied?1:p.components;
     lower_.resize(matrices*square);
     for(std::size_t component=0;component<matrices;++component)
         if(!covariance(p.covariances.subspan(component*square,square),std::span(lower_).subspan(component*square,square),retry))return false;
-    for(std::size_t component=0;component<p.components;++component){
-        const auto matrix=p.covariance==GaussianCovariance::Tied?0:component;float sum=0;
-        for(std::size_t feature=0;feature<features_;++feature)sum+=std::log(lower_[matrix*square+feature*features_+feature]);
-        constants_[component]=float(features_)*log_two_pi+2.f*sum;
-        if(!std::isfinite(constants_[component]))return false;
-    }
+    for(std::size_t component=0;component<p.components;++component)if(!full_constant(component,p.covariance))return false;
     return true;
 }
 bool PreparedGaussianMixture::configure(GaussianMixtureParameters p,float retry) {

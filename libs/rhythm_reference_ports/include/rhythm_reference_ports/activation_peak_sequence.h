@@ -33,6 +33,8 @@ public:
     std::int64_t frame_counter() const noexcept {return counter_;}
     std::size_t buffer_frames() const noexcept {return started_?history_.values().size():0;}
 private:
+    void prepend_previous() noexcept;
+    void publish_combined(std::size_t,std::size_t,bool) noexcept;
     bool configure(std::size_t,ActivationPeakSequenceConfig);
     bool prepare_kernels();
     bool validate(std::span<const float>) const noexcept;

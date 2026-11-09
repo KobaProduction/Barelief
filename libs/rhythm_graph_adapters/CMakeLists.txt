@@ -121,3 +121,10 @@ add_executable(rhythm_operations_composition EXCLUDE_FROM_ALL
     "${PROJECT_SOURCE_DIR}/examples/rhythm_operations/spectral_diagnostics.cpp")
 target_link_libraries(rhythm_operations_composition PRIVATE rhythm_graph_adapters)
 target_compile_features(rhythm_operations_composition PRIVATE cxx_std_20)
+
+if(BUILD_TESTING AND NOT BUILD_DSP_ONLY AND NOT BUILD_PORTABLE_SDK)
+    set_property(TARGET rhythm_operations_composition PROPERTY EXCLUDE_FROM_ALL FALSE)
+    add_test(NAME rhythm_operations_composition COMMAND rhythm_operations_composition)
+    set_tests_properties(rhythm_operations_composition PROPERTIES
+        LABELS "quick;component" TIMEOUT 15)
+endif()

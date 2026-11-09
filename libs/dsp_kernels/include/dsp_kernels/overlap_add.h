@@ -22,6 +22,7 @@ public:
     bool add(std::size_t frame,std::span<const float> values) noexcept;
     bool finish(std::span<float> output) const noexcept;
 private:
+    void configure(std::size_t,std::span<const float>,std::size_t,bool,OverlapNormalization,OverlapSampleSelection);
     std::size_t maximum_frames_=0,hop_=1,offset_=0,used_=0;
     bool accumulate(std::size_t,float,float) noexcept;
     OverlapNormalization normalization_=OverlapNormalization::WindowSquared;

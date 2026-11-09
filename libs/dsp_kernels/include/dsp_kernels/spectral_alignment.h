@@ -17,6 +17,7 @@ public:
     std::ptrdiff_t offset() const noexcept {return offset_;}
     std::span<const float> correlations() const noexcept {return correlations_;}
 private:
+    bool aligned_difference(std::span<const float>,std::span<const float>,std::ptrdiff_t) noexcept;
     std::size_t bins_=0,radius_=0;
     bool positive_=false;
     std::ptrdiff_t offset_=0;

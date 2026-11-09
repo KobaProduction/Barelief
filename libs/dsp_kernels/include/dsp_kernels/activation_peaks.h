@@ -29,6 +29,7 @@ public:
     std::size_t output_frames(std::size_t input_frames) const noexcept;
     bool process(std::span<const float> activations,std::span<std::uint8_t> peaks) noexcept;
 private:
+    void detect(std::size_t) noexcept;
     bool smooth(std::span<const float>,std::size_t) noexcept;
     float mean(std::size_t,std::size_t) const noexcept;
     float maximum(std::size_t,std::size_t) const noexcept;

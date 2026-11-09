@@ -35,6 +35,10 @@ public:
     std::uint64_t consumed_frames() const noexcept {return frames_;}
     PeriodPhaseTickStatus status() const noexcept {return status_;}
 private:
+    bool match_periods(std::span<const float>,float,float&) noexcept;
+    void allocate(std::size_t,std::size_t,std::size_t);
+    void append_period_matches(std::span<const float>,float) noexcept;
+    bool emit_tick(std::int64_t,float,float&) noexcept;
     bool configure(std::size_t,std::size_t,std::size_t,PeriodPhaseTickConfig);
     bool valid(std::span<const float>,std::span<const float>) const noexcept;
     std::size_t retain(std::span<const float>,std::span<const float>) noexcept;

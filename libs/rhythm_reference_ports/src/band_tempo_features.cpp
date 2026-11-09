@@ -14,15 +14,19 @@ float tempo_feature_scale(float value,float lower,float upper,float exponent) no
     if(value>lower)return upper+(upper-lower)*std::pow((value-lower)/(upper-lower),exponent);
     return value;
 }
+void PreparedBandTempoFeatures::allocate(std::span<const float> gains,float factor) {
+    frame_factor_=factor;
+    gains_.assign(gains.begin(),gains.end());previous_.resize(gains.size());
+    current_.resize(gains.size());result_.resize(gains.size());
+}
 bool PreparedBandTempoFeatures::prepare(std::span<const float> gains,float frame_time) {
     std::size_t admitted=0;if(!storage_bytes(gains,frame_time,admitted))return false;
     if(gains.empty() || !std::isfinite(frame_time) || frame_time<=0 ||
        !std::all_of(gains.begin(),gains.end(),[](float x){return std::isfinite(x);}))return false;
     const float factor=std::sqrt(256.f/frame_time);
     if(!std::isfinite(factor))return false;
-    PreparedBandTempoFeatures next;next.frame_factor_=factor;
-    next.gains_.assign(gains.begin(),gains.end());next.previous_.resize(gains.size());
-    next.current_.resize(gains.size());next.result_.resize(gains.size());
+    PreparedBandTempoFeatures next;
+    next.allocate(gains,factor);
     if(next.workspace_bytes()>admitted)return false;
     *this=std::move(next);return true;
 }

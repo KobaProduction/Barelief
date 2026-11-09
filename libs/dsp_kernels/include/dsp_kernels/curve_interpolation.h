@@ -45,6 +45,14 @@ public:
              basis_.capacity()+left_.capacity()+right_.capacity())*sizeof(float);
     }
 private:
+    bool collect_coordinate_indices(std::span<const float>) noexcept;
+    bool prepare_geometry();
+    bool prepare_spline_geometry();
+    bool allocate_spline();
+    void forward_substitution() noexcept;
+    bool load_values(std::span<const float>) noexcept;
+    float interpolate_between(float,std::size_t) const noexcept;
+    float sample_spline(float) const noexcept;
     bool configure(std::span<const float>,CurveInterpolationConfig);
     bool coordinates(std::span<const float>) noexcept;
     bool resize_geometry() noexcept;

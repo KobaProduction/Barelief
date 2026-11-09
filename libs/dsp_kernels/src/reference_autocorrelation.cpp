@@ -36,17 +36,22 @@ bool PreparedSpectralAutocorrelation::collect_reference(std::size_t samples,std:
     }
     return true;
 }
+void PreparedSpectralAutocorrelation::publish_reference_spectrum() noexcept {
+    for(std::size_t k=0;k<reference_spectrum_.size()/2;++k){
+        spectrum_[k]=float(reference_spectrum_[2*k]);
+        if(k && 2*k!=config_.fft_size)spectrum_[config_.fft_size-k]=spectrum_[k];
+    }
+    for(std::size_t k=0;k<reference_result_.size();++k){
+        result_[2*k]=float(reference_result_[k]);result_[2*k+1]=0;
+    }
+}
 bool PreparedSpectralAutocorrelation::publish_reference(std::size_t lags) noexcept {
     if(!detail::finite_float_range(reference_input_) || !detail::finite_float_range(reference_complex_) ||
        !detail::finite_float_range(reference_spectrum_) || !detail::finite_float_range(reference_result_) ||
        !detail::finite_float_range(std::span<const double>(reference_values_).first(lags)))return false;
     std::transform(reference_input_.begin(),reference_input_.end(),input_.begin(),[](double x){return float(x);});
     std::transform(reference_complex_.begin(),reference_complex_.end(),transformed_.begin(),[](double x){return float(x);});
-    for(std::size_t k=0;k<reference_spectrum_.size()/2;++k){
-        spectrum_[k]=float(reference_spectrum_[2*k]);
-        if(k && 2*k!=config_.fft_size)spectrum_[config_.fft_size-k]=spectrum_[k];
-    }
-    for(std::size_t k=0;k<reference_result_.size();++k){result_[2*k]=float(reference_result_[k]);result_[2*k+1]=0;}
+    publish_reference_spectrum();
     std::transform(reference_values_.begin(),reference_values_.begin()+std::ptrdiff_t(lags),values_.begin(),[](double x){return float(x);});
     return true;
 }

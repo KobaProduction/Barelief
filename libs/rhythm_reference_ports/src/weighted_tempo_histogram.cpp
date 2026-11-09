@@ -24,14 +24,17 @@ bool strength_order(const InterpolatedPeak& a,const InterpolatedPeak& b) noexcep
     return a.value==b.value?a.position>b.position:a.value>b.value;
 }
 }
+void PreparedWeightedTempoHistogram::allocate(std::size_t observations,std::size_t frames,WeightedTempoHistogramConfig config) {
+    config.minimum_bpm=std::floor(config.minimum_bpm);config.maximum_bpm=std::ceil(config.maximum_bpm);
+    config_=config;maximum_observations_=observations;maximum_frames_=frames;
+    const auto bins=std::size_t(config.maximum_bpm)+1;
+    histogram_.resize(bins);frame_.resize(bins);result_.resize(bins);
+}
 bool PreparedWeightedTempoHistogram::prepare(std::size_t observations,std::size_t frames,WeightedTempoHistogramConfig config) {
     if(!observations || !frames || !valid(config))return false;
     std::size_t bound=0;if(!storage_bytes(observations,frames,config,bound))return false;
     PreparedWeightedTempoHistogram next;
-    config.minimum_bpm=std::floor(config.minimum_bpm);config.maximum_bpm=std::ceil(config.maximum_bpm);
-    next.config_=config;next.maximum_observations_=observations;next.maximum_frames_=frames;
-    const auto bins=std::size_t(config.maximum_bpm)+1;
-    next.histogram_.resize(bins);next.frame_.resize(bins);next.result_.resize(bins);
+    next.allocate(observations,frames,config);
     if(next.workspace_bytes()>bound)return false;
     *this=std::move(next);return true;
 }
@@ -80,10 +83,20 @@ bool PreparedWeightedTempoHistogram::accumulate(dsp_kernels::FloatMatrixSource s
     }
     return true;
 }
-void PreparedWeightedTempoHistogram::seed() noexcept {
-    float sum=0;std::size_t nonzero=0;
+float PreparedWeightedTempoHistogram::seed_threshold() const noexcept {
+    float sum=0;
+    std::size_t nonzero=0;
     for(const float value:histogram_)if(value>0){sum+=value;++nonzero;}
-    const float threshold=nonzero?sum/float(nonzero):0;
+    return nonzero?sum/float(nonzero):0;
+}
+bool PreparedWeightedTempoHistogram::finish_histogram(dsp_kernels::FloatMatrixSource tempogram,std::size_t frames) noexcept {
+    seed();
+    if(!enrich(tempogram,frames))return false;
+    normalize();
+    return true;
+}
+void PreparedWeightedTempoHistogram::seed() noexcept {
+    const float threshold=seed_threshold();
     count_=0;
     if(threshold==0){result_[count_++]={0,0};return;}
     for(std::size_t i=0;i<histogram_.size();++i)
@@ -127,8 +140,6 @@ bool PreparedWeightedTempoHistogram::process(dsp_kernels::FloatMatrixSource obse
     count_=0;std::fill(histogram_.begin(),histogram_.end(),0);
     if(silent_)return true;
     if(!accumulate(observations,count,maximum))return false;
-    seed();
-    if(!enrich(tempogram,frames))return false;
-    normalize();return true;
+    return finish_histogram(tempogram,frames);
 }
 }

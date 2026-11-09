@@ -18,6 +18,7 @@ public:
     bool process(std::span<const float> values,std::span<float> output) const noexcept {return projection_.process(values,output);}
     std::size_t bands() const noexcept {return bands_;}
 private:
+    bool configure(std::span<const float>,std::span<const float>,bool,bool,std::size_t);
     std::size_t bands_=0;
     MelFilterBank projection_;
 };

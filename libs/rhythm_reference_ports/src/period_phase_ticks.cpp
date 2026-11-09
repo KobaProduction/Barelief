@@ -10,6 +10,10 @@
 #include <utility>
 
 namespace rhythm_reference_ports {
+void PreparedPeriodPhaseTicks::allocate(std::size_t candidates,std::size_t matches,std::size_t ticks) {
+    periods_.resize(candidates);phases_.resize(candidates+12);matches_.resize(matches);ticks_.resize(ticks);
+    counts_.resize(std::size_t(config_.maximum_candidate_frames/2.f+.5f)+1);
+}
 bool PreparedPeriodPhaseTicks::configure(std::size_t candidates,std::size_t matches,std::size_t ticks,PeriodPhaseTickConfig config) {
     const auto limit=std::size_t(std::numeric_limits<std::ptrdiff_t>::max());
     if(!candidates || candidates>limit-12 || !matches || !ticks || !config.evaluation_hop ||
@@ -21,8 +25,8 @@ bool PreparedPeriodPhaseTicks::configure(std::size_t candidates,std::size_t matc
     const float time=float(config.audio_hop)/config.sample_rate;
     if(!std::isfinite(time) || time<=0)return false;
     config_=config;maximum_candidates_=candidates;frame_time_=time;
-    periods_.resize(candidates);phases_.resize(candidates+12);matches_.resize(matches);ticks_.resize(ticks);
-    counts_.resize(std::size_t(config.maximum_candidate_frames/2.f+.5f)+1);return true;
+    allocate(candidates,matches,ticks);
+    return true;
 }
 bool PreparedPeriodPhaseTicks::prepare(std::size_t candidates,std::size_t matches,std::size_t ticks,PeriodPhaseTickConfig config) {
     std::size_t admitted=0;if(!storage_bytes(candidates,matches,ticks,config,admitted))return false;
@@ -61,14 +65,29 @@ bool PreparedPeriodPhaseTicks::closest(std::span<float> candidates,float& closes
     for(auto& value:candidates)value*=2.f;
     return true;
 }
+void PreparedPeriodPhaseTicks::append_period_matches(std::span<const float> values,float closest_period) noexcept {
+    for(const float value:values)if(std::abs(closest_period-value)<2.f)matches_[match_count_++]=value;
+}
+bool PreparedPeriodPhaseTicks::emit_tick(std::int64_t origin,float period,float& phase) noexcept {
+    if(tick_count_==ticks_.size()){status_=PeriodPhaseTickStatus::CapacityExceeded;return false;}
+    const float time=(float(origin)+phase)*frame_time_,next=phase+period;
+    if(!std::isfinite(time) || !std::isfinite(next))return false;
+    if(next<=phase){status_=PeriodPhaseTickStatus::NonAdvancingPhase;return false;}
+    ticks_[tick_count_++]=time;phase=next;
+    return true;
+}
+bool PreparedPeriodPhaseTicks::match_periods(std::span<const float> values,float closest_period,float& sum) noexcept {
+    std::size_t additions=0;
+    for(const float value:values)if(std::abs(closest_period-value)<2.f){++additions;sum+=value;}
+    if(additions>matches_.size()-match_count_){status_=PeriodPhaseTickStatus::CapacityExceeded;return false;}
+    return std::isfinite(sum);
+}
 bool PreparedPeriodPhaseTicks::period_vote(std::size_t count,float& period) noexcept {
     auto values=std::span(periods_).first(count);float closest_period=0;
     if(!closest(values,closest_period))return false;
-    std::size_t additions=0;float sum=match_sum_;
-    for(const float value:values)if(std::abs(closest_period-value)<2.f){++additions;sum+=value;}
-    if(additions>matches_.size()-match_count_){status_=PeriodPhaseTickStatus::CapacityExceeded;return false;}
-    if(!std::isfinite(sum))return false;
-    for(const float value:values)if(std::abs(closest_period-value)<2.f)matches_[match_count_++]=value;
+    float sum=match_sum_;
+    if(!match_periods(values,closest_period,sum))return false;
+    append_period_matches(values,closest_period);
     match_sum_=sum;period=match_count_?sum/float(match_count_):closest_period;return true;
 }
 bool PreparedPeriodPhaseTicks::phase_vote(std::size_t count,float& phase) noexcept {
@@ -90,13 +109,7 @@ bool PreparedPeriodPhaseTicks::update_next_phase(float period,float phase) noexc
 bool PreparedPeriodPhaseTicks::emit(float period,float phase) noexcept {
     if(period<=0)return true;
     const auto origin=std::int64_t(frames_)-std::int64_t(config_.evaluation_hop);
-    while(phase<float(config_.evaluation_hop)){
-        if(tick_count_==ticks_.size()){status_=PeriodPhaseTickStatus::CapacityExceeded;return false;}
-        const float time=(float(origin)+phase)*frame_time_,next=phase+period;
-        if(!std::isfinite(time) || !std::isfinite(next))return false;
-        if(next<=phase){status_=PeriodPhaseTickStatus::NonAdvancingPhase;return false;}
-        ticks_[tick_count_++]=time;phase=next;
-    }
+    while(phase<float(config_.evaluation_hop))if(!emit_tick(origin,period,phase))return false;
     return update_next_phase(period,phase);
 }
 bool PreparedPeriodPhaseTicks::process(std::span<const float> periods,std::span<const float> phases) noexcept {

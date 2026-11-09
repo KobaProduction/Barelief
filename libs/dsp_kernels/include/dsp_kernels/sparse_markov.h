@@ -24,6 +24,8 @@ public:
 private:
     bool configure(std::size_t,std::span<const MarkovTransition>);
     bool append(std::span<const MarkovTransition>,std::size_t);
+    void append_edge(const MarkovTransition&);
+    void finish_offsets();
     std::vector<std::size_t> offsets_;
     std::vector<std::uint32_t> predecessors_;
     std::vector<float> probabilities_,logs_;
@@ -67,6 +69,9 @@ private:
     bool configure(std::size_t,std::size_t,std::span<const std::uint32_t>,
                    std::span<const MarkovTransition>,std::span<const float>);
     bool initial(std::span<const float>);
+    void allocate(std::size_t,std::size_t,std::size_t);
+    bool viterbi_frame(FloatMatrixSource,std::size_t) noexcept;
+    bool forward_frame(FloatMatrixSource,std::size_t,FloatMatrixDestination) noexcept;
     bool load(FloatMatrixSource,std::size_t,bool logarithmic) noexcept;
     bool trace(std::size_t) noexcept;
     std::size_t maximum_frames_=0,density_count_=0,result_frames_=0;
