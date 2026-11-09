@@ -83,15 +83,20 @@ static QJsonObject saved_settings(const QByteArray& source) {
 }
 static bool navigation_does_not_save(CoreApplication& app,MainWindow* window,const QString& path) {
     auto* surface=window->findChild<SpectrogramGraph*>();if(!surface)return false;
-    // Saved node settings do not imply the first dock-layout timer has fired.
-    // Wait for the actual persisted workspace, not an arbitrary startup delay.
+    // Initial resize events may occur while layout restoration suppresses saves.
+    // Make a real workspace change after startup, then await its persisted state.
+    window->resize(window->width()+16,window->height());
     auto modified=QFileInfo(path).lastModified();
     auto workspace=saved_settings(read(path)).value("ui").toObject().value("workspace").toObject();
     if(!wait_until([&]{
         const auto current=QFileInfo(path).lastModified();
         if(current!=modified){modified=current;workspace=saved_settings(read(path)).value("ui").toObject().value("workspace").toObject();}
         return saved(window) && workspace.value("version").toInt()==1;
-    }))return require(false,"initial dock layout was not persisted");
+    })) {
+        qWarning()<<"WORKSPACE_AUTOSAVE disk-version"<<workspace.value("version").toInt()
+            <<"memory-version"<<app._ctx.file_configs.ui.workspace.value("version").toInt()<<"saved"<<saved(window);
+        return require(false,"dock layout change was not persisted");
+    }
     const auto before=read(path);const auto baselineModified=QFileInfo(path).lastModified();
     const QJsonObject camera{{"rotation_x",17},{"rotation_y",29},{"zoom",1.25}};
     QObject diagnostics;

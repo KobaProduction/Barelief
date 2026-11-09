@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from project_environment import activate
 import re
 import shutil
 import subprocess
@@ -162,6 +163,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main():
     try:
+        activate(Path(__file__).resolve().parent.parent)
         return run(arguments())
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print("Clazy gate: " + str(error), file=sys.stderr)

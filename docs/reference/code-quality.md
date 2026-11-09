@@ -331,6 +331,50 @@ meta-hook for changes to quality tooling.
 
 ## Proven compilation profiles
 
+### Настройка основного checkout
+
+Машинные пути хранятся в корневом `.env.local` (шаблон — `.env.example`).
+Его читают CMake, clang-tidy, Clazy и runner проверок инструментов. Относительные
+пути считаются от корня checkout; `${NAME}` ссылается на ранее заданную переменную
+или окружение процесса. Окружение процесса имеет приоритет. Настройка не выполняет
+shell-команды и не меняет глобальные переменные Windows.
+
+Задайте `QT_ROOT`, `CC`, `CXX`, `CMAKE_EXE`, `NINJA_EXE`, `CLAZY_STANDALONE`,
+`IDF_PATH`, `IDF_TOOLS_PATH`, `IDF_PYTHON_ENV_PATH`, `ESP32_TOOLCHAIN_DIR`,
+`ESP_CLANG_TIDY`, `ESP_DSP_SOURCE_DIR`, `GMF_FFT_SOURCE_DIR`, `BDSP_SOURCE_DIR`.
+ESP-IDF должен соответствовать принятому v6.1; версии компиляторов берутся из
+его `tools/tools.json`. Установка недостающих официальных инструментов выполняется
+явно через `python "$IDF_PATH/tools/idf_tools.py" install esp-clang xtensa-esp-elf
+esp32ulp-elf esp-rom-elfs`. Конфигурация проекта сама их не устанавливает.
+GMF проверяется по `examples/gmf_fft_benchmark/vendor.lock.json`; ESP-DSP использует
+тот же pin, что и `adapters/esp_idf/library/CMakeLists.txt`.
+
+После задания путей выполните из основного checkout:
+
+```powershell
+cmake --preset dev -DBUILD_QUALITY_HEADER_AUDIT=ON -DBARELIEF_RHYTHM_REFERENCE_GUI=ON
+cmake --build --preset dev --target quality-contexts quality_public_headers quality_fourier_headers
+```
+
+Desktop-сборка с `BUILD_TESTING=ON` создаёт все зарегистрированные CTest exe,
+включая reference-pipeline тесты. Эти длительные сценарии не входят в `local-push`;
+`rhythm_reference_runner` по-прежнему собирается только явно.
+Research GUI включён в Dev для реальных команд компиляции его исходников;
+Release сохраняет отдельный выбор этого профиля.
+
+`cmake/quality-profiles.json` регистрирует SDK, ESP32/ESP32-S3 benchmark variants
+и host-профиль GMF. Цель `quality-contexts` создаёт настоящие compile databases
+в `cmake-build-dev/quality-contexts`, использует отдельный build-local sdkconfig
+для каждой конфигурации и обновляет `.agent-workspace/quality-contexts.json`
+только после успешной подготовки всех профилей. После изменения toolchain или
+CMake/options этих профилей повторите эту цель. Hook использует готовые базы;
+не копируйте базы команд из другого checkout.
+
+Публичные standalone-заголовки и C-совместимые конфигурационные заголовки FFT
+получают реальные C++ consumer targets `quality_public_headers` и
+`quality_fourier_headers`. Проверки не заимствуют случайную C++-команду для
+заголовка, фактически включённого только из C-файла.
+
 clang-tidy no longer borrows an arbitrary nearby compilation command. Each selected
 source must have a real entry in a configured compilation database. Self-contained
 headers remain main files with `-x c++-header` placed before the input and use each

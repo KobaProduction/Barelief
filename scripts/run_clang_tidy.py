@@ -8,6 +8,7 @@ import shutil
 import sys
 
 from quality_execution import CommandTask, run_jobs
+from project_environment import activate
 from quality_compile_context import exact_header_filter, contexts_for, embedded_target, include_roots, is_fragment, load_contexts, materialize
 from quality_scope import partition_scope, select_scope
 
@@ -146,6 +147,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main() -> None:
     try:
+        activate(Path(__file__).resolve().parent.parent)
         result = run(arguments())
     except (OSError, ValueError) as error:
         print("clang-tidy gate: " + str(error), file=sys.stderr)

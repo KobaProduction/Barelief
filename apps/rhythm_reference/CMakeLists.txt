@@ -67,4 +67,10 @@ if(BUILD_TESTING)
     target_link_libraries(essentia_reference_pipeline_tests PRIVATE desktop_fourier_backend)
     # Full three-mode, packet/replay and rollover coverage measured 227 seconds.
     set_tests_properties(madmom_reference_pipeline_tests PROPERTIES TIMEOUT 600)
+    # Registered CTest executables must exist after the ordinary test build,
+    # even though the optional research application stays outside ALL.
+    get_property(reference_test_targets DIRECTORY PROPERTY TESTS)
+    foreach(reference_test_target IN LISTS reference_test_targets)
+        set_property(TARGET ${reference_test_target} PROPERTY EXCLUDE_FROM_ALL FALSE)
+    endforeach()
 endif()

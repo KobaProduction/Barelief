@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.30)
+include(cmake/ProjectEnvironment.cmake)
 include(cmake/GitVersion.cmake)
 project(Barelief VERSION ${BARELIEF_VERSION} DESCRIPTION "Barelief | Signal Processing & Visualization" LANGUAGES C CXX)
 include(cmake/serena.cmake)
@@ -40,6 +41,10 @@ FetchContent_Declare(BDSP
     GIT_TAG 2c68056dfaeffba2f34fc64eee9bc9e331e83c7c)
 FetchContent_MakeAvailable(BDSP)
 include(cmake/esp32_sdk.cmake)
+add_custom_target(quality-contexts
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/prepare_quality_profiles.py"
+        --source "${CMAKE_SOURCE_DIR}" --build-root "${CMAKE_SOURCE_DIR}/cmake-build-dev/quality-contexts"
+    USES_TERMINAL VERBATIM)
 add_subdirectory(libs/signal_contracts)
 add_subdirectory(libs/wled_protocol)
 add_subdirectory(libs/bdsp_protocol)

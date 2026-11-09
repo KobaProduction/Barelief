@@ -25,3 +25,8 @@ target_compile_definitions(desktop_fourier_backend PRIVATE
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(desktop_fourier_backend PRIVATE -fstack-usage)
 endif()
+if(BUILD_QUALITY_HEADER_AUDIT)
+    add_library(quality_fourier_headers OBJECT "${PROJECT_SOURCE_DIR}/tools/quality/fourier_headers.cpp")
+    target_link_libraries(quality_fourier_headers PRIVATE desktop_fourier_backend)
+    set_target_properties(quality_fourier_headers PROPERTIES AUTOMOC OFF CXX_STANDARD 20)
+endif()

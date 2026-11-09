@@ -1,5 +1,7 @@
 cmake-*-*
 /CMakeUserPresets.json
+/.env.local
+/.tools/
 /build/
 /dist/
 /packages/

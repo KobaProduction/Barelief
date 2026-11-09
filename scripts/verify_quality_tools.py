@@ -6,10 +6,12 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from project_environment import activate
 
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
+    activate(root)
     sys.path.insert(0, str(root / "tests"))
     sys.path.insert(0, str(root / "scripts"))
     with tempfile.TemporaryDirectory(prefix="quality-regressions-") as directory:
@@ -21,7 +23,7 @@ def main() -> int:
         with patch.dict(os.environ, environment):
             suite = unittest.defaultTestLoader.loadTestsFromNames([
                 "quality_scope_tests", "quality_execution_tests", "quality_cpu_tests", "quality_compile_context_tests",
-                "run_clang_tidy_tests", "run_clazy_tests", "run_ctest_tests", "git_version_tests", "prepare_release_tests",
+                "run_clang_tidy_tests", "run_clazy_tests", "run_ctest_tests", "git_version_tests", "prepare_release_tests", "project_environment_tests",
             ])
             if not suite.countTestCases():
                 print("Quality-tool regressions were not discovered", file=sys.stderr)

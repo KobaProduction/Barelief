@@ -10,7 +10,7 @@ repos:
         additional_dependencies: [identify==2.6.20, clang-tidy==22.1.8, PyYAML==6.0.3]
         entry: python scripts/verify_quality_tools.py
         pass_filenames: false
-        files: '^(\.pre-commit-config\.yaml|CMakePresets\.json|(?:tests/)?\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution|cpu|compile_context)(_tests)?|run_(clazy|clang_tidy|ctest)|git_version|prepare_release|verify_quality_tools)\.py|tests/(quality_execution|quality_cpu|quality_compile_context|run_clazy|run_clang_tidy|run_ctest|git_version|prepare_release)_tests\.py)$'
+        files: '^(\.pre-commit-config\.yaml|\.env\.example|CMakePresets\.json|cmake/(ProjectEnvironment\.cmake|quality-profiles\.json)|(?:tests/)?\.clang-tidy|\.github/workflows/.*\.ya?ml|scripts/(quality_(scope|execution|cpu|compile_context)(_tests)?|run_(clazy|clang_tidy|ctest|project_tool)|git_version|prepare_release|project_environment|prepare_quality_profiles|verify_quality_tools)\.py|tests/(quality_execution|quality_cpu|quality_compile_context|run_clazy|run_clang_tidy|run_ctest|git_version|prepare_release|project_environment)_tests\.py)$'
       - id: ctest-quick
         name: CTest (quick tests for local push)
         language: python
