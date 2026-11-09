@@ -1,8 +1,10 @@
 name: ESP32 library SDK
 on:
   push:
+    branches-ignore: [release]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:

@@ -56,7 +56,9 @@ bool PreparedResampler::prepare_mode(const ResamplerBackendFactory* external){
     case ResamplerMode::ExistingFir:case ResamplerMode::CompactFir:return existing_.prepare(config_.input_rate,config_.output_rate,config_.channels,fir_quality(config_.mode));
     case ResamplerMode::IirExperimental:design_iir();return true;
     case ResamplerMode::SpeexDsp:case ResamplerMode::SpeexDspQ15:
-        if(!external)return false;backend_=external->prepare(config_);return bool(backend_);
+        if (!external) { return false; }
+        backend_ = external->prepare(config_);
+        return bool(backend_);
     default:return false;
     }
 }

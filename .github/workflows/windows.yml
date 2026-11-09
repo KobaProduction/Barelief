@@ -43,6 +43,7 @@ jobs:
           arch: win64_mingw
           modules: qtcharts qtdatavis3d qtserialport
           tools: tools_mingw1310,qt.tools.win64_mingw1310
+          setup-python: 'false'
           aqtversion: '==3.3.0'
       - name: Configure
         run: |

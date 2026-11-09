@@ -3,7 +3,7 @@
 #include <dsp_kernels/prepared_storage.h>
 #include <algorithm>
 #include <cmath>
-#include <climits>
+#include <cstdint>
 namespace rhythm_reference_ports {
 using namespace dsp_kernels;
 bool PreparedFourierTempoCandidates::storage_bytes(std::size_t bins,FourierTempoCandidateConfig c,std::size_t& out) noexcept {

@@ -215,10 +215,15 @@ bool axis_map_shape(const ConfiguredProcessingNode& n,Geometry& output) noexcept
     std::size_t type=0;if(!size(n,"output_dtype",0,type) || type>2)return false;
     output.type=type==2?DType::UInt64:type==1?DType::Float64:DType::Float32;return true;
 }
-bool axis_sum_shape(const ConfiguredProcessingNode& n,std::size_t other,Geometry& output) noexcept {
-    const auto* cumulative=parameter(n,"cumulative");
-    if(cumulative && !std::holds_alternative<bool>(*cumulative))return false;
-    if(!cumulative || !std::get<bool>(*cumulative))output={Rank::Vector,other,1,true,output.type};return true;
+bool axis_sum_shape(const ConfiguredProcessingNode& n, std::size_t other, Geometry& output) noexcept {
+    const auto* cumulative = parameter(n, "cumulative");
+    if (cumulative && !std::holds_alternative<bool>(*cumulative)) {
+        return false;
+    }
+    if (!cumulative || !std::get<bool>(*cumulative)) {
+        output = {Rank::Vector, other, 1, true, output.type};
+    }
+    return true;
 }
 bool ordered_peak_shapes(const ConfiguredProcessingNode& n,std::array<Geometry,3>& out) noexcept {
     std::size_t count=0;if(out[0].rank!=Rank::Vector || !size(n,"maximum_count",5,count) || !count)return false;
@@ -333,13 +338,19 @@ std::span<const ParameterDescriptor> common_operation_parameters(std::string_vie
     return {};
 }
 namespace {
-Status absolute_output_contract(const NumericContract& input,std::vector<OwnedProcessingContract>& output) {
-    if((input.dtype!=DType::Float32 && input.dtype!=DType::Float64) || input.channel_order.size()!=1 ||
-        input.representation.encoding!=StorageEncoding::Native || input.representation.layout!=ChannelLayout::Planar)return Status::incompatible_contract;
-    auto value=input;value.representation.normalization=Normalization::None;
+Status absolute_output_contract(const NumericContract& input, std::vector<OwnedProcessingContract>& output) {
+    if ((input.dtype != DType::Float32 && input.dtype != DType::Float64) || input.channel_order.size() != 1 ||
+        input.representation.encoding != StorageEncoding::Native || input.representation.layout != ChannelLayout::Planar) {
+        return Status::incompatible_contract;
+    }
+    auto value = input;
+    value.representation.normalization = Normalization::None;
     std::vector<OwnedProcessingContract> next(1);
-    const auto status=own_processing_contract(value,{1,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX,SIZE_MAX},SIZE_MAX,next[0]);
-    if(status==Status::ok)output=std::move(next);return status;
+    const auto status = own_processing_contract(value, {1, SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX}, SIZE_MAX, next[0]);
+    if (status == Status::ok) {
+        output = std::move(next);
+    }
+    return status;
 }
 }
 namespace {

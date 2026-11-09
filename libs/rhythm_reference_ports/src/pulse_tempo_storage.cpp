@@ -4,7 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
-#include <climits>
+#include <cstdint>
 namespace rhythm_reference_ports {
 using namespace dsp_kernels;
 bool PreparedPulseTrainScoring::storage_bytes(std::size_t lag,std::size_t candidates,std::size_t& out) noexcept {

@@ -636,8 +636,12 @@ Status NumericPreparation::prepare_signal_transform(NodeFrame& frame){
     case NodeKind::FrameBuffer:{
         const auto status=prepare_emission_stride(frame.n,frame.resolved,"hop_samples");if(status!=Status::ok)return status;
         const auto count=std::size_t(std::get<NumericContract>(frame.n.numeric_outputs[0]).shape.extents[0].maximum);
-        if(std::get<NumericContract>(frame.n.numeric_input).dtype==DType::Int16)frame.state.pcm16.resize(count);
-        else frame.state.pcm.resize(count);return Status::ok;
+        if (std::get<NumericContract>(frame.n.numeric_input).dtype == DType::Int16) {
+            frame.state.pcm16.resize(count);
+        } else {
+            frame.state.pcm.resize(count);
+        }
+        return Status::ok;
     }
     case NodeKind::WindowFunction:return prepare_transform_window_function(frame);
     default:return Status::invalid_argument;

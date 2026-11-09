@@ -6,10 +6,14 @@
 namespace dataflow_runtime {
 using namespace signal_contracts;
 bool numeric_operation_add_bytes(std::size_t& total,std::size_t value) noexcept {
-    if(value>std::numeric_limits<std::size_t>::max()-total)return false;total+=value;return true;
+    if (value > std::numeric_limits<std::size_t>::max() - total) { return false; }
+    total += value;
+    return true;
 }
 bool numeric_operation_mul_bytes(std::size_t count,std::size_t width,std::size_t& output) noexcept {
-    if(width && count>std::numeric_limits<std::size_t>::max()/width)return false;output=count*width;return true;
+    if (width && count > std::numeric_limits<std::size_t>::max() / width) { return false; }
+    output = count * width;
+    return true;
 }
 namespace {
 NumericOperationNode own_node(const NumericOperationNodeView& source) {
@@ -35,7 +39,8 @@ bool definition_bytes(const NumericOperationNodeView& source,const domain::Proce
     domain::ResolvedProcessingNode settings;settings.kind=source.kind;settings.parameters=source.parameters;
     if(!domain::processing_node_required_bytes(settings,limits,bytes,false))return false;
     const auto removed=sizeof(domain::ConfiguredProcessingNode)+std::max(source.kind.size(),sizeof(std::string));
-    if(bytes<removed)return false;bytes-=removed;
+    if (bytes < removed) { return false; }
+    bytes -= removed;
     return numeric_operation_add_bytes(bytes,sizeof(NumericOperationDescriptor)) && numeric_operation_add_bytes(bytes,kind_capacity) &&
         add_array(bytes,inputs,sizeof(NumericOperationPort)) && add_array(bytes,outputs,sizeof(NumericOperationPort));
 }

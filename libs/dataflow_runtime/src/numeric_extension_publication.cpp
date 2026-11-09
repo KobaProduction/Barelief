@@ -57,7 +57,8 @@ void PreparedNumericExtension::Impl::rebind_output(std::size_t i,State& state) c
     NumericView view{&output_contracts[i],buffer.storage(),buffer.planes,buffer.actual,{},{}};
     for(std::size_t axis=0;axis<2;++axis)if(stamp.available && output_contracts[i].coordinates[axis].mode==CoordinateMode::ExplicitFloat64LE)
         view.coordinates.axes[axis]={buffer.coordinates[axis].data(),buffer.actual[axis]*sizeof(double)};
-    if(!stamp.available)view.storage={};state.numeric_frames[i]={stamp,view};
+    if (!stamp.available) { view.storage = {}; }
+    state.numeric_frames[i] = {stamp, view};
 }
 void PreparedNumericExtension::Impl::rebind(State& state) const noexcept {
     if(state.numeric_frames.size()!=output_contracts.size() || state.numeric_outputs.size()!=output_contracts.size())return;

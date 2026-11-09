@@ -96,7 +96,7 @@ bool PreparedBeatTracker::local_scores(std::size_t frames) noexcept {
     for(std::size_t i=0;i<frames;++i){
         const auto p=periods_[i],k_count=2*p+1;
         if(p!=previous){window(p);previous=p;}
-        const auto begin=std::max(0,std::int32_t(i)+p-std::int32_t(frames)+1),end=std::min(std::int32_t(i)+p,k_count);
+        const auto begin=std::max(std::int32_t{0},std::int32_t(i)+p-std::int32_t(frames)+1),end=std::min(std::int32_t(i)+p,k_count);
         float value=0;
         // Preserve the original exclusive upper bound, including its boundary.
         for(auto k=begin;k<end;++k)value+=window_[std::size_t(k)]*normalized_[i+std::size_t(p)-std::size_t(k)];
@@ -105,7 +105,7 @@ bool PreparedBeatTracker::local_scores(std::size_t frames) noexcept {
     return finite(std::span(local_).first(frames));
 }
 void PreparedBeatTracker::advance(std::size_t i,float threshold,bool& first) noexcept {
-    const auto p=periods_[i],start=std::int32_t(i)-round_even(float(p)*.5f),end=std::max(0,std::int32_t(i)-2*p);
+    const auto p=periods_[i],start=std::int32_t(i)-round_even(float(p)*.5f),end=std::max(std::int32_t{0},std::int32_t(i)-2*p);
     float best=-std::numeric_limits<float>::infinity();std::int32_t link=-1;
     for(auto loc=start;loc>=end;--loc){
         const float delta=log_intervals_[i-std::size_t(loc)]-log_intervals_[std::size_t(p)];

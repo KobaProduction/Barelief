@@ -1,7 +1,9 @@
 name: Strict function quality
 on:
   push:
+    branches-ignore: [release]
   pull_request:
+  workflow_call:
   workflow_dispatch:
     inputs:
       test_lint:
@@ -41,6 +43,7 @@ jobs:
           arch: win64_mingw
           modules: qtcharts qtdatavis3d qtserialport
           tools: 'tools_mingw1310,qt.tools.win64_mingw1310 tools_qtcreator,qt.tools.qtcreator'
+          setup-python: 'false'
           aqtversion: '==3.3.0'
       - name: Prepare C++ compilation database
         shell: pwsh
@@ -87,6 +90,7 @@ jobs:
         run: |
           python "$env:IDF_PATH/tools/idf_tools.py" install esp-clang xtensa-esp-elf esp32ulp-elf esp-rom-elfs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path $env:IDF_PYTHON_ENV_PATH -Force | Out-Null
           python "$env:IDF_PATH/tools/idf_tools.py" install-python-env
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $compilers = @(Get-ChildItem -LiteralPath "$env:IDF_TOOLS_PATH/tools/xtensa-esp-elf" -Recurse -File -Filter xtensa-esp-elf-gcc.exe)

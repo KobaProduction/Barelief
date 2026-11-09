@@ -73,7 +73,14 @@ class CTestGateTests(unittest.TestCase):
         self.assertEqual(job["uses"], "./.github/workflows/windows.yml")
         self.assertEqual(job["with"]["release_validation"], "true")
         publish = workflow["jobs"]["publish"]
-        self.assertEqual(set(publish["needs"]), {"version", "validate-and-package"})
+        self.assertEqual(set(publish["needs"]), {"version", "validate-and-package", "quality", "esp32-sdk"})
+        for name, filename in (("quality", "code-quality.yml"), ("esp32-sdk", "esp32-sdk.yml")):
+            dependency = workflow["jobs"][name]
+            self.assertEqual(dependency["uses"], f"./.github/workflows/{filename}")
+            self.assertNotIn("if", dependency)
+            required = yaml.load((ROOT / ".github/workflows" / filename).read_text(), Loader=yaml.BaseLoader)
+            self.assertIn("workflow_call", required["on"])
+            self.assertIn("release", required["on"]["push"]["branches-ignore"])
         self.assertEqual(publish["permissions"]["contents"], "write")
         self.assertIn("inputs.publish", publish["if"])
         self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["publish"]["default"], "false")

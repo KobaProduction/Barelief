@@ -57,7 +57,7 @@ bool PreparedOnsets::measure(OnsetBand range,Measurement& output) const noexcept
     if(!sum_float32(std::span(differences_).subspan(range.first,range.count),positive) ||
        !sum_float32(current,level) || !sum_float32(std::span(previous_).subspan(range.first,range.count),previous))return false;
     const auto clipped=unsigned(std::count_if(current.begin(),current.end(),[](float value){return value>1;}));
-    output.observation={positive/float(range.count),positive/std::max({1.f/255.f,level,previous}),0,level/float(range.count),clipped,{}};
+    output.observation={positive/float(range.count),positive/std::max({1.f/255.f,level,previous}),0,level/float(range.count),clipped,{}, {}};
     output.positive_mass=positive;
     return true;
 }

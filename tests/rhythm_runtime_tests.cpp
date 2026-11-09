@@ -1,6 +1,7 @@
 #include <dataflow_runtime/runtime.h>
 #include <domain/graph/node_factory.h>
 #include <dsp_kernels/rhythm.h>
+#include <dsp_kernels/dsp.h>
 #include <dsp_kernels/musical_features.h>
 #include <core_app/numeric_default_graph.h>
 #ifdef BARELIEF_TEST_DESKTOP_SPEEX
@@ -211,7 +212,13 @@ void example_is_preparable() {
         auto& params=std::get<TransformProcessingParameters>(node.parameters).values;
         for(auto& entry:params)if(entry.key=="mode")entry.value=std::string{"existing_fir"};
     }
-    check(PreparedGraph::prepare_numeric(portable,p,plan,context)==Status::ok);
+    const auto status=PreparedGraph::prepare_numeric(portable,p,plan,context);
+    if constexpr(dsp_kernels::max_fft_samples<4096) {
+        check(status!=Status::ok && !plan && !context);
+        check(PreparedGraph::prepare_numeric(portable,p,plan,context)==status && !plan && !context);
+    } else {
+        check(status==Status::ok);
+    }
 #endif
 }
 void research_history_contract() {

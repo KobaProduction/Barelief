@@ -34,8 +34,12 @@ jobs:
     uses: ./.github/workflows/windows.yml
     with:
       release_validation: true
+  quality:
+    uses: ./.github/workflows/code-quality.yml
+  esp32-sdk:
+    uses: ./.github/workflows/esp32-sdk.yml
   publish:
-    needs: [version, validate-and-package]
+    needs: [version, validate-and-package, quality, esp32-sdk]
     if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/release') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
     runs-on: ubuntu-24.04
     permissions:

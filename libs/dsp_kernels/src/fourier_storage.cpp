@@ -46,6 +46,8 @@ bool PreparedFourierTransform::storage_bytes(std::size_t samples,std::size_t& ou
     const auto capacity=detail::fourier_convolution_size(samples);if(!capacity)return false;
     std::size_t bytes=0,nested=0;
     if(!transform_buffer_storage(samples,capacity,bytes) || !convolution_fft_storage(capacity,nested))return false;
-    if(!add_bytes(bytes,nested))return false;output=bytes;return true;
+    if (!add_bytes(bytes, nested)) { return false; }
+    output = bytes;
+    return true;
 }
 } // namespace dsp_kernels

@@ -154,7 +154,8 @@ PreparedNumericExtension::PreparedNumericExtension(PreparedNumericExtension&&) n
 PreparedNumericExtension& PreparedNumericExtension::operator=(PreparedNumericExtension&&) noexcept=default;
 Status PreparedNumericExtension::prepare(const ResolvedProcessingNode& source,const NumericRuntimeProfile& profile) {
     auto next=std::make_unique<Impl>();const auto status=next->configure(source,profile);
-    if(status==Status::ok)value_.swap(next);return status;
+    if (status == Status::ok) { value_.swap(next); }
+    return status;
 }
 bool PreparedNumericExtension::Impl::compatible(const Impl& other) const noexcept {
     if(!descriptor || !other.descriptor || !processor || !other.processor)return false;

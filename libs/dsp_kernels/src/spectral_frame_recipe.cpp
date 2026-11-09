@@ -144,7 +144,7 @@ bool PreparedSpectralFrameRecipe::feature_values() noexcept {
 }
 bool PreparedSpectralFrameRecipe::process_frame(std::span<const float> pcm,std::size_t frame,
                                                 std::span<float> output,std::span<float> phase) noexcept {
-    return process_frame(pcm,frame,SpectralFrameOutputs{output,phase});
+    return process_frame(pcm,frame,SpectralFrameOutputs{output, phase, {}, {}, {}});
 }
 bool PreparedSpectralFrameRecipe::process_frame(std::span<const float> pcm,std::size_t frame,SpectralFrameOutputs outputs) noexcept {
     return transform_frame(pcm,frame) && project_frame(std::span<const float>(complex_).first(2*phase_bins()),outputs);

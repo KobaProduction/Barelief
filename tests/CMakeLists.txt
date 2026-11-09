@@ -71,6 +71,7 @@ add_test(NAME esp32_sdk_preflight COMMAND ${CMAKE_COMMAND}
     -P "${CMAKE_CURRENT_SOURCE_DIR}/esp32_sdk_preflight_tests.cmake")
 set_tests_properties(esp32_sdk_preflight PROPERTIES LABELS "sdk;quick" TIMEOUT 10)
 if(BUILD_DSP_ONLY OR BUILD_PORTABLE_SDK)
+    include(allocation_overrides.cmake)
     return()
 endif()
 if(NOT PORTABLE_DISABLE_EXCEPTIONS_RTTI)
@@ -405,3 +406,5 @@ if(BUILD_GUI)
         endif()
     endforeach()
 endif()
+
+include(allocation_overrides.cmake)

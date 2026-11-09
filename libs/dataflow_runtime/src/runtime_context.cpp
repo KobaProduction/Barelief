@@ -91,7 +91,9 @@ class HistoryQuery {
         const auto& buffer=state.numeric_outputs[port];const auto& contract=std::get<NumericContract>(node.numeric_outputs[port]);const auto stamp=prepared_stamp(contract,state);
         NumericView view{&contract,buffer.storage(),buffer.planes,{state.frames,buffer.actual[1]},{buffer.actual[0],state.oldest,{}},{}};
         prepared_coordinates(view,buffer,state);select_filled_history(node,state,view);
-        if(!stamp.available)view.storage={};output={stamp,view};return stamp.available?Status::ok:Status::unavailable;
+        if (!stamp.available) { view.storage = {}; }
+        output = {stamp, view};
+        return stamp.available ? Status::ok : Status::unavailable;
     }
 public:
     HistoryQuery(std::span<const PlanNode> plan,std::span<const State> context,std::size_t node,PortId requested_port) noexcept:nodes(plan),states(context),requested(node),at(node),port(requested_port),mask_port(port){}

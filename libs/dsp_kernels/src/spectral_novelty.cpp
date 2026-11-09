@@ -128,7 +128,8 @@ bool PreparedSpectralNovelty::process_frame(FloatMatrixSource source,FloatMatrix
                                             std::size_t frame,std::span<float> output) noexcept {
     if(!maximum_frames_ || frames>maximum_frames_ || frame>=frames || frame!=next_frame_ || output.size()!=output_features())return false;
     const bool ok=config_.method==SpectralNoveltyMethod::AlignedDifference?aligned(source,frame,output):scalar(source,phase,frames,frame,output[0]);
-    if(ok)++next_frame_;return ok;
+    if (ok) { ++next_frame_; }
+    return ok;
 }
 bool PreparedSpectralNovelty::process(FloatMatrixSource source,FloatMatrixSource phase,std::size_t frames,FloatMatrixDestination output) noexcept {
     reset();

@@ -138,7 +138,12 @@ constexpr auto pattern_sequence_params=[] {auto p=pattern_params;p[1].default_nu
 }
 std::span<const SequenceOperationSpec> sequence_operation_catalogue() noexcept {return catalogue;}
 const SequenceOperationSpec* sequence_operation_spec(std::string_view kind) noexcept {
-    for(const auto& s:catalogue)if(s.kind==kind)return &s;return nullptr;
+    for (const auto& s : catalogue) {
+        if (s.kind == kind) {
+            return &s;
+        }
+    }
+    return nullptr;
 }
 bool sequence_operation_kind(std::string_view kind) noexcept {return sequence_operation_spec(kind)!=nullptr;}
 std::size_t sequence_operation_output_count(std::string_view kind) noexcept {

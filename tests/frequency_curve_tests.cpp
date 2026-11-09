@@ -9,11 +9,11 @@
 namespace {
 using namespace dsp_kernels;
 ProfileCompatibility frontend() {
-    ProfileCompatibility c;c.sample_rate=48000;c.fft_size=4096;c.projection={SpectrumProjection::PeakAmplitude,true};return c;
+    ProfileCompatibility c;c.sample_rate=48000;c.fft_size=std::min<std::size_t>(4096,max_fft_samples);c.projection={SpectrumProjection::PeakAmplitude,true};return c;
 }
 CompositionStatistics track(double scale=1) {
     const auto c=frontend();CompositionStatistics t;t.frames=t.active_frames=100;t.rms=.1;t.measured_max_hz=24000;
-    t.mean_spectrum.resize(2049);t.peak_spectrum.resize(2049);
+    t.mean_spectrum.resize(c.fft_size/2+1);t.peak_spectrum.resize(c.fft_size/2+1);
     for(std::size_t k=0;k<t.peak_spectrum.size();++k){
         const auto hz=k*c.sample_rate/c.fft_size;
         t.peak_spectrum[k]=scale*std::exp(-2.-hz/18000.-hz*hz/1e9);t.mean_spectrum[k]=t.peak_spectrum[k]/4;
@@ -143,19 +143,20 @@ void native_measurement_grids() {
     for(std::size_t i=0;i<tracks.size();++i){
         auto& t=tracks[i];t.sample_rate=t.source_sample_rate=rates[i];t.measured_max_hz=rates[i]/2;
         for(std::size_t k=0;k<t.peak_spectrum.size();++k){
-            const auto hz=k*rates[i]/4096;t.peak_spectrum[k]=double(1u<<i)*(.1+hz/1e6);t.mean_spectrum[k]=t.peak_spectrum[k]/4;
+            const auto hz=k*rates[i]/frontend().fft_size;t.peak_spectrum[k]=double(1u<<i)*(.1+hz/1e6);t.mean_spectrum[k]=t.peak_spectrum[k]/4;
         }
     }
     FrequencyCurveOptions absolute;absolute.level_reference=CurveLevelReference::AbsoluteAmplitude;
     const auto p=curve(absolute,tracks);
     for(std::size_t k=1;k<p.gains.size();++k){
-        const auto hz=k*48000./4096;double sum=0,count=0;
+        const auto hz=k*48000./frontend().fft_size;double sum=0,count=0;
         for(std::size_t i=0;i<rates.size();++i)if(hz<=rates[i]/2){sum+=double(1u<<i)*(.1+hz/1e6);++count;}
         assert(std::abs(p.peak_spectrum[k]-sum/count)<1e-12);
     }
     FrequencyProfile legacy;std::string error;ProfileTraining training;
     assert(build_frequency_profile(frontend(),training,tracks,legacy,error));
-    assert(std::abs(legacy.peak_spectrum[2000]-p.peak_spectrum[2000])<1e-12);
+    const auto near_nyquist=frontend().fft_size*125/256;
+    assert(std::abs(legacy.peak_spectrum[near_nyquist]-p.peak_spectrum[near_nyquist])<1e-12);
 }
 void holes_and_boundaries() {
     auto t=track();t.peak_spectrum[100]=0;const auto p=curve({},std::span(&t,1));

@@ -47,7 +47,8 @@ template<typename Scalar> bool sequential_axis_sum(std::span<const Scalar> input
         if(!detail::axis_sum_step(input[i],sum))return false;
         if(cumulative)output[i]=sum;
     }
-    if(!cumulative)output[0]=sum;return true;
+    if (!cumulative) { output[0] = sum; }
+    return true;
 }
 // Pairwise is an explicit reduction policy, independent of storage layout.
 // Cumulative sums retain their sequential definition. Recursion depth is
