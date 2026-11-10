@@ -2,7 +2,7 @@
 #include "tracking_operations.h"
 #include "frame_operation_io.h"
 #include <cmath>
-#include <climits>
+#include <cstdint>
 namespace rhythm_graph_adapters::detail {
 using namespace signal_contracts;using namespace rhythm_reference_ports;
 namespace {

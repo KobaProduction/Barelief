@@ -119,8 +119,11 @@ void band_oracle() {
     require(!overflow.prepare(3, 10, std::array<double, 3>{0, 10, 10}, BandStatistic::Rms), "Repeated boundary accepted");
 }
 
+constexpr auto note_fft_size=std::min<std::size_t>(4096,dsp_kernels::max_fft_samples);
+constexpr double note_sample_rate=8.*note_fft_size;
+
 double note_tone(dsp_kernels::PreparedRfft& rfft,dsp_kernels::NoteSalience& salience,std::vector<float>& input,std::vector<float>& raw,std::vector<float>& power,std::vector<float>& result,const auto& midi,std::size_t t){
-    constexpr std::size_t n=4096;constexpr double fs=32768;
+    constexpr std::size_t n=note_fft_size;constexpr double fs=note_sample_rate;
         const auto frequency = 440 * std::pow(2.0, (midi[t] - 69.0) / 12);
         const auto amplitude = .2 + .07 * double(t);
         double window_sum = 0;
@@ -146,8 +149,8 @@ double note_tone(dsp_kernels::PreparedRfft& rfft,dsp_kernels::NoteSalience& sali
 }
 void note_oracle() {
     using namespace dsp_kernels;
-    constexpr std::size_t n = 4096;
-    constexpr double fs = 32768;
+    constexpr std::size_t n = note_fft_size;
+    constexpr double fs = note_sample_rate;
     PreparedRfft rfft;
     require(rfft.prepare(n), "Note RFFT prepare failed");
     std::vector<float> input(n), raw(n + 2), power(n / 2 + 1), result(48);

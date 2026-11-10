@@ -2,6 +2,14 @@
 # of claiming CONSTANT merely to satisfy the meta-object property checks.
 include("${CMAKE_CURRENT_LIST_DIR}/patch_dependency_source.cmake")
 set(ads_headers "${ADS_SOURCE}/src")
+foreach(header IN ITEMS DockWidget.h DockAreaWidget.h)
+    patch_dependency_source("${ads_headers}" "${header}"
+        "void setAutoHide(bool Enable, SideBarLocation Location = SideBarNone, int TabIndex = -1);"
+        "void setAutoHide(bool Enable, ads::SideBarLocation Location = SideBarNone, int TabIndex = -1);")
+    patch_dependency_source("${ads_headers}" "${header}"
+        "void toggleAutoHide(SideBarLocation Location = SideBarNone);"
+        "void toggleAutoHide(ads::SideBarLocation Location = SideBarNone);")
+endforeach()
 # Q_ENUM_NS exposes this meta-object to consumers of the shared ADS library.
 patch_dependency_source("${ads_headers}" ads_globals.h
     "Q_NAMESPACE\n" "Q_NAMESPACE_EXPORT(ADS_EXPORT)\n")

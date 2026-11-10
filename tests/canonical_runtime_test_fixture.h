@@ -1,6 +1,7 @@
 #pragma once
 #include <core_app/numeric_default_graph.h>
 #include <dataflow_runtime/runtime.h>
+#include <dsp_kernels/dsp.h>
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -10,10 +11,11 @@
 namespace canonical_test {
 using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
 inline std::size_t allocations=0;
+inline constexpr auto fft_size=std::min<std::uint32_t>(4096,dsp_kernels::max_fft_samples);
 inline void check(bool value,const char* why){if(!value){std::fprintf(stderr,"FAIL %s\n",why);std::exit(1);}}
 inline constexpr FrameLimits limits{8,32768,262144,16384,256,8192};
 // Retained numerical oracles below explicitly use 60 Hz; the product default remains 120 Hz.
-inline NumericProcessingGraph oracle_graph(){auto g=numeric_test_graph();g.execution_interval={1,60};return g;}
+inline NumericProcessingGraph oracle_graph(){auto g=numeric_test_graph(fft_size);g.execution_interval={1,60};return g;}
 // Two branches plus six auxiliary constants fit40nodes. Converter support
 // adds its8192-byte reference stack reservation to the65536-byte graph budget.
 // Owned graph DTOs include explicit window arrays and share the plan budget.

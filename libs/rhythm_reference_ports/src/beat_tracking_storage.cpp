@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <cstdint>
 namespace rhythm_reference_ports {
 namespace {
 using namespace dsp_kernels::prepared_storage;

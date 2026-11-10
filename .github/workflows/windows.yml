@@ -94,7 +94,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Configure without Qt
-        run: cmake -S . -B build -DBUILD_DSP_ONLY=ON -DPORTABLE_DSP_MAX_FFT_SIZE=${{ matrix.fft_size }} -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+        run: cmake -S . -B build -G Ninja -DBUILD_DSP_ONLY=ON -DPORTABLE_DSP_MAX_FFT_SIZE=${{ matrix.fft_size }} -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
       - name: Build
         run: cmake --build build --parallel 2
       - name: Quick portable tests

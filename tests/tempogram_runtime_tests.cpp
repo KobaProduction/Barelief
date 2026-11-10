@@ -1,6 +1,7 @@
 #include <domain/graph/node_factory.h>
 #include <dataflow_runtime/runtime.h>
 #include <dsp_kernels/correlation.h>
+#include <dsp_kernels/dsp.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -240,4 +241,10 @@ void operator delete(void* data) noexcept{std::free(data);}
 void operator delete[](void* data) noexcept{std::free(data);}
 void operator delete(void* data,std::size_t) noexcept{std::free(data);}
 void operator delete[](void* data,std::size_t) noexcept{std::free(data);}
-int main(){phase_contract_admission();phase_kernel_failures();correlation_admission();numerical_case(512);numerical_case(4096);std::puts("shipped scalar history/center/Hann/FFT magnitude+phase/linear-ACF 512/4096 DFT/Hz/lag/wrap/silence/admission/no-allocation PASS");}
+int main() {
+    phase_contract_admission();phase_kernel_failures();correlation_admission();
+    numerical_case(512);
+    const auto long_size=std::min<std::size_t>(4096,dsp_kernels::max_fft_samples);
+    if(long_size!=512)numerical_case(long_size);
+    std::printf("scalar history/center/Hann/FFT magnitude+phase/linear-ACF 512/%zu DFT/Hz/lag/wrap/silence/admission/no-allocation PASS\n",long_size);
+}

@@ -4,6 +4,7 @@
 // prepared before processing; callbacks inspect borrowed frames synchronously.
 namespace aligned_acceptance {
 using namespace canonical_test;
+inline constexpr auto short_fft_size=std::min<std::size_t>(512,fft_size/2);
 inline void resampler_range(){dsp_kernels::PcmResampler resampler;
  check(resampler.advance_input(INT64_MAX,0)&&resampler.input_contiguous(INT64_MAX),"resampler zero count at signed upper limit");
  check(!resampler.advance_input(INT64_MAX,1)&&resampler.input_contiguous(INT64_MAX),"resampler signed addition overflow leaves state unchanged");
@@ -144,15 +145,15 @@ inline void physical_feed(GraphExecutor& e,Feed& feed,PhysicalObservation& out,s
 }
 inline void physical_grid_case(std::size_t fs,std::size_t n){auto g=physical_graph(fs,n); GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"physical matrix Apply");Feed feed(g);PhysicalObservation out{fs,n};
  physical_feed(e,feed,out,n,fs); check(out.fft>0&&out.fft==out.mel&&out.full,"physical matrix real FFT and Mel both observed");}
-inline void physical_grid_matrix(){for(std::size_t fs:{44100u,48000u,96000u})for(std::size_t n:{512u,4096u})physical_grid_case(fs,n); std::puts("actual FFT/Mel grids Fs44100/48000/96000 x N512/4096 explicit bindings/noalloc PASS");
+inline void physical_grid_matrix(){for(std::size_t fs:{44100u,48000u,96000u})for(std::size_t n:{short_fft_size,std::size_t(fft_size)})physical_grid_case(fs,n); std::printf("actual FFT/Mel grids Fs44100/48000/96000 x N%zu/%zu explicit bindings/noalloc PASS\n",short_fft_size,std::size_t(fft_size));
 }
 struct StereoObservation {std::array<std::array<std::int64_t,128>,2> ends{};std::array<unsigned,2> count{};unsigned mixed=0;};
-inline void stereo_mixed(const NumericPortFrameView& frame,float dc,StereoObservation& out){if(frame.frame.stamp.timestamp_ticks>=4096){check(std::abs(dc-3.f)<1e-5,"mixed PCM4096 rectangular FFT analytical DC3");++out.mixed;}
+inline void stereo_mixed(const NumericPortFrameView& frame,float dc,StereoObservation& out){if(frame.frame.stamp.timestamp_ticks>=std::int64_t(fft_size)){check(std::abs(dc-3.f)<1e-5,"mixed PCM mixed-window rectangular FFT analytical DC3");++out.mixed;}
 }
 inline void stereo_dc(const NumericPortFrameView& frame,const NumericView& view,StereoObservation& out,unsigned lane){
  float dc=0;check(load_element(view,{0,0,0},dc)==Status::ok,"stereo DC access");
  if(frame.identity.node==4)stereo_mixed(frame,dc,out);
- else if(frame.frame.stamp.timestamp_ticks>=512)check(std::abs(dc-(lane?4.f:2.f))<1e-5,"separate FFT512 preserves distinct lane DC");
+ else if(frame.frame.stamp.timestamp_ticks>=std::int64_t(short_fft_size))check(std::abs(dc-(lane?4.f:2.f))<1e-5,"separate short FFT preserves distinct lane DC");
 }
 inline void stereo_output(void* user,const NumericPortFrameView& frame){auto& out=*static_cast<StereoObservation*>(user);if(frame.identity.node!=104&&frame.identity.node!=404&&frame.identity.node!=4)return;
  check(frame.status==Status::ok&&frame.frame.stamp.available,"stereo numerical real FFT");
@@ -163,13 +164,13 @@ inline void stereo_output(void* user,const NumericPortFrameView& frame){auto& ou
   return;
  }
  if(frame.identity.node==4 || frame.identity.port!=0)return;
- check(out.count[lane]<128&&view.actual[0]==256,"paired FFT512 observation bound");out.ends[lane][out.count[lane]++]=frame.frame.stamp.timestamp_ticks;
+ check(out.count[lane]<128&&view.actual[0]==short_fft_size/2,"paired short FFT observation bound");out.ends[lane][out.count[lane]++]=frame.frame.stamp.timestamp_ticks;
 }
 inline void stereo_branch(NumericProcessingGraph& g,std::size_t aperture,NodeId offset,NodeId from,PortId port){auto branch=oracle_graph();geometry(branch,48000,aperture,317);
   auto copy=node(branch,2);copy.id+=offset;g.nodes.push_back(std::move(copy));
   g.edges.push_back({from,2+offset,port,0});core_regression::append_spectrum(g,2+offset,3+offset,4+offset,aperture,48000);}
 inline void stereo_send_lane(GraphExecutor& e,Feed& feed,StereoObservation& out,PortId lane,std::int64_t begin,std::size_t count){auto frame=feed.frame(count);feed.samples.fill(lane?4.f:2.f);frame.stamp.has_sample_interval=true;frame.stamp.sample_begin=begin;frame.stamp.sample_count=count;frame.stamp.timestamp_ticks=begin+std::int64_t(count)-1;
-   const auto before=allocations;check(e.process_numeric_ports(1,lane,frame,{},{stereo_output,nullptr,nullptr,&out})==Status::ok&&allocations==before,"paired512 mixed4096 irregular packets noalloc");}
+   const auto before=allocations;check(e.process_numeric_ports(1,lane,frame,{},{stereo_output,nullptr,nullptr,&out})==Status::ok&&allocations==before,"paired/mixed windows irregular packets noalloc");}
 inline void stereo_feed(GraphExecutor& e,Feed& feed,StereoObservation& out){ std::int64_t begin=0;unsigned packet=0;
  while(begin<8192){const auto count=std::min<std::size_t>(packet++%2?193:127,8192-begin);
   for(PortId lane=0;lane<2;++lane)stereo_send_lane(e,feed,out,lane,begin,count);
@@ -177,11 +178,11 @@ inline void stereo_feed(GraphExecutor& e,Feed& feed,StereoObservation& out){ std
  }
 }
 inline void stereo_windows_and_mix(){auto g=aligned_fixture(2);
- stereo_branch(g,4096,0,20,0);stereo_branch(g,512,100,1,0);stereo_branch(g,512,400,1,1);
- GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"paired512 mixed4096 Apply");Feed feed(g);StereoObservation out;
+ stereo_branch(g,fft_size,0,20,0);stereo_branch(g,short_fft_size,100,1,0);stereo_branch(g,short_fft_size,400,1,1);
+ GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"paired/mixed windows Apply");Feed feed(g);StereoObservation out;
  stereo_feed(e,feed,out);
- check(out.count[0]>0&&out.count[0]==out.count[1]&&out.mixed>0,"both512 and mixed4096 emitted");
- for(unsigned i=0;i<out.count[0];++i)check(out.ends[0][i]==out.ends[1][i],"each paired FFT512 has identical source window end");
- std::puts("stereo distinct DC2/DC4 FFT512 identical ends/mixed4096 analytical DC3/irregular/noalloc PASS");
+ check(out.count[0]>0&&out.count[0]==out.count[1]&&out.mixed>0,"separate and mixed windows emitted");
+ for(unsigned i=0;i<out.count[0];++i)check(out.ends[0][i]==out.ends[1][i],"each paired short FFT has identical source window end");
+ std::puts("stereo distinct DC2/DC4 short FFT identical ends/mixed window analytical DC3/irregular/noalloc PASS");
 }
 }

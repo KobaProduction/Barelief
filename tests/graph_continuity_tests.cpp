@@ -1,6 +1,7 @@
 #include <core_app/numeric_default_graph.h>
 #include "test_assertions.h"
 #include <dataflow_runtime/runtime.h>
+#include <dsp_kernels/dsp.h>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -19,6 +20,8 @@ void operator delete(void* value)noexcept{std::free(value);}void operator delete
 void operator delete(void* value,std::size_t)noexcept{std::free(value);}void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
 namespace {
 #define CHECK(x) test_assertions::record(bool(x), #x, __FILE__, __LINE__, failures)
+constexpr auto initial_fft_size=std::min<std::uint32_t>(4096,dsp_kernels::max_fft_samples);
+constexpr auto edited_fft_size=initial_fft_size/2;
 constexpr FrameLimits frame_limits{8,32768,262144,16384,256,8192};
 void print_port_contract(const ProcessingPort& port) {
  const auto value=port.contract.view();const auto* c=std::get_if<NumericContract>(&value);if(!c)return;
@@ -48,7 +51,7 @@ void positive_latest(const Snapshot& snapshot){
 }
 struct Fixture {
  NumericRuntimeProfile p=profile();GraphExecutor executor{p};application::GraphLifecycle lifecycle{executor,executor,PreparedGraph::numeric_capabilities(p),{p.admission,p.resources}};
- NumericProcessingGraph graph=numeric_test_graph();std::uint64_t sequence=0,ordinal=0,filled=0,history_sequence=0;std::size_t events=0;
+ NumericProcessingGraph graph=numeric_test_graph(initial_fft_size);std::uint64_t sequence=0,ordinal=0,filled=0,history_sequence=0;std::size_t events=0;
  NumericContract source;std::array<float,256> samples{};std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
  Fixture(){graph.execution_interval={1,60};source=std::get<NumericContract>(graph.nodes[0].outputs[0].contract.view());}
  ConfiguredProcessingNode& node(NodeId id){auto it=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==id;});CHECK(it!=graph.nodes.end());return *it;}
@@ -122,22 +125,26 @@ void remove_gate(Fixture& f){
  std::erase_if(f.graph.edges,[](const auto& e){return e.from==20 || e.to==20;});f.graph.edges.push_back({15,6,0,0});std::erase_if(f.graph.nodes,[](const auto& n){return n.id==20;});
  f.edit_preserves("bypass/remove Gate");
 }
-void resize_fft_contract(ProcessingPort& port){
- auto value=std::get<NumericContract>(port.contract.view());
- if(value.semantic==Semantic::Window || value.semantic==Semantic::Windowed || (value.shape.rank==Rank::Vector && value.shape.extents[0].maximum==4096))value.shape.extents[0]={2048,2048};
- else if(value.semantic==Semantic::SpectrumMagnitude){value.shape.extents[0]={1024,1024};value.coordinates[0].step={48000,2048};}
- else return;
- CHECK(own_processing_contract(value,frame_limits,65536,port.contract)==Status::ok);
+void resize_fft_contract(ProcessingPort& port) {
+    auto value=std::get<NumericContract>(port.contract.view());
+    if(value.semantic==Semantic::Window || value.semantic==Semantic::Windowed ||
+        (value.shape.rank==Rank::Vector && value.shape.extents[0].maximum==initial_fft_size)) {
+        value.shape.extents[0]={edited_fft_size,edited_fft_size};
+    } else if(value.semantic==Semantic::SpectrumMagnitude) {
+        value.shape.extents[0]={edited_fft_size/2,edited_fft_size/2};
+        value.coordinates[0].step={48000,edited_fft_size};
+    } else return;
+    CHECK(own_processing_contract(value,frame_limits,65536,port.contract)==Status::ok);
 }
-void fft_geometry_edit(Fixture& f){
- // The window geometry changes, but the final Mel50/History contract and clock do not.
- for(auto& n:f.graph.nodes)for(auto* ports:{&n.inputs,&n.outputs})for(auto& port:*ports)resize_fft_contract(port);
- std::get<TransformProcessingParameters>(f.node(2).parameters).values[0].value=NumericLiteral{std::uint64_t{2048}};
- for(const NodeId id:{2,3,15,6})for(auto& field:std::get<TransformProcessingParameters>(f.node(id).parameters).values){
-  if(field.key=="size" || field.key=="fft_size")field.value=NumericLiteral{std::uint64_t{2048}};
-  if(field.key=="bin_hz")field.value=NumericLiteral{48000./2048.};
- }
- f.edit_preserves("FFT window4096 to2048 compatible Mel50");
+void fft_geometry_edit(Fixture& f) {
+    // Change the window while keeping the final Mel50/History geometry and clock.
+    for(auto& n:f.graph.nodes)for(auto* ports:{&n.inputs,&n.outputs})for(auto& port:*ports)resize_fft_contract(port);
+    std::get<TransformProcessingParameters>(f.node(2).parameters).values[0].value=NumericLiteral{std::uint64_t(edited_fft_size)};
+    for(const NodeId id:{2,3,15,6})for(auto& field:std::get<TransformProcessingParameters>(f.node(id).parameters).values) {
+        if(field.key=="size" || field.key=="fft_size")field.value=NumericLiteral{std::uint64_t(edited_fft_size)};
+        if(field.key=="bin_hz")field.value=NumericLiteral{48000./edited_fft_size};
+    }
+    f.edit_preserves("halved FFT window keeps compatible Mel50");
 }
 Snapshot disconnect_history(Fixture& f){
  const auto before=f.snapshot();CHECK(f.lifecycle.disconnect(6));f.graph=*f.lifecycle.working_numeric_graph();f.preserved(before);f.feed(8);auto zero=f.snapshot();

@@ -1,10 +1,13 @@
 #include <application/graph_lifecycle.h>
 #include <core_app/numeric_default_graph.h>
 #include <dataflow_runtime/runtime.h>
+#include <dsp_kernels/dsp.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 using namespace application;
+static constexpr auto fixture_fft_size=std::min<std::uint32_t>(4096,dsp_kernels::max_fft_samples);
 static void check(bool ok,const char* why){if(!ok){std::fprintf(stderr,"FAIL %s\n",why);std::exit(1);}}
 struct Plan final:PreparedPlan {
  std::shared_ptr<const domain::NumericProcessingGraph> graph;MemoryRequirements memory;
@@ -47,7 +50,7 @@ static void configuration_identity_rules(const domain::NumericProcessingGraph& r
  check(!same_numeric_processing_graph(requested,changed),"configuration role defines graph identity");
 }
 static void configuration_identity(const dataflow_runtime::NumericRuntimeProfile& profile){
- auto requested=numeric_generator_graph();for(auto& node:requested.nodes)node.clock_node=-1;
+ auto requested=numeric_generator_graph(48000,fixture_fft_size);for(auto& node:requested.nodes)node.clock_node=-1;
  configuration_identity_rules(requested);
  Preparer preparer;preparer.resolve_bindings=true;Runtime runtime;
  GraphLifecycle lifecycle(preparer,runtime,dataflow_runtime::PreparedGraph::numeric_capabilities(profile),{profile.admission,profile.resources});
@@ -67,7 +70,7 @@ static dataflow_runtime::NumericRuntimeProfile test_profile() {
 struct LifecycleFixture {
  dataflow_runtime::NumericRuntimeProfile profile=test_profile();
  Preparer p;Runtime r;GraphLifecycle life;
- domain::NumericProcessingGraph g=numeric_test_graph();
+ domain::NumericProcessingGraph g=numeric_test_graph(fixture_fft_size);
  LifecycleFixture():life(p,r,dataflow_runtime::PreparedGraph::numeric_capabilities(profile),{profile.admission,profile.resources}) {}
  void start() {
   check(life.state()==LifecycleState::Empty&&!life.working_numeric_graph(),"constructor mutates runtime");

@@ -3,13 +3,14 @@
 // Product default: self-clocked generator, sample window and generic line view.
 domain::NumericProcessingGraph numeric_basic_signal_graph(std::uint32_t sample_rate=48000,std::uint64_t window_size=500);
 // Computational fixtures, outside the interactive preset catalogue.
-domain::NumericProcessingGraph numeric_default_graph(std::uint32_t sample_rate=48000);
+// FFT geometry is explicit; callers can select a supported SDK capacity.
+domain::NumericProcessingGraph numeric_default_graph(std::uint32_t sample_rate=48000,std::uint32_t fft_size=4096);
 // Silent single-source changing-tone graph for test fixtures only.
-domain::NumericProcessingGraph numeric_test_graph();
+domain::NumericProcessingGraph numeric_test_graph(std::uint32_t fft_size=4096);
 // Temporal Fourier analysis of each Mel band, driven by silent changing tones.
 domain::NumericProcessingGraph numeric_temporal_fft_graph(std::uint32_t sample_rate=48000);
 // Product generator, bound to an explicit local SampleClock.
-domain::NumericProcessingGraph numeric_generator_graph(std::uint32_t sample_rate=48000);
+domain::NumericProcessingGraph numeric_generator_graph(std::uint32_t sample_rate=48000,std::uint32_t fft_size=4096);
 // Generator drives analysis; physical source awaits native discovery and explicit wiring.
 domain::NumericProcessingGraph numeric_startup_graph();
 // PC research pipeline, separate from startup and user projects.

@@ -34,15 +34,17 @@ static NumericProcessingGraph single_window_graph(std::size_t size){
  graph.nodes.push_back(std::move(fourier));graph.nodes.push_back(std::move(amplitude));
  graph.edges.insert(graph.edges.end(),{{2,3,0,0},{3,4,0,0},{3,4,1,1}});return graph;
 }
-static NumericProcessingGraph dual_window_graph(){auto graph=single_window_graph(2048),short_graph=single_window_graph(512);
+constexpr auto dual_long_fft_size=std::min<std::size_t>(2048,dsp_kernels::max_fft_samples);
+
+static NumericProcessingGraph dual_window_graph(){auto graph=single_window_graph(dual_long_fft_size),short_graph=single_window_graph(dual_long_fft_size/4);
  for(auto n:short_graph.nodes)if(n.id!=1){n.id+=20;graph.nodes.push_back(std::move(n));}
  graph.edges.insert(graph.edges.end(),{{1,22,0,0},{22,23,0,0},{23,24,0,0},{23,24,1,1}});return graph;
 }
 static void independent_windows(){auto g=dual_window_graph();
  GraphExecutor e(profile());application::PreparedExecution pending;prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"apply dual windows");Feed feed(g);Spectra result;
  for(int i=0;i<32;++i)feed.process(e,256,{spectrum,nullptr,nullptr,&result});
- for(std::size_t i=0;i<2;++i)check(result.count[i]==32&&result.end[i]==7936&&result.peak[i]==(i==0?127:31),"independent mono window schedule/timestamp");
- std::puts("independent windows2048/512 mono peaks at bins128/32 (non-DC indices127/31) PASS");}
+ for(std::size_t i=0;i<2;++i)check(result.count[i]==32&&result.end[i]==7936&&result.peak[i]==(i==0?dual_long_fft_size:dual_long_fft_size/4)/16-1,"independent mono window schedule/timestamp");
+ std::printf("independent windows%zu/%zu mono 512Hz peaks and original packet timestamps PASS\n",dual_long_fft_size,dual_long_fft_size/4);}
 struct RetainedHistory {std::size_t filled=0,bands=0;std::uint64_t sequence=0;bool discontinuity=false;std::vector<std::uint64_t> bits;};
 static RetainedHistory retained_history(const GraphExecutor& e,NodeId id=7){DataFrameView frame;std::uint64_t filled=0;check(e.plan()->history(id,0,*e.context(),frame,&filled)==Status::ok,"retain History observation");const auto& view=std::get<NumericView>(frame.payload);RetainedHistory result;result.sequence=frame.stamp.sequence;result.discontinuity=frame.stamp.discontinuity;result.filled=std::size_t(filled);result.bands=view.actual[1];result.bits.resize(result.filled*result.bands);
  for(std::size_t r=0;r<result.filled;++r)for(std::size_t b=0;b<result.bands;++b)check(load_bits(view,{0,view.actual[0]-result.filled+r,b},view.contract->dtype,result.bits[r*result.bands+b])==Status::ok,"retain History exact bits");return result;}
@@ -114,7 +116,7 @@ struct SelectiveResetFixture {
  void process_right(){auto frame=right.frame(256);const auto before=allocations;
   check(executor.process_numeric_ports(21,frame,{}, {})==Status::ok&&allocations==before,"right branch process/noalloc");}
  void start(){prepare(executor,graph,pending);const auto admission=pending.plan->numeric_admission();
-  check(admission && admission->resources.payload_bytes>=2*2048*50*sizeof(float) && admission->resources.payload_bytes<=profile().resources.maximum.payload_bytes,"both retained Float32 Mel plans charged within bounded two-branch payload budget");
+  check(admission && admission->resources.payload_bytes>=2*(fft_size/2)*50*sizeof(float) && admission->resources.payload_bytes<=profile().resources.maximum.payload_bytes,"both retained Float32 Mel plans charged within bounded two-branch payload budget");
   check(executor.apply(std::move(pending))==Status::ok,"two branches Apply");
   for(int i=0;i<32;++i){left.process(executor,256);process_right();}
   check(rows(executor,27)==rows(executor,7),"two branches counts");}
@@ -272,6 +274,8 @@ static void repeated_dsp_restart(){auto graph=oracle_graph();GraphExecutor execu
  check(executor.apply(std::move(pending))==Status::ok,"DSP restart Apply");Feed feed(graph);
  for(int cycle=0;cycle<10;++cycle)restart_dsp_cycle(executor,graph,feed);
  std::puts("actual 8-tone Window/FFT/Mel/History repeated re-admission/Stop10 cycles, fresh positive finite output PASS");}
+constexpr std::size_t selector_packet_samples=256;
+
 struct SelectorObservation {
  std::size_t available=0,unavailable=0,windows=0;
  FrameStamp last{};bool inspect_fresh_window=false,expect_history_discontinuity=false,expect_selector_zero=false;
@@ -293,8 +297,9 @@ static void observe_selector(SelectorObservation& observation,const NumericPortF
    "selector unavailable is not available zeros");}
 }
 static void check_fresh_window(const NumericView& view){
+ check(view.actual[0]>selector_packet_samples,"selector freshness checks a nonempty zero prefix");
  for(std::size_t plane=0;plane<view.planes.size();++plane)
-  for(std::size_t sample=0;sample<view.actual[0]-800;++sample){float value=1;
+  for(std::size_t sample=0;sample<view.actual[0]-selector_packet_samples;++sample){float value=1;
    check(load_element(view,{plane,sample,0},value)==Status::ok&&value==0,
     "selector mixed old producer into fresh Window");}
 }
@@ -339,7 +344,7 @@ struct InputSelectorFixture {
   capture.epoch=99;capture.sent=480000;
  }
  FrameStamp send(NodeId id,Feed& feed,bool available=true,bool discontinuity=false){
-  auto frame=feed.frame(256);frame.stamp.available=available;frame.stamp.discontinuity=discontinuity;
+  auto frame=feed.frame(selector_packet_samples);frame.stamp.available=available;frame.stamp.discontinuity=discontinuity;
   if(!available)std::get<NumericView>(frame.payload).storage={};
   const auto before=allocations;
   check(e.process_numeric_ports(id,frame,{}, {selector_output,nullptr,nullptr,&o})==Status::ok,"selector ingress");
@@ -482,7 +487,7 @@ struct GroupSelectorFixture {
  NumericProcessingGraph base=oracle_graph();NumericProcessingGraph g;GraphExecutor e{profile()};
  application::PreparedExecution pending;std::array<Feed,4> feeds;GroupObservation o;
  GroupSelectorFixture():g(make_graph()),feeds{Feed(g),Feed(g),Feed(g),Feed(g)}{apply("group initial Apply");}
- NumericProcessingGraph make_graph(){geometry(base,48000,4096,317);return grouped_selector_graph(base);}
+ NumericProcessingGraph make_graph(){geometry(base,48000,fft_size,317);return grouped_selector_graph(base);}
  void apply(const char* reason){prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,reason);}
  void send(unsigned id,std::size_t count=256){auto& feed=feeds[id-1];feed.epoch=100+id;
   auto frame=feed.frame(count);std::fill(feed.samples.begin(),feed.samples.end(),float(id));
@@ -555,7 +560,7 @@ static void aligned_mixer_output(ConfiguredProcessingNode& target,const OwnedPro
  target.parameters=std::move(params);target.outputs={{0,PortDirection::Output,pcm}};
 }
 static NumericProcessingGraph aligned_fixture(std::size_t lanes,bool comparison=false,bool routing=false){
- auto base=oracle_graph();geometry(base,48000,4096,317);
+ auto base=oracle_graph();geometry(base,48000,fft_size,317);
  NumericProcessingGraph graph;graph.graph_id="aligned.regression";graph.nodes.push_back(aligned_source(base,lanes));
  const auto pcm=graph.nodes.front().outputs.front().contract;
  ConfiguredProcessingNode target;target.id=20;target.kind=routing?"Switch":comparison?"ChannelComparison":"Mixer";
@@ -726,14 +731,38 @@ static void mono_selector_variants(NumericProcessingGraph& graph,const NumericRu
   check(mono_status==Status::ok,"startup mono discovery preserves explicit bindings and disconnected physical lanes");
  }
 }
-static void startup_preparation_oracle(){auto graph=numeric_startup_graph();const auto profile=startup_profile();
- std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
- const auto status=PreparedGraph::prepare_numeric(graph,profile,plan,context);
- if(status!=Status::ok)diagnose_startup_failure(graph,profile,status);
- check(status==Status::ok,"startup complete preparation");
- check(std::any_of(graph.nodes.begin(),graph.nodes.end(),[](const auto& source){return source.kind=="AudioSource";}),"shipped selector includes a capture stream");
- for(const auto& source:graph.nodes)if(source.kind=="AudioSource")mono_source_discovery(graph,source.id);
- mono_selector_variants(graph,profile);
+static void portable_startup_backend(NumericProcessingGraph& graph,const NumericRuntimeProfile& profile) {
+#ifndef BARELIEF_TEST_DESKTOP_SPEEX
+    std::shared_ptr<const PreparedGraph> rejected;std::unique_ptr<RuntimeContext> rejected_context;
+    check(PreparedGraph::prepare_numeric(graph,profile,rejected,rejected_context)!=Status::ok &&
+        !rejected && !rejected_context,"shipped Speex recipe requires its external backend");
+    for(auto& configured:graph.nodes)if(configured.kind=="PcmResampler") {
+        for(auto& field:std::get<TransformProcessingParameters>(configured.parameters).values)
+            if(field.key=="mode")field.value=std::string{"existing_fir"};
+    }
+#else
+    (void)graph;(void)profile;
+#endif
+}
+static void bounded_startup_frontend(NumericProcessingGraph& graph,const NumericRuntimeProfile& profile) {
+    if constexpr(dsp_kernels::max_fft_samples<4096) {
+        std::shared_ptr<const PreparedGraph> rejected;std::unique_ptr<RuntimeContext> rejected_context;
+        check(PreparedGraph::prepare_numeric(graph,profile,rejected,rejected_context)!=Status::ok &&
+            !rejected && !rejected_context,"fixed calibrated frontend rejects insufficient FFT capacity atomically");
+        graph=startup_fragment(graph,200);
+    }
+}
+
+static void startup_preparation_oracle() {
+    auto graph=numeric_startup_graph();const auto profile=startup_profile();
+    portable_startup_backend(graph,profile);bounded_startup_frontend(graph,profile);
+    std::shared_ptr<const PreparedGraph> plan;std::unique_ptr<RuntimeContext> context;
+    const auto status=PreparedGraph::prepare_numeric(graph,profile,plan,context);
+    if(status!=Status::ok)diagnose_startup_failure(graph,profile,status);
+    check(status==Status::ok,"startup selected profile preparation");
+    check(std::any_of(graph.nodes.begin(),graph.nodes.end(),[](const auto& source){return source.kind=="AudioSource";}),"shipped selector includes a capture stream");
+    for(const auto& source:graph.nodes)if(source.kind=="AudioSource")mono_source_discovery(graph,source.id);
+    mono_selector_variants(graph,profile);
 }
 #include "aligned_numerical_acceptance.h"
 static void moved_from_context_rejected(){

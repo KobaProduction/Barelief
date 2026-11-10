@@ -92,17 +92,18 @@ void complex_case(){
     run.feed(1,im,3*size,true);run.feed(0,original,3*size,true);
     check(run.seen.calls[0]==3 && run.seen.stamps[0].discontinuity,"imaginary-first boundary pair works");
 }
-void real_case(const char* radix){
-    constexpr std::size_t size=4096;Running run(true,size,radix);std::array<float,size> samples{};
+void real_case(const char* radix) {
+    constexpr std::size_t size=std::min<std::size_t>(4096,dsp_kernels::max_fft_samples);
+    constexpr auto bins=size/2+1;Running run(true,size,radix);std::array<float,size> samples{};
     for(std::size_t i=0;i<size;++i)samples[i]=float(.25+.5*(i%2?-1:1)+.125*std::sin(6.283185307179586*3*i/size));
     run.feed(0,samples);
-    check(run.seen.counts[0]==2049 && run.seen.counts[1]==2049 && !run.seen.calls[2],"RFFT4096 has two 2049-bin planes");
-    check(std::abs(run.seen.values[0][2048]-.5*size)<.002,"Nyquist is the final real value");
+    check(run.seen.counts[0]==bins && run.seen.counts[1]==bins && !run.seen.calls[2],"real FFT exposes both positive-frequency planes");
+    check(std::abs(run.seen.values[0][size/2]-.5*size)<.002,"Nyquist is the final real value");
     check(std::abs(run.seen.values[1][3]+.0625*size)<.002,"interior imaginary sign and index");
     check(std::abs(run.seen.values[0][0]-.25*size)<.002,"real DC at bin zero");
     Running complex(false,size,"radix2",false);complex.feed(0,samples);
-    for(std::size_t i=0;i<2049;++i)check(std::abs(complex.seen.values[0][i]-run.seen.values[0][i])<.002,"complex and real FFT positive bins agree");
-    for(std::size_t i=0;i<2049;++i)check(std::abs(complex.seen.values[1][i]-run.seen.values[1][i])<.002,"imaginary interior agrees");
+    for(std::size_t i=0;i<bins;++i)check(std::abs(complex.seen.values[0][i]-run.seen.values[0][i])<.002,"complex and real FFT positive bins agree");
+    for(std::size_t i=0;i<bins;++i)check(std::abs(complex.seen.values[1][i]-run.seen.values[1][i])<.002,"imaginary interior agrees");
 }
 void pairing_boundaries(){
     std::array<float,8> re{},im{};re.fill(1);

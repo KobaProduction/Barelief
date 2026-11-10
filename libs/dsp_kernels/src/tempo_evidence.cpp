@@ -27,8 +27,11 @@ float sample(std::span<const float> values,float index) noexcept {
 }
 float offset(std::span<const float> values,std::size_t index,bool logarithmic) noexcept {
     const float left=values[index-1],center=values[index],right=values[index+1];
-    if(logarithmic && left>0 && center>0 && right>0)
-        return quadratic_peak_offset(std::log(left),std::log(center),std::log(right));
+    if(logarithmic && left>0 && center>0 && right>0) {
+        const auto relative_left=std::log(double(left)/double(center));
+        const auto relative_right=std::log(double(right)/double(center));
+        return quadratic_peak_offset(relative_left,0.,relative_right);
+    }
     return quadratic_peak_offset(left,center,right);
 }
 struct Peak {float bpm=0,strength=0;};

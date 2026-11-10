@@ -2,6 +2,7 @@
 #include <dataflow_runtime/pcm_packet_queue.h>
 #include "numeric_test_builders.h"
 #include <algorithm>
+#include <dsp_kernels/dsp.h>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -16,6 +17,7 @@ std::size_t allocations=0;
 void check(bool yes,const char* reason){if(!yes){std::fprintf(stderr,"FAIL music runtime: %s\n",reason);std::exit(1);}}
 constexpr FrameLimits limits{1,32768,262144,16384,256,32768};
 constexpr std::array<std::uint32_t,1> mono{0};
+constexpr auto runtime_fft_size=std::min<std::uint32_t>(4096,dsp_kernels::max_fft_samples);
 NumericRuntimeProfile profile(){auto p=NumericRuntimeProfile{{32,64,8,32,1048576,4*1048576,limits},{{4*1048576,4*1048576,4*1048576,131072},0,32*1048576},{32768,1,262144,262144,1048576},{true,true,true}};p.music_enabled=true;return p;}
 ProcessingPort port(PortDirection direction,PortId id,const NumericContract& c){return numeric_test_builders::port(id,direction,c,limits,65536,check,"own fixture port");}
 ProcessingParameter number(const char* key,std::uint64_t value){return {key,NumericLiteral{value}};}
@@ -23,7 +25,9 @@ ProcessingParameter text(const char* key,const char* value){return {key,std::str
 ConfiguredProcessingNode transform(NodeId id,const char* kind,const NumericContract& input,std::vector<ProcessingParameter> params={}){
     auto n=numeric_test_builders::node(id,kind,TransformProcessingParameters{std::move(params)},
         {port(PortDirection::Input,0,input)},{});
-    OwnedProcessingContract result;check(music_output_contract(n,input,result)==Status::ok,"derive music output");
+    OwnedProcessingContract result;const auto status=music_output_contract(n,input,result);
+    if(status!=Status::ok)std::fprintf(stderr,"derive %s node%llu status%d\n",kind,static_cast<unsigned long long>(id),int(status));
+    check(status==Status::ok,"derive music output");
     n.outputs.push_back(numeric_test_builders::port(0,PortDirection::Output,std::move(result)));return n;
 }
 NumericContract output(const ConfiguredProcessingNode& node){return std::get<NumericContract>(node.outputs[0].contract.view());}
@@ -34,33 +38,37 @@ ConfiguredProcessingNode history(NodeId id,const NumericContract& input){
     ConfiguredProcessingNode n;n.id=id;n.kind="Spectrogram";n.parameters=HistoryProcessingParameters{400};n.inputs={port(PortDirection::Input,0,input)};
     n.outputs={port(PortDirection::Output,0,c),port(PortDirection::Output,1,count)};return n;
 }
-void music_branches(NumericProcessingGraph& g,unsigned bits){
-    g.nodes.push_back(transform(5,"SpectrumProjection",output(g.nodes.back()),{text("representation","power"),number("sample_rate",32768)}));g.edges.push_back({4,5});
+void music_branches(NumericProcessingGraph& g,unsigned bits,std::uint32_t fft_size){
+    const auto bin_hz=32768.f/fft_size;
+    g.nodes.push_back(transform(5,"SpectrumProjection",output(g.nodes.back()),{text("representation","power"),number("sample_rate",32768),number("fft_size",fft_size)}));g.edges.push_back({4,5});
     g.nodes.push_back(transform(6,"FrequencyNormalizer",output(g.nodes.back())));g.edges.push_back({5,6});
-    const auto power=output(g.nodes.back());g.nodes.push_back(transform(7,"BroadbandFeatures",power,{text("statistic","rms"),{"bin_hz",NumericLiteral{float{8}}}}));g.edges.push_back({6,7});
+    const auto power=output(g.nodes.back());g.nodes.push_back(transform(7,"BroadbandFeatures",power,{text("statistic","rms"),{"bin_hz",NumericLiteral{float{bin_hz}}}}));g.edges.push_back({6,7});
     g.nodes.push_back(transform(8,"SpectralQuantize",output(g.nodes.back()),{number("bits",bits)}));g.edges.push_back({7,8});
     g.nodes.push_back(history(9,output(g.nodes.back())));g.edges.push_back({8,9});
-    g.nodes.push_back(transform(10,"NoteSalience",power,{{"bin_hz",NumericLiteral{float{8}}}}));g.edges.push_back({6,10});
+    g.nodes.push_back(transform(10,"NoteSalience",power,{{"bin_hz",NumericLiteral{float{bin_hz}}}}));g.edges.push_back({6,10});
     g.nodes.push_back(transform(11,"SpectralQuantize",output(g.nodes.back()),{number("bits",bits)}));g.edges.push_back({10,11});
     g.nodes.push_back(history(12,output(g.nodes.back())));g.edges.push_back({11,12});}
-std::pair<ConfiguredProcessingNode,ConfiguredProcessingNode> window_coefficients(NumericProcessingGraph& g,const ConfiguredProcessingNode& window,const NumericContract& pcm){
+std::pair<ConfiguredProcessingNode,ConfiguredProcessingNode> window_coefficients(NumericProcessingGraph& g,const ConfiguredProcessingNode& window,const NumericContract& pcm,std::uint32_t fft_size){
     ConfiguredProcessingNode length;length.id=20;length.kind="ArrayLength";length.parameters=TransformProcessingParameters{};length.inputs={port(PortDirection::Input,0,pcm)};OwnedProcessingContract size;check(numeric_metadata_output_contract(pcm,false,size)==Status::ok,"window array size");length.outputs={{0,PortDirection::Output,size}};
-    auto function=window;function.id=3;function.kind="WindowFunction";function.parameters=TransformProcessingParameters{{text("function","hann"),number("size",4096)}};function.inputs={{0,PortDirection::Input,size}};OwnedProcessingContract coefficients;check(array_generator_output_contract(function,std::get<NumericContract>(size.view()),coefficients)==Status::ok,"window coefficient generator");function.outputs={{0,PortDirection::Output,coefficients}};g.nodes.push_back(function);
+    auto function=window;function.id=3;function.kind="WindowFunction";function.parameters=TransformProcessingParameters{{text("function","hann"),number("size",fft_size)}};function.inputs={{0,PortDirection::Input,size}};OwnedProcessingContract coefficients;check(array_generator_output_contract(function,std::get<NumericContract>(size.view()),coefficients)==Status::ok,"window coefficient generator");function.outputs={{0,PortDirection::Output,coefficients}};g.nodes.push_back(function);
     ConfiguredProcessingNode product;product.id=21;product.kind="ArrayMultiply";product.parameters=TransformProcessingParameters{};product.inputs={port(PortDirection::Input,0,pcm),{1,PortDirection::Input,coefficients}};product.outputs={port(PortDirection::Output,0,pcm)};
     return {std::move(length),std::move(product)};
 }
-NumericProcessingGraph graph(unsigned cadence=60,unsigned bits=8){
+NumericProcessingGraph graph(unsigned cadence=60,unsigned bits=8,std::uint32_t fft_size=runtime_fft_size){
     NumericContract pcm;pcm.channel_order=mono;pcm.semantic=Semantic::PCM;pcm.quantity=Quantity::Amplitude;pcm.unit=NumericUnit::NormalizedAmplitude;
     pcm.representation.normalization=Normalization::FloatUnit;pcm.representation.alignment=alignof(float);
     pcm.shape={Rank::Vector,{Axis::Sample,Axis::None},{ExtentBounds{1,1024},ExtentBounds{}}};pcm.clock={"music-clock",{1,32768},32768};
     ConfiguredProcessingNode source;source.id=1;source.kind="NetworkInput";source.outputs={port(PortDirection::Output,0,pcm)};
     auto g=numeric_test_builders::graph("music-runtime-regression",{1,cadence},{source},{});
-    auto window=source;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{number("size",4096)}};window.inputs={port(PortDirection::Input,0,pcm)};
-    pcm.shape.extents[0]={4096,4096};pcm.semantic=Semantic::Window;window.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(window);g.edges.push_back({1,2});
-    auto [length,product]=window_coefficients(g,window,pcm);
-    g.nodes.push_back(transform(4,"RFFT",pcm,{number("fft_size",4096),number("sample_rate",32768)}));g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});
-    music_branches(g,bits);g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
+    auto window=source;window.id=2;window.kind="Window";window.parameters=TransformProcessingParameters{{number("size",fft_size)}};window.inputs={port(PortDirection::Input,0,pcm)};
+    pcm.shape.extents[0]={fft_size,fft_size};pcm.semantic=Semantic::Window;window.outputs={port(PortDirection::Output,0,pcm)};g.nodes.push_back(window);g.edges.push_back({1,2});
+    auto [length,product]=window_coefficients(g,window,pcm,fft_size);
+    g.nodes.push_back(transform(4,"RFFT",pcm,{number("fft_size",fft_size),number("sample_rate",32768)}));g.edges.insert(g.edges.end(),{{2,20},{20,3},{2,21,0,0},{3,21,0,1},{21,4}});
+    music_branches(g,bits,fft_size);g.nodes.push_back(std::move(length));g.nodes.push_back(std::move(product));return g;
 }
+// Contract-only calibration fixtures keep their explicit 8 Hz / 4096-bin geometry.
+NumericProcessingGraph calibration_graph(){return graph(60,8,4096);}
+
 struct Observation {
     std::size_t count=0;std::array<std::int64_t,600> ticks{};std::array<std::uint64_t,600> hashes{};std::array<bool,600> boundaries{};bool discontinuity=false;std::size_t discontinuities=0;
     std::size_t flux_count=0;std::array<std::uint64_t,600> flux_hashes{};std::array<bool,600> flux_boundaries{},flux_nonzero{};
@@ -70,7 +78,7 @@ struct Observation {
             self.flux_hashes[self.flux_count]=hash;self.flux_boundaries[self.flux_count]=event.frame.stamp.discontinuity;self.flux_nonzero[self.flux_count++]=nonzero;return;
         }
         if(event.identity.node!=5)return;
-        const auto& v=std::get<NumericView>(event.frame.payload);check(v.planes.size()==1 && v.actual[0]==2049,"projection includes DC/Nyquist in one plane");
+        const auto& v=std::get<NumericView>(event.frame.payload);check(v.planes.size()==1 && v.actual[0]==runtime_fft_size/2+1,"projection includes DC/Nyquist in one plane");
         check(self.count<self.ticks.size(),"bounded observations");std::uint64_t hash=1469598103934665603ull;
         for(std::size_t i=0;i<v.actual[0];++i){float x=0;check(load_element(v,{0,i,0},x)==Status::ok && std::isfinite(x) && x>=0,"finite power");hash=(hash^std::bit_cast<std::uint32_t>(x))*1099511628211ull;}
         self.ticks[self.count]=event.frame.stamp.timestamp_ticks;self.boundaries[self.count]=event.frame.stamp.discontinuity;self.hashes[self.count++]=hash;self.discontinuity=event.frame.stamp.discontinuity;if(self.discontinuity)++self.discontinuities;
@@ -82,7 +90,7 @@ struct Running {
     std::uint64_t sequence=0;Observation observation;
     explicit Running(unsigned cadence=60,unsigned bits=8,bool flux=false):graph(::graph(cadence,bits)){
         if(flux){
-            graph.nodes[6]=transform(7,"BroadbandFeatures",output(graph.nodes[5]),{text("statistic","flux"),{"bin_hz",NumericLiteral{float{8}}}});
+            graph.nodes[6]=transform(7,"BroadbandFeatures",output(graph.nodes[5]),{text("statistic","flux"),{"bin_hz",NumericLiteral{32768.f/runtime_fft_size}}});
             graph.nodes[7]=transform(8,"SpectralQuantize",output(graph.nodes[6]),{number("bits",bits)});
             graph.nodes[8]=history(9,output(graph.nodes[7]));
         }
@@ -137,7 +145,7 @@ void changed_feature_partition(Running& whole){
 void refused_feature_profiles(Running& whole){
     auto profile_embedded=profile();profile_embedded.music_enabled=false;std::shared_ptr<const PreparedGraph> refused;std::unique_ptr<RuntimeContext> context;
     check(PreparedGraph::prepare_numeric(whole.graph,profile_embedded,refused,context)!=Status::ok && !refused,"new embedded ops unsupported");
-    auto wrong=whole.graph;auto& projection=std::get<TransformProcessingParameters>(wrong.nodes[4].parameters);projection.values={text("representation","phase")};
+    auto wrong=whole.graph;auto& projection=std::get<TransformProcessingParameters>(wrong.nodes[4].parameters);for(auto& field:projection.values)if(field.key=="representation")field.value=std::string{"phase"};
     OwnedProcessingContract phase;check(music_output_contract(wrong.nodes[4],std::get<NumericContract>(wrong.nodes[4].inputs[0].contract.view()),phase)==Status::ok,"derive honest phase metadata");
     auto phase_input=std::get<NumericContract>(phase.view());OwnedProcessingContract invalid;check(music_output_contract(wrong.nodes[6],phase_input,invalid)!=Status::ok,"phase cannot masquerade as power features");
 }
@@ -180,7 +188,7 @@ SalienceInput salience_input(std::string_view representation){
     check(false,"unknown salience fixture representation");return {};
 }
 std::vector<float> salience_values(bool no_dc,const char* representation){
-    const auto source_graph=graph();
+    const auto source_graph=calibration_graph();
     auto input=output(source_graph.nodes[4]);
     const auto settings=salience_input(representation);input.quantity=settings.quantity;input.unit=settings.unit;
     if(no_dc){input.shape.extents[0]={2048,2048};input.coordinates[0].origin=input.coordinates[0].step;}
@@ -216,7 +224,7 @@ void salience_grid_and_units(){
         std::abs(full[i]-bin[i])<1e-6f && std::abs(full[i]-scaled[i])<1e-6f,"salience explicit policy unit equivalence");
 }
 void new_projection_contracts(){
-    const auto fixture=graph();auto input=output(fixture.nodes[4]);OwnedProcessingContract result;
+    const auto fixture=calibration_graph();auto input=output(fixture.nodes[4]);OwnedProcessingContract result;
     auto broad=*std::find_if(fixture.nodes.begin(),fixture.nodes.end(),[](const auto& n){return n.kind=="BroadbandFeatures";});
     input.quantity=Quantity::SpectrumBinPower;input.unit=NumericUnit::SquaredAmplitude;
     check(music_output_contract(broad,input,result)==Status::ok,"BroadbandFeatures accepts bin power without converting its units");
@@ -230,7 +238,7 @@ void new_projection_contracts(){
     }
 }
 void calibrated_magnitude_admission(){
-    const auto fixture=graph();auto input=output(fixture.nodes[4]);
+    const auto fixture=calibration_graph();auto input=output(fixture.nodes[4]);
     input.quantity=Quantity::SpectrumWindowScaledMagnitude;input.unit=NumericUnit::RawAmplitude;
     ConfiguredProcessingNode node;node.id=99;node.kind="NoteSalience";
     node.parameters=TransformProcessingParameters{{text("input_representation","magnitude"),{"bin_hz",NumericLiteral{8.}},
@@ -247,7 +255,7 @@ void calibrated_magnitude_admission(){
     check(music_output_contract(node,input,result)==Status::incompatible_contract,"raw FFT cannot masquerade as calibrated magnitude");
 }
 void normalizer_magnitude_admission(){
-    const auto fixture=graph();auto input=output(fixture.nodes[4]);
+    const auto fixture=calibration_graph();auto input=output(fixture.nodes[4]);
     input.quantity=Quantity::SpectrumWindowScaledMagnitude;input.unit=NumericUnit::RawAmplitude;
     ConfiguredProcessingNode node;node.id=99;node.kind="FrequencyNormalizer";
     node.parameters=TransformProcessingParameters{{text("mode","profile"),text("representation","magnitude"),
@@ -263,7 +271,7 @@ void normalizer_magnitude_admission(){
     check(!frequency_normalizer_diagnostic(node,input),"profile calibrated magnitude refuses a raw FFT");
 }
 void broadband_quantity_admission(){
-    const auto fixture=graph();auto input=output(fixture.nodes[4]);
+    const auto fixture=calibration_graph();auto input=output(fixture.nodes[4]);
     const char* statistics[]{"sum_energy","mean_power","rms","maximum","flux"};
     const Quantity expected[]{Quantity::BroadbandBinPowerSum,Quantity::BroadbandBinPowerMean,Quantity::BroadbandBinPowerRms,Quantity::BroadbandBinPowerMaximum,Quantity::BroadbandBinPowerFlux};
     for(unsigned i=0;i<5;++i){
@@ -314,7 +322,7 @@ void declared_spectral_window(){
     check(PreparedGraph::prepare_numeric(direct,profile(),plan,state)==Status::ok,"explicit calibration accepted without ancestry inference");
 }
 void complex_frequency_binding(){
-    auto g=graph();NumericProcessingGraph resolved;
+    auto g=calibration_graph();NumericProcessingGraph resolved;
     ConfiguredProcessingNode view;view.id=30;view.kind="FFTView";
     view.inputs={port(PortDirection::Input,0,output(g.nodes[4]))};g.nodes.push_back(view);
     g.configuration_bindings={{4,30,ConfigurationRole::FrequencyGrid,ConfigurationRole::FrequencyGrid}};
@@ -324,7 +332,7 @@ void complex_frequency_binding(){
     const auto prior_id=resolved.graph_id;
     check(resolve_configuration_bindings(g,profile().admission,resolved).error==ProcessingError::IncompatiblePorts,"RFFT frequency grid rejects unequal Hz spacing");
     check(resolved.graph_id==prior_id && output(resolved.nodes[3]).shape.axes[1]==Axis::Component,"failed frequency binding leaves resolved graph unchanged");
-    auto matrix=output(::graph().nodes[4]);matrix.shape.rank=Rank::Matrix;
+    auto matrix=output(g.nodes[4]);matrix.shape.rank=Rank::Matrix;
     matrix.shape.axes={Axis::Time,Axis::Bin};matrix.shape.extents={ExtentBounds{0,8},ExtentBounds{2049,2049}};
     matrix.history_element=matrix.semantic;matrix.semantic=Semantic::History;
     matrix.coordinates={AxisCoordinates{CoordinateMode::ExplicitFloat64LE,NumericUnit::Seconds},output(g.nodes[4]).coordinates[0]};

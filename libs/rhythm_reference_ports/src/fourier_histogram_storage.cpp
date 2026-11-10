@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <cstdint>
 #include <limits>
 namespace rhythm_reference_ports {
 using namespace dsp_kernels;

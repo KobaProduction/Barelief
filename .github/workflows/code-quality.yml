@@ -42,7 +42,7 @@ jobs:
           version: '6.10.2'
           arch: win64_mingw
           modules: qtcharts qtdatavis3d qtserialport
-          tools: 'tools_mingw1310,qt.tools.win64_mingw1310 tools_qtcreator,qt.tools.qtcreator'
+          tools: 'tools_mingw1310,qt.tools.win64_mingw1310 tools_qtcreator_gui,qt.tools.qtcreator_gui'
           setup-python: 'false'
           aqtversion: '==3.3.0'
       - name: Prepare C++ compilation database
@@ -57,6 +57,8 @@ jobs:
           cmake --preset dev -DBUILD_QUALITY_HEADER_AUDIT=ON -DBARELIEF_RHYTHM_REFERENCE_GUI=ON -DCMAKE_C_COMPILER="$env:CC" -DCMAKE_CXX_COMPILER="$env:CXX"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build --preset dev --parallel 4
+      - name: Preserve pinned vendor source bytes
+        run: git config --global core.autocrlf false
       - name: Pinned ESP-IDF sources
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

@@ -98,6 +98,9 @@ def prepare(root: Path, build_root: Path, selected_names: set[str] | None = None
             for command in commands:
                 result = subprocess.run(command, cwd=root, env=selected, stdout=output, stderr=subprocess.STDOUT)
                 if result.returncode:
+                    output.flush()
+                    diagnostic = (build / "quality-configure.log").read_text(encoding="utf-8", errors="replace")
+                    print("\n".join(diagnostic.splitlines()[-80:]), file=sys.stderr)
                     raise ValueError(f"Profile {profile['name']} failed; inspect {build / 'quality-configure.log'}")
         if not (build / "compile_commands.json").is_file():
             raise ValueError("Compile database was not produced: " + str(build))

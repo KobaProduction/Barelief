@@ -188,25 +188,25 @@ domain::NumericProcessingGraph numeric_basic_signal_graph(std::uint32_t sample_r
     builder.chain(3,"VectorLineView",2);
     return builder.finish();
 }
-domain::NumericProcessingGraph numeric_default_graph(std::uint32_t sample_rate) {
-    examples::Builder b({sample_rate,4096,256,400});b.add(1,"AudioSource");examples::add_window(b,1,2,3,1000,1001,4096);
-    add_amplitude_spectrum(b,1001,3,1000,1,sample_rate_output,1002,4,4096,sample_rate);
-    b.chain(15,"BarkWeighting",4,regular_spectrum_grid(sample_rate,4096));
-    b.chain(6,"Mel",15,regular_spectrum_grid(sample_rate,4096));
+domain::NumericProcessingGraph numeric_default_graph(std::uint32_t sample_rate,std::uint32_t fft_size) {
+    examples::Builder b({sample_rate,fft_size,256,400});b.add(1,"AudioSource");examples::add_window(b,1,2,3,1000,1001,fft_size);
+    add_amplitude_spectrum(b,1001,3,1000,1,sample_rate_output,1002,4,fft_size,sample_rate);
+    b.chain(15,"BarkWeighting",4,regular_spectrum_grid(sample_rate,fft_size));
+    b.chain(6,"Mel",15,regular_spectrum_grid(sample_rate,fft_size));
     b.chain(7,"Spectrogram",6);b.chain(8,"AudioSurfaceView",7);b.chain(9,"AudioLineView",1);
     b.chain(10,"AudioLineView",15,examples::transform({{"first_bin",NumericLiteral{std::uint64_t{1}}}}));
     b.chain(11,"AudioLineView",6);b.chain(12,"ScalarMetricsView",7,{},1);
     examples::add_frequency_step(b,1,1000,1003);b.connect(1003,10,0,domain::frequency_step_input);return b.finish();
 }
-domain::NumericProcessingGraph numeric_test_graph() {
-    auto graph=numeric_default_graph();auto& source=graph.nodes.front();source.kind="TestSignal";
+domain::NumericProcessingGraph numeric_test_graph(std::uint32_t fft_size) {
+    auto graph=numeric_default_graph(48000,fft_size);auto& source=graph.nodes.front();source.kind="TestSignal";
     source.parameters=domain::EndpointProcessingParameters{{{"tones",signal_contracts::NumericLiteral{std::uint64_t{8}}},{"sample_rate",signal_contracts::NumericLiteral{std::uint64_t{48000}}},
         {"minimum_hz",signal_contracts::NumericLiteral{73.0}},{"maximum_hz",signal_contracts::NumericLiteral{13901.0}},{"amplitude",signal_contracts::NumericLiteral{0.4}},
         {"period_seconds",signal_contracts::NumericLiteral{6.0}},{"sweep_depth",signal_contracts::NumericLiteral{0.18}}}};
     return finish_example(std::move(graph));
 }
-domain::NumericProcessingGraph numeric_generator_graph(std::uint32_t sample_rate) {
-    examples::Builder b({sample_rate,4096,256,400});b.graph=numeric_default_graph(sample_rate);auto& source=b.node(1);source.kind="SignalGenerator";
+domain::NumericProcessingGraph numeric_generator_graph(std::uint32_t sample_rate,std::uint32_t fft_size) {
+    examples::Builder b({sample_rate,fft_size,256,400});b.graph=numeric_default_graph(sample_rate,fft_size);auto& source=b.node(1);source.kind="SignalGenerator";
     source.parameters=domain::SignalGeneratorProcessingParameters{};source.clock_node=16;b.add(16,"SampleClock");b.configuration(16,1);return b.finish();
 }
 domain::NumericProcessingGraph numeric_temporal_fft_graph(std::uint32_t sample_rate) {

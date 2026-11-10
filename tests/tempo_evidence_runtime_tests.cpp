@@ -17,6 +17,7 @@ using namespace signal_contracts;
 using namespace dataflow_runtime;
 namespace r=dsp_kernels::rhythm;
 std::size_t allocations=0;
+constexpr auto long_fft=std::min<std::size_t>(4096,dsp_kernels::max_fft_samples);
 void check(bool value,const char* why){if(!value){std::fprintf(stderr,"FAIL tempo runtime: %s\n",why);std::exit(1);}}
 NumericRuntimeProfile profile() {
     constexpr FrameLimits frames{1,131072,524288,65536,256,65536};
@@ -24,10 +25,26 @@ NumericRuntimeProfile profile() {
         {131072,1,524288,524288,524288},{true,true,true}};
     result.music_enabled=true;return result;
 }
+r::TempoEvidenceConfig evidence_config() {
+    r::TempoEvidenceConfig config;config.long_fft=long_fft;return config;
+}
+void configure_tempo(ConfiguredProcessingNode& tempo) {
+    auto& values=std::get<TransformProcessingParameters>(tempo.parameters).values;
+    const auto field=std::find_if(values.begin(),values.end(),[](const auto& value){return value.key=="long_fft";});
+    if(field==values.end())values.push_back({"long_fft",NumericLiteral{std::uint64_t(long_fft)}});
+    else field->value=NumericLiteral{std::uint64_t(long_fft)};
+    auto input=std::get<NumericContract>(tempo.inputs[1].contract.view());
+    input.shape.extents[0]={long_fft/2,long_fft/2};
+    input.coordinates[0].step={60,long_fft};
+    check(own_processing_contract(input,profile().admission.frame,131072,tempo.inputs[1].contract)==Status::ok,
+        "own explicit long Fourier input geometry");
+    check(bool(derive_processing_node_contracts(tempo,profile().admission)),"derive supported six-input geometry");
+}
+
 NumericProcessingGraph graph(bool enabled=true) {
     ConfiguredProcessingNode tempo;
     check(bool(make_processing_node("TempoEvidence",7,profile().admission,tempo)),"create six-input evidence block");
-    tempo.enabled=enabled;NumericProcessingGraph g;g.graph_id="explicit-tempo-evidence";g.execution_interval={1,60};
+    configure_tempo(tempo);tempo.enabled=enabled;NumericProcessingGraph g;g.graph_id="explicit-tempo-evidence";g.execution_interval={1,60};
     for(PortId port=0;port<tempo_evidence_inputs;++port){
         ConfiguredProcessingNode input;input.id=port+1;input.kind="NetworkInput";input.parameters=EndpointProcessingParameters{};
         input.outputs={{0,PortDirection::Output,tempo.inputs[port].contract}};g.nodes.push_back(std::move(input));
@@ -37,9 +54,9 @@ NumericProcessingGraph graph(bool enabled=true) {
 }
 struct Inputs {
     std::array<std::vector<float>,4> curves;
-    std::array<std::uint64_t,2> filled{512,4096};
+    std::array<std::uint64_t,2> filled{512,long_fft};
     std::size_t short_lags=121,long_lags=121;
-    Inputs(){generate(512,0);generate(4096,1);}
+    Inputs(){generate(512,0);generate(long_fft,1);}
     void generate(std::size_t size,std::size_t branch) {
         constexpr double tau=6.2831853071795864769;
         std::vector<float> centered(size),windowed(size);double sum=0;
@@ -54,7 +71,7 @@ struct Inputs {
         check(dsp_kernels::linear_autocorrelation(centered,curves[branch+2]),"existing linear ACF kernel");
     }
     r::TempoEvidenceOutput expected() const {
-        r::PreparedTempoEvidence kernel;check(kernel.prepare() && kernel.process({curves[0],std::span(curves[2]).first(short_lags),std::size_t(filled[0])},
+        r::PreparedTempoEvidence kernel;check(kernel.prepare(evidence_config()) && kernel.process({curves[0],std::span(curves[2]).first(short_lags),std::size_t(filled[0])},
             {curves[1],std::span(curves[3]).first(long_lags),std::size_t(filled[1])}),"shared kernel reference");return kernel.output();
     }
 };

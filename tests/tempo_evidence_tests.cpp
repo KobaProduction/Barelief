@@ -42,20 +42,42 @@ struct Curve {
     }
     PeriodicityCurve view(std::size_t filled) const {return {std::span(spectrum).first(size/2),acf,filled};}
 };
-void known_tempi_and_scaling() {
-    Curve short_curve(512),long_curve(long_fft);PreparedTempoEvidence kernel;check(kernel.prepare(evidence_config()),"prepare evidence");
-    for(double bpm:{90.,110.,120.,200.,215.}){
+void check_scaled_evidence(const TempoEvidenceOutput& original,const TempoEvidenceOutput& scaled,
+                           std::size_t size,double bpm) {
+    if(std::abs(scaled.candidates[0].bpm-original.candidates[0].bpm)>=1e-5) {
+        std::fprintf(stderr,"scale mismatch N=%zu input=%.17g original=%a scaled=%a counts=%zu/%zu\n",
+            size,bpm,double(original.candidates[0].bpm),double(scaled.candidates[0].bpm),
+            std::size_t(original.count),std::size_t(scaled.count));
+        for(const auto* output:{&original,&scaled})for(std::size_t i=0;i<output->count;++i) {
+            const auto& c=output->candidates[i];
+            std::fprintf(stderr,"candidate%zu bpm=%a score=%a short=%a long=%a acf=%a/%a origins=%u\n",
+                i,double(c.bpm),double(c.score),double(c.fourier_short),double(c.fourier_long),
+                double(c.acf_short),double(c.acf_long),unsigned(c.origin_curves));
+        }
+    }
+    check(std::abs(scaled.candidates[0].bpm-original.candidates[0].bpm)<1e-5,"ranking independent of amplitude units");
+    check(std::abs(scaled.candidates[0].score-original.candidates[0].score)<1e-6,"bounded support is scale invariant");
+}
+void known_tempi_and_scaling_at_size(std::size_t size) {
+    Curve short_curve(512),long_curve(size);PreparedTempoEvidence kernel;
+    auto config=evidence_config();config.long_fft=size;check(kernel.prepare(config),"prepare evidence");
+    for(double bpm:{90.,110.,120.,200.,215.}) {
         short_curve.generate(bpm);long_curve.generate(bpm);const auto before=allocations;
-        check(kernel.process(short_curve.view(512),long_curve.view(long_fft)),"finite histories accepted");
+        check(kernel.process(short_curve.view(512),long_curve.view(size)),"finite histories accepted");
         check(allocations==before,"evidence processing never allocates");
         const auto original=kernel.output();check(original.count>0 && original.count<=8,"bounded candidate set");
         if(std::abs(original.candidates[0].bpm/bpm-1)>.02)std::fprintf(stderr,"expected %.3f found %.3f\n",bpm,original.candidates[0].bpm);
         check(std::abs(original.candidates[0].bpm/bpm-1)<=.02,"isolated dominant modulation resolves off-bin and integer-lag quantization");
         for(auto& value:short_curve.spectrum)value*=1e-12f;
         for(auto& value:long_curve.spectrum)value*=1e-12f;
-        check(kernel.process(short_curve.view(512),long_curve.view(long_fft)),"very weak finite spectra accepted");
-        check(std::abs(kernel.output().candidates[0].bpm-original.candidates[0].bpm)<1e-5,"ranking independent of amplitude units");
-        check(std::abs(kernel.output().candidates[0].score-original.candidates[0].score)<1e-6,"bounded support is scale invariant");
+        check(kernel.process(short_curve.view(512),long_curve.view(size)),"very weak finite spectra accepted");
+        check_scaled_evidence(original,kernel.output(),size,bpm);
+    }
+}
+
+void known_tempi_and_scaling() {
+    for(const std::size_t size:{512,1024,2048,4096}) {
+        if(size<=max_fft_samples)known_tempi_and_scaling_at_size(size);
     }
 }
 void warming_silence_and_atomic_errors() {

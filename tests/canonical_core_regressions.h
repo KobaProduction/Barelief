@@ -256,7 +256,7 @@ inline void detached_refresh(GraphExecutor& e,NumericProcessingGraph& g,applicat
 }
 inline void detached_stale(GraphExecutor& e,const NumericProcessingGraph& g,application::PreparedExecution& pending,const NumericRuntimeProfile& p){ auto stale=e.snapshot_preparation_base();application::PreparedExecution old;check(e.prepare_numeric_detached(g,{p.admission,p.resources},stale,old)==Status::ok,"stale candidate prepared");prepare(e,g,pending);check(e.apply(std::move(pending))==Status::ok,"intervening owner Apply");check(e.register_prepared(old,stale)==Status::would_block&&bool(old)&&e.running(),"stale detached base refused without consumption");
 }
-inline void detached_preparation_ownership(){auto g=oracle_graph();geometry(g,48000,4096,4096);GraphExecutor e(profile()),foreign(profile());application::PreparedExecution pending;const auto p=profile();detached_initial(e,foreign,g,pending,p);detached_refresh(e,g,pending,p);detached_stale(e,g,pending,p);}
+inline void detached_preparation_ownership(){auto g=oracle_graph();geometry(g,48000,fft_size,4096);GraphExecutor e(profile()),foreign(profile());application::PreparedExecution pending;const auto p=profile();detached_initial(e,foreign,g,pending,p);detached_refresh(e,g,pending,p);detached_stale(e,g,pending,p);}
 struct BurstObservation {
  std::size_t begin=0,count=0;float peak=0;
  float sample(std::int64_t index)const {

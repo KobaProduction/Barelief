@@ -6,6 +6,14 @@ foreach(method IN ITEMS connectionCreated connectionDeleted)
         "void ${method}(ConnectionId const connectionId);"
         "void ${method}(QtNodes::ConnectionId const connectionId);")
 endforeach()
+foreach(method IN ITEMS portsAboutToBeDeleted portsAboutToBeInserted)
+    patch_dependency_source("${qtnodes_headers}" NodeDelegateModel.hpp
+        "void ${method}(PortType const"
+        "void ${method}(QtNodes::PortType const")
+endforeach()
+patch_dependency_source("${qtnodes_headers}" DataFlowGraphModel.hpp
+    "void inPortDataWasSet(NodeId const, PortType const, PortIndex const);"
+    "void inPortDataWasSet(NodeId const, QtNodes::PortType const, PortIndex const);")
 foreach(method IN ITEMS inputConnectionCreated inputConnectionDeleted outputConnectionCreated outputConnectionDeleted)
     patch_dependency_source("${qtnodes_headers}" NodeDelegateModel.hpp
         "void ${method}(ConnectionId const &)"

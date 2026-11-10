@@ -19,7 +19,7 @@ struct Fixture {
  Clock clock;Runtime runtime;Persistence persistence;ProcessingCapabilities caps;std::array<ControlSessionSlot,2> slots;
  explicit Fixture(std::uint64_t ttl=30000,std::size_t sessions=2){auto p=canonical_test::profile();caps.numeric=NumericProcessingCapabilities{dataflow_runtime::PreparedGraph::numeric_capabilities(p),{p.admission,p.resources}};caps.explicit_persist=true;caps.control.max_sessions=sessions;caps.control.prepared_ttl_ms=ttl;const auto snapshot=control_snapshot_bytes(caps);check(snapshot.has_value(),"bounded control snapshot");caps.control.max_replay_bytes_per_session=*snapshot;caps.control.max_replay_bytes_total=slots.size()*(*snapshot);caps.control.max_control_scratch_bytes=*snapshot;}
 };
-static ProcessingDTO dto(){ProcessingDTO d;d.numeric=numeric_test_graph();return d;}
+static ProcessingDTO dto(){ProcessingDTO d;d.numeric=numeric_test_graph(canonical_test::fft_size);return d;}
 struct ControlScenario {
  Fixture fixture;
  ProcessingControlService service;

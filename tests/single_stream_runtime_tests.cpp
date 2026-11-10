@@ -139,9 +139,9 @@ void spectral_cadence(){
 
 void rejection_preserves_working_graph(){
  auto g=generator_graph();GraphExecutor e(profile());application::PreparedExecution pending;auto p=profile();require(e.prepare_numeric(g,{p.admission,p.resources},pending)==Status::ok&&e.apply(std::move(pending))==Status::ok,"executor working graph admitted");
- auto bad=mixer_graph(true);auto c=std::get<NumericContract>(node(bad,3).outputs[0].contract.view());c.shape.extents[0]={2,2};node(bad,3).outputs[0]=port(PortDirection::Output,0,c);
+ auto bad=mixer_graph(true);const auto bad_contract=node(bad,3).outputs[0].contract;auto c=std::get<NumericContract>(bad_contract.view());c.shape.extents[0]={2,2};node(bad,3).outputs[0]=port(PortDirection::Output,0,c);
  require(e.prepare_numeric(bad,{p.admission,p.resources},pending)!=Status::ok,"inconsistent spectral geometry rejected");
- auto variable=mixer_graph(true);c=std::get<NumericContract>(node(variable,1).outputs[0].contract.view());c.shape.extents[0]={1,4};node(variable,1).outputs[0]=port(PortDirection::Output,0,c);node(variable,3).inputs[0]=port(PortDirection::Input,9,c);
+ auto variable=mixer_graph(true);const auto variable_contract=node(variable,1).outputs[0].contract;c=std::get<NumericContract>(variable_contract.view());c.shape.extents[0]={1,4};node(variable,1).outputs[0]=port(PortDirection::Output,0,c);node(variable,3).inputs[0]=port(PortDirection::Input,9,c);
  require(e.prepare_numeric(variable,{p.admission,p.resources},pending)!=Status::ok,"variable spectral frame geometry rejected");
  auto restrictive=p.resources;restrictive.max_peak_bytes=1;require(e.prepare_numeric(g,{p.admission,restrictive},pending)!=Status::ok,"insufficient resource admission rejected");
  Observation o;o.watched=1;const auto before=allocations;require(e.process_clock(10,tick(0,256,1),{},o.callbacks())==Status::ok&&allocations==before,"rejected candidate leaves working graph allocation-free");require(o.calls==1,"working graph remains usable after rejected candidates");

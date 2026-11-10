@@ -1,4 +1,5 @@
 #include <embedded_support/persistence.h>
+#include <application/graph_lifecycle.h>
 #include <embedded_support/profile.h>
 #include <embedded_support/synthetic_pipeline.h>
 #include <array>
@@ -162,7 +163,9 @@ void persistence(const nc::Codec& codec) {
 void profile_limits() {
     es::Profile p;CHECK(p.fft_size==2048 && p.channels==1 && !es::numeric_runtime_profile(p).history_enabled);
     auto a=es::admit(p,3);CHECK(a.status==Status::ok);
-    p.channels=2;CHECK(es::admit(p,3).status==Status::invalid_argument);p=es::Profile{};p.spectral=true;CHECK(es::admit(p,3).status==Status::ok);
+    p.channels=2;CHECK(es::admit(p,3).status==Status::invalid_argument);p=es::Profile{};p.spectral=true;
+    CHECK((es::admit(p,3).status==Status::ok)==(p.fft_size<=dsp_kernels::max_fft_samples));
+    p.fft_size=std::min<std::uint32_t>(2048,dsp_kernels::max_fft_samples);CHECK(es::admit(p,3).status==Status::ok);
     p=es::Profile{};p.fft_size=4096;CHECK(es::admit(p,3).status==Status::ok);CHECK(p.fft_size==4096);
     p.control_bytes=p.memory_bytes;CHECK(es::admit(p,3).status==Status::exhausted);CHECK(es::numeric_runtime_profile(p).resources.max_peak_bytes==0);
     p.control_bytes=SIZE_MAX;CHECK(es::admit(p,3).status==Status::exhausted);
@@ -190,14 +193,28 @@ void profile_contract_admission() {
     CHECK(!runtime.capabilities.float64_arithmetic);
     runtime.resources.max_peak_bytes=1;caps=es::numeric_capabilities(device);CHECK(!admit_processing_graph(g,runtime.admission,caps,workspace,result));
 }
+void unsupported_fft_profile(const es::Profile& profile) {
+    auto output=graph("unchanged-fft");const auto before=output;
+    const auto status=es::default_processing_graph(profile,"device-fft",output);
+    CHECK(status!=Status::ok);
+    CHECK(es::default_processing_graph(profile,"device-fft",output)==status);
+    CHECK(application::same_numeric_processing_graph(output,before));
+    CHECK(!output.nodes.empty() && !output.nodes[0].outputs.empty() &&
+        same_contract(output.nodes[0].outputs[0].contract.view(),before.nodes[0].outputs[0].contract.view()));
+}
+
 void profile_fft_admission() {
     std::array<std::size_t,2*nc::device_limits().nodes> workspace{};
     ProcessingGraphAdmission result;
-    for(auto fft:{2048u,4096u}) {
+    for(auto fft:{512u,2048u,4096u}) {
         es::Profile p;p.spectral=true;p.fft_size=fft;p.memory_bytes=2*1024*1024;p.task_stack_bytes=1024*1024;
-        auto actual_device=es::device_profile(p);auto& actual=actual_device.runtime;auto actual_caps=es::numeric_capabilities(actual_device);auto dsp=fft_graph(fft);
+        if(fft>dsp_kernels::max_fft_samples) {
+            unsupported_fft_profile(p);CHECK(p.fft_size==fft);continue;
+        }
+        auto actual_device=es::device_profile(p);auto& actual=actual_device.runtime;
+        auto actual_caps=es::numeric_capabilities(actual_device);auto dsp=fft_graph(fft);
         auto accepted=admit_processing_graph(dsp,actual.admission,actual_caps,workspace,result);
-        CHECK(bool(accepted)==(fft<=dsp_kernels::max_fft_samples));CHECK(p.fft_size==fft);
+        CHECK(bool(accepted));CHECK(p.fft_size==fft);
         if(accepted) {
             std::shared_ptr<const dataflow_runtime::PreparedGraph> prepared;std::unique_ptr<dataflow_runtime::RuntimeContext> context;
             CHECK(dataflow_runtime::PreparedGraph::prepare_numeric(dsp,actual,prepared,context)==Status::ok);

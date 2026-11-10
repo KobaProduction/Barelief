@@ -1,9 +1,11 @@
 #pragma once
+#include <algorithm>
+#include <dsp_kernels/dsp.h>
 
 // Integration oracle: the same eight changing tones are checked at every
 // prepared-graph stage. Reference DFT/filter weights do not call DSP kernels.
 namespace {
-constexpr std::size_t trace_n=4096,trace_bins=trace_n/2,trace_bands=50;
+constexpr std::size_t trace_n=std::min<std::size_t>(4096,dsp_kernels::max_fft_samples),trace_bins=trace_n/2,trace_bands=50;
 constexpr std::size_t trace_samples=19*256,trace_timestamp=trace_samples-256;
 constexpr double trace_pi=3.1415926535897932384626433832795;
 float trace_sample(std::size_t sample,std::size_t channel) {
@@ -11,7 +13,7 @@ float trace_sample(std::size_t sample,std::size_t channel) {
     double value=0;
     for(std::size_t tone=0;tone<bins.size();++tone) {
         const auto amplitude=(.018+.002*tone)*(1+.1*std::sin(sample*.00013+tone));
-        value+=amplitude*std::sin(2*trace_pi*bins[tone]*sample/trace_n+channel*.31*tone);
+        value+=amplitude*std::sin(2*trace_pi*bins[tone]*sample/4096.+channel*.31*tone);
     }
     return float(value*(channel?.7:1.));
 }
@@ -56,7 +58,7 @@ void trace_spectrum_geometry(NumericContract& contract) {
     if(!complex)contract.coordinates[0]={CoordinateMode::Regular,NumericUnit::Hertz,{48000,trace_n},{48000,trace_n}};
 }
 NumericContract trace_geometry(NumericContract c) {
-    // The ingress owns one 256-sample block; intermediate storage uses N4096.
+    // The ingress owns one 256-sample block; intermediate storage uses the selected supported FFT geometry.
     if(c.semantic==Semantic::PCM)c.shape.extents[0]={256,256};
     if(c.semantic==Semantic::Window||c.semantic==Semantic::Windowed)c.shape.extents[0]={trace_n,trace_n};
     trace_spectrum_geometry(c);
@@ -238,6 +240,6 @@ void numeric_full_chain_oracle(bool retag=false) {
     if(!trace_ingress(executor,pcm,trace))return;
     if(!trace_all_stages_seen(trace))return;
     trace_reference(executor,trace);
-    std::printf("DSP full-chain oracle: eight changing tones, N4096/Hann/FFT/Bark/explicit gain/Mel50/History, no hot C++ allocations\n");
+    std::printf("DSP full-chain oracle: eight changing tones, N%zu/Hann/FFT/Bark/explicit gain/Mel50/History, no hot C++ allocations\n",trace_n);
 }
 }
