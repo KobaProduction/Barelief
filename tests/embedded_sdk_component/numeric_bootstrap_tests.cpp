@@ -39,7 +39,7 @@ esp_err_t nvs_set_blob(nvs_handle_t,const char* key,const void* bytes,std::size_
     const auto* begin=static_cast<const std::uint8_t*>(bytes);records[key]={begin,begin+size};++writes;return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t){return ESP_OK;}
-#define CHECK(x) do{if(!test_assertions::verify(bool(x),#x,__FILE__,__LINE__))return 1;}while(false)
+#define CHECK(x) test_assertions::require(bool(x),#x,__FILE__,__LINE__)
 struct FakeIo final:bdsp_protocol::ByteTransport {
     std::deque<std::uint8_t> input;FakeIo* other=nullptr;std::size_t segment=17;
     bdsp_protocol::TransportState state() const noexcept override{return bdsp_protocol::TransportState::connected;}
@@ -53,7 +53,9 @@ struct FakeIo final:bdsp_protocol::ByteTransport {
 };
 static bool drain_control(control::numeric::ControlSession& client,Device& device,FakeIo& a,FakeIo& b){
  for(unsigned i=0;i<10000 && (client.pending_bytes()||device.control->pending_bytes()||!a.input.empty()||!b.input.empty());++i)
-  if(client.poll(a)!=Status::ok||device.control->poll(b)!=Status::ok)return false;
+  if(client.poll(a)!=Status::ok||device.control->poll(b)!=Status::ok){
+   std::fprintf(stderr,"CONTROL drain failed: client state=%d error=%d pending=%zu device state=%d error=%d pending=%zu input=%zu/%zu\n",int(client.state()),int(client.error()),client.pending_bytes(),int(device.control->state()),int(device.control->error()),device.control->pending_bytes(),a.input.size(),b.input.size());return false;
+  }
  return !client.pending_bytes()&&!device.control->pending_bytes()&&a.input.empty()&&b.input.empty();
 }
 static int control_cold_budget(Device& device){
@@ -76,7 +78,7 @@ static int control_state_codec(Device& device,unsigned mask){
         struct Reply {unsigned* count;bool* valid;} capture{&replies,&valid};
         client.set_reply_handler([](const nc::Message& message,void* user) {
             auto& c=*static_cast<Reply*>(user);const auto& reply=std::get<nc::Reply>(message.body);
-            ++*c.count;*c.valid=reply.error==nc::Error::None && reply.state.applied && reply.state.applied->nodes.size()==(Spectral?9:3);
+            ++*c.count;*c.valid=reply.error==nc::Error::None && reply.state.applied && reply.state.applied->nodes.size()==(Spectral?10:3);
         },&capture);
         CHECK(control_handshake(client,device,a,b,mask)==0);
         nc::Command command;command.id=nc::CommandId::State;CHECK(client.send(command,1)==Status::ok);CHECK(drain_control(client,device,a,b));CHECK(replies==1 && valid);
@@ -87,6 +89,131 @@ static int control_state_both(Device& device) {
     for(const auto mask:{1u,2u}) {
         CHECK(control_state_codec(device,mask)==0);
     }
+    return 0;
+}
+struct SubscriptionCapture {
+    Buffers buffers;
+    std::array<std::uint8_t,FrameBytes> storage{};
+    bdsp_protocol::FrameAssembler assembler{storage};
+    std::array<nd::Binding,2> references;
+    std::uint64_t nonce,session,revision;
+    nd::Limits limits;
+    bool valid=true;
+    std::vector<std::pair<std::uint8_t,std::uint64_t>> arrivals;
+    SubscriptionCapture(const nd::Message& selected,nd::Limits data_limits)
+        :nonce(selected.envelope.nonce),session(selected.envelope.session),revision(selected.envelope.revision),limits(data_limits) {
+        references[0]={{1,1},selected.endpoint,StreamId,selected.contract,{},selected.values};
+        references[1]=references[0];references[1].reference.binding=2;
+    }
+    void packet(bdsp_protocol::PacketView packet) {
+        auto bytes=packet.payload;
+        if(packet.id==nd::FragmentId) {
+            const auto status=assembler.accept(bytes,bytes);
+            if(status==Status::would_block)return;
+            if(status!=Status::ok){valid=false;return;}
+        }
+        nd::Message message;
+        const auto result=nd::decode(std::as_bytes(bytes),message,buffers.arena(),limits,{nonce,session,revision,references});
+        if(!result){valid=false;return;}
+        if(packet.id==nd::AckId)arrivals.emplace_back(nd::AckId,message.envelope.delivery_generation);
+        else {valid &= message.stamp.generation==7;arrivals.emplace_back(nd::EventsId,message.envelope.delivery_sequence);}
+    }
+};
+static nd::Message subscribe_message(Device& d,std::uint64_t generation,std::uint64_t request) {
+    const auto& graph=*d.state.applied_numeric;
+    const auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[](const auto& node){return node.kind=="NetworkOutput";});
+    const auto& port=node->inputs.front();nd::Message selected;
+    selected.kind=nd::Kind::Unavailable;selected.stamp.available=false;selected.stamp.stream_id=StreamId;
+    selected.endpoint={graph.graph_id,node->id,nd::Direction::Input,port.id};selected.contract=port.contract.view();
+    selected.envelope={d.control->nonce(),d.control->identity().session,1,d.control->identity().epoch,generation,d.state.graph_revision,request};
+    return selected;
+}
+static int send_subscription(Device& d,control::numeric::ControlSession& client,FakeIo& a,FakeIo& b,const nd::Message& selected) {
+    std::array<std::byte,FrameBytes> wire{},scratch{};
+    const auto encoded=nd::encode(selected,wire,scratch,d.effective.data);CHECK(encoded);
+    CHECK(client.send_packet(nd::SubscribeId,{reinterpret_cast<const std::uint8_t*>(wire.data()),encoded.produced})==Status::ok);
+    CHECK(drain_control(client,d,a,b));return 0;
+}
+static int drain_subscription(Device& d,control::numeric::ControlSession& client,FakeIo& a,FakeIo& b) {
+    for(unsigned i=0;i<32;++i) {
+        d.advance_subscription();d.acknowledge();CHECK(drain_control(client,d,a,b));
+        if(!d.pending_subscription && !d.ack_pending && (!d.data || !d.data->pending_bytes()))return 0;
+    }
+    CHECK(false);return 1;
+}
+static int publish_subscription_frame(Device& d) {
+    const auto contract=d.binding.binding.contract;
+    const auto& numeric=std::get<signal_contracts::NumericContract>(contract);
+    std::array<float,BlockSamples> samples{};samples.fill(.25f);
+    const std::array<signal_contracts::PlaneLayout,1> planes{{{0,{4,0}}}};
+    signal_contracts::FrameStamp stamp;stamp.sequence=stamp.source_sequence=11;stamp.generation=stamp.producer_epoch=7;
+    const auto message=d.output_message({stamp,signal_contracts::NumericView{&numeric,std::as_bytes(std::span(samples)),planes,{BlockSamples,1}}});
+    CHECK(d.data->publish(message)==Status::ok);return 0;
+}
+static int rejected_subscription_replacements(Device& d,control::numeric::ControlSession& client,FakeIo& a,FakeIo& b) {
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,2,3))==0);
+    CHECK(!d.pending_subscription && !d.ack_pending && d.binding.binding.reference.binding==2);
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,1,4))==0);
+    CHECK(!d.pending_subscription && d.selection_generation==2);
+    auto invalid=subscribe_message(d,3,5);invalid.endpoint.port=UINT16_MAX;
+    CHECK(send_subscription(d,client,a,b,invalid)==0);
+    CHECK(!d.pending_subscription && d.selection_generation==2 && d.data->last_delivery_sequence()==2);
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,UINT64_MAX,6))==0);
+    CHECK(drain_subscription(d,client,a,b)==0);CHECK(d.selection_generation==UINT64_MAX);
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,0,7))==0);
+    CHECK(!d.pending_subscription && d.selection_generation==UINT64_MAX && d.data->last_delivery_sequence()==2);
+    return 0;
+}
+struct FailingSubscriptionSender {
+    Device& device;unsigned calls=0;
+    static Status send(void* user,std::uint8_t id,std::span<const std::uint8_t> bytes) {
+        auto& sender=*static_cast<FailingSubscriptionSender*>(user);
+        if(++sender.calls>1)return Status::disconnected;
+        return sender.device.control->send_packet(id,bytes);
+    }
+};
+static int failed_subscription_drain(Device& d,control::numeric::ControlSession& client,FakeIo& a,FakeIo& b) {
+    client.reset();client.set_packet_handler([](bdsp_protocol::PacketView,void*){},nullptr);
+    CHECK(control_handshake(client,d,a,b,1)==0);d.discard_data=false;
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,1,1))==0);
+    CHECK(drain_subscription(d,client,a,b)==0);
+    FailingSubscriptionSender sender{d};
+    d.data=std::make_unique<embedded_support::NumericSession>(embedded_support::Role::publisher,d.binding,
+        d.buffers.spans(),d.effective.data,FailingSubscriptionSender::send,&sender,d.control->packet_payload_capacity());
+    CHECK(d.data->begin()==Status::ok);CHECK(publish_subscription_frame(d)==0);
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,2,2))==0);
+    CHECK(d.pending_subscription && d.data->pending_bytes()>0);
+    d.advance_subscription();d.acknowledge();
+    CHECK(sender.calls==2 && d.retire && !d.data && !d.pending_subscription && !d.ack_pending);
+    CHECK(d.control->pending_bytes()==0);d.control->reset();
+    return 0;
+}
+static int subscription_replacement(Device& d) {
+    if constexpr(Spectral)return 0; // RAW spans multiple packets at the stock 1024-byte capacity.
+    control::numeric::SessionConfig config;config.endpoint_authorized=true;config.device_identity="numeric-esp32";
+    config.max_packet_bytes=PacketBytes;config.codec_limits=d.control_limits();
+    control::numeric::ControlSession client(config,d.clock);FakeIo a,b;a.other=&b;b.other=&a;
+    CHECK(control_handshake(client,d,a,b,1)==0);
+    CHECK(d.control->discard_outbound_data()==Status::ok);d.discard_data=false;
+    const auto initial=subscribe_message(d,1,1);
+    SubscriptionCapture capture(initial,d.effective.data);
+    client.set_packet_handler([](bdsp_protocol::PacketView packet,void* user){static_cast<SubscriptionCapture*>(user)->packet(packet);},&capture);
+    CHECK(send_subscription(d,client,a,b,initial)==0);CHECK(drain_subscription(d,client,a,b)==0);
+    CHECK(d.selection_generation==1 && d.data && !d.ack_pending);
+    CHECK(publish_subscription_frame(d)==0);CHECK(d.data->pending_bytes()>0);
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,2,2))==0);
+    CHECK(d.pending_subscription && d.selection_generation==1 && !d.ack_pending);
+    CHECK(capture.arrivals.size()==1 && capture.assembler.pending_bytes()>0);
+    CHECK(drain_subscription(d,client,a,b)==0);CHECK(capture.valid);
+    CHECK((capture.arrivals==std::vector<std::pair<std::uint8_t,std::uint64_t>>{{nd::AckId,1},{nd::EventsId,1},{nd::AckId,2}}));
+    CHECK(publish_subscription_frame(d)==0);CHECK(drain_subscription(d,client,a,b)==0);
+    CHECK((capture.arrivals.back()==std::pair<std::uint8_t,std::uint64_t>{nd::EventsId,2}));
+    CHECK(send_subscription(d,client,a,b,subscribe_message(d,2,2))==0);
+    CHECK(!d.pending_subscription && d.ack_pending && d.data->last_delivery_sequence()==2);
+    CHECK(drain_subscription(d,client,a,b)==0);CHECK(rejected_subscription_replacements(d,client,a,b)==0);
+    WorkerConnection connection{d};CHECK(!connection.reconnect());
+    CHECK(!d.data && !d.pending_subscription && d.selection_generation==0 && d.delivery_sequence==0);
+    CHECK(failed_subscription_drain(d,client,a,b)==0);
     return 0;
 }
 static void print_host_model(Device& d){
@@ -107,9 +234,36 @@ static void print_node_support(Device& d,const domain::ConfiguredProcessingNode&
     std::fprintf(stderr,"node=%d plan=%zu payload=%zu scratch=%zu stack=%zu\n",int(node.id),support.resources.plan_bytes,
                  support.resources.payload_bytes,support.resources.scratch_bytes,support.resources.stack_bytes);
 }
+static void print_definition_stage(const char* label,const domain::NumericProcessingGraph& graph,domain::ProcessingAdmissionLimits limits) {
+    limits.max_owned_metadata_bytes=SIZE_MAX;std::size_t bytes=0;
+    const auto status=domain::processing_graph_owned_bytes(graph,limits,bytes);
+    std::fprintf(stderr,"%s nodes=%zu edges=%zu owned=%zu measurement_status=%d\n",label,graph.nodes.size(),graph.edges.size(),bytes,int(status));
+}
+static void print_preparation_definitions(Device& d,const domain::NumericProcessingGraph& source) {
+    const auto& limits=d.effective.runtime.admission;
+    domain::NumericProcessingGraph evaluated,values,metadata,converted,routed;
+    std::vector<domain::RoutingAlias> aliases;
+    auto result=domain::resolve_numeric_parameter_bindings(source,limits,evaluated,values,-1,&d.effective.runtime.preparation_values);
+    std::fprintf(stderr,"bind diagnostic=%d node=%d\n",int(result.error),int(result.node));if(!result)return;
+    print_definition_stage("evaluated",evaluated,limits);print_definition_stage("values",values,limits);
+    result=domain::lower_numeric_metadata_outputs(values,limits,metadata,aliases,&d.effective.runtime.preparation_values);
+    std::fprintf(stderr,"metadata diagnostic=%d node=%d\n",int(result.error),int(result.node));if(!result)return;
+    print_definition_stage("metadata",metadata,limits);
+    result=domain::lower_dtype_edges(metadata,limits,converted);
+    std::fprintf(stderr,"dtype diagnostic=%d node=%d\n",int(result.error),int(result.node));if(!result)return;
+    print_definition_stage("converted",converted,limits);
+    result=domain::lower_routing_points(converted,limits,routed,aliases);
+    std::fprintf(stderr,"routing diagnostic=%d node=%d\n",int(result.error),int(result.node));if(!result)return;
+    print_definition_stage("routed",routed,limits);
+}
 static void print_prepare_refusal(Device& d,Status status){
     if(status==Status::ok||!d.service)return;
+    std::fprintf(stderr,"initial stage: working=%d running=%d control=%d control_error=%d local_session=%llu\n",int(bool(d.state.applied_numeric)),int(d.executor&&d.executor->running()),int(bool(d.control)),d.control?int(d.control->error()):-1,static_cast<unsigned long long>(d.local.session));
     application::ProcessingDTO probe;probe.numeric=embedded_support::default_processing_graph(d.profile,StreamId);
+    auto envelope_limits=d.control_limits();envelope_limits.wire_bytes=envelope_limits.arena_bytes=16*1024;
+    const auto envelope=control::numeric::reply_envelope_fits(*probe.numeric,envelope_limits,d.advertised);
+    std::fprintf(stderr,"expanded reply measurement status=%d wire=%zu scratch=%zu arena=%zu text=%zu\n",int(envelope.status),envelope.required_wire,envelope.required_scratch,envelope.required_arena,envelope.required_text);
+    print_preparation_definitions(d,*probe.numeric);
     const auto reply=d.submit(application::PrepareProcessing{&probe});
     std::fprintf(stderr,"prepare status=%d control=%d validation=%d node=%d\n",int(reply.status),int(reply.error),int(reply.numeric_validation.error),int(reply.numeric_validation.node));
     for(const auto& node:probe.numeric->nodes)print_node_support(d,node);
@@ -117,9 +271,25 @@ static void print_prepare_refusal(Device& d,Status status){
 static Status prepare_host_bootstrap(Device& d){
     // Fake-IDF executes on the host stack. Reserve a truthful host fixture budget;
     // the configured acquisition stack is not physically executed by the host fixture.
-    d.profile.task_stack_bytes=32*1024;
+    d.profile.task_stack_bytes=96*1024;
     d.effective=embedded_support::device_profile(d.profile);
     return d.prepare();
+}
+static int graph_control_budget(const Device& d) {
+    const auto snapshot=application::control_snapshot_bytes(d.caps);CHECK(snapshot);
+    const auto metadata=d.caps.numeric->runtime.admission.max_owned_metadata_bytes;
+    CHECK(metadata>0 && metadata==d.graph_metadata_ceiling);
+    CHECK(metadata<=GraphMetadataBytes);
+    CHECK(metadata==d.effective.runtime.admission.max_owned_metadata_bytes);
+    CHECK(*snapshot==d.caps.control.max_replay_bytes_per_session);
+    CHECK(*snapshot*d.slots_.size()==d.caps.control.max_replay_bytes_total);
+    auto fixed=d.caps;fixed.numeric->runtime.admission.max_owned_metadata_bytes=0;
+    const auto fixed_snapshot=application::control_snapshot_bytes(fixed);CHECK(fixed_snapshot);
+    CHECK(*snapshot-*fixed_snapshot==2*metadata);
+    CHECK(d.profile.control_bytes>=2*(d.slots_.size()+1)*metadata);
+    CHECK(d.effective.runtime.resources.max_peak_bytes>=metadata);
+    CHECK(d.profile.control_bytes<d.profile.memory_bytes);
+    return 0;
 }
 static int bootstrap_initial(Device& d){
 const auto status=prepare_host_bootstrap(d);std::fprintf(stderr,"host fixture bootstrap status=%d spectral=%d fft=%u\n",int(status),int(Spectral),unsigned(FftSize));
@@ -129,6 +299,7 @@ const auto status=prepare_host_bootstrap(d);std::fprintf(stderr,"host fixture bo
         print_host_model(d);
         print_prepare_refusal(d,status);
         CHECK(status==Status::ok);
+        CHECK(graph_control_budget(d)==0);
         CHECK(d.control->state()!=control::ControlSessionState::Failed);CHECK(d.state.applied_numeric);CHECK(d.state.run_requested);CHECK(writes==0);
         std::printf("memory=%zu control=%zu adapter=%zu pool=%zu runtime_peak=%zu replay=%zu cold=%zu device=%zu\n",
             d.profile.memory_bytes,d.profile.control_bytes,d.profile.adapter_bytes,d.profile.queue_frames*d.profile.max_frame_bytes,
@@ -311,6 +482,25 @@ static int ordinary_host_resource_refusal(){
     std::puts("ordinary 320KiB host64 budget: exhausted atomically; no write, binding, execution; restore read cleaned up");
     return 0;
 }
+static int host_spectral_initial_refusal() {
+    const auto prior_opens=opens,prior_writes=writes;
+    {
+        Device d;CHECK(prepare_host_bootstrap(d)==Status::exhausted);
+        CHECK(d.profile.memory_bytes==1024*1024 && d.executor && d.service);
+        CHECK(!d.executor->running() && !d.state.applied_numeric && !d.state.run_requested);
+        CHECK(!d.data && !d.pending_subscription && !d.control && !d.local.session);
+        CHECK(graph_control_budget(d)==0);
+        application::ProcessingDTO dto;dto.numeric=embedded_support::default_processing_graph(d.profile,StreamId);
+        const auto refused=d.submit(application::PrepareProcessing{&dto});
+        CHECK(!refused.accepted && refused.status==Status::exhausted);
+        CHECK(refused.numeric_validation.error==domain::ProcessingError::ResourceLimit);
+        CHECK(!refused.prepared_token && !refused.state.own_prepared_token);
+        CHECK(d.processed_frames.load()==0 && writes==prior_writes && records.empty());
+    }
+    CHECK(closes==opens && opens>=prior_opens);
+    std::puts("host64 spectral4096/1MiB: initial peak admission rejected atomically; no execution/binding/persist");
+    return 0;
+}
 int main(){
 #ifdef ORDINARY_PROFILE
  constexpr bool ordinary_host_budget_refusal=sizeof(void*)==8;
@@ -318,10 +508,12 @@ int main(){
  constexpr bool ordinary_host_budget_refusal=false;
 #endif
  if(ordinary_host_budget_refusal)return ordinary_host_resource_refusal();
+ if(sizeof(void*)==8 && Spectral && FftSize==4096 && MemoryBytes==1024*1024)return host_spectral_initial_refusal();
  domain::NumericProcessingGraph saved;
  {Device d;
   CHECK(bootstrap_initial(d)==0);CHECK(bootstrap_persist_budget(d)==0);
   CHECK(bootstrap_processing(d)==0);CHECK(bootstrap_queue_identity(d)==0);CHECK(bootstrap_executor_frames(d)==0);
+  CHECK(subscription_replacement(d)==0);
   CHECK(bootstrap_replacement(d,saved)==0);
  }
     CHECK(bootstrap_reload(saved)==0);

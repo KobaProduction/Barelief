@@ -39,9 +39,10 @@ struct Storage {
     std::array<std::uint32_t,2> channels{};std::array<PlaneLayout,2> planes{};
     es::NumericSessionBuffers view(){return {pi,po,read,tx,scratch,fragment,assembly,{bytes,text,channels,planes}};}
 };
-struct Capture{int frames=0,markers=0;std::uint64_t exact=0;bool gap=false;};
+struct Capture{int frames=0,markers=0;std::uint64_t exact=0;bool gap=false;std::uint64_t delivery=0,generation=0;};
 void receive(void* p,const nd::Message& message) {
     auto& c=*static_cast<Capture*>(p);c.gap=message.stamp.discontinuity;
+    c.delivery=message.envelope.delivery_sequence;c.generation=message.stamp.generation;
     if(!message.stamp.available){++c.markers;return;}++c.frames;
     CHECK(load_element(std::get<NumericView>(message.frame_view().payload),{0,0,0},c.exact)==Status::ok);
     CHECK(message.envelope.nonce==13 && message.envelope.session==17 && message.envelope.revision==19);
@@ -81,6 +82,24 @@ void descriptive_history_binding(const es::NumericSessionBinding& binding,const 
     es::NumericSession ordinary(es::Role::publisher,passive,storage.view(),nd::device_block_limits());
     // A descriptive tag cannot turn a scalar into a ring History.
     CHECK(ordinary.begin()==Status::ok);
+}
+void seeded_delivery_sequence(std::uint64_t seed) {
+    constexpr std::array<std::uint32_t,1> channels{42};NumericContract contract;contract.dtype=DType::UInt64;
+    contract.channel_order=channels;contract.representation.encoding=StorageEncoding::FixedLittleEndian;
+    auto binding=exact_binding(contract);binding.initial_delivery_sequence=seed;
+    Storage ps,ss;Transport a,b;a.peer=&b;b.peer=&a;
+    es::NumericSession publisher(es::Role::publisher,binding,ps.view(),nd::device_block_limits());
+    es::NumericSession subscriber(es::Role::subscriber,binding,ss.view(),nd::device_block_limits());
+    CHECK(publisher.begin()==Status::ok && subscriber.begin()==Status::ok);
+    Capture capture;subscriber.set_frame_handler(receive,&capture);
+    nd::Message marker;marker.kind=nd::Kind::Unavailable;marker.stamp.available=false;
+    marker.stamp.stream_id="exact64";marker.stamp.generation=7;marker.envelope.delivery_generation=7;
+    marker.endpoint=binding.binding.endpoint;marker.contract=contract;
+    CHECK(publisher.last_delivery_sequence()==seed);
+    CHECK(publisher.publish(marker)==Status::ok);transfer(publisher,subscriber,a,b);
+    CHECK(capture.markers==1 && capture.delivery==seed+1 && capture.generation==7);
+    CHECK(publisher.last_delivery_sequence()==seed+1);
+    if(seed==UINT64_MAX-1)CHECK(publisher.publish(marker)==Status::exhausted && publisher.last_delivery_sequence()==UINT64_MAX);
 }
 void scenario() {
     constexpr std::array<std::uint32_t,1> channels{42};NumericContract contract;contract.dtype=DType::UInt64;contract.channel_order=channels;
@@ -185,4 +204,4 @@ void source_only() {
     CHECK(executor.shutdown()==Status::ok);CHECK(!executor.running());
 }
 }
-int main(){scenario();external_session();source_only();std::printf("embedded numeric DATA: %d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){seeded_delivery_sequence(42);seeded_delivery_sequence(UINT64_MAX-1);scenario();external_session();source_only();std::printf("embedded numeric DATA: %d checks, %d failures\n",checks,failures);return failures?1:0;}

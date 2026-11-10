@@ -35,12 +35,14 @@ set(PORTABLE_SDK_SOURCES
     domain/src/graph/clock_provenance.cpp
     domain/src/graph/owned_footprint.cpp
     domain/src/graph/configuration_bindings.cpp
+    domain/src/graph/preparation_vector_values.cpp
     domain/src/numeric/contract_snapshot.cpp domain/src/numeric/array_generator_contract.cpp
      domain/src/numeric/interval_operation_contracts.cpp
     domain/src/numeric/common_operation_contracts.cpp
     domain/src/numeric/sequence_operation_contracts.cpp domain/src/numeric/spectral_sequence_parameters.cpp domain/src/numeric/reference_operation_contracts.cpp
     domain/src/numeric/matrix_contracts.cpp domain/src/signal/fourier_contracts.cpp
     domain/src/signal/parameter_contracts.cpp domain/src/music/spectral_features_contract.cpp
+    domain/src/signal/window_coefficients.cpp
     domain/src/music/frequency_normalizer_contract.cpp
     domain/src/music/rhythm_contract.cpp
     domain/src/music/tempo_evidence_contract.cpp
@@ -55,6 +57,7 @@ set(PORTABLE_SDK_SOURCES
     domain/src/numeric/array_concat_contract.cpp
     domain/src/numeric/array_extraction.cpp
     application/src/graph_lifecycle.cpp application/src/processing_control.cpp
+    application/src/frequency_profile_application.cpp
     adapters/control/src/numeric_processing_message_mapper.cpp
     adapters/control/src/numeric_control_session.cpp
     adapters/project_storage/src/numeric_array_codec.cpp
@@ -110,6 +113,7 @@ set(PORTABLE_SDK_SOURCES
     libs/dataflow_runtime/src/numeric_execution.cpp
     libs/dataflow_runtime/src/matrix_execution.cpp
     libs/dataflow_runtime/src/transform_execution.cpp
+    libs/dataflow_runtime/src/frame_buffer_execution.cpp
     libs/dataflow_runtime/src/mixer_execution.cpp
     libs/dataflow_runtime/src/clock_execution.cpp
     libs/dsp_kernels/src/dsp.cpp libs/dsp_kernels/src/rfft_split.cpp libs/dsp_kernels/src/backend_tables.cpp libs/dsp_kernels/src/scalar_reduce.cpp

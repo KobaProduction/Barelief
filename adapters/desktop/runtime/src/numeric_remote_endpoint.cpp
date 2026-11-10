@@ -34,6 +34,7 @@ struct NumericRemoteEndpoint::Impl {
     bool discard_data=false;
     std::optional<nc::Command> unsent;std::uint64_t unsent_expected=0;
     std::uint64_t nonce=0,next_request=1,next_public=1,waiting=0,token=0,next_binding=1,sequence=0,received_sequence=0,last_state=0,snapshot_generation=0;
+    std::uint64_t selection_generation=0;
     std::uint64_t snapshot_handler_generation=0,reply_handler_generation=0,frame_handler_generation=0,history_handler_generation=0;
     nc::CommandId phase=nc::CommandId::Capabilities;
     bool connected=false,pumping=false,retiring=false,capabilities=false,bootstrapped=false,rebind=false,apply_next=false;
@@ -67,7 +68,11 @@ struct NumericRemoteEndpoint::Impl {
         active.reset();apply_next=false;
         cold_snapshot=cold_selected=false;queries.clear();
     }
-    void fence() {bindings.clear();staged_arena.reset();ingress.clear();received.clear();receive_losses.clear();ingress_losses.clear();history_snapshots.clear();queries.clear();cold_selected=false;codec.reset();received_sequence=0;discard_data=true;}
+    void retire_selection() {
+        bindings.clear();staged_arena.reset();ingress.clear();received.clear();
+        receive_losses.clear();ingress_losses.clear();history_snapshots.clear();queries.clear();cold_selected=false;
+    }
+    void fence() {retire_selection();codec.reset();discard_data=true;}
     void retire(QString error={}) {
         if(retiring)return;retiring=true;
         auto retired_bindings=std::move(bindings);
@@ -117,7 +122,7 @@ struct NumericRemoteEndpoint::Impl {
     }
     void reset_session_identity() {
         nonce=QRandomGenerator::global()->generate64();if(!nonce)nonce=1;
-        next_request=1;next_binding=1;sequence=0;last_state=0;connected=true;
+        next_request=1;next_binding=1;selection_generation=0;sequence=received_sequence=0;last_state=0;connected=true;
     }
     void start() {
         if(control)retire();fence();warning.clear();state.diagnostics={};
@@ -212,8 +217,10 @@ struct NumericRemoteEndpoint::Impl {
     void replace_bindings(const std::vector<EndpointIdentity>& selected,std::shared_ptr<Arena> next_arena) {
         std::deque<Binding> next;
         auto next_id=next_binding;
+        if(selection_generation==UINT64_MAX){warning=QStringLiteral("Remote selection generation exhausted");return;}
         if(!prepare_bindings(selected,next_arena,next,next_id))return;
-        fence();arena=std::move(next_arena);bindings=std::move(next);next_binding=next_id;
+        retire_selection();++selection_generation;
+        arena=std::move(next_arena);bindings=std::move(next);next_binding=next_id;
     }
     void select_bindings() {
         rebind=false;
@@ -225,15 +232,21 @@ struct NumericRemoteEndpoint::Impl {
         if(!next_arena){warning=QStringLiteral("Remote numeric retention budget exhausted");rebind=true;return;}
         replace_bindings(selected,std::move(next_arena));
     }
+    bool prepare_binding(const EndpointIdentity& endpoint,const domain::ProcessingPort& port,
+                         const std::shared_ptr<Arena>& next_arena,std::uint64_t& next_id,Binding& binding) {
+        if(next_id>UINT32_MAX){warning=QStringLiteral("Remote binding identifiers exhausted");return false;}
+        if(make_binding(endpoint,port.contract,std::uint32_t(next_id),next_arena,binding)!=Status::ok) {
+            warning=QStringLiteral("Remote numeric binding preparation refused");return false;
+        }
+        ++next_id;return true;
+    }
     bool prepare_bindings(const std::vector<EndpointIdentity>& selected,const std::shared_ptr<Arena>& next_arena,
                           std::deque<Binding>& next,std::uint64_t& next_id) {
         for(const auto& e:selected) {
             const auto* p=find_port(graph,e);if(!p){warning=QStringLiteral("Remote numeric port missing");continue;}
             if(std::any_of(next.begin(),next.end(),[&](const auto& b){return b.context->endpoint==e;}))continue;
             Binding binding;
-            if(make_binding(e,p->contract,std::uint32_t(next_id++),next_arena,binding)!=Status::ok) {
-                warning=QStringLiteral("Remote numeric binding preparation refused");return false;
-            }
+            if(!prepare_binding(e,*p,next_arena,next_id,binding))return false;
             next.push_back(std::move(binding));
         }
         return true;
@@ -246,11 +259,17 @@ struct NumericRemoteEndpoint::Impl {
         if(m.envelope.request)receive_snapshot(m,*found);
         else receive_delivery(m,*found);
     }
-    bool decode_data_message(std::span<const std::uint8_t> bytes,nd::Message& m) {
+    bool decode_data_message(std::uint8_t id,std::span<const std::uint8_t> bytes,nd::Message& m) {
         const auto identity=control->identity();
-        const auto decoded=codec.decode(bytes,m,codec.reference_context(bindings,nonce,identity.session,state.graph_revision));if(decoded!=Status::ok){warning=QStringLiteral("Remote numeric decode refused: status=%1").arg(int(decoded));return false;}
+        const auto decoded=codec.decode(bytes,m,codec.reference_context(bindings,nonce,identity.session,state.graph_revision));
+        if(decoded!=Status::ok) {
+            // The old encoded delivery precedes the new ACK on the same stream.
+            // Its retired reference is expected while the selection is pending.
+            if(id!=nd::AckId && std::any_of(bindings.begin(),bindings.end(),[](const auto& binding){return !binding.acknowledged;}))return false;
+            warning=QStringLiteral("Remote numeric decode refused: status=%1").arg(int(decoded));return false;
+        }
         if(m.envelope.nonce!=nonce||m.envelope.session!=identity.session||m.envelope.revision!=state.graph_revision||m.envelope.delivery_epoch!=state.epoch||
-           m.envelope.delivery_generation!=m.stamp.generation)return false;
+           (id!=nd::AckId&&m.envelope.delivery_generation!=m.stamp.generation))return false;
         return true;
     }
     void packet(bdsp_protocol::PacketView p) {
@@ -258,12 +277,12 @@ struct NumericRemoteEndpoint::Impl {
         auto bytes=p.payload;
         if(p.id==nd::FragmentId) {if(codec.assembler.accept(bytes,bytes)!=Status::ok||bytes.empty())return;}
         else if(p.id!=nd::AckId&&p.id!=nd::EventsId&&p.id!=nd::SnapshotId)return;
-        nd::Message m;if(!decode_data_message(bytes,m))return;
+        nd::Message m;if(!decode_data_message(p.id,bytes,m))return;
         dispatch_data_message(p.id,m);
     }
     void accept_ack(const nd::Message& m,Binding& binding) {
         if(m.kind==nd::Kind::Unavailable&&!m.stamp.available&&m.envelope.delivery_sequence==1&&
-           !m.envelope.delivery_generation&&m.envelope.request==binding.id&&m.stamp.stream_id==binding.stream&&
+           m.envelope.delivery_generation==selection_generation&&!m.stamp.generation&&m.envelope.request==binding.id&&m.stamp.stream_id==binding.stream&&
            signal_contracts::same_contract(m.contract,binding.wire_owner.view()))binding.acknowledged=true;
     }
     void receive_snapshot(nd::Message& m,Binding& binding) {
@@ -394,6 +413,7 @@ struct NumericRemoteEndpoint::Impl {
     bool transmit_subscription(Binding& binding,std::uint64_t now) {
         auto* unbound=&binding;
         auto message=handshake(*unbound,nonce,control->identity().session,state.graph_revision,state.epoch);
+        message.envelope.delivery_generation=selection_generation;
         if(codec.encode(message,nd::SubscribeId)==Status::ok){
             unbound->sent=true;unbound->sent_at=now;codec.flush(*control);}
         return true;

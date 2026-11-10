@@ -65,7 +65,7 @@ Message base(const NumericContract &c, std::span<const std::byte> storage,
 void reference_literal_golden(const Message& m,Buffers& b,const ReferenceContext& context,const auto& e){
     std::array<std::byte, 2277> golden{};
     const std::array<std::byte, 12> prefix{std::byte{0x4e}, std::byte{0x44}, std::byte{0x41}, std::byte{0x54},
-                                           std::byte{6},    std::byte{0},    std::byte{1},    std::byte{0},
+                                           std::byte{7},    std::byte{0},    std::byte{1},    std::byte{0},
                                            std::byte{1},    std::byte{1},    std::byte{1},    std::byte{0}};
     std::copy(prefix.begin(), prefix.end(), golden.begin());
     for (auto [at, value] : {std::pair{12, 1},
@@ -627,10 +627,10 @@ void matrix_cases() {
 }
 void boundary_literal_golden(Buffers& b,const auto& e){
     const std::array<std::byte, 12> prefix{std::byte{0x4e}, std::byte{0x44}, std::byte{0x41}, std::byte{0x54},
-                                           std::byte{6},    std::byte{0},    std::byte{1},    std::byte{0},
+                                           std::byte{7},    std::byte{0},    std::byte{1},    std::byte{0},
                                            std::byte{1},    std::byte{0},    std::byte{1},    std::byte{0}};
     check(std::equal(prefix.begin(), prefix.end(), b.wire.begin()), "literal fixed header golden");
-    // Independent DATA6 field table: DATA5 fields plus nonlinear-latency flag
+    // Independent DATA7 field table: DATA6 layout, selection-generation handshake semantics
     // at183, before the contract. Canonical zero latency is0/1. Complete450 bytes.
     std::array<std::byte, 450> golden{};
     std::copy(prefix.begin(), prefix.end(), golden.begin());

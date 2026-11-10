@@ -3,6 +3,58 @@
 #include <core_app/numeric_default_graph.h>
 #include <control/numeric_remote_support.h>
 using namespace transport_fixture;
+struct SubscriptionWireClient {
+    remote_numeric::Clock clock;QTcpSocket socket;desktop::QtTcpByteTransport transport{socket};
+    static control::numeric::SessionConfig config() {
+        auto value=remote_numeric::desktop_session_config();value.endpoint_authorized=true;value.device_identity="numeric-desktop";return value;
+    }
+    control::numeric::ControlSession client{config(),clock};
+    remote_numeric::CodecStorage codec;
+    std::vector<std::pair<std::uint64_t,std::uint64_t>> acknowledgements;
+    explicit SubscriptionWireClient(quint16 port) {
+        client.set_packet_handler([](bdsp_protocol::PacketView packet,void* user){static_cast<SubscriptionWireClient*>(user)->packet(packet);},this);
+        socket.connectToHost(QHostAddress::LocalHost,port);
+        require(wait([&]{return socket.state()==QAbstractSocket::ConnectedState;}),"subscription wire connection");
+        require(client.open(71)==Status::ok,"subscription wire negotiation");
+        require(wait([&]{poll();return client.state()==control::ControlSessionState::Ready;}),"subscription wire ready");
+    }
+    void poll() {
+        const auto status=client.poll(transport,socket.bytesToWrite());
+        require(status==Status::ok || status==Status::would_block,"subscription wire poll");
+    }
+    void packet(bdsp_protocol::PacketView packet) {
+        if(packet.id!=remote_numeric::nd::AckId)return;
+        remote_numeric::nd::Message message;
+        require(codec.decode(packet.payload,message)==Status::ok,"subscription ACK decode");
+        acknowledgements.emplace_back(message.envelope.request,message.envelope.delivery_generation);
+    }
+    void send(const remote_numeric::nd::Message& message) {
+        require(codec.encode(message,remote_numeric::nd::SubscribeId)==Status::ok,"subscription wire encode");
+        require(wait([&]{
+            const auto status=codec.flush(client);require(status==Status::ok || status==Status::would_block,"subscription wire flush");
+            poll();return !codec.wire_bytes && !client.pending_bytes();
+        }),"subscription wire send");
+    }
+    void expect(std::size_t count,std::uint64_t request,std::uint64_t generation) {
+        require(wait([&]{poll();return acknowledgements.size()>=count;}),"subscription ACK timeout");
+        require(acknowledgements.size()==count && acknowledgements.back()==std::pair{request,generation},"rejected subscription changed active generation/binding");
+    }
+};
+static void subscription_rejection_is_atomic() {
+    NumericEngine engine;Replies replies(engine);auto g=graph("selection");replies.accepted(apply(g));
+    NumericControlServer server(engine);require(server.listen(QHostAddress::LocalHost,0),"subscription rejection server");
+    SubscriptionWireClient peer(server.port());
+    auto limits=remote_numeric::nd::desktop_limits().frame;
+    auto arena=std::make_shared<remote_numeric::Arena>(limits,0);remote_numeric::Binding binding;
+    require(remote_numeric::make_binding(sink(g),g.nodes[1].inputs[0].contract,1,arena,binding)==Status::ok,"subscription wire binding");
+    auto selected=remote_numeric::handshake(binding,peer.client.nonce(),peer.client.identity().session,engine.snapshot().graph_revision,peer.client.identity().epoch);
+    selected.envelope.delivery_generation=1;peer.send(selected);peer.expect(1,1,1);
+    auto invalid=selected;invalid.envelope.delivery_generation=2;invalid.envelope.request=2;invalid.values=ValueDomain::AnyIeee;
+    peer.send(invalid);peer.send(selected);peer.expect(2,1,1);
+    invalid=selected;invalid.envelope.request=3;peer.send(invalid);peer.send(selected);peer.expect(3,1,1);
+    auto next=selected;next.envelope.delivery_generation=2;next.envelope.request=2;peer.send(next);peer.expect(4,2,2);
+    peer.send(selected);peer.send(next);peer.expect(5,2,2);
+}
 static void fifo_and_cancellation_regressions() {
     NumericEngine engine;Replies replies(engine);const auto g=graph("fifo");replies.accepted(apply(g));
     std::vector<std::uint64_t> received;bool recovery_gap=false;
@@ -77,7 +129,8 @@ static void demanded_sink_burst() {
 }
 static void verify_pcm_burst(NumericEngine& receiver,const domain::NumericProcessingGraph& receive_graph,NumericRemoteEndpoint& remote,std::uint64_t& received,bool& gap,std::uint64_t& sequence,const auto& send_pcm) {
     // CONTROL readiness precedes ACKed DATA demand; establish a real delivery first.
-    require(wait([&]{send_pcm();return received>0;}),"PCM DATA binding readiness");settle(200);const auto baseline=received;gap=false;
+    const auto before=received;
+    require(wait([&]{send_pcm();return received>before;}),"PCM DATA binding readiness");settle(200);const auto baseline=received;gap=false;
     for(unsigned block=0;block<24;++block)send_pcm();
     const auto complete=wait([&]{return received==baseline+24;});if(!complete)std::fprintf(stderr,"PCM transport received=%llu baseline=%llu sent=%llu warning=%s\n",(unsigned long long)received,(unsigned long long)baseline,(unsigned long long)sequence,qPrintable(remote.network_warning()));
     require(complete,"ordered PCM frames coalesced at sender/receiver");require(!gap,"ordinary PCM delivery invented discontinuity");DeliveredNumericFrame history;std::uint64_t history_filled=0;require(receiver.query_numeric({receive_graph.graph_id,7,domain::PortDirection::Output,0},history,nullptr,&history_filled)==Status::ok&&history_filled>0&&std::get<NumericView>(history.frame.view().payload).actual[0]==400,"continuous PCM never completed Window/FFT/History");remote.disconnect_remote();
@@ -86,10 +139,22 @@ static void pcm_transport_window_continuity() {
     auto defaults=numeric_default_graph();auto source=defaults.nodes.front();source.id=0;source.kind="NetworkInput";source.parameters=domain::EndpointProcessingParameters{};
     auto send_graph=graph("pcm");send_graph.nodes[0]=source;auto input=source.outputs.front();input.direction=domain::PortDirection::Input;send_graph.nodes[1].inputs={input};
     auto receive_graph=defaults;receive_graph.graph_id="receiver";receive_graph.nodes.front().kind="NetworkInput";receive_graph.nodes.front().parameters=domain::EndpointProcessingParameters{};
-    NumericEngine sender,receiver;Replies sr(sender),rr(receiver);sr.accepted(apply(send_graph));rr.accepted(apply(receive_graph));NumericControlServer server(sender);require(server.listen(QHostAddress::LocalHost,0),"PCM server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);require(remote.subscribe_numeric_frames({sink(send_graph)}),"PCM sink subscription");
-    std::uint64_t received=0;bool gap=false;remote.set_numeric_frame_handler([&](auto frame){if(frame.frame&&frame.frame.view().stamp.available){++received;if(received>1)gap|=frame.frame.view().stamp.discontinuity;require(receiver.feed_numeric(1,frame.frame.view())==Status::ok,"received PCM processing");}});
-    settle(100);const auto data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(data);std::array<float,256> pcm{};pcm.fill(.125f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
+    NumericEngine sender,receiver;Replies sr(sender),rr(receiver);sr.accepted(apply(send_graph));rr.accepted(apply(receive_graph));NumericControlServer server(sender);require(server.listen(QHostAddress::LocalHost,0),"PCM server");NumericRemoteEndpoint remote("127.0.0.1",server.port());connect(remote,&server);
+    std::uint64_t received=0,source_received=0,last_source=0;bool gap=false;
+    remote.set_numeric_frame_handler([&](auto frame){
+        if(!frame.context || !frame.frame || !frame.frame.view().stamp.available)return;
+        const auto view=frame.frame.view();const auto* numeric=std::get_if<NumericView>(&view.payload);float sample=0;
+        if(!numeric || load_element(*numeric,{0,0,0},sample)!=Status::ok || sample!=.125f)return;
+        if(frame.context->endpoint!=sink(send_graph)){++source_received;return;}
+        const auto stamp=frame.frame.view().stamp;
+        ++received;gap|=stamp.discontinuity || (last_source && stamp.source_sequence!=last_source+1);last_source=stamp.source_sequence;
+        require(receiver.feed_numeric(1,frame.frame.view())==Status::ok,"received PCM processing");
+    });
+    const auto data=source.outputs[0].contract.view();const auto& c=std::get<NumericContract>(data);std::array<float,256> pcm{};pcm.fill(.125f);std::array<PlaneLayout,1> planes{{{0,{4,0}}}};
     std::uint64_t sequence=0;auto send_pcm=[&]{send_pcm_block(sender,c,pcm,planes,sequence);};
+    require(wait([&]{send_pcm();return received>0 && source_received>0;}),"default source and sink bindings must both be acknowledged before replacement");
+    settle(200);
+    require(remote.subscribe_numeric_frames({sink(send_graph)}),"PCM sink subscription");
     verify_pcm_burst(receiver,receive_graph,remote,received,gap,sequence,send_pcm);
 }
 struct BatchIo final:bdsp_protocol::ByteTransport {
@@ -191,6 +256,7 @@ static void control_frame_profile_regression() {
         "CONTROL can describe every frame admitted by the desktop runtime");
 }
 int main(int argc,char** argv){QCoreApplication app(argc,argv);try{
+    subscription_rejection_is_atomic();
     control_frame_profile_regression();
     fifo_and_cancellation_regressions();
     ratio_json_regression();

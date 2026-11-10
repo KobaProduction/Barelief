@@ -88,3 +88,17 @@ workspace_patch_ads(DockContainerWidget.cpp "Application tabbar wins over native
 set(anchor "if (ContainerDropArea != InvalidDockWidgetArea &&\n\t\t\tContainerDropArea != dropArea)")
 set(replacement "// Application native tabbar drop retains the exact insertion index.\n\t\tif (ContainerDropArea != InvalidDockWidgetArea &&\n\t\t\tContainerDropArea != dropArea && dropOverlay->tabIndexUnderCursor() < TabDefaultInsertIndex)")
 workspace_patch_ads(DockContainerWidget.cpp "Application native tabbar drop retains" "${anchor}" "${replacement}")
+
+# Paint is part of event-driven drag hit testing on every platform. Reading the
+# live cursor here would overwrite the insertion index supplied by the event.
+set(anchor [=[
+	// Wayland: use the cached drag position because the global cursor
+	// position is not available during a platform drag
+	const DockWidgetArea da = internal::isWayland()
+		? dropAreaUnderCursor(d->LastGlobalPos) : dropAreaUnderCursor();
+]=])
+set(replacement [=[
+    // Application overlay paint retains the event-supplied drag position.
+    const DockWidgetArea da = dropAreaUnderCursor(d->LastGlobalPos);
+]=])
+workspace_patch_ads(DockOverlay.cpp "Application overlay paint retains" "${anchor}" "${replacement}")

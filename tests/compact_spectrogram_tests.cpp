@@ -1,3 +1,4 @@
+#include "menu_row_font_fixture.h"
 #include "isolated_gui_platform.h"
 #include <barelief/compact_spectrogram_view.h>
 #include <barelief/classic_spectrogram_colors.h>
@@ -418,8 +419,8 @@ int main(int argc,char** argv) {
     if(argc==3 && QString::fromLocal8Bit(argv[1])=="--live-probe")return live_spectrogram_probe(argc,argv);
     if(argc==3 && QString::fromLocal8Bit(argv[1])=="--config")return startup_project(argc,argv);
     QApplication app(argc,argv);check(test_fixture::isolated_gui_platform(),"isolated widget renderer only");
-    check(QFontDatabase::addApplicationFont(QDir(qEnvironmentVariable("WINDIR")).filePath("Fonts/segoeui.ttf"))>=0,"system font with Cyrillic glyphs");
-    app.setFont(QFont("Segoe UI",10));ui::Language::instance().set("ru");
+    auto fixture_font=menu_row_fixture_font();fixture_font.setPointSize(10);
+    app.setFont(fixture_font);ui::Language::instance().set("ru");
     if(argc==3 && QString::fromLocal8Bit(argv[1])=="--load-project")return load_project(QString::fromLocal8Bit(argv[2]));
     if(argc==2 && QString::fromLocal8Bit(argv[1])=="--history-edit")return history_edit_probe();
     if(argc==2 && QString::fromLocal8Bit(argv[1])=="--benchmark")return spectrogram_benchmarks();

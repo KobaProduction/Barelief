@@ -16,6 +16,7 @@ struct NumericSessionBinding {
     bdsp_protocol::numeric_data::Binding binding;
     bdsp_protocol::numeric_data::Negotiated negotiated;
     std::uint64_t nonce=0, session=0, revision=0, publisher_epoch=0;
+    std::uint64_t initial_delivery_sequence=0;
 };
 using NumericFrameHandler=void (*)(void*,const bdsp_protocol::numeric_data::Message&);
 // Positive negotiation and endpoint binding come from the trusted control plane.
@@ -41,6 +42,7 @@ public:
     Status last_status() const noexcept {return last_;}
     std::size_t pending_bytes() const noexcept {return packets_.pending_bytes()+tx_size_-tx_offset_;}
     std::uint64_t dropped() const noexcept {return dropped_;}
+    std::uint64_t last_delivery_sequence() const noexcept {return sequence_;}
 private:
     void accept_fragment(std::span<const std::uint8_t>) noexcept;
     void packet(bdsp_protocol::PacketView) noexcept;

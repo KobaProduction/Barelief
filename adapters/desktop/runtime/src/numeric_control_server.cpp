@@ -58,7 +58,7 @@ struct NumericControlServer::Impl {
         struct Ingress {domain::NodeId node;DeliveredNumericFrame frame;std::optional<std::uint64_t> history_ordinal;std::uint64_t filled_count=0;};
         std::deque<Queued> outbound;std::deque<Ingress> inbound;
         std::deque<std::pair<EndpointIdentity,std::uint64_t>> queries;
-        std::uint64_t revision=0,stop=0,sequence=0,received_sequence=0,reply_check=0;
+        std::uint64_t revision=0,stop=0,sequence=0,received_sequence=0,reply_check=0,selection_generation=0;
         DeliveryLosses outbound_losses,inbound_losses;
         bool failed=false,gap=false,writable=true;
         Peer(Impl& s):server(s),capabilities(s.capabilities),revision(s.state.graph_revision),stop(s.stop_generation) {}
@@ -83,7 +83,7 @@ struct NumericControlServer::Impl {
             return config;
         }
         void fence() {
-            bindings.clear();acknowledgements.clear();outbound.clear();outbound_losses.clear();inbound.clear();inbound_losses.clear();queries.clear();codec.reset();sequence=received_sequence=0;gap=false;
+            bindings.clear();acknowledgements.clear();outbound.clear();outbound_losses.clear();inbound.clear();inbound_losses.clear();queries.clear();codec.reset();gap=false;
             if(control)control->discard_outbound_data();
         }
         bdsp_protocol::ByteTransport& transport(){return serial?static_cast<bdsp_protocol::ByteTransport&>(*serial):*tcp;}
@@ -97,10 +97,10 @@ struct NumericControlServer::Impl {
             // Established session capabilities stay pinned; its registered reply check
             // admits every new graph against this snapshot. New peers use fresh capabilities.
         }
-        bool valid_data_envelope(const nd::Message& m) const {
+        bool valid_data_envelope(std::uint8_t id,const nd::Message& m) const {
             const auto identity=control->identity();
             if(m.envelope.nonce!=control->nonce()||m.envelope.session!=identity.session||m.envelope.revision!=revision||
-               m.envelope.delivery_epoch!=identity.epoch||m.envelope.delivery_generation!=m.stamp.generation)return false;
+               m.envelope.delivery_epoch!=identity.epoch||(id!=nd::SubscribeId&&m.envelope.delivery_generation!=m.stamp.generation))return false;
             return true;
         }
         bool accept_data_payload(bdsp_protocol::PacketView p,std::span<const std::uint8_t>& bytes) {
@@ -112,7 +112,7 @@ struct NumericControlServer::Impl {
             if(!accept_data_payload(p,bytes))return;
             nd::Message m;const auto identity=control->identity();
             if(codec.decode(bytes,m,codec.reference_context(bindings,control->nonce(),identity.session,revision))!=Status::ok)return;
-            if(!valid_data_envelope(m))return;
+            if(!valid_data_envelope(p.id,m))return;
             const auto e=endpoint(m.endpoint);
             if(p.id==nd::SubscribeId){subscribe(m,e);return;}
             dispatch_bound_packet(p.id,m,e);
@@ -124,32 +124,45 @@ struct NumericControlServer::Impl {
             receive_input(m,e,*b);
         }
         void acknowledge_existing_subscription(const nd::Message& m,const EndpointIdentity& e,const Binding& old) {
-                if(old.context->endpoint==e&&old.stream==m.stamp.stream_id&&
+                if(old.context->endpoint==e&&old.stream==m.stamp.stream_id&&m.values==signal_contracts::ValueDomain::FiniteOnly&&
                    signal_contracts::same_contract(old.wire_owner.view(),m.contract))acknowledgements.push_back(old.id);
         }
-        void install_subscription(Binding b,std::deque<Binding>::iterator old) {
+        void install_subscription(Binding b) {
             b.acknowledged=true;
-            if(old!=bindings.end()){*old=std::move(b);acknowledgements.push_back(old->id);}
-            else {bindings.push_back(std::move(b));acknowledgements.push_back(bindings.back().id);}
+            bindings.push_back(std::move(b));acknowledgements.push_back(bindings.back().id);
             server.update_demand();
         }
-        void complete_subscription(const nd::Message& m,const EndpointIdentity& e,const domain::ProcessingPort& port,std::deque<Binding>::iterator old) {
+        void retire_selection(std::uint64_t generation) {
+            bindings.clear();acknowledgements.clear();outbound.clear();outbound_losses.clear();
+            inbound.clear();inbound_losses.clear();queries.clear();gap=false;selection_generation=generation;
+        }
+        void complete_subscription(const nd::Message& m,const EndpointIdentity& e,const domain::ProcessingPort& port) {
             Binding b;if(make_binding(e,port.contract,std::uint32_t(m.envelope.request),arena,b)!=Status::ok||
-                !signal_contracts::same_contract(b.wire_owner.view(),m.contract)||b.stream!=m.stamp.stream_id)return;
+                !signal_contracts::same_contract(b.wire_owner.view(),m.contract)||b.stream!=m.stamp.stream_id||m.values!=b.view().values)return;
             if(!history_subscription_matches(m,port.contract.view()))return;
-            install_subscription(std::move(b),old);
+            if(m.envelope.delivery_generation>selection_generation)retire_selection(m.envelope.delivery_generation);
+            install_subscription(std::move(b));
+        }
+        bool accepts_subscription(const nd::Message& m) const {
+            return m.kind==nd::Kind::Unavailable && !m.stamp.available && m.envelope.request && m.envelope.request<=UINT32_MAX &&
+                m.envelope.delivery_sequence==1 && m.envelope.delivery_generation && !m.stamp.generation &&
+                m.envelope.delivery_generation>=selection_generation && acknowledgements.size()<QueueSize;
+        }
+        bool handle_existing_subscription(const nd::Message& m,const EndpointIdentity& e,const domain::ProcessingPort& port) {
+            auto old=std::find_if(bindings.begin(),bindings.end(),[&](const auto& b){return b.context->endpoint==e||b.id==m.envelope.request;});
+            if(old==bindings.end())return false;
+            if(old->id==m.envelope.request && history_subscription_matches(m,port.contract.view()))
+                acknowledge_existing_subscription(m,e,*old);
+            return true;
         }
         void subscribe(const nd::Message& m,const EndpointIdentity& e) {
-            if(m.kind!=nd::Kind::Unavailable||m.stamp.available||!m.envelope.request||m.envelope.request>UINT32_MAX||
-               m.envelope.delivery_sequence!=1||m.envelope.delivery_generation||acknowledgements.size()>=QueueSize)return;
+            if(!accepts_subscription(m))return;
             const auto* port=find_port(server.graph,e);if(!port)return;
-            auto old=std::find_if(bindings.begin(),bindings.end(),[&](const auto& b){return b.context->endpoint==e||b.id==m.envelope.request;});
-            if(old!=bindings.end()&&old->id==m.envelope.request) {
-                acknowledge_existing_subscription(m,e,*old);
-                return;
+            if(m.envelope.delivery_generation==selection_generation) {
+                if(handle_existing_subscription(m,e,*port))return;
+                if(bindings.size()>=MaxBindings)return;
             }
-            if(old==bindings.end()&&bindings.size()>=MaxBindings)return;
-            complete_subscription(m,e,*port,old);
+            complete_subscription(m,e,*port);
         }
         bool history_subscription_matches(const nd::Message& m,const signal_contracts::DataContract& c) const {
             const auto* history=std::get_if<signal_contracts::NumericContract>(&c);
@@ -213,6 +226,7 @@ struct NumericControlServer::Impl {
             auto b=std::find_if(bindings.begin(),bindings.end(),[&](const auto& b){return b.id==id;});
             if(b==bindings.end())return;
             auto m=handshake(*b,control->nonce(),control->identity().session,revision,control->identity().epoch);
+            m.envelope.delivery_generation=selection_generation;
             if(codec.encode(m,nd::AckId)!=Status::ok)failed=true;else codec.flush(*control);
         }
         void transmit_query() {

@@ -57,7 +57,7 @@ sequenceDiagram
 | Graph / processing | 5 / 4 | [domain DTO](../../domain/include/domain/processing_contracts.h) |
 | HELLO envelope | 2 | [ControlSession](../../adapters/desktop/runtime/src/numeric_control_session.cpp) |
 | CONTROL schema | 4 | [CONTROL DTO](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_control_message.h), [Protobuf schema](../../libs/bdsp_protocol/schema/numeric_control.proto) |
-| DATA payload / delivery grammar | 6 / 1 | [DATA DTO](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_data_message.h), [DATA codec](../../libs/bdsp_protocol/src/numeric_data_codec.cpp) |
+| DATA payload / delivery grammar | 7 / 1 | [DATA DTO](../../libs/bdsp_protocol/include/bdsp_protocol/numeric_data_message.h), [DATA codec](../../libs/bdsp_protocol/src/numeric_data_codec.cpp) |
 
 Номера этих границ независимы. На провод передаются символические идентификаторы,
 а не C++ enum ordinals или память `struct`. Точную таблицу полей CBOR/Protobuf
@@ -73,7 +73,7 @@ sequenceDiagram
 
 ## Согласование и управление
 
-Версия CONTROL packet равна 4, DATA payload — 6. `GraphVersions` внутри
+Версия CONTROL packet равна 4, DATA payload — 7. `GraphVersions` внутри
 CONTROL сохраняет отдельную оболочку схемы с document=4, graph=5,
 processing=4, control=4, data=5. Последнее поле — processing data edition,
 оно не задаёт версию сетевого DATA payload. В API этим величинам соответствуют
@@ -113,7 +113,7 @@ transport nonce/session/sequence, delivery epoch/generation, graph revision и
 request. FrameStamp сохраняет происхождение и время производителя. Reconnect
 не является новым sample clock и не синхронизирует независимые устройства.
 
-DATA начинается с magic `NDAT`, payload version 6, grammar 1, kind, flags,
+DATA начинается с magic `NDAT`, payload version 7, grammar 1, kind, flags,
 value domain и envelope. Полный descriptor несёт dtype, форму, representation,
 координаты, clock, planes/strides; accepted reference разрешается только после
 положительного ACK привязки. Numeric storage имеет явное wire encoding;
@@ -127,6 +127,18 @@ History realtime передаёт компактную строку, capacity, f
 Query/Snapshot восстанавливают полную согласованную матрицу отдельно.
 Empty, Reset и Unavailable — разные маркеры. Async-получатель удерживает owning
 payload; borrowed ring нельзя сохранять после callback.
+
+Subscribe/Ack используют ненулевой `envelope.delivery_generation` как поколение
+набора подписок, отдельно от нулевого `stamp.generation` handshake. Первое
+проверенное Subscribe нового поколения удаляет прежние привязки, отложенные
+доставки и запросы; остальные Subscribe того же поколения добавляют привязки.
+Идентичный повтор подтверждается без замены, конфликтующий или устаревший запрос
+не меняет состояние. ACK возвращает поколение набора. Установка привязок
+последовательная; это не атомарная транзакция всего набора.
+Уже закодированный DATA завершается перед новым ACK; delivery sequence сохраняет
+монотонность в пределах CONTROL session. Для Events/Query/Snapshot поле
+delivery generation по-прежнему соответствует поколению производителя.
+Совместимость с DATA payload 6 не поддерживается.
 
 ## Ограничения и восстановление
 

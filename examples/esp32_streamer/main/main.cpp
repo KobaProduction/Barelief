@@ -46,20 +46,22 @@ namespace nd = bdsp_protocol::numeric_data;
 namespace nc = bdsp_protocol::numeric_control;
 constexpr const char *Tag = "numeric-stream";
 constexpr std::size_t BlockSamples = 256, FrameBytes = 4096;
-// Separate paths no longer nest CONTROL codec/persistence frames above DSP.
-// Nine admitted nodes reserve 17920 dispatch bytes plus 8192 conversion stack bytes.
-// Allocate 32 KiB for that conservative bound and charge the full task stack.
+// The stock composition admits bounded graph metadata independently of DSP
+// samples/state and of the smaller borrowed CONTROL decode arena.
+constexpr std::size_t GraphMetadataBytes=32*1024;
+// Acquisition and transport have separate RTOS stacks. Admission charges the
+// full allocation and rejects kernels whose stack reservation exceeds it.
 // CONTROL uses externally allocated staging rather than large stack arrays.
 constexpr std::size_t AcquisitionStackBytes = 32 * 1024, TaskStackBytes = 16 * 1024;
 #ifdef CONFIG_STREAMER_CONTROL_WIRE_KIB
 constexpr std::size_t ControlWire = CONFIG_STREAMER_CONTROL_WIRE_KIB * 1024;
 #else
-constexpr std::size_t ControlWire = 4 * 1024;
+constexpr std::size_t ControlWire = 8 * 1024;
 #endif
 #ifdef CONFIG_STREAMER_CONTROL_ARENA_KIB
 constexpr std::size_t ControlArena = CONFIG_STREAMER_CONTROL_ARENA_KIB * 1024;
 #else
-constexpr std::size_t ControlArena = 8 * 1024;
+constexpr std::size_t ControlArena = 16 * 1024;
 #endif
 constexpr std::size_t PacketBytes = 1024;
 #ifdef CONFIG_STREAMER_SPECTRAL
@@ -276,8 +278,16 @@ struct Device final : application::NumericGraphPreparationPort {
     nc::Capabilities advertised;
     std::unique_ptr<control::numeric::ControlSession> control;
     embedded_support::SyntheticPipeline source;
-    domain::OwnedProcessingContract output_contract;
-    std::string output_graph, output_stream;
+    struct Subscription {
+        domain::OwnedProcessingContract contract;
+        std::string graph,stream;
+        embedded_support::NumericSessionBinding binding;
+        std::unique_ptr<embedded_support::NumericSession> data;
+        std::uint64_t generation=0;
+    };
+    std::unique_ptr<Subscription> active_subscription,pending_subscription;
+    std::uint64_t selection_generation=0,delivery_sequence=0;
+    std::size_t graph_metadata_ceiling=SIZE_MAX;
     embedded_support::NumericSessionBinding binding;
     std::unique_ptr<embedded_support::NumericSession> data;
     bool retire = false, ack_pending = false, gap = true;
@@ -313,9 +323,8 @@ struct Device final : application::NumericGraphPreparationPort {
     void configure_runtime() {
         auto &r = effective.runtime;
         r.admission.max_text_bytes = 64;
+        r.admission.max_owned_metadata_bytes=std::min(r.admission.max_owned_metadata_bytes,graph_metadata_ceiling);
         r.monotonic_nanoseconds = [](void *) noexcept { return std::uint64_t(esp_timer_get_time()) * 1000; };
-        r.admission.max_ports_per_node = 2;
-        r.admission.max_parameters_per_node = 5;
         r.admission.frame.max_payload_bytes = std::min<std::size_t>(
             r.admission.frame.max_payload_bytes, std::max<std::size_t>(FftSize, BlockSamples) * sizeof(float));
         const auto m = r.resources;
@@ -360,9 +369,12 @@ struct Device final : application::NumericGraphPreparationPort {
     bool discard_data = false;
     void fence() noexcept {
         selected_endpoint.store(UINT64_MAX, std::memory_order_release);
+        if(data)delivery_sequence=data->last_delivery_sequence();
         if (data)
             data->stop();
         data.reset();
+        active_subscription.reset();
+        pending_subscription.reset();
         ack_pending = false;
         discard_data = true;
         gap = true;
@@ -537,10 +549,12 @@ struct Device final : application::NumericGraphPreparationPort {
         discard_data = false;
         return control->state() == control::ControlSessionState::Failed ? Status::exhausted : Status::ok;
     }
-    std::optional<std::size_t> reserve_control_snapshots() {
+    std::optional<std::size_t> reserve_control_snapshots(std::size_t metadata_limit=SIZE_MAX) {
         caps.control.max_sessions = slots_.size();
         caps.control.max_field_string_bytes = 64;
         caps.control.max_graph_identity_bytes = 64;
+        auto& metadata=caps.numeric->runtime.admission.max_owned_metadata_bytes;
+        metadata=std::min(metadata,metadata_limit);
         const auto snapshot_bytes = application::control_snapshot_bytes(caps);
         if (!snapshot_bytes)
             return {};
@@ -549,12 +563,18 @@ struct Device final : application::NumericGraphPreparationPort {
         caps.control.max_control_scratch_bytes = *snapshot_bytes;
         return snapshot_bytes;
     }
+    std::size_t subscription_storage_bytes() const noexcept {
+        // Active and prepared sessions share DATA buffers and immutable contract
+        // owners. Their objects and copied graph/stream identities are distinct.
+        const auto identities=caps.control.max_graph_identity_bytes+effective.data.identity_bytes+2;
+        return 2*(sizeof(Subscription)+sizeof(embedded_support::NumericSession)+identities);
+    }
     void charge_control_storage(std::size_t persistent_bytes,std::size_t cold_bytes,std::size_t snapshot_bytes) {
         // DTO replay slots include their own objects. DATA tx/scratch are exactly
         // the two max_frame_bytes owners already charged by Profile::admit.
         profile.adapter_bytes = sizeof(Device) - sizeof(slots_) - 2 * FrameBytes +
                                 BlockSamples * profile.channels * sizeof(float) + 8 * 1024 + 4096 + TaskStackBytes +
-                                2 * sizeof(StaticTask_t);
+                                2 * sizeof(StaticTask_t) + subscription_storage_bytes();
         profile.control_bytes = persistent_bytes + cold_bytes + (slots_.size() + 1) * snapshot_bytes +
                                 sizeof(application::ProcessingControlService) + sizeof(application::GraphLifecycle) +
                                 sizeof(application::GraphLifecycleControlPort) +
@@ -562,8 +582,23 @@ struct Device final : application::NumericGraphPreparationPort {
                                 sizeof(esp_idf_adapter::NvsProcessingStorage) + 4096;
         effective = embedded_support::device_profile(profile);
     }
-    Status prepare_control_budget(control::numeric::SessionConfig &config, std::size_t &cold_bytes) {
+    Status reserve_graph_and_control(std::size_t persistent_bytes,std::size_t cold_bytes,std::size_t fixed_snapshot_bytes) {
+        charge_control_storage(persistent_bytes,cold_bytes,fixed_snapshot_bytes);
+        // Each snapshot owns a request and independent reply DTO. Reserve those
+        // copies jointly with one processing DTO, never a whole-RAM ceiling for
+        // every owner. Fixed codec/service/adapter storage was charged first.
+        constexpr auto metadata_owners=2*(std::tuple_size_v<decltype(slots_)>+1)+1;
+        graph_metadata_ceiling=std::min(GraphMetadataBytes,effective.runtime.admission.max_owned_metadata_bytes/metadata_owners);
+        if(!graph_metadata_ceiling)return Status::exhausted;
+        configure_runtime();
         const auto snapshot_bytes=reserve_control_snapshots();
+        if(!snapshot_bytes)return Status::exhausted;
+        charge_control_storage(persistent_bytes,cold_bytes,*snapshot_bytes);
+        if(embedded_support::admit(profile,std::char_traits<char>::length(StreamId)).status!=Status::ok)return Status::exhausted;
+        configure_runtime();return Status::ok;
+    }
+    Status prepare_control_budget(control::numeric::SessionConfig &config, std::size_t &cold_bytes) {
+        const auto snapshot_bytes=reserve_control_snapshots(0);
         if(!snapshot_bytes)return Status::exhausted;
         config = session_config();
         const auto session_bytes = control::numeric::ControlSession::storage_requirements(config);
@@ -571,11 +606,7 @@ struct Device final : application::NumericGraphPreparationPort {
             return Status::exhausted;
         config.storage_budget_bytes = session_bytes->persistent_bytes;
         cold_bytes = std::max(sizeof(PersistenceBuffers), session_bytes->external_staging_bytes);
-        charge_control_storage(session_bytes->persistent_bytes,cold_bytes,*snapshot_bytes);
-        if (embedded_support::admit(profile, std::char_traits<char>::length(StreamId)).status != Status::ok)
-            return Status::exhausted;
-        configure_runtime();
-        return Status::ok;
+        return reserve_graph_and_control(session_bytes->persistent_bytes,cold_bytes,*snapshot_bytes);
     }
     Status create_runtime(std::size_t cold_bytes) {
         auto &r = effective.runtime;
@@ -631,11 +662,13 @@ struct Device final : application::NumericGraphPreparationPort {
             selected.envelope.request > UINT32_MAX || selected.envelope.nonce != control->nonce() ||
             selected.envelope.session != identity.session || selected.envelope.delivery_epoch != identity.epoch ||
             selected.envelope.revision != state.graph_revision || selected.envelope.delivery_sequence != 1 ||
+            !selected.envelope.delivery_generation || selected.stamp.generation ||
+            selected.envelope.delivery_generation<selection_generation ||
             !state.applied_numeric || selected.endpoint.graph != state.applied_numeric->graph_id ||
             selected.endpoint.direction != nd::Direction::Input);
     }
     void packet(bdsp_protocol::PacketView packet) {
-        if (packet.id != nd::SubscribeId || packet.payload.size() > FrameBytes || ack_pending || discard_data)
+        if (packet.id != nd::SubscribeId || packet.payload.size() > FrameBytes || ack_pending || discard_data || pending_subscription)
             return;
         nd::Message selected;
         if (!nd::decode(std::as_bytes(packet.payload), selected, buffers.arena(), effective.data))
@@ -659,37 +692,66 @@ struct Device final : application::NumericGraphPreparationPort {
             if(node.id==selected.endpoint.node && node.kind=="NetworkOutput")
                 if(select_node_subscription(node,selected,identity))return;
     }
-    bool begin_output_session() {
-        data = std::make_unique<embedded_support::NumericSession>(
-            embedded_support::Role::publisher, binding, buffers.spans(), effective.data,
+    bool begin_output_session(Subscription& next) {
+        next.data = std::make_unique<embedded_support::NumericSession>(
+            embedded_support::Role::publisher, next.binding, buffers.spans(), effective.data,
             [](void *c, std::uint8_t id, std::span<const std::uint8_t> bytes) {
                 return static_cast<Device *>(c)->control->send_packet(id, bytes);
             },
             this, control->packet_payload_capacity());
-        if (data->begin() != Status::ok) {
-            data.reset();
-            return false;
-        }
-        return true;
+        // begin validates metadata and resets only the candidate's cursors. It
+        // does not overwrite the shared encoded frame still owned by old DATA.
+        return next.data->begin()==Status::ok;
     }
     void install_subscription(const nd::Message& selected,const application::SessionIdentity& identity,const domain::ConfiguredProcessingNode& node,const domain::ProcessingPort& port) {
-        output_contract = port.contract;
-        output_graph = state.applied_numeric->graph_id;
-        output_stream = std::string(selected.stamp.stream_id);
-        binding = {{{std::uint32_t(selected.envelope.request), 1},
-                    {output_graph, node.id, nd::Direction::Input, port.id},
-                    output_stream,
-                    output_contract.view(),
+        if(selected.envelope.delivery_generation==selection_generation) {
+            if(same_subscription(selected))ack_pending=true;
+            return;
+        }
+        auto next=std::make_unique<Subscription>();
+        next->contract=port.contract;next->graph=state.applied_numeric->graph_id;
+        next->stream=std::string(selected.stamp.stream_id);next->generation=selected.envelope.delivery_generation;
+        next->binding = {{{std::uint32_t(selected.envelope.request), 1},
+                    {next->graph, node.id, nd::Direction::Input, port.id},
+                    next->stream,
+                    next->contract.view(),
                     {},
                     selected.values},
                    {nd::PayloadVersion, unsigned(nd::Feature::Numeric)},
                    control->nonce(),
                    identity.session,
                    state.graph_revision,
-                   identity.epoch};
-        if(!begin_output_session())return;
-        selected_endpoint.store((std::uint64_t(std::uint32_t(node.id)) << 16) | port.id,
-                                std::memory_order_release);
+                   identity.epoch,data?data->last_delivery_sequence():delivery_sequence};
+        if(!begin_output_session(*next))return;
+        std::lock_guard lock(processing_mutex);
+        selected_endpoint.store(UINT64_MAX,std::memory_order_release);
+        pending_subscription=std::move(next);
+    }
+    bool same_subscription(const nd::Message& selected) const {
+        const auto& old=binding.binding;
+        return data && old.reference.binding==selected.envelope.request &&
+            old.endpoint.graph==selected.endpoint.graph && old.endpoint.node==selected.endpoint.node &&
+            old.endpoint.direction==selected.endpoint.direction && old.endpoint.port==selected.endpoint.port &&
+            old.stream==selected.stamp.stream_id && old.values==selected.values &&
+            signal_contracts::same_contract(old.contract,selected.contract);
+    }
+    void discard_queued_outputs() {
+        signal_contracts::OwnedDataFrame frame;domain::NodeId node;domain::PortId port;
+        dataflow_runtime::DeliveryStamp delivery;
+        while(output_queue.pop(frame,node,port,delivery)){}
+    }
+    void advance_subscription() {
+        if(data) {
+            const auto status=data->drain_packets();
+            if(status!=Status::ok && status!=Status::would_block){fence();retire=true;return;}
+        }
+        if(!pending_subscription || (data && data->pending_bytes()))return;
+        discard_queued_outputs();
+        data=std::move(pending_subscription->data);
+        active_subscription=std::move(pending_subscription);
+        binding=active_subscription->binding;selection_generation=active_subscription->generation;
+        const auto& endpoint=binding.binding.endpoint;
+        selected_endpoint.store((std::uint64_t(std::uint32_t(endpoint.node))<<16)|endpoint.port,std::memory_order_release);
         ack_pending = true;
         gap = true;
     }
@@ -704,7 +766,7 @@ struct Device final : application::NumericGraphPreparationPort {
                         binding.session,
                         1,
                         binding.publisher_epoch,
-                        0,
+                        selection_generation,
                         binding.revision,
                         binding.binding.reference.binding};
         return ack;
@@ -825,7 +887,7 @@ struct Device final : application::NumericGraphPreparationPort {
         message.endpoint = binding.binding.endpoint;
         message.contract = binding.binding.contract;
         message.stamp = frame.stamp;
-        message.stamp.stream_id = output_stream;
+        message.stamp.stream_id = binding.binding.stream;
         message.stamp.discontinuity |= gap;
         message.kind = message.stamp.available ? nd::Kind::Frame : nd::Kind::Unavailable;
         message.envelope.delivery_generation = message.stamp.generation;
@@ -837,7 +899,7 @@ struct Device final : application::NumericGraphPreparationPort {
     }
     void transmit_output(const signal_contracts::DataFrameView &frame, domain::NodeId node, domain::PortId port,
                          const dataflow_runtime::DeliveryStamp &delivery) {
-        if (!data || ack_pending || retire || discard_data || node != binding.binding.endpoint.node ||
+        if (!data || pending_subscription || ack_pending || retire || discard_data || node != binding.binding.endpoint.node ||
             port != binding.binding.endpoint.port || delivery.graph_revision != state.graph_revision ||
             delivery.epoch != state.epoch)
             return;
@@ -1106,6 +1168,7 @@ struct WorkerConnection {
     bool reconnect() {
         d.fence();
         d.control->reset();
+        d.selection_generation=d.delivery_sequence=0;
         tcp.detach();
         uart.detach();
         if (descriptor >= 0) {
@@ -1178,9 +1241,8 @@ struct WorkerConnection {
         }
         if (d.retire || d.discard_data)
             return;
+        d.advance_subscription();
         d.acknowledge();
-        if (d.data)
-            d.data->drain_packets();
         vTaskDelay(1);
     }
     void cycle() {

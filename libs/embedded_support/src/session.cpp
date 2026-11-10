@@ -51,6 +51,7 @@ Status NumericSession::begin() noexcept {
     auto status=validate_binding(numeric);if(status!=Status::ok)return fail(status);
     status=validate_buffers();if(status!=Status::ok)return fail(status);
     status=validate_marker(*numeric);if(status!=Status::ok)return fail(status);
+    sequence_=binding_.initial_delivery_sequence;
     state_=SessionState::ready;return Status::ok;
 }
 void NumericSession::stop() noexcept {

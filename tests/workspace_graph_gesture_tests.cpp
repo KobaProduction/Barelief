@@ -1,6 +1,8 @@
 #include "numeric_gui_fixture.h"
 #include "workspace_drag_fixture.h"
 #include <FloatingDockContainer.h>
+#include <DockManager.h>
+#include <DockOverlay.h>
 #include <QGraphicsView>
 #include <QPointer>
 #include <QProcess>
@@ -92,6 +94,28 @@ static void check_inserted_tab(WorkspaceDock* external,const QPointer<ads::CFloa
     }
     check(oldHost.isNull() && active==external && index==1,"Drop lost exact insertion/active tab or leaked source host");
 }
+static void overlay_paint_retains_insertion(WorkspaceDock* target) {
+    ads::CDockOverlay owned_overlay(target->dockManager(),ads::CDockOverlay::ModeDockAreaOverlay);
+    auto* overlay=&owned_overlay;
+    const auto allowed=overlay->allowedAreas();
+    const bool preview=overlay->dropPreviewEnabled();
+    overlay->setAllowedAreas(ads::CenterDockWidgetArea);
+    overlay->enableDropPreview(true);
+    overlay->showOverlay(target->dockAreaWidget(),workspace_drag::insertion(target,0));
+    overlay->dropAreaUnderCursor();
+    const int expected=overlay->tabIndexUnderCursor()==0?1:0;
+    overlay->showOverlay(target->dockAreaWidget(),workspace_drag::insertion(target,expected));
+    const int before=overlay->tabIndexUnderCursor();
+    QImage image(overlay->size(),QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    overlay->render(&image);
+    const int after=overlay->tabIndexUnderCursor();
+    overlay->hideOverlay();
+    overlay->setAllowedAreas(allowed);
+    overlay->enableDropPreview(preview);
+    check(before==expected && after==expected,"Overlay paint replaced event-supplied tab insertion");
+}
+
 static QJsonObject initial_session(){
     App app;app.apply();auto* flow=app.dock("dataFlowDock");
     const auto baseline=app.presenter().client().snapshot();
@@ -100,6 +124,7 @@ static QJsonObject initial_session(){
     click_node(app,10);check(opened(app.window)==0 && app.window->workspaceDocks().size()==inventory,"Pipeline-only click created a graph");
     auto* first=app.open(10,2,0);auto* inactive=app.open(11,1,0);auto* adjacent=app.open(10,2,0);
     check(first!=adjacent && first->dockAreaWidget()==inactive->dockAreaWidget() && adjacent->dockAreaWidget()!=first->dockAreaWidget(),"Explicit tab/adjacent actions lost distinct instances");
+    overlay_paint_retains_insertion(first);
     const QRect flowBounds(app.window->mapFromGlobal(flow->mapToGlobal(QPoint())),flow->size());
     const QRect graphBounds(app.window->mapFromGlobal(first->mapToGlobal(QPoint())),first->size());
     check(flowBounds.top()>graphBounds.bottom(),"Pipeline default is not below internal graphs");

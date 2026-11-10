@@ -1,7 +1,8 @@
 #pragma once
 #include <array>
 #include <cstdint>
-// Actual genuine aubio Ooura FFT on saved source postwindow input, tones8 N64 frame86.
+// Historical platform capture of genuine aubio Ooura FFT, tones8 N64 frame86.
+// Runtime bit conformance uses the pinned source on the active compiler/libm.
 // Provenance: Testing/xhigh-ooura-20261028/source-fft-golden.json.
 namespace ooura_source_fft {
 inline constexpr std::array<std::uint32_t,64> input{

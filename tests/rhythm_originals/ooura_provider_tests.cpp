@@ -10,6 +10,8 @@
 #include <limits>
 #include <new>
 #include <vector>
+// Test-local ABI of the pinned C source, bypassing the adapter under test.
+extern "C" void barelief_aubio_ooura_rdft(int,int,float*,int*,float*);
 namespace {
 using Owner=dsp_kernels::PreparedFourierBackend;
 using Transform=dsp_kernels::FourierBackendTransform;
@@ -75,12 +77,28 @@ void clone_factory_lifetime() {
     auto copy=operation;operation=Owner{};std::array<float,4> output{};
     require(copy.process(std::array<float,2>{1,2},output) && output[0]==3,"clone independent of borrowed factory lifetime");
 }
+std::array<float,66> pinned_source_bins(std::array<float,64> raw) {
+    std::array<int,33> indices{};std::array<float,33> tables{};
+    barelief_aubio_ooura_rdft(64,1,raw.data(),indices.data(),tables.data());
+    std::array<float,66> bins{};bins[0]=raw[0];bins[64]=raw[1];
+    // Original RDFT packing: DC, Nyquist, then real/positive-sine pairs.
+    for(std::size_t bin=1;bin<32;++bin){bins[2*bin]=raw[2*bin];bins[2*bin+1]=-raw[2*bin+1];}
+    return bins;
+}
+
 void genuine_source_bits() {
     if(dsp_kernels::max_fft_samples<64)return;
     std::array<float,64> input{};std::array<float,66> output{};
     for(std::size_t i=0;i<input.size();++i)input[i]=std::bit_cast<float>(ooura_source_fft::input[i]);
+    const auto expected=pinned_source_bins(input);
     Owner operation;require(operation.prepare({64,Transform::RealForward},factory()) && operation.process(input,output),"genuine source FFT row");
-    for(std::size_t i=0;i<output.size();++i)require(std::bit_cast<std::uint32_t>(output[i])==ooura_source_fft::expected[i],"actual genuine Ooura FFT bits");
+    for(std::size_t i=0;i<output.size();++i){
+        const auto actual=std::bit_cast<std::uint32_t>(output[i]);
+        const auto reference=std::bit_cast<std::uint32_t>(expected[i]);
+        const auto snapshot=ooura_source_fft::expected[i];
+        if(actual!=reference || reference!=snapshot)std::fprintf(stderr,"Ooura[%zu] adapter=%08x raw=%08x historical=%08x\n",i,unsigned(actual),unsigned(reference),unsigned(snapshot));
+        require(actual==reference,"actual genuine Ooura FFT bits");
+    }
 }
 void tracking_self_check();
 }

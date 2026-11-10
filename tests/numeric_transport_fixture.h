@@ -19,7 +19,8 @@ using namespace pipeline;
 using namespace signal_contracts;
 inline void require(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 inline bool wait(const std::function<bool()>& predicate,int ms=3000){
-    QElapsedTimer timer;timer.start();while(!predicate()&&timer.elapsed()<ms){QCoreApplication::processEvents();QThread::msleep(1);}return predicate();
+    QElapsedTimer timer;timer.start();
+    for(;;){if(predicate())return true;if(timer.elapsed()>=ms)return false;QCoreApplication::processEvents();QThread::msleep(1);}
 }
 inline void settle(int ms=60){QElapsedTimer timer;timer.start();wait([&]{return timer.elapsed()>=ms;},ms+100);}
 inline NumericContract contract(std::size_t elements=1){

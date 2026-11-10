@@ -814,8 +814,9 @@ void codec_mask_decode_case(const Codec& c,std::uint32_t mask,bool valid,Reply& 
         message.body = reply;
         auto fixture = encode(c, message);
         CHECK(fixture);
-        const std::uint8_t cb[]{0xa5, 1, 4, 2, 6, 3, 1};
-        const std::uint8_t pb[]{8, 4, 16, 6, 24, 1};
+        // DATA7 capabilities; the final scalar is the codec mask under test.
+        const std::uint8_t cb[]{0xa5, 1, 4, 2, 7, 3, 1};
+        const std::uint8_t pb[]{8, 4, 16, 7, 24, 1};
         auto needle = c.id() == CodecId::Cbor ? std::span<const std::uint8_t>{cb} : std::span<const std::uint8_t>{pb};
         auto end = wire.begin() + fixture.produced;
         auto match = std::search(wire.begin(), end, needle.begin(), needle.end());
