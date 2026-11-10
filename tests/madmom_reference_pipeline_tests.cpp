@@ -6,6 +6,7 @@
 #include <domain/graph/preparation_values.h>
 #include <domain/numeric/atomic_operation_ports.h>
 #include "numeric_test_builders.h"
+#include "test_aligned_allocation.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -17,7 +18,6 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <malloc.h>
 #include <new>
 #include <memory>
 #include <ostream>
@@ -437,10 +437,10 @@ void* operator new[](std::size_t bytes) {return ::operator new(bytes);}
 void operator delete[](void* p) noexcept {::operator delete(p);}
 void operator delete[](void* p,std::size_t) noexcept {::operator delete(p);}
 void* operator new(std::size_t bytes,std::align_val_t alignment) {
-    ++allocations;if(auto* p=_aligned_malloc(bytes?bytes:1,std::size_t(alignment)))return p;throw std::bad_alloc();
+    ++allocations;if(auto* p=test_allocation::allocate_aligned(bytes,std::size_t(alignment)))return p;throw std::bad_alloc();
 }
-void operator delete(void* p,std::align_val_t) noexcept {_aligned_free(p);}
-void operator delete(void* p,std::size_t,std::align_val_t) noexcept {_aligned_free(p);}
+void operator delete(void* p,std::align_val_t) noexcept {test_allocation::deallocate_aligned(p);}
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept {test_allocation::deallocate_aligned(p);}
 void* operator new[](std::size_t bytes,std::align_val_t alignment) {return ::operator new(bytes,alignment);}
 void operator delete[](void* p,std::align_val_t alignment) noexcept {::operator delete(p,alignment);}
 void operator delete[](void* p,std::size_t,std::align_val_t alignment) noexcept {::operator delete(p,alignment);}

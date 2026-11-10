@@ -65,22 +65,23 @@ function(deploy_desktop_runtime target)
     if(dxc_redist_bin)
         string(PREPEND runtime_deploy_path "${dxc_redist_bin};")
     endif()
-    set(qml_deploy_args)
+    set(qml_directory)
     if(ARGV1 STREQUAL "QML")
-        list(APPEND qml_deploy_args --qmldir "${CMAKE_SOURCE_DIR}/presentation/qt/qml")
+        set(qml_directory "${CMAKE_SOURCE_DIR}/presentation/qt/qml")
     endif()
-    add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E env
-            "PATH=${runtime_deploy_path}"
-            "${QT_WINDEPLOYQT_EXECUTABLE}" --no-translations --compiler-runtime ${qml_deploy_args}
-            --dir "$<TARGET_FILE_DIR:${target}>" "$<TARGET_FILE:${target}>"
-        COMMENT "Deploying Qt runtime for ${target}" VERBATIM)
+    set(compiler_runtime_directory)
     if(MINGW)
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "${runtime_compiler_bin}/libgcc_s_seh-1.dll"
-                "${runtime_compiler_bin}/libstdc++-6.dll"
-                "${runtime_compiler_bin}/libwinpthread-1.dll"
-                "$<TARGET_FILE_DIR:${target}>" VERBATIM)
+        set(compiler_runtime_directory "${runtime_compiler_bin}")
     endif()
+    # All targets share bin. Serialize only deployment, including compiler DLLs.
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E env "PATH=${runtime_deploy_path}"
+            "${CMAKE_COMMAND}"
+            "-DDEPLOY_QT_TOOL=${QT_WINDEPLOYQT_EXECUTABLE}"
+            "-DDEPLOY_EXECUTABLE=$<TARGET_FILE:${target}>"
+            "-DDEPLOY_DIRECTORY=$<TARGET_FILE_DIR:${target}>"
+            "-DDEPLOY_QML_DIRECTORY=${qml_directory}"
+            "-DDEPLOY_COMPILER_DIRECTORY=${compiler_runtime_directory}"
+            -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/DeployDesktopRuntime.cmake"
+        COMMENT "Deploying Qt runtime for ${target}" VERBATIM)
 endfunction()

@@ -9,6 +9,7 @@
 #include <dsp_kernels/log_compression.h>
 #include <domain/graph/node_factory.h>
 #include "numeric_test_builders.h"
+#include "test_aligned_allocation.h"
 #include "aubio_reference_trace.h"
 #include "aubio_context_test_inputs.h"
 #include <ooura_backend.h>
@@ -19,7 +20,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
-#include <malloc.h>
 
 namespace {
 using namespace domain;using namespace signal_contracts;using namespace dataflow_runtime;
@@ -171,9 +171,9 @@ void operator delete(void* p,std::size_t) noexcept{std::free(p);}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
-void* operator new(std::size_t n,std::align_val_t align){++allocations;if(auto* p=_aligned_malloc(n?n:1,std::size_t(align)))return p;throw std::bad_alloc();}
-void operator delete(void* p,std::align_val_t) noexcept{_aligned_free(p);}
-void operator delete(void* p,std::size_t,std::align_val_t) noexcept{_aligned_free(p);}
+void* operator new(std::size_t n,std::align_val_t align){++allocations;if(auto* p=test_allocation::allocate_aligned(n,std::size_t(align)))return p;throw std::bad_alloc();}
+void operator delete(void* p,std::align_val_t) noexcept{test_allocation::deallocate_aligned(p);}
+void operator delete(void* p,std::size_t,std::align_val_t) noexcept{test_allocation::deallocate_aligned(p);}
 void* operator new[](std::size_t n,std::align_val_t align){return ::operator new(n,align);}
 void operator delete[](void* p,std::align_val_t align) noexcept{::operator delete(p,align);}
 void operator delete[](void* p,std::size_t,std::align_val_t align) noexcept{::operator delete(p,align);}

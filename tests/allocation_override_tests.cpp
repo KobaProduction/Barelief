@@ -2,9 +2,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
-#ifdef _WIN32
-#include <malloc.h>
-#endif
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include "test_aligned_allocation.h"
 
 namespace {
 std::size_t allocations = 0;
@@ -21,13 +22,8 @@ void* allocate(std::size_t size) {
 void* allocate_aligned(std::size_t size, std::size_t alignment) {
     ++allocations;
     if (fail_allocation) { throw std::bad_alloc{}; }
-#ifdef _WIN32
-    auto* pointer = _aligned_malloc(size, alignment);
-#else
-    auto* pointer = std::aligned_alloc(alignment, size);
-#endif
-    if (!pointer) { throw std::bad_alloc{}; }
-    return pointer;
+    if (auto* pointer = test_allocation::allocate_aligned(size, alignment)) return pointer;
+    throw std::bad_alloc{};
 }
 void ordinary_and_array() {
     const auto before = allocations;
@@ -45,6 +41,24 @@ void aligned_and_array() {
     ::operator delete(scalar, std::align_val_t{64});
     ::operator delete[](array, std::align_val_t{64});
 }
+void aligned_sizes() {
+    const auto before = allocations;
+    auto* zero = ::operator new(0, std::align_val_t{64}, std::nothrow);
+    auto* odd = ::operator new[](65, std::align_val_t{64}, std::nothrow);
+    check(zero && odd && allocations == before + 2);
+    check(reinterpret_cast<std::uintptr_t>(zero) % 64 == 0);
+    check(reinterpret_cast<std::uintptr_t>(odd) % 64 == 0);
+    static_cast<std::byte*>(odd)[64] = std::byte{0x5a};
+    check(static_cast<std::byte*>(odd)[64] == std::byte{0x5a});
+    ::operator delete(zero, std::align_val_t{64});
+    ::operator delete[](odd, std::align_val_t{64});
+}
+void aligned_overflow() {
+    const auto before = allocations;
+    check(!::operator new(std::numeric_limits<std::size_t>::max(), std::align_val_t{64}, std::nothrow));
+    check(allocations == before + 1);
+}
+
 void allocation_failure() {
     fail_allocation = true;
     const auto before = allocations;
@@ -63,11 +77,7 @@ void* operator new(std::size_t size, std::align_val_t alignment) {
     return allocate_aligned(size, std::size_t(alignment));
 }
 void operator delete(void* pointer, std::align_val_t) noexcept {
-#ifdef _WIN32
-    _aligned_free(pointer);
-#else
-    std::free(pointer);
-#endif
+    test_allocation::deallocate_aligned(pointer);
 }
 void operator delete(void* pointer, std::size_t, std::align_val_t alignment) noexcept {
     ::operator delete(pointer, alignment);
@@ -75,6 +85,8 @@ void operator delete(void* pointer, std::size_t, std::align_val_t alignment) noe
 int main() {
     ordinary_and_array();
     aligned_and_array();
+    aligned_sizes();
+    aligned_overflow();
     allocation_failure();
     std::puts("allocation replacement families PASS");
 }
