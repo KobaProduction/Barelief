@@ -20,6 +20,8 @@
 #include <QLineF>
 #include <QKeyEvent>
 #include <QElapsedTimer>
+#include <QThread>
+#include <QTimer>
 #include <QDialog>
 #include <QMenu>
 #include <QPlainTextEdit>
@@ -186,16 +188,22 @@ static void camera_resize_restore(SchemeEditorWidget& editor,QtNodes::GraphicsVi
         for(const auto size:{QSize(800,600),QSize(1300,900),QSize(1100,760)}){editor.hide();editor.resize(size);editor.show();QTest::qWait(10);if(!near(resizeCenter) || view->getScale()!=resizeScale)std::fprintf(stderr,"Camera resize %dx%d desired=(%.3f,%.3f)/%.4f actual=(%.3f,%.3f)/%.4f viewport=%dx%d\n",size.width(),size.height(),resizeCenter.x(),resizeCenter.y(),resizeScale,center().x(),center().y(),view->getScale(),view->viewport()->width(),view->viewport()->height());require(near(resizeCenter) && view->getScale()==resizeScale,"Hide/show/resize resets camera");}
 }
 
+static void wait_for_keyboard_pan(const auto& center,QPointF origin) {
+    const bool moved=QTest::qWaitFor([&] {return QLineF(origin,center()).length()>8;},1000);
+    require(moved,"Keyboard pan timer did not advance camera");
+}
+
 static void held_keyboard_navigation(QtNodes::GraphicsView* view,const auto& center,const auto& near,const auto& key) {
-        view->setFocus(Qt::OtherFocusReason);const auto beforeHeld=center();key(QEvent::KeyPress,Qt::Key_W);require(near(beforeHeld,2),"WASD press jumps in chunks");QTest::qWait(70);const auto held=center();require(held.y()<beforeHeld.y()-5,"Held W did not pan");key(QEvent::KeyRelease,Qt::Key_W,0,true);QTest::qWait(35);require(center().y()<held.y()-3,"Autorepeat release stopped held key");key(QEvent::KeyRelease,Qt::Key_W);const auto released=center();QTest::qWait(45);require(near(released,2),"Key release fails to stop pan");
-        const auto diagonalStart=center();key(QEvent::KeyPress,Qt::Key_W);key(QEvent::KeyPress,Qt::Key_D);QTest::qWait(65);key(QEvent::KeyRelease,Qt::Key_W);key(QEvent::KeyRelease,Qt::Key_D);const auto delta=center()-diagonalStart;require(delta.x()>5 && delta.y()<-5 && std::abs(delta.x()/delta.y())>.6 && std::abs(delta.x()/delta.y())<1.5,"Diagonal pan not normalized");
+        view->setFocus(Qt::OtherFocusReason);const auto beforeHeld=center();key(QEvent::KeyPress,Qt::Key_W);require(near(beforeHeld,2),"WASD press jumps in chunks");wait_for_keyboard_pan(center,beforeHeld);const auto held=center();require(held.y()<beforeHeld.y()-5,"Held W did not pan");key(QEvent::KeyRelease,Qt::Key_W,0,true);wait_for_keyboard_pan(center,held);require(center().y()<held.y()-3,"Autorepeat release stopped held key");key(QEvent::KeyRelease,Qt::Key_W);const auto released=center();QTest::qWait(45);require(near(released,2),"Key release fails to stop pan");
+        // A delayed event loop must not turn direction checks into zero-tick checks.
+        const auto diagonalStart=center();key(QEvent::KeyPress,Qt::Key_W);key(QEvent::KeyPress,Qt::Key_D);QTimer::singleShot(0,view,[]{QThread::msleep(100);});wait_for_keyboard_pan(center,diagonalStart);key(QEvent::KeyRelease,Qt::Key_W);key(QEvent::KeyRelease,Qt::Key_D);const auto delta=center()-diagonalStart;std::fprintf(stderr,"Diagonal delta=(%.3f,%.3f)\n",delta.x(),delta.y());require(delta.x()>5 && delta.y()<-5 && std::abs(delta.x()/delta.y())>.6 && std::abs(delta.x()/delta.y())<1.5,"Diagonal pan not normalized");
         constexpr quint32 physicalW=
 #ifdef Q_OS_LINUX
             25;
 #else
             17;
 #endif
-        const auto physicalStart=center();key(QEvent::KeyPress,0x0426,physicalW);QTest::qWait(65);key(QEvent::KeyRelease,0x0426,physicalW);require(center().y()<physicalStart.y()-5,"Physical W under RU layout does not pan");
+        const auto physicalStart=center();key(QEvent::KeyPress,0x0426,physicalW);wait_for_keyboard_pan(center,physicalStart);key(QEvent::KeyRelease,0x0426,physicalW);require(center().y()<physicalStart.y()-5,"Physical W under RU layout does not pan");
 }
 
 static void canvas_input_navigation(SchemeEditorWidget& editor,QtNodes::GraphicsView* view,QLineEdit* text,const auto& center,const auto& near) {

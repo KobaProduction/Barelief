@@ -27,14 +27,7 @@ if(BUILD_TESTING)
     add_executable(research_fourier_profile_tests EXCLUDE_FROM_ALL
         ${PROJECT_SOURCE_DIR}/tests/research_fourier_profile_tests.cpp fourier_profile.cpp)
     target_include_directories(research_fourier_profile_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    # The parameter registry in domain_model dispatches to domain_numeric;
-    # numeric contracts also use the model. GNU archives need a rescan here.
-    if(MINGW)
-        target_link_libraries(research_fourier_profile_tests PRIVATE
-            "$<LINK_GROUP:RESCAN,domain_model,domain_numeric>" desktop_fourier_backend)
-    else()
-        target_link_libraries(research_fourier_profile_tests PRIVATE domain_numeric desktop_fourier_backend)
-    endif()
+    target_link_libraries(research_fourier_profile_tests PRIVATE domain_numeric desktop_fourier_backend)
     set_target_properties(research_fourier_profile_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
     add_test(NAME research_fourier_profile_tests COMMAND research_fourier_profile_tests)
     set_tests_properties(research_fourier_profile_tests PROPERTIES TIMEOUT 30 LABELS "numeric;reference;regression;fft")

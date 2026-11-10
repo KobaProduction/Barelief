@@ -30,7 +30,9 @@ foreach(module IN ITEMS domain_model domain_numeric domain_signal domain_music g
         $<INSTALL_INTERFACE:include>)
     target_compile_features(${module} PUBLIC cxx_std_20)
 endforeach()
-target_link_libraries(domain_model PUBLIC signal_contracts)
+# The parameter registry calls numeric catalogs; declare the existing static
+# link component centrally so every consumer gets CMake archive rescanning.
+target_link_libraries(domain_model PUBLIC signal_contracts PRIVATE domain_numeric)
 target_link_libraries(domain_numeric PUBLIC domain_model)
 target_link_libraries(domain_signal PUBLIC domain_model PRIVATE window_math)
 target_link_libraries(domain_music PUBLIC domain_model domain_signal)
