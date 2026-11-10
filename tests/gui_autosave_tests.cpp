@@ -86,14 +86,13 @@ static bool navigation_does_not_save(CoreApplication& app,MainWindow* window,con
     // Initial resize events may occur while layout restoration suppresses saves.
     // Make a real workspace change after startup, then await its persisted state.
     window->resize(window->width()+16,window->height());
-    auto modified=QFileInfo(path).lastModified();
-    auto workspace=saved_settings(read(path)).value("ui").toObject().value("workspace").toObject();
+    // File timestamps are not a notification: two atomic saves may share a
+    // timestamp. Observe the persisted content once the save reports completion.
     if(!wait_until([&]{
-        const auto current=QFileInfo(path).lastModified();
-        if(current!=modified){modified=current;workspace=saved_settings(read(path)).value("ui").toObject().value("workspace").toObject();}
-        return saved(window) && workspace.value("version").toInt()==1;
+        return saved(window) && saved_settings(read(path)).value("ui").toObject()
+            .value("workspace").toObject().value("version").toInt()==1;
     })) {
-        qWarning()<<"WORKSPACE_AUTOSAVE disk-version"<<workspace.value("version").toInt()
+        qWarning()<<"WORKSPACE_AUTOSAVE disk-version"<<saved_settings(read(path)).value("ui").toObject().value("workspace").toObject().value("version").toInt()
             <<"memory-version"<<app._ctx.file_configs.ui.workspace.value("version").toInt()<<"saved"<<saved(window);
         return require(false,"dock layout change was not persisted");
     }

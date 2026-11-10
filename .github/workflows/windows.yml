@@ -50,6 +50,8 @@ jobs:
           $toolchain = Join-Path (Split-Path (Split-Path $env:QT_ROOT_DIR)) 'Tools/mingw1310_64/bin'
           $toolchain >> $env:GITHUB_PATH
           $env:PATH = "$toolchain;$env:PATH"
+          $null = python scripts/git_version.py --source . --require-clean
+          if ($LASTEXITCODE) { git status --short; exit 1 }
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }} -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DCMAKE_C_COMPILER="$toolchain/gcc.exe" -DCMAKE_CXX_COMPILER="$toolchain/g++.exe" -DPORTABLE_DSP_MAX_FFT_SIZE=16384 -DBUILD_TESTING=ON
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Build
@@ -138,6 +140,7 @@ jobs:
       - name: Configure
         run: |
           set -o pipefail
+          python scripts/git_version.py --source . --require-clean > "$RUNNER_TEMP/barelief-source-identity.json" || { git status --short; exit 1; }
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DBUILD_GUI=${{ matrix.gui }} -DBARELIEF_TEST_QPA_PLATFORM=xcb -DPORTABLE_DSP_MAX_FFT_SIZE=16384 -DBUILD_TESTING=ON 2>&1 | tee linux-configure.log
       - name: Build
         run: |

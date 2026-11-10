@@ -60,7 +60,7 @@ class GitVersionTests(unittest.TestCase):
         (self.source / ".gitignore").write_text(ignore.read_text(), encoding="utf-8")
         self.git("commit", "-qam", "ignore generated CI outputs")
         before = self.identity()
-        for name in ("linux-configure.log", "linux-build.log", "linux-package.log", "linux-test.log"):
+        for name in ("linux-configure.log", "linux-build.log", "linux-package.log", "linux-test.log", "aqtinstall.log"):
             (self.source / name).write_text("diagnostic output", encoding="utf-8")
         (self.source / "build").mkdir()
         (self.source / "build/generated.txt").write_text("generated", encoding="utf-8")

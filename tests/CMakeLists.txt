@@ -172,6 +172,10 @@ endforeach()
 add_desktop_check(console_config_tests graph_document_adapter)
 target_link_libraries(console_config_tests PRIVATE desktop_numeric_defaults Qt6::Network)
 add_dependencies(console_config_tests pipeline_cli)
+add_test(NAME package_fixture_startup COMMAND pipeline_cli --synthetic
+    --config "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/linux-package.json" --duration 1200)
+set_tests_properties(package_fixture_startup PROPERTIES
+    LABELS "numeric;integration;packaging" TIMEOUT 15 RUN_SERIAL TRUE)
 add_executable(numeric_presentation_tests numeric_presentation_tests.cpp)
 target_include_directories(numeric_presentation_tests PRIVATE ${CMAKE_SOURCE_DIR}/presentation/ports/include)
 target_link_libraries(numeric_presentation_tests PRIVATE graph_domain signal_contracts)

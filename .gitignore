@@ -9,6 +9,7 @@ cmake-*-*
 /linux-build.log
 /linux-package.log
 /linux-test.log
+/aqtinstall.log
 
 # Independent local build trees used for architecture validation.
 /build-editor/
